@@ -299,6 +299,17 @@ impl NodeRpcClient {
             .await
     }
 
+    /// `stop` — ask the node to shut down gracefully. Works for any reachable
+    /// node (one we spawned OR one the user started), unlike killing our child
+    /// handle. The connection may drop as the node exits, so a transport error is
+    /// treated as success.
+    pub async fn stop(&self) -> Result<(), AppError> {
+        match self.call::<serde_json::Value>("stop", serde_json::json!([])).await {
+            Ok(_) | Err(AppError::Http(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     // --- Broadcast (write) -------------------------------------------------
 
     /// `sendrawtransaction` — broadcast an already-signed, hex-encoded tx.

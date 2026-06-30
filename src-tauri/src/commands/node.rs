@@ -387,7 +387,9 @@ fn read_log_tail(path: &std::path::Path) -> String {
     }
 }
 
-/// Stop the app-managed hsd (no-op if we didn't start one this session).
+/// Stop hsd. Kills the child we spawned (if any) AND asks any reachable node to
+/// shut down over RPC — so the app can stop a node it adopted or that the user
+/// started outside the app, not just one from this session.
 #[tauri::command]
 pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
     let child = {
@@ -398,6 +400,15 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
         let _ = child.kill();
         let _ = child.wait();
     }
+
+    // Snapshot settings (no lock held across the await), then ask any node still
+    // answering to stop. Best-effort: if nothing's reachable, that's fine.
+    let settings = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::get_settings(&db)?
+    };
+    let _ = NodeRpcClient::from_settings(&settings).stop().await;
+
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db.execute(
         "INSERT INTO audit_log (action, detail) VALUES ('stop_hsd', ?1)",

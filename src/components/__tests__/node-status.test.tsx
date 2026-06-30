@@ -235,6 +235,17 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(screen.queryByRole("button", { name: /Manage wallets/i })).toBeNull();
   });
 
+  it("offers Stop hsd for a connected node even if the app didn't spawn it", async () => {
+    // External/adopted node: connected via RPC but no child handle (process_alive
+    // false). The app must still let the user stop it.
+    invokeMock.mockImplementation(
+      route(nodeStatus({ connected: true, process_alive: false, height: 500 })),
+    );
+    render(<Settings />, { wrapper: wrapper() });
+    expect(await screen.findByRole("button", { name: /Stop hsd/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Start hsd/i })).toBeNull();
+  });
+
   it("Settings shows Starting… when the process is alive but RPC isn't up yet", async () => {
     invokeMock.mockImplementation(route(nodeStatus({ connected: false, process_alive: true })));
     render(<Settings />, { wrapper: wrapper() });
