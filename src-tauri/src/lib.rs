@@ -40,9 +40,15 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            // Store everything under ~/.namehold (pairs with the node's ~/.hsd),
+            // rather than the OS app-data dir derived from the bundle identifier.
+            // The identifier stays reverse-DNS for packaging/signing but no longer
+            // dictates where data lives.
             let db_path = app
                 .path()
-                .home_dir().expect("failed to get home dir").join(".namehold")
+                .home_dir()
+                .expect("failed to get home dir")
+                .join(".namehold")
                 .join("portfolio.db");
             std::fs::create_dir_all(db_path.parent().unwrap()).expect("failed to create data dir");
             let conn = db::connection::open(&db_path).expect("failed to open database");

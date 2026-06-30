@@ -135,9 +135,13 @@ Output: `src-tauri/target/release/bundle/`
 
 ## Database Location
 
-- macOS: `~/.namehold/portfolio.db`
-- Windows: `~/.namehold/portfolio.db`
-- Linux: `~/.namehold/portfolio.db`
+All app data lives in a single directory in your home folder (pairs with the
+node's `~/.hsd`), on every platform:
+
+- `~/.namehold/portfolio.db`
+
+This one SQLite file holds your wallet profiles, the encrypted vault, and the
+local chain cache.
 
 ## Tech Stack
 
