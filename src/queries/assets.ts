@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
-import type { Asset, DashboardStats, ImportResult } from "../types";
+import type { Asset, ImportResult } from "../types";
 
 interface ListAssetsParams {
   status?: string;
@@ -65,16 +65,6 @@ export function useDeleteAsset() {
   return useMutation({
     mutationFn: (id: number) => invoke("delete_asset", { id }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["assets"] }),
-  });
-}
-
-export function useDashboardStats() {
-  return useQuery({
-    queryKey: ["dashboard"],
-    queryFn: () => invoke<DashboardStats>("list_assets", {
-      sort_by: "tld",
-    }).then(() => invoke<DashboardStats>("get_settings")),
-    staleTime: 30_000,
   });
 }
 

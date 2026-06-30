@@ -2,8 +2,31 @@ use crate::db;
 use crate::error::AppError;
 use crate::hsd::client::HandshakeClient;
 use crate::AppState;
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead as _, BufReader};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tauri::State;
+
+/// Expand a leading `~` to the user's home directory.
+fn expand_prefix(prefix: &str) -> PathBuf {
+    if let Some(stripped) = prefix.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(stripped);
+        }
+    }
+    if prefix == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    }
+    PathBuf::from(prefix)
+}
+
+/// Location of the captured hsd log inside the data directory.
+fn hsd_log_path(prefix: &str) -> PathBuf {
+    expand_prefix(prefix).join("namehold-hsd.log")
+}
 
 fn get_client(state: &AppState) -> Result<HandshakeClient, AppError> {
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -120,7 +143,26 @@ pub async fn start_hsd(
         "regtest" => { cmd.arg("--regtest"); }
         _ => {}
     }
-    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+
+    // Capture hsd output to a log file inside the data directory so the UI can
+    // surface real errors instead of a generic startup timeout.
+    let log_path = hsd_log_path(&hsd_prefix);
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match File::create(&log_path) {
+        Ok(log_file) => {
+            let stderr_file = log_file
+                .try_clone()
+                .unwrap_or_else(|_| File::create(&log_path).expect("reopen log file"));
+            cmd.stdout(Stdio::from(log_file));
+            cmd.stderr(Stdio::from(stderr_file));
+        }
+        Err(_) => {
+            // Fall back to discarding output if the log file cannot be created.
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    }
 
     match cmd.spawn() {
         Ok(_) => {
@@ -133,4 +175,49 @@ pub async fn start_hsd(
         }
         Err(e) => Err(AppError::Other(format!("Failed to start hsd: {}", e))),
     }
+}
+
+#[tauri::command]
+pub async fn get_hsd_log(
+    state: State<'_, AppState>,
+    lines: Option<usize>,
+) -> Result<serde_json::Value, AppError> {
+    let hsd_prefix = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let settings = db::queries::get_settings(&db)?;
+        settings
+            .get("hsd_prefix")
+            .cloned()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .map(|h| h.join(".hsd").to_string_lossy().to_string())
+                    .unwrap_or_else(|| "/root/.hsd".to_string())
+            })
+    };
+
+    let log_path = hsd_log_path(&hsd_prefix);
+    let max_lines = lines.unwrap_or(200).min(2000);
+
+    let file = match OpenOptions::new().read(true).open(&log_path) {
+        Ok(f) => f,
+        Err(_) => {
+            return Ok(serde_json::json!({
+                "path": log_path.to_string_lossy(),
+                "exists": false,
+                "lines": Vec::<String>::new(),
+            }));
+        }
+    };
+
+    let reader = BufReader::new(file);
+    let all_lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+    let start = all_lines.len().saturating_sub(max_lines);
+    let tail = all_lines[start..].to_vec();
+
+    Ok(serde_json::json!({
+        "path": log_path.to_string_lossy(),
+        "exists": true,
+        "lines": tail,
+    }))
 }

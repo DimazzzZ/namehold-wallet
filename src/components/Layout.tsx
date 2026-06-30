@@ -1,47 +1,15 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useSettingsStore } from "../stores/settings";
-import { useNodeStatus } from "../queries/node";
 import { Toast } from "./ui/Toast";
+import { StatusStrip } from "./ui/StatusStrip";
+import { PRIMARY_ROUTES } from "../lib/navigation";
 import { cn } from "../lib/utils";
-
-const NAV_ITEMS = [
-  { to: "/", label: "Dashboard" },
-  { to: "/inventory", label: "TLD Inventory" },
-  { to: "/batches", label: "Batches" },
-  { to: "/wallet", label: "Wallet" },
-  { to: "/wallets", label: "Wallet Manager" },
-  { to: "/sync", label: "Sync" },
-  { to: "/renewals", label: "Renewals" },
-  { to: "/dns", label: "DNS Records" },
-  { to: "/node", label: "Node Control" },
-  { to: "/settings", label: "Settings" },
-];
 
 export function Layout() {
   const settings = useSettingsStore((s) => s.settings);
-  const { data: nodeStatus } = useNodeStatus();
   const network = settings?.hsd_network || "unknown";
   const writeMode = settings?.write_mode === "true";
   const currentWallet = settings?.hsd_wallet_id || "";
-
-  const nodeRunning = nodeStatus?.running ?? false;
-  const walletConnected = nodeStatus?.wallet_connected ?? false;
-
-  const connectionLabel = !nodeRunning
-    ? "Node offline"
-    : !currentWallet
-      ? "No wallet"
-      : walletConnected
-        ? "Connected"
-        : "Wallet error";
-
-  const connectionColor = !nodeRunning
-    ? "bg-red-500"
-    : !currentWallet
-      ? "bg-yellow-500"
-      : walletConnected
-        ? "bg-green-500"
-        : "bg-yellow-500";
 
   return (
     <div className="flex h-screen bg-gray-100">
@@ -65,15 +33,17 @@ export function Layout() {
           </div>
         </div>
         <nav className="flex-1 py-2">
-          {NAV_ITEMS.map((item) => (
+          {PRIMARY_ROUTES.map((item) => (
             <NavLink
-              key={item.to}
+              key={item.key}
               to={item.to}
               end={item.to === "/"}
+              title={item.description}
               className={({ isActive }) =>
                 cn(
                   "block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100",
-                  isActive && "bg-blue-50 text-blue-700 font-medium border-r-2 border-blue-700",
+                  isActive &&
+                    "bg-blue-50 text-blue-700 font-medium border-r-2 border-blue-700",
                 )
               }
             >
@@ -82,20 +52,17 @@ export function Layout() {
           ))}
         </nav>
         <div className="px-4 py-2 border-t border-gray-200">
-          <div className="flex items-center gap-2">
-            <div className={cn("w-2 h-2 rounded-full", connectionColor)} />
-            <span className="text-[10px] text-gray-500">{connectionLabel}</span>
-          </div>
-          <div className="text-[10px] text-gray-400 mt-1">
+          <div className="text-[10px] text-gray-400">
             {currentWallet || "No wallet selected"}
           </div>
-          <div className="text-[10px] text-gray-400 mt-0.5">
-            v0.1.0
-          </div>
+          <div className="text-[10px] text-gray-400 mt-0.5">v0.2.0</div>
         </div>
       </aside>
-      <main className="flex-1 overflow-auto">
-        <div className="p-6">
+      <main className="flex-1 flex flex-col overflow-hidden">
+        <header className="flex items-center justify-end gap-4 px-6 py-2 border-b border-gray-200 bg-white">
+          <StatusStrip />
+        </header>
+        <div className="flex-1 overflow-auto p-6">
           <Outlet />
         </div>
       </main>

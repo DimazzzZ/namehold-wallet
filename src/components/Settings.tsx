@@ -16,9 +16,8 @@ export function Settings() {
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [namebaseCookie, setNamebaseCookie] = useState("");
-  const [namebaseConnected, setNamebaseConnected] = useState(false);
-  const [connectingNamebase, setConnectingNamebase] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [connectionResult, setConnectionResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
     if (settings) {
@@ -31,12 +30,6 @@ export function Settings() {
         hsd_prefix: settings.hsd_prefix,
         write_mode: settings.write_mode,
       });
-      // Load Namebase connection status
-      invoke<{ connected: boolean; has_cookie: boolean }>("get_namebase_status")
-        .then((status) => {
-          setNamebaseConnected(status.connected);
-        })
-        .catch(() => {});
     }
   }, [settings]);
 
@@ -66,6 +59,24 @@ export function Settings() {
     const selected = await open({ directory: true, multiple: false });
     if (selected) {
       updateField("hsd_prefix", selected as string);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTestingConnection(true);
+    setConnectionResult(null);
+    try {
+      await saveAll(form);
+      const result = await invoke<{ connected: boolean; info?: unknown; error?: string }>("check_connection");
+      if (result.connected) {
+        setConnectionResult({ ok: true, message: "Connected to hsd successfully" });
+      } else {
+        setConnectionResult({ ok: false, message: result.error || "Cannot connect to hsd" });
+      }
+    } catch (e) {
+      setConnectionResult({ ok: false, message: mapError(e) });
+    } finally {
+      setTestingConnection(false);
     }
   };
 
@@ -132,30 +143,63 @@ export function Settings() {
         <div className="text-xs text-gray-500">
           Path where hsd stores blockchain and wallet data. Use an external drive for large blockchain data.
         </div>
+        <div className="flex items-center gap-3">
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={handleTestConnection}
+            disabled={testingConnection}
+          >
+            {testingConnection ? "Testing..." : "Test Connection"}
+          </Button>
+          {connectionResult && (
+            <span className={`text-sm ${connectionResult.ok ? "text-green-600" : "text-red-600"}`}>
+              {connectionResult.message}
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="bg-white rounded p-4 border border-gray-200 space-y-4">
         <h3 className="text-sm font-semibold text-gray-700">Security</h3>
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm font-medium">Write Mode</div>
-            <div className="text-xs text-gray-500">
-              Enable write actions (renewals, updates). Disabled by default.
+        <div>
+          <div className="text-sm font-medium mb-1">Write Mode</div>
+          <div className="text-xs text-gray-500 mb-3">
+            Write mode enables actions that modify your wallet: send HNS, transfer TLDs, renew names, update records.
+            Disabled by default for safety.
+          </div>
+          {form.write_mode === "true" ? (
+            <div className="space-y-2">
+              <div className="bg-green-50 border border-green-200 rounded p-2 text-xs text-green-700">
+                Write mode is enabled. Write actions are available.
+              </div>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => updateField("write_mode", "false")}
+              >
+                Disable Write Mode
+              </Button>
             </div>
-          </div>
-          <Button
-            variant={form.write_mode === "true" ? "danger" : "secondary"}
-            size="sm"
-            onClick={() => updateField("write_mode", form.write_mode === "true" ? "false" : "true")}
-          >
-            {form.write_mode === "true" ? "Enabled" : "Disabled"}
-          </Button>
+          ) : (
+            <div className="space-y-2">
+              <div className="bg-gray-50 border border-gray-200 rounded p-2 text-xs text-gray-600">
+                Write mode is disabled. Only read operations are available.
+              </div>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  if (confirm("Enable write mode? This allows sending HNS, transferring TLDs, and other wallet operations. Use with caution.")) {
+                    updateField("write_mode", "true");
+                  }
+                }}
+              >
+                Enable Write Mode
+              </Button>
+            </div>
+          )}
         </div>
-        {form.write_mode === "true" && (
-          <div className="bg-red-50 border border-red-200 rounded p-2 text-xs text-red-700">
-            Write mode is enabled. Write actions will require confirmation dialogs. Use with caution on mainnet.
-          </div>
-        )}
         <div>
           <div className="text-sm font-medium mb-1">Wallet Passphrase (memory only)</div>
           <div className="text-xs text-gray-500 mb-2">
@@ -190,62 +234,6 @@ export function Settings() {
             <tr><td className="pr-4 py-0.5">Regtest Node:</td><td>14037</td></tr>
           </tbody>
         </table>
-      </div>
-
-      <div className="bg-white rounded p-4 border border-gray-200 space-y-4">
-        <h3 className="text-sm font-semibold text-gray-700">Namebase Connection</h3>
-        <div className="text-xs text-gray-500">
-          Connect to Namebase to import your TLDs. Paste your session cookie from browser DevTools.
-        </div>
-        <Input
-          label="Session Cookie"
-          type="password"
-          value={namebaseCookie}
-          onChange={(e) => setNamebaseCookie(e.target.value)}
-          placeholder="Paste Namebase session cookie"
-        />
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant="primary"
-            onClick={async () => {
-              if (!namebaseCookie.trim()) return;
-              setConnectingNamebase(true);
-              try {
-                await invoke("connect_namebase", { cookie: namebaseCookie });
-                setNamebaseConnected(true);
-                showToast("Connected to Namebase", "success");
-              } catch (e) {
-                showToast(mapError(e), "error");
-              } finally {
-                setConnectingNamebase(false);
-              }
-            }}
-            disabled={!namebaseCookie.trim() || connectingNamebase}
-          >
-            {connectingNamebase ? "Connecting..." : "Connect"}
-          </Button>
-          {namebaseConnected && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={async () => {
-                await invoke("disconnect_namebase");
-                setNamebaseConnected(false);
-                setNamebaseCookie("");
-                showToast("Disconnected from Namebase", "success");
-              }}
-            >
-              Disconnect
-            </Button>
-          )}
-        </div>
-        {namebaseConnected && (
-          <div className="text-xs text-green-600">Connected to Namebase</div>
-        )}
-        <div className="text-xs text-gray-400">
-          To get your cookie: Open Namebase in browser → F12 → Network tab → copy Cookie header from any request.
-        </div>
       </div>
 
       <StickyFooter>

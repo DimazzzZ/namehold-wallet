@@ -132,3 +132,75 @@ export interface Settings {
   hsd_prefix: string;
   write_mode: string;
 }
+
+// ---------------------------------------------------------------------------
+// Frontend UI-facing types (routing, shell status, workspace tabs, view models)
+// ---------------------------------------------------------------------------
+
+export type AppRouteKey =
+  | "overview"
+  | "portfolio"
+  | "migration"
+  | "wallet"
+  | "node"
+  | "settings";
+
+export type PortfolioSectionKey = "inventory" | "batches" | "renewals" | "dns";
+
+export type MigrationSectionKey = "namebase" | "sync";
+
+export type StatusTone = "default" | "info" | "success" | "warning" | "error";
+
+export interface ShellStatusItem {
+  key: string;
+  label: string;
+  value: string;
+  tone: StatusTone;
+  detail?: string;
+  route?: string;
+}
+
+export interface PageAction {
+  label: string;
+  variant?: "primary" | "secondary" | "danger" | "ghost";
+  disabled?: boolean;
+  loading?: boolean;
+  to?: string;
+  onClick?: () => void;
+}
+
+export interface WorkspaceTab<T extends string> {
+  key: T;
+  label: string;
+  description?: string;
+  badge?: string | number;
+}
+
+export interface WalletTransactionRow {
+  hash: string;
+  direction: "send" | "receive" | "other";
+  amountDoos: number;
+  amountHns: number;
+  address: string;
+  confirmed: boolean;
+  confirmations: number | null;
+  height: number | null;
+  timestamp: string | null;
+  tone: StatusTone;
+}
+
+export interface OverviewMetric {
+  key: string;
+  label: string;
+  value: string | number;
+  hint?: string;
+  tone?: StatusTone;
+}
+
+export interface OverviewData {
+  metrics: OverviewMetric[];
+  statusCounts: Record<string, number>;
+  recentAudit: AuditEntry[];
+  namebaseConnected: boolean;
+  namebaseHnsBalance?: number;
+}

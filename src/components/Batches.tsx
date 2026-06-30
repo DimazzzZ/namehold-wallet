@@ -206,7 +206,7 @@ export function Batches() {
             Batches help you organize TLDs into migration groups.
           </div>
           <div className="flex gap-2 justify-center">
-            <Link to="/inventory">
+            <Link to="/portfolio?tab=inventory">
               <Button size="sm">Select TLDs in Inventory</Button>
             </Link>
             <Button size="sm" variant="primary" onClick={() => setCreateDialogOpen(true)}>

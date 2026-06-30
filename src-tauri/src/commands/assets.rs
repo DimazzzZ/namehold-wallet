@@ -81,3 +81,11 @@ pub async fn delete_asset(state: State<'_, AppState>, id: i64) -> Result<(), App
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db::queries::delete_asset(&db, id)
 }
+
+#[tauri::command]
+pub async fn get_dashboard_stats(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    db::queries::get_dashboard_stats(&db)
+}

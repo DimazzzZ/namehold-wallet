@@ -6,11 +6,13 @@ import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
 import { Dialog } from "./ui/Dialog";
+import { PageHeader } from "./ui/PageHeader";
 import { formatHns, hnsToDollarydoos, formatDate } from "../lib/utils";
 import { mapError } from "../lib/errors";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
+import { invoke } from "../lib/invoke";
 
 interface ParsedTx {
   hash: string;
@@ -82,6 +84,21 @@ export function WalletView() {
   const [newWalletId, setNewWalletId] = useState("");
   const [copied, setCopied] = useState(false);
 
+  // Create wallet state
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newPassphrase, setNewPassphrase] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createdMnemonic, setCreatedMnemonic] = useState("");
+  const [confirmedSaved, setConfirmedSaved] = useState(false);
+
+  // Import wallet state
+  const [importOpen, setImportOpen] = useState(false);
+  const [importName, setImportName] = useState("");
+  const [importPassphrase, setImportPassphrase] = useState("");
+  const [importMnemonic, setImportMnemonic] = useState("");
+  const [importing, setImporting] = useState(false);
+
   const walletUrl = settings?.hsd_wallet_api_url || "";
   const isLocalhost = walletUrl.includes("127.0.0.1") || walletUrl.includes("localhost");
   const writeMode = settings?.write_mode === "true";
@@ -148,33 +165,98 @@ export function WalletView() {
     }
   };
 
+  const getUniqueName = (base: string) => {
+    if (!walletList || !walletList.includes(base)) return base;
+    let i = 2;
+    while (walletList.includes(`${base}-${i}`)) i++;
+    return `${base}-${i}`;
+  };
+
+  const handleCreate = async () => {
+    const name = newName.trim() || getUniqueName("wallet");
+    setCreating(true);
+    try {
+      const result: any = await invoke("create_wallet", { id: name, passphrase: newPassphrase });
+      setCreatedMnemonic(result?.mnemonic?.phrase || "");
+      setNewName(name);
+    } catch (e) {
+      showToast(mapError(e), "error");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleConfirmCreated = async () => {
+    await updateSetting("hsd_wallet_id", newName.trim());
+    qc.invalidateQueries({ queryKey: ["wallet"] });
+    setCreateOpen(false);
+    setCreatedMnemonic("");
+    setNewName("");
+    setNewPassphrase("");
+    setConfirmedSaved(false);
+    showToast(`Wallet "${newName.trim()}" created`, "success");
+  };
+
+  const handleImport = async () => {
+    if (!importMnemonic.trim()) {
+      showToast("Enter your seed phrase", "error");
+      return;
+    }
+    const name = importName.trim() || getUniqueName("wallet");
+    setImporting(true);
+    try {
+      await invoke("create_wallet", { id: name, passphrase: importPassphrase, mnemonic: importMnemonic.trim() });
+      await updateSetting("hsd_wallet_id", name);
+      qc.invalidateQueries({ queryKey: ["wallet"] });
+      setImportOpen(false);
+      setImportName("");
+      setImportPassphrase("");
+      setImportMnemonic("");
+      showToast(`Wallet "${name}" imported`, "success");
+    } catch (e) {
+      showToast(mapError(e), "error");
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h2 className="text-xl font-bold">Wallet</h2>
-          <Badge variant="info">{currentWalletId}</Badge>
-          {conn?.connected ? (
-            <Badge variant="success">Connected</Badge>
-          ) : connLoading ? (
-            <Badge>Checking...</Badge>
-          ) : (
-            <Badge variant="error">Disconnected</Badge>
-          )}
-        </div>
-        <div className="flex gap-2">
-          <Button onClick={() => setSwitchDialogOpen(true)} size="sm" variant="secondary">
-            Switch Wallet
-          </Button>
-          <Button onClick={handleRefresh} size="sm">
-            Refresh
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="Wallet"
+        subtitle="Manage your Handshake wallet, balance, names, and transactions."
+        badges={
+          <>
+            <Badge variant="info">{currentWalletId}</Badge>
+            {conn?.connected ? (
+              <Badge variant="success">Connected</Badge>
+            ) : connLoading ? (
+              <Badge>Checking...</Badge>
+            ) : (
+              <Badge variant="error">Disconnected</Badge>
+            )}
+          </>
+        }
+        actions={[
+          { label: "Create Wallet", onClick: () => setCreateOpen(true) },
+          { label: "Import Wallet", variant: "secondary", onClick: () => setImportOpen(true) },
+          { label: "Switch Wallet", variant: "secondary", onClick: () => setSwitchDialogOpen(true) },
+          { label: "Refresh", onClick: handleRefresh },
+        ]}
+      />
 
       {!isLocalhost && (
         <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700">
           Warning: Wallet API URL ({walletUrl}) is not localhost. Only use local connections for security.
+        </div>
+      )}
+
+      {!conn?.connected && !connLoading && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-800">
+          Wallet API not available. Make sure hsd is running with wallet plugin enabled (without <code>--no-wallet</code> flag).
+          {!walletList?.length && (
+            <span className="block mt-1">No wallets found. Create or import a wallet below.</span>
+          )}
         </div>
       )}
 
@@ -450,6 +532,60 @@ export function WalletView() {
             </Button>
             <Button variant="ghost" size="sm" onClick={() => setSwitchDialogOpen(false)}>
               Cancel
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Create Wallet Dialog */}
+      <Dialog open={createOpen} onClose={() => { setCreateOpen(false); setCreatedMnemonic(""); }} title="Create Wallet">
+        {createdMnemonic ? (
+          <div className="space-y-3">
+            <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-800">
+              Write down these 24 words. This is the ONLY way to recover your wallet.
+            </div>
+            <div className="bg-gray-50 rounded p-4 font-mono text-sm break-all">{createdMnemonic}</div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="confirmed-save" checked={confirmedSaved} onChange={(e) => setConfirmedSaved(e.target.checked)} />
+              <label htmlFor="confirmed-save" className="text-sm">I have saved my seed phrase</label>
+            </div>
+            <Button variant="primary" className="w-full" disabled={!confirmedSaved} onClick={handleConfirmCreated}>Done</Button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <Input label="Wallet Name" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder={getUniqueName("wallet")} />
+            <Input label="Passphrase (optional)" type="password" value={newPassphrase} onChange={(e) => setNewPassphrase(e.target.value)} placeholder="Optional passphrase" />
+            <div className="flex gap-2 justify-end">
+              <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
+              <Button variant="primary" onClick={handleCreate} disabled={creating}>
+                {creating ? "Creating..." : "Create"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Dialog>
+
+      {/* Import Wallet Dialog */}
+      <Dialog open={importOpen} onClose={() => setImportOpen(false)} title="Import Wallet">
+        <div className="space-y-3">
+          <Input label="Wallet Name" value={importName} onChange={(e) => setImportName(e.target.value)} placeholder={getUniqueName("wallet")} />
+          <Input label="Passphrase (optional)" type="password" value={importPassphrase} onChange={(e) => setImportPassphrase(e.target.value)} placeholder="Leave empty if original wallet had no passphrase" />
+          <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
+            The passphrase affects address derivation. If your original wallet had no passphrase, leave this empty.
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-gray-700">Seed Phrase (24 words)</label>
+            <textarea
+              className="border border-gray-300 rounded px-3 py-2 text-sm h-24 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value={importMnemonic}
+              onChange={(e) => setImportMnemonic(e.target.value)}
+              placeholder="word1 word2 word3 ... word24"
+            />
+          </div>
+          <div className="flex gap-2 justify-end">
+            <Button variant="ghost" onClick={() => setImportOpen(false)}>Cancel</Button>
+            <Button variant="primary" onClick={handleImport} disabled={!importMnemonic.trim() || importing}>
+              {importing ? "Importing..." : "Import"}
             </Button>
           </div>
         </div>

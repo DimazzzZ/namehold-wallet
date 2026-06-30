@@ -220,4 +220,98 @@ impl HandshakeClient {
         }
         Ok(resp.json().await?)
     }
+
+    // P0: Cancel pending transfer
+    pub async fn cancel_transfer(&self, name: &str, passphrase: &str) -> Result<serde_json::Value, AppError> {
+        let resp = self.wallet_post("/cancel").json(&serde_json::json!({"passphrase": passphrase, "name": name, "broadcast": true, "sign": true})).send().await?;
+        if !resp.status().is_success() {
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            return Err(AppError::Other(format!("Cancel failed for {}: {}", name, body["error"].as_str().unwrap_or("unknown error"))));
+        }
+        Ok(resp.json().await?)
+    }
+
+    // P0: Get pending/unconfirmed transactions
+    pub async fn get_pending_transactions(&self) -> Result<serde_json::Value, AppError> {
+        let resp = self.wallet_get("/tx/unconfirmed").send().await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!("Pending txs returned status {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
+
+    // P1: Get specific transaction by hash
+    pub async fn get_transaction(&self, hash: &str) -> Result<serde_json::Value, AppError> {
+        let resp = self.wallet_get(&format!("/tx/{}", hash)).send().await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!("TX lookup failed for {}: status {}", hash, resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
+
+    // P1: List wallet coins/UTXOs
+    pub async fn get_coins(&self) -> Result<serde_json::Value, AppError> {
+        let resp = self.wallet_get("/coin").send().await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!("Coins returned status {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
+
+    // P1: Lock wallet
+    pub async fn lock_wallet(&self) -> Result<(), AppError> {
+        let resp = self.wallet_post("/lock").send().await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!("Lock failed: status {}", resp.status())));
+        }
+        Ok(())
+    }
+
+    // P1: Unlock wallet
+    pub async fn unlock_wallet(&self, passphrase: &str) -> Result<(), AppError> {
+        let resp = self.wallet_post("/unlock").json(&serde_json::json!({"passphrase": passphrase})).send().await?;
+        if !resp.status().is_success() {
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            return Err(AppError::Other(format!("Unlock failed: {}", body["error"].as_str().unwrap_or("unknown error"))));
+        }
+        Ok(())
+    }
+
+    // P2: Change passphrase
+    pub async fn change_passphrase(&self, old_pass: &str, new_pass: &str) -> Result<(), AppError> {
+        let resp = self.wallet_post("/passphrase").json(&serde_json::json!({"old": old_pass, "new": new_pass})).send().await?;
+        if !resp.status().is_success() {
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            return Err(AppError::Other(format!("Passphrase change failed: {}", body["error"].as_str().unwrap_or("unknown error"))));
+        }
+        Ok(())
+    }
+
+    // P2: Get account info
+    pub async fn get_account(&self, account: &str) -> Result<serde_json::Value, AppError> {
+        let resp = self.wallet_get(&format!("/account/{}", account)).send().await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!("Account lookup failed: status {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
+
+    // P2: Validate address (node RPC)
+    pub async fn validate_address(&self, address: &str) -> Result<serde_json::Value, AppError> {
+        let resp = self.node_post().json(&serde_json::json!({"method": "validateaddress", "params": [address]})).send().await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!("Validate address failed: status {}", resp.status())));
+        }
+        let body: serde_json::Value = resp.json().await?;
+        Ok(body.get("result").cloned().unwrap_or(body))
+    }
+
+    // P2: Estimate fee (node API)
+    pub async fn estimate_fee(&self, blocks: u32) -> Result<serde_json::Value, AppError> {
+        let resp = self.http.get(&format!("{}/fee?{}", self.node_url, blocks)).basic_auth("x", Some(&self.api_key)).send().await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!("Fee estimate failed: status {}", resp.status())));
+        }
+        Ok(resp.json().await?)
+    }
 }

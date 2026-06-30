@@ -4,6 +4,22 @@ Your local desktop wallet for managing Handshake TLDs and HNS.
 
 ---
 
+## Navigation
+
+Namehold uses a consolidated sidebar with six primary sections:
+
+| Section | Purpose | Sub-tabs |
+|---------|---------|----------|
+| **Overview** | Portfolio and infrastructure summary at a glance | — |
+| **Portfolio** | Manage your TLDs | Inventory · Batches · Renewals · DNS |
+| **Migration** | Track Namebase transfers and verify ownership | Namebase · Sync & Verify |
+| **Wallet** | HNS balance, send, receive | — |
+| **Node** | hsd node connection and status | — |
+| **Settings** | Connection, write mode, preferences | — |
+
+The header badges show the active network (e.g. `mainnet`) and whether the app
+is in `READ-ONLY` or `WRITE` mode.
+
 ## Table of Contents
 
 1. [Getting Started](#1-getting-started)
@@ -63,7 +79,9 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 ### Launch Namehold
 
-Open the Namehold app. On first launch, you'll see the Dashboard with empty data.
+Open the Namehold app. On first launch you'll be guided through creating or
+importing a wallet. Once a wallet is selected, you'll land on the **Overview**
+page with empty data.
 
 ---
 
@@ -73,7 +91,7 @@ Namehold needs to connect to your local hsd node to read wallet data and perform
 
 ### Step-by-step
 
-1. Click **Settings** in the left sidebar
+1. Click **Node** or **Settings** in the left sidebar
 2. Fill in the connection details:
 
 | Field | Default | Description |
@@ -124,7 +142,7 @@ test,false,Test,Migration test
 
 ### How to import
 
-1. Go to **TLD Inventory** page
+1. Go to **Portfolio → Inventory**
 2. Click **Import CSV**
 3. Select your CSV file
 4. The app will import all rows and show a summary
@@ -140,17 +158,17 @@ test,false,Test,Migration test
 
 ## 4. Viewing Your Portfolio
 
-### Dashboard
+### Overview
 
-The Dashboard shows:
-- Total TLDs count
-- Staked vs Unstaked breakdown (with pie chart)
-- Migration status bar chart
-- Recent activity log
+The **Overview** page shows:
+- Key portfolio metrics (total TLDs, in wallet, pending migration, expiring soon)
+- A status breakdown of TLDs by migration status
+- Recent activity from the audit log
+- System status (Node, Wallet, Balance)
 
-### TLD Inventory
+### Portfolio → Inventory
 
-The main table shows all your TLDs with:
+The main table (under **Portfolio → Inventory**) shows all your TLDs with:
 - Name, Status, Category, HNS State, Expiration, Notes, Updated date
 
 **Filters:**
@@ -216,7 +234,7 @@ TLDs arrive in your wallet when someone transfers them to you (e.g., from Nameba
 
 ### How to check if TLDs arrived
 
-1. Go to the **Sync** page
+1. Go to **Migration → Sync & Verify**
 2. Click **Sync Now** (or **Compare Names** to preview without updating)
 3. The app fetches all names from your wallet and compares them with your imported inventory
 4. Matched names are automatically marked as **Finalized**
@@ -237,7 +255,7 @@ To send a TLD to another address (e.g., to a buyer):
 
 1. Enable **Write Mode** in Settings
 2. Enter your **Wallet Passphrase** in Settings
-3. Go to **TLD Inventory**
+3. Go to **Portfolio → Inventory**
 4. Select the TLD you want to transfer (check the box)
 5. Click **Transfer** in the bulk action bar
 6. Enter the **Destination Address**
@@ -284,7 +302,7 @@ Batches help you organize TLDs into migration groups (e.g., "Test Batch 1", "Hig
 1. Select TLDs in the inventory
 2. Click **Create Batch**
 3. Enter a batch name
-4. The batch appears on the **Batches** page
+4. The batch appears under **Portfolio → Batches**
 
 ### Recommended workflow
 
@@ -299,7 +317,7 @@ Batches help you organize TLDs into migration groups (e.g., "Test Batch 1", "Hig
 
 ## 10. Syncing with Your Wallet
 
-The Sync page compares your imported inventory against what your wallet actually owns.
+The **Migration → Sync & Verify** tab compares your imported inventory against what your wallet actually owns.
 
 ### Sync Now
 
@@ -318,13 +336,13 @@ Click **Compare Names** to see the diff without updating any statuses:
 
 ### Wallet Snapshots
 
-Each sync stores a snapshot of your wallet state. You can view the history at the bottom of the Sync page.
+Each sync stores a snapshot of your wallet state. You can view the history at the bottom of the **Sync & Verify** tab.
 
 ---
 
 ## 11. Renewals
 
-The Renewals page shows TLDs with known expiration data.
+The **Portfolio → Renewals** tab shows TLDs with known expiration data.
 
 ### What it shows
 
@@ -345,7 +363,7 @@ Renewal tracking is **read-only** in the current version. You cannot renew TLDs 
 
 ## 12. DNS Records
 
-The DNS Records page shows resource records for names owned by your wallet.
+The **Portfolio → DNS** tab shows resource records for names owned by your wallet.
 
 ### How to view records
 
@@ -379,7 +397,7 @@ The DNS Records page shows resource records for names owned by your wallet.
 
 ### Export from Renewals
 
-1. Click **Export CSV** on the Renewals page
+1. Click **Export CSV** on the **Portfolio → Renewals** tab
 2. Exports TLDs with expiration data
 
 ### What's exported
@@ -478,18 +496,20 @@ Namehold connects to hsd on `127.0.0.1` by default. If you configure a non-local
 
 | Action | Page | Requirements |
 |--------|------|-------------|
-| View TLDs | Dashboard / Inventory | None |
-| Import CSV | Inventory | None |
-| Export CSV | Inventory / Renewals | None |
-| Create batch | Inventory / Batches | None |
+| View summary | Overview | None |
+| View TLDs | Portfolio → Inventory | None |
+| Import CSV | Portfolio → Inventory | None |
+| Export CSV | Portfolio → Inventory / Renewals | None |
+| Create batch | Portfolio → Inventory / Batches | None |
 | Check balance | Wallet | hsd connection |
 | Copy receive address | Wallet | hsd connection |
 | Send HNS | Wallet | Write mode + passphrase |
-| Transfer TLD | Inventory | Write mode + passphrase |
-| Sync names | Sync | hsd connection |
-| View DNS records | DNS | hsd connection |
-| View renewals | Renewals | hsd connection |
+| Transfer TLD | Portfolio → Inventory | Write mode + passphrase |
+| Sync names | Migration → Sync & Verify | hsd connection |
+| View DNS records | Portfolio → DNS | hsd connection |
+| View renewals | Portfolio → Renewals | hsd connection |
+| Node status | Node | None |
 
 ---
 
-*Namehold v0.1.0 — your HNS network wallet*
+*Namehold v0.2.0 — your HNS network wallet*

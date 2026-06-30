@@ -12,11 +12,27 @@ export interface NodeStatus {
   chain?: Record<string, unknown>;
 }
 
+export interface HsdLog {
+  path: string;
+  exists: boolean;
+  lines: string[];
+}
+
+export function useHsdLog(lines = 200) {
+  return useQuery({
+    queryKey: ["node", "log", lines],
+    queryFn: () => invoke<HsdLog>("get_hsd_log", { lines }),
+    enabled: false,
+    retry: false,
+  });
+}
+
 export function useNodeStatus() {
   return useQuery({
     queryKey: ["node", "status"],
     queryFn: () => invoke<NodeStatus>("get_node_status"),
     refetchInterval: 10_000,
+    refetchOnMount: "always",
     retry: false,
   });
 }

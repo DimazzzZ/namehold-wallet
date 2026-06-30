@@ -4,7 +4,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { Settings } from "../Settings";
 import { NodeControl } from "../NodeControl";
-import { WalletManager } from "../WalletManager";
 import { SyncVerification } from "../SyncVerification";
 import { Renewals } from "../Renewals";
 import { DnsRecords } from "../DnsRecords";
@@ -31,11 +30,6 @@ describe("Page Components - Smoke Tests", () => {
 
   it("NodeControl renders", () => {
     const { container } = renderWithProviders(<NodeControl />);
-    expect(container).toBeTruthy();
-  });
-
-  it("WalletManager renders", () => {
-    const { container } = renderWithProviders(<WalletManager />);
     expect(container).toBeTruthy();
   });
 

@@ -193,3 +193,79 @@ pub async fn transfer_name(
 
     Ok(result)
 }
+
+#[tauri::command]
+pub async fn cancel_transfer(
+    state: State<'_, AppState>,
+    name: String,
+    passphrase: String,
+) -> Result<serde_json::Value, AppError> {
+    check_write_mode(&state)?;
+
+    let client = get_client(&state)?;
+    let result = client.cancel_transfer(&name, &passphrase).await?;
+
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    db.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('cancel_transfer', ?1)",
+        [serde_json::json!({"name": name}).to_string()],
+    )?;
+
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn get_pending_transactions(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+    let client = get_client(&state)?;
+    Ok(client.get_pending_transactions().await?)
+}
+
+#[tauri::command]
+pub async fn get_transaction(state: State<'_, AppState>, hash: String) -> Result<serde_json::Value, AppError> {
+    let client = get_client(&state)?;
+    Ok(client.get_transaction(&hash).await?)
+}
+
+#[tauri::command]
+pub async fn get_coins(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+    let client = get_client(&state)?;
+    Ok(client.get_coins().await?)
+}
+
+#[tauri::command]
+pub async fn lock_wallet(state: State<'_, AppState>) -> Result<(), AppError> {
+    let client = get_client(&state)?;
+    client.lock_wallet().await
+}
+
+#[tauri::command]
+pub async fn unlock_wallet(state: State<'_, AppState>, passphrase: String) -> Result<(), AppError> {
+    let client = get_client(&state)?;
+    client.unlock_wallet(&passphrase).await
+}
+
+#[tauri::command]
+pub async fn change_passphrase(state: State<'_, AppState>, old_pass: String, new_pass: String) -> Result<(), AppError> {
+    check_write_mode(&state)?;
+
+    let client = get_client(&state)?;
+    client.change_passphrase(&old_pass, &new_pass).await
+}
+
+#[tauri::command]
+pub async fn get_account(state: State<'_, AppState>, account: String) -> Result<serde_json::Value, AppError> {
+    let client = get_client(&state)?;
+    Ok(client.get_account(&account).await?)
+}
+
+#[tauri::command]
+pub async fn validate_address(state: State<'_, AppState>, address: String) -> Result<serde_json::Value, AppError> {
+    let client = get_client(&state)?;
+    Ok(client.validate_address(&address).await?)
+}
+
+#[tauri::command]
+pub async fn estimate_fee(state: State<'_, AppState>, blocks: u32) -> Result<serde_json::Value, AppError> {
+    let client = get_client(&state)?;
+    Ok(client.estimate_fee(blocks).await?)
+}

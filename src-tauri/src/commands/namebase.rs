@@ -158,3 +158,48 @@ pub async fn import_from_namebase(state: State<'_, AppState>) -> Result<serde_js
         "staked_count": staked_names.len(),
     }))
 }
+
+#[tauri::command]
+pub async fn namebase_transfer_domain(
+    state: State<'_, AppState>,
+    name: String,
+    address: String,
+) -> Result<(), AppError> {
+    let cookie = get_cookie(&state)?;
+    let client = NamebaseClient::new(&cookie)?;
+    client.transfer_domain(&name, &address).await?;
+
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    db.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('namebase_transfer', ?1)",
+        [serde_json::json!({"name": name, "address": address}).to_string()],
+    )?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn namebase_withdraw_hns(
+    state: State<'_, AppState>,
+    address: String,
+    amount: String,
+) -> Result<(), AppError> {
+    let cookie = get_cookie(&state)?;
+    let client = NamebaseClient::new(&cookie)?;
+    client.withdraw_hns(&address, &amount).await?;
+
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    db.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('namebase_withdraw_hns', ?1)",
+        [serde_json::json!({"address": address, "amount": amount}).to_string()],
+    )?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn fetch_namebase_domain_withdrawals(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+    let cookie = get_cookie(&state)?;
+    let client = NamebaseClient::new(&cookie)?;
+    client.get_domain_withdrawals().await
+}

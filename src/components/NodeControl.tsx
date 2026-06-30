@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useNodeStatus, useStopHsd, useStartHsd } from "../queries/node";
+import { useNodeStatus, useStopHsd, useStartHsd, useHsdLog } from "../queries/node";
 import { useSettingsStore } from "../stores/settings";
 import { useUiStore } from "../stores/ui";
 import { Button } from "./ui/Button";
@@ -12,6 +12,8 @@ export function NodeControl() {
   const { data: status, isLoading, refetch } = useNodeStatus();
   const stopHsd = useStopHsd();
   const startHsd = useStartHsd();
+  const hsdLog = useHsdLog(200);
+  const [showLog, setShowLog] = useState(false);
   const settings = useSettingsStore((s) => s.settings);
   const saveAll = useSettingsStore((s) => s.saveAll);
   const showToast = useUiStore((s) => s.showToast);
@@ -24,10 +26,22 @@ export function NodeControl() {
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [startWarning, setStartWarning] = useState<string | null>(null);
   const [configDirty, setConfigDirty] = useState(false);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track how long we've been starting and whether the hsd log keeps growing.
+  const startElapsedRef = useRef(0);
+  const lastLogCountRef = useRef(0);
+  const stalledTicksRef = useRef(0);
+
+  // Absolute safety cap (5 minutes) and how long with no log progress before
+  // we treat the start as failed.
+  const HARD_TIMEOUT_MS = 300_000;
+  const POLL_INTERVAL_MS = 2000;
+  // Number of consecutive polls (~no log growth) before declaring failure.
+  const MAX_STALLED_TICKS = 30; // ~60s of no progress
 
   const defaultPrefix = settings?.hsd_prefix || "";
   const defaultApiKey = settings?.hsd_api_key || "";
@@ -39,34 +53,79 @@ export function NodeControl() {
   const hsdBinary = status?.hsd_binary;
   const hsdBinaryFound = status?.hsd_binary_found;
 
-  // hsd getblockchaininfo returns 'blocks' and 'headers'
+  // hsd getblockchaininfo returns 'blocks', 'headers', 'verificationprogress'
   const chainHeight = (chain?.blocks as number) || 0;
-  // Handshake mainnet has ~340,000+ blocks. Use this as reference for progress.
-  const ESTIMATED_TOTAL_BLOCKS = 340_000;
-  const isSyncing = chainHeight < ESTIMATED_TOTAL_BLOCKS;
-  const progressPct = isSyncing
-    ? Math.min((chainHeight / ESTIMATED_TOTAL_BLOCKS) * 100, 99.9)
-    : 100;
+  // Use hsd's verificationprogress if available (0.0 to 1.0), otherwise estimate
+  const verificationProgress = chain?.verificationprogress as number | undefined;
+  const isSyncing = verificationProgress != null ? verificationProgress < 0.999 : chainHeight < 340_000;
+  const progressPct = verificationProgress != null
+    ? Math.min(verificationProgress * 100, 100)
+    : Math.min((chainHeight / 340_000) * 100, 99.9);
 
-  // Poll for status when starting
+  // Poll for status when starting. Instead of a fixed 30s timeout, we keep
+  // waiting as long as the captured hsd log is still growing (hsd is
+  // initializing - this matters for large chains or external/slow drives).
   useEffect(() => {
     if (starting && !isRunning) {
+      startElapsedRef.current = 0;
+      lastLogCountRef.current = 0;
+      stalledTicksRef.current = 0;
+      setStartWarning(null);
+
+      const fail = (msg: string) => {
+        setStarting(false);
+        setStartError(msg);
+        if (pollRef.current) clearInterval(pollRef.current);
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        // Auto-fetch the captured hsd log so the user can see the real error.
+        setShowLog(true);
+        hsdLog.refetch();
+      };
+
       pollRef.current = setInterval(async () => {
+        startElapsedRef.current += POLL_INTERVAL_MS;
+
         const result = await refetch();
         if (result.data?.running) {
           setStarting(false);
           setStartError(null);
+          setStartWarning(null);
           if (pollRef.current) clearInterval(pollRef.current);
           if (timeoutRef.current) clearTimeout(timeoutRef.current);
+          return;
         }
-      }, 2000);
 
-      // Timeout after 30 seconds
+        // hsd not reporting healthy yet - check whether it's still making
+        // progress by watching the captured log file grow.
+        const logResult = await hsdLog.refetch();
+        const lineCount = logResult.data?.exists ? logResult.data.lines.length : 0;
+
+        if (lineCount > lastLogCountRef.current) {
+          // Log is growing => hsd is still initializing. Keep waiting.
+          lastLogCountRef.current = lineCount;
+          stalledTicksRef.current = 0;
+          if (startElapsedRef.current >= 30_000) {
+            setStartWarning(
+              "hsd is taking longer than usual to become ready (still initializing). This can happen on large chains or external/slow drives.",
+            );
+          }
+        } else {
+          // No new log output since last poll.
+          stalledTicksRef.current += 1;
+          if (stalledTicksRef.current >= MAX_STALLED_TICKS) {
+            fail(
+              "hsd stopped making progress and is not responding. Check the log below for errors.",
+            );
+          }
+        }
+      }, POLL_INTERVAL_MS);
+
+      // Absolute safety cap so we never poll forever.
       timeoutRef.current = setTimeout(() => {
-        setStarting(false);
-        setStartError("hsd did not start within 30 seconds. Check logs and try again.");
-        if (pollRef.current) clearInterval(pollRef.current);
-      }, 30000);
+        fail(
+          "hsd did not become ready within 5 minutes. Check the log below, or leave hsd running and click Refresh.",
+        );
+      }, HARD_TIMEOUT_MS);
     }
 
     return () => {
@@ -80,6 +139,7 @@ export function NodeControl() {
     if (isRunning && starting) {
       setStarting(false);
       setStartError(null);
+      setStartWarning(null);
     }
   }, [isRunning, starting]);
 
@@ -128,6 +188,7 @@ export function NodeControl() {
   const handleStart = async () => {
     setStarting(true);
     setStartError(null);
+    setStartWarning(null);
     try {
       const result = await startHsd.mutateAsync({
         prefix: prefix || defaultPrefix || undefined,
@@ -181,14 +242,62 @@ export function NodeControl() {
             </div>
 
             {starting && (
-              <div className="text-sm text-yellow-700 bg-yellow-50 rounded p-2">
-                hsd is starting up. This may take a few seconds while the node initializes...
+              <div className="text-sm text-yellow-700 bg-yellow-50 rounded p-2 space-y-2">
+                <div>
+                  {startWarning ??
+                    "hsd is starting up. This may take a few seconds while the node initializes..."}
+                </div>
+                <button
+                  className="text-xs text-blue-600 hover:underline"
+                  onClick={() => {
+                    setShowLog((v) => !v);
+                    if (!showLog) hsdLog.refetch();
+                  }}
+                >
+                  {showLog ? "Hide hsd log" : "Show hsd log"}
+                </button>
               </div>
             )}
 
             {startError && !starting && (
-              <div className="text-sm text-red-600 bg-red-50 rounded p-2">
-                {startError}
+              <div className="text-sm text-red-600 bg-red-50 rounded p-2 space-y-2">
+                <div>{startError}</div>
+                <button
+                  className="text-xs text-blue-600 hover:underline"
+                  onClick={() => {
+                    setShowLog((v) => !v);
+                    if (!showLog) hsdLog.refetch();
+                  }}
+                >
+                  {showLog ? "Hide hsd log" : "Show hsd log"}
+                </button>
+              </div>
+            )}
+
+            {showLog && (
+              <div className="bg-gray-900 text-gray-100 rounded p-3 text-xs font-mono overflow-auto max-h-64">
+                <div className="flex justify-between items-center mb-2 text-gray-400">
+                  <span className="truncate">{hsdLog.data?.path || "hsd log"}</span>
+                  <button
+                    className="text-blue-300 hover:underline ml-2 shrink-0"
+                    onClick={() => hsdLog.refetch()}
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {hsdLog.isFetching ? (
+                  <div className="text-gray-400">Loading log...</div>
+                ) : hsdLog.data && !hsdLog.data.exists ? (
+                  <div className="text-gray-400">
+                    No log file found. It is created the next time you start hsd from here.
+                  </div>
+                ) : hsdLog.data && hsdLog.data.lines.length === 0 ? (
+                  <div className="text-gray-400">Log file is empty.</div>
+                ) : (
+                  <pre className="whitespace-pre-wrap break-all">
+                    {hsdLog.data?.lines.join("\n")}
+                  </pre>
+                )}
               </div>
             )}
 
@@ -214,9 +323,7 @@ export function NodeControl() {
                   <span className="text-gray-500">Block Height:</span>{" "}
                   {chainHeight.toLocaleString()}
                   {isSyncing && (
-                    <span className="text-yellow-600 ml-2 text-xs">
-                      (syncing... ~{ESTIMATED_TOTAL_BLOCKS.toLocaleString()} total)
-                    </span>
+                    <span className="text-yellow-600 ml-2 text-xs">(syncing...)</span>
                   )}
                 </div>
                 <div>

@@ -255,6 +255,13 @@ export function TldInventory() {
           <Button onClick={handleExport} size="sm">
             Export CSV
           </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => qc.invalidateQueries({ queryKey: ["assets"] })}
+          >
+            Refresh
+          </Button>
         </div>
       </div>
 
