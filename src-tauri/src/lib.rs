@@ -94,6 +94,7 @@ pub fn run() {
             commands::namebase::namebase_withdraw_hns,
             commands::namebase::fetch_namebase_domain_withdrawals,
             commands::node::node_status,
+            commands::node::resync_hsd_chain,
             commands::node::start_hsd,
             commands::node::stop_hsd,
             commands::read::read_balance,

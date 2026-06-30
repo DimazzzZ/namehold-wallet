@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -34,6 +34,8 @@ type NodeOver = Partial<{
   height: number | null;
   verification_progress: number | null;
   headers: number | null;
+  last_error: string | null;
+  index_mismatch: boolean;
 }>;
 
 function nodeStatus(over: NodeOver = {}) {
@@ -48,6 +50,8 @@ function nodeStatus(over: NodeOver = {}) {
     height: null,
     verification_progress: null,
     headers: null,
+    last_error: null,
+    index_mismatch: false,
     ...over,
   };
 }
@@ -179,6 +183,47 @@ describe("Node status (truthful, RPC-based)", () => {
     invokeMock.mockImplementation(route(nodeStatus({ binary_found: false })));
     render(<Settings />, { wrapper: wrapper() });
     expect(await screen.findByRole("button", { name: /Start hsd/i })).toBeDisabled();
+  });
+
+  it("surfaces the hsd start error (not a silent Starting…) when the RPC is down", async () => {
+    invokeMock.mockImplementation(
+      route(
+        nodeStatus({
+          connected: false,
+          process_alive: false,
+          last_error:
+            "This chain was synced without the address index, and hsd can't add an index to an existing chain. Re-sync with address indexing …",
+        }),
+      ),
+    );
+    render(<Settings />, { wrapper: wrapper() });
+    const err = await screen.findByTestId("node-last-error");
+    expect(err).toHaveTextContent(/indexes don't match|address index|re-sync/i);
+    // A plain error (not an index mismatch) offers no re-sync button.
+    expect(screen.queryByTestId("node-resync")).toBeNull();
+  });
+
+  it("offers a one-click Re-sync when the chain's indexes don't match (index_mismatch)", async () => {
+    const orig = window.confirm;
+    window.confirm = vi.fn(() => true);
+    invokeMock.mockImplementation(
+      route(
+        nodeStatus({
+          connected: false,
+          process_alive: false,
+          index_mismatch: true,
+          last_error: "This chain's indexes don't match … Re-sync the node data …",
+        }),
+      ),
+    );
+    render(<Settings />, { wrapper: wrapper() });
+
+    const btn = await screen.findByTestId("node-resync");
+    fireEvent.click(btn);
+    await waitFor(() => {
+      expect(invokeMock.mock.calls.map((c) => c[0])).toContain("resync_hsd_chain");
+    });
+    window.confirm = orig;
   });
 
   it("Settings no longer shows the redundant Wallet block", async () => {

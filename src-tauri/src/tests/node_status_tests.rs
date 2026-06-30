@@ -124,3 +124,48 @@ fn pick_hsd_path_finds_the_first_existing_candidate() {
     assert_eq!(pick_hsd_path(None, &["/no/such/path/hsd".to_string()]), None);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- start-failure surfacing (no more silent "Starting…") --------------------
+
+use crate::commands::node::{chain_paths_for_network, node_start_error};
+use crate::noncustodial::network::Network;
+
+#[test]
+fn node_start_error_flags_the_index_mismatch_with_guidance() {
+    let dir = std::env::temp_dir().join("namehold_node_err_index");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("namehold-hsd.log"),
+        "[info] (chaindb) Opening ChainDB...\nError: Cannot retroactively enable TX indexing.\n    at ChainDB.verifyFlags\n",
+    )
+    .unwrap();
+
+    let (msg, mismatch) = node_start_error(&dir.to_string_lossy()).expect("should surface an error");
+    assert!(mismatch, "index mismatch must be flagged so the UI offers a re-sync");
+    assert!(msg.contains("Re-sync"), "actionable guidance: {msg}");
+    assert!(msg.contains("Cannot retroactively enable"), "includes the log tail: {msg}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn node_start_error_is_none_without_a_failing_log() {
+    let dir = std::env::temp_dir().join("namehold_node_err_none");
+    std::fs::create_dir_all(&dir).unwrap();
+    // No log at all → None.
+    assert!(node_start_error(&dir.to_string_lossy()).is_none());
+    // A log with no error markers → None (don't cry wolf on a clean start).
+    std::fs::write(dir.join("namehold-hsd.log"), "[info] (chain) Chain is loading.\n").unwrap();
+    assert!(node_start_error(&dir.to_string_lossy()).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn chain_paths_are_network_scoped() {
+    // Mainnet keeps chain artifacts at the prefix root; other networks under a subdir.
+    let main = chain_paths_for_network("/data", Network::Main);
+    assert!(main.iter().any(|p| p.ends_with("blocks")));
+    assert!(main.iter().any(|p| p.ends_with("chain")));
+    assert!(main.iter().any(|p| p.ends_with("tree")));
+    assert_eq!(chain_paths_for_network("/data", Network::Regtest), vec![std::path::PathBuf::from("/data/regtest")]);
+    assert_eq!(chain_paths_for_network("/data", Network::Testnet), vec![std::path::PathBuf::from("/data/testnet")]);
+}
