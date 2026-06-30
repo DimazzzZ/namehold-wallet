@@ -10,6 +10,25 @@ fn get_cookie(state: &AppState) -> Result<String, AppError> {
     Ok(settings.get("namebase_cookie").cloned().unwrap_or_default())
 }
 
+/// Build a Namebase client, honoring an optional `namebase_base_url` setting so
+/// tests can point the irreversible transfer/withdraw calls at a mock server.
+/// Production leaves the setting unset → the real Namebase host.
+pub(crate) fn namebase_client(state: &AppState) -> Result<NamebaseClient, AppError> {
+    let (cookie, base) = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let settings = db::queries::get_settings(&db)?;
+        (
+            settings.get("namebase_cookie").cloned().unwrap_or_default(),
+            settings.get("namebase_base_url").cloned().unwrap_or_default(),
+        )
+    };
+    if base.trim().is_empty() {
+        NamebaseClient::new(&cookie)
+    } else {
+        NamebaseClient::with_base_url(&cookie, base.trim())
+    }
+}
+
 #[tauri::command]
 pub async fn connect_namebase(
     state: State<'_, AppState>,
@@ -165,8 +184,19 @@ pub async fn namebase_transfer_domain(
     name: String,
     address: String,
 ) -> Result<(), AppError> {
-    let cookie = get_cookie(&state)?;
-    let client = NamebaseClient::new(&cookie)?;
+    // Validate the destination FIRST — a Namebase withdrawal is irreversible, so a
+    // malformed or wrong-network address would lose the domain. Reuse the same
+    // address validator the Send flow uses. This fails fast (no cookie needed).
+    let address = address.trim().to_string();
+    let network = active_profile_network(&state);
+    crate::noncustodial::address::decode(network, &address).map_err(|_| {
+        AppError::InvalidInput(format!(
+            "destination is not a valid {} HNS address",
+            network.as_str()
+        ))
+    })?;
+
+    let client = namebase_client(&state)?;
     client.transfer_domain(&name, &address).await?;
 
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -174,8 +204,31 @@ pub async fn namebase_transfer_domain(
         "INSERT INTO audit_log (action, detail) VALUES ('namebase_transfer', ?1)",
         [serde_json::json!({"name": name, "address": address}).to_string()],
     )?;
+    // Reflect the initiated transfer in the inventory so the domain shows
+    // "transfer requested" (and the Transfers view / inventory badge light up).
+    db::queries::set_asset_status_by_tld(&db, &name, "namebase_transfer_requested")?;
 
     Ok(())
+}
+
+/// The active profile's network, defaulting to mainnet (Namebase domains are
+/// mainnet HNS) when there is no active profile or it can't be parsed.
+fn active_profile_network(state: &AppState) -> crate::noncustodial::network::Network {
+    use crate::noncustodial::network::Network;
+    let conn = match state.db.lock() {
+        Ok(c) => c,
+        Err(_) => return Network::Main,
+    };
+    let id = db::queries::get_active_profile_id(&conn).unwrap_or_default();
+    if id.is_empty() {
+        return Network::Main;
+    }
+    match db::queries::get_wallet_profile(&conn, &id) {
+        Ok(Some(p)) => {
+            crate::noncustodial::derivation::network_from_profile(&p.network).unwrap_or(Network::Main)
+        }
+        _ => Network::Main,
+    }
 }
 
 #[tauri::command]
@@ -184,9 +237,28 @@ pub async fn namebase_withdraw_hns(
     address: String,
     amount: String,
 ) -> Result<(), AppError> {
-    let cookie = get_cookie(&state)?;
-    let client = NamebaseClient::new(&cookie)?;
-    client.withdraw_hns(&address, &amount).await?;
+    // Validate FIRST — a Namebase withdrawal is irreversible. Reuse the Send
+    // flow's address validator; require a positive integer amount (doos).
+    let address = address.trim().to_string();
+    let network = active_profile_network(&state);
+    crate::noncustodial::address::decode(network, &address).map_err(|_| {
+        AppError::InvalidInput(format!(
+            "destination is not a valid {} HNS address",
+            network.as_str()
+        ))
+    })?;
+    // Namebase amounts are in HNS (decimal), e.g. "1" or "1.5".
+    match amount.trim().parse::<f64>() {
+        Ok(n) if n.is_finite() && n > 0.0 => {}
+        _ => {
+            return Err(AppError::InvalidInput(
+                "amount must be a positive number of HNS".to_string(),
+            ))
+        }
+    }
+
+    let client = namebase_client(&state)?;
+    client.withdraw_hns(&address, amount.trim()).await?;
 
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db.execute(

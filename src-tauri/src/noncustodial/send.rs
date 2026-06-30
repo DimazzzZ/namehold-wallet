@@ -69,7 +69,8 @@ pub const TX_OVERHEAD_VBYTES: u64 = 10;
 /// `derived_addresses` (see [`load_spendable_coins`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpendableCoin {
-    /// Funding transaction id in hsd display-order hex (as stored).
+    /// Funding transaction id in hsd natural-order hex (as stored / as the node
+    /// reports it; Handshake does not byte-reverse hashes).
     pub txid: String,
     pub vout: u32,
     pub value: u64,
@@ -217,9 +218,12 @@ pub fn select_coins(
     ))
 }
 
-/// Convert an hsd display-order txid hex into the raw internal 32-byte order
-/// used by [`Outpoint`]. hsd reports `getcoinsbyaddress` hashes in display
-/// (reversed) order; the tx serialization wants internal order, so we reverse.
+/// Convert an hsd txid hex into the 32-byte prevout hash used by [`Outpoint`].
+///
+/// Handshake does NOT byte-reverse hashes (unlike Bitcoin): the hash string the
+/// node reports for a coin is the exact byte order written into a spending
+/// input's prevout. So this is a plain hex decode with NO reversal — reversing
+/// would reference a non-existent outpoint and the node would reject the spend.
 fn outpoint_hash_from_txid(txid: &str) -> Result<[u8; 32], AppError> {
     let bytes = hex::decode(txid)
         .map_err(|e| AppError::InvalidInput(format!("bad txid hex: {e}")))?;
@@ -231,7 +235,6 @@ fn outpoint_hash_from_txid(txid: &str) -> Result<[u8; 32], AppError> {
     }
     let mut hash = [0u8; 32];
     hash.copy_from_slice(&bytes);
-    hash.reverse();
     Ok(hash)
 }
 
@@ -241,7 +244,7 @@ fn outpoint_hash_from_txid(txid: &str) -> Result<[u8; 32], AppError> {
 pub struct BuiltTransaction {
     /// Fully-signed transaction, hex-encoded for `sendrawtransaction`.
     pub tx_hex: String,
-    /// Transaction id in hsd display (reversed) order hex.
+    /// Transaction id in hsd natural-order hex (no Bitcoin-style reversal).
     pub txid: String,
     pub fee: u64,
     pub input_total: u64,
@@ -321,7 +324,7 @@ pub fn build_send(
     }
 
     let tx_hex = tx.to_hex();
-    let txid = compute_txid(&tx);
+    let txid = tx.txid();
 
     Ok(BuiltTransaction {
         tx_hex,
@@ -334,70 +337,6 @@ pub fn build_send(
     })
 }
 
-/// Compute the Handshake txid: Blake2b-256 of the NON-witness serialization,
-/// returned in reversed (display) hex order.
-///
-/// hsd `tx.js` hashes the base (no-witness) form: `version || varint(nin) ||
-/// inputs || varint(nout) || outputs || locktime`. The witness section is
-/// excluded entirely (it has its own `wtxid`). Because the tx module's writer
-/// is private and `serialize()` always appends per-input witness varints, we
-/// reconstruct the base form here.
-fn compute_txid(tx: &Transaction) -> String {
-    let base = serialize_base(tx);
-    let mut hash = crate::noncustodial::tx::blake2b256(&base);
-    hash.reverse();
-    hex::encode(hash)
-}
-
-/// Serialize the base (no-witness) transaction form for txid computation.
-///
-/// Mirrors `tx::Transaction::serialize` exactly but stops before the witness
-/// tail.
-fn serialize_base(tx: &Transaction) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(&tx.version.to_le_bytes());
-
-    write_varint(&mut buf, tx.inputs.len() as u64);
-    for input in &tx.inputs {
-        buf.extend_from_slice(&input.prevout.hash);
-        buf.extend_from_slice(&input.prevout.index.to_le_bytes());
-        buf.extend_from_slice(&input.sequence.to_le_bytes());
-    }
-
-    write_varint(&mut buf, tx.outputs.len() as u64);
-    for output in &tx.outputs {
-        buf.extend_from_slice(&output.value.to_le_bytes());
-        buf.push(output.address.version);
-        buf.push(output.address.hash.len() as u8);
-        buf.extend_from_slice(&output.address.hash);
-        buf.push(output.covenant.covenant_type);
-        write_varint(&mut buf, output.covenant.items.len() as u64);
-        for item in &output.covenant.items {
-            write_varint(&mut buf, item.len() as u64);
-            buf.extend_from_slice(item);
-        }
-    }
-
-    buf.extend_from_slice(&tx.locktime.to_le_bytes());
-    buf
-}
-
-/// CompactSize varint, mirroring the tx module's private writer.
-fn write_varint(buf: &mut Vec<u8>, n: u64) {
-    if n < 0xfd {
-        buf.push(n as u8);
-    } else if n <= 0xffff {
-        buf.push(0xfd);
-        buf.extend_from_slice(&(n as u16).to_le_bytes());
-    } else if n <= 0xffff_ffff {
-        buf.push(0xfe);
-        buf.extend_from_slice(&(n as u32).to_le_bytes());
-    } else {
-        buf.push(0xff);
-        buf.extend_from_slice(&n.to_le_bytes());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,7 +346,7 @@ mod tests {
     fn test_session() -> SignerSession {
         let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
         let master = ExtendedPrivKey::from_seed(&seed).expect("master");
-        SignerSession::unlock(1, Network::Main, master, 60_000)
+        SignerSession::unlock("p1".to_string(), Network::Main, master, 60_000)
     }
 
     const ACCOUNT: u32 = 0;
@@ -588,16 +527,17 @@ mod tests {
     }
 
     #[test]
-    fn outpoint_hash_reverses_display_order() {
-        let mut display = [0u8; 32];
-        for (i, b) in display.iter_mut().enumerate() {
+    fn outpoint_hash_preserves_byte_order() {
+        // Handshake does NOT byte-reverse hashes: the prevout hash must be the
+        // node's coin-hash bytes verbatim, else the spend references a
+        // non-existent outpoint and is rejected.
+        let mut h = [0u8; 32];
+        for (i, b) in h.iter_mut().enumerate() {
             *b = i as u8;
         }
-        let txid = hex::encode(display);
-        let internal = outpoint_hash_from_txid(&txid).expect("hash");
-        let mut expected = display;
-        expected.reverse();
-        assert_eq!(internal, expected);
+        let txid = hex::encode(h);
+        let decoded = outpoint_hash_from_txid(&txid).expect("hash");
+        assert_eq!(decoded, h, "prevout hash must match the txid bytes exactly");
     }
 
     #[test]
@@ -627,6 +567,24 @@ mod tests {
         assert!(built.fee > 0);
         // Conservation across the whole tx.
         assert_eq!(built.input_total, built.output_total + built.fee);
+    }
+
+    #[test]
+    fn build_send_conserves_value_and_fee_equals_rate_times_size() {
+        let mut session = test_session();
+        let rate = 3;
+        let addr = "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx";
+        // Single input, comfortably above amount + fee => one change output.
+        let coins = vec![coin(1, 2_000_000, 0, 0)];
+        let built =
+            build_send(&mut session, Network::Main, ACCOUNT, &coins, addr, 500_000, addr, rate)
+                .expect("build");
+        // Exact conservation: inputs == outputs + fee.
+        assert_eq!(built.input_total, built.output_total + built.fee);
+        // With change present the tx is 1-in/2-out; fee == size * rate exactly.
+        assert!(built.change > 0);
+        assert_eq!(built.fee, estimate_fee(1, 2, rate));
+        assert_eq!(built.fee, estimate_size(1, 2) * rate);
     }
 
     #[test]

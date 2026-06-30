@@ -46,11 +46,8 @@ fn test_schema_version_tracking() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
         .unwrap();
-    // 001 initial, 002 hsd prefix, 003 provider modes, 004 wallet addresses,
-    // 005 fix hnsfans api url, 006 noncustodial wallet profiles,
-    // 007 noncustodial chain cache, 008 noncustodial name state,
-    // 009 node rpc settings.
-    assert_eq!(count, 9);
+    // 001..009, 010 (drop legacy settings), 011 (re-add hsd data dir).
+    assert_eq!(count, 11);
 }
 
 #[test]
@@ -58,15 +55,26 @@ fn test_default_settings_seeded() {
     let conn = Connection::open_in_memory().unwrap();
     crate::db::migrations::run(&conn).unwrap();
 
-    let url: String = conn
-        .query_row("SELECT value FROM settings WHERE key = 'hsd_wallet_api_url'", [], |row| row.get(0))
+    // Non-custodial settings survive; the node RPC URL is seeded by 009.
+    let node_url: String = conn
+        .query_row("SELECT value FROM settings WHERE key = 'node_rpc_url'", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(url, "http://127.0.0.1:12039");
+    assert_eq!(node_url, "http://127.0.0.1:12037");
 
-    let network: String = conn
-        .query_row("SELECT value FROM settings WHERE key = 'hsd_network'", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(network, "mainnet");
+    // Legacy keys are removed by migration 010.
+    for key in ["hsd_wallet_api_url", "connection_mode", "write_mode", "chain_source"] {
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM settings WHERE key = ?1", [key], |row| row.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "legacy setting '{key}' should be deleted");
+    }
+
+    // The hsd data directory is re-added by migration 011 (010 drops it, 011
+    // brings it back), so the app can start hsd against a custom prefix.
+    let hsd_prefix: String = conn
+        .query_row("SELECT value FROM settings WHERE key = 'hsd_prefix'", [], |row| row.get(0))
+        .expect("hsd_prefix should exist after the full migration chain");
+    assert_eq!(hsd_prefix, "", "hsd_prefix defaults to empty (= hsd's own ~/.hsd)");
 }
 
 #[test]

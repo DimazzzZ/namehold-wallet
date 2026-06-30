@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "secure",
+  "description": "Capability for Rust-owned secure prompt windows (secret ingress/egress).",
+  "windows": ["secure-prompt-*"],
+  "permissions": [
+    "core:default",
+    "clipboard-manager:allow-write-text"
+  ]
+}

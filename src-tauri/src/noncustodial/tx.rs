@@ -144,8 +144,9 @@ impl Writer {
 /// A transaction outpoint (previous output reference).
 #[derive(Clone, Debug)]
 pub struct Outpoint {
-    /// 32-byte transaction hash of the funding tx (as stored by hsd: the raw
-    /// internal byte order, NOT reversed display order).
+    /// 32-byte transaction hash of the funding tx, in the same natural byte
+    /// order hsd uses everywhere (no Bitcoin-style reversal). This is exactly
+    /// the hex string the node reports for the coin.
     pub hash: [u8; 32],
     pub index: u32,
 }
@@ -208,6 +209,15 @@ impl Covenant {
         for item in &self.items {
             w.write_var_bytes(item);
         }
+    }
+
+    /// Serialize this covenant on its own: `type(u8) || varint(count) ||
+    /// varbytes(item)*`. Matches hsd `Covenant.encode()` byte-for-byte and is
+    /// used by the hsd-parity tests to compare covenant encodings.
+    pub fn to_raw(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        self.write(&mut w);
+        w.into_bytes()
     }
 }
 
@@ -434,6 +444,35 @@ impl Transaction {
         Ok(())
     }
 
+    /// Serialize the base (no-witness) form used for txid computation:
+    /// `version || varint(nin) || inputs || varint(nout) || outputs || locktime`.
+    fn write_base(&self, w: &mut Writer) {
+        w.write_u32(self.version);
+        w.write_varint(self.inputs.len() as u64);
+        for input in &self.inputs {
+            input.write(w);
+        }
+        w.write_varint(self.outputs.len() as u64);
+        for output in &self.outputs {
+            output.write(w);
+        }
+        w.write_u32(self.locktime);
+    }
+
+    /// The Handshake txid: Blake2b-256 of the NON-witness serialization, hex
+    /// -encoded in natural (internal) byte order.
+    ///
+    /// Unlike Bitcoin, Handshake does NOT byte-reverse hashes for display: hsd
+    /// `tx.txid()` is `this.hash().toString('hex')` with no `revHex`, and the
+    /// same natural-order bytes are written into spending inputs' prevout hash
+    /// (`Outpoint`). Reversing here would make our txid disagree with the node /
+    /// explorer and — worse — make spends reference the wrong outpoint.
+    pub fn txid(&self) -> String {
+        let mut w = Writer::new();
+        self.write_base(&mut w);
+        hex::encode(blake2b256(&w.into_bytes()))
+    }
+
     /// Serialize the transaction with witnesses for broadcast.
     ///
     /// hsd `tx.js` `write`: `version || varint(nin) || inputs ||
@@ -442,24 +481,10 @@ impl Transaction {
     /// input order.
     pub fn serialize(&self) -> Vec<u8> {
         let mut w = Writer::new();
-        w.write_u32(self.version);
-
-        w.write_varint(self.inputs.len() as u64);
-        for input in &self.inputs {
-            input.write(&mut w);
-        }
-
-        w.write_varint(self.outputs.len() as u64);
-        for output in &self.outputs {
-            output.write(&mut w);
-        }
-
-        w.write_u32(self.locktime);
-
+        self.write_base(&mut w);
         for input in &self.inputs {
             input.write_witness(&mut w);
         }
-
         w.into_bytes()
     }
 
@@ -565,6 +590,30 @@ mod tests {
     }
 
     #[test]
+    fn signature_hash_commits_output_covenant() {
+        // Two otherwise-identical 1-in/1-out txs differing only in the output
+        // covenant must produce different sighashes (the covenant is committed
+        // via hashOutputs).
+        let mk = |covenant: Covenant| {
+            let mut tx = Transaction::new();
+            tx.inputs.push(Input::new(Outpoint { hash: [0x22; 32], index: 0 }));
+            tx.outputs.push(Output {
+                value: 1000,
+                address: OutputAddress { version: 0, hash: vec![0xbb; 20] },
+                covenant,
+            });
+            tx.signature_hash(0, &p2wpkh_script_code(&[0x11; 20]), 1000, sighash::ALL)
+                .unwrap()
+        };
+        let plain = mk(Covenant::default());
+        let with_cov = mk(Covenant {
+            covenant_type: 2, // OPEN
+            items: vec![vec![1u8; 32], vec![0, 0, 0, 0], b"abc".to_vec()],
+        });
+        assert_ne!(plain, with_cov);
+    }
+
+    #[test]
     fn serialize_layout_has_no_segwit_marker() {
         // A 1-in/1-out tx: witness stacks are appended after locktime with no
         // segwit marker/flag byte (Handshake-specific).
@@ -591,5 +640,202 @@ mod tests {
         assert_eq!(&bytes[5..37], &[0x22; 32]);
         // The final byte is the (empty) witness count for the single input.
         assert_eq!(*bytes.last().unwrap(), 0x00);
+    }
+
+    // A deterministic key + its P2WPKH hash160, for signing tests.
+    fn test_key() -> (SecretKey, [u8; 20]) {
+        let sk = SecretKey::from_slice(&[7u8; 32]).unwrap();
+        let secp = Secp256k1::new();
+        let pk = PublicKey::from_secret_key(&secp, &sk).serialize();
+        (sk, address::pubkey_to_hash160(&pk))
+    }
+
+    fn out(value: u64, hash_byte: u8, covenant: Covenant) -> Output {
+        Output {
+            value,
+            address: OutputAddress { version: 0, hash: vec![hash_byte; 20] },
+            covenant,
+        }
+    }
+
+    fn two_in_two_out() -> Transaction {
+        let mut tx = Transaction::new();
+        tx.inputs.push(Input::new(Outpoint { hash: [0x11; 32], index: 0 }));
+        tx.inputs.push(Input::new(Outpoint { hash: [0x22; 32], index: 1 }));
+        tx.outputs.push(out(500_000, 0xaa, Covenant::default()));
+        tx.outputs.push(out(499_000, 0xbb, Covenant::default()));
+        tx
+    }
+
+    #[test]
+    fn txid_is_witness_independent_but_serialize_grows() {
+        // The txid hashes the NON-witness form, so signing must not change it
+        // (witness malleability can't alter the txid we previewed) — but the
+        // broadcast serialization does grow by the witness stacks.
+        let (sk, h160) = test_key();
+        let mut tx = two_in_two_out();
+        let txid_before = tx.txid();
+        let unsigned_len = tx.serialize().len();
+
+        tx.sign_p2wpkh_input(0, &sk, &h160, 1_000_000, sighash::ALL).unwrap();
+        tx.sign_p2wpkh_input(1, &sk, &h160, 50_000, sighash::ALL).unwrap();
+
+        assert_eq!(tx.txid(), txid_before, "txid must not depend on the witness");
+        assert!(
+            tx.serialize().len() > unsigned_len,
+            "signed serialization must include witness bytes"
+        );
+        // Each P2WPKH witness is [sig(65), pubkey(33)] => 2 items.
+        assert_eq!(tx.inputs[0].witness.len(), 2);
+        assert_eq!(tx.inputs[1].witness.len(), 2);
+        assert_eq!(tx.inputs[0].witness[0].len(), 65);
+        assert_eq!(tx.inputs[0].witness[1].len(), 33);
+    }
+
+    #[test]
+    fn multi_input_sighashes_are_distinct_and_value_committed() {
+        let (_sk, h160) = test_key();
+        let tx = two_in_two_out();
+        let code = p2wpkh_script_code(&h160);
+        let sh0 = tx.signature_hash(0, &code, 1_000_000, sighash::ALL).unwrap();
+        let sh1 = tx.signature_hash(1, &code, 50_000, sighash::ALL).unwrap();
+        // Different prevout/sequence per index => different sighash.
+        assert_ne!(sh0, sh1);
+        // The spent value is committed: same index, different value => different.
+        let sh0b = tx.signature_hash(0, &code, 999_999, sighash::ALL).unwrap();
+        assert_ne!(sh0, sh0b, "input value must be committed in the sighash");
+    }
+
+    #[test]
+    fn sighash_all_commits_every_output_field() {
+        // SIGHASH_ALL must commit each output's value, address, and covenant, so
+        // tampering with ANY of them after signing invalidates the signature.
+        let (_sk, h160) = test_key();
+        let code = p2wpkh_script_code(&h160);
+        let base = two_in_two_out();
+        let sh = base.signature_hash(0, &code, 1_000_000, sighash::ALL).unwrap();
+
+        // Tamper: recipient value.
+        let mut t1 = base.clone();
+        t1.outputs[0].value += 1;
+        assert_ne!(sh, t1.signature_hash(0, &code, 1_000_000, sighash::ALL).unwrap());
+
+        // Tamper: recipient address (redirect funds).
+        let mut t2 = base.clone();
+        t2.outputs[0].address.hash = vec![0xcc; 20];
+        assert_ne!(sh, t2.signature_hash(0, &code, 1_000_000, sighash::ALL).unwrap());
+
+        // Tamper: change output's covenant.
+        let mut t3 = base.clone();
+        t3.outputs[1].covenant = Covenant { covenant_type: 7, items: vec![vec![1u8; 32]] };
+        assert_ne!(sh, t3.signature_hash(0, &code, 1_000_000, sighash::ALL).unwrap());
+    }
+
+    #[test]
+    fn serialize_then_reparse_layout_round_trips() {
+        // Walk the witness serialization back out and confirm the recovered
+        // structure re-serializes to the identical bytes (no asymmetric framing).
+        let (sk, h160) = test_key();
+        let mut tx = two_in_two_out();
+        tx.locktime = 42;
+        tx.sign_p2wpkh_input(0, &sk, &h160, 1_000_000, sighash::ALL).unwrap();
+        tx.sign_p2wpkh_input(1, &sk, &h160, 50_000, sighash::ALL).unwrap();
+        let bytes = tx.serialize();
+
+        let mut r = Reader::new(&bytes);
+        let version = r.read_u32();
+        let nin = r.read_varint() as usize;
+        let mut inputs = Vec::new();
+        for _ in 0..nin {
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(r.read_bytes(32));
+            let index = r.read_u32();
+            let sequence = r.read_u32();
+            inputs.push((Outpoint { hash, index }, sequence));
+        }
+        let nout = r.read_varint() as usize;
+        let mut outputs = Vec::new();
+        for _ in 0..nout {
+            let value = r.read_u64();
+            let version = r.read_u8();
+            let hlen = r.read_u8() as usize;
+            let hash = r.read_bytes(hlen).to_vec();
+            let ctype = r.read_u8();
+            let nitems = r.read_varint() as usize;
+            let mut items = Vec::new();
+            for _ in 0..nitems {
+                let ilen = r.read_varint() as usize;
+                items.push(r.read_bytes(ilen).to_vec());
+            }
+            outputs.push(Output {
+                value,
+                address: OutputAddress { version, hash },
+                covenant: Covenant { covenant_type: ctype, items },
+            });
+        }
+        let locktime = r.read_u32();
+        let mut rebuilt = Transaction { version, inputs: Vec::new(), outputs, locktime };
+        for (i, (prevout, sequence)) in inputs.into_iter().enumerate() {
+            let mut inp = Input::new(prevout);
+            inp.sequence = sequence;
+            // Recover the witness stack for this input.
+            let nitems = r.read_varint() as usize;
+            for _ in 0..nitems {
+                let ilen = r.read_varint() as usize;
+                inp.witness.push(r.read_bytes(ilen).to_vec());
+            }
+            rebuilt.inputs.push(inp);
+            let _ = i;
+        }
+        assert!(r.at_end(), "parser must consume the entire buffer");
+        assert_eq!(rebuilt.serialize(), bytes, "round-trip must be byte-identical");
+        assert_eq!(rebuilt.txid(), tx.txid());
+    }
+
+    /// Minimal LE reader mirroring `Writer`, used only by the round-trip test.
+    struct Reader<'a> {
+        buf: &'a [u8],
+        pos: usize,
+    }
+    impl<'a> Reader<'a> {
+        fn new(buf: &'a [u8]) -> Self {
+            Reader { buf, pos: 0 }
+        }
+        fn read_u8(&mut self) -> u8 {
+            let v = self.buf[self.pos];
+            self.pos += 1;
+            v
+        }
+        fn read_u32(&mut self) -> u32 {
+            let v = u32::from_le_bytes(self.buf[self.pos..self.pos + 4].try_into().unwrap());
+            self.pos += 4;
+            v
+        }
+        fn read_u64(&mut self) -> u64 {
+            let v = u64::from_le_bytes(self.buf[self.pos..self.pos + 8].try_into().unwrap());
+            self.pos += 8;
+            v
+        }
+        fn read_bytes(&mut self, n: usize) -> &'a [u8] {
+            let s = &self.buf[self.pos..self.pos + n];
+            self.pos += n;
+            s
+        }
+        fn read_varint(&mut self) -> u64 {
+            let first = self.read_u8();
+            match first {
+                0xff => self.read_u64(),
+                0xfe => self.read_u32() as u64,
+                0xfd => {
+                    let v = u16::from_le_bytes(self.buf[self.pos..self.pos + 2].try_into().unwrap());
+                    self.pos += 2;
+                    v as u64
+                }
+                n => n as u64,
+            }
+        }
+        fn at_end(&self) -> bool {
+            self.pos == self.buf.len()
+        }
     }
 }

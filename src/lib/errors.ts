@@ -1,19 +1,31 @@
+// Friendly messages for the NON-CUSTODIAL model. Matching is a case-insensitive
+// substring scan over the raw error text (first match wins), so the more
+// specific patterns are listed first. No legacy hsd-wallet / API-key / "wallet
+// ID" copy — this app holds its own keys and reads via an explorer.
 const ERROR_MAP: Record<string, string> = {
-  "connection refused": "Cannot connect to wallet. Is hsd running?",
-  "ECONNREFUSED": "Cannot connect to wallet. Is hsd running?",
-  "connection reset": "Connection lost. Check if hsd is still running.",
-  "timed out": "Connection timed out. hsd may be syncing or overloaded.",
-  "timeout": "Connection timed out. hsd may be syncing or overloaded.",
-  "Unauthorized": "Invalid API key. Check your settings.",
-  "unauthorized": "Invalid API key. Check your settings.",
+  // Explorer rate-limited (HNSFans answers rapid bursts with HTTP 403).
+  "status 403": "The explorer is busy (rate-limited). Wait a moment and Refresh again.",
+  forbidden: "The explorer is busy (rate-limited). Wait a moment and Refresh again.",
+  // Explorer / network unreachable.
+  hnsfans: "Couldn't reach the explorer. Check the Explorer URL in Settings and your connection.",
+  "connection refused": "Couldn't reach the configured endpoint. Check your connection and Settings.",
+  econnrefused: "Couldn't reach the configured endpoint. Check your connection and Settings.",
+  "connection reset": "Connection lost. Please try again.",
+  "timed out": "The request timed out. Please try again.",
+  timeout: "The request timed out. Please try again.",
+  // Signer state (still valid in the non-custodial model).
+  "wallet locked": "Your signer is locked — click Unlock first.",
+  "wallet is locked": "Your signer is locked — click Unlock first.",
+  // Node not address-indexed (getcoinsbyaddress unavailable) — blocks all spends.
+  "getcoinsbyaddress":
+    "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start hsd) and let it finish syncing.",
+  "index-address":
+    "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start hsd) and let it finish syncing.",
+  // The name's coin isn't in the wallet's synced set yet.
+  "does not hold":
+    "This wallet hasn't synced this name's coin yet — make sure your node is fully synced and address-indexed (Settings), Refresh, then try again.",
+  // Sending.
   "insufficient funds": "Insufficient HNS balance for this transaction.",
-  "Insufficient funds": "Insufficient HNS balance for this transaction.",
-  "error decoding response body": "Wallet returned unexpected data. Try refreshing.",
-  "Not found": "Wallet or endpoint not found. Check wallet ID in settings.",
-  "bad API key": "Invalid API key. Check your settings.",
-  "wallet is locked": "Wallet is locked. Unlock it with your passphrase.",
-  "Wallet is locked": "Wallet is locked. Unlock it with your passphrase.",
-  "no such wallet": "Wallet not found. Check wallet ID in settings.",
 };
 
 export function mapError(error: unknown): string {

@@ -30,8 +30,9 @@ fn now_ms() -> u128 {
 /// drop) and a `chain_code` that its explicit `Drop` impl zeroizes, so dropping
 /// the session wipes all key material.
 pub struct SignerSession {
-    /// Identifier of the wallet profile this session unlocks.
-    wallet_profile_id: i64,
+    /// Identifier of the wallet profile this session unlocks. Matches the TEXT
+    /// `wallet_profiles.id`.
+    wallet_profile_id: String,
     /// The network this wallet operates on.
     network: Network,
     /// The unlocked BIP32 master key. `None` once locked.
@@ -43,7 +44,7 @@ pub struct SignerSession {
 impl SignerSession {
     /// Create an unlocked session valid for `ttl_ms` from now.
     pub fn unlock(
-        wallet_profile_id: i64,
+        wallet_profile_id: String,
         network: Network,
         master: ExtendedPrivKey,
         ttl_ms: u128,
@@ -56,8 +57,13 @@ impl SignerSession {
         }
     }
 
-    pub fn wallet_profile_id(&self) -> i64 {
-        self.wallet_profile_id
+    pub fn wallet_profile_id(&self) -> &str {
+        &self.wallet_profile_id
+    }
+
+    /// Absolute expiry in epoch milliseconds (0 once locked).
+    pub fn unlocked_until_ms(&self) -> u128 {
+        self.unlocked_until_ms
     }
 
     pub fn network(&self) -> Network {
@@ -116,15 +122,15 @@ mod tests {
 
     #[test]
     fn unlocked_session_exposes_master() {
-        let mut s = SignerSession::unlock(1, Network::Main, test_master(), 60_000);
+        let mut s = SignerSession::unlock("p1".to_string(), Network::Main, test_master(), 60_000);
         assert!(s.is_unlocked());
-        assert_eq!(s.wallet_profile_id(), 1);
+        assert_eq!(s.wallet_profile_id(), "p1");
         assert!(s.master().is_ok());
     }
 
     #[test]
     fn locked_session_denies_master() {
-        let mut s = SignerSession::unlock(1, Network::Main, test_master(), 60_000);
+        let mut s = SignerSession::unlock("p1".to_string(), Network::Main, test_master(), 60_000);
         s.lock();
         assert!(!s.is_unlocked());
         assert!(matches!(s.master(), Err(AppError::WalletLocked)));
@@ -133,14 +139,14 @@ mod tests {
     #[test]
     fn expired_session_denies_master() {
         // ttl_ms = 0 means already expired.
-        let mut s = SignerSession::unlock(1, Network::Main, test_master(), 0);
+        let mut s = SignerSession::unlock("p1".to_string(), Network::Main, test_master(), 0);
         assert!(!s.is_unlocked());
         assert!(matches!(s.master(), Err(AppError::WalletLocked)));
     }
 
     #[test]
     fn touch_extends_expiry() {
-        let mut s = SignerSession::unlock(1, Network::Main, test_master(), 0);
+        let mut s = SignerSession::unlock("p1".to_string(), Network::Main, test_master(), 0);
         assert!(!s.is_unlocked());
         s.touch(60_000);
         assert!(s.is_unlocked());

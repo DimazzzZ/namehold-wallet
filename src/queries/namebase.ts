@@ -1,5 +1,73 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
+import type { StatusTone } from "../types";
+
+/**
+ * A domain transfer ("withdrawal") as Namebase tracks it (`/api/domains/withdrawals`).
+ * `status` is Namebase's own lifecycle string for the two-phase Handshake transfer:
+ * `transfer_pending` → `transfer_completed` → `finalize_pending` → `finalize_completed`.
+ */
+export interface DomainWithdrawal {
+  id: string;
+  domain: string;
+  destination_address: string;
+  status: string;
+  status_note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Domain transfers exactly as Namebase reports them (`/api/domains/withdrawals`),
+ * so the app mirrors Namebase's own transfer list + statuses rather than guessing
+ * from on-chain state. Shares the `["namebase-domain-withdrawals"]` key that a
+ * transfer already invalidates.
+ */
+export function useNamebaseDomainWithdrawals() {
+  return useQuery<DomainWithdrawal[]>({
+    queryKey: ["namebase-domain-withdrawals"],
+    queryFn: async () => {
+      const raw = await invoke<{ withdrawals?: DomainWithdrawal[] } | DomainWithdrawal[]>(
+        "fetch_namebase_domain_withdrawals",
+      );
+      return Array.isArray(raw) ? raw : (raw?.withdrawals ?? []);
+    },
+    retry: false,
+  });
+}
+
+/** True once a domain transfer has fully landed (finalized) on Namebase's side. */
+export function isDomainTransferDone(status: string): boolean {
+  return (status || "").toLowerCase() === "finalize_completed";
+}
+
+/**
+ * Humanize a Namebase status string into a label + badge tone. Covers both the
+ * domain-transfer vocabulary (`transfer_*` / `finalize_*`) and the currency
+ * withdrawal vocabulary (`pending` / `completed`), so the app shows the same
+ * words Namebase does.
+ */
+export function namebaseStatus(status: string): { label: string; tone: StatusTone } {
+  const s = (status || "").toLowerCase().trim();
+  if (!s) return { label: "—", tone: "default" };
+  if (s.includes("fail") || s.includes("cancel") || s.includes("error") || s.includes("reject"))
+    return { label: humanizeStatus(s), tone: "error" };
+  if (s === "finalize_completed") return { label: "Completed", tone: "success" };
+  if (s === "transfer_completed") return { label: "Transfer sent — finalizing", tone: "info" };
+  if (s === "completed" || s === "complete") return { label: "Completed", tone: "success" };
+  if (s.includes("pending") || s.includes("progress") || s.includes("processing") || s.includes("waiting"))
+    return { label: humanizeStatus(s), tone: "info" };
+  return { label: humanizeStatus(s), tone: "default" };
+}
+
+/** "transfer_completed" → "Transfer completed". */
+function humanizeStatus(status: string): string {
+  return status
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
 
 export interface NamebaseAccount {
   email?: string;
@@ -91,6 +159,45 @@ export function useTransferNamebaseDomain() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["namebase"] });
       qc.invalidateQueries({ queryKey: ["assets"] });
+    },
+  });
+}
+
+/** A currency withdrawal from the Namebase custodial balance. */
+export interface NamebaseWithdrawal {
+  id: string;
+  currency: string;
+  amount: string; // dollarydoos, as a string
+  destination_address: string;
+  status: string; // e.g. "pending" | "completed"
+  status_note: string | null;
+  created_at: string;
+}
+
+/** HNS/BTC withdrawals from Namebase (`/api/withdrawals`), newest-first. */
+export function useNamebaseWithdrawals() {
+  return useQuery<NamebaseWithdrawal[]>({
+    queryKey: ["namebase-withdrawals"],
+    queryFn: async () => {
+      const raw = await invoke<{ withdrawals?: NamebaseWithdrawal[] } | NamebaseWithdrawal[]>(
+        "fetch_namebase_withdrawals",
+      );
+      const list = Array.isArray(raw) ? raw : (raw?.withdrawals ?? []);
+      return list;
+    },
+    retry: false,
+  });
+}
+
+/** Withdraw HNS funds from Namebase to an address. `amount` is dollarydoos. */
+export function useWithdrawHns() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { address: string; amount: string }) =>
+      invoke("namebase_withdraw_hns", { address: args.address, amount: args.amount }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["namebase"] });
+      qc.invalidateQueries({ queryKey: ["namebase-withdrawals"] });
     },
   });
 }

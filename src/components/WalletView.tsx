@@ -1,8 +1,25 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useWalletConnection, useWalletAddress, useWalletList, useSendHns } from "../queries/wallet";
-import { useReadContext, useReadBalance, useReadNames, useReadTransactions } from "../queries/read";
-import { useSettingsStore } from "../stores/settings";
+import {
+  useWalletProfiles,
+  useActiveProfile,
+  useSignerSession,
+  useWriteCapability,
+  useWalletBalances,
+  useTxDrafts,
+  useSyncWalletState,
+  useDiscoverOwnedNames,
+  useUnlockSigner,
+  useLockSigner,
+  useSetActiveProfile,
+  useBuildSendDraft,
+  useSignTxDraft,
+  useBroadcastTxDraft,
+} from "../queries/wallet";
+import { useReadNames, useReadBalance } from "../queries/read";
+import { NameActionsModal } from "./NameActionsModal";
+import { WalletManager } from "./WalletManager";
+import { AddWalletForm } from "./AddWalletForm";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
@@ -13,59 +30,66 @@ import { mapError } from "../lib/errors";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
-import { invoke } from "../lib/invoke";
-import { WriteSetupWizard } from "./WriteSetupWizard";
+import type { TxDraftSummary } from "../types";
 
 export function WalletView() {
   const qc = useQueryClient();
-  const [writeSetupOpen, setWriteSetupOpen] = useState(false);
-  const { data: conn, isLoading: connLoading } = useWalletConnection();
-  const { data: readContext } = useReadContext();
-  const { data: balance, isLoading: balLoading } = useReadBalance();
-  const { data: address } = useWalletAddress();
-  const { data: names } = useReadNames();
-  const { data: transactions = [] } = useReadTransactions();
-  const { data: walletList } = useWalletList();
-  const settings = useSettingsStore((s) => s.settings);
-  const updateSetting = useSettingsStore((s) => s.update);
-  const passphrase = useSettingsStore((s) => s.passphrase);
   const showToast = useUiStore((s) => s.showToast);
-  const sendHns = useSendHns();
 
-  const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  const { data: profiles = [] } = useWalletProfiles();
+  const { data: profile } = useActiveProfile();
+  const { data: signer } = useSignerSession();
+  const { data: writeCap } = useWriteCapability();
+  const { data: balances } = useWalletBalances();
+  const { data: readBalance } = useReadBalance();
+  const { data: drafts = [] } = useTxDrafts();
+  const { data: names = [] } = useReadNames();
+
+  const sync = useSyncWalletState();
+  const discoverNames = useDiscoverOwnedNames();
+  const unlock = useUnlockSigner();
+  const lock = useLockSigner();
+  const setActive = useSetActiveProfile();
+  const buildDraft = useBuildSendDraft();
+  const signDraft = useSignTxDraft();
+  const broadcast = useBroadcastTxDraft();
+
+  const [sendOpen, setSendOpen] = useState(false);
   const [sendAddress, setSendAddress] = useState("");
   const [sendAmount, setSendAmount] = useState("");
-  const [sendPassphrase, setSendPassphrase] = useState("");
-  const [switchDialogOpen, setSwitchDialogOpen] = useState(false);
-  const [newWalletId, setNewWalletId] = useState("");
+  const [draft, setDraft] = useState<TxDraftSummary | null>(null);
   const [copied, setCopied] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  // A failed sign/broadcast must NOT look like success: we surface it as a
+  // persistent in-dialog error (not just a transient toast) and keep the dialog
+  // open so the user can see exactly what happened before deciding to retry.
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [manageName, setManageName] = useState<string | null>(null);
+  const [arbitraryName, setArbitraryName] = useState("");
+  // Wallets manager modal (add / switch / delete). `addMode` opens it straight
+  // to the add-wallet form.
+  const [walletManagerOpen, setWalletManagerOpen] = useState(false);
+  const [walletManagerAddMode, setWalletManagerAddMode] = useState(false);
 
-  // Create wallet state
-  const [createOpen, setCreateOpen] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newPassphrase, setNewPassphrase] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [createdMnemonic, setCreatedMnemonic] = useState("");
-  const [confirmedSaved, setConfirmedSaved] = useState(false);
+  const unlocked = signer?.unlocked ?? false;
+  const canWrite = writeCap?.canWrite ?? false;
+  const isWatchOnly = profile?.watchOnly ?? false;
+  const address = profile?.receiveAddress ?? null;
+  // Spending uses node-synced coins (tracked_utxos), NOT the explorer balance.
+  // If the explorer shows funds but nothing is synced yet, the user must connect
+  // a node and Refresh before they can send.
+  const spendable = balances?.liquidDoos ?? 0;
+  const explorerBalance = readBalance?.confirmed ?? 0;
+  const needsNodeSync = explorerBalance > 0 && spendable === 0;
 
-  // Import wallet state
-  const [importOpen, setImportOpen] = useState(false);
-  const [importName, setImportName] = useState("");
-  const [importPassphrase, setImportPassphrase] = useState("");
-  const [importMnemonic, setImportMnemonic] = useState("");
-  const [importing, setImporting] = useState(false);
-
-  const walletUrl = settings?.hsd_wallet_api_url || "";
-  const isLocalhost = walletUrl.includes("127.0.0.1") || walletUrl.includes("localhost");
-  const writeMode = settings?.write_mode === "true";
-  const currentWalletId = settings?.hsd_wallet_id || "primary";
-
-  // Provider-aware permissions: writes require both write_mode AND a write-capable provider.
-  const providerLabel = readContext?.activeReadProvider.label || "—";
-  const writeAllowed = writeMode && (readContext?.writeAllowed ?? false);
-  const writeBlockedReason = readContext?.writeReason || null;
-  const readOnlyMode = !writeAllowed;
-  const walletManageable = readContext?.activeReadProvider.manageable ?? false;
+  const resetSend = () => {
+    setSendOpen(false);
+    setSendAddress("");
+    setSendAmount("");
+    setDraft(null);
+    setSubmitting(false);
+    setSendError(null);
+  };
 
   const handleCopyAddress = async () => {
     if (!address) return;
@@ -75,186 +99,235 @@ export function WalletView() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleSendHns = async () => {
-    if (!sendAddress.trim() || !sendAmount.trim()) return;
-    const dollarydoos = hnsToDollarydoos(sendAmount);
-    if (isNaN(dollarydoos) || dollarydoos <= 0) {
+  // Refresh is best-effort. Reads (balance/names) and owned-name discovery come
+  // from the explorer (node-free); the local node is OPTIONAL and only needed to
+  // sync spendable coins. Neither a missing node nor a busy explorer should raise
+  // a scary error toast — they're expected conditions, surfaced as calm info.
+  const handleSync = async () => {
+    // Node sync: soft-fail. A missing node already returns nodeReachable:false;
+    // any other node error just means "couldn't sync spendable coins right now".
+    let nodeReachable = false;
+    try {
+      const res = (await sync.mutateAsync(undefined)) as { nodeReachable?: boolean } | undefined;
+      nodeReachable = res?.nodeReachable !== false;
+    } catch {
+      nodeReachable = false;
+    }
+
+    // Explorer discovery of owned names: best-effort, may be partial if the
+    // explorer rate-limits mid-crawl.
+    const found = (await discoverNames.mutateAsync().catch(() => undefined)) as
+      | { discovered?: number; partial?: boolean }
+      | undefined;
+
+    if (found?.partial) {
+      showToast(
+        "The explorer is busy (rate-limited). Some names may be missing — Refresh again shortly.",
+        "info",
+      );
+    } else if (nodeReachable) {
+      showToast("Synced", "success");
+    } else {
+      const n = found?.discovered ?? 0;
+      showToast(
+        n > 0
+          ? `Found ${n} owned name${n === 1 ? "" : "s"}. Connect a local node to sync spendable coins.`
+          : "Reads refreshed. Connect a local node to sync spendable coins.",
+        "info",
+      );
+    }
+  };
+
+  const handleUnlock = async () => {
+    if (!profile) return;
+    try {
+      await unlock.mutateAsync(profile.id);
+      showToast("Wallet unlocked", "success");
+    } catch (e) {
+      showToast(mapError(e), "error");
+    }
+  };
+
+  const handleLock = async () => {
+    try {
+      await lock.mutateAsync();
+      showToast("Wallet locked", "info");
+    } catch (e) {
+      showToast(mapError(e), "error");
+    }
+  };
+
+  const handleBuildDraft = async () => {
+    const doos = hnsToDollarydoos(sendAmount);
+    if (!sendAddress.trim()) {
+      showToast("Enter a destination address", "error");
+      return;
+    }
+    if (isNaN(doos) || doos <= 0) {
       showToast("Invalid amount", "error");
       return;
     }
-    const pw = sendPassphrase || passphrase;
-    if (!pw) {
-      showToast("Enter wallet passphrase in Settings or below", "error");
-      return;
-    }
+    setSendError(null);
     try {
-      await sendHns.mutateAsync({ address: sendAddress, value: dollarydoos, passphrase: pw });
-      showToast(`Sent ${sendAmount} HNS to ${sendAddress}`, "success");
-      setSendDialogOpen(false);
-      setSendAddress("");
-      setSendAmount("");
-      setSendPassphrase("");
+      const d = await buildDraft.mutateAsync({ toAddress: sendAddress.trim(), valueDoos: doos });
+      setDraft(d);
     } catch (e) {
       showToast(mapError(e), "error");
     }
   };
 
-  const handleRefresh = () => {
-    qc.invalidateQueries({ queryKey: ["wallet"] });
-  };
-
-  const handleSwitchWallet = async (walletId: string) => {
-    if (!walletId.trim() || walletId === currentWalletId) return;
+  // Unlock (if needed) → sign → broadcast. The send is only considered done when
+  // the node confirms the broadcast; any failure keeps the dialog open with a
+  // persistent error so it can never be mistaken for a successful send.
+  const handleConfirmSend = async () => {
+    if (!draft || !profile) return;
+    setSubmitting(true);
+    setSendError(null);
     try {
-      await updateSetting("hsd_wallet_id", walletId.trim());
+      if (!unlocked) {
+        await unlock.mutateAsync(profile.id);
+      }
+      await signDraft.mutateAsync(draft.id);
+      const result = await broadcast.mutateAsync(draft.id);
+      // Only here — after the node accepted the tx — is the send complete.
+      showToast(`Broadcast ${result.txid.slice(0, 12)}…`, "success");
+      resetSend();
       qc.invalidateQueries({ queryKey: ["wallet"] });
-      showToast(`Switched to wallet "${walletId.trim()}"`, "success");
-      setSwitchDialogOpen(false);
-      setNewWalletId("");
     } catch (e) {
-      showToast(mapError(e), "error");
+      const msg = mapError(e);
+      setSendError(msg);
+      showToast(msg, "error");
+      setSubmitting(false);
     }
   };
 
-  const handleDisconnect = async () => {
-    try {
-      await updateSetting("hsd_wallet_id", "");
-      qc.invalidateQueries({ queryKey: ["wallet"] });
-      showToast("Disconnected", "success");
-    } catch (e) {
-      showToast(mapError(e), "error");
-    }
-  };
-
-  const getUniqueName = (base: string) => {
-    if (!walletList || !walletList.includes(base)) return base;
-    let i = 2;
-    while (walletList.includes(`${base}-${i}`)) i++;
-    return `${base}-${i}`;
-  };
-
-  const handleCreate = async () => {
-    const name = newName.trim() || getUniqueName("wallet");
-    setCreating(true);
-    try {
-      const result: any = await invoke("create_wallet", { id: name, passphrase: newPassphrase });
-      setCreatedMnemonic(result?.mnemonic?.phrase || "");
-      setNewName(name);
-    } catch (e) {
-      showToast(mapError(e), "error");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleConfirmCreated = async () => {
-    await updateSetting("hsd_wallet_id", newName.trim());
-    qc.invalidateQueries({ queryKey: ["wallet"] });
-    setCreateOpen(false);
-    setCreatedMnemonic("");
-    setNewName("");
-    setNewPassphrase("");
-    setConfirmedSaved(false);
-    showToast(`Wallet "${newName.trim()}" created`, "success");
-  };
-
-  const handleImport = async () => {
-    if (!importMnemonic.trim()) {
-      showToast("Enter your seed phrase", "error");
-      return;
-    }
-    const name = importName.trim() || getUniqueName("wallet");
-    setImporting(true);
-    try {
-      await invoke("create_wallet", { id: name, passphrase: importPassphrase, mnemonic: importMnemonic.trim() });
-      await updateSetting("hsd_wallet_id", name);
-      qc.invalidateQueries({ queryKey: ["wallet"] });
-      setImportOpen(false);
-      setImportName("");
-      setImportPassphrase("");
-      setImportMnemonic("");
-      showToast(`Wallet "${name}" imported`, "success");
-    } catch (e) {
-      showToast(mapError(e), "error");
-    } finally {
-      setImporting(false);
-    }
-  };
+  if (!profile) {
+    return (
+      <div className="space-y-6">
+        <PageHeader title="Wallet" subtitle="No wallet profile yet." />
+        <div className="bg-white border border-gray-200 rounded-lg p-6 space-y-4">
+          <div className="text-sm text-gray-600">
+            No wallet profile is active. Create or import one — your recovery phrase
+            and passphrase are handled only in a secure window.
+          </div>
+          <AddWalletForm defaultLabel="Primary" onDone={() => {}} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Wallet"
-        subtitle="Manage your Handshake wallet, balance, names, and transactions."
+        subtitle="Non-custodial. Keys are held locally and never leave this device."
         badges={
           <>
-            <Badge variant="info">{currentWalletId}</Badge>
-            {conn?.connected ? (
-              <Badge variant="success">Connected</Badge>
-            ) : connLoading ? (
-              <Badge>Checking...</Badge>
+            <Badge variant="info">{profile.label}</Badge>
+            <Badge>{profile.network}</Badge>
+            {isWatchOnly ? (
+              <Badge variant="warning">Watch-only</Badge>
+            ) : unlocked ? (
+              <Badge variant="success">Unlocked</Badge>
             ) : (
-              <Badge variant="error">Disconnected</Badge>
+              <Badge variant="warning">Locked</Badge>
             )}
           </>
         }
-        actions={
-          walletManageable
-            ? [
-                { label: "Create Wallet", onClick: () => setCreateOpen(true) },
-                { label: "Import Wallet", variant: "secondary", onClick: () => setImportOpen(true) },
-                { label: "Switch Wallet", variant: "secondary", onClick: () => setSwitchDialogOpen(true) },
-                { label: "Refresh", onClick: handleRefresh },
-              ]
-            : [{ label: "Refresh", onClick: handleRefresh }]
-        }
+        actions={[
+          {
+            label: sync.isPending || discoverNames.isPending ? "Refreshing…" : "Refresh",
+            onClick: handleSync,
+          },
+        ]}
       />
 
-      {/* Provider / read-only context banner */}
-      <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm text-blue-800 flex items-center justify-between">
-        <span>
-          Data source: <strong>{providerLabel}</strong>
-        </span>
-        {readOnlyMode && (
-          <Badge variant="warning">
-            Read-only{writeBlockedReason ? ` — ${writeBlockedReason}` : ""}
-          </Badge>
+      {/* Profile quick-switch + manage */}
+      <div className="flex items-center gap-2 text-sm">
+        <span className="text-gray-500">Active wallet:</span>
+        {profiles.length > 1 ? (
+          <select
+            className="border border-gray-300 rounded px-2 py-1"
+            value={profile.id}
+            onChange={(e) => setActive.mutate(e.target.value)}
+          >
+            {profiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label} ({p.network})
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="font-medium">
+            {profile.label} ({profile.network})
+          </span>
         )}
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => {
+            setWalletManagerAddMode(true);
+            setWalletManagerOpen(true);
+          }}
+        >
+          + Add wallet
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            setWalletManagerAddMode(false);
+            setWalletManagerOpen(true);
+          }}
+        >
+          Manage wallets
+        </Button>
       </div>
 
-      {/* Read-only → write setup CTA */}
-      {readOnlyMode && (
-        <div className="bg-white border border-gray-200 rounded-lg p-4 flex items-center justify-between gap-4">
-          <div>
-            <div className="font-medium text-gray-900">You're in read-only mode</div>
-            <div className="text-sm text-gray-500">
-              Connect your own local hsd node to send HNS and manage names.
+      <WalletManager
+        open={walletManagerOpen}
+        startInAddMode={walletManagerAddMode}
+        onClose={() => setWalletManagerOpen(false)}
+      />
+
+      {/* Signer status / lock controls */}
+      {!isWatchOnly && (
+        <div className="bg-white border border-gray-200 rounded-lg p-4 flex items-center justify-between">
+          <div className="text-sm">
+            <div className="font-medium text-gray-900">
+              Signer {unlocked ? "unlocked" : "locked"}
+            </div>
+            <div className="text-gray-500">
+              {unlocked
+                ? "Your keys are in memory. They lock automatically after the session timeout."
+                : profile.hasPassphrase
+                  ? "Unlock with your passphrase (in a secure window) to sign transactions."
+                  : "This wallet has no passphrase — just click Unlock to enable signing."}
             </div>
           </div>
-          <Button variant="primary" onClick={() => setWriteSetupOpen(true)}>
-            Enable write mode
-          </Button>
-        </div>
-      )}
-
-      {!isLocalhost && walletManageable && (
-        <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700">
-          Warning: Wallet API URL ({walletUrl}) is not localhost. Only use local connections for security.
-        </div>
-      )}
-
-      {walletManageable && !conn?.connected && !connLoading && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-800">
-          Wallet API not available. Make sure hsd is running with wallet plugin enabled (without <code>--no-wallet</code> flag).
-          {!walletList?.length && (
-            <span className="block mt-1">No wallets found. Create or import a wallet below.</span>
+          {unlocked ? (
+            <Button variant="secondary" onClick={handleLock}>Lock</Button>
+          ) : (
+            <Button variant="primary" onClick={handleUnlock} disabled={unlock.isPending}>
+              {unlock.isPending ? "Unlocking…" : "Unlock"}
+            </Button>
           )}
         </div>
       )}
 
-      {/* Receive Address - Prominent */}
+      {/* Receive Address */}
       <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
-        <div className="text-sm text-gray-500 mb-2">Receive Address</div>
+        <div className="text-sm text-gray-500 mb-2 flex items-center gap-2">
+          <span>Receive Address</span>
+          <Badge variant={profile.network === "mainnet" ? "info" : "warning"}>
+            {profile.network}
+          </Badge>
+          {profile.network !== "mainnet" && (
+            <span className="text-xs text-amber-600">
+              — {profile.network} addresses differ from mainnet
+            </span>
+          )}
+        </div>
         {address ? (
           <div className="flex items-center gap-6">
             <div className="flex-1">
@@ -272,65 +345,94 @@ export function WalletView() {
             </div>
           </div>
         ) : (
-          <div className="text-gray-400">
-            {conn?.connected ? "Loading address..." : "Connect to wallet first"}
-          </div>
+          <div className="text-gray-400">No address derived yet. Try syncing.</div>
         )}
       </div>
 
-      {/* Balance */}
+      {/* Balances — confirmed/unconfirmed come from the HNSFans explorer
+          (node-free); "Spendable (synced)" is what coin selection can use after
+          a node sync. */}
       <div className="grid grid-cols-3 gap-4">
         <div className="bg-white rounded p-4 border border-gray-200">
-          <div className="text-sm text-gray-500">Confirmed Balance</div>
-          <div className="text-2xl font-bold">
-            {balLoading ? "..." : formatHns(balance?.confirmed)}
-          </div>
-          <div className="text-xs text-gray-400">HNS</div>
+          <div className="text-sm text-gray-500">Confirmed</div>
+          <div className="text-2xl font-bold">{formatHns(readBalance?.confirmed ?? 0)}</div>
+          <div className="text-xs text-gray-400">HNS · via explorer</div>
         </div>
         <div className="bg-white rounded p-4 border border-gray-200">
           <div className="text-sm text-gray-500">Unconfirmed</div>
-          <div className="text-2xl font-bold">
-            {balLoading ? "..." : formatHns(balance?.unconfirmed)}
-          </div>
-          <div className="text-xs text-gray-400">HNS</div>
+          <div className="text-2xl font-bold">{formatHns(readBalance?.unconfirmed ?? 0)}</div>
+          <div className="text-xs text-gray-400">HNS · via explorer</div>
         </div>
         <div className="bg-white rounded p-4 border border-gray-200">
-          <div className="text-sm text-gray-500">Locked</div>
-          <div className="text-2xl font-bold">
-            {balLoading
-              ? "..."
-              : formatHns(
-                  (balance?.locked_confirmed || 0) + (balance?.locked_unconfirmed || 0),
-                )}
-          </div>
-          <div className="text-xs text-gray-400">HNS</div>
+          <div className="text-sm text-gray-500">Spendable (synced)</div>
+          <div className="text-2xl font-bold">{formatHns(balances?.liquidDoos ?? 0)}</div>
+          <div className="text-xs text-gray-400">HNS · from node sync</div>
         </div>
       </div>
 
       {/* Actions */}
-      <div className="flex gap-3">
-        {writeAllowed && (
-          <Button variant="primary" onClick={() => setSendDialogOpen(true)}>
-            Send HNS
-          </Button>
-        )}
-      </div>
-
-      {/* Owned Names */}
-      <div className="bg-white rounded p-4 border border-gray-200">
-        <div className="text-sm text-gray-500 mb-2">
-          Owned Names ({names?.length ?? 0})
+      {!isWatchOnly && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-3">
+            <Button
+              variant="primary"
+              onClick={() => setSendOpen(true)}
+              disabled={!canWrite || spendable === 0}
+            >
+              Send HNS
+            </Button>
+            {!canWrite && (
+              <span className="text-sm text-amber-600">
+                {writeCap?.reason ??
+                  "Connect a node in Settings, Refresh to sync your coins, then unlock to send."}
+              </span>
+            )}
+          </div>
+          {needsNodeSync && (
+            <div
+              className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
+              data-testid="needs-node-sync"
+            >
+              Your balance is read from the explorer, but spending requires a
+              synced node. Connect a node in <strong>Settings</strong> and click{" "}
+              <strong>Refresh</strong> to load your spendable coins.
+            </div>
+          )}
         </div>
-        {names && names.length > 0 ? (
+      )}
+
+      {/* Owned Names (from local name-state cache) */}
+      <div className="bg-white rounded p-4 border border-gray-200">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm text-gray-500">Owned Names ({names.length})</div>
+          {!isWatchOnly && (
+            <div className="flex items-center gap-2">
+              <input
+                className="border border-gray-300 rounded px-2 py-1 text-xs"
+                value={arbitraryName}
+                onChange={(e) => setArbitraryName(e.target.value.toLowerCase())}
+                placeholder="name to act on (e.g. open/bid)"
+              />
+              <Button
+                size="sm"
+                disabled={!arbitraryName.trim()}
+                onClick={() => setManageName(arbitraryName.trim())}
+              >
+                Name actions
+              </Button>
+            </div>
+          )}
+        </div>
+        {names.length > 0 ? (
           <div className="max-h-60 overflow-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-gray-500">
+                <tr className="text-left text-gray-500 border-b">
                   <th className="py-1">Name</th>
                   <th className="py-1">State</th>
                   <th className="py-1">Height</th>
                   <th className="py-1">Renewal</th>
-                  <th className="py-1">Expires</th>
+                  <th className="py-1"></th>
                 </tr>
               </thead>
               <tbody>
@@ -340,10 +442,12 @@ export function WalletView() {
                     <td className="py-1">{n.state || "—"}</td>
                     <td className="py-1 text-xs text-gray-500">{n.height ? `#${n.height}` : "—"}</td>
                     <td className="py-1 text-xs text-gray-500">{n.renewal ? `#${n.renewal}` : "—"}</td>
-                    <td className="py-1">
-                      {n.stats?.days_until_expire
-                        ? `${Math.round(n.stats.days_until_expire)}d`
-                        : "—"}
+                    <td className="py-1 text-right">
+                      {!isWatchOnly && (
+                        <Button size="sm" variant="ghost" onClick={() => setManageName(n.name)}>
+                          Manage
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -352,55 +456,55 @@ export function WalletView() {
           </div>
         ) : (
           <div className="text-gray-400 text-sm py-4 text-center">
-            {conn?.connected
-              ? "No names in wallet yet. Names will appear here after transfer."
-              : "Connect to wallet first"}
+            {discoverNames.isPending
+              ? "Scanning the explorer for names this wallet owns…"
+              : "No owned names found yet. Click Refresh to scan for names this wallet owns."}
           </div>
         )}
       </div>
 
-      {/* Transaction History */}
+      {/* Recent drafts */}
       <div className="bg-white rounded p-4 border border-gray-200">
-        <div className="text-sm text-gray-500 mb-2">
-          Transaction History ({transactions.length})
-        </div>
-        {transactions.length > 0 ? (
-          <div className="max-h-80 overflow-auto">
+        <div className="text-sm text-gray-500 mb-2">Recent transactions ({drafts.length})</div>
+        {drafts.length > 0 ? (
+          <div className="max-h-72 overflow-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-500 border-b">
                   <th className="py-2 pr-4">Date</th>
-                  <th className="py-2 pr-4">Type</th>
+                  <th className="py-2 pr-4">Action</th>
                   <th className="py-2 pr-4">Amount</th>
-                  <th className="py-2 pr-4">Address</th>
+                  <th className="py-2 pr-4">Fee</th>
                   <th className="py-2 pr-4">Status</th>
-                  <th className="py-2">Hash</th>
+                  <th className="py-2">Txid</th>
                 </tr>
               </thead>
               <tbody>
-                {transactions.map((tx, i) => (
-                  <tr key={tx.hash || i} className="border-t border-gray-100">
-                    <td className="py-2 pr-4 text-xs text-gray-500">
-                      {tx.timestamp ? formatDate(tx.timestamp) : "—"}
-                    </td>
-                    <td className="py-2 pr-4">
-                      <Badge variant={tx.direction === "receive" ? "success" : tx.direction === "send" ? "warning" : "default"}>
-                        {tx.direction}
-                      </Badge>
-                    </td>
+                {drafts.map((d) => (
+                  <tr key={d.id} className="border-t border-gray-100">
+                    <td className="py-2 pr-4 text-xs text-gray-500">{formatDate(d.createdAt)}</td>
+                    <td className="py-2 pr-4">{d.action}</td>
                     <td className="py-2 pr-4 font-mono">
-                      {tx.amountDoos > 0 ? formatHns(tx.amountDoos) : "—"}
+                      {d.summary ? formatHns(d.summary.sendTotalDoos) : "—"}
                     </td>
-                    <td className="py-2 pr-4 text-xs font-mono truncate max-w-[120px]">
-                      {tx.address || "—"}
+                    <td className="py-2 pr-4 font-mono text-xs text-gray-500">
+                      {d.summary ? formatHns(d.summary.feeDoos) : "—"}
                     </td>
                     <td className="py-2 pr-4">
-                      <Badge variant={tx.confirmed ? "success" : "warning"}>
-                        {tx.confirmed ? "Confirmed" : "Pending"}
+                      <Badge
+                        variant={
+                          d.status === "broadcasted"
+                            ? "success"
+                            : d.status === "failed"
+                            ? "error"
+                            : "default"
+                        }
+                      >
+                        {d.status}
                       </Badge>
                     </td>
-                    <td className="py-2 text-xs font-mono truncate max-w-[100px]">
-                      {tx.hash ? `${tx.hash.slice(0, 8)}...` : "—"}
+                    <td className="py-2 text-xs font-mono truncate max-w-[120px]">
+                      {d.txid ? `${d.txid.slice(0, 10)}…` : "—"}
                     </td>
                   </tr>
                 ))}
@@ -408,182 +512,116 @@ export function WalletView() {
             </table>
           </div>
         ) : (
-          <div className="text-gray-400 text-sm py-4 text-center">
-            {conn?.connected
-              ? "No transactions yet. Transactions will appear here after sending or receiving."
-              : "Connect to wallet first"}
-          </div>
+          <div className="text-gray-400 text-sm py-4 text-center">No transactions yet.</div>
         )}
       </div>
 
-      {/* Wallet info */}
       <div className="text-xs text-gray-400">
-        Wallet ID: {currentWalletId} | Network: {settings?.hsd_network || "—"} | API: {walletUrl}
+        Profile: {profile.id.slice(0, 8)}… | Last synced height:{" "}
+        {profile.lastSyncedHeight ?? "—"} | xpub: {profile.accountXpub.slice(0, 16)}…
       </div>
 
-      {/* Send HNS Dialog */}
-      <Dialog open={sendDialogOpen} onClose={() => setSendDialogOpen(false)} title="Send HNS">
-        <div className="space-y-3">
-          <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
-            This will send real HNS from your wallet. This action cannot be undone.
-          </div>
-          <Input
-            label="Destination Address"
-            value={sendAddress}
-            onChange={(e) => setSendAddress(e.target.value)}
-            placeholder="hs1q..."
-          />
-          <Input
-            label="Amount (HNS)"
-            value={sendAmount}
-            onChange={(e) => setSendAmount(e.target.value)}
-            placeholder="1.0"
-            type="number"
-            step="0.000001"
-          />
-          <Input
-            label="Wallet Passphrase"
-            type="password"
-            value={sendPassphrase}
-            onChange={(e) => setSendPassphrase(e.target.value)}
-            placeholder={passphrase ? "Using saved passphrase" : "Enter passphrase"}
-          />
-          {sendAmount && sendAddress && (
-            <div className="bg-gray-50 rounded p-3 text-sm">
-              <div className="flex justify-between">
-                <span>Amount:</span>
-                <span className="font-mono">{sendAmount} HNS</span>
-              </div>
-              <div className="flex justify-between text-gray-500">
-                <span>To:</span>
-                <span className="font-mono truncate max-w-[200px]">{sendAddress}</span>
-              </div>
+      {manageName && (
+        <NameActionsModal
+          name={manageName}
+          open={!!manageName}
+          onClose={() => setManageName(null)}
+        />
+      )}
+
+      {/* Send dialog: form → preview → confirm */}
+      <Dialog open={sendOpen} onClose={resetSend} title="Send HNS">
+        {!draft ? (
+          <div className="space-y-3">
+            <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
+              This sends real HNS. You'll review the fee and confirm before broadcasting.
             </div>
-          )}
-          <div className="flex gap-2 justify-end">
-            <Button variant="ghost" onClick={() => setSendDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              onClick={handleSendHns}
-              disabled={!sendAddress.trim() || !sendAmount.trim() || sendHns.isPending}
-            >
-              {sendHns.isPending ? "Sending..." : "Send HNS"}
-            </Button>
-          </div>
-        </div>
-      </Dialog>
-
-      {/* Switch Wallet Dialog */}
-      <Dialog open={switchDialogOpen} onClose={() => setSwitchDialogOpen(false)} title="Switch Wallet">
-        <div className="space-y-3">
-          <div className="text-sm text-gray-600">
-            Current wallet: <strong>{currentWalletId}</strong>
-          </div>
-
-          {walletList && walletList.length > 0 && (
-            <div>
-              <label className="text-sm font-medium text-gray-700">Available Wallets</label>
-              <div className="mt-1 border border-gray-300 rounded max-h-40 overflow-auto">
-                {walletList.map((wid) => (
-                  <div
-                    key={wid}
-                    className={`px-3 py-2 text-sm cursor-pointer hover:bg-gray-50 flex items-center justify-between ${wid === currentWalletId ? "bg-blue-50" : ""}`}
-                    onClick={() => handleSwitchWallet(wid)}
-                  >
-                    <span className="font-mono">{wid}</span>
-                    {wid === currentWalletId && <Badge variant="success">Current</Badge>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="border-t pt-3">
             <Input
-              label="Or enter wallet ID"
-              value={newWalletId}
-              onChange={(e) => setNewWalletId(e.target.value)}
-              placeholder="e.g. my-wallet"
+              label="Destination Address"
+              value={sendAddress}
+              onChange={(e) => setSendAddress(e.target.value)}
+              placeholder={profile.network === "mainnet" ? "hs1q…" : "rs1q… / ts1q…"}
             />
-            <div className="flex gap-2 justify-end mt-2">
+            <Input
+              label="Amount (HNS)"
+              value={sendAmount}
+              onChange={(e) => setSendAmount(e.target.value)}
+              placeholder="1.0"
+              type="number"
+              step="0.000001"
+            />
+            <div className="flex gap-2 justify-end">
+              <Button variant="ghost" onClick={resetSend}>Cancel</Button>
               <Button
-                size="sm"
-                onClick={() => handleSwitchWallet(newWalletId)}
-                disabled={!newWalletId.trim() || newWalletId === currentWalletId}
+                variant="primary"
+                onClick={handleBuildDraft}
+                disabled={!sendAddress.trim() || !sendAmount.trim() || buildDraft.isPending}
               >
-                Switch
+                {buildDraft.isPending ? "Building…" : "Review"}
               </Button>
             </div>
-          </div>
-
-          <div className="border-t pt-3 flex justify-between">
-            <Button variant="ghost" size="sm" onClick={handleDisconnect}>
-              Disconnect
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setSwitchDialogOpen(false)}>
-              Cancel
-            </Button>
-          </div>
-        </div>
-      </Dialog>
-
-      {/* Create Wallet Dialog */}
-      <Dialog open={createOpen} onClose={() => { setCreateOpen(false); setCreatedMnemonic(""); }} title="Create Wallet">
-        {createdMnemonic ? (
-          <div className="space-y-3">
-            <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-800">
-              Write down these 24 words. This is the ONLY way to recover your wallet.
-            </div>
-            <div className="bg-gray-50 rounded p-4 font-mono text-sm break-all">{createdMnemonic}</div>
-            <div className="flex items-center gap-2">
-              <input type="checkbox" id="confirmed-save" checked={confirmedSaved} onChange={(e) => setConfirmedSaved(e.target.checked)} />
-              <label htmlFor="confirmed-save" className="text-sm">I have saved my seed phrase</label>
-            </div>
-            <Button variant="primary" className="w-full" disabled={!confirmedSaved} onClick={handleConfirmCreated}>Done</Button>
           </div>
         ) : (
           <div className="space-y-3">
-            <Input label="Wallet Name" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder={getUniqueName("wallet")} />
-            <Input label="Passphrase (optional)" type="password" value={newPassphrase} onChange={(e) => setNewPassphrase(e.target.value)} placeholder="Optional passphrase" />
+            <div className="bg-gray-50 rounded p-3 text-sm space-y-1">
+              <div className="flex justify-between">
+                <span>Amount</span>
+                <span className="font-mono">{formatHns(draft.summary?.sendTotalDoos ?? 0)} HNS</span>
+              </div>
+              <div className="flex justify-between text-gray-500">
+                <span>Fee</span>
+                <span className="font-mono">{formatHns(draft.summary?.feeDoos ?? 0)} HNS</span>
+              </div>
+              <div className="flex justify-between text-gray-500">
+                <span>Change</span>
+                <span className="font-mono">{formatHns(draft.summary?.changeDoos ?? 0)} HNS</span>
+              </div>
+              <div className="flex justify-between text-gray-500">
+                <span>Inputs</span>
+                <span className="font-mono">{draft.summary?.numInputs ?? 0}</span>
+              </div>
+              {/* Show the FULL recipient address — never truncate it, so the
+                  user always verifies exactly where funds are going. */}
+              <div className="pt-1 border-t border-gray-200 mt-1">
+                <div className="text-gray-500 mb-0.5">To</div>
+                <div className="font-mono text-xs break-all" data-testid="send-recipient">
+                  {draft.summary?.recipientAddress}
+                </div>
+              </div>
+            </div>
+            {sendError && (
+              <div
+                className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800"
+                role="alert"
+                data-testid="send-error"
+              >
+                <span className="font-semibold">Not sent.</span> {sendError} Your coins
+                were not moved. You can adjust and try again.
+              </div>
+            )}
+            {!unlocked && !sendError && (
+              <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800">
+                You'll be asked for your passphrase in a secure window to sign.
+              </div>
+            )}
             <div className="flex gap-2 justify-end">
-              <Button variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
-              <Button variant="primary" onClick={handleCreate} disabled={creating}>
-                {creating ? "Creating..." : "Create"}
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setDraft(null);
+                  setSendError(null);
+                }}
+                disabled={submitting}
+              >
+                Back
+              </Button>
+              <Button variant="danger" onClick={handleConfirmSend} disabled={submitting}>
+                {submitting ? "Sending…" : sendError ? "Retry Sign & Broadcast" : "Sign & Broadcast"}
               </Button>
             </div>
           </div>
         )}
       </Dialog>
-
-      {/* Import Wallet Dialog */}
-      <Dialog open={importOpen} onClose={() => setImportOpen(false)} title="Import Wallet">
-        <div className="space-y-3">
-          <Input label="Wallet Name" value={importName} onChange={(e) => setImportName(e.target.value)} placeholder={getUniqueName("wallet")} />
-          <Input label="Passphrase (optional)" type="password" value={importPassphrase} onChange={(e) => setImportPassphrase(e.target.value)} placeholder="Leave empty if original wallet had no passphrase" />
-          <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
-            The passphrase affects address derivation. If your original wallet had no passphrase, leave this empty.
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-sm font-medium text-gray-700">Seed Phrase (24 words)</label>
-            <textarea
-              className="border border-gray-300 rounded px-3 py-2 text-sm h-24 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-              value={importMnemonic}
-              onChange={(e) => setImportMnemonic(e.target.value)}
-              placeholder="word1 word2 word3 ... word24"
-            />
-          </div>
-          <div className="flex gap-2 justify-end">
-            <Button variant="ghost" onClick={() => setImportOpen(false)}>Cancel</Button>
-            <Button variant="primary" onClick={handleImport} disabled={!importMnemonic.trim() || importing}>
-              {importing ? "Importing..." : "Import"}
-            </Button>
-          </div>
-        </div>
-      </Dialog>
-
-      <WriteSetupWizard open={writeSetupOpen} onClose={() => setWriteSetupOpen(false)} />
     </div>
   );
 }

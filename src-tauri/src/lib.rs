@@ -10,9 +10,11 @@ mod wallet_delete;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
 
+use crate::commands::secure_prompt::PendingPrompt;
 use crate::noncustodial::session::SignerSession;
 
 pub struct AppState {
@@ -23,6 +25,12 @@ pub struct AppState {
     /// The sole on-disk form of the secret is the encrypted vault blob. The
     /// session locks (and zeroizes) on lock/expiry/drop.
     pub signer: Mutex<Option<SignerSession>>,
+    /// In-flight secure prompts, keyed by prompt id. Holds secret request
+    /// material (e.g. a mnemonic to reveal) in memory only, until answered.
+    pub secure_prompts: Mutex<HashMap<String, PendingPrompt>>,
+    /// Handle to the hsd node the app started this session, if any. Used to
+    /// report running state and to stop the node. Not persisted across restarts.
+    pub hsd_child: Mutex<Option<std::process::Child>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -42,6 +50,8 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(conn),
                 signer: Mutex::new(None),
+                secure_prompts: Mutex::new(HashMap::new()),
+                hsd_child: Mutex::new(None),
             });
             Ok(())
         })
@@ -60,32 +70,6 @@ pub fn run() {
             commands::batches::delete_batch,
             commands::batches::add_to_batch,
             commands::batches::remove_from_batch,
-            commands::wallet::check_connection,
-            commands::wallet::get_wallet_info,
-            commands::wallet::get_balance,
-            commands::wallet::get_address,
-            commands::wallet::get_names,
-            commands::wallet::get_name_info,
-            commands::wallet::get_resource,
-            commands::wallet::get_transactions,
-            commands::wallet::list_wallets,
-            commands::wallet::create_wallet,
-            commands::wallet::delete_wallet,
-            commands::wallet::get_mnemonic,
-            commands::wallet::send_hns,
-            commands::wallet::transfer_name,
-            commands::wallet::cancel_transfer,
-            commands::wallet::get_pending_transactions,
-            commands::wallet::get_transaction,
-            commands::wallet::get_coins,
-            commands::wallet::lock_wallet,
-            commands::wallet::unlock_wallet,
-            commands::wallet::change_passphrase,
-            commands::wallet::get_account,
-            commands::wallet::validate_address,
-            commands::wallet::estimate_fee,
-            commands::sync::sync_names,
-            commands::sync::get_sync_report,
             commands::settings::get_settings,
             commands::settings::update_setting,
             commands::settings::get_audit_log,
@@ -103,17 +87,46 @@ pub fn run() {
             commands::namebase::namebase_transfer_domain,
             commands::namebase::namebase_withdraw_hns,
             commands::namebase::fetch_namebase_domain_withdrawals,
-            commands::node::get_node_status,
-            commands::node::stop_hsd,
+            commands::node::node_status,
             commands::node::start_hsd,
-            commands::node::get_hsd_log,
-            commands::read::get_read_context,
+            commands::node::stop_hsd,
             commands::read::read_balance,
             commands::read::read_names,
+            commands::read::discover_owned_names,
             commands::read::read_name_info,
             commands::read::read_transactions,
-            commands::read::get_wallet_read_model,
             commands::read::compare_inventory_with_provider,
+            commands::secure_prompt::secure_prompt_fetch,
+            commands::secure_prompt::secure_prompt_submit,
+            commands::secure_wallet::secure_create_wallet,
+            commands::secure_wallet::secure_import_wallet,
+            commands::secure_wallet::secure_reveal_backup_phrase,
+            commands::secure_wallet::unlock_local_signer,
+            commands::secure_wallet::lock_local_signer,
+            commands::secure_wallet::get_signer_session,
+            commands::secure_wallet::list_wallet_profiles,
+            commands::secure_wallet::set_active_wallet_profile,
+            commands::secure_wallet::delete_wallet_profile,
+            commands::tx::sync_wallet_state,
+            commands::tx::sync_tracked_names,
+            commands::tx::build_send_hns_draft,
+            commands::tx::estimate_tx_draft_fee,
+            commands::tx::sign_tx_draft,
+            commands::tx::broadcast_tx_draft,
+            commands::tx::list_tx_drafts,
+            commands::tx::get_write_capability,
+            commands::tx::get_wallet_balances,
+            commands::names::build_open_draft,
+            commands::names::build_bid_draft,
+            commands::names::build_reveal_draft,
+            commands::names::build_redeem_draft,
+            commands::names::build_register_draft,
+            commands::names::build_update_draft,
+            commands::names::build_renew_draft,
+            commands::names::build_transfer_draft,
+            commands::names::build_finalize_draft,
+            commands::names::build_cancel_draft,
+            commands::names::build_revoke_draft,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

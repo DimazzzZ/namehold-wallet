@@ -78,3 +78,60 @@ impl Default for Network {
         Network::Main
     }
 }
+
+/// Name-auction consensus parameters (hsd `networks.js` `names`). Block counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NameParams {
+    pub tree_interval: u32,
+    pub bidding_period: u32,
+    pub reveal_period: u32,
+    pub renewal_window: u32,
+    pub transfer_lockup: u32,
+    pub revocation_delay: u32,
+    /// hsd `renewalMaturity`. `getRenewalBlock` uses `height - 2*renewal_maturity`.
+    pub renewal_maturity: u32,
+}
+
+impl Network {
+    /// Per-network name params. Mainnet/testnet `blocksPerDay` = 144.
+    pub fn name_params(self) -> NameParams {
+        match self {
+            Network::Main => NameParams {
+                tree_interval: 36,
+                bidding_period: 720,
+                reveal_period: 1440,
+                renewal_window: 105_120,
+                transfer_lockup: 288,
+                revocation_delay: 2016,
+                renewal_maturity: 4320,
+            },
+            Network::Testnet => NameParams {
+                tree_interval: 36,
+                bidding_period: 144,
+                reveal_period: 288,
+                renewal_window: 4320,
+                transfer_lockup: 288,
+                revocation_delay: 576,
+                renewal_maturity: 144,
+            },
+            Network::Regtest => NameParams {
+                tree_interval: 5,
+                bidding_period: 5,
+                reveal_period: 10,
+                renewal_window: 5000,
+                transfer_lockup: 10,
+                revocation_delay: 50,
+                renewal_maturity: 50,
+            },
+            Network::Simnet => NameParams {
+                tree_interval: 2,
+                bidding_period: 25,
+                reveal_period: 50,
+                renewal_window: 2500,
+                transfer_lockup: 5,
+                revocation_delay: 25,
+                renewal_maturity: 25,
+            },
+        }
+    }
+}

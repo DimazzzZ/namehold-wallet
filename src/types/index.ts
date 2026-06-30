@@ -66,6 +66,8 @@ export interface HsdName {
     blocks_until_expire: number | null;
     days_until_expire: number | null;
   } | null;
+  /** Non-zero block height while the name is mid-transfer (0/null otherwise). */
+  transfer?: number | null;
 }
 
 export interface WalletConnection {
@@ -123,29 +125,23 @@ export interface WalletSnapshot {
   name_count: number;
 }
 
+/**
+ * The single non-custodial settings model. Reads come from the explorer
+ * (`explorer_api_url`); sending uses one hsd node (`node_rpc_url`). Keys are
+ * local; there is no legacy hsd-wallet / connection-mode config.
+ */
 export interface Settings {
-  hsd_wallet_api_url: string;
-  hsd_node_api_url: string;
-  hsd_api_key: string;
-  hsd_wallet_id: string;
-  hsd_network: string;
+  /** hsd node RPC used for sync + broadcast (sending). */
+  node_rpc_url: string;
+  node_rpc_api_key: string;
+  /** hsd data directory ("prefix") used when the app starts hsd. Empty = ~/.hsd. */
   hsd_prefix: string;
-  write_mode: string;
-  connection_mode:
-    | "local_managed_hsd"
-    | "remote_hsd"
-    | "auto_fallback"
-    | "external_read_only";
-  external_read_provider: "none" | "hnsfans";
-  external_read_api_url: string;
-  /** JSON stringified string[] of watch addresses. */
-  external_read_watch_addresses: string;
-  /** JSON stringified string[] of watch names. */
-  external_read_watch_names: string;
-  remote_hsd_label: string;
-  /** "true" | "false" */
-  trusted_remote_hsd: string;
-  future_signer_mode: "none" | "local_signer_planned";
+  /** HNSFans explorer used for node-free reads (balance + names). */
+  explorer_api_url: string;
+  /** Integer string, default "20". */
+  address_gap_limit: string;
+  /** Integer string seconds, default "900". */
+  signer_session_timeout_seconds: string;
   /** "true" | "false" — reveals advanced nav items and settings sections. */
   advanced_mode: string;
   /** "true" | "false" — marks first-run onboarding as complete. */
@@ -153,62 +149,91 @@ export interface Settings {
 }
 
 // ---------------------------------------------------------------------------
-// Provider / connection-mode capability types
+// Non-custodial wallet types (secret-free; mirror src-tauri noncustodial::types)
 // ---------------------------------------------------------------------------
 
-export type ConnectionMode = Settings["connection_mode"];
-export type ReadProviderKind = "local_hsd" | "remote_hsd" | "external_hnsfans";
-export type WriteProviderKind = "local_hsd" | "remote_hsd" | "none";
+export type WalletNetwork = "mainnet" | "testnet" | "regtest";
+export type WalletProfileKind = "mnemonic_hot" | "xpriv_hot" | "watch_only_xpub";
 
-export interface ProviderStatus {
-  kind: ReadProviderKind;
+export interface WalletProfileSummary {
+  id: string;
   label: string;
-  healthy: boolean;
-  writeCapable: boolean;
-  /** Whether NodeControl may start/stop the backend. */
-  manageable: boolean;
-  /** Fallback or failure explanation. */
-  reason?: string;
-  providerUrl?: string | null;
-  network?: string | null;
-  chainHeight?: number | null;
-  verificationProgress?: number | null;
-  syncing?: boolean;
+  kind: WalletProfileKind;
+  network: WalletNetwork;
+  accountXpub: string;
+  accountIndex: number;
+  receiveDepth: number;
+  changeDepth: number;
+  receiveAddress: string | null;
+  lastSyncedHeight: number | null;
+  lastSyncedAt: string | null;
+  watchOnly: boolean;
+  /** False when the wallet was created without a passphrase (kdf='none'); the
+   *  signer then unlocks in one click with no passphrase prompt. */
+  hasPassphrase: boolean;
+  active: boolean;
 }
 
-export interface ReadContext {
-  connectionMode: ConnectionMode;
-  activeReadProvider: ProviderStatus;
-  fallbackActive: boolean;
-  localNodeHealthy: boolean;
-  walletAvailable: boolean;
-  writeAllowed: boolean;
-  writeReason?: string | null;
+export interface SignerSessionSummary {
+  walletProfileId: string | null;
+  unlocked: boolean;
+  unlockedUntilEpochMs: number;
 }
+
+export interface TxSummary {
+  action: string;
+  sendTotalDoos: number;
+  feeDoos: number;
+  changeDoos: number;
+  inputTotalDoos: number;
+  numInputs: number;
+  recipientAddress: string | null;
+  txid: string | null;
+  warnings: string[];
+}
+
+export interface TxDraftSummary {
+  id: string;
+  walletProfileId: string;
+  action: string;
+  status: "draft" | "signed" | "broadcast_pending" | "broadcasted" | "failed";
+  summary: TxSummary | null;
+  errorMessage: string | null;
+  txid: string | null;
+  createdAt: string;
+}
+
+export interface BroadcastResult {
+  draftId: string;
+  txid: string;
+  status: string;
+}
+
+export interface WriteCapability {
+  signerUnlocked: boolean;
+  broadcasterAvailable: boolean;
+  canWrite: boolean;
+  reason: string | null;
+}
+
+export interface WalletBalances {
+  liquidDoos: number;
+  nameControlDoos: number;
+  nameLockupDoos: number;
+  totalDoos: number;
+}
+
+// ---------------------------------------------------------------------------
+// Read model (explorer-backed, node-free)
+// ---------------------------------------------------------------------------
 
 export interface WalletReadModel {
-  context: ReadContext;
   address: string | null;
   watchAddresses: string[];
   balance: HsdBalance | null;
   names: HsdName[];
   transactions: WalletTransactionRow[];
   lastUpdatedAt?: string | null;
-  readOnlyReason?: string | null;
-}
-
-export interface ExternalNameSummary {
-  name: string;
-  state: string | null;
-  ownerAddress?: string | null;
-  expiresAtHeight?: number | null;
-  daysUntilExpire?: number | null;
-  source: "external_hnsfans";
-}
-
-export interface ExternalTransactionRow extends WalletTransactionRow {
-  source: "external_hnsfans";
-  matchedAddress?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,16 +241,14 @@ export interface ExternalTransactionRow extends WalletTransactionRow {
 // ---------------------------------------------------------------------------
 
 export type AppRouteKey =
-  | "overview"
   | "portfolio"
   | "migration"
   | "wallet"
-  | "node"
   | "settings";
 
 export type PortfolioSectionKey = "inventory" | "batches" | "renewals" | "dns";
 
-export type MigrationSectionKey = "namebase" | "sync";
+export type MigrationSectionKey = "namebase" | "transfers" | "sync";
 
 export type StatusTone = "default" | "info" | "success" | "warning" | "error";
 
@@ -267,21 +290,3 @@ export interface WalletTransactionRow {
   tone: StatusTone;
 }
 
-export interface OverviewMetric {
-  key: string;
-  label: string;
-  value: string | number;
-  hint?: string;
-  tone?: StatusTone;
-}
-
-export interface OverviewData {
-  metrics: OverviewMetric[];
-  statusCounts: Record<string, number>;
-  recentAudit: AuditEntry[];
-  namebaseConnected: boolean;
-  namebaseHnsBalance?: number;
-  readContext?: ReadContext | null;
-  walletSummary?: WalletReadModel | null;
-  providerWarnings?: string[];
-}

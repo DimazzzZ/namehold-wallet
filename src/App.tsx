@@ -2,15 +2,13 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Layout } from "./components/Layout";
-import { Overview } from "./components/Overview";
 import { PortfolioWorkspace } from "./components/PortfolioWorkspace";
 import { MigrationWorkspace } from "./components/MigrationWorkspace";
 import { WalletView } from "./components/WalletView";
-import { NodeControl } from "./components/NodeControl";
 import { Settings } from "./components/Settings";
 import { Onboarding } from "./components/Onboarding";
 import { useSettingsStore } from "./stores/settings";
-import { useWalletList } from "./queries/wallet";
+import { useWalletProfiles } from "./queries/wallet";
 import "./app.css";
 
 const queryClient = new QueryClient({
@@ -24,21 +22,14 @@ const queryClient = new QueryClient({
 
 function AppRoutes() {
   const settings = useSettingsStore((s) => s.settings);
-  const { data: walletList } = useWalletList();
-  const currentWalletId = settings?.hsd_wallet_id || "";
+  const { data: profiles } = useWalletProfiles();
 
-  const hasWallets = walletList && walletList.length > 0;
-  const hasSelectedWallet = currentWalletId.trim().length > 0;
-
-  // Onboarding is shown until the user has completed first-run setup. Once a
-  // wallet is selected/available, or the user explicitly finished onboarding,
-  // we drop them straight into the wallet.
+  // Onboarding shows until a non-custodial wallet profile exists (or the user
+  // explicitly finished onboarding).
+  const hasProfile = (profiles?.length ?? 0) > 0;
   const onboardingComplete = settings?.onboarding_complete === "true";
-  const connectionMode = settings?.connection_mode;
-  const usesExternalSource =
-    connectionMode === "remote_hsd" || connectionMode === "external_read_only";
 
-  if (!onboardingComplete && !hasSelectedWallet && !hasWallets && !usesExternalSource) {
+  if (!onboardingComplete && !hasProfile) {
     return <Onboarding />;
   }
 
@@ -49,8 +40,6 @@ function AppRoutes() {
         <Route path="/" element={<WalletView />} />
         <Route path="/migration" element={<MigrationWorkspace />} />
         <Route path="/portfolio" element={<PortfolioWorkspace />} />
-        <Route path="/node" element={<NodeControl />} />
-        <Route path="/overview" element={<Overview />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

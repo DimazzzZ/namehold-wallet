@@ -3,7 +3,6 @@ import { render } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { Settings } from "../Settings";
-import { NodeControl } from "../NodeControl";
 import { SyncVerification } from "../SyncVerification";
 import { Renewals } from "../Renewals";
 import { DnsRecords } from "../DnsRecords";
@@ -25,11 +24,6 @@ function renderWithProviders(ui: React.ReactElement) {
 describe("Page Components - Smoke Tests", () => {
   it("Settings renders", () => {
     const { container } = renderWithProviders(<Settings />);
-    expect(container).toBeTruthy();
-  });
-
-  it("NodeControl renders", () => {
-    const { container } = renderWithProviders(<NodeControl />);
     expect(container).toBeTruthy();
   });
 

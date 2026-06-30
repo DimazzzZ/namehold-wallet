@@ -1,17 +1,21 @@
-//! Future signing abstraction (placeholder).
+//! Signing abstraction + non-custodial write-capability gate.
 //!
-//! Today, all writes are performed by a trusted `hsd` backend which holds the
-//! keys and signs transactions internally. The `future_signer_mode` setting
-//! (`none` | `local_signer_planned`) anticipates a future where Namehold owns
-//! key material and signs transactions locally, sending only fully-signed
-//! transactions to a (potentially untrusted) node for broadcast.
+//! Namehold is non-custodial: it owns key material and signs transactions
+//! locally, sending only fully-signed transactions to a node for broadcast.
+//! Write capability therefore depends on TWO things being true at once:
+//!   1. the local signer session is unlocked (keys in memory), and
+//!   2. a broadcaster is available (a node RPC source that can `sendrawtransaction`).
 //!
-//! This module intentionally ships only the trait + types so the rest of the
-//! codebase can reference a stable shape. No real signing is implemented yet;
-//! the placeholder implementation returns `AppError::Other` to make accidental
-//! use loud and obvious.
+//! [`WriteCapability`] captures that gate for the frontend. The actual
+//! covenant-aware signing of a Handshake transaction lives in
+//! `noncustodial::{send, tx}` — that path needs per-input prevout values and
+//! BIP44 derivation paths, which the byte-opaque [`SignerBackend`] trait cannot
+//! carry. The trait is retained as a stable seam for future hardware/multisig
+//! backends; [`LocalHotSigner`] reports availability through it.
 
 use crate::error::AppError;
+use crate::noncustodial::rpc::ChainSource;
+use serde::Serialize;
 
 /// Which signing strategy is active. Mirrors the `future_signer_mode` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,9 +71,8 @@ pub trait SignerBackend: Send + Sync {
     fn sign(&self, request: &SignRequest) -> Result<SignedTx, AppError>;
 }
 
-/// Placeholder signer used while `local_signer_planned` is selected but no real
-/// implementation exists. It is never available and always errors on `sign`,
-/// guaranteeing that no half-built signing path can be exercised by mistake.
+/// Placeholder signer for explicitly-unsupported modes (e.g. a future hardware
+/// backend that isn't wired yet). Never available; always errors on `sign`.
 pub struct PlaceholderSigner;
 
 impl SignerBackend for PlaceholderSigner {
@@ -79,9 +82,84 @@ impl SignerBackend for PlaceholderSigner {
 
     fn sign(&self, _request: &SignRequest) -> Result<SignedTx, AppError> {
         Err(AppError::Other(
-            "Local signing is not implemented yet. Writes currently require a trusted hsd."
+            "This signer backend is not available.".to_string(),
+        ))
+    }
+}
+
+/// The local hot signer. Availability mirrors whether the in-memory signer
+/// session is unlocked. Byte-level `sign` is intentionally unsupported: the
+/// covenant-aware signing path is `noncustodial::send`/`tx`, which has the
+/// prevout + derivation context this trait lacks.
+pub struct LocalHotSigner {
+    available: bool,
+}
+
+impl LocalHotSigner {
+    pub fn new(available: bool) -> Self {
+        Self { available }
+    }
+}
+
+impl SignerBackend for LocalHotSigner {
+    fn is_available(&self) -> bool {
+        self.available
+    }
+
+    fn sign(&self, _request: &SignRequest) -> Result<SignedTx, AppError> {
+        Err(AppError::Other(
+            "Local signing of Handshake transactions is performed via the draft \
+             sign flow (build → sign → broadcast), not raw byte signing."
                 .to_string(),
         ))
+    }
+}
+
+/// Non-custodial write capability: writes require BOTH an unlocked signer AND a
+/// broadcaster that can `sendrawtransaction`. Serialized to the frontend so the
+/// UI can enable/disable spend actions with an accurate reason.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteCapability {
+    pub signer_unlocked: bool,
+    pub broadcaster_available: bool,
+    pub can_write: bool,
+    pub reason: Option<String>,
+}
+
+impl WriteCapability {
+    /// Evaluate the gate from the unlocked-signer flag and the chain source.
+    /// `allow_remote` mirrors the `allow_remote_broadcast` setting and only
+    /// matters for a remote node source.
+    pub fn evaluate(signer_unlocked: bool, source: ChainSource, allow_remote: bool) -> Self {
+        let broadcaster_available = match source {
+            ChainSource::LocalNode => true,
+            ChainSource::RemoteNode => allow_remote,
+            ChainSource::Explorer => false,
+        };
+        let reason = if !signer_unlocked && !broadcaster_available {
+            Some("Unlock your wallet and configure a node that can broadcast.".to_string())
+        } else if !signer_unlocked {
+            Some("Unlock your wallet to sign transactions.".to_string())
+        } else if !broadcaster_available {
+            Some(match source {
+                ChainSource::Explorer => {
+                    "The configured chain source is read-only and cannot broadcast.".to_string()
+                }
+                ChainSource::RemoteNode => {
+                    "Remote broadcast is disabled (enable allow_remote_broadcast).".to_string()
+                }
+                ChainSource::LocalNode => unreachable!(),
+            })
+        } else {
+            None
+        };
+        Self {
+            signer_unlocked,
+            broadcaster_available,
+            can_write: signer_unlocked && broadcaster_available,
+            reason,
+        }
     }
 }
 
@@ -114,5 +192,41 @@ mod tests {
             summary: None,
         };
         assert!(signer.sign(&req).is_err());
+    }
+
+    #[test]
+    fn local_hot_signer_reflects_availability() {
+        assert!(LocalHotSigner::new(true).is_available());
+        assert!(!LocalHotSigner::new(false).is_available());
+        // Byte-level signing is intentionally unsupported (use the draft flow).
+        assert!(LocalHotSigner::new(true)
+            .sign(&SignRequest {
+                unsigned_tx: vec![],
+                summary: None
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn write_capability_requires_unlock_and_broadcaster() {
+        // Locked + local node: no write, reason mentions unlocking.
+        let c = WriteCapability::evaluate(false, ChainSource::LocalNode, false);
+        assert!(!c.can_write);
+        assert!(c.broadcaster_available);
+        assert!(c.reason.unwrap().to_lowercase().contains("unlock"));
+
+        // Unlocked + local node: can write.
+        let c = WriteCapability::evaluate(true, ChainSource::LocalNode, false);
+        assert!(c.can_write);
+        assert!(c.reason.is_none());
+
+        // Unlocked + explorer: read-only source blocks broadcast.
+        let c = WriteCapability::evaluate(true, ChainSource::Explorer, false);
+        assert!(!c.can_write);
+        assert!(!c.broadcaster_available);
+
+        // Unlocked + remote node, opt-in off vs on.
+        assert!(!WriteCapability::evaluate(true, ChainSource::RemoteNode, false).can_write);
+        assert!(WriteCapability::evaluate(true, ChainSource::RemoteNode, true).can_write);
     }
 }

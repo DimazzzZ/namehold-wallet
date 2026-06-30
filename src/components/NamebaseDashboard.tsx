@@ -1,14 +1,18 @@
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
 import { useUiStore } from "../stores/ui";
-import { useWalletAddress } from "../queries/wallet";
+import { useActiveProfile } from "../queries/wallet";
+import {
+  useNamebaseDomainWithdrawals,
+  useWithdrawHns,
+  namebaseStatus,
+} from "../queries/namebase";
 import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
 import { Badge } from "./ui/Badge";
 import { Dialog } from "./ui/Dialog";
 import { mapError } from "../lib/errors";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 interface NamebaseDomain {
   name: string;
@@ -23,18 +27,35 @@ interface NamebaseAccount {
   pendingHns: number;
   has2fa: boolean;
   withdrawalFeeHns: number;
+  minimums?: { hns?: number; btc?: number };
 }
 
 export function NamebaseDashboard() {
   const qc = useQueryClient();
   const showToast = useUiStore((s) => s.showToast);
-  const { data: walletAddress } = useWalletAddress();
+  const { data: activeProfile } = useActiveProfile();
+  const walletAddress = activeProfile?.receiveAddress ?? null;
+  const { data: domainTransfers = [] } = useNamebaseDomainWithdrawals();
+  // Latest Namebase transfer status per domain, so the list mirrors Namebase.
+  const transferByDomain = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of domainTransfers) {
+      if (t.domain && !m.has(t.domain)) m.set(t.domain, t.status);
+    }
+    return m;
+  }, [domainTransfers]);
   const [cookie, setCookie] = useState("");
   const [importing, setImporting] = useState(false);
   const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
   const [transferTarget, setTransferTarget] = useState<NamebaseDomain | null>(null);
   const [bulkTransferOpen, setBulkTransferOpen] = useState(false);
   const [transferPending, setTransferPending] = useState(false);
+  // Editable destination for transfers/withdrawals — defaults to the user's
+  // wallet (set when a modal opens) but can be changed to a third-party address.
+  const [destInput, setDestInput] = useState("");
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState("");
+  const withdrawHns = useWithdrawHns();
 
   const { data: nbStatus, isLoading: statusLoading } = useQuery({
     queryKey: ["namebase", "status"],
@@ -113,7 +134,33 @@ export function NamebaseDashboard() {
   };
 
   const receiveAddress = walletAddress || null;
-  const destAddress = receiveAddress || "Connect wallet to get address";
+
+  // When a transfer/withdraw modal opens, default the destination to the wallet.
+  useEffect(() => {
+    if (transferTarget || bulkTransferOpen || withdrawOpen) {
+      setDestInput(receiveAddress ?? "");
+    }
+    if (withdrawOpen) setWithdrawAmount("");
+  }, [transferTarget, bulkTransferOpen, withdrawOpen, receiveAddress]);
+
+  const dest = destInput.trim();
+  const isThirdParty = dest.length > 0 && dest !== receiveAddress;
+
+  // HNS withdrawal amounts are denominated in HNS (Namebase's create endpoint,
+  // balance, fee, and minimum are all HNS — NOT dollarydoos). The user enters the
+  // NET amount the recipient receives; Namebase's `amount` is the GROSS (debited
+  // from balance) with the fee deducted, so we send `net + fee`.
+  const availableHns = account?.balance?.hns ?? 0;
+  const feeHns = account?.withdrawalFeeHns ?? 0;
+  const minHns = account?.minimums?.hns ?? 0;
+  const amountNet = parseFloat(withdrawAmount);
+  const grossHns = Number.isFinite(amountNet) ? Number((amountNet + feeHns).toFixed(6)) : 0;
+  const overBalance = Number.isFinite(amountNet) && amountNet > 0 && grossHns > availableHns;
+  const amountValid =
+    Number.isFinite(amountNet) &&
+    amountNet > 0 &&
+    grossHns <= availableHns &&
+    grossHns >= minHns;
 
   return (
     <div className="space-y-6">
@@ -159,7 +206,11 @@ export function NamebaseDashboard() {
         </div>
       ) : (
         <>
-          {/* Account Balance */}
+          {/* Account Balance (custodial — held by Namebase, not the on-chain wallet) */}
+          <div className="text-xs text-gray-400 mb-1">
+            Custodial balance held by Namebase — separate from your on-chain wallet
+            (the HNSFans/explorer balance).
+          </div>
           <div className="grid grid-cols-3 gap-4">
             <div className="bg-white rounded p-4 border border-gray-200">
               <div className="text-sm text-gray-500">HNS Balance</div>
@@ -173,12 +224,33 @@ export function NamebaseDashboard() {
                 {account?.balance?.btc || "—"}
               </div>
             </div>
-            <div className="bg-white rounded p-4 border border-gray-200">
+            <div
+              className="bg-white rounded p-4 border border-gray-200"
+              title="HNS in your Namebase custodial account that Namebase reports as pending/reserved and isn't part of your available balance. Separate from your on-chain wallet (the HNSFans/explorer balance)."
+            >
               <div className="text-sm text-gray-500">Pending HNS</div>
               <div className="text-2xl font-bold">
                 {account?.pendingHns || "0"}
+                <span className="text-base font-normal text-gray-400"> HNS</span>
               </div>
+              <div className="text-xs text-gray-400">Reserved on Namebase</div>
             </div>
+          </div>
+
+          <div>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setWithdrawOpen(true)}
+              disabled={availableHns <= feeHns}
+            >
+              Withdraw HNS
+            </Button>
+            {availableHns <= feeHns && (
+              <span className="ml-2 text-xs text-gray-400">
+                Not enough balance to withdraw.
+              </span>
+            )}
           </div>
 
           {/* Domain Summary */}
@@ -251,13 +323,24 @@ export function NamebaseDashboard() {
                           <td className="px-2 py-1">{d.auto_renew_active ? "Yes" : "No"}</td>
                           <td className="px-2 py-1 text-xs text-gray-400">{d.owned_since?.slice(0, 10)}</td>
                           <td className="px-2 py-1">
-                            <Button
-                              size="sm"
-                              variant="secondary"
-                              onClick={() => setTransferTarget(d)}
-                            >
-                              Transfer
-                            </Button>
+                            {transferByDomain.has(d.name) ? (
+                              (() => {
+                                // Show Namebase's own live status for the transfer.
+                                const status = transferByDomain.get(d.name)!;
+                                const { label, tone } = namebaseStatus(status);
+                                return (
+                                  <Badge variant={tone} title={status}>{label}</Badge>
+                                );
+                              })()
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => setTransferTarget(d)}
+                              >
+                                Transfer
+                              </Button>
+                            )}
                           </td>
                         </tr>
                       );
@@ -278,41 +361,48 @@ export function NamebaseDashboard() {
       >
         <div className="space-y-3">
           <p className="text-sm text-gray-600">
-            Transfer <strong>.{transferTarget?.name}</strong> from Namebase to your wallet.
+            Transfer <strong>.{transferTarget?.name}</strong> from Namebase to an HNS address.
           </p>
           <div>
-            <label className="text-sm font-medium text-gray-700">Destination address</label>
-            <div className="mt-1 flex items-center gap-2">
-              <code className="flex-1 text-sm bg-gray-50 p-2 rounded font-mono truncate">
-                {destAddress}
-              </code>
-              <Button
-                size="sm"
-                onClick={async () => {
-                  if (receiveAddress) {
-                    await writeText(receiveAddress);
-                    showToast("Address copied", "success");
-                  }
-                }}
-                disabled={!receiveAddress}
-              >
-                Copy
-              </Button>
+            <Input
+              label="Destination address"
+              value={destInput}
+              onChange={(e) => setDestInput(e.target.value)}
+              placeholder="hs1…"
+            />
+            <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
+              <span>Defaults to your wallet — change it to transfer to a third party.</span>
+              {receiveAddress && dest !== receiveAddress && (
+                <button
+                  type="button"
+                  className="text-blue-600 hover:underline"
+                  onClick={() => setDestInput(receiveAddress)}
+                >
+                  Use my wallet
+                </button>
+              )}
             </div>
           </div>
+          {isThirdParty && (
+            <div className="bg-amber-50 border border-amber-300 rounded p-2 text-xs text-amber-800">
+              Transferring to an address <strong>outside this wallet</strong>. Double-check
+              it — Namebase withdrawals are irreversible.
+            </div>
+          )}
           <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
-            This will initiate a transfer on Namebase. The domain will appear in your wallet after blockchain confirmation.
+            This will initiate a transfer on Namebase. The domain will appear at the
+            destination after blockchain confirmation.
           </div>
           <div className="flex gap-2 justify-end">
             <Button variant="ghost" onClick={() => setTransferTarget(null)}>Cancel</Button>
             <Button
               variant="primary"
-              disabled={!receiveAddress || transferPending}
+              disabled={!dest || transferPending}
               onClick={async () => {
-                if (!transferTarget || !receiveAddress) return;
+                if (!transferTarget || !dest) return;
                 setTransferPending(true);
                 try {
-                  await invoke("namebase_transfer_domain", { name: transferTarget.name, address: receiveAddress });
+                  await invoke("namebase_transfer_domain", { name: transferTarget.name, address: dest });
                   showToast(`Transfer initiated for .${transferTarget.name}`, "success");
                   setTransferTarget(null);
                   qc.invalidateQueries({ queryKey: ["namebase-withdrawals"] });
@@ -338,12 +428,34 @@ export function NamebaseDashboard() {
       >
         <div className="space-y-3">
           <p className="text-sm text-gray-600">
-            Transfer <strong>{selectedDomains.size}</strong> domains from Namebase to your wallet.
+            Transfer <strong>{selectedDomains.size}</strong> domains from Namebase to an HNS address.
           </p>
           <div>
-            <label className="text-sm font-medium text-gray-700">Destination address</label>
-            <div className="mt-1 font-mono text-sm bg-gray-50 p-2 rounded truncate">{destAddress}</div>
+            <Input
+              label="Destination address"
+              value={destInput}
+              onChange={(e) => setDestInput(e.target.value)}
+              placeholder="hs1…"
+            />
+            <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
+              <span>All selected domains go to this address. Defaults to your wallet.</span>
+              {receiveAddress && dest !== receiveAddress && (
+                <button
+                  type="button"
+                  className="text-blue-600 hover:underline"
+                  onClick={() => setDestInput(receiveAddress)}
+                >
+                  Use my wallet
+                </button>
+              )}
+            </div>
           </div>
+          {isThirdParty && (
+            <div className="bg-amber-50 border border-amber-300 rounded p-2 text-xs text-amber-800">
+              Transferring to an address <strong>outside this wallet</strong>. Double-check
+              it — Namebase withdrawals are irreversible.
+            </div>
+          )}
           <div className="text-sm text-gray-600">
             <p className="mb-2"><strong>Selected domains ({selectedDomains.size}):</strong></p>
             <div className="max-h-32 overflow-auto bg-gray-50 rounded p-2 text-xs font-mono">
@@ -351,21 +463,22 @@ export function NamebaseDashboard() {
             </div>
           </div>
           <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
-            Each domain transfer will be initiated on Namebase. Domains will appear in your wallet after blockchain confirmation.
+            Each domain transfer will be initiated on Namebase. Domains will appear at the
+            destination after blockchain confirmation.
           </div>
           <div className="flex gap-2 justify-end">
             <Button variant="ghost" onClick={() => setBulkTransferOpen(false)}>Cancel</Button>
             <Button
               variant="primary"
-              disabled={!receiveAddress || transferPending}
+              disabled={!dest || transferPending}
               onClick={async () => {
-                if (!receiveAddress) return;
+                if (!dest) return;
                 setTransferPending(true);
                 let successCount = 0;
                 let failCount = 0;
                 for (const name of selectedDomains) {
                   try {
-                    await invoke("namebase_transfer_domain", { name, address: receiveAddress });
+                    await invoke("namebase_transfer_domain", { name, address: dest });
                     successCount++;
                   } catch {
                     failCount++;
@@ -383,6 +496,114 @@ export function NamebaseDashboard() {
               }}
             >
               {transferPending ? "Transferring..." : `Transfer ${selectedDomains.size} Domains`}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Withdraw HNS Modal */}
+      <Dialog open={withdrawOpen} onClose={() => setWithdrawOpen(false)} title="Withdraw HNS">
+        <div className="space-y-3">
+          <p className="text-sm text-gray-600">
+            Withdraw HNS from your Namebase balance to an HNS address.
+          </p>
+          <div>
+            <Input
+              label="Amount to send (HNS)"
+              type="number"
+              step="0.000001"
+              value={withdrawAmount}
+              onChange={(e) => setWithdrawAmount(e.target.value)}
+              placeholder="0.0"
+            />
+            <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
+              <span>
+                The recipient receives this amount; the {feeHns} HNS network fee is added
+                on top. Available: {availableHns.toLocaleString()} HNS.
+              </span>
+              <button
+                type="button"
+                className="text-blue-600 hover:underline"
+                onClick={() =>
+                  setWithdrawAmount(String(Number(Math.max(availableHns - feeHns, 0).toFixed(6))))
+                }
+              >
+                Max
+              </button>
+            </div>
+          </div>
+
+          {/* Fee breakdown — make the fee explicit. */}
+          {Number.isFinite(amountNet) && amountNet > 0 && (
+            <div className="bg-gray-50 border border-gray-200 rounded p-3 text-sm space-y-1">
+              <div className="flex justify-between text-gray-600">
+                <span>Send to recipient</span>
+                <span className="font-mono">{amountNet} HNS</span>
+              </div>
+              <div className="flex justify-between text-gray-600">
+                <span>Network fee</span>
+                <span className="font-mono">+ {feeHns} HNS</span>
+              </div>
+              <div className="flex justify-between font-semibold text-gray-900 border-t border-gray-200 pt-1">
+                <span>Total debited</span>
+                <span className="font-mono">{grossHns} HNS</span>
+              </div>
+            </div>
+          )}
+          {overBalance && (
+            <div className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800">
+              Not enough balance — need {grossHns} HNS including the {feeHns} HNS fee
+              (available {availableHns.toLocaleString()} HNS).
+            </div>
+          )}
+          <div>
+            <Input
+              label="Destination address"
+              value={destInput}
+              onChange={(e) => setDestInput(e.target.value)}
+              placeholder="hs1…"
+            />
+            <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
+              <span>Defaults to your wallet — change it to withdraw to a third party.</span>
+              {receiveAddress && dest !== receiveAddress && (
+                <button
+                  type="button"
+                  className="text-blue-600 hover:underline"
+                  onClick={() => setDestInput(receiveAddress)}
+                >
+                  Use my wallet
+                </button>
+              )}
+            </div>
+          </div>
+          {isThirdParty && (
+            <div className="bg-amber-50 border border-amber-300 rounded p-2 text-xs text-amber-800">
+              Withdrawing to an address <strong>outside this wallet</strong>. Double-check
+              it — Namebase withdrawals are irreversible.
+            </div>
+          )}
+          <div className="flex gap-2 justify-end">
+            <Button variant="ghost" onClick={() => setWithdrawOpen(false)}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={!amountValid || !dest || withdrawHns.isPending}
+              onClick={async () => {
+                if (!amountValid || !dest) return;
+                try {
+                  // Namebase's `amount` is the GROSS (HNS) debited; recipient gets
+                  // gross − fee. The user entered the net, so send net + fee.
+                  await withdrawHns.mutateAsync({ address: dest, amount: String(grossHns) });
+                  showToast(
+                    `Withdrawal of ${amountNet} HNS requested (+${feeHns} HNS fee)`,
+                    "success",
+                  );
+                  setWithdrawOpen(false);
+                } catch (e) {
+                  showToast(mapError(e), "error");
+                }
+              }}
+            >
+              {withdrawHns.isPending ? "Requesting…" : "Withdraw"}
             </Button>
           </div>
         </div>

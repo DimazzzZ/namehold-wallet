@@ -1,226 +1,119 @@
 import { useState } from "react";
-import { useSyncNames, useSyncReport } from "../queries/sync";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
-import { useReadContext } from "../queries/read";
 import { Button } from "./ui/Button";
-import { formatDate, formatHns } from "../lib/utils";
+import { formatDate } from "../lib/utils";
 import { useUiStore } from "../stores/ui";
-import type { AuditEntry, WalletSnapshot } from "../types";
+import type { AuditEntry } from "../types";
 
+interface InventoryComparison {
+  providerKind: string;
+  providerLabel: string;
+  matched: string[];
+  missingAtProvider: string[];
+  extraAtProvider: string[];
+}
+
+/**
+ * Reconciles your local inventory (imported TLDs) against the names Namebase
+ * still lists for your account. One bulk call — fast and read-only; it does not
+ * change any statuses.
+ */
 export function SyncVerification() {
-  const syncNames = useSyncNames();
-  const syncReport = useSyncReport();
-  const { data: readContext } = useReadContext();
   const showToast = useUiStore((s) => s.showToast);
-  const [showReport, setShowReport] = useState(false);
-
-  // Sync compares the inventory against the wallet's owned names. This requires
-  // a provider that can enumerate owned names (a local managed or remote hsd
-  // wallet). External read-only providers cannot drive sync.
-  const walletAvailable = readContext?.walletAvailable ?? true;
-  const activeProvider = readContext?.activeReadProvider;
+  const [report, setReport] = useState<InventoryComparison | null>(null);
+  const [loading, setLoading] = useState(false);
 
   const { data: auditLog } = useQuery({
     queryKey: ["audit", "sync"],
     queryFn: () => invoke<AuditEntry[]>("get_audit_log", { limit: 10 }),
     staleTime: 30_000,
   });
-
-  const { data: snapshots } = useQuery({
-    queryKey: ["wallet", "snapshots"],
-    queryFn: () => invoke<WalletSnapshot[]>("get_wallet_snapshots", { limit: 10 }),
-    staleTime: 30_000,
-  });
-
   const syncEntries = auditLog?.filter((e) => e.action === "sync") ?? [];
 
-  const handleSync = async () => {
+  const handleCompare = async () => {
+    setLoading(true);
     try {
-      await syncNames.mutateAsync();
-      showToast("Sync complete", "success");
+      const r = await invoke<InventoryComparison>("compare_inventory_with_provider");
+      setReport(r);
     } catch (e) {
-      showToast(`Sync failed: ${e}`, "error");
+      showToast(`Compare failed: ${e}`, "error");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleReport = async () => {
-    try {
-      await syncReport.refetch();
-      setShowReport(true);
-    } catch (e) {
-      showToast(`Report failed: ${e}`, "error");
-    }
-  };
-
-  const result = syncNames.data;
-  const report = syncReport.data;
+  const Section = ({ title, names, tone }: { title: string; names: string[]; tone: string }) =>
+    names.length > 0 ? (
+      <div className="bg-white rounded p-4 border border-gray-200">
+        <h4 className={`text-sm font-semibold mb-2 ${tone}`}>
+          {title} ({names.length})
+        </h4>
+        <div className="max-h-40 overflow-auto">
+          {names.map((n) => (
+            <div key={n} className="text-sm font-mono py-0.5">.{n}</div>
+          ))}
+        </div>
+      </div>
+    ) : null;
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold">Sync & Verification</h2>
-        <div className="flex gap-2">
-          <Button
-            variant="secondary"
-            onClick={handleReport}
-            disabled={!walletAvailable || syncReport.isFetching}
-          >
-            {syncReport.isFetching ? "Loading..." : "Compare Names"}
-          </Button>
-          <Button
-            variant="primary"
-            onClick={handleSync}
-            disabled={!walletAvailable || syncNames.isPending}
-          >
-            {syncNames.isPending ? "Syncing..." : "Sync Now"}
-          </Button>
-        </div>
+        <h2 className="text-xl font-bold">Verify against Namebase</h2>
+        <Button variant="primary" onClick={handleCompare} disabled={loading}>
+          {loading ? "Comparing…" : "Compare inventory"}
+        </Button>
       </div>
-
-      {readContext && !walletAvailable && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-800">
-          <div>
-            Active data source: <strong>{activeProvider?.label ?? "—"}</strong>
-          </div>
-          <div className="mt-1 text-yellow-700">
-            Sync requires a wallet that can enumerate owned names (local managed
-            or remote hsd). The active provider is read-only, so syncing is
-            unavailable
-            {activeProvider?.reason ? `: ${activeProvider.reason}` : "."}
-          </div>
-        </div>
-      )}
 
       <div className="bg-white rounded p-4 border border-gray-200 text-sm text-gray-600">
-        <p>
-          <strong>Sync Now</strong> fetches names from your local hsd wallet, matches them against
-          your imported inventory, and marks matched names as <strong>finalized_owned</strong>.
-        </p>
-        <p className="mt-1">
-          <strong>Compare Names</strong> shows the diff without updating any statuses.
-        </p>
+        Reconciles your imported inventory against the domains Namebase still
+        lists for your account. Fast, read-only — no statuses are changed.
       </div>
 
-      {result && (
-        <div className="space-y-4">
-          <h3 className="text-sm font-semibold">Last Sync Result</h3>
-          <div className="grid grid-cols-4 gap-4">
-            <div className="bg-white rounded p-4 border border-gray-200">
-              <div className="text-sm text-gray-500">Matched</div>
-              <div className="text-2xl font-bold text-green-700">{result.matched}</div>
+      {report && (
+        <div className="space-y-4" data-testid="compare-report">
+          {/* Always-visible summary so a completed compare never looks blank. */}
+          <div className="bg-white rounded p-4 border border-gray-200 text-sm">
+            <div className="text-gray-500 mb-1">
+              Source: <strong>{report.providerLabel}</strong>
             </div>
-            <div className="bg-white rounded p-4 border border-gray-200">
-              <div className="text-sm text-gray-500">Wallet Names</div>
-              <div className="text-2xl font-bold">{result.wallet_count}</div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              <span className="text-green-700 font-medium">
+                Still at Namebase: {report.matched.length}
+              </span>
+              <span className="text-yellow-700 font-medium">
+                Left Namebase / elsewhere: {report.missingAtProvider.length}
+              </span>
+              <span className="text-blue-700 font-medium">
+                On Namebase only: {report.extraAtProvider.length}
+              </span>
             </div>
-            <div className="bg-white rounded p-4 border border-gray-200">
-              <div className="text-sm text-gray-500">Extra in Wallet</div>
-              <div className="text-2xl font-bold text-yellow-700">{result.extra_count}</div>
-            </div>
-            <div className="bg-white rounded p-4 border border-gray-200">
-              <div className="text-sm text-gray-500">Not in Wallet</div>
-              <div className="text-2xl font-bold text-orange-700">{result.missing_count}</div>
-            </div>
-          </div>
-
-          {result.extra_names.length > 0 && (
-            <div className="bg-white rounded p-4 border border-gray-200">
-              <h4 className="text-sm font-semibold mb-2">
-                Extra Wallet Names (not in inventory)
-              </h4>
-              <div className="max-h-40 overflow-auto">
-                {result.extra_names.map((name) => (
-                  <div key={name} className="text-sm font-mono py-0.5">
-                    .{name}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {result.missing_names && result.missing_names.length > 0 && (
-            <div className="bg-white rounded p-4 border border-gray-200">
-              <h4 className="text-sm font-semibold mb-2">
-                In Inventory, Not in Wallet ({result.missing_count})
-              </h4>
-              <div className="max-h-40 overflow-auto">
-                {result.missing_names.map((name) => (
-                  <div key={name} className="text-sm font-mono py-0.5">
-                    .{name}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {result.errors.length > 0 && (
-            <div className="bg-red-50 rounded p-4 border border-red-200">
-              <h4 className="text-sm font-semibold mb-2 text-red-700">Errors</h4>
-              {result.errors.map((err, i) => (
-                <div key={i} className="text-sm text-red-600">
-                  {err}
+            {report.matched.length === 0 &&
+              report.missingAtProvider.length === 0 &&
+              report.extraAtProvider.length === 0 && (
+                <div className="text-gray-500 mt-2">
+                  Nothing to compare yet — import your domains on the Namebase tab first.
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {showReport && report && (
-        <div className="space-y-4">
-          <h3 className="text-sm font-semibold">Name Comparison</h3>
-
-          {report.matched.length > 0 && (
-            <div className="bg-white rounded p-4 border border-gray-200">
-              <h4 className="text-sm font-semibold mb-2 text-green-700">
-                Matched ({report.matched.length})
-              </h4>
-              <div className="max-h-40 overflow-auto">
-                {report.matched.map((name) => (
-                  <div key={name} className="text-sm font-mono py-0.5">.{name}</div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {report.missing.length > 0 && (
-            <div className="bg-white rounded p-4 border border-gray-200">
-              <h4 className="text-sm font-semibold mb-2 text-yellow-700">
-                In Inventory, Not in Wallet ({report.missing.length})
-              </h4>
-              <div className="max-h-40 overflow-auto">
-                {report.missing.map((name) => (
-                  <div key={name} className="text-sm font-mono py-0.5">.{name}</div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {report.extra.length > 0 && (
-            <div className="bg-white rounded p-4 border border-gray-200">
-              <h4 className="text-sm font-semibold mb-2 text-blue-700">
-                In Wallet, Not in Inventory ({report.extra.length})
-              </h4>
-              <div className="max-h-40 overflow-auto">
-                {report.extra.map((name) => (
-                  <div key={name} className="text-sm font-mono py-0.5">.{name}</div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {syncNames.isError && (
-        <div className="bg-red-50 rounded p-4 border border-red-200 text-red-700">
-          Sync failed: {syncNames.error?.message || "Check your wallet connection settings and try again."}
+              )}
+          </div>
+          <Section title="Still at Namebase" names={report.matched} tone="text-green-700" />
+          <Section
+            title="In inventory, not on Namebase (left / transferred out)"
+            names={report.missingAtProvider}
+            tone="text-yellow-700"
+          />
+          <Section
+            title="On Namebase, not in your inventory"
+            names={report.extraAtProvider}
+            tone="text-blue-700"
+          />
         </div>
       )}
 
       {syncEntries.length > 0 && (
         <div className="bg-white rounded p-4 border border-gray-200">
-          <h3 className="text-sm font-semibold mb-3">Sync History</h3>
+          <h3 className="text-sm font-semibold mb-3">History</h3>
           <div className="space-y-1">
             {syncEntries.map((entry) => (
               <div key={entry.id} className="flex items-center gap-3 text-xs">
@@ -230,34 +123,6 @@ export function SyncVerification() {
               </div>
             ))}
           </div>
-        </div>
-      )}
-
-      {snapshots && snapshots.length > 0 && (
-        <div className="bg-white rounded p-4 border border-gray-200">
-          <h3 className="text-sm font-semibold mb-3">Wallet Snapshots</h3>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-gray-500 border-b">
-                <th className="px-2 py-1">Time</th>
-                <th className="px-2 py-1">Wallet</th>
-                <th className="px-2 py-1">Balance</th>
-                <th className="px-2 py-1">Names</th>
-                <th className="px-2 py-1">Address</th>
-              </tr>
-            </thead>
-            <tbody>
-              {snapshots.map((snap) => (
-                <tr key={snap.id} className="border-t border-gray-100">
-                  <td className="px-2 py-1 text-xs text-gray-400">{formatDate(snap.snapshot_at)}</td>
-                  <td className="px-2 py-1">{snap.wallet_name}</td>
-                  <td className="px-2 py-1 font-mono">{formatHns(snap.balance)}</td>
-                  <td className="px-2 py-1">{snap.name_count}</td>
-                  <td className="px-2 py-1 text-xs text-gray-500 truncate max-w-[150px]">{snap.address || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       )}
     </div>

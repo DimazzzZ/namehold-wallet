@@ -1,0 +1,287 @@
+{
+  "meta": {
+    "generator": "gen_hsd_vectors.js",
+    "hsd": "8.0.0",
+    "network": "main",
+    "coinType": 5353,
+    "account": 0,
+    "mnemonic": "april coyote civil finger crane uncle situate moon choice wrong goose client purse deer funny hobby shrug give anxiety truly rack stand salad coach",
+    "note": "Independent known-answer vectors. Rust must match signedHex/txid/sighash/covenantRaw byte-for-byte."
+  },
+  "addresses": [
+    {
+      "path": "m/44'/5353'/0'/0/0",
+      "branch": 0,
+      "index": 0,
+      "address": "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8",
+      "keyHash160": "f1593f4e1be74a76551bc94ee7f5fe1a06c61885",
+      "pubkey": "03a527c08aeb86e99f6a4019d9bcd38290a598d7287fcca929a684004ed8d41d39"
+    },
+    {
+      "path": "m/44'/5353'/0'/0/1",
+      "branch": 0,
+      "index": 1,
+      "address": "hs1qajh8ju0zn0gey92myupmq2n5mul2826ffxy8dg",
+      "keyHash160": "ecae7971e29bd192155b2703b02a74df3ea3ab49",
+      "pubkey": "03424ba78161965d2dc6f52968f207c050629992cc238d1902ce328c304520388e"
+    },
+    {
+      "path": "m/44'/5353'/0'/0/2",
+      "branch": 0,
+      "index": 2,
+      "address": "hs1q7p94h09nqshcjuc5hpq06pz7mf40gpmjg6k6yk",
+      "keyHash160": "f04b5bbcb3042f897314b840fd045eda6af40772",
+      "pubkey": "02d4fd514d5cad8bd5d5a13e35bf68df75468a87dcff0b59304b95695ce16c0dbb"
+    },
+    {
+      "path": "m/44'/5353'/0'/1/0",
+      "branch": 1,
+      "index": 0,
+      "address": "hs1qdhtaj7ws7chd2z2tulrmakqww428myx08d6w3v",
+      "keyHash160": "6dd7d979d0f62ed5094be7c7bed80e75547d90cf",
+      "pubkey": "039824f2b9b612042fe83821dc980a6971fbbfb4daaf81f904d21bbc328b33c78c"
+    }
+  ],
+  "plainSendDirect": {
+    "inputs": [
+      {
+        "displayTxid": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        "prevoutHashInternal": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        "vout": 0,
+        "value": 1000000,
+        "branch": 0,
+        "index": 0,
+        "keyHash160": "f1593f4e1be74a76551bc94ee7f5fe1a06c61885",
+        "sighashAll": "dba77b3a52fc371dba7295e6bbcb170d05cc88f0e4ecb1694330a88b7ce9ad50"
+      }
+    ],
+    "recipient": {
+      "address": "hs1q7p94h09nqshcjuc5hpq06pz7mf40gpmjg6k6yk",
+      "value": 500000
+    },
+    "change": {
+      "address": "hs1qdhtaj7ws7chd2z2tulrmakqww428myx08d6w3v",
+      "value": 499785
+    },
+    "locktime": 0,
+    "txid": "5793ec731587f8d814e6bba5f8aa8f971b1b94baf58cb94690a891e66ea3c520",
+    "signedHex": "00000000010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2000000000ffffffff0220a10700000000000014f04b5bbcb3042f897314b840fd045eda6af40772000049a007000000000000146dd7d979d0f62ed5094be7c7bed80e75547d90cf0000000000000241e45e467d96dfaded4fb5e1850e54b161892f57af39dc9b32c1da564638dde56676a83b7d3ae1790809b983587de5befb3b5f048471ebd237a49fb7441bda7bc2012103a527c08aeb86e99f6a4019d9bcd38290a598d7287fcca929a684004ed8d41d39"
+  },
+  "buildSend1": {
+    "inputs": [
+      {
+        "displayTxid": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "prevoutHashInternal": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "vout": 0,
+        "value": 1000000,
+        "branch": 0,
+        "index": 0,
+        "keyHash160": "f1593f4e1be74a76551bc94ee7f5fe1a06c61885",
+        "sighashAll": "e2f91dd2497572f4ca2829927386debf2dce91767e1c37bc1caaa86afd492a6d"
+      }
+    ],
+    "recipient": {
+      "address": "hs1q7p94h09nqshcjuc5hpq06pz7mf40gpmjg6k6yk",
+      "value": 400000
+    },
+    "change": {
+      "address": "hs1qdhtaj7ws7chd2z2tulrmakqww428myx08d6w3v",
+      "value": 599785
+    },
+    "locktime": 0,
+    "txid": "b8c569f553a6ee6706666d4d0b0ea6897069ff837aca250e2d320e9e0d18a93e",
+    "signedHex": "0000000001404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f00000000ffffffff02801a0600000000000014f04b5bbcb3042f897314b840fd045eda6af407720000e92609000000000000146dd7d979d0f62ed5094be7c7bed80e75547d90cf0000000000000241387214ac2983c5d259dc75226e0819b06b8c522abbbad7ba1ea6f978e0ad46a469cfcb398052a8ab7be53f7b77a74f3b8d11060722d2601e57d76390be6489b6012103a527c08aeb86e99f6a4019d9bcd38290a598d7287fcca929a684004ed8d41d39",
+    "params": {
+      "amount": 400000,
+      "rate": 1,
+      "fee": 215,
+      "change": 599785,
+      "coinValue": 1000000
+    }
+  },
+  "buildSend2": {
+    "inputs": [
+      {
+        "displayTxid": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        "prevoutHashInternal": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+        "vout": 0,
+        "value": 600000,
+        "branch": 0,
+        "index": 0,
+        "keyHash160": "f1593f4e1be74a76551bc94ee7f5fe1a06c61885",
+        "sighashAll": "8bd6ad0dbc9da38bc08e59870aa3b73def5d3bc08b0903aeb076c7741077054b"
+      },
+      {
+        "displayTxid": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "prevoutHashInternal": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "vout": 1,
+        "value": 500000,
+        "branch": 0,
+        "index": 1,
+        "keyHash160": "ecae7971e29bd192155b2703b02a74df3ea3ab49",
+        "sighashAll": "e2a5335cd9e1bc8b52d70188fb2576317246e1a73f3ef48f4540333f19027f73"
+      }
+    ],
+    "recipient": {
+      "address": "hs1q7p94h09nqshcjuc5hpq06pz7mf40gpmjg6k6yk",
+      "value": 900000
+    },
+    "change": {
+      "address": "hs1qdhtaj7ws7chd2z2tulrmakqww428myx08d6w3v",
+      "value": 199644
+    },
+    "locktime": 0,
+    "txid": "0c5aa8696f2564828dc85915bbf567d517cfee24fa0b1883f957bc0e909dd7ea",
+    "signedHex": "00000000020102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2000000000ffffffff404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f01000000ffffffff02a0bb0d00000000000014f04b5bbcb3042f897314b840fd045eda6af407720000dc0b03000000000000146dd7d979d0f62ed5094be7c7bed80e75547d90cf00000000000002410f48fbf7a104f48d3020c054ebf9e5dd3204919e94a0401a99a746e4082107c758864eaa5e83ce9ccbf95766c3fae9960c206d37df9a8c635e2cf49c1103b86e012103a527c08aeb86e99f6a4019d9bcd38290a598d7287fcca929a684004ed8d41d390241a741f1cc568e31eb5e23e3379c164ed111dcb721e6d27d1dee24dd63e804b17415372d26c993cf9b570a559611923a5454f86edb0de76b3a30f09616face6bda012103424ba78161965d2dc6f52968f207c050629992cc238d1902ce328c304520388e",
+    "params": {
+      "amount": 900000,
+      "rate": 1,
+      "fee": 356,
+      "change": 199644,
+      "coin0": 600000,
+      "coin1": 500000
+    }
+  },
+  "openTx": {
+    "input": {
+      "prevoutHashInternal": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "displayTxid": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "vout": 0,
+      "value": 1000000,
+      "branch": 0,
+      "index": 0,
+      "keyHash160": "f1593f4e1be74a76551bc94ee7f5fe1a06c61885",
+      "sighashAll": "68a1d8291ab75f15c5ef311d9e62c072a80c32fa56cf8c53bcd1ed748b90fb61"
+    },
+    "covenantOutput": {
+      "value": 0,
+      "address": "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8",
+      "covenantRaw": "0203200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904000000000e70726f6f666f66636f6e63657074"
+    },
+    "change": {
+      "address": "hs1qdhtaj7ws7chd2z2tulrmakqww428myx08d6w3v",
+      "value": 999785
+    },
+    "locktime": 0,
+    "txid": "05d54179ebc3dd356d65e45c6d764fe9ccb92309f2cd507f7a09b08d4cb39f25",
+    "signedHex": "0000000001808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f00000000ffffffff0200000000000000000014f1593f4e1be74a76551bc94ee7f5fe1a06c618850203200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904000000000e70726f6f666f66636f6e6365707469410f000000000000146dd7d979d0f62ed5094be7c7bed80e75547d90cf0000000000000241252f52c3fe8c69e538706579a2aa18005c413d5e1bc5c8c64c9c7c212267a631211c188461c84c76aa5bdc86ea4cb9c039080b944538246c1cc9c6533988abb7012103a527c08aeb86e99f6a4019d9bcd38290a598d7287fcca929a684004ed8d41d39"
+  },
+  "openTxMeta": {
+    "name": "proofofconcept",
+    "nameHash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9",
+    "rawName": "70726f6f666f66636f6e63657074"
+  },
+  "covenants": [
+    {
+      "kind": "open",
+      "args": {
+        "nameHash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9",
+        "rawName": "70726f6f666f66636f6e63657074"
+      },
+      "raw": "0203200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904000000000e70726f6f666f66636f6e63657074"
+    },
+    {
+      "kind": "bid",
+      "args": {
+        "nameHash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9",
+        "start": 100,
+        "rawName": "70726f6f666f66636f6e63657074",
+        "blind": "98f202e30d3f95ba3403739c4a47bc6842d50a8db33c02e72e8b70f9c17a939c"
+      },
+      "raw": "0304200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904640000000e70726f6f666f66636f6e636570742098f202e30d3f95ba3403739c4a47bc6842d50a8db33c02e72e8b70f9c17a939c"
+    },
+    {
+      "kind": "reveal",
+      "args": {
+        "nameHash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9",
+        "height": 200,
+        "nonce": "0909090909090909090909090909090909090909090909090909090909090909"
+      },
+      "raw": "0403200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904c8000000200909090909090909090909090909090909090909090909090909090909090909"
+    },
+    {
+      "kind": "redeem",
+      "args": {
+        "nameHash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9",
+        "height": 200
+      },
+      "raw": "0502200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904c8000000"
+    },
+    {
+      "kind": "register",
+      "args": {
+        "nameHash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9",
+        "height": 200,
+        "resource": "00",
+        "renewalBlock": "0505050505050505050505050505050505050505050505050505050505050505"
+      },
+      "raw": "0604200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904c80000000100200505050505050505050505050505050505050505050505050505050505050505"
+    },
+    {
+      "kind": "update",
+      "args": {
+        "nameHash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9",
+        "height": 200,
+        "resource": "00"
+      },
+      "raw": "0703200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904c80000000100"
+    },
+    {
+      "kind": "renew",
+      "args": {
+        "nameHash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9",
+        "height": 200,
+        "renewalBlock": "0505050505050505050505050505050505050505050505050505050505050505"
+      },
+      "raw": "0803200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904c8000000200505050505050505050505050505050505050505050505050505050505050505"
+    },
+    {
+      "kind": "transfer",
+      "args": {
+        "nameHash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9",
+        "height": 200,
+        "addrVersion": 0,
+        "addrHash": "0606060606060606060606060606060606060606"
+      },
+      "raw": "0904200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904c80000000100140606060606060606060606060606060606060606"
+    },
+    {
+      "kind": "finalize",
+      "args": {
+        "nameHash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9",
+        "height": 200,
+        "rawName": "70726f6f666f66636f6e63657074",
+        "flags": 0,
+        "claimed": 0,
+        "renewals": 3,
+        "renewalBlock": "0505050505050505050505050505050505050505050505050505050505050505"
+      },
+      "raw": "0a07200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904c80000000e70726f6f666f66636f6e63657074010004000000000403000000200505050505050505050505050505050505050505050505050505050505050505"
+    },
+    {
+      "kind": "cancel",
+      "args": {
+        "nameHash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9",
+        "height": 200
+      },
+      "raw": "0703200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904c800000000"
+    },
+    {
+      "kind": "revoke",
+      "args": {
+        "nameHash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9",
+        "height": 200
+      },
+      "raw": "0b02200c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc904c8000000"
+    }
+  ],
+  "nameHash": {
+    "name": "proofofconcept",
+    "hash": "0c452105532473920739ba0da9ede7f1da8c8eb9c23fd089be97a486ee23bdc9"
+  },
+  "blind": {
+    "value": 1234567,
+    "nonce": "0707070707070707070707070707070707070707070707070707070707070707",
+    "blind": "98f202e30d3f95ba3403739c4a47bc6842d50a8db33c02e72e8b70f9c17a939c"
+  }
+}

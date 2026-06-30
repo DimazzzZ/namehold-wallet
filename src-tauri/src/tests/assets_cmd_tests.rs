@@ -8,6 +8,30 @@ fn test_list_assets_empty() {
 }
 
 #[test]
+fn test_set_asset_status_by_tld() {
+    // Reflects an initiated Namebase transfer in the inventory.
+    let conn = crate::tests::command_helpers::create_test_db();
+    conn.execute(
+        "INSERT INTO assets (tld, status, is_staked) VALUES ('exampletld', 'not_started', 0)",
+        [],
+    )
+    .unwrap();
+
+    db::queries::set_asset_status_by_tld(&conn, "exampletld", "namebase_transfer_requested").unwrap();
+    let assets = db::queries::list_assets(&conn, None, None, None, None, None).unwrap();
+    let a = assets.iter().find(|a| a.tld == "exampletld").unwrap();
+    assert_eq!(a.status.as_str(), "namebase_transfer_requested");
+
+    // Unknown TLD is a harmless no-op (does not error or insert).
+    db::queries::set_asset_status_by_tld(&conn, "doesnotexist", "namebase_transfer_requested")
+        .unwrap();
+    assert_eq!(
+        db::queries::list_assets(&conn, None, None, None, None, None).unwrap().len(),
+        1,
+    );
+}
+
+#[test]
 fn test_list_assets_with_data() {
     let conn = crate::tests::command_helpers::create_test_db();
     conn.execute("INSERT INTO assets (tld, status, is_staked) VALUES ('crypto', 'not_started', 0)", []).unwrap();

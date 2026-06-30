@@ -1,46 +1,43 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { useSettingsStore } from "../stores/settings";
+import { useActiveProfile } from "../queries/wallet";
+import { useNodeStatus, useStartHsd, useStopHsd } from "../queries/node";
+import { open } from "@tauri-apps/plugin-dialog";
 import { Input } from "./ui/Input";
-import { Select } from "./ui/Select";
 import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
 import { useUiStore } from "../stores/ui";
-import { open } from "@tauri-apps/plugin-dialog";
-import { invoke } from "../lib/invoke";
-import { mapError } from "../lib/errors";
 
+/**
+ * One coherent settings model for the non-custodial wallet:
+ *   - Wallet: the active profile (managed on the Wallet page).
+ *   - Connections: the explorer URL (node-free reads) and the hsd node RPC
+ *     (needed only to send).
+ *   - Advanced (collapsed): address gap limit, signer session timeout, and the
+ *     advanced-navigation toggle.
+ * No legacy hsd-wallet / connection-mode / write-mode config.
+ */
 export function Settings() {
-  const { settings, loaded, saveAll, passphrase, setPassphrase, clearPassphrase } = useSettingsStore();
+  const { settings, loaded, saveAll } = useSettingsStore();
   const showToast = useUiStore((s) => s.showToast);
+  const navigate = useNavigate();
+  const { data: profile } = useActiveProfile();
 
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [testingConnection, setTestingConnection] = useState(false);
-  const [connectionResult, setConnectionResult] = useState<{ ok: boolean; message: string } | null>(null);
-  const [showAdvancedExternal, setShowAdvancedExternal] = useState(false);
-  // Progressive disclosure: most users never need node URLs, API keys, data
-  // directory, ports, or connection-mode internals. Keep these collapsed by
-  // default so the screen reads as a short, approachable set of essentials.
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
     if (settings) {
       setForm({
-        hsd_wallet_api_url: settings.hsd_wallet_api_url,
-        hsd_node_api_url: settings.hsd_node_api_url,
-        hsd_api_key: settings.hsd_api_key,
-        hsd_wallet_id: settings.hsd_wallet_id,
-        hsd_network: settings.hsd_network,
+        node_rpc_url: settings.node_rpc_url,
+        node_rpc_api_key: settings.node_rpc_api_key,
         hsd_prefix: settings.hsd_prefix,
-        write_mode: settings.write_mode,
-        connection_mode: settings.connection_mode || "local_managed_hsd",
-        external_read_provider: settings.external_read_provider || "none",
-        external_read_api_url: settings.external_read_api_url || "",
-        external_read_watch_addresses: settings.external_read_watch_addresses || "[]",
-        external_read_watch_names: settings.external_read_watch_names || "[]",
-        remote_hsd_label: settings.remote_hsd_label || "",
-        trusted_remote_hsd: settings.trusted_remote_hsd || "false",
+        explorer_api_url: settings.explorer_api_url,
+        address_gap_limit: settings.address_gap_limit,
+        signer_session_timeout_seconds: settings.signer_session_timeout_seconds,
+        advanced_mode: settings.advanced_mode,
       });
     }
   }, [settings]);
@@ -52,6 +49,23 @@ export function Settings() {
   const updateField = (key: string, value: string) => {
     setForm((prev) => ({ ...prev, [key]: value }));
     setDirty(true);
+  };
+
+  // Pick the hsd data directory with the native folder browser (Finder).
+  const pickDataDir = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose hsd data directory",
+        defaultPath: form.hsd_prefix || undefined,
+      });
+      if (typeof selected === "string") {
+        updateField("hsd_prefix", selected);
+      }
+    } catch (e) {
+      showToast(`Couldn't open folder picker: ${e}`, "error");
+    }
   };
 
   const handleSave = async () => {
@@ -67,354 +81,234 @@ export function Settings() {
     }
   };
 
-  const handleBrowsePrefix = async () => {
-    const selected = await open({ directory: true, multiple: false });
-    if (selected) {
-      updateField("hsd_prefix", selected as string);
-    }
-  };
-
-  const handleTestConnection = async () => {
-    setTestingConnection(true);
-    setConnectionResult(null);
-    try {
-      await saveAll(form);
-      const result = await invoke<{ connected: boolean; info?: unknown; error?: string }>("check_connection");
-      if (result.connected) {
-        setConnectionResult({ ok: true, message: "Connected to hsd successfully" });
-      } else {
-        setConnectionResult({ ok: false, message: result.error || "Cannot connect to hsd" });
-      }
-    } catch (e) {
-      setConnectionResult({ ok: false, message: mapError(e) });
-    } finally {
-      setTestingConnection(false);
-    }
-  };
-
-  const isLocalhost =
-    (form.hsd_wallet_api_url || "").includes("127.0.0.1") ||
-    (form.hsd_wallet_api_url || "").includes("localhost");
-
-  const connectionMode = form.connection_mode || "local_managed_hsd";
-  const externalProvider = form.external_read_provider || "none";
-  const trustedRemote = form.trusted_remote_hsd === "true";
-
-  const parseJsonLines = (raw: string): string[] => {
-    try {
-      const parsed = JSON.parse(raw || "[]");
-      return Array.isArray(parsed) ? parsed.map((x) => String(x)) : [];
-    } catch {
-      return [];
-    }
-  };
-
-  const linesToJson = (text: string): string =>
-    JSON.stringify(
-      text
-        .split(/[\n,]/)
-        .map((s) => s.trim())
-        .filter(Boolean),
-    );
-
-  const watchAddressesText = parseJsonLines(form.external_read_watch_addresses || "").join("\n");
-  const watchNamesText = parseJsonLines(form.external_read_watch_names || "").join("\n");
-
   return (
     <div className="space-y-6 max-w-xl pb-16">
       <h2 className="text-xl font-bold">Settings</h2>
 
-      {/* Essentials — what most users actually touch. */}
-      <div className="bg-white rounded p-4 border border-gray-200 space-y-4">
+      {/* Wallet */}
+      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
         <h3 className="text-sm font-semibold text-gray-700">Wallet</h3>
-        <Input
-          label="Wallet ID"
-          value={form.hsd_wallet_id || ""}
-          onChange={(e) => updateField("hsd_wallet_id", e.target.value)}
-        />
-        <Select
-          label="Network"
-          options={[
-            { value: "mainnet", label: "Mainnet" },
-            { value: "testnet", label: "Testnet" },
-            { value: "regtest", label: "Regtest" },
-          ]}
-          value={form.hsd_network || "mainnet"}
-          onChange={(e) => updateField("hsd_network", e.target.value)}
-        />
+        {profile ? (
+          <div className="text-sm text-gray-600">
+            Active: <strong>{profile.label}</strong> · {profile.network}
+            {profile.watchOnly ? " · watch-only" : ""}
+          </div>
+        ) : (
+          <div className="text-sm text-gray-500">No wallet profile yet.</div>
+        )}
+        <Button size="sm" variant="secondary" onClick={() => navigate("/")}>
+          Manage wallets
+        </Button>
+        <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800">
+          Non-custodial: your passphrase is only ever entered in a secure window
+          and is never stored by the app.
+        </div>
       </div>
 
-      {/* Security essentials — write mode + session passphrase. */}
+      {/* Connections: reads (explorer) + sending (node) in one place. */}
       <div className="bg-white rounded p-4 border border-gray-200 space-y-4">
-        <h3 className="text-sm font-semibold text-gray-700">Security</h3>
-        <div>
-          <div className="text-sm font-medium mb-1">Write Mode</div>
-          <div className="text-xs text-gray-500 mb-3">
-            Write mode enables actions that modify your wallet: send HNS, transfer TLDs, renew names, update records.
-            Disabled by default for safety.
+        <h3 className="text-sm font-semibold text-gray-700">Connections</h3>
+
+        <div className="space-y-2">
+          <Input
+            label="Explorer URL (reads)"
+            value={form.explorer_api_url ?? ""}
+            onChange={(e) => updateField("explorer_api_url", e.target.value)}
+            placeholder="https://e.hnsfans.com"
+          />
+          <div className="text-xs text-gray-500">
+            Balance and names are read from this explorer — no node required.
           </div>
-          {form.write_mode === "true" ? (
-            <div className="space-y-2">
-              <div className="bg-green-50 border border-green-200 rounded p-2 text-xs text-green-700">
-                Write mode is enabled. Write actions are available.
-              </div>
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => updateField("write_mode", "false")}
-              >
-                Disable Write Mode
-              </Button>
+        </div>
+
+        <div className="space-y-2 pt-2 border-t border-gray-100">
+          <Input
+            label="Node RPC URL (sending)"
+            value={form.node_rpc_url ?? ""}
+            onChange={(e) => updateField("node_rpc_url", e.target.value)}
+            placeholder="http://127.0.0.1:12037"
+          />
+          <Input
+            label="Node RPC API key"
+            type="password"
+            value={form.node_rpc_api_key ?? ""}
+            onChange={(e) => updateField("node_rpc_api_key", e.target.value)}
+            placeholder="(optional)"
+          />
+          <div className="text-xs text-gray-500">
+            Needed only to send or do name actions. Run hsd with{" "}
+            <code>--index-address</code>. See NODE_SETUP.md.
+          </div>
+        </div>
+
+        <div className="space-y-2 pt-2 border-t border-gray-100">
+          <div className="flex items-end gap-2">
+            <div className="flex-1">
+              <Input
+                label="Node data directory (hsd --prefix)"
+                value={form.hsd_prefix ?? ""}
+                onChange={(e) => updateField("hsd_prefix", e.target.value)}
+                placeholder="(default: ~/.hsd)"
+              />
             </div>
+            <Button size="sm" variant="secondary" onClick={pickDataDir}>
+              Browse…
+            </Button>
+          </div>
+          <div className="text-xs text-gray-500">
+            Where hsd stores the chain. Point this at e.g.{" "}
+            <code>/Volumes/WD/hsd-data</code> to keep the large chain off your home
+            disk. Empty uses hsd's default (<code>~/.hsd</code>).
+          </div>
+          <NodeControl dirty={dirty} />
+        </div>
+      </div>
+
+      {/* Advanced (collapsed by default — rarely changed). */}
+      <details className="bg-white rounded border border-gray-200 group">
+        <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-gray-700">
+          Advanced
+        </summary>
+        <div className="px-4 pb-4 space-y-3">
+          <Input
+            label="Address gap limit"
+            value={form.address_gap_limit ?? ""}
+            onChange={(e) => updateField("address_gap_limit", e.target.value)}
+            placeholder="20"
+          />
+          <Input
+            label="Signer session timeout (seconds)"
+            value={form.signer_session_timeout_seconds ?? ""}
+            onChange={(e) => updateField("signer_session_timeout_seconds", e.target.value)}
+            placeholder="900"
+          />
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={form.advanced_mode === "true"}
+              onChange={(e) => updateField("advanced_mode", e.target.checked ? "true" : "false")}
+            />
+            Show Portfolio in the sidebar
+          </label>
+        </div>
+      </details>
+
+      {dirty && (
+        <StickyFooter>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? "Saving…" : "Save settings"}
+          </Button>
+        </StickyFooter>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Start/stop the app-managed hsd node and show its live status. hsd is launched
+ * with the configured data directory; `dirty` warns that an unsaved directory
+ * change won't apply until settings are saved.
+ */
+function NodeControl({ dirty }: { dirty: boolean }) {
+  const { data: status } = useNodeStatus();
+  const start = useStartHsd();
+  const stop = useStopHsd();
+  const showToast = useUiStore((s) => s.showToast);
+
+  const connected = status?.connected ?? false;
+  const processAlive = status?.process_alive ?? false;
+  // A node that doesn't report progress is treated as synced (covers nodes that
+  // omit verificationProgress); otherwise it's synced at ~100%.
+  const progress = status?.verification_progress ?? null;
+  const synced = progress == null || progress >= 0.9999;
+  const pct = progress == null ? 100 : Math.floor(progress * 1000) / 10; // 1 decimal
+  // Connected (RPC answers) → green; spawned but RPC not up yet → amber; else grey.
+  const dotClass = connected ? "bg-green-500" : processAlive ? "bg-amber-500" : "bg-gray-300";
+  const label = connected
+    ? synced
+      ? `Connected · block ${status?.height ?? "?"}${processAlive ? "" : " (external node)"}`
+      : `Syncing · ${pct}%`
+    : processAlive
+      ? "Starting…"
+      : "Stopped";
+
+  const onStart = async () => {
+    try {
+      const res = await start.mutateAsync();
+      if (res?.connected) {
+        showToast("hsd connected", "success");
+      } else {
+        showToast("hsd is starting… status will update when its RPC responds.", "info");
+      }
+    } catch (e) {
+      showToast(`Failed to start hsd: ${e}`, "error");
+    }
+  };
+  const onStop = async () => {
+    try {
+      await stop.mutateAsync();
+      showToast("hsd stopped", "success");
+    } catch (e) {
+      showToast(`Failed to stop hsd: ${e}`, "error");
+    }
+  };
+
+  return (
+    <div className="rounded border border-gray-200 bg-gray-50 p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 text-sm">
+          <span className={`inline-block w-2 h-2 rounded-full ${dotClass}`} />
+          <span className="font-medium">{label}</span>
+        </div>
+        {processAlive ? (
+          <Button size="sm" variant="secondary" onClick={onStop} disabled={stop.isPending}>
+            {stop.isPending ? "Stopping…" : "Stop hsd"}
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            onClick={onStart}
+            disabled={start.isPending || connected || !status?.binary_found}
+          >
+            {start.isPending ? "Starting…" : "Start hsd"}
+          </Button>
+        )}
+      </div>
+      {connected && !synced && (
+        <div className="space-y-1">
+          <div className="h-1.5 w-full rounded-full bg-gray-200 overflow-hidden">
+            <div
+              className="h-full bg-blue-500 transition-all"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <div className="text-xs text-gray-500">
+            Syncing the chain — {pct}% · block {status?.height ?? "?"}. Spendable
+            balance and sending become available once it finishes.
+          </div>
+        </div>
+      )}
+      <div className="text-xs text-gray-500 space-y-0.5">
+        <div>
+          Data dir: <code>{status?.data_dir ?? "…"}</code>
+        </div>
+        <div>
+          {status?.binary_found ? (
+            <>
+              hsd {status.version} · {status.network}
+            </>
           ) : (
-            <div className="space-y-2">
-              <div className="bg-gray-50 border border-gray-200 rounded p-2 text-xs text-gray-600">
-                Write mode is disabled. Only read operations are available.
-              </div>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => {
-                  if (confirm("Enable write mode? This allows sending HNS, transferring TLDs, and other wallet operations. Use with caution.")) {
-                    updateField("write_mode", "true");
-                  }
-                }}
-              >
-                Enable Write Mode
-              </Button>
-            </div>
+            <span className="text-red-600">
+              hsd binary not found — install it (<code>npm i -g hsd</code>).
+            </span>
           )}
         </div>
-        <div>
-          <div className="text-sm font-medium mb-1">Wallet Passphrase (memory only)</div>
-          <div className="text-xs text-gray-500 mb-2">
-            Stored in memory only. Lost on app restart. Used for write operations (send, transfer, renew, finalize).
-          </div>
-          <div className="flex gap-2">
-            <Input
-              type="password"
-              value={passphrase}
-              onChange={(e) => setPassphrase(e.target.value)}
-              placeholder="Enter wallet passphrase"
-              className="flex-1"
-            />
-            {passphrase && (
-              <Button size="sm" variant="ghost" onClick={clearPassphrase}>
-                Clear
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Advanced — node connection internals, hidden by default. */}
-      <div className="bg-white rounded border border-gray-200">
-        <button
-          type="button"
-          className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold text-gray-700"
-          onClick={() => setShowAdvanced((v) => !v)}
-        >
-          <span>Advanced (connection & node)</span>
-          <span className="text-gray-400 text-xs">{showAdvanced ? "Hide" : "Show"}</span>
-        </button>
-
-        {showAdvanced && (
-          <div className="px-4 pb-4 space-y-6">
-            <div className="space-y-4">
-              <h3 className="text-sm font-semibold text-gray-700">Handshake Node</h3>
-              <Input
-                label="Wallet API URL"
-                value={form.hsd_wallet_api_url || ""}
-                onChange={(e) => updateField("hsd_wallet_api_url", e.target.value)}
-              />
-              {!isLocalhost && (
-                <div className="bg-red-50 border border-red-200 rounded p-2 text-xs text-red-700">
-                  Warning: Non-localhost URL. Only use local connections for security.
-                </div>
-              )}
-              <Input
-                label="Node API URL"
-                value={form.hsd_node_api_url || ""}
-                onChange={(e) => updateField("hsd_node_api_url", e.target.value)}
-              />
-              <Input
-                label="API Key"
-                type="password"
-                value={form.hsd_api_key || ""}
-                onChange={(e) => updateField("hsd_api_key", e.target.value)}
-                placeholder="Leave empty if no auth"
-              />
-              <div className="flex gap-2 items-end">
-                <div className="flex-1">
-                  <Input
-                    label="Data Directory (hsd prefix)"
-                    value={form.hsd_prefix || ""}
-                    onChange={(e) => updateField("hsd_prefix", e.target.value)}
-                    placeholder="~/.hsd (default) or /Volumes/WD/hsd-data"
-                  />
-                </div>
-                <Button size="sm" onClick={handleBrowsePrefix}>
-                  Browse
-                </Button>
-              </div>
-              <div className="text-xs text-gray-500">
-                Path where hsd stores blockchain and wallet data. Use an external drive for large blockchain data.
-              </div>
-              <div className="flex items-center gap-3">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={handleTestConnection}
-                  disabled={testingConnection}
-                >
-                  {testingConnection ? "Testing..." : "Test Connection"}
-                </Button>
-                {connectionResult && (
-                  <span className={`text-sm ${connectionResult.ok ? "text-green-600" : "text-red-600"}`}>
-                    {connectionResult.message}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <h3 className="text-sm font-semibold text-gray-700">Connection Mode</h3>
-              <div className="text-xs text-gray-500">
-                Choose how the wallet reads chain data. External read-only mode requires no local node
-                but cannot sign or broadcast transactions.
-              </div>
-              <Select
-                label="Mode"
-                options={[
-                  { value: "local_managed_hsd", label: "Local managed hsd (full read + write)" },
-                  { value: "remote_hsd", label: "Remote hsd (requires trust to write)" },
-                  { value: "auto_fallback", label: "Auto fallback (prefer hsd, fall back to external)" },
-                  { value: "external_read_only", label: "External read-only (no writes)" },
-                ]}
-                value={connectionMode}
-                onChange={(e) => updateField("connection_mode", e.target.value)}
-              />
-
-              {connectionMode === "remote_hsd" && (
-                <div className="space-y-3 border-l-2 border-blue-200 pl-3">
-                  <Input
-                    label="Remote hsd Label"
-                    value={form.remote_hsd_label || ""}
-                    onChange={(e) => updateField("remote_hsd_label", e.target.value)}
-                    placeholder="e.g. home-server"
-                  />
-                  <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
-                    Writes to a remote hsd send your transactions through a node you do not manage.
-                    Only trust nodes you fully control.
-                  </div>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={trustedRemote}
-                      onChange={(e) =>
-                        updateField("trusted_remote_hsd", e.target.checked ? "true" : "false")
-                      }
-                    />
-                    I trust this remote hsd for write operations
-                  </label>
-                </div>
-              )}
-
-              {(connectionMode === "external_read_only" || connectionMode === "auto_fallback") && (
-                <div className="space-y-3 border-l-2 border-blue-200 pl-3">
-                  <Select
-                    label="External Read Provider"
-                    options={[
-                      { value: "none", label: "None" },
-                      { value: "hnsfans", label: "hnsfans explorer" },
-                    ]}
-                    value={externalProvider}
-                    onChange={(e) => updateField("external_read_provider", e.target.value)}
-                  />
-                  {externalProvider !== "none" && (
-                    <>
-                      <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800">
-                        This wallet automatically reads its known addresses (from past
-                        syncs) and the names in your inventory. You usually don't need
-                        to configure anything else. Open Advanced only to override the
-                        provider URL or watch extra addresses/names.
-                      </div>
-                      <button
-                        type="button"
-                        className="text-xs text-blue-600 hover:underline self-start"
-                        onClick={() => setShowAdvancedExternal((v) => !v)}
-                      >
-                        {showAdvancedExternal ? "Hide advanced" : "Advanced settings"}
-                      </button>
-                      {showAdvancedExternal && (
-                        <div className="space-y-3 border-l-2 border-gray-200 pl-3">
-                          <Input
-                            label="External Read API URL"
-                            value={form.external_read_api_url || ""}
-                            onChange={(e) => updateField("external_read_api_url", e.target.value)}
-                            placeholder="https://hnsfans.com (default)"
-                          />
-                          <div className="flex flex-col gap-1">
-                            <label className="text-sm font-medium text-gray-700">
-                              Extra Watch Addresses
-                            </label>
-                            <textarea
-                              className="border border-gray-300 rounded px-3 py-2 text-sm h-20 resize-none font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              value={watchAddressesText}
-                              onChange={(e) =>
-                                updateField("external_read_watch_addresses", linesToJson(e.target.value))
-                              }
-                              placeholder="hs1q... (one per line; leave empty to use cached wallet addresses)"
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <label className="text-sm font-medium text-gray-700">Extra Watch Names</label>
-                            <textarea
-                              className="border border-gray-300 rounded px-3 py-2 text-sm h-20 resize-none font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              value={watchNamesText}
-                              onChange={(e) =>
-                                updateField("external_read_watch_names", linesToJson(e.target.value))
-                              }
-                              placeholder="example (one per line, no .; leave empty to use your inventory)"
-                            />
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  )}
-                  <div className="bg-gray-50 border border-gray-200 rounded p-2 text-xs text-gray-600">
-                    External read-only mode displays balances, names, and transactions from a public
-                    explorer. Sending HNS and on-chain name operations are disabled.
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <h3 className="text-sm font-semibold text-gray-700">Default Ports</h3>
-              <table className="text-xs text-gray-600">
-                <tbody>
-                  <tr><td className="pr-4 py-0.5">Mainnet Wallet:</td><td>12039</td></tr>
-                  <tr><td className="pr-4 py-0.5">Mainnet Node:</td><td>12037</td></tr>
-                  <tr><td className="pr-4 py-0.5">Testnet Wallet:</td><td>13039</td></tr>
-                  <tr><td className="pr-4 py-0.5">Testnet Node:</td><td>13037</td></tr>
-                  <tr><td className="pr-4 py-0.5">Regtest Wallet:</td><td>14039</td></tr>
-                  <tr><td className="pr-4 py-0.5">Regtest Node:</td><td>14037</td></tr>
-                </tbody>
-              </table>
-            </div>
+        {dirty && (
+          <div className="text-amber-600">
+            Save settings to apply a new data directory before starting.
           </div>
         )}
       </div>
-
-      <StickyFooter>
-        <span className="text-sm text-gray-500">
-          {dirty ? "You have unsaved changes" : "All changes saved"}
-        </span>
-        <Button variant="primary" onClick={handleSave} disabled={saving || !dirty}>
-          {saving ? "Saving..." : "Save Settings"}
-        </Button>
-      </StickyFooter>
     </div>
   );
 }

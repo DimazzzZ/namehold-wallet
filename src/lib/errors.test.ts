@@ -1,56 +1,45 @@
 import { describe, it, expect } from "vitest";
 import { mapError } from "./errors";
 
-describe("mapError", () => {
-  it("maps connection refused", () => {
-    expect(mapError("connection refused")).toContain("Cannot connect to wallet");
+describe("mapError (non-custodial)", () => {
+  it("maps explorer rate-limit (403 / forbidden) to a busy hint", () => {
+    expect(mapError("HNSFans txs lookup failed for hs1q…: status 403 Forbidden")).toMatch(
+      /rate-limited/i,
+    );
   });
 
-  it("maps ECONNREFUSED", () => {
-    expect(mapError("ECONNREFUSED")).toContain("Cannot connect to wallet");
+  it("maps explorer/network unreachable to an explorer hint", () => {
+    expect(mapError("HNSFans is unreachable at https://e.hnsfans.com")).toMatch(
+      /reach the explorer/i,
+    );
   });
 
-  it("maps unauthorized", () => {
-    expect(mapError("Unauthorized")).toContain("Invalid API key");
-  });
-
-  it("maps bad API key", () => {
-    expect(mapError("bad API key")).toContain("Invalid API key");
+  it("maps a locked signer to an Unlock hint", () => {
+    expect(mapError("Wallet locked")).toMatch(/signer is locked/i);
+    expect(mapError("wallet is locked")).toMatch(/signer is locked/i);
   });
 
   it("maps insufficient funds", () => {
     expect(mapError("insufficient funds")).toContain("Insufficient HNS");
   });
 
-  it("maps timed out", () => {
-    expect(mapError("timed out")).toContain("timed out");
-  });
-
-  it("maps not found", () => {
-    expect(mapError("Not found")).toContain("not found");
-  });
-
-  it("maps wallet locked", () => {
-    expect(mapError("wallet is locked")).toContain("locked");
-  });
-
-  it("maps error decoding response", () => {
-    expect(mapError("error decoding response body")).toContain("unexpected data");
+  it("does NOT mention a 'wallet ID' (legacy custodial copy is gone)", () => {
+    // A bare 404/"not found" must fall through to the plain message, never the
+    // old "Wallet or endpoint not found. Check wallet ID in settings."
+    const msg = mapError("status 404 Not Found");
+    expect(msg.toLowerCase()).not.toContain("wallet id");
   });
 
   it("strips technical prefixes", () => {
-    const result = mapError("Error invoking remote method: some error");
-    expect(result).toBeTruthy();
-    expect(result.length).toBeGreaterThan(0);
+    const result = mapError("Error invoking remote method 'discover_owned_names': some error");
+    expect(result).toBe("some error");
   });
 
   it("returns original for unknown errors", () => {
-    const result = mapError("something completely unknown");
-    expect(result).toBe("something completely unknown");
+    expect(mapError("something completely unknown")).toBe("something completely unknown");
   });
 
   it("handles Error objects", () => {
-    const result = mapError(new Error("connection refused"));
-    expect(result).toContain("Cannot connect to wallet");
+    expect(mapError(new Error("status 403 Forbidden"))).toMatch(/rate-limited/i);
   });
 });

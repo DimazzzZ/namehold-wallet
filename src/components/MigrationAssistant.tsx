@@ -1,9 +1,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
-import { useWalletAddress } from "../queries/wallet";
-import { useReadContext } from "../queries/read";
-import { canWrite } from "../lib/providerMode";
+import { useActiveProfile, useWriteCapability } from "../queries/wallet";
 import { cn } from "../lib/utils";
 
 interface NamebaseStatus {
@@ -38,12 +36,12 @@ export function MigrationAssistant() {
       invoke<NamebaseStatus>("get_namebase_status"),
     retry: false,
   });
-  const { data: walletAddress } = useWalletAddress();
-  const { data: readContext } = useReadContext();
+  const { data: profile } = useActiveProfile();
+  const { data: writeCap } = useWriteCapability();
 
   const connected = nbStatus?.connected ?? false;
-  const hasReceiveAddress = Boolean(walletAddress);
-  const writeReady = readContext ? canWrite(readContext) : false;
+  const hasReceiveAddress = Boolean(profile?.receiveAddress);
+  const writeReady = writeCap?.canWrite ?? false;
 
   const steps: AssistantStep[] = useMemo(() => {
     // Step 1 — connect Namebase (read your custodial holdings).

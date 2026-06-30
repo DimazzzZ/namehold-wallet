@@ -1,26 +1,19 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useSettingsStore } from "../stores/settings";
-import { useReadContext } from "../queries/read";
+import { useActiveProfile, useWriteCapability } from "../queries/wallet";
 import { Toast } from "./ui/Toast";
 import { StatusStrip } from "./ui/StatusStrip";
 import { PRIMARY_ROUTES } from "../lib/navigation";
-import { canWrite, providerStatusValue } from "../lib/providerMode";
 import { cn } from "../lib/utils";
 
 export function Layout() {
   const settings = useSettingsStore((s) => s.settings);
-  const { data: readContext } = useReadContext();
-  const network = settings?.hsd_network || "unknown";
-  const currentWallet = settings?.hsd_wallet_id || "";
   const advancedMode = settings?.advanced_mode === "true";
+  const { data: profile } = useActiveProfile();
+  const { data: writeCap } = useWriteCapability();
 
-  // The write badge reflects the active provider's real write capability when
-  // the read context is loaded, falling back to the configured write_mode
-  // setting before the context resolves.
-  const writeMode = readContext
-    ? canWrite(readContext)
-    : settings?.write_mode === "true";
-  const providerStatus = readContext ? providerStatusValue(readContext) : null;
+  const network = profile?.network ?? "no wallet";
+  const canWrite = writeCap?.canWrite ?? false;
 
   return (
     <div className="flex h-screen bg-gray-100">
@@ -34,19 +27,14 @@ export function Layout() {
             <span
               className={cn(
                 "text-[10px] px-1.5 py-0.5 rounded",
-                writeMode
+                canWrite
                   ? "bg-red-100 text-red-700"
                   : "bg-green-100 text-green-700",
               )}
             >
-              {writeMode ? "WRITE" : "READ-ONLY"}
+              {canWrite ? "CAN SEND" : "READ-ONLY"}
             </span>
           </div>
-          {providerStatus && (
-            <div className="mt-1 text-[10px] text-gray-400">
-              {readContext?.activeReadProvider?.label ?? "Provider"}: {providerStatus}
-            </div>
-          )}
         </div>
         <nav className="flex-1 py-2">
           {PRIMARY_ROUTES.filter((item) => !item.advanced || advancedMode).map((item) => (
@@ -69,7 +57,7 @@ export function Layout() {
         </nav>
         <div className="px-4 py-2 border-t border-gray-200">
           <div className="text-[10px] text-gray-400">
-            {currentWallet || "No wallet selected"}
+            {profile ? profile.label : "No wallet"}
           </div>
           <div className="text-[10px] text-gray-400 mt-0.5">v0.2.0</div>
         </div>

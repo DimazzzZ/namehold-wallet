@@ -5,14 +5,16 @@ import { Tabs } from "./ui/Tabs";
 import { NamebaseDashboard } from "./NamebaseDashboard";
 import { MigrationAssistant } from "./MigrationAssistant";
 import { SyncVerification } from "./SyncVerification";
+import { TransfersView } from "./TransfersView";
 import type { MigrationSectionKey, WorkspaceTab } from "../types";
 
 const TABS: WorkspaceTab<MigrationSectionKey>[] = [
   { key: "namebase", label: "Namebase", description: "Namebase account & transfers" },
+  { key: "transfers", label: "Transfers", description: "Track domain transfer status" },
   { key: "sync", label: "Sync & Verify", description: "Reconcile wallet vs inventory" },
 ];
 
-const VALID_KEYS = new Set<MigrationSectionKey>(["namebase", "sync"]);
+const VALID_KEYS = new Set<MigrationSectionKey>(["namebase", "transfers", "sync"]);
 
 export function MigrationWorkspace() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -29,6 +31,8 @@ export function MigrationWorkspace() {
             <NamebaseDashboard />
           </>
         );
+      case "transfers":
+        return <TransfersView />;
       case "sync":
         return <SyncVerification />;
       default:

@@ -1,0 +1,13 @@
+{
+  "name": "namehold-hsd-vectors",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Generates independent known-answer transaction vectors from canonical hsd, consumed by the Rust transaction-parity tests.",
+  "type": "commonjs",
+  "scripts": {
+    "gen": "node gen_hsd_vectors.js"
+  },
+  "dependencies": {
+    "hsd": "8.0.0"
+  }
+}

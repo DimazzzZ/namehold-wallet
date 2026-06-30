@@ -3,8 +3,13 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAssets, useBulkUpdateStatus, useUpdateAsset, useImportCsv, useExportCsv } from "../queries/assets";
 import { useCreateBatch } from "../queries/batches";
-import { useTransferName } from "../queries/wallet";
-import { useSettingsStore } from "../stores/settings";
+import {
+  useActiveProfile,
+  useSignerSession,
+  useWriteCapability,
+  useNameAction,
+  useExecuteDraft,
+} from "../queries/wallet";
 import { useUiStore } from "../stores/ui";
 import { DataTable } from "./ui/DataTable";
 import { StatusBadge } from "./ui/StatusBadge";
@@ -44,16 +49,20 @@ export function TldInventory() {
   const [batchName, setBatchName] = useState("");
   const [transferDialogOpen, setTransferDialogOpen] = useState(false);
   const [transferAddress, setTransferAddress] = useState("");
-  const [transferPassphrase, setTransferPassphrase] = useState("");
   const [transferConfirmName, setTransferConfirmName] = useState("");
+  const [actionBusy, setActionBusy] = useState(false);
 
   const { selectedAssetIds, clearSelection, showToast } =
     useUiStore();
-  const settings = useSettingsStore((s) => s.settings);
-  const passphrase = useSettingsStore((s) => s.passphrase);
-  const writeMode = settings?.write_mode === "true";
-  const transferName = useTransferName();
   const qc = useQueryClient();
+
+  const { data: activeProfile } = useActiveProfile();
+  const { data: signer } = useSignerSession();
+  const { data: writeCap } = useWriteCapability();
+  const writeMode = writeCap?.canWrite ?? false;
+  const buildTransfer = useNameAction("build_transfer_draft");
+  const buildFinalize = useNameAction("build_finalize_draft");
+  const execDraft = useExecuteDraft();
 
   const params = {
     status: statusFilter || undefined,
@@ -449,30 +458,64 @@ export function TldInventory() {
         title="Transfer TLD"
       >
         <div className="space-y-3">
-          <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
-            This will initiate a name transfer on-chain. The TLD will be sent to the specified address.
-            This action cannot be undone.
-          </div>
           {(() => {
-            const tld = assets.find(a => selectedAssetIds.has(a.id))?.tld;
+            const tld = assets.find((a) => selectedAssetIds.has(a.id))?.tld;
             const confirmMatch = transferConfirmName === tld;
+            const unlocked = signer?.unlocked ?? false;
+            const closeReset = () => {
+              setTransferDialogOpen(false);
+              setTransferAddress("");
+              setTransferConfirmName("");
+            };
+            const runTransfer = async () => {
+              if (!tld || !activeProfile) return;
+              setActionBusy(true);
+              try {
+                const draft = await buildTransfer.mutateAsync({
+                  name: tld,
+                  recipient: transferAddress.trim(),
+                });
+                await execDraft.run(draft.id, activeProfile.id, unlocked);
+                showToast(`Transfer broadcast for .${tld}`, "success");
+                clearSelection();
+                closeReset();
+                qc.invalidateQueries({ queryKey: ["wallet"] });
+              } catch (e) {
+                showToast(mapError(e), "error");
+              } finally {
+                setActionBusy(false);
+              }
+            };
+            const runFinalize = async () => {
+              if (!tld || !activeProfile) return;
+              setActionBusy(true);
+              try {
+                const draft = await buildFinalize.mutateAsync({ name: tld });
+                await execDraft.run(draft.id, activeProfile.id, unlocked);
+                showToast(`Finalize broadcast for .${tld}`, "success");
+                clearSelection();
+                closeReset();
+                qc.invalidateQueries({ queryKey: ["wallet"] });
+              } catch (e) {
+                showToast(mapError(e), "error");
+              } finally {
+                setActionBusy(false);
+              }
+            };
             return (
               <>
+                <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
+                  This builds, signs (in the secure window if locked), and broadcasts an
+                  on-chain name covenant. It cannot be undone.
+                </div>
                 <p className="text-sm text-gray-600">
-                  Transferring: <strong>.{tld}</strong>
+                  Name: <strong>.{tld}</strong>
                 </p>
                 <Input
                   label="Destination Address"
                   value={transferAddress}
                   onChange={(e) => setTransferAddress(e.target.value)}
-                  placeholder="hs1q..."
-                />
-                <Input
-                  label="Wallet Passphrase"
-                  type="password"
-                  value={transferPassphrase}
-                  onChange={(e) => setTransferPassphrase(e.target.value)}
-                  placeholder={passphrase ? "Using saved passphrase" : "Enter passphrase"}
+                  placeholder={activeProfile?.network === "mainnet" ? "hs1q…" : "rs1q… / ts1q…"}
                 />
                 <Input
                   label={`Type "${tld}" to confirm`}
@@ -480,37 +523,22 @@ export function TldInventory() {
                   onChange={(e) => setTransferConfirmName(e.target.value)}
                   placeholder={tld}
                 />
-                <div className="flex gap-2 justify-end">
-                  <Button variant="ghost" onClick={() => { setTransferDialogOpen(false); setTransferConfirmName(""); }}>
-                    Cancel
+                <div className="flex gap-2 justify-between">
+                  <Button variant="secondary" onClick={runFinalize} disabled={actionBusy}>
+                    {actionBusy ? "Working…" : "Finalize pending transfer"}
                   </Button>
-                  <Button
-                    variant="danger"
-                    disabled={!transferAddress.trim() || !confirmMatch || transferName.isPending}
-                    onClick={async () => {
-                      const id = Array.from(selectedAssetIds)[0];
-                      const asset = assets.find(a => a.id === id);
-                      if (!asset) return;
-                      const pw = transferPassphrase || passphrase;
-                      if (!pw) {
-                        showToast("Enter wallet passphrase in Settings or below", "error");
-                        return;
-                      }
-                      try {
-                        await transferName.mutateAsync({ name: asset.tld, address: transferAddress, passphrase: pw });
-                        showToast(`Transfer initiated for .${asset.tld}`, "success");
-                        clearSelection();
-                        setTransferDialogOpen(false);
-                        setTransferAddress("");
-                        setTransferPassphrase("");
-                        setTransferConfirmName("");
-                      } catch (e) {
-                        showToast(mapError(e), "error");
-                      }
-                    }}
-                  >
-                    {transferName.isPending ? "Transferring..." : "Transfer"}
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button variant="ghost" onClick={closeReset} disabled={actionBusy}>
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="danger"
+                      onClick={runTransfer}
+                      disabled={!transferAddress.trim() || !confirmMatch || actionBusy}
+                    >
+                      {actionBusy ? "Working…" : "Transfer"}
+                    </Button>
+                  </div>
                 </div>
               </>
             );

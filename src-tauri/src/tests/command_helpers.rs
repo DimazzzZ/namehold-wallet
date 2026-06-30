@@ -18,5 +18,7 @@ pub fn create_test_state() -> crate::AppState {
     crate::AppState {
         db: Mutex::new(conn),
         signer: Mutex::new(None),
+        secure_prompts: Mutex::new(std::collections::HashMap::new()),
+        hsd_child: Mutex::new(None),
     }
 }

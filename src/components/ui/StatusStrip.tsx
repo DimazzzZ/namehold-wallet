@@ -1,10 +1,8 @@
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
+import { useActiveProfile, useSignerSession, useWriteCapability } from "../../queries/wallet";
 import { useNodeStatus } from "../../queries/node";
-import { useNamebaseStatus } from "../../queries/namebase";
-import { useReadContext } from "../../queries/read";
-import { providerStatusValue, providerTone } from "../../lib/providerMode";
 import type { ShellStatusItem, StatusTone } from "../../types";
 
 const TONE_DOT: Record<StatusTone, string> = {
@@ -24,62 +22,69 @@ const TONE_TEXT: Record<StatusTone, string> = {
 };
 
 /**
- * Compact, always-visible operational status indicators rendered in the shell.
- * Each item is clickable and routes to the relevant workspace.
+ * Compact, always-visible status for the non-custodial model: which wallet is
+ * active, whether the signer is unlocked, and whether sending is possible (node
+ * reachable + unlocked). Reads are always via the explorer, so there is no
+ * "provider/node connection" probing of localhost here. Namebase status is NOT
+ * shown here — it lives only in the Namebase section (the Migration workspace).
  */
 export function StatusStrip({ className }: { className?: string }) {
   const navigate = useNavigate();
+  const { data: profile } = useActiveProfile();
+  const { data: signer } = useSignerSession();
+  const { data: writeCap } = useWriteCapability();
   const { data: node } = useNodeStatus();
-  const { data: namebase } = useNamebaseStatus();
-  const { data: readContext } = useReadContext();
 
   const items = useMemo<ShellStatusItem[]>(() => {
     const result: ShellStatusItem[] = [];
 
-    if (readContext) {
+    result.push({
+      key: "wallet",
+      label: "Wallet",
+      value: profile ? `${profile.label} · ${profile.network}` : "None",
+      tone: profile ? "info" : "default",
+      detail: profile ? undefined : "Create or import a wallet",
+      route: "/wallet",
+    });
+
+    if (profile && !profile.watchOnly) {
+      const unlocked = signer?.unlocked ?? false;
       result.push({
-        key: "provider",
-        label: "Provider",
-        value: providerStatusValue(readContext),
-        tone: providerTone(readContext),
-        detail:
-          readContext.activeReadProvider.reason ??
-          readContext.activeReadProvider.label,
+        key: "signer",
+        label: "Signer",
+        value: unlocked ? "Unlocked" : "Locked",
+        tone: unlocked ? "success" : "default",
+        route: "/wallet",
+      });
+
+      // Node connectivity — the authoritative RPC-answers signal, so the app
+      // explicitly says whether a node is connected (not just "can send").
+      const nodeConnected = node?.connected ?? false;
+      const nodeStarting = node?.process_alive ?? false;
+      result.push({
+        key: "node",
+        label: "Node",
+        value: nodeConnected ? "Connected" : nodeStarting ? "Starting…" : "Offline",
+        tone: nodeConnected ? "success" : nodeStarting ? "warning" : "default",
+        detail: nodeConnected
+          ? `block ${node?.height ?? "?"}`
+          : "Start a node in Settings",
+        route: "/settings",
+      });
+
+      const canWrite = writeCap?.canWrite ?? false;
+      result.push({
+        key: "sending",
+        label: "Sending",
+        value: canWrite ? "Ready" : "Unavailable",
+        tone: canWrite ? "success" : "warning",
+        detail: writeCap?.reason ?? undefined,
         route: "/settings",
       });
     }
 
-    const nodeRunning = Boolean(node?.running);
-    result.push({
-      key: "node",
-      label: "Node",
-      value: nodeRunning ? "Running" : "Stopped",
-      tone: nodeRunning ? "success" : "default",
-      detail: node?.error ?? node?.hsd_version,
-      route: "/node",
-    });
-
-    const walletConnected = Boolean(node?.wallet_connected);
-    result.push({
-      key: "wallet",
-      label: "Wallet",
-      value: walletConnected ? "Connected" : "Offline",
-      tone: walletConnected ? "success" : "warning",
-      route: "/wallet",
-    });
-
-    const nbConnected = Boolean(namebase?.connected);
-    result.push({
-      key: "namebase",
-      label: "Namebase",
-      value: nbConnected ? "Connected" : "Not connected",
-      tone: nbConnected ? "success" : "default",
-      detail: namebase?.error,
-      route: "/migration",
-    });
-
     return result;
-  }, [node, namebase, readContext]);
+  }, [profile, signer, writeCap, node]);
 
   return (
     <div className={cn("flex items-center gap-4", className)}>

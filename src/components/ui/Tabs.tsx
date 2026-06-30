@@ -17,10 +17,7 @@ export function Tabs<T extends string>({
   return (
     <div
       role="tablist"
-      className={cn(
-        "inline-flex items-center gap-1 rounded-lg bg-gray-100 p-1",
-        className,
-      )}
+      className={cn("inline-flex flex-wrap items-center gap-1.5", className)}
     >
       {tabs.map((tab) => {
         const isActive = tab.key === active;
@@ -32,10 +29,10 @@ export function Tabs<T extends string>({
             title={tab.description}
             onClick={() => onChange(tab.key)}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
+              "inline-flex items-center gap-1.5 rounded-md border px-3.5 py-1.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1",
               isActive
-                ? "bg-white text-gray-900 shadow-sm"
-                : "text-gray-500 hover:text-gray-800",
+                ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                : "bg-gray-100 text-gray-900 border-gray-300 hover:bg-gray-200",
             )}
           >
             {tab.label}
@@ -43,7 +40,7 @@ export function Tabs<T extends string>({
               <span
                 className={cn(
                   "rounded-full px-1.5 text-[10px] font-semibold",
-                  isActive ? "bg-blue-100 text-blue-700" : "bg-gray-200 text-gray-600",
+                  isActive ? "bg-white/20 text-white" : "bg-gray-200 text-gray-600",
                 )}
               >
                 {tab.badge}

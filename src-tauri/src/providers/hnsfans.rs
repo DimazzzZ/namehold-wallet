@@ -192,6 +192,144 @@ impl HnsFansClient {
     ) -> Result<serde_json::Value, AppError> {
         Ok(serde_json::Value::Array(Vec::new()))
     }
+
+    // --- Owned-name discovery (node-free) ----------------------------------
+    //
+    // HNSFans has no "names owned by address" route, but it DOES expose enough
+    // to reconstruct ownership without a node:
+    //   * `/api/txs?address=&limit=&offset=` — the txs an address touched.
+    //   * `/api/txs/:hash` — single-tx detail whose outputs are flattened with
+    //     `action` + `name` + `address` (the covenant info the list endpoint and
+    //     the `covenant` field omit).
+    //   * `/api/names/:name/history` — newest-first covenant history; its latest
+    //     entry's (txid,index) points at the current owner output.
+    // The explorer rate-limits rapid requests (HTTP 403), so callers throttle
+    // and treat any error mid-crawl as "stop this pass, keep what we have".
+
+    /// One page of the txids an address participated in, plus the total count.
+    pub async fn get_address_txids(
+        &self,
+        address: &str,
+        limit: u32,
+        offset: u32,
+    ) -> Result<(Vec<String>, u64), AppError> {
+        let url = format!(
+            "{}/api/txs?address={}&limit={}&offset={}",
+            self.base_url,
+            address.trim(),
+            limit,
+            offset
+        );
+        let resp = self.http.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!(
+                "HNSFans txs lookup failed for {}: status {}",
+                address,
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp.json().await?;
+        let total = body.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+        let hashes = body
+            .get("result")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.get("hash").and_then(|h| h.as_str()).map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Ok((hashes, total))
+    }
+
+    /// The name-bearing outputs of a single tx. Each carries the covenant
+    /// `action`, the resolved `name`, the owning `address`, and its output
+    /// `index` (position in the full output list).
+    pub async fn get_tx_named_outputs(&self, hash: &str) -> Result<Vec<NamedOutput>, AppError> {
+        let url = format!("{}/api/txs/{}", self.base_url, hash.trim());
+        let resp = self.http.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!(
+                "HNSFans tx detail failed for {}: status {}",
+                hash,
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp.json().await?;
+        Ok(parse_named_outputs(&body))
+    }
+
+    /// The current owner outpoint `(txid, index)` of a name, from the newest
+    /// entry of `/api/names/:name/history`. `None` if the name has no history.
+    pub async fn get_name_current_owner(
+        &self,
+        name: &str,
+    ) -> Result<Option<(String, u32)>, AppError> {
+        let url = format!("{}/api/names/{}/history", self.base_url, name.trim());
+        let resp = self.http.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!(
+                "HNSFans history failed for {}: status {}",
+                name,
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp.json().await?;
+        Ok(newest_owner_outpoint(&body))
+    }
+}
+
+/// A name-bearing transaction output as flattened by `/api/txs/:hash`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedOutput {
+    pub index: u32,
+    pub action: String,
+    pub name: String,
+    pub address: String,
+}
+
+/// Extract name-bearing outputs from a `/api/txs/:hash` payload. The output
+/// `index` is its position in the full `outputs` array.
+fn parse_named_outputs(body: &serde_json::Value) -> Vec<NamedOutput> {
+    let mut out = Vec::new();
+    let Some(arr) = body.get("outputs").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for (i, o) in arr.iter().enumerate() {
+        let name = o.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let address = o.get("address").and_then(|v| v.as_str()).unwrap_or("");
+        if name.is_empty() || address.is_empty() {
+            continue;
+        }
+        out.push(NamedOutput {
+            index: i as u32,
+            action: o
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            name: name.to_string(),
+            address: address.to_string(),
+        });
+    }
+    out
+}
+
+/// The newest `(txid, index)` from a `/api/names/:name/history` payload, which
+/// lists entries newest-first.
+fn newest_owner_outpoint(body: &serde_json::Value) -> Option<(String, u32)> {
+    let rows = body
+        .get("result")
+        .and_then(|v| v.as_array())
+        .or_else(|| body.as_array())?;
+    for entry in rows {
+        let txid = entry.get("txid").and_then(|v| v.as_str());
+        let index = entry.get("index").and_then(|v| v.as_u64());
+        if let (Some(txid), Some(index)) = (txid, index) {
+            return Some((txid.to_string(), index as u32));
+        }
+    }
+    None
 }
 
 fn extract_amount(body: &serde_json::Value, keys: &[&str]) -> i64 {
@@ -454,6 +592,45 @@ mod tests {
         assert!(name.transfer.is_none());
         // `revoked: 1` normalizes to true.
         assert_eq!(name.revoked, Some(true));
+    }
+
+    #[test]
+    fn parse_named_outputs_keeps_only_named_with_true_index() {
+        // Mirrors /api/txs/:hash: outputs are flattened with action+name+address;
+        // plain (NONE) outputs carry no name and must be skipped, but the named
+        // output keeps its true position in the full outputs array.
+        let body = json!({
+            "outputs": [
+                { "address": "hs1qplain", "value": 1000 },
+                { "action": "NONE", "address": "hs1qplain2", "value": 0 },
+                { "action": "FINALIZE", "name": "examplename", "address": "hs1qowner", "value": 400000 }
+            ]
+        });
+        let outs = parse_named_outputs(&body);
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].index, 2);
+        assert_eq!(outs[0].action, "FINALIZE");
+        assert_eq!(outs[0].name, "examplename");
+        assert_eq!(outs[0].address, "hs1qowner");
+        // Missing outputs array -> empty.
+        assert!(parse_named_outputs(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn newest_owner_outpoint_takes_first_history_entry() {
+        // /api/names/:name/history is newest-first; take the first (txid,index).
+        let body = json!({
+            "result": [
+                { "action": "Finalize", "txid": "aa", "index": 32 },
+                { "action": "Transfer", "txid": "bb", "index": 0 }
+            ]
+        });
+        assert_eq!(newest_owner_outpoint(&body), Some(("aa".to_string(), 32)));
+        // Bare array form also supported.
+        let bare = json!([{ "txid": "cc", "index": 1 }]);
+        assert_eq!(newest_owner_outpoint(&bare), Some(("cc".to_string(), 1)));
+        // Empty -> None.
+        assert_eq!(newest_owner_outpoint(&json!({ "result": [] })), None);
     }
 
     #[test]

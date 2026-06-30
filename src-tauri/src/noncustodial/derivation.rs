@@ -165,7 +165,37 @@ pub fn ensure_addresses(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::noncustodial::hd::{seed_from_mnemonic, ExtendedPrivKey};
+    use crate::noncustodial::hd::{derive_address, seed_from_mnemonic, ExtendedPrivKey};
+
+    /// Regression lock: a real 24-word mnemonic must derive the user's known
+    /// addresses, and per-network (BIP44 coin type 5353 main / 5355 regtest) must
+    /// differ. Guards against any silent change to seed/HD/coin-type/address code.
+    #[test]
+    fn known_mnemonic_derives_expected_addresses_per_network() {
+        let mnemonic = "april coyote civil finger crane uncle situate moon choice wrong \
+                        goose client purse deer funny hobby shrug give anxiety truly rack \
+                        stand salad coach";
+        let seed = seed_from_mnemonic(mnemonic, "").unwrap();
+        let master = ExtendedPrivKey::from_seed(&seed).unwrap();
+
+        for (network, expected) in [
+            (Network::Main, "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8"),
+            (Network::Regtest, "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2"),
+        ] {
+            // Private path (m/44'/coin'/0'/0/0) — what the signer uses.
+            let (_sk, _pk, addr_priv) = derive_address(network, &seed, 0, 0, 0).unwrap();
+            assert_eq!(addr_priv, expected, "private derivation, {network:?}");
+
+            // Public path via account xpub — what the app's receive-address
+            // scanning uses. Must agree with the private path.
+            let account = master
+                .derive_path(&crate::noncustodial::hd::bip44_path(network, 0, 0, 0)[..3])
+                .unwrap();
+            let xpub = ExtendedPubKey::from_priv(&account);
+            let recv0 = derive_one(network, &xpub, BRANCH_RECEIVE, 0).unwrap();
+            assert_eq!(recv0.address, expected, "public derivation, {network:?}");
+        }
+    }
 
     fn test_xpub() -> ExtendedPubKey {
         let seed = seed_from_mnemonic(

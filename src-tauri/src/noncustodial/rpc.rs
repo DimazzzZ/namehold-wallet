@@ -80,6 +80,56 @@ struct RpcRequest<'a> {
     params: serde_json::Value,
 }
 
+/// Resolve the api-key to authenticate the node RPC with: the explicit
+/// `node_rpc_api_key` setting when set, otherwise the `api-key` from the data
+/// directory's `hsd.conf` (so the app talks to a node configured via hsd.conf
+/// without the user re-entering the key). Empty when neither is present (a node
+/// with no api-key needs none).
+pub fn resolve_node_api_key(settings: &HashMap<String, String>) -> String {
+    let explicit = settings
+        .get("node_rpc_api_key")
+        .map(|s| s.trim())
+        .unwrap_or("");
+    if !explicit.is_empty() {
+        return explicit.to_string();
+    }
+    // Only consult hsd.conf when a data dir is explicitly configured, so a bare
+    // settings map never touches the filesystem (and stays deterministic).
+    let prefix = settings.get("hsd_prefix").map(|s| s.trim()).unwrap_or("");
+    if prefix.is_empty() {
+        return String::new();
+    }
+    read_hsd_conf_api_key(prefix).unwrap_or_default()
+}
+
+/// Parse `api-key: <value>` (or `api-key <value>`) from `<prefix>/hsd.conf`.
+fn read_hsd_conf_api_key(prefix: &str) -> Option<String> {
+    let conf = std::path::Path::new(prefix).join("hsd.conf");
+    let text = std::fs::read_to_string(conf).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("api-key") else {
+            continue;
+        };
+        // The separator must be ':' or whitespace so we don't match e.g.
+        // "api-keys" or "api-key-foo".
+        let value = if let Some(after) = rest.strip_prefix(':') {
+            after.trim()
+        } else if rest.starts_with(char::is_whitespace) {
+            rest.trim()
+        } else {
+            continue;
+        };
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
 impl NodeRpcClient {
     /// Construct a client against an explicit node URL / key / source.
     pub fn new(node_url: &str, api_key: &str, source: ChainSource) -> Self {
@@ -102,17 +152,14 @@ impl NodeRpcClient {
             .get("node_rpc_url")
             .map(|s| s.as_str())
             .unwrap_or("http://127.0.0.1:12037");
-        let key = settings
-            .get("node_rpc_api_key")
-            .map(|s| s.as_str())
-            .unwrap_or("");
+        let key = resolve_node_api_key(settings);
         let source = ChainSource::from_setting(
             settings
                 .get("chain_source")
                 .map(|s| s.as_str())
                 .unwrap_or("local_node"),
         );
-        Self::new(url, key, source)
+        Self::new(url, &key, source)
     }
 
     pub fn source(&self) -> ChainSource {
@@ -209,6 +256,11 @@ impl NodeRpcClient {
             .await
     }
 
+    /// `getblockhash` — the block hash (display-order hex) at `height`.
+    pub async fn get_block_hash(&self, height: i64) -> Result<String, AppError> {
+        self.call("getblockhash", serde_json::json!([height])).await
+    }
+
     // --- Broadcast (write) -------------------------------------------------
 
     /// `sendrawtransaction` — broadcast an already-signed, hex-encoded tx.
@@ -225,6 +277,33 @@ impl NodeRpcClient {
         self.call("sendrawtransaction", serde_json::json!([raw_tx_hex]))
             .await
     }
+
+    /// `estimatesmartfee` — suggested fee rate, returned in **dollarydoos per
+    /// byte** (floored to the 1 doo/byte relay minimum).
+    ///
+    /// hsd returns `{ "fee": <HNS per kvB>, "blocks": n }` (and some variants a
+    /// bare number). Many nodes (regtest, freshly-synced) have no estimate and
+    /// return a non-positive value or an error; callers must treat any error as
+    /// "use the fixed default rate" rather than failing the operation.
+    pub async fn estimate_smart_fee(&self, blocks: u32) -> Result<u64, AppError> {
+        let v: serde_json::Value = self
+            .call("estimatesmartfee", serde_json::json!([blocks]))
+            .await?;
+        let rate_hns_per_kvb = v
+            .get("fee")
+            .and_then(|f| f.as_f64())
+            .or_else(|| v.as_f64())
+            .ok_or_else(|| AppError::Rpc("estimatesmartfee: no fee in response".into()))?;
+        if !(rate_hns_per_kvb.is_finite()) || rate_hns_per_kvb <= 0.0 {
+            return Err(AppError::Rpc(
+                "estimatesmartfee: no estimate available".into(),
+            ));
+        }
+        // HNS/kvB -> doos/kvB (×1e6) -> doos/byte (÷1000). Floor at the relay
+        // minimum (1 doo/byte, == send::MIN_FEE_RATE_PER_BYTE).
+        let doos_per_byte = ((rate_hns_per_kvb * 1_000_000.0) / 1000.0).floor() as i64;
+        Ok((doos_per_byte.max(1)) as u64)
+    }
 }
 
 /// Minimal typed view of `getblockchaininfo` (extra fields ignored).
@@ -236,8 +315,10 @@ pub struct BlockchainInfo {
     /// Header height (peers' best).
     #[serde(default)]
     pub headers: Option<i64>,
-    /// 0.0..=1.0 sync progress.
-    #[serde(default)]
+    /// 0.0..=1.0 sync progress. hsd sends this all-lowercase
+    /// (`verificationprogress`), which the struct's camelCase `rename_all` would
+    /// otherwise miss — so name it explicitly.
+    #[serde(default, rename = "verificationprogress")]
     pub verification_progress: Option<f64>,
     /// Best block hash.
     #[serde(default)]
@@ -354,12 +435,40 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn estimate_smart_fee_scales_hns_per_kvb_to_doos_per_byte() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"result":{"fee":0.1,"blocks":6},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        // 0.1 HNS/kvB -> 100000 doos/kvB -> 100 doos/byte.
+        assert_eq!(client.estimate_smart_fee(6).await.unwrap(), 100);
+    }
+
+    #[tokio::test]
+    async fn estimate_smart_fee_errors_when_no_estimate() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":{"fee":0,"blocks":6},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        assert!(client.estimate_smart_fee(6).await.is_err());
+    }
+
     #[test]
     fn blockchain_info_deserializes_minimal() {
+        // Field names match hsd's actual getblockchaininfo output — note
+        // `verificationprogress` is ALL lowercase (not camelCase).
         let json = serde_json::json!({
             "blocks": 12345,
             "headers": 12345,
-            "verificationProgress": 0.9999,
+            "verificationprogress": 0.9999,
             "bestblockhash": "abc123",
             "extraFieldWeIgnore": true
         });

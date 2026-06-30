@@ -5,30 +5,19 @@ import type { Settings } from "../types";
 interface SettingsState {
   settings: Settings | null;
   loaded: boolean;
-  passphrase: string;
   load: () => Promise<void>;
   update: (key: string, value: string) => Promise<void>;
   saveAll: (partial: Partial<Settings>) => Promise<void>;
-  setPassphrase: (p: string) => void;
-  clearPassphrase: () => void;
 }
 
 const DEFAULT_SETTINGS: Settings = {
-  hsd_wallet_api_url: "http://127.0.0.1:12039",
-  hsd_node_api_url: "http://127.0.0.1:12037",
-  hsd_api_key: "",
-  hsd_wallet_id: "primary",
-  hsd_network: "mainnet",
-  hsd_prefix: "~/.hsd",
-  write_mode: "false",
-  connection_mode: "local_managed_hsd",
-  external_read_provider: "none",
-  external_read_api_url: "https://hnsfans.com",
-  external_read_watch_addresses: "[]",
-  external_read_watch_names: "[]",
-  remote_hsd_label: "",
-  trusted_remote_hsd: "false",
-  future_signer_mode: "none",
+  // Sending node (hsd RPC); reads come from the explorer below.
+  node_rpc_url: "http://127.0.0.1:12037",
+  node_rpc_api_key: "",
+  hsd_prefix: "",
+  explorer_api_url: "https://e.hnsfans.com",
+  address_gap_limit: "20",
+  signer_session_timeout_seconds: "900",
   advanced_mode: "false",
   onboarding_complete: "false",
 };
@@ -36,7 +25,6 @@ const DEFAULT_SETTINGS: Settings = {
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   settings: null,
   loaded: false,
-  passphrase: "",
   load: async () => {
     const s = await invoke<Record<string, string>>("get_settings");
     set({ settings: { ...DEFAULT_SETTINGS, ...s }, loaded: true });
@@ -57,6 +45,4 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
     await invoke("update_setting", { key, value });
   },
-  setPassphrase: (p) => set({ passphrase: p }),
-  clearPassphrase: () => set({ passphrase: "" }),
 }));

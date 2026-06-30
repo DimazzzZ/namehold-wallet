@@ -193,6 +193,22 @@ impl ExtendedPubKey {
         self.public.serialize()
     }
 
+    /// Serialize this key to a BIP32 base58check xpub string for `network`.
+    ///
+    /// depth / parent fingerprint / child number are zeroed: callers only need
+    /// the key + chain code to derive non-hardened children, and storing the
+    /// account-level node this way round-trips through [`from_xpub`].
+    pub fn to_base58check(&self, network: Network) -> String {
+        let mut payload = Vec::with_capacity(78);
+        payload.extend_from_slice(&network.xpub_version().to_be_bytes());
+        payload.push(0); // depth
+        payload.extend_from_slice(&[0u8; 4]); // parent fingerprint
+        payload.extend_from_slice(&[0u8; 4]); // child number
+        payload.extend_from_slice(&self.chain_code);
+        payload.extend_from_slice(&self.public.serialize());
+        base58check_encode(&payload)
+    }
+
     /// Parse a base58check-encoded BIP32 xpub string into an `ExtendedPubKey`.
     ///
     /// Validates the 4-byte version prefix against the network's `xpub_version`

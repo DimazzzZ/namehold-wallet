@@ -48,3 +48,6 @@ zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 mockito = "1"
+# Enables tauri::test (mock_builder/mock_context) so integration tests can drive
+# the real #[tauri::command] functions with managed AppState.
+tauri = { version = "2", features = ["test"] }

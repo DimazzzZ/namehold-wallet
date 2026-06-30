@@ -12,13 +12,19 @@ pub struct NamebaseClient {
 
 impl NamebaseClient {
     pub fn new(cookie: &str) -> Result<Self, AppError> {
+        Self::with_base_url(cookie, "https://www.namebase.io")
+    }
+
+    /// Construct against an explicit base URL. Used to point the client at a mock
+    /// server in tests; production always uses `new` (the real Namebase host).
+    pub fn with_base_url(cookie: &str, base_url: &str) -> Result<Self, AppError> {
         let http = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| AppError::Other(format!("Failed to create HTTP client: {}", e)))?;
         Ok(Self {
             http,
-            base_url: "https://www.namebase.io".to_string(),
+            base_url: base_url.trim_end_matches('/').to_string(),
             cookie: cookie.to_string(),
         })
     }
