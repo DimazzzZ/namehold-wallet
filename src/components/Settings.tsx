@@ -278,7 +278,7 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
           <span className={`inline-block w-2 h-2 rounded-full ${dotClass}`} />
           <span className="font-medium">{label}</span>
         </div>
-        {processAlive ? (
+        {processAlive || connected ? (
           <Button size="sm" variant="secondary" onClick={onStop} disabled={stop.isPending}>
             {stop.isPending ? "Stopping…" : "Stop hsd"}
           </Button>
