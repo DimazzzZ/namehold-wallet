@@ -513,6 +513,87 @@ pub fn get_wallet_snapshots(
     Ok(snapshots)
 }
 
+/// Collect distinct, non-empty addresses recorded in wallet snapshots, newest
+/// first. Used to auto-derive watch addresses for external read-only mode so
+/// the user does not have to enter them manually.
+pub fn get_known_wallet_addresses(
+    conn: &rusqlite::Connection,
+    limit: i64,
+) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT address FROM wallet_snapshots
+         WHERE address IS NOT NULL AND address != ''
+         ORDER BY id DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit], |row| row.get::<_, String>(0))?;
+    let mut addresses = Vec::new();
+    for row in rows {
+        addresses.push(row?);
+    }
+    Ok(addresses)
+}
+
+/// Replace the cached address set for a specific wallet. Called after a sync
+/// against a (local or remote) hsd, so external read-only mode can resolve the
+/// selected wallet's full balance/assets without manual watch addresses.
+pub fn replace_wallet_addresses(
+    conn: &rusqlite::Connection,
+    wallet_id: &str,
+    addresses: &[String],
+) -> Result<usize, AppError> {
+    // Upsert each address (preserving first_seen, refreshing last_seen). We do
+    // not delete stale rows: an address that was ever owned by the wallet stays
+    // relevant for read-only history.
+    let mut inserted = 0usize;
+    for addr in addresses {
+        let trimmed = addr.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        conn.execute(
+            "INSERT INTO wallet_addresses (wallet_id, address, last_seen)
+             VALUES (?1, ?2, datetime('now'))
+             ON CONFLICT(wallet_id, address)
+             DO UPDATE SET last_seen = datetime('now')",
+            params![wallet_id, trimmed],
+        )?;
+        inserted += 1;
+    }
+    Ok(inserted)
+}
+
+/// Get the cached addresses for a specific wallet, newest activity first.
+pub fn get_wallet_addresses_for_wallet(
+    conn: &rusqlite::Connection,
+    wallet_id: &str,
+    limit: i64,
+) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT address FROM wallet_addresses
+         WHERE wallet_id = ?1
+         ORDER BY last_seen DESC, id DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![wallet_id, limit], |row| row.get::<_, String>(0))?;
+    let mut addresses = Vec::new();
+    for row in rows {
+        addresses.push(row?);
+    }
+    Ok(addresses)
+}
+
+/// Collect the TLDs tracked in the local inventory. Used to auto-derive watch
+/// names for external read-only mode.
+pub fn get_inventory_tlds(conn: &rusqlite::Connection) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare("SELECT tld FROM assets ORDER BY tld ASC")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut tlds = Vec::new();
+    for row in rows {
+        tlds.push(row?);
+    }
+    Ok(tlds)
+}
+
 pub fn get_assets_by_tlds(
     conn: &rusqlite::Connection,
     tlds: &[String],

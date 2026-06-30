@@ -17,6 +17,9 @@ pub async fn sync_names(state: State<'_, AppState>) -> Result<serde_json::Value,
     let wallet_names = client.get_names().await?;
     let balance = client.get_balance().await.ok();
     let address = client.get_receive_address().await.ok();
+    // Collect the wallet's full public address set so external read-only mode
+    // can resolve the *selected wallet's* balance/assets automatically.
+    let wallet_addresses = client.get_wallet_addresses().await.unwrap_or_default();
 
     let tld_set: HashSet<String> = assets.iter().map(|a| a.tld.clone()).collect();
     let mut matched = 0usize;
@@ -70,6 +73,16 @@ pub async fn sync_names(state: State<'_, AppState>) -> Result<serde_json::Value,
                 wallet_names.len() as i64,
                 None,
             )?;
+        }
+
+        // Persist the wallet's public address set, scoped to this wallet id, so
+        // external read-only mode can resolve the selected wallet automatically.
+        if !wallet_addresses.is_empty() {
+            if let Err(e) =
+                db::queries::replace_wallet_addresses(&db, &wallet_id, &wallet_addresses)
+            {
+                errors.push(format!("wallet_addresses: {}", e));
+            }
         }
 
         db.execute(

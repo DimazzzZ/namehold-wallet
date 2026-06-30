@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNodeStatus, useStopHsd, useStartHsd, useHsdLog } from "../queries/node";
+import { useReadContext } from "../queries/read";
+import { canManageNode } from "../lib/providerMode";
 import { useSettingsStore } from "../stores/settings";
 import { useUiStore } from "../stores/ui";
 import { Button } from "./ui/Button";
@@ -10,6 +12,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 
 export function NodeControl() {
   const { data: status, isLoading, refetch } = useNodeStatus();
+  const { data: readContext } = useReadContext();
   const stopHsd = useStopHsd();
   const startHsd = useStartHsd();
   const hsdLog = useHsdLog(200);
@@ -46,6 +49,11 @@ export function NodeControl() {
   const defaultPrefix = settings?.hsd_prefix || "";
   const defaultApiKey = settings?.hsd_api_key || "";
   const defaultNetwork = settings?.hsd_network || "mainnet";
+
+  // Provider-aware node management: only the local managed hsd provider can be
+  // started/stopped from here. Remote / external providers are not manageable.
+  const nodeManageable = canManageNode(readContext);
+  const activeProvider = readContext?.activeReadProvider;
 
   const isRunning = status?.running ?? false;
   const chain = status?.chain;
@@ -223,6 +231,20 @@ export function NodeControl() {
     <div className="space-y-6">
       <h2 className="text-xl font-bold">Node Control</h2>
 
+      {/* Provider context: node controls only apply to a local managed hsd. */}
+      {readContext && !nodeManageable && (
+        <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm text-blue-800">
+          <div>
+            Active data source: <strong>{activeProvider?.label ?? "—"}</strong>
+          </div>
+          <div className="mt-1 text-blue-700">
+            This provider is not managed by Namehold, so the node cannot be
+            started or stopped here
+            {activeProvider?.reason ? `: ${activeProvider.reason}` : "."}
+          </div>
+        </div>
+      )}
+
       {/* Status */}
       <div className="bg-white rounded p-4 border border-gray-200">
         <h3 className="text-sm font-semibold mb-3">Status</h3>
@@ -357,7 +379,7 @@ export function NodeControl() {
           <Button
             variant="primary"
             onClick={handleStart}
-            disabled={isRunning || starting || startHsd.isPending}
+            disabled={!nodeManageable || isRunning || starting || startHsd.isPending}
           >
             {starting ? (
               <span className="flex items-center gap-2">
@@ -376,7 +398,7 @@ export function NodeControl() {
           <Button
             variant="danger"
             onClick={handleStop}
-            disabled={!isRunning || stopping || stopHsd.isPending}
+            disabled={!nodeManageable || !isRunning || stopping || stopHsd.isPending}
           >
             {stopping ? (
               <span className="flex items-center gap-2">

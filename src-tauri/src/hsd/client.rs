@@ -258,6 +258,66 @@ impl HandshakeClient {
         Ok(resp.json().await?)
     }
 
+    /// Collect the distinct set of public addresses that belong to the selected
+    /// wallet, by inspecting its unspent coins and transaction history.
+    ///
+    /// hsd does not expose a single "list all addresses" endpoint, but every
+    /// address the wallet has ever received on appears in either its current
+    /// coins or its transaction history (as an output owned by the wallet).
+    /// This gives external read-only mode a wallet-scoped address set so the
+    /// selected wallet's full balance/assets resolve automatically.
+    pub async fn get_wallet_addresses(&self) -> Result<Vec<String>, AppError> {
+        use std::collections::BTreeSet;
+        let mut addresses: BTreeSet<String> = BTreeSet::new();
+
+        // 1) Current coins (UTXOs) — these directly carry an `address` field.
+        if let Ok(coins) = self.get_coins().await {
+            if let Some(arr) = coins.as_array() {
+                for coin in arr {
+                    if let Some(addr) = coin.get("address").and_then(|v| v.as_str()) {
+                        if !addr.is_empty() {
+                            addresses.insert(addr.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2) Transaction history — outputs flagged as owned by this wallet
+        //    (`path` present) belong to the wallet. This recovers older
+        //    receive/change addresses that no longer hold UTXOs.
+        if let Ok(txs) = self.get_transactions().await {
+            if let Some(arr) = txs.as_array() {
+                for tx in arr {
+                    if let Some(outputs) = tx.get("outputs").and_then(|v| v.as_array()) {
+                        for output in outputs {
+                            let owned = output.get("path").map(|p| !p.is_null()).unwrap_or(false);
+                            if !owned {
+                                continue;
+                            }
+                            if let Some(addr) =
+                                output.get("address").and_then(|v| v.as_str())
+                            {
+                                if !addr.is_empty() {
+                                    addresses.insert(addr.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3) Always include the current default receive address.
+        if let Ok(addr) = self.get_receive_address().await {
+            if !addr.is_empty() {
+                addresses.insert(addr);
+            }
+        }
+
+        Ok(addresses.into_iter().collect())
+    }
+
     // P1: Lock wallet
     pub async fn lock_wallet(&self) -> Result<(), AppError> {
         let resp = self.wallet_post("/lock").send().await?;

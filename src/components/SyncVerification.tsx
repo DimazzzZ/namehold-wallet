@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useSyncNames, useSyncReport } from "../queries/sync";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
+import { useReadContext } from "../queries/read";
 import { Button } from "./ui/Button";
 import { formatDate, formatHns } from "../lib/utils";
 import { useUiStore } from "../stores/ui";
@@ -10,8 +11,15 @@ import type { AuditEntry, WalletSnapshot } from "../types";
 export function SyncVerification() {
   const syncNames = useSyncNames();
   const syncReport = useSyncReport();
+  const { data: readContext } = useReadContext();
   const showToast = useUiStore((s) => s.showToast);
   const [showReport, setShowReport] = useState(false);
+
+  // Sync compares the inventory against the wallet's owned names. This requires
+  // a provider that can enumerate owned names (a local managed or remote hsd
+  // wallet). External read-only providers cannot drive sync.
+  const walletAvailable = readContext?.walletAvailable ?? true;
+  const activeProvider = readContext?.activeReadProvider;
 
   const { data: auditLog } = useQuery({
     queryKey: ["audit", "sync"],
@@ -56,19 +64,33 @@ export function SyncVerification() {
           <Button
             variant="secondary"
             onClick={handleReport}
-            disabled={syncReport.isFetching}
+            disabled={!walletAvailable || syncReport.isFetching}
           >
             {syncReport.isFetching ? "Loading..." : "Compare Names"}
           </Button>
           <Button
             variant="primary"
             onClick={handleSync}
-            disabled={syncNames.isPending}
+            disabled={!walletAvailable || syncNames.isPending}
           >
             {syncNames.isPending ? "Syncing..." : "Sync Now"}
           </Button>
         </div>
       </div>
+
+      {readContext && !walletAvailable && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-800">
+          <div>
+            Active data source: <strong>{activeProvider?.label ?? "—"}</strong>
+          </div>
+          <div className="mt-1 text-yellow-700">
+            Sync requires a wallet that can enumerate owned names (local managed
+            or remote hsd). The active provider is read-only, so syncing is
+            unavailable
+            {activeProvider?.reason ? `: ${activeProvider.reason}` : "."}
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded p-4 border border-gray-200 text-sm text-gray-600">
         <p>

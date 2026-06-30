@@ -131,6 +131,84 @@ export interface Settings {
   hsd_network: string;
   hsd_prefix: string;
   write_mode: string;
+  connection_mode:
+    | "local_managed_hsd"
+    | "remote_hsd"
+    | "auto_fallback"
+    | "external_read_only";
+  external_read_provider: "none" | "hnsfans";
+  external_read_api_url: string;
+  /** JSON stringified string[] of watch addresses. */
+  external_read_watch_addresses: string;
+  /** JSON stringified string[] of watch names. */
+  external_read_watch_names: string;
+  remote_hsd_label: string;
+  /** "true" | "false" */
+  trusted_remote_hsd: string;
+  future_signer_mode: "none" | "local_signer_planned";
+  /** "true" | "false" — reveals advanced nav items and settings sections. */
+  advanced_mode: string;
+  /** "true" | "false" — marks first-run onboarding as complete. */
+  onboarding_complete: string;
+}
+
+// ---------------------------------------------------------------------------
+// Provider / connection-mode capability types
+// ---------------------------------------------------------------------------
+
+export type ConnectionMode = Settings["connection_mode"];
+export type ReadProviderKind = "local_hsd" | "remote_hsd" | "external_hnsfans";
+export type WriteProviderKind = "local_hsd" | "remote_hsd" | "none";
+
+export interface ProviderStatus {
+  kind: ReadProviderKind;
+  label: string;
+  healthy: boolean;
+  writeCapable: boolean;
+  /** Whether NodeControl may start/stop the backend. */
+  manageable: boolean;
+  /** Fallback or failure explanation. */
+  reason?: string;
+  providerUrl?: string | null;
+  network?: string | null;
+  chainHeight?: number | null;
+  verificationProgress?: number | null;
+  syncing?: boolean;
+}
+
+export interface ReadContext {
+  connectionMode: ConnectionMode;
+  activeReadProvider: ProviderStatus;
+  fallbackActive: boolean;
+  localNodeHealthy: boolean;
+  walletAvailable: boolean;
+  writeAllowed: boolean;
+  writeReason?: string | null;
+}
+
+export interface WalletReadModel {
+  context: ReadContext;
+  address: string | null;
+  watchAddresses: string[];
+  balance: HsdBalance | null;
+  names: HsdName[];
+  transactions: WalletTransactionRow[];
+  lastUpdatedAt?: string | null;
+  readOnlyReason?: string | null;
+}
+
+export interface ExternalNameSummary {
+  name: string;
+  state: string | null;
+  ownerAddress?: string | null;
+  expiresAtHeight?: number | null;
+  daysUntilExpire?: number | null;
+  source: "external_hnsfans";
+}
+
+export interface ExternalTransactionRow extends WalletTransactionRow {
+  source: "external_hnsfans";
+  matchedAddress?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,4 +281,7 @@ export interface OverviewData {
   recentAudit: AuditEntry[];
   namebaseConnected: boolean;
   namebaseHnsBalance?: number;
+  readContext?: ReadContext | null;
+  walletSummary?: WalletReadModel | null;
+  providerWarnings?: string[];
 }

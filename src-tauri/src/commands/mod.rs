@@ -3,6 +3,7 @@ pub mod batches;
 pub mod csv;
 pub mod namebase;
 pub mod node;
+pub mod read;
 pub mod settings;
 pub mod sync;
 pub mod wallet;

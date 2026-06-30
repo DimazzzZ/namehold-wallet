@@ -10,18 +10,23 @@ export interface PrimaryRoute {
   to: string;
   label: string;
   description: string;
+  /** When true, only shown if the user enabled advanced mode in Settings. */
+  advanced?: boolean;
 }
 
 /**
- * Single source of truth for the application's primary navigation.
- * The shell sidebar and router both consume this list.
+ * Wallet-first primary navigation.
+ *
+ * Order intentionally leads with the wallet (the default landing screen),
+ * followed by the urgent Namebase migration flow, then secondary/advanced
+ * tools. Items marked `advanced: true` are only shown when the user has opted
+ * into advanced mode in Settings.
  */
 export const PRIMARY_ROUTES: PrimaryRoute[] = [
-  { key: "overview", to: "/", label: "Overview", description: "Operational summary and quick actions" },
-  { key: "portfolio", to: "/portfolio", label: "Portfolio", description: "Inventory, batches, renewals, and DNS" },
-  { key: "migration", to: "/migration", label: "Migration", description: "Namebase source and on-chain sync" },
-  { key: "wallet", to: "/wallet", label: "Wallet", description: "Balance, send, receive, and history" },
-  { key: "node", to: "/node", label: "Node", description: "hsd runtime status and lifecycle" },
+  { key: "wallet", to: "/", label: "Wallet", description: "Balance, send, receive, and history" },
+  { key: "migration", to: "/migration", label: "Move from Namebase", description: "Guided transfer of your domains from Namebase" },
+  { key: "portfolio", to: "/portfolio", label: "Portfolio", description: "Inventory, batches, renewals, and DNS", advanced: true },
+  { key: "node", to: "/node", label: "Node", description: "hsd runtime status and lifecycle", advanced: true },
   { key: "settings", to: "/settings", label: "Settings", description: "Configuration and safety" },
 ];
 

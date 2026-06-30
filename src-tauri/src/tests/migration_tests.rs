@@ -46,7 +46,9 @@ fn test_schema_version_tracking() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 2);
+    // 001 initial, 002 hsd prefix, 003 provider modes, 004 wallet addresses,
+    // 005 fix hnsfans api url.
+    assert_eq!(count, 5);
 }
 
 #[test]

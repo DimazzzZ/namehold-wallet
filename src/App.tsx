@@ -30,18 +30,27 @@ function AppRoutes() {
   const hasWallets = walletList && walletList.length > 0;
   const hasSelectedWallet = currentWalletId.trim().length > 0;
 
-  if (!hasSelectedWallet && !hasWallets) {
+  // Onboarding is shown until the user has completed first-run setup. Once a
+  // wallet is selected/available, or the user explicitly finished onboarding,
+  // we drop them straight into the wallet.
+  const onboardingComplete = settings?.onboarding_complete === "true";
+  const connectionMode = settings?.connection_mode;
+  const usesExternalSource =
+    connectionMode === "remote_hsd" || connectionMode === "external_read_only";
+
+  if (!onboardingComplete && !hasSelectedWallet && !hasWallets && !usesExternalSource) {
     return <Onboarding />;
   }
 
   return (
     <Routes>
       <Route element={<Layout />}>
-        <Route path="/" element={<Overview />} />
-        <Route path="/portfolio" element={<PortfolioWorkspace />} />
+        {/* Wallet-first: the wallet is the default landing screen. */}
+        <Route path="/" element={<WalletView />} />
         <Route path="/migration" element={<MigrationWorkspace />} />
-        <Route path="/wallet" element={<WalletView />} />
+        <Route path="/portfolio" element={<PortfolioWorkspace />} />
         <Route path="/node" element={<NodeControl />} />
+        <Route path="/overview" element={<Overview />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

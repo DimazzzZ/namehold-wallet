@@ -8,6 +8,8 @@ pub fn create_test_db() -> Connection {
     conn.execute_batch(sql).unwrap();
     let sql2 = include_str!("../../../src-tauri/src/sql/002_hsd_prefix.sql");
     conn.execute_batch(sql2).unwrap();
+    let sql3 = include_str!("../../../src-tauri/src/sql/003_provider_modes.sql");
+    conn.execute_batch(sql3).unwrap();
     conn
 }
 

@@ -21,6 +21,16 @@ const DEFAULT_SETTINGS: Settings = {
   hsd_network: "mainnet",
   hsd_prefix: "~/.hsd",
   write_mode: "false",
+  connection_mode: "local_managed_hsd",
+  external_read_provider: "none",
+  external_read_api_url: "https://hnsfans.com",
+  external_read_watch_addresses: "[]",
+  external_read_watch_names: "[]",
+  remote_hsd_label: "",
+  trusted_remote_hsd: "false",
+  future_signer_mode: "none",
+  advanced_mode: "false",
+  onboarding_complete: "false",
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

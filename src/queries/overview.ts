@@ -1,10 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
+import { writeBlockedReason } from "../lib/providerMode";
 import type {
   DashboardStats,
+  HsdBalance,
   OverviewData,
   OverviewMetric,
+  ReadContext,
   StatusTone,
+  WalletReadModel,
 } from "../types";
 
 interface NamebaseStatusPayload {
@@ -47,6 +51,49 @@ export function useOverviewData() {
         namebaseConnected = false;
       }
 
+      // Provider-aware read context + balance (best-effort: these must never
+      // break the overview when the active provider is unreachable).
+      const readContext = await invoke<ReadContext>("get_read_context").catch(
+        () => null,
+      );
+      const balance = await invoke<HsdBalance | null>("read_balance").catch(
+        () => null,
+      );
+
+      const providerWarnings: string[] = [];
+      if (readContext) {
+        const provider = readContext.activeReadProvider;
+        if (provider && !provider.healthy) {
+          providerWarnings.push(
+            `${provider.label} is currently unavailable${
+              provider.reason ? `: ${provider.reason}` : "."
+            }`,
+          );
+        }
+        if (readContext.fallbackActive) {
+          providerWarnings.push(
+            "Local node is unavailable — running on read-only fallback.",
+          );
+        }
+        const blocked = writeBlockedReason(readContext);
+        if (blocked) {
+          providerWarnings.push(blocked);
+        }
+      }
+
+      const walletSummary: WalletReadModel | null = readContext
+        ? {
+            context: readContext,
+            address: null,
+            watchAddresses: [],
+            balance: balance ?? null,
+            names: [],
+            transactions: [],
+            lastUpdatedAt: new Date().toISOString(),
+            readOnlyReason: writeBlockedReason(readContext),
+          }
+        : null;
+
       const metrics: OverviewMetric[] = [
         {
           key: "total",
@@ -82,6 +129,9 @@ export function useOverviewData() {
         recentAudit: stats.recent_audit ?? [],
         namebaseConnected,
         namebaseHnsBalance,
+        readContext,
+        walletSummary,
+        providerWarnings,
       };
     },
     staleTime: 30_000,

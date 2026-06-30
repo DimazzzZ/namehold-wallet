@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import { useNodeStatus } from "../../queries/node";
 import { useNamebaseStatus } from "../../queries/namebase";
+import { useReadContext } from "../../queries/read";
+import { providerStatusValue, providerTone } from "../../lib/providerMode";
 import type { ShellStatusItem, StatusTone } from "../../types";
 
 const TONE_DOT: Record<StatusTone, string> = {
@@ -29,9 +31,23 @@ export function StatusStrip({ className }: { className?: string }) {
   const navigate = useNavigate();
   const { data: node } = useNodeStatus();
   const { data: namebase } = useNamebaseStatus();
+  const { data: readContext } = useReadContext();
 
   const items = useMemo<ShellStatusItem[]>(() => {
     const result: ShellStatusItem[] = [];
+
+    if (readContext) {
+      result.push({
+        key: "provider",
+        label: "Provider",
+        value: providerStatusValue(readContext),
+        tone: providerTone(readContext),
+        detail:
+          readContext.activeReadProvider.reason ??
+          readContext.activeReadProvider.label,
+        route: "/settings",
+      });
+    }
 
     const nodeRunning = Boolean(node?.running);
     result.push({
@@ -63,7 +79,7 @@ export function StatusStrip({ className }: { className?: string }) {
     });
 
     return result;
-  }, [node, namebase]);
+  }, [node, namebase, readContext]);
 
   return (
     <div className={cn("flex items-center gap-4", className)}>

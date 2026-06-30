@@ -23,6 +23,7 @@ src-tauri/gen/
 .vscode/
 .idea/
 .mimocode/
+.clinerules/
 *.swp
 *.swo
 *~
@@ -47,8 +48,4 @@ src-tauri/target/release/bundle/
 
 # Build artifacts
 tsconfig.tsbuildinfo
-
-# Session artifacts
 www.namebase.io.har
-SESSION_SUMMARY.md
-implementation_plan.md

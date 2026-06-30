@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useWalletConnection, useWalletBalance, useWalletAddress, useWalletNames, useWalletTransactions, useWalletList, useSendHns } from "../queries/wallet";
+import { useWalletConnection, useWalletAddress, useWalletList, useSendHns } from "../queries/wallet";
+import { useReadContext, useReadBalance, useReadNames, useReadTransactions } from "../queries/read";
 import { useSettingsStore } from "../stores/settings";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
@@ -13,62 +14,17 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
 import { invoke } from "../lib/invoke";
-
-interface ParsedTx {
-  hash: string;
-  type: "send" | "receive" | "other";
-  amount: number;
-  address: string;
-  confirmed: boolean;
-  height: number | null;
-  date: string | null;
-}
-
-function parseTransactions(txs: unknown[]): ParsedTx[] {
-  if (!Array.isArray(txs)) return [];
-  return txs.map((tx: any) => {
-    const hash = tx.hash || tx.tx?.hash || "";
-    const confirmed = (tx.confirmations || 0) > 0;
-    const height = tx.height > 0 ? tx.height : null;
-    const date = tx.date && tx.date !== "1970-01-01T00:00:00Z" ? tx.date : tx.mdate || null;
-
-    // Determine type and amount from outputs
-    let type: "send" | "receive" | "other" = "other";
-    let amount = 0;
-    let address = "";
-
-    if (tx.outputs && Array.isArray(tx.outputs)) {
-      const hasPath = tx.outputs.some((o: any) => o.path && !o.path.change);
-
-      if (hasPath) {
-        type = "receive";
-        const receiveOutput = tx.outputs.find((o: any) => o.path && !o.path.change);
-        amount = receiveOutput?.value || 0;
-        address = receiveOutput?.address || "";
-      } else if (tx.inputs && Array.isArray(tx.inputs)) {
-        type = "send";
-        const sendOutput = tx.outputs.find((o: any) => !o.path?.change);
-        amount = sendOutput?.value || 0;
-        address = sendOutput?.address || "";
-      }
-    }
-
-    // Fallback: use fee to determine direction
-    if (type === "other" && tx.fee) {
-      amount = tx.fee;
-    }
-
-    return { hash, type, amount, address, confirmed, height, date };
-  });
-}
+import { WriteSetupWizard } from "./WriteSetupWizard";
 
 export function WalletView() {
   const qc = useQueryClient();
+  const [writeSetupOpen, setWriteSetupOpen] = useState(false);
   const { data: conn, isLoading: connLoading } = useWalletConnection();
-  const { data: balance, isLoading: balLoading } = useWalletBalance();
+  const { data: readContext } = useReadContext();
+  const { data: balance, isLoading: balLoading } = useReadBalance();
   const { data: address } = useWalletAddress();
-  const { data: names } = useWalletNames();
-  const { data: rawTransactions } = useWalletTransactions();
+  const { data: names } = useReadNames();
+  const { data: transactions = [] } = useReadTransactions();
   const { data: walletList } = useWalletList();
   const settings = useSettingsStore((s) => s.settings);
   const updateSetting = useSettingsStore((s) => s.update);
@@ -104,7 +60,12 @@ export function WalletView() {
   const writeMode = settings?.write_mode === "true";
   const currentWalletId = settings?.hsd_wallet_id || "primary";
 
-  const transactions = parseTransactions(rawTransactions || []);
+  // Provider-aware permissions: writes require both write_mode AND a write-capable provider.
+  const providerLabel = readContext?.activeReadProvider.label || "—";
+  const writeAllowed = writeMode && (readContext?.writeAllowed ?? false);
+  const writeBlockedReason = readContext?.writeReason || null;
+  const readOnlyMode = !writeAllowed;
+  const walletManageable = readContext?.activeReadProvider.manageable ?? false;
 
   const handleCopyAddress = async () => {
     if (!address) return;
@@ -237,21 +198,52 @@ export function WalletView() {
             )}
           </>
         }
-        actions={[
-          { label: "Create Wallet", onClick: () => setCreateOpen(true) },
-          { label: "Import Wallet", variant: "secondary", onClick: () => setImportOpen(true) },
-          { label: "Switch Wallet", variant: "secondary", onClick: () => setSwitchDialogOpen(true) },
-          { label: "Refresh", onClick: handleRefresh },
-        ]}
+        actions={
+          walletManageable
+            ? [
+                { label: "Create Wallet", onClick: () => setCreateOpen(true) },
+                { label: "Import Wallet", variant: "secondary", onClick: () => setImportOpen(true) },
+                { label: "Switch Wallet", variant: "secondary", onClick: () => setSwitchDialogOpen(true) },
+                { label: "Refresh", onClick: handleRefresh },
+              ]
+            : [{ label: "Refresh", onClick: handleRefresh }]
+        }
       />
 
-      {!isLocalhost && (
+      {/* Provider / read-only context banner */}
+      <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm text-blue-800 flex items-center justify-between">
+        <span>
+          Data source: <strong>{providerLabel}</strong>
+        </span>
+        {readOnlyMode && (
+          <Badge variant="warning">
+            Read-only{writeBlockedReason ? ` — ${writeBlockedReason}` : ""}
+          </Badge>
+        )}
+      </div>
+
+      {/* Read-only → write setup CTA */}
+      {readOnlyMode && (
+        <div className="bg-white border border-gray-200 rounded-lg p-4 flex items-center justify-between gap-4">
+          <div>
+            <div className="font-medium text-gray-900">You're in read-only mode</div>
+            <div className="text-sm text-gray-500">
+              Connect your own local hsd node to send HNS and manage names.
+            </div>
+          </div>
+          <Button variant="primary" onClick={() => setWriteSetupOpen(true)}>
+            Enable write mode
+          </Button>
+        </div>
+      )}
+
+      {!isLocalhost && walletManageable && (
         <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700">
           Warning: Wallet API URL ({walletUrl}) is not localhost. Only use local connections for security.
         </div>
       )}
 
-      {!conn?.connected && !connLoading && (
+      {walletManageable && !conn?.connected && !connLoading && (
         <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-800">
           Wallet API not available. Make sure hsd is running with wallet plugin enabled (without <code>--no-wallet</code> flag).
           {!walletList?.length && (
@@ -317,7 +309,7 @@ export function WalletView() {
 
       {/* Actions */}
       <div className="flex gap-3">
-        {writeMode && (
+        {writeAllowed && (
           <Button variant="primary" onClick={() => setSendDialogOpen(true)}>
             Send HNS
           </Button>
@@ -389,15 +381,15 @@ export function WalletView() {
                 {transactions.map((tx, i) => (
                   <tr key={tx.hash || i} className="border-t border-gray-100">
                     <td className="py-2 pr-4 text-xs text-gray-500">
-                      {tx.date ? formatDate(tx.date) : "—"}
+                      {tx.timestamp ? formatDate(tx.timestamp) : "—"}
                     </td>
                     <td className="py-2 pr-4">
-                      <Badge variant={tx.type === "receive" ? "success" : tx.type === "send" ? "warning" : "default"}>
-                        {tx.type}
+                      <Badge variant={tx.direction === "receive" ? "success" : tx.direction === "send" ? "warning" : "default"}>
+                        {tx.direction}
                       </Badge>
                     </td>
                     <td className="py-2 pr-4 font-mono">
-                      {tx.amount > 0 ? formatHns(tx.amount) : "—"}
+                      {tx.amountDoos > 0 ? formatHns(tx.amountDoos) : "—"}
                     </td>
                     <td className="py-2 pr-4 text-xs font-mono truncate max-w-[120px]">
                       {tx.address || "—"}
@@ -590,6 +582,8 @@ export function WalletView() {
           </div>
         </div>
       </Dialog>
+
+      <WriteSetupWizard open={writeSetupOpen} onClose={() => setWriteSetupOpen(false)} />
     </div>
   );
 }

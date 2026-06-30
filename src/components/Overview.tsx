@@ -4,7 +4,8 @@ import { Card } from "./ui/Card";
 import { Badge } from "./ui/Badge";
 import { EmptyState } from "./ui/EmptyState";
 import { useOverviewData, statusTone } from "../queries/overview";
-import { cn } from "../lib/utils";
+import { providerTone, providerStatusValue } from "../lib/providerMode";
+import { cn, formatHns } from "../lib/utils";
 import type { StatusTone } from "../types";
 
 const METRIC_TONE_RING: Record<StatusTone, string> = {
@@ -40,6 +41,45 @@ export function Overview() {
             Failed to load overview data. Check that the node and database are
             reachable.
           </p>
+        </Card>
+      )}
+
+      {/* Provider-aware context banner */}
+      {data?.readContext && (
+        <Card className="mb-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm text-gray-700">
+              Active data source:{" "}
+              <strong>{data.readContext.activeReadProvider.label}</strong>
+            </div>
+            <Badge variant={providerTone(data.readContext)}>
+              {providerStatusValue(data.readContext)}
+            </Badge>
+          </div>
+          {data.walletSummary?.balance && (
+            <div className="mt-2 text-xs text-gray-500">
+              Wallet balance:{" "}
+              <span className="font-medium text-gray-700">
+                {formatHns(
+                  data.walletSummary.balance.confirmed +
+                    data.walletSummary.balance.unconfirmed,
+                )}{" "}
+                HNS
+              </span>
+            </div>
+          )}
+          {data.providerWarnings && data.providerWarnings.length > 0 && (
+            <ul className="mt-3 space-y-1">
+              {data.providerWarnings.map((warning, i) => (
+                <li
+                  key={i}
+                  className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1"
+                >
+                  {warning}
+                </li>
+              ))}
+            </ul>
+          )}
         </Card>
       )}
 

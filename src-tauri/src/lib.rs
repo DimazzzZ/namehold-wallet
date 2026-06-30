@@ -4,6 +4,7 @@ mod error;
 mod hsd;
 mod models;
 mod namebase;
+mod providers;
 mod wallet_delete;
 #[cfg(test)]
 mod tests;
@@ -96,6 +97,13 @@ pub fn run() {
             commands::node::stop_hsd,
             commands::node::start_hsd,
             commands::node::get_hsd_log,
+            commands::read::get_read_context,
+            commands::read::read_balance,
+            commands::read::read_names,
+            commands::read::read_name_info,
+            commands::read::read_transactions,
+            commands::read::get_wallet_read_model,
+            commands::read::compare_inventory_with_provider,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

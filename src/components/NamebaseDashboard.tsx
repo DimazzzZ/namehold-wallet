@@ -112,7 +112,8 @@ export function NamebaseDashboard() {
     }
   };
 
-  const destAddress = walletAddress || "Connect wallet to get address";
+  const receiveAddress = walletAddress || null;
+  const destAddress = receiveAddress || "Connect wallet to get address";
 
   return (
     <div className="space-y-6">
@@ -288,12 +289,12 @@ export function NamebaseDashboard() {
               <Button
                 size="sm"
                 onClick={async () => {
-                  if (walletAddress) {
-                    await writeText(walletAddress);
+                  if (receiveAddress) {
+                    await writeText(receiveAddress);
                     showToast("Address copied", "success");
                   }
                 }}
-                disabled={!walletAddress}
+                disabled={!receiveAddress}
               >
                 Copy
               </Button>
@@ -306,12 +307,12 @@ export function NamebaseDashboard() {
             <Button variant="ghost" onClick={() => setTransferTarget(null)}>Cancel</Button>
             <Button
               variant="primary"
-              disabled={!walletAddress || transferPending}
+              disabled={!receiveAddress || transferPending}
               onClick={async () => {
-                if (!transferTarget || !walletAddress) return;
+                if (!transferTarget || !receiveAddress) return;
                 setTransferPending(true);
                 try {
-                  await invoke("namebase_transfer_domain", { name: transferTarget.name, address: walletAddress });
+                  await invoke("namebase_transfer_domain", { name: transferTarget.name, address: receiveAddress });
                   showToast(`Transfer initiated for .${transferTarget.name}`, "success");
                   setTransferTarget(null);
                   qc.invalidateQueries({ queryKey: ["namebase-withdrawals"] });
@@ -356,15 +357,15 @@ export function NamebaseDashboard() {
             <Button variant="ghost" onClick={() => setBulkTransferOpen(false)}>Cancel</Button>
             <Button
               variant="primary"
-              disabled={!walletAddress || transferPending}
+              disabled={!receiveAddress || transferPending}
               onClick={async () => {
-                if (!walletAddress) return;
+                if (!receiveAddress) return;
                 setTransferPending(true);
                 let successCount = 0;
                 let failCount = 0;
                 for (const name of selectedDomains) {
                   try {
-                    await invoke("namebase_transfer_domain", { name, address: walletAddress });
+                    await invoke("namebase_transfer_domain", { name, address: receiveAddress });
                     successCount++;
                   } catch {
                     failCount++;

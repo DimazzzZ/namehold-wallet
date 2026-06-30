@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "./ui/PageHeader";
 import { Tabs } from "./ui/Tabs";
 import { NamebaseDashboard } from "./NamebaseDashboard";
+import { MigrationAssistant } from "./MigrationAssistant";
 import { SyncVerification } from "./SyncVerification";
 import type { MigrationSectionKey, WorkspaceTab } from "../types";
 
@@ -22,11 +23,21 @@ export function MigrationWorkspace() {
   const content = useMemo(() => {
     switch (activeTab) {
       case "namebase":
-        return <NamebaseDashboard />;
+        return (
+          <>
+            <MigrationAssistant />
+            <NamebaseDashboard />
+          </>
+        );
       case "sync":
         return <SyncVerification />;
       default:
-        return <NamebaseDashboard />;
+        return (
+          <>
+            <MigrationAssistant />
+            <NamebaseDashboard />
+          </>
+        );
     }
   }, [activeTab]);
 
