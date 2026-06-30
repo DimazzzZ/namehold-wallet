@@ -514,6 +514,10 @@ export function NamebaseDashboard() {
           <p className="text-sm text-gray-600">
             Transfer <strong>{selectedDomains.size}</strong> domains from Namebase to an HNS address.
           </p>
+          <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
+            ⚠️ Beta — transfers are irreversible. Move <strong>one</strong> domain first
+            and confirm it arrives before transferring the rest.
+          </div>
           <div>
             <Input
               label="Destination address"
