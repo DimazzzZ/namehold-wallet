@@ -4,6 +4,7 @@ mod error;
 mod hsd;
 mod models;
 mod namebase;
+mod noncustodial;
 mod providers;
 mod wallet_delete;
 #[cfg(test)]
@@ -12,8 +13,16 @@ mod tests;
 use std::sync::Mutex;
 use tauri::Manager;
 
+use crate::noncustodial::session::SignerSession;
+
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
+    /// The currently-unlocked signer session, if any.
+    ///
+    /// This holds decrypted key material in memory ONLY; it is never persisted.
+    /// The sole on-disk form of the secret is the encrypted vault blob. The
+    /// session locks (and zeroizes) on lock/expiry/drop.
+    pub signer: Mutex<Option<SignerSession>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -32,6 +41,7 @@ pub fn run() {
             db::migrations::run(&conn).expect("failed to run migrations");
             app.manage(AppState {
                 db: Mutex::new(conn),
+                signer: Mutex::new(None),
             });
             Ok(())
         })

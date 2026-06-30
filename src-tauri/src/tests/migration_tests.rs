@@ -47,8 +47,10 @@ fn test_schema_version_tracking() {
         .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
         .unwrap();
     // 001 initial, 002 hsd prefix, 003 provider modes, 004 wallet addresses,
-    // 005 fix hnsfans api url.
-    assert_eq!(count, 5);
+    // 005 fix hnsfans api url, 006 noncustodial wallet profiles,
+    // 007 noncustodial chain cache, 008 noncustodial name state,
+    // 009 node rpc settings.
+    assert_eq!(count, 9);
 }
 
 #[test]

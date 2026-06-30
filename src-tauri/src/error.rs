@@ -15,6 +15,16 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error("Lock error: {0}")]
     Lock(String),
+    #[error("Crypto error: {0}")]
+    Crypto(String),
+    #[error("Node RPC error: {0}")]
+    Rpc(String),
+    #[error("Wallet locked")]
+    WalletLocked,
+    #[error("Not found: {0}")]
+    NotFound(String),
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
     #[error("{0}")]
     Other(String),
 }

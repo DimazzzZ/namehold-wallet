@@ -17,5 +17,6 @@ pub fn create_test_state() -> crate::AppState {
     let conn = create_test_db();
     crate::AppState {
         db: Mutex::new(conn),
+        signer: Mutex::new(None),
     }
 }
