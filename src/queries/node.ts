@@ -18,6 +18,10 @@ export interface NodeStatus {
   verification_progress: number | null;
   /** Peers' best header height (the sync target), when reported. */
   headers: number | null;
+  /** Why the last start failed (with log tail), when the RPC isn't answering. */
+  last_error: string | null;
+  /** The failure is a chain/index mismatch hsd can't fix in place → offer re-sync. */
+  index_mismatch: boolean;
 }
 
 /** Poll the hsd node status (binary, data dir, connected, height). */
@@ -52,6 +56,19 @@ export function useStopHsd() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => invoke("stop_hsd"),
+    onSuccess: () => invalidateNode(qc),
+  });
+}
+
+/**
+ * One-click recovery when the existing chain's indexes don't match what the
+ * wallet needs (hsd can't change them in place): moves the old chain to a
+ * timestamped backup and re-syncs with the required indexes.
+ */
+export function useResyncHsd() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => invoke("resync_hsd_chain"),
     onSuccess: () => invalidateNode(qc),
   });
 }

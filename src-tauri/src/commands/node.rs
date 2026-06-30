@@ -184,6 +184,18 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     let data_dir = resolve_data_dir(&state)?;
     let process_alive = is_running(&state)?;
     let probe = probe_node(&state).await;
+    // When the RPC isn't answering, surface WHY the last start failed (the hsd log
+    // persists past `start_hsd`'s short watch window), so a failed start never
+    // shows as a silent "Starting…/Stopped".
+    let err = if probe.is_none() {
+        node_start_error(&data_dir)
+    } else {
+        None
+    };
+    let (last_error, index_mismatch) = match err {
+        Some((msg, mismatch)) => (Some(msg), mismatch),
+        None => (None, false),
+    };
     Ok(serde_json::json!({
         "binary": binary,
         "binary_found": version.is_some(),
@@ -195,7 +207,38 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         "height": probe.as_ref().map(|p| p.height),
         "verification_progress": probe.as_ref().and_then(|p| p.verification_progress),
         "headers": probe.as_ref().and_then(|p| p.headers),
+        "last_error": last_error,
+        // True when the failure is a chain/index-flag mismatch hsd can't fix in
+        // place — the UI offers a one-click re-sync for this case.
+        "index_mismatch": index_mismatch,
     }))
+}
+
+/// If `<data_dir>/namehold-hsd.log` records a startup failure, return
+/// `(human_reason, is_index_mismatch)`. `None` when there's no log or it doesn't
+/// look like an error. The index-mismatch case (hsd can't retro-enable an index)
+/// gets specific guidance and flags the UI to offer a one-click re-sync.
+pub(crate) fn node_start_error(data_dir: &str) -> Option<(String, bool)> {
+    let log_path = std::path::Path::new(data_dir).join("namehold-hsd.log");
+    let body = std::fs::read_to_string(&log_path).ok()?;
+    let body = body.trim();
+    if body.is_empty() || (!body.contains("Error") && !body.contains("error")) {
+        return None;
+    }
+    let tail: Vec<&str> = body.lines().rev().take(8).collect();
+    let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+    if body.contains("retroactively") && body.contains("indexing") {
+        Some((
+            format!(
+                "This chain's indexes don't match what the wallet needs, and hsd can't \
+                 change a chain's indexes in place. Re-sync the node data (the old chain \
+                 is moved to a backup), or point Node RPC at an already-indexed node.\n\n{tail}"
+            ),
+            true,
+        ))
+    } else {
+        Some((format!("hsd failed to start:\n\n{tail}"), false))
+    }
 }
 
 /// Start hsd against the configured data directory. The data dir comes from the
@@ -237,11 +280,14 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     if !api_key.trim().is_empty() {
         cmd.arg(format!("--api-key={}", api_key.trim()));
     }
-    // The wallet syncs spendable + name-owner coins via `getcoinsbyaddress`, which
-    // hsd only serves with the address index; `getrawtransaction` needs the tx
-    // index. Without these, sends/name-transfers can never see the wallet's coins.
-    // (Enabling these on a chain dir previously synced without them triggers a
-    // one-time reindex.)
+    // The wallet learns its spendable + name-owner coins via `getcoinsbyaddress`
+    // (ADDRESS index); `getrawtransaction` (TX index) backs the transaction-history
+    // cache AND the pending→confirmed tracking that looks a sent tx up by id.
+    //
+    // IMPORTANT: hsd cannot retroactively enable an index on an already-synced
+    // chain (chaindb.js `verifyFlags` throws "Cannot retroactively enable …
+    // indexing"). A chain synced without these must be re-synced from genesis with
+    // them — there is no in-place reindex.
     cmd.arg("--index-address");
     cmd.arg("--index-tx");
     match network {
@@ -358,4 +404,70 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
         ["{}"],
     )?;
     Ok(())
+}
+
+/// The on-disk chain artifacts to move aside for a re-sync, by network. Mainnet
+/// stores them at the prefix root; other networks under a per-network subdir.
+/// Pure (path computation only) so it's unit-testable.
+pub(crate) fn chain_paths_for_network(data_dir: &str, network: Network) -> Vec<std::path::PathBuf> {
+    let base = std::path::Path::new(data_dir);
+    match network {
+        Network::Main => ["blocks", "chain", "tree"].iter().map(|p| base.join(p)).collect(),
+        Network::Testnet => vec![base.join("testnet")],
+        Network::Regtest => vec![base.join("regtest")],
+        Network::Simnet => vec![base.join("simnet")],
+    }
+}
+
+/// One-click recovery for an index/flag mismatch: stop the managed node, move the
+/// current chain data to a timestamped backup under the data dir, then start hsd
+/// fresh so it re-syncs with the wallet's required indexes. The backup is
+/// reversible (the wallet/key/conf are left in place); reads stay node-free.
+#[tauri::command]
+pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+    // 1. Stop any node we manage so the chain files aren't locked.
+    {
+        let mut guard = state.hsd_child.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    let data_dir = resolve_data_dir(&state)?;
+    let network = active_profile_network(&state);
+
+    // 2. Move existing chain artifacts into a timestamped backup dir.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = std::path::Path::new(&data_dir).join(format!("_noindex-backup-{ts}"));
+    std::fs::create_dir_all(&backup)
+        .map_err(|e| AppError::Other(format!("cannot create backup dir: {e}")))?;
+    let mut moved = Vec::new();
+    for p in chain_paths_for_network(&data_dir, network) {
+        if p.exists() {
+            let name = p
+                .file_name()
+                .ok_or_else(|| AppError::Other("bad chain path".into()))?;
+            std::fs::rename(&p, backup.join(name))
+                .map_err(|e| AppError::Other(format!("cannot move {}: {e}", p.display())))?;
+            moved.push(p.display().to_string());
+        }
+    }
+    {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db.execute(
+            "INSERT INTO audit_log (action, detail) VALUES ('resync_hsd_chain', ?1)",
+            [serde_json::json!({
+                "backup": backup.display().to_string(),
+                "moved": moved,
+            })
+            .to_string()],
+        )?;
+    }
+
+    // 3. Start hsd fresh — it re-syncs with the required indexes.
+    start_hsd(state).await
 }

@@ -22,7 +22,12 @@ hsd --index-address --index-tx --api-key=<your-key>
 # mainnet node RPC: http://127.0.0.1:12037
 ```
 
-- `--index-address` is **required** (the wallet scans coins by address).
+- `--index-address` is **required** (the wallet scans coins by address); `--index-tx`
+  backs transaction history + confirmation tracking. The app starts hsd with both.
+- **hsd cannot add an index to an already-synced chain** ("Cannot retroactively
+  enable … indexing"). If your existing chain was synced without these indexes, it
+  must be re-synced with them — the app detects this and offers a one-click re-sync
+  (it moves the old `blocks/`, `chain/`, `tree/` aside and re-syncs).
 - Then in the app: **Settings → Node RPC** → URL `http://127.0.0.1:12037`, API key
   `<your-key>`; click **Sync** to pull your UTXOs; **Send** is now enabled.
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useSettingsStore } from "../stores/settings";
-import { useNodeStatus, useStartHsd, useStopHsd } from "../queries/node";
+import { useNodeStatus, useStartHsd, useStopHsd, useResyncHsd } from "../queries/node";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
@@ -202,6 +202,7 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
   const { data: status } = useNodeStatus();
   const start = useStartHsd();
   const stop = useStopHsd();
+  const resync = useResyncHsd();
   const showToast = useUiStore((s) => s.showToast);
 
   const connected = status?.connected ?? false;
@@ -250,6 +251,23 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
       showToast("hsd stopped", "success");
     } catch (e) {
       showToast(`Failed to stop hsd: ${e}`, "error");
+    }
+  };
+  const onResync = async () => {
+    if (
+      !window.confirm(
+        "Re-sync node data?\n\nYour current chain will be moved to a timestamped " +
+          "backup folder in the data directory, and hsd will re-sync from scratch " +
+          "with the indexes the wallet needs. This can take a while. Your wallet " +
+          "keys are NOT affected.",
+      )
+    )
+      return;
+    try {
+      await resync.mutateAsync();
+      showToast("Re-syncing: old chain backed up; hsd is downloading again.", "info");
+    } catch (e) {
+      showToast(`Failed to re-sync: ${e}`, "error");
     }
   };
 
@@ -319,6 +337,29 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
           </div>
         )}
       </div>
+      {/* Why the last start failed — shown when the RPC isn't answering, so a
+          failed start never looks like a silent "Starting…". */}
+      {!connected && status?.last_error && (
+        <div className="space-y-2">
+          <pre
+            className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2 whitespace-pre-wrap break-words"
+            data-testid="node-last-error"
+          >
+            {status.last_error}
+          </pre>
+          {status.index_mismatch && (
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={onResync}
+              disabled={resync.isPending}
+              data-testid="node-resync"
+            >
+              {resync.isPending ? "Re-syncing…" : "Re-sync node data"}
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

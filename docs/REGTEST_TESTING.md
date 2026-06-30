@@ -16,7 +16,8 @@ hsd --network=regtest \
 ```
 
 - Node RPC is now at `http://127.0.0.1:14037` (regtest), API key `test`.
-- `--index-address` is **required** (the wallet scans coins by address).
+- `--index-address` is **required** (the wallet scans coins by address); both indexes
+  must be set from the first sync — hsd can't add an index to an existing chain.
 - `--no-wallet` is fine — we are non-custodial; we never use hsd's wallet.
 
 Helper CLI (separate terminal): `hsd-cli --network=regtest --api-key=test rpc <method> [args]`.
