@@ -110,6 +110,34 @@ describe("formatDate", () => {
     const result = formatDate("2024-06-15");
     expect(result).toContain("2024");
   });
+
+  it("parses a Namebase ISO timestamp that already carries Z (no double-Z → never Invalid Date)", () => {
+    const result = formatDate("2026-06-26T00:00:00Z");
+    expect(result).not.toMatch(/Invalid Date/);
+    expect(result).toContain("2026");
+  });
+
+  it("parses an ISO timestamp with millis + Z", () => {
+    const result = formatDate("2026-06-26T13:23:32.000Z");
+    expect(result).not.toMatch(/Invalid Date/);
+    expect(result).toContain("2026");
+  });
+
+  it("parses an ISO timestamp with a numeric offset", () => {
+    const result = formatDate("2026-06-26T13:23:32+02:00");
+    expect(result).not.toMatch(/Invalid Date/);
+    expect(result).toContain("2026");
+  });
+
+  it("parses a SQLite naive 'YYYY-MM-DD HH:MM:SS' timestamp as UTC", () => {
+    const result = formatDate("2026-06-26 00:00:00");
+    expect(result).not.toMatch(/Invalid Date/);
+    expect(result).toContain("2026");
+  });
+
+  it("returns the raw string for an unparseable value (never 'Invalid Date')", () => {
+    expect(formatDate("not-a-date")).toBe("not-a-date");
+  });
 });
 
 describe("truncate", () => {

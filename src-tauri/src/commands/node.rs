@@ -16,9 +16,27 @@ use std::process::{Command, Stdio};
 use tauri::State;
 use tokio::time::{sleep, Duration};
 
-/// Locate the hsd binary: common install dirs first, then `which hsd`, then the
-/// bare name (resolved via PATH at spawn time).
-fn find_hsd_binary() -> String {
+/// First usable hsd path given an explicit override and an ordered candidate
+/// list. An explicit `hsd_path` is honored verbatim (trust the user — the binary
+/// may not exist yet at lookup time); otherwise the first existing candidate
+/// wins. Returns `None` if nothing matches (caller falls back to `which`/PATH).
+/// Pure (no env reads) so it's unit-testable.
+pub(crate) fn pick_hsd_path(override_path: Option<&str>, candidates: &[String]) -> Option<String> {
+    if let Some(p) = override_path {
+        let p = p.trim();
+        if !p.is_empty() {
+            return Some(p.to_string());
+        }
+    }
+    candidates
+        .iter()
+        .find(|c| std::path::Path::new(c).exists())
+        .cloned()
+}
+
+/// Common hsd install locations to probe (a GUI-launched app has a minimal PATH,
+/// so the user's shell PATH isn't available — we must look in the usual dirs).
+fn hsd_candidates() -> Vec<String> {
     let mut candidates = vec![
         "/opt/homebrew/bin/hsd".to_string(),
         "/usr/local/bin/hsd".to_string(),
@@ -26,11 +44,25 @@ fn find_hsd_binary() -> String {
     if let Ok(home) = std::env::var("HOME") {
         candidates.push(format!("{home}/.npm-global/bin/hsd"));
         candidates.push(format!("{home}/.npm/bin/hsd"));
-    }
-    for c in &candidates {
-        if std::path::Path::new(c).exists() {
-            return c.clone();
+        candidates.push(format!("{home}/.local/bin/hsd"));
+        // nvm-managed node installs: ~/.nvm/versions/node/<ver>/bin/hsd
+        if let Ok(entries) = std::fs::read_dir(format!("{home}/.nvm/versions/node")) {
+            for e in entries.flatten() {
+                let cand = e.path().join("bin/hsd");
+                if cand.exists() {
+                    candidates.push(cand.to_string_lossy().to_string());
+                }
+            }
         }
+    }
+    candidates
+}
+
+/// Locate the hsd binary: an explicit `hsd_path` override first, then common
+/// install dirs, then `which hsd`, then the bare name (resolved via PATH).
+fn find_hsd_binary(override_path: Option<&str>) -> String {
+    if let Some(found) = pick_hsd_path(override_path, &hsd_candidates()) {
+        return found;
     }
     if let Ok(output) = Command::new("which").arg("hsd").output() {
         if output.status.success() {
@@ -41,6 +73,16 @@ fn find_hsd_binary() -> String {
         }
     }
     "hsd".to_string()
+}
+
+/// The explicit `hsd_path` setting, if set and non-empty.
+fn configured_hsd_path(state: &AppState) -> Option<String> {
+    let db = state.db.lock().ok()?;
+    let settings = db::queries::get_settings(&db).ok()?;
+    settings
+        .get("hsd_path")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// `hsd --version`, if the binary runs.
@@ -137,7 +179,7 @@ async fn probe_node(state: &AppState) -> Option<NodeProbe> {
 /// the authoritative signal; `process_alive` only reflects the child we spawned.
 #[tauri::command]
 pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let binary = find_hsd_binary();
+    let binary = find_hsd_binary(configured_hsd_path(&state).as_deref());
     let version = get_hsd_version(&binary);
     let data_dir = resolve_data_dir(&state)?;
     let process_alive = is_running(&state)?;
@@ -189,7 +231,7 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| AppError::Other(format!("cannot create data dir {data_dir}: {e}")))?;
 
-    let binary = find_hsd_binary();
+    let binary = find_hsd_binary(configured_hsd_path(&state).as_deref());
     let mut cmd = Command::new(&binary);
     cmd.arg(format!("--prefix={data_dir}"));
     if !api_key.trim().is_empty() {

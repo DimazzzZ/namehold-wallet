@@ -85,3 +85,42 @@ fn explicit_api_key_wins_over_hsd_conf() {
     assert_eq!(resolve_node_api_key(&s), "explicitkey");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- hsd binary discovery (the Start-hsd button depends on this) -------------
+
+use crate::commands::node::pick_hsd_path;
+
+#[test]
+fn pick_hsd_path_honors_explicit_override_verbatim() {
+    // An explicit hsd_path is trusted as-is (even if it doesn't exist yet), and
+    // wins over candidates.
+    let candidates = vec!["/opt/homebrew/bin/hsd".to_string()];
+    assert_eq!(
+        pick_hsd_path(Some("/custom/hsd"), &candidates).as_deref(),
+        Some("/custom/hsd")
+    );
+    // Blank/whitespace override is ignored (falls through to candidates).
+    assert_eq!(pick_hsd_path(Some("   "), &[]), None);
+}
+
+#[test]
+fn pick_hsd_path_finds_the_first_existing_candidate() {
+    // A real temp file stands in for an installed hsd on a candidate path.
+    let dir = std::env::temp_dir().join("namehold_hsd_discovery_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let real = dir.join("hsd");
+    std::fs::write(&real, b"#!/bin/sh\n").unwrap();
+
+    let candidates = vec![
+        "/no/such/path/hsd".to_string(),
+        real.to_string_lossy().to_string(),
+    ];
+    assert_eq!(
+        pick_hsd_path(None, &candidates),
+        Some(real.to_string_lossy().to_string())
+    );
+
+    // Nothing exists and no override → None (caller falls back to which/PATH).
+    assert_eq!(pick_hsd_path(None, &["/no/such/path/hsd".to_string()]), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}

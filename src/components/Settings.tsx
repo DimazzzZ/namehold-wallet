@@ -1,7 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
 import { useSettingsStore } from "../stores/settings";
-import { useActiveProfile } from "../queries/wallet";
 import { useNodeStatus, useStartHsd, useStopHsd } from "../queries/node";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Input } from "./ui/Input";
@@ -21,8 +19,6 @@ import { useUiStore } from "../stores/ui";
 export function Settings() {
   const { settings, loaded, saveAll } = useSettingsStore();
   const showToast = useUiStore((s) => s.showToast);
-  const navigate = useNavigate();
-  const { data: profile } = useActiveProfile();
 
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -34,6 +30,7 @@ export function Settings() {
         node_rpc_url: settings.node_rpc_url,
         node_rpc_api_key: settings.node_rpc_api_key,
         hsd_prefix: settings.hsd_prefix,
+        hsd_path: settings.hsd_path,
         explorer_api_url: settings.explorer_api_url,
         address_gap_limit: settings.address_gap_limit,
         signer_session_timeout_seconds: settings.signer_session_timeout_seconds,
@@ -84,26 +81,6 @@ export function Settings() {
   return (
     <div className="space-y-6 max-w-xl pb-16">
       <h2 className="text-xl font-bold">Settings</h2>
-
-      {/* Wallet */}
-      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
-        <h3 className="text-sm font-semibold text-gray-700">Wallet</h3>
-        {profile ? (
-          <div className="text-sm text-gray-600">
-            Active: <strong>{profile.label}</strong> · {profile.network}
-            {profile.watchOnly ? " · watch-only" : ""}
-          </div>
-        ) : (
-          <div className="text-sm text-gray-500">No wallet profile yet.</div>
-        )}
-        <Button size="sm" variant="secondary" onClick={() => navigate("/")}>
-          Manage wallets
-        </Button>
-        <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800">
-          Non-custodial: your passphrase is only ever entered in a secure window
-          and is never stored by the app.
-        </div>
-      </div>
 
       {/* Connections: reads (explorer) + sending (node) in one place. */}
       <div className="bg-white rounded p-4 border border-gray-200 space-y-4">
@@ -160,7 +137,19 @@ export function Settings() {
             <code>/Volumes/WD/hsd-data</code> to keep the large chain off your home
             disk. Empty uses hsd's default (<code>~/.hsd</code>).
           </div>
-          <NodeControl dirty={dirty} />
+
+          <Input
+            label="hsd binary path (optional)"
+            value={form.hsd_path ?? ""}
+            onChange={(e) => updateField("hsd_path", e.target.value)}
+            placeholder="(auto-detect: Homebrew / npm / nvm / PATH)"
+          />
+          <div className="text-xs text-gray-500">
+            Leave empty to auto-detect. Set this if the app can't find your hsd
+            install (e.g. <code>$(which hsd)</code>). Save settings to apply.
+          </div>
+
+          <NodeControl dirty={dirty} hsdPathConfigured={!!settings.hsd_path?.trim()} />
         </div>
       </div>
 
@@ -209,7 +198,7 @@ export function Settings() {
  * with the configured data directory; `dirty` warns that an unsaved directory
  * change won't apply until settings are saved.
  */
-function NodeControl({ dirty }: { dirty: boolean }) {
+function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConfigured: boolean }) {
   const { data: status } = useNodeStatus();
   const start = useStartHsd();
   const stop = useStopHsd();
@@ -217,11 +206,22 @@ function NodeControl({ dirty }: { dirty: boolean }) {
 
   const connected = status?.connected ?? false;
   const processAlive = status?.process_alive ?? false;
-  // A node that doesn't report progress is treated as synced (covers nodes that
-  // omit verificationProgress); otherwise it's synced at ~100%.
+  // "Synced" = chain tip reached (applied blocks caught up to best header).
+  // verificationProgress can plateau just under 1.0 (e.g. ~0.9997 on regtest), so
+  // it's only a fallback when the node doesn't report headers.
+  const height = status?.height ?? null;
+  const headers = status?.headers ?? null;
   const progress = status?.verification_progress ?? null;
-  const synced = progress == null || progress >= 0.9999;
-  const pct = progress == null ? 100 : Math.floor(progress * 1000) / 10; // 1 decimal
+  const synced =
+    headers != null && headers > 0
+      ? height != null && height >= headers
+      : progress == null || progress >= 0.9999;
+  const pct =
+    headers != null && headers > 0 && height != null
+      ? Math.min(100, Math.floor((height / headers) * 1000) / 10)
+      : progress == null
+        ? 100
+        : Math.floor(progress * 1000) / 10; // 1 decimal
   // Connected (RPC answers) → green; spawned but RPC not up yet → amber; else grey.
   const dotClass = connected ? "bg-green-500" : processAlive ? "bg-amber-500" : "bg-gray-300";
   const label = connected
@@ -268,23 +268,33 @@ function NodeControl({ dirty }: { dirty: boolean }) {
           <Button
             size="sm"
             onClick={onStart}
-            disabled={start.isPending || connected || !status?.binary_found}
+            disabled={start.isPending || connected || (!status?.binary_found && !hsdPathConfigured)}
           >
             {start.isPending ? "Starting…" : "Start hsd"}
           </Button>
         )}
       </div>
-      {connected && !synced && (
-        <div className="space-y-1">
+      {connected && (
+        <div className="space-y-1" data-testid="node-sync-progress">
           <div className="h-1.5 w-full rounded-full bg-gray-200 overflow-hidden">
             <div
-              className="h-full bg-blue-500 transition-all"
-              style={{ width: `${pct}%` }}
+              className={`h-full transition-all ${synced ? "bg-green-500" : "bg-blue-500"}`}
+              style={{ width: `${synced ? 100 : pct}%` }}
             />
           </div>
           <div className="text-xs text-gray-500">
-            Syncing the chain — {pct}% · block {status?.height ?? "?"}. Spendable
-            balance and sending become available once it finishes.
+            {synced ? (
+              <>
+                Synced — 100% · block {status?.height ?? "?"}
+                {headers ? ` / ${headers}` : ""}.
+              </>
+            ) : (
+              <>
+                Syncing the chain — {pct}% · block {status?.height ?? "?"}
+                {headers ? ` / ${headers}` : ""}. Spendable balance and sending become
+                available once it finishes.
+              </>
+            )}
           </div>
         </div>
       )}

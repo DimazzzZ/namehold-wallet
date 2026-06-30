@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
 import { Button } from "./ui/Button";
@@ -21,8 +21,6 @@ interface InventoryComparison {
  */
 export function SyncVerification() {
   const showToast = useUiStore((s) => s.showToast);
-  const [report, setReport] = useState<InventoryComparison | null>(null);
-  const [loading, setLoading] = useState(false);
 
   const { data: auditLog } = useQuery({
     queryKey: ["audit", "sync"],
@@ -31,16 +29,29 @@ export function SyncVerification() {
   });
   const syncEntries = auditLog?.filter((e) => e.action === "sync") ?? [];
 
-  const handleCompare = async () => {
-    setLoading(true);
-    try {
-      const r = await invoke<InventoryComparison>("compare_inventory_with_provider");
-      setReport(r);
-    } catch (e) {
-      showToast(`Compare failed: ${e}`, "error");
-    } finally {
-      setLoading(false);
-    }
+  // The comparison result lives in the query cache (not local state), so it
+  // survives navigating away and back. It only runs on demand (enabled: false →
+  // refetch() on the button) and never auto-expires during the session.
+  const {
+    data: report,
+    isFetching: loading,
+    error,
+    refetch,
+  } = useQuery({
+    queryKey: ["sync", "comparison"],
+    queryFn: () => invoke<InventoryComparison>("compare_inventory_with_provider"),
+    enabled: false,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (error) showToast(`Compare failed: ${error}`, "error");
+  }, [error, showToast]);
+
+  const handleCompare = () => {
+    void refetch();
   };
 
   const Section = ({ title, names, tone }: { title: string; names: string[]; tone: string }) =>

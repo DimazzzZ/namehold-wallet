@@ -1,6 +1,7 @@
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
 import { normalizeTransaction } from "../lib/providerMode";
+import { useActiveProfile } from "./wallet";
 import type { HsdBalance, HsdName, WalletTransactionRow } from "../types";
 
 /**
@@ -11,15 +12,28 @@ import type { HsdBalance, HsdName, WalletTransactionRow } from "../types";
 
 const STALE_TIME = 15_000;
 
-/** Provider-aware balance (hsd or aggregated external watch addresses). */
+/**
+ * Per-wallet balance. The cache is keyed by the active profile id so wallet B
+ * never momentarily shows wallet A's number, and it does NOT auto-refetch —
+ * each wallet shows its last-known balance (persisted server-side in the chain
+ * cache, so it survives a restart) and only updates when the user hits Refresh
+ * (which invalidates the `["read"]` prefix).
+ */
 export function useReadBalance(): UseQueryResult<HsdBalance | null> {
+  const { data: profile } = useActiveProfile();
+  const profileId = profile?.id ?? null;
   return useQuery<HsdBalance | null>({
-    queryKey: ["read", "balance"],
+    queryKey: ["read", "balance", profileId],
+    enabled: profileId != null,
     queryFn: async () => {
       const raw = await invoke<HsdBalance | null>("read_balance");
       return raw ?? null;
     },
-    staleTime: STALE_TIME,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
 

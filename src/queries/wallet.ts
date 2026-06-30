@@ -45,10 +45,24 @@ export function useWriteCapability() {
   });
 }
 
+/**
+ * Per-wallet spendable balance (from the node-synced chain cache). Keyed by the
+ * active profile id (no cross-wallet bleed) and never auto-refetched: each wallet
+ * shows its own last-known value — persisted server-side, so it survives a
+ * restart — and only changes on Refresh (which invalidates the `["wallet"]` prefix).
+ */
 export function useWalletBalances() {
+  const profileId = useActiveProfile().data?.id ?? null;
   return useQuery({
-    queryKey: ["wallet", "balances"],
-    queryFn: () => invoke<WalletBalances>("get_wallet_balances"),
+    queryKey: ["wallet", "balances", profileId],
+    enabled: profileId != null,
+    queryFn: () =>
+      invoke<WalletBalances>("get_wallet_balances", { walletProfileId: profileId }),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: false,
   });
 }
@@ -56,7 +70,20 @@ export function useWalletBalances() {
 export function useTxDrafts() {
   return useQuery({
     queryKey: ["wallet", "drafts"],
-    queryFn: () => invoke<TxDraftSummary[]>("list_tx_drafts"),
+    queryFn: async () => {
+      // Advance any broadcast drafts pending→confirmed/dropped before listing.
+      // Best-effort and node-free-safe: when the node is unreachable (or there
+      // are no broadcast drafts) this is a fast no-op and statuses are unchanged.
+      try {
+        await invoke("refresh_tx_confirmations", { walletProfileId: null });
+      } catch {
+        /* ignore — a node blip must never break the drafts list */
+      }
+      return invoke<TxDraftSummary[]>("list_tx_drafts");
+    },
+    // Poll so a broadcast tx visibly settles to Confirmed (or Not confirmed)
+    // without the user hitting Refresh.
+    refetchInterval: 15_000,
     retry: false,
   });
 }
@@ -131,11 +158,12 @@ export function useDiscoverOwnedNames() {
 export function useBuildSendDraft() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (a: { toAddress: string; valueDoos: number; feeRate?: number }) =>
+    mutationFn: (a: { toAddress: string; valueDoos: number; feeRate?: number; max?: boolean }) =>
       invoke<TxDraftSummary>("build_send_hns_draft", {
         toAddress: a.toAddress,
-        valueDoos: a.valueDoos,
+        valueDoos: a.max ? 0 : a.valueDoos,
         feeRate: a.feeRate ?? null,
+        max: a.max ?? false,
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["wallet"] }),
   });

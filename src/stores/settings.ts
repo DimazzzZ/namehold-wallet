@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS: Settings = {
   node_rpc_url: "http://127.0.0.1:12037",
   node_rpc_api_key: "",
   hsd_prefix: "",
+  hsd_path: "",
   explorer_api_url: "https://e.hnsfans.com",
   address_gap_limit: "20",
   signer_session_timeout_seconds: "900",

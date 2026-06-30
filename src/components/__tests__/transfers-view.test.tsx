@@ -80,6 +80,11 @@ describe("TransfersView", () => {
     expect(await screen.findByText(/Transfer sent — finalizing/i)).toBeInTheDocument();
     expect(await screen.findByText(/\.examplename/)).toBeInTheDocument();
     expect(await screen.findByText(/^Completed$/i)).toBeInTheDocument();
+
+    // The Date column renders a real localized date (Namebase sends ISO + Z),
+    // never "Invalid Date" (the double-Z regression).
+    expect(screen.queryByText(/Invalid Date/i)).toBeNull();
+    expect(screen.getAllByText(/2026/).length).toBeGreaterThan(0);
   });
 
   it("shows an HNS withdrawal with its Namebase status", async () => {
