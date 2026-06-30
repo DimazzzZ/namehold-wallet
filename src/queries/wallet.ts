@@ -6,8 +6,9 @@ export function useWalletConnection() {
   return useQuery({
     queryKey: ["wallet", "connection"],
     queryFn: () => invoke<{ connected: boolean; info?: unknown; error?: string }>("check_connection"),
-    refetchInterval: 30_000,
-    retry: false,
+    refetchInterval: 15_000,
+    refetchOnMount: "always",
+    retry: 1,
   });
 }
 
@@ -41,6 +42,15 @@ export function useWalletTransactions() {
     queryKey: ["wallet", "transactions"],
     queryFn: () => invoke<unknown[]>("get_transactions"),
     retry: false,
+  });
+}
+
+export function useWalletList() {
+  return useQuery({
+    queryKey: ["wallet", "list"],
+    queryFn: () => invoke<string[]>("list_wallets"),
+    retry: false,
+    staleTime: 30_000,
   });
 }
 

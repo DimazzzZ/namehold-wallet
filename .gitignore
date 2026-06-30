@@ -44,3 +44,11 @@ coverage/
 
 # Bundle artifacts (reproducible via `pnpm tauri build`)
 src-tauri/target/release/bundle/
+
+# Build artifacts
+tsconfig.tsbuildinfo
+
+# Session artifacts
+www.namebase.io.har
+SESSION_SUMMARY.md
+implementation_plan.md

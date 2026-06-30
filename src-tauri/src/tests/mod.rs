@@ -1,5 +1,16 @@
+mod assets_cmd_tests;
+mod batches_cmd_tests;
+mod command_helpers;
+mod csv_cmd_tests;
+mod csv_extra_tests;
 mod csv_import_tests;
 mod csv_tests;
+mod hsd_client_tests;
+mod hsd_extra_tests;
 mod hsd_types_tests;
 mod migration_tests;
+mod query_extra_tests;
 mod query_tests;
+mod settings_cmd_tests;
+mod settings_tests;
+mod wallet_delete_tests;

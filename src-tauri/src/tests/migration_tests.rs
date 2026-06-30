@@ -46,7 +46,7 @@ fn test_schema_version_tracking() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(count, 2);
 }
 
 #[test]

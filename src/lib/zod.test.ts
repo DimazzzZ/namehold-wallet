@@ -1,25 +1,47 @@
 import { describe, it, expect } from "vitest";
-import { AssetSchema, BatchSchema, HsdBalanceSchema, MigrationStatus, BatchStatus } from "./zod";
+import {
+  MigrationStatus,
+  BatchStatus,
+  AssetSchema,
+  BatchSchema,
+  HsdBalanceSchema,
+} from "./zod";
 
 describe("MigrationStatus", () => {
-  it("accepts valid statuses", () => {
-    expect(MigrationStatus.parse("not_started")).toBe("not_started");
-    expect(MigrationStatus.parse("finalized_owned")).toBe("finalized_owned");
-    expect(MigrationStatus.parse("do_not_touch_staked")).toBe("do_not_touch_staked");
+  it("accepts all valid statuses", () => {
+    const valid = [
+      "not_started",
+      "namebase_transfer_requested",
+      "waiting_transfer_tx",
+      "transfer_seen_on_chain",
+      "waiting_finalize",
+      "finalized_owned",
+      "failed_or_stuck",
+      "do_not_touch_staked",
+    ];
+    valid.forEach((s) => {
+      expect(MigrationStatus.parse(s)).toBe(s);
+    });
   });
+
   it("rejects invalid status", () => {
     expect(() => MigrationStatus.parse("invalid")).toThrow();
+    expect(() => MigrationStatus.parse("")).toThrow();
+    expect(() => MigrationStatus.parse("PENDING")).toThrow();
   });
 });
 
 describe("BatchStatus", () => {
-  it("accepts valid statuses", () => {
-    expect(BatchStatus.parse("planned")).toBe("planned");
-    expect(BatchStatus.parse("in_progress")).toBe("in_progress");
-    expect(BatchStatus.parse("completed")).toBe("completed");
+  it("accepts all valid statuses", () => {
+    const valid = ["planned", "in_progress", "completed", "paused", "cancelled"];
+    valid.forEach((s) => {
+      expect(BatchStatus.parse(s)).toBe(s);
+    });
   });
+
   it("rejects invalid status", () => {
     expect(() => BatchStatus.parse("invalid")).toThrow();
+    expect(() => BatchStatus.parse("active")).toThrow();
   });
 });
 
@@ -44,84 +66,102 @@ describe("AssetSchema", () => {
   };
 
   it("accepts valid asset", () => {
-    const result = AssetSchema.safeParse(validAsset);
+    expect(AssetSchema.safeParse(validAsset).success).toBe(true);
+  });
+
+  it("accepts with all nulls", () => {
+    const result = AssetSchema.safeParse({
+      ...validAsset,
+      category: null,
+      notes: null,
+      hns_received: null,
+      tags: [],
+    });
     expect(result.success).toBe(true);
   });
-  it("accepts asset with nulls", () => {
-    const result = AssetSchema.safeParse({ ...validAsset, category: null, notes: null, hns_received: null });
-    expect(result.success).toBe(true);
-  });
+
   it("rejects missing required field", () => {
     const { tld, ...noTld } = validAsset;
-    const result = AssetSchema.safeParse(noTld);
-    expect(result.success).toBe(false);
+    expect(AssetSchema.safeParse(noTld).success).toBe(false);
   });
+
   it("rejects invalid status", () => {
-    const result = AssetSchema.safeParse({ ...validAsset, status: "invalid" });
-    expect(result.success).toBe(false);
+    expect(AssetSchema.safeParse({ ...validAsset, status: "bad" }).success).toBe(false);
   });
+
   it("rejects wrong type for is_staked", () => {
-    const result = AssetSchema.safeParse({ ...validAsset, is_staked: "yes" });
-    expect(result.success).toBe(false);
+    expect(AssetSchema.safeParse({ ...validAsset, is_staked: "yes" }).success).toBe(false);
+  });
+
+  it("rejects wrong type for id", () => {
+    expect(AssetSchema.safeParse({ ...validAsset, id: "one" }).success).toBe(false);
   });
 });
 
 describe("BatchSchema", () => {
   it("accepts valid batch", () => {
-    const result = BatchSchema.safeParse({
-      id: 1,
-      name: "Test Batch",
-      description: "desc",
-      status: "planned",
-      asset_count: 5,
-      created_at: "2024-01-01",
-      updated_at: "2024-01-01",
-    });
-    expect(result.success).toBe(true);
+    expect(
+      BatchSchema.safeParse({
+        id: 1,
+        name: "Test",
+        description: "desc",
+        status: "planned",
+        asset_count: 5,
+        created_at: "2024-01-01",
+        updated_at: "2024-01-01",
+      }).success
+    ).toBe(true);
   });
+
   it("accepts null description", () => {
-    const result = BatchSchema.safeParse({
-      id: 1,
-      name: "Test",
-      description: null,
-      status: "completed",
-      asset_count: null,
-      created_at: "2024-01-01",
-      updated_at: "2024-01-01",
-    });
-    expect(result.success).toBe(true);
+    expect(
+      BatchSchema.safeParse({
+        id: 1,
+        name: "Test",
+        description: null,
+        status: "completed",
+        asset_count: null,
+        created_at: "2024-01-01",
+        updated_at: "2024-01-01",
+      }).success
+    ).toBe(true);
   });
+
   it("rejects invalid status", () => {
-    const result = BatchSchema.safeParse({
-      id: 1,
-      name: "Test",
-      description: null,
-      status: "invalid",
-      asset_count: 0,
-      created_at: "2024-01-01",
-      updated_at: "2024-01-01",
-    });
-    expect(result.success).toBe(false);
+    expect(
+      BatchSchema.safeParse({
+        id: 1,
+        name: "Test",
+        description: null,
+        status: "invalid",
+        asset_count: 0,
+        created_at: "2024-01-01",
+        updated_at: "2024-01-01",
+      }).success
+    ).toBe(false);
   });
 });
 
 describe("HsdBalanceSchema", () => {
   it("accepts valid balance", () => {
-    const result = HsdBalanceSchema.safeParse({
-      confirmed: 1000000,
-      unconfirmed: 500000,
-      locked_unconfirmed: 0,
-      locked_confirmed: 0,
-    });
-    expect(result.success).toBe(true);
+    expect(
+      HsdBalanceSchema.safeParse({
+        confirmed: 1000000,
+        unconfirmed: 500000,
+        locked_unconfirmed: 0,
+        locked_confirmed: 0,
+      }).success
+    ).toBe(true);
   });
+
   it("accepts null locked fields", () => {
-    const result = HsdBalanceSchema.safeParse({
-      confirmed: 1000000,
-      unconfirmed: 0,
-      locked_unconfirmed: null,
-      locked_confirmed: null,
-    });
-    expect(result.success).toBe(true);
+    expect(
+      HsdBalanceSchema.safeParse({
+        confirmed: 1000000,
+        unconfirmed: 0,
+        locked_unconfirmed: null,
+        locked_confirmed: null,
+      }).success
+    ).toBe(true);
   });
 });
