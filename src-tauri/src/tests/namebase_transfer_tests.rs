@@ -8,7 +8,9 @@ use rusqlite::params;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
-use crate::commands::namebase::{namebase_transfer_domain, namebase_withdraw_hns};
+use crate::commands::namebase::{
+    fetch_namebase_renewals, namebase_transfer_domain, namebase_withdraw_hns,
+};
 use crate::db;
 use crate::error::AppError;
 use crate::AppState;
@@ -186,6 +188,43 @@ async fn withdraw_hns_posts_currency_amount_and_address() {
         .await
         .expect("withdraw should succeed against the mock");
     m.assert_async().await;
+}
+
+#[tokio::test]
+async fn fetch_renewals_returns_the_expiring_calendar() {
+    // The renewal calendar (/api/domains/renewals) is now surfaced in the UI;
+    // lock the contract: the command returns Namebase's `{ expiring: [...] }`.
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/domains/renewals")
+        .with_status(200)
+        .with_body(
+            r#"{"expiring":[
+                {"domain":"soon","expire_block":339000,"estimated_date":"2026-07-05T00:00:00.000Z"},
+                {"domain":"later","expire_block":340000,"estimated_date":"2026-09-01T00:00:00.000Z"}
+            ]}"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = seeded_conn();
+    db::queries::set_setting(&conn, "namebase_cookie", "testcookie").unwrap();
+    db::queries::set_setting(&conn, "namebase_base_url", &server.url()).unwrap();
+    let app = app_with(conn);
+
+    let v = fetch_namebase_renewals(app.state())
+        .await
+        .expect("renewals fetch should succeed against the mock");
+    m.assert_async().await;
+
+    let expiring = v
+        .get("expiring")
+        .and_then(|e| e.as_array())
+        .expect("expiring array present");
+    assert_eq!(expiring.len(), 2);
+    assert_eq!(expiring[0]["domain"], serde_json::json!("soon"));
+    assert_eq!(expiring[0]["expire_block"], serde_json::json!(339000));
+    assert!(expiring[0]["estimated_date"].as_str().unwrap().ends_with("Z"));
 }
 
 #[tokio::test]

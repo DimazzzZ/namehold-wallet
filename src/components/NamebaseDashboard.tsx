@@ -5,6 +5,7 @@ import { useUiStore } from "../stores/ui";
 import { useActiveProfile } from "../queries/wallet";
 import {
   useNamebaseDomainWithdrawals,
+  useNamebaseRenewals,
   useWithdrawHns,
   namebaseStatus,
 } from "../queries/namebase";
@@ -13,6 +14,22 @@ import { Input } from "./ui/Input";
 import { Badge } from "./ui/Badge";
 import { Dialog } from "./ui/Dialog";
 import { mapError } from "../lib/errors";
+import { formatDate } from "../lib/utils";
+
+/** Whole days from now until an ISO date (negative = already past). */
+function daysUntil(iso: string): number | null {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.floor((t - Date.now()) / 86_400_000);
+}
+
+/** Expiry urgency color, matching the Portfolio Renewals thresholds. */
+function expiryColor(days: number | null): string {
+  if (days == null) return "text-gray-400";
+  if (days < 30) return "text-red-600";
+  if (days < 90) return "text-yellow-600";
+  return "text-green-600";
+}
 
 interface NamebaseDomain {
   name: string;
@@ -81,6 +98,15 @@ export function NamebaseDashboard() {
   const account = nbStatus?.account;
   const domains = domainsData?.domains || [];
   const stakedDomains = stakedData?.stakedDomains || [];
+
+  // Namebase's renewal calendar (soonest-first). Lets the user renew/move a
+  // custodial domain before it lapses mid-migration.
+  const { data: renewals = [] } = useNamebaseRenewals(isConnected);
+  const autoRenewByDomain = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const d of domains) m.set(d.name, d.auto_renew_active);
+    return m;
+  }, [domains]);
 
   const handleConnect = async () => {
     if (!cookie.trim()) return;
@@ -275,6 +301,63 @@ export function NamebaseDashboard() {
               <Button size="sm" variant="ghost" onClick={() => setSelectedDomains(new Set())}>
                 Clear
               </Button>
+            </div>
+          )}
+
+          {/* Expiring soon — Namebase renewal calendar */}
+          {renewals.length > 0 && (
+            <div
+              className="bg-white rounded p-4 border border-gray-200"
+              data-testid="namebase-expiring"
+            >
+              <h3 className="text-sm font-semibold mb-1">Expiring soon ({renewals.length})</h3>
+              <p className="text-xs text-gray-500 mb-3">
+                These custodial domains expire soonest — renew on Namebase or move them
+                out before they lapse. Names with auto-renew <strong>off</strong> are the
+                highest risk.
+              </p>
+              <div className="max-h-72 overflow-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-500 border-b">
+                      <th className="px-2 py-1">Name</th>
+                      <th className="px-2 py-1">Expires</th>
+                      <th className="px-2 py-1">Block</th>
+                      <th className="px-2 py-1">Auto-renew</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {renewals.map((r) => {
+                      const days = daysUntil(r.estimated_date);
+                      const autoRenew = autoRenewByDomain.get(r.domain);
+                      return (
+                        <tr key={r.domain} className="border-t border-gray-100">
+                          <td className="px-2 py-1 font-mono">.{r.domain}</td>
+                          <td className={`px-2 py-1 ${expiryColor(days)}`}>
+                            {formatDate(r.estimated_date)}
+                            {days != null && (
+                              <span className="text-xs text-gray-400">
+                                {" "}
+                                ({days <= 0 ? "now" : `${days}d`})
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-2 py-1 text-xs text-gray-500">#{r.expire_block}</td>
+                          <td className="px-2 py-1">
+                            {autoRenew === false ? (
+                              <Badge variant="error">Off</Badge>
+                            ) : autoRenew ? (
+                              <Badge variant="success">On</Badge>
+                            ) : (
+                              <span className="text-xs text-gray-400">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 

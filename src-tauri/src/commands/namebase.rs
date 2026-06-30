@@ -99,8 +99,10 @@ pub async fn fetch_namebase_staked(state: State<'_, AppState>) -> Result<serde_j
 
 #[tauri::command]
 pub async fn fetch_namebase_renewals(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let cookie = get_cookie(&state)?;
-    let client = NamebaseClient::new(&cookie)?;
+    // Use the shared client builder so the `namebase_base_url` test seam applies
+    // (and so this honors any future base-url override), unlike the other fetch_*
+    // commands which hard-code the real host.
+    let client = namebase_client(&state)?;
     client.get_renewals().await
 }
 

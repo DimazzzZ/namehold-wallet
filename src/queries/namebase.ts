@@ -36,6 +36,38 @@ export function useNamebaseDomainWithdrawals() {
   });
 }
 
+/**
+ * A custodial domain's expiry, from Namebase's renewal calendar
+ * (`/api/domains/renewals` → `{ expiring: [...] }`). `estimated_date` is ISO+Z.
+ */
+export interface NamebaseRenewal {
+  domain: string;
+  expire_block: number;
+  estimated_date: string;
+}
+
+/**
+ * Domains expiring on Namebase, soonest first — so a migrating user can renew or
+ * move a name BEFORE it lapses. Backed by the already-wired `fetch_namebase_renewals`
+ * command (unwraps the `expiring` array, mirroring the withdrawals hooks).
+ */
+export function useNamebaseRenewals(enabled: boolean) {
+  return useQuery<NamebaseRenewal[]>({
+    queryKey: ["namebase-renewals"],
+    enabled,
+    queryFn: async () => {
+      const raw = await invoke<{ expiring?: NamebaseRenewal[] } | NamebaseRenewal[]>(
+        "fetch_namebase_renewals",
+      );
+      const list = Array.isArray(raw) ? raw : (raw?.expiring ?? []);
+      return [...list].sort((a, b) =>
+        (a.estimated_date ?? "").localeCompare(b.estimated_date ?? ""),
+      );
+    },
+    retry: false,
+  });
+}
+
 /** True once a domain transfer has fully landed (finalized) on Namebase's side. */
 export function isDomainTransferDone(status: string): boolean {
   return (status || "").toLowerCase() === "finalize_completed";
