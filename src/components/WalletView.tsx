@@ -730,6 +730,10 @@ export function WalletView() {
                 </div>
               </div>
             </div>
+            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
+              ⚠️ Beta — send a small test amount first and confirm it arrives before
+              sending larger amounts.
+            </div>
             {sendError && (
               <div
                 className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800"

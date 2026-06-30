@@ -8,6 +8,11 @@ custodial service.
 
 Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 
+> ⚠️ **Beta software.** Namehold is under active development and can make mistakes.
+> Transactions and Namebase transfers are **irreversible** — always test with a
+> single name or a small amount and confirm it arrives **before** sending or
+> transferring everything.
+
 ## Features
 
 ### Wallet (the core)
