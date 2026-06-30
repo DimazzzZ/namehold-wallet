@@ -8,6 +8,10 @@ custodial service.
 
 Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 
+<p align="center">
+  <img src="docs/assets/wallet.png" alt="Namehold wallet" width="700" />
+</p>
+
 > ⚠️ **Beta software.** Namehold is under active development and can make mistakes.
 > Transactions and Namebase transfers are **irreversible** — always test with a
 > single name or a small amount and confirm it arrives **before** sending or
@@ -122,6 +126,10 @@ See [`docs/NODE_SETUP.md`](docs/NODE_SETUP.md) and
 
 A guided migration helper (not the wallet's core function). In **Move from
 Namebase**, paste your Namebase session cookie to connect, then:
+
+<p align="center">
+  <img src="docs/assets/namebase-migration.png" alt="Namebase migration" width="700" />
+</p>
 
 - review your custodial domains and which are **expiring soon**,
 - **transfer** names out to your own wallet address,

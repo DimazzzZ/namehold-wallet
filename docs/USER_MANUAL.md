@@ -276,6 +276,10 @@ To send a TLD to another address (e.g., to a buyer):
 
 Migration tracking helps you organize the process of moving TLDs from Namebase to your own wallet.
 
+<p align="center">
+  <img src="assets/namebase-migration.png" alt="Namebase migration" width="700" />
+</p>
+
 ### Migration statuses
 
 | Status | Meaning |
