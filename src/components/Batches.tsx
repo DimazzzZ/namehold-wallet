@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useBatches, useCreateBatch, useDeleteBatch, useBatchWithAssets, useUpdateBatch, useRemoveFromBatch } from "../queries/batches";
 import { useAssets } from "../queries/assets";
 import { Button } from "./ui/Button";
@@ -199,8 +200,19 @@ export function Batches() {
       {isLoading ? (
         <div className="text-gray-500">Loading...</div>
       ) : batches.length === 0 ? (
-        <div className="text-gray-500 bg-white rounded p-8 border text-center">
-          No batches yet. Create one from the inventory page or click "New Batch".
+        <div className="bg-white rounded p-8 border text-center">
+          <div className="text-gray-500 mb-3">No batches created yet.</div>
+          <div className="text-sm text-gray-400 mb-4">
+            Batches help you organize TLDs into migration groups.
+          </div>
+          <div className="flex gap-2 justify-center">
+            <Link to="/inventory">
+              <Button size="sm">Select TLDs in Inventory</Button>
+            </Link>
+            <Button size="sm" variant="primary" onClick={() => setCreateDialogOpen(true)}>
+              New Batch
+            </Button>
+          </div>
         </div>
       ) : (
         <div className="space-y-2">

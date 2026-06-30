@@ -192,7 +192,7 @@ export function SyncVerification() {
 
       {syncNames.isError && (
         <div className="bg-red-50 rounded p-4 border border-red-200 text-red-700">
-          Sync failed. Check your wallet connection settings and try again.
+          Sync failed: {syncNames.error?.message || "Check your wallet connection settings and try again."}
         </div>
       )}
 

@@ -107,9 +107,9 @@ export function DataTable<T extends { id: number }>({
       <div
         ref={parentRef}
         className="overflow-auto border border-gray-200 rounded"
-        style={{ height: `${height}px` }}
+        style={{ height: `${height}px`, maxWidth: "100%" }}
       >
-        <table className="w-full text-sm" style={{ minWidth: "100%" }}>
+        <table className="w-full text-sm" style={{ minWidth: "800px" }}>
           <thead className="sticky top-0 bg-gray-50 z-10">
             {table.getHeaderGroups().map((hg) => (
               <tr key={hg.id}>

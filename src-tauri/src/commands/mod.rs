@@ -1,6 +1,8 @@
 pub mod assets;
 pub mod batches;
 pub mod csv;
+pub mod namebase;
+pub mod node;
 pub mod settings;
 pub mod sync;
 pub mod wallet;

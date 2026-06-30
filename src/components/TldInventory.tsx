@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAssets, useBulkUpdateStatus, useUpdateAsset, useImportCsv, useExportCsv } from "../queries/assets";
 import { useCreateBatch } from "../queries/batches";
 import { useTransferName } from "../queries/wallet";
@@ -13,7 +14,9 @@ import { Dialog } from "./ui/Dialog";
 import { Input } from "./ui/Input";
 import type { Asset, MigrationStatus } from "../types";
 import { formatHns, formatDate } from "../lib/utils";
+import { mapError } from "../lib/errors";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { invoke } from "../lib/invoke";
 
 const MIGRATION_STATUSES: { value: string; label: string }[] = [
   { value: "", label: "All Statuses" },
@@ -42,6 +45,7 @@ export function TldInventory() {
   const [transferDialogOpen, setTransferDialogOpen] = useState(false);
   const [transferAddress, setTransferAddress] = useState("");
   const [transferPassphrase, setTransferPassphrase] = useState("");
+  const [transferConfirmName, setTransferConfirmName] = useState("");
 
   const { selectedAssetIds, clearSelection, showToast } =
     useUiStore();
@@ -49,6 +53,7 @@ export function TldInventory() {
   const passphrase = useSettingsStore((s) => s.passphrase);
   const writeMode = settings?.write_mode === "true";
   const transferName = useTransferName();
+  const qc = useQueryClient();
 
   const params = {
     status: statusFilter || undefined,
@@ -230,6 +235,23 @@ export function TldInventory() {
           <Button onClick={handleImport} variant="primary" size="sm">
             Import CSV
           </Button>
+          <Button
+            onClick={async () => {
+              try {
+                const result: any = await invoke("import_from_namebase");
+                showToast(
+                  `Imported ${result.imported} TLDs from Namebase (${result.staked_count} staked)`,
+                  "success",
+                );
+                qc.invalidateQueries({ queryKey: ["assets"] });
+              } catch (e) {
+                showToast(mapError(e), "error");
+              }
+            }}
+            size="sm"
+          >
+            Import from Namebase
+          </Button>
           <Button onClick={handleExport} size="sm">
             Export CSV
           </Button>
@@ -281,9 +303,9 @@ export function TldInventory() {
           <Button size="sm" onClick={() => setBatchDialogOpen(true)}>
             Create Batch
           </Button>
-          {writeMode && selectedAssetIds.size === 1 && (
+          {writeMode && (
             <Button size="sm" variant="danger" onClick={() => setTransferDialogOpen(true)}>
-              Transfer
+              Transfer {selectedAssetIds.size > 1 ? `(${selectedAssetIds.size})` : ""}
             </Button>
           )}
           <Button size="sm" variant="ghost" onClick={clearSelection}>
@@ -294,6 +316,16 @@ export function TldInventory() {
 
       {isLoading ? (
         <div className="text-gray-500">Loading...</div>
+      ) : assets.length === 0 ? (
+        <div className="bg-white rounded p-8 border text-center">
+          <div className="text-gray-500 mb-3">No TLDs imported yet.</div>
+          <div className="text-sm text-gray-400 mb-4">
+            Import a CSV file with your TLDs to get started.
+          </div>
+          <Button variant="primary" onClick={handleImport}>
+            Import CSV
+          </Button>
+        </div>
       ) : (
         <DataTable
           data={assets}
@@ -414,53 +446,68 @@ export function TldInventory() {
             This will initiate a name transfer on-chain. The TLD will be sent to the specified address.
             This action cannot be undone.
           </div>
-          <p className="text-sm text-gray-600">
-            Transferring: <strong>.{assets.find(a => selectedAssetIds.has(a.id))?.tld}</strong>
-          </p>
-          <Input
-            label="Destination Address"
-            value={transferAddress}
-            onChange={(e) => setTransferAddress(e.target.value)}
-            placeholder="rs1q..."
-          />
-          <Input
-            label="Wallet Passphrase"
-            type="password"
-            value={transferPassphrase}
-            onChange={(e) => setTransferPassphrase(e.target.value)}
-            placeholder={passphrase ? "Using saved passphrase" : "Enter passphrase"}
-          />
-          <div className="flex gap-2 justify-end">
-            <Button variant="ghost" onClick={() => setTransferDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              disabled={!transferAddress.trim() || transferName.isPending}
-              onClick={async () => {
-                const id = Array.from(selectedAssetIds)[0];
-                const asset = assets.find(a => a.id === id);
-                if (!asset) return;
-                const pw = transferPassphrase || passphrase;
-                if (!pw) {
-                  showToast("Enter wallet passphrase in Settings or below", "error");
-                  return;
-                }
-                try {
-                  await transferName.mutateAsync({ name: asset.tld, address: transferAddress, passphrase: pw });
-                  showToast(`Transfer initiated for .${asset.tld}`, "success");
-                  clearSelection();
-                  setTransferDialogOpen(false);
-                  setTransferAddress("");
-                  setTransferPassphrase("");
-                } catch (e) {
-                  showToast(`Transfer failed: ${e}`, "error");
-                }
-              }}
-            >
-              {transferName.isPending ? "Transferring..." : "Transfer"}
-            </Button>
-          </div>
+          {(() => {
+            const tld = assets.find(a => selectedAssetIds.has(a.id))?.tld;
+            const confirmMatch = transferConfirmName === tld;
+            return (
+              <>
+                <p className="text-sm text-gray-600">
+                  Transferring: <strong>.{tld}</strong>
+                </p>
+                <Input
+                  label="Destination Address"
+                  value={transferAddress}
+                  onChange={(e) => setTransferAddress(e.target.value)}
+                  placeholder="hs1q..."
+                />
+                <Input
+                  label="Wallet Passphrase"
+                  type="password"
+                  value={transferPassphrase}
+                  onChange={(e) => setTransferPassphrase(e.target.value)}
+                  placeholder={passphrase ? "Using saved passphrase" : "Enter passphrase"}
+                />
+                <Input
+                  label={`Type "${tld}" to confirm`}
+                  value={transferConfirmName}
+                  onChange={(e) => setTransferConfirmName(e.target.value)}
+                  placeholder={tld}
+                />
+                <div className="flex gap-2 justify-end">
+                  <Button variant="ghost" onClick={() => { setTransferDialogOpen(false); setTransferConfirmName(""); }}>
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="danger"
+                    disabled={!transferAddress.trim() || !confirmMatch || transferName.isPending}
+                    onClick={async () => {
+                      const id = Array.from(selectedAssetIds)[0];
+                      const asset = assets.find(a => a.id === id);
+                      if (!asset) return;
+                      const pw = transferPassphrase || passphrase;
+                      if (!pw) {
+                        showToast("Enter wallet passphrase in Settings or below", "error");
+                        return;
+                      }
+                      try {
+                        await transferName.mutateAsync({ name: asset.tld, address: transferAddress, passphrase: pw });
+                        showToast(`Transfer initiated for .${asset.tld}`, "success");
+                        clearSelection();
+                        setTransferDialogOpen(false);
+                        setTransferAddress("");
+                        setTransferPassphrase("");
+                        setTransferConfirmName("");
+                      } catch (e) {
+                        showToast(mapError(e), "error");
+                      }
+                    }}
+                  >
+                    {transferName.isPending ? "Transferring..." : "Transfer"}
+                  </Button>
+                </div>
+              </>
+            );
+          })()}
         </div>
       </Dialog>
     </div>

@@ -83,4 +83,5 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('hsd_api_key',        ''),
     ('hsd_wallet_id',      'primary'),
     ('hsd_network',        'mainnet'),
+    ('hsd_prefix',         ''),
     ('write_mode',         'false');

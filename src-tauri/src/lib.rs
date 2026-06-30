@@ -3,6 +3,8 @@ mod db;
 mod error;
 mod hsd;
 mod models;
+mod namebase;
+mod wallet_delete;
 #[cfg(test)]
 mod tests;
 
@@ -54,6 +56,10 @@ pub fn run() {
             commands::wallet::get_name_info,
             commands::wallet::get_resource,
             commands::wallet::get_transactions,
+            commands::wallet::list_wallets,
+            commands::wallet::create_wallet,
+            commands::wallet::delete_wallet,
+            commands::wallet::get_mnemonic,
             commands::wallet::send_hns,
             commands::wallet::transfer_name,
             commands::sync::sync_names,
@@ -64,6 +70,17 @@ pub fn run() {
             commands::settings::get_wallet_snapshots,
             commands::csv::import_csv,
             commands::csv::export_csv,
+            commands::namebase::connect_namebase,
+            commands::namebase::disconnect_namebase,
+            commands::namebase::get_namebase_status,
+            commands::namebase::fetch_namebase_domains,
+            commands::namebase::fetch_namebase_staked,
+            commands::namebase::fetch_namebase_renewals,
+            commands::namebase::fetch_namebase_withdrawals,
+            commands::namebase::import_from_namebase,
+            commands::node::get_node_status,
+            commands::node::stop_hsd,
+            commands::node::start_hsd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

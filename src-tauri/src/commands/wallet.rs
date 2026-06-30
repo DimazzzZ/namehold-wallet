@@ -54,8 +54,8 @@ pub async fn get_balance(state: State<'_, AppState>) -> Result<serde_json::Value
 #[tauri::command]
 pub async fn get_address(state: State<'_, AppState>) -> Result<String, AppError> {
     let client = get_client(&state)?;
-    let addr = client.get_receive_address().await?;
-    Ok(addr.address)
+    let address = client.get_receive_address().await?;
+    Ok(address)
 }
 
 #[tauri::command]
@@ -90,6 +90,68 @@ pub async fn get_transactions(state: State<'_, AppState>) -> Result<serde_json::
     let client = get_client(&state)?;
     let txs = client.get_transactions().await?;
     Ok(txs)
+}
+
+#[tauri::command]
+pub async fn list_wallets(state: State<'_, AppState>) -> Result<Vec<String>, AppError> {
+    let client = get_client(&state)?;
+    let wallets = client.list_wallets().await?;
+    Ok(wallets)
+}
+
+#[tauri::command]
+pub async fn create_wallet(
+    state: State<'_, AppState>,
+    id: String,
+    passphrase: String,
+    mnemonic: Option<String>,
+) -> Result<serde_json::Value, AppError> {
+    let client = get_client(&state)?;
+    let result = client
+        .create_wallet(&id, &passphrase, mnemonic.as_deref())
+        .await?;
+
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    db.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('create_wallet', ?1)",
+        [serde_json::json!({"wallet_id": id}).to_string()],
+    )?;
+
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn get_mnemonic(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
+    let client = get_client(&state)?;
+    let url = format!(
+        "{}/wallet/{}/master",
+        client.wallet_url_for_master(),
+        client.wallet_id_for_master()
+    );
+    let resp = client.http_get_master(&url).await?;
+    Ok(resp)
+}
+
+#[tauri::command]
+pub async fn delete_wallet(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<String, AppError> {
+    // Soft delete: mark wallet for deletion in local audit log
+    // Don't stop hsd or touch wallet database
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    db.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('wallet_hidden', ?1)",
+        [serde_json::json!({"wallet_id": id}).to_string()],
+    )?;
+
+    Ok(format!(
+        "Wallet '{}' hidden from list. The wallet still exists in hsd. \
+         To fully delete it, stop hsd and remove the wallet database manually.",
+        id
+    ))
 }
 
 #[tauri::command]

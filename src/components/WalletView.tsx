@@ -1,21 +1,75 @@
 import { useState } from "react";
-import { useWalletConnection, useWalletBalance, useWalletAddress, useWalletNames, useWalletTransactions, useSendHns } from "../queries/wallet";
+import { useQueryClient } from "@tanstack/react-query";
+import { useWalletConnection, useWalletBalance, useWalletAddress, useWalletNames, useWalletTransactions, useWalletList, useSendHns } from "../queries/wallet";
 import { useSettingsStore } from "../stores/settings";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
 import { Dialog } from "./ui/Dialog";
-import { formatHns, hnsToDollarydoos } from "../lib/utils";
+import { formatHns, hnsToDollarydoos, formatDate } from "../lib/utils";
+import { mapError } from "../lib/errors";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useUiStore } from "../stores/ui";
+import { QRCodeSVG } from "qrcode.react";
+
+interface ParsedTx {
+  hash: string;
+  type: "send" | "receive" | "other";
+  amount: number;
+  address: string;
+  confirmed: boolean;
+  height: number | null;
+  date: string | null;
+}
+
+function parseTransactions(txs: unknown[]): ParsedTx[] {
+  if (!Array.isArray(txs)) return [];
+  return txs.map((tx: any) => {
+    const hash = tx.hash || tx.tx?.hash || "";
+    const confirmed = (tx.confirmations || 0) > 0;
+    const height = tx.height > 0 ? tx.height : null;
+    const date = tx.date && tx.date !== "1970-01-01T00:00:00Z" ? tx.date : tx.mdate || null;
+
+    // Determine type and amount from outputs
+    let type: "send" | "receive" | "other" = "other";
+    let amount = 0;
+    let address = "";
+
+    if (tx.outputs && Array.isArray(tx.outputs)) {
+      const hasPath = tx.outputs.some((o: any) => o.path && !o.path.change);
+
+      if (hasPath) {
+        type = "receive";
+        const receiveOutput = tx.outputs.find((o: any) => o.path && !o.path.change);
+        amount = receiveOutput?.value || 0;
+        address = receiveOutput?.address || "";
+      } else if (tx.inputs && Array.isArray(tx.inputs)) {
+        type = "send";
+        const sendOutput = tx.outputs.find((o: any) => !o.path?.change);
+        amount = sendOutput?.value || 0;
+        address = sendOutput?.address || "";
+      }
+    }
+
+    // Fallback: use fee to determine direction
+    if (type === "other" && tx.fee) {
+      amount = tx.fee;
+    }
+
+    return { hash, type, amount, address, confirmed, height, date };
+  });
+}
 
 export function WalletView() {
+  const qc = useQueryClient();
   const { data: conn, isLoading: connLoading } = useWalletConnection();
   const { data: balance, isLoading: balLoading } = useWalletBalance();
   const { data: address } = useWalletAddress();
   const { data: names } = useWalletNames();
-  const { data: transactions } = useWalletTransactions();
+  const { data: rawTransactions } = useWalletTransactions();
+  const { data: walletList } = useWalletList();
   const settings = useSettingsStore((s) => s.settings);
+  const updateSetting = useSettingsStore((s) => s.update);
   const passphrase = useSettingsStore((s) => s.passphrase);
   const showToast = useUiStore((s) => s.showToast);
   const sendHns = useSendHns();
@@ -24,10 +78,24 @@ export function WalletView() {
   const [sendAddress, setSendAddress] = useState("");
   const [sendAmount, setSendAmount] = useState("");
   const [sendPassphrase, setSendPassphrase] = useState("");
+  const [switchDialogOpen, setSwitchDialogOpen] = useState(false);
+  const [newWalletId, setNewWalletId] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const walletUrl = settings?.hsd_wallet_api_url || "";
   const isLocalhost = walletUrl.includes("127.0.0.1") || walletUrl.includes("localhost");
   const writeMode = settings?.write_mode === "true";
+  const currentWalletId = settings?.hsd_wallet_id || "primary";
+
+  const transactions = parseTransactions(rawTransactions || []);
+
+  const handleCopyAddress = async () => {
+    if (!address) return;
+    await writeText(address);
+    setCopied(true);
+    showToast("Address copied", "success");
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   const handleSendHns = async () => {
     if (!sendAddress.trim() || !sendAmount.trim()) return;
@@ -49,13 +117,60 @@ export function WalletView() {
       setSendAmount("");
       setSendPassphrase("");
     } catch (e) {
-      showToast(`Send failed: ${e}`, "error");
+      showToast(mapError(e), "error");
+    }
+  };
+
+  const handleRefresh = () => {
+    qc.invalidateQueries({ queryKey: ["wallet"] });
+  };
+
+  const handleSwitchWallet = async (walletId: string) => {
+    if (!walletId.trim() || walletId === currentWalletId) return;
+    try {
+      await updateSetting("hsd_wallet_id", walletId.trim());
+      qc.invalidateQueries({ queryKey: ["wallet"] });
+      showToast(`Switched to wallet "${walletId.trim()}"`, "success");
+      setSwitchDialogOpen(false);
+      setNewWalletId("");
+    } catch (e) {
+      showToast(mapError(e), "error");
+    }
+  };
+
+  const handleDisconnect = async () => {
+    try {
+      await updateSetting("hsd_wallet_id", "");
+      qc.invalidateQueries({ queryKey: ["wallet"] });
+      showToast("Disconnected", "success");
+    } catch (e) {
+      showToast(mapError(e), "error");
     }
   };
 
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-bold">Wallet</h2>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h2 className="text-xl font-bold">Wallet</h2>
+          <Badge variant="info">{currentWalletId}</Badge>
+          {conn?.connected ? (
+            <Badge variant="success">Connected</Badge>
+          ) : connLoading ? (
+            <Badge>Checking...</Badge>
+          ) : (
+            <Badge variant="error">Disconnected</Badge>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <Button onClick={() => setSwitchDialogOpen(true)} size="sm" variant="secondary">
+            Switch Wallet
+          </Button>
+          <Button onClick={handleRefresh} size="sm">
+            Refresh
+          </Button>
+        </div>
+      </div>
 
       {!isLocalhost && (
         <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700">
@@ -63,43 +178,51 @@ export function WalletView() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-white rounded p-4 border border-gray-200">
-          <div className="text-sm text-gray-500">Connection</div>
-          <div className="mt-1">
-            {connLoading ? (
-              <span className="text-gray-400">Checking...</span>
-            ) : conn?.connected ? (
-              <Badge variant="success">Connected</Badge>
-            ) : (
-              <Badge variant="error">{conn?.error || "Disconnected"}</Badge>
-            )}
+      {/* Receive Address - Prominent */}
+      <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
+        <div className="text-sm text-gray-500 mb-2">Receive Address</div>
+        {address ? (
+          <div className="flex items-center gap-6">
+            <div className="flex-1">
+              <div className="font-mono text-lg font-bold break-all bg-gray-50 p-3 rounded">
+                {address}
+              </div>
+              <div className="mt-2">
+                <Button onClick={handleCopyAddress} variant="primary">
+                  {copied ? "Copied!" : "Copy Address"}
+                </Button>
+              </div>
+            </div>
+            <div className="shrink-0">
+              <QRCodeSVG value={address} size={150} level="M" />
+            </div>
           </div>
-        </div>
-        <div className="bg-white rounded p-4 border border-gray-200">
-          <div className="text-sm text-gray-500">Network</div>
-          <div className="text-lg font-semibold">{settings?.hsd_network || "—"}</div>
-        </div>
+        ) : (
+          <div className="text-gray-400">
+            {conn?.connected ? "Loading address..." : "Connect to wallet first"}
+          </div>
+        )}
       </div>
 
+      {/* Balance */}
       <div className="grid grid-cols-3 gap-4">
         <div className="bg-white rounded p-4 border border-gray-200">
           <div className="text-sm text-gray-500">Confirmed Balance</div>
-          <div className="text-xl font-bold">
+          <div className="text-2xl font-bold">
             {balLoading ? "..." : formatHns(balance?.confirmed)}
           </div>
           <div className="text-xs text-gray-400">HNS</div>
         </div>
         <div className="bg-white rounded p-4 border border-gray-200">
           <div className="text-sm text-gray-500">Unconfirmed</div>
-          <div className="text-xl font-bold">
+          <div className="text-2xl font-bold">
             {balLoading ? "..." : formatHns(balance?.unconfirmed)}
           </div>
           <div className="text-xs text-gray-400">HNS</div>
         </div>
         <div className="bg-white rounded p-4 border border-gray-200">
           <div className="text-sm text-gray-500">Locked</div>
-          <div className="text-xl font-bold">
+          <div className="text-2xl font-bold">
             {balLoading
               ? "..."
               : formatHns(
@@ -110,36 +233,16 @@ export function WalletView() {
         </div>
       </div>
 
-      <div className="bg-white rounded p-4 border border-gray-200">
-        <div className="text-sm text-gray-500 mb-2">Receive Address</div>
-        <div className="flex items-center gap-2">
-          <code className="text-sm bg-gray-50 px-2 py-1 rounded flex-1 truncate">
-            {address || "—"}
-          </code>
-          <Button
-            size="sm"
-            onClick={async () => {
-              if (address) {
-                await writeText(address);
-                showToast("Address copied", "success");
-              }
-            }}
-            disabled={!address}
-          >
-            Copy
+      {/* Actions */}
+      <div className="flex gap-3">
+        {writeMode && (
+          <Button variant="primary" onClick={() => setSendDialogOpen(true)}>
+            Send HNS
           </Button>
-          {writeMode && (
-            <Button
-              size="sm"
-              variant="primary"
-              onClick={() => setSendDialogOpen(true)}
-            >
-              Send HNS
-            </Button>
-          )}
-        </div>
+        )}
       </div>
 
+      {/* Owned Names */}
       <div className="bg-white rounded p-4 border border-gray-200">
         <div className="text-sm text-gray-500 mb-2">
           Owned Names ({names?.length ?? 0})
@@ -174,29 +277,77 @@ export function WalletView() {
             </table>
           </div>
         ) : (
-          <div className="text-gray-400 text-sm">
-            {conn?.connected ? "No names found in wallet" : "Connect to wallet first"}
+          <div className="text-gray-400 text-sm py-4 text-center">
+            {conn?.connected
+              ? "No names in wallet yet. Names will appear here after transfer."
+              : "Connect to wallet first"}
           </div>
         )}
       </div>
 
-      {transactions && transactions.length > 0 && (
-        <div className="bg-white rounded p-4 border border-gray-200">
-          <div className="text-sm text-gray-500 mb-2">
-            Recent Transactions ({transactions.length})
-          </div>
-          <div className="max-h-60 overflow-auto">
-            <pre className="text-xs bg-gray-50 p-2 rounded">
-              {JSON.stringify(transactions.slice(0, 10), null, 2)}
-            </pre>
-          </div>
+      {/* Transaction History */}
+      <div className="bg-white rounded p-4 border border-gray-200">
+        <div className="text-sm text-gray-500 mb-2">
+          Transaction History ({transactions.length})
         </div>
-      )}
-
-      <div className="text-xs text-gray-400">
-        Wallet ID: {settings?.hsd_wallet_id || "primary"} | API: {walletUrl}
+        {transactions.length > 0 ? (
+          <div className="max-h-80 overflow-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-500 border-b">
+                  <th className="py-2 pr-4">Date</th>
+                  <th className="py-2 pr-4">Type</th>
+                  <th className="py-2 pr-4">Amount</th>
+                  <th className="py-2 pr-4">Address</th>
+                  <th className="py-2 pr-4">Status</th>
+                  <th className="py-2">Hash</th>
+                </tr>
+              </thead>
+              <tbody>
+                {transactions.map((tx, i) => (
+                  <tr key={tx.hash || i} className="border-t border-gray-100">
+                    <td className="py-2 pr-4 text-xs text-gray-500">
+                      {tx.date ? formatDate(tx.date) : "—"}
+                    </td>
+                    <td className="py-2 pr-4">
+                      <Badge variant={tx.type === "receive" ? "success" : tx.type === "send" ? "warning" : "default"}>
+                        {tx.type}
+                      </Badge>
+                    </td>
+                    <td className="py-2 pr-4 font-mono">
+                      {tx.amount > 0 ? formatHns(tx.amount) : "—"}
+                    </td>
+                    <td className="py-2 pr-4 text-xs font-mono truncate max-w-[120px]">
+                      {tx.address || "—"}
+                    </td>
+                    <td className="py-2 pr-4">
+                      <Badge variant={tx.confirmed ? "success" : "warning"}>
+                        {tx.confirmed ? "Confirmed" : "Pending"}
+                      </Badge>
+                    </td>
+                    <td className="py-2 text-xs font-mono truncate max-w-[100px]">
+                      {tx.hash ? `${tx.hash.slice(0, 8)}...` : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="text-gray-400 text-sm py-4 text-center">
+            {conn?.connected
+              ? "No transactions yet. Transactions will appear here after sending or receiving."
+              : "Connect to wallet first"}
+          </div>
+        )}
       </div>
 
+      {/* Wallet info */}
+      <div className="text-xs text-gray-400">
+        Wallet ID: {currentWalletId} | Network: {settings?.hsd_network || "—"} | API: {walletUrl}
+      </div>
+
+      {/* Send HNS Dialog */}
       <Dialog open={sendDialogOpen} onClose={() => setSendDialogOpen(false)} title="Send HNS">
         <div className="space-y-3">
           <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
@@ -206,7 +357,7 @@ export function WalletView() {
             label="Destination Address"
             value={sendAddress}
             onChange={(e) => setSendAddress(e.target.value)}
-            placeholder="rs1q..."
+            placeholder="hs1q..."
           />
           <Input
             label="Amount (HNS)"
@@ -223,6 +374,18 @@ export function WalletView() {
             onChange={(e) => setSendPassphrase(e.target.value)}
             placeholder={passphrase ? "Using saved passphrase" : "Enter passphrase"}
           />
+          {sendAmount && sendAddress && (
+            <div className="bg-gray-50 rounded p-3 text-sm">
+              <div className="flex justify-between">
+                <span>Amount:</span>
+                <span className="font-mono">{sendAmount} HNS</span>
+              </div>
+              <div className="flex justify-between text-gray-500">
+                <span>To:</span>
+                <span className="font-mono truncate max-w-[200px]">{sendAddress}</span>
+              </div>
+            </div>
+          )}
           <div className="flex gap-2 justify-end">
             <Button variant="ghost" onClick={() => setSendDialogOpen(false)}>
               Cancel
@@ -233,6 +396,60 @@ export function WalletView() {
               disabled={!sendAddress.trim() || !sendAmount.trim() || sendHns.isPending}
             >
               {sendHns.isPending ? "Sending..." : "Send HNS"}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Switch Wallet Dialog */}
+      <Dialog open={switchDialogOpen} onClose={() => setSwitchDialogOpen(false)} title="Switch Wallet">
+        <div className="space-y-3">
+          <div className="text-sm text-gray-600">
+            Current wallet: <strong>{currentWalletId}</strong>
+          </div>
+
+          {walletList && walletList.length > 0 && (
+            <div>
+              <label className="text-sm font-medium text-gray-700">Available Wallets</label>
+              <div className="mt-1 border border-gray-300 rounded max-h-40 overflow-auto">
+                {walletList.map((wid) => (
+                  <div
+                    key={wid}
+                    className={`px-3 py-2 text-sm cursor-pointer hover:bg-gray-50 flex items-center justify-between ${wid === currentWalletId ? "bg-blue-50" : ""}`}
+                    onClick={() => handleSwitchWallet(wid)}
+                  >
+                    <span className="font-mono">{wid}</span>
+                    {wid === currentWalletId && <Badge variant="success">Current</Badge>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="border-t pt-3">
+            <Input
+              label="Or enter wallet ID"
+              value={newWalletId}
+              onChange={(e) => setNewWalletId(e.target.value)}
+              placeholder="e.g. my-wallet"
+            />
+            <div className="flex gap-2 justify-end mt-2">
+              <Button
+                size="sm"
+                onClick={() => handleSwitchWallet(newWalletId)}
+                disabled={!newWalletId.trim() || newWalletId === currentWalletId}
+              >
+                Switch
+              </Button>
+            </div>
+          </div>
+
+          <div className="border-t pt-3 flex justify-between">
+            <Button variant="ghost" size="sm" onClick={handleDisconnect}>
+              Disconnect
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setSwitchDialogOpen(false)}>
+              Cancel
             </Button>
           </div>
         </div>

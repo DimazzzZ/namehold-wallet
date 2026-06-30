@@ -16,7 +16,7 @@ pub async fn sync_names(state: State<'_, AppState>) -> Result<serde_json::Value,
 
     let wallet_names = client.get_names().await?;
     let balance = client.get_balance().await.ok();
-    let address = client.get_receive_address().await.ok().map(|a| a.address);
+    let address = client.get_receive_address().await.ok();
 
     let tld_set: HashSet<String> = assets.iter().map(|a| a.tld.clone()).collect();
     let mut matched = 0usize;

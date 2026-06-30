@@ -20,7 +20,26 @@ export function Dashboard() {
         statusCounts[a.status] = (statusCounts[a.status] || 0) + 1;
       }
       const recentAudit = await invoke<AuditEntry[]>("get_audit_log", { limit: 5 }).catch(() => []);
-      return { total, staked, unstaked, status_counts: statusCounts, recent_audit: recentAudit } as DashboardStats;
+
+      // Fetch Namebase balance if connected
+      let namebaseAccount: { balance?: { hns: number; btc: number } } | null = null;
+      try {
+        const nbStatus = await invoke<{ connected: boolean; account?: { balance?: { hns: number; btc: number } } }>("get_namebase_status");
+        if (nbStatus.connected && nbStatus.account) {
+          namebaseAccount = nbStatus.account;
+        }
+      } catch {
+        // Not connected to Namebase
+      }
+
+      return {
+        total,
+        staked,
+        unstaked,
+        status_counts: statusCounts,
+        recent_audit: recentAudit,
+        namebase_account: namebaseAccount,
+      } as DashboardStats & { namebase_account: typeof namebaseAccount };
     },
     staleTime: 15_000,
   });
@@ -72,6 +91,22 @@ export function Dashboard() {
           <div className="text-2xl font-bold text-blue-700">{stats.unstaked}</div>
         </div>
       </div>
+
+      {stats.namebase_account && (
+        <div className="bg-white rounded p-4 border border-gray-200">
+          <h3 className="text-sm font-semibold mb-2">Namebase Balance</h3>
+          <div className="flex gap-4">
+            <div>
+              <div className="text-sm text-gray-500">HNS</div>
+              <div className="text-lg font-bold">{stats.namebase_account.balance?.hns?.toLocaleString() || "—"}</div>
+            </div>
+            <div>
+              <div className="text-sm text-gray-500">BTC</div>
+              <div className="text-lg font-bold">{stats.namebase_account.balance?.btc || "—"}</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded p-4 border border-gray-200">
         <h3 className="text-sm font-semibold mb-3">Migration Status</h3>

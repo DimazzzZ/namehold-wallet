@@ -11,7 +11,8 @@ pub struct HsdNodeInfo {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HsdWalletInfo {
-    pub wid: Option<String>,
+    #[serde(default)]
+    pub wid: Option<serde_json::Value>,
     pub id: Option<String>,
     pub network: Option<String>,
     pub account_depth: Option<u64>,

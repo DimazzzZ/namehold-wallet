@@ -1,6 +1,9 @@
 use rusqlite::Connection;
 
-const MIGRATIONS: &[(&str, &str)] = &[("001", include_str!("../sql/001_initial.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("001", include_str!("../sql/001_initial.sql")),
+    ("002", include_str!("../sql/002_hsd_prefix.sql")),
+];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(

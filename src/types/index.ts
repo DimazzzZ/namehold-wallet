@@ -129,5 +129,6 @@ export interface Settings {
   hsd_api_key: string;
   hsd_wallet_id: string;
   hsd_network: string;
+  hsd_prefix: string;
   write_mode: string;
 }
