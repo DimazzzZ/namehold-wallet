@@ -512,4 +512,4 @@ Namehold connects to hsd on `127.0.0.1` by default. If you configure a non-local
 
 ---
 
-*Namehold v0.2.0 — your HNS network wallet*
+*Namehold v0.1.0 — your HNS network wallet*
