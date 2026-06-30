@@ -46,8 +46,9 @@ fn test_schema_version_tracking() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
         .unwrap();
-    // 001..009, 010 (drop legacy settings), 011 (re-add hsd data dir).
-    assert_eq!(count, 11);
+    // 001..009, 010 (drop legacy settings), 011 (re-add hsd data dir),
+    // 012 (tx-draft confirmation tracking).
+    assert_eq!(count, 12);
 }
 
 #[test]
@@ -75,6 +76,43 @@ fn test_default_settings_seeded() {
         .query_row("SELECT value FROM settings WHERE key = 'hsd_prefix'", [], |row| row.get(0))
         .expect("hsd_prefix should exist after the full migration chain");
     assert_eq!(hsd_prefix, "", "hsd_prefix defaults to empty (= hsd's own ~/.hsd)");
+}
+
+#[test]
+fn test_tx_draft_confirmation_schema() {
+    // Migration 012 adds the confirmation_height column and the 'confirmed' /
+    // 'dropped' terminal statuses (recreating the table to change the CHECK).
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&conn).unwrap();
+
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(wallet_tx_drafts)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        cols.iter().any(|c| c == "confirmation_height"),
+        "confirmation_height column should exist"
+    );
+
+    // Exercise the status CHECK, not the FK to wallet_profiles — drop FK
+    // enforcement so an arbitrary wallet_profile_id is allowed. id == status
+    // keeps PKs unique across the calls below.
+    conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+    let insert = |status: &str| {
+        conn.execute(
+            "INSERT INTO wallet_tx_drafts
+                (id, wallet_profile_id, action, unsigned_tx_hex, signing_inputs_json, summary_json, status)
+             VALUES (?1, 'p', 'send_hns', '00', '{}', '{}', ?2)",
+            rusqlite::params![status, status],
+        )
+    };
+    assert!(insert("confirmed").is_ok(), "'confirmed' must be accepted");
+    assert!(insert("dropped").is_ok(), "'dropped' must be accepted");
+    assert!(insert("broadcasted").is_ok(), "existing statuses still accepted");
+    assert!(insert("bogus").is_err(), "an unknown status must be rejected by the CHECK");
 }
 
 #[test]

@@ -33,6 +33,9 @@ struct SendBuildParams {
     rate_per_byte: u64,
     account: u32,
     network: String,
+    /// "Send Max": ignore `amount_doos`, sweep all coins, output = inputTotal−fee.
+    #[serde(default)]
+    max: bool,
 }
 
 fn random_id() -> String {
@@ -281,11 +284,12 @@ pub async fn build_send_hns_draft(
     to_address: String,
     value_doos: i64,
     fee_rate: Option<u64>,
+    max: Option<bool>,
 ) -> Result<TxDraftSummary, AppError> {
-    if value_doos <= 0 {
+    let is_max = max.unwrap_or(false);
+    if !is_max && value_doos <= 0 {
         return Err(AppError::InvalidInput("amount must be positive".to_string()));
     }
-    let amount = value_doos as u64;
     let rate = resolve_fee_rate(&state, fee_rate).await;
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -301,7 +305,18 @@ pub async fn build_send_hns_draft(
     crate::noncustodial::tx::output_address_from_string(network, &to_address)?;
 
     let coins = send::load_spendable_coins(&conn, &profile.id)?;
-    let selection = send::select_coins(&coins, amount, rate)?;
+    // Send Max sweeps all coins (output = inputTotal − fee, no change); otherwise
+    // select to cover the requested amount + fee.
+    let selection = if is_max {
+        send::select_all_coins(&coins, rate)?
+    } else {
+        send::select_coins(&coins, value_doos as u64, rate)?
+    };
+    let amount = if is_max {
+        selection.input_total - selection.fee
+    } else {
+        value_doos as u64
+    };
     let change_addr = change_address(network, &profile.account_xpub)?;
 
     let summary = TxSummary {
@@ -322,6 +337,7 @@ pub async fn build_send_hns_draft(
         rate_per_byte: rate,
         account: profile.account_index as u32,
         network: profile.network.clone(),
+        max: is_max,
     };
 
     let id = random_id();
@@ -412,6 +428,7 @@ pub async fn sign_tx_draft(
                 params.amount_doos,
                 &params.change_address,
                 params.rate_per_byte,
+                params.max,
             )?;
             let summary = TxSummary {
                 action: "send_hns".to_string(),
@@ -486,6 +503,132 @@ pub async fn broadcast_tx_draft(
     }
 }
 
+/// Grace window before a broadcast-but-unfound tx is judged `dropped`. A tx is
+/// usually mined or visible in the mempool within seconds of broadcast; if the
+/// node still can't find it after this long, it was evicted/never confirmed.
+const DROPPED_GRACE_SECS: i64 = 90;
+
+/// Re-poll the node for the on-chain status of this profile's broadcast drafts.
+///
+/// A draft is marked `broadcasted` the instant the node accepts it to the
+/// mempool. This advances it to `confirmed` (mined, ≥1 confirmation, recording
+/// the block height) or `dropped` (accepted then evicted, or never confirmed
+/// past the grace window — e.g. an auction bid that missed its bidding window).
+/// Soft-fails to a no-op when the node is unreachable, so reads stay node-free.
+#[tauri::command]
+pub async fn refresh_tx_confirmations(
+    state: State<'_, AppState>,
+    wallet_profile_id: Option<String>,
+) -> Result<serde_json::Value, AppError> {
+    // 1. Snapshot the drafts awaiting confirmation + settings, then drop the lock.
+    let (profile_id, drafts, settings) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let id = match wallet_profile_id {
+            Some(id) => id,
+            None => db::queries::get_active_profile_id(&conn)?,
+        };
+        if id.is_empty() {
+            return Ok(serde_json::json!({
+                "walletProfileId": null, "nodeReachable": false,
+                "checked": 0, "confirmed": 0, "dropped": 0,
+            }));
+        }
+        let drafts = db::queries::list_drafts_awaiting_confirmation(&conn, &id)?;
+        let settings = db::queries::get_settings(&conn)?;
+        (id, drafts, settings)
+    };
+
+    if drafts.is_empty() {
+        return Ok(serde_json::json!({
+            "walletProfileId": profile_id, "nodeReachable": true,
+            "checked": 0, "confirmed": 0, "dropped": 0,
+        }));
+    }
+
+    // 2. Probe the node. Unreachable → soft no-op (never touch drafts on a blip).
+    let client = NodeRpcClient::from_settings(&settings);
+    let tip = match client.get_blockchain_info().await {
+        Ok(info) => info.blocks,
+        Err(_) => {
+            return Ok(serde_json::json!({
+                "walletProfileId": profile_id, "nodeReachable": false,
+                "checked": drafts.len(), "confirmed": 0, "dropped": 0,
+            }));
+        }
+    };
+
+    // 3. Classify each draft from getrawtransaction (network I/O, no lock held).
+    let mut confirmed_updates: Vec<(String, i64)> = Vec::new();
+    let mut maybe_dropped: Vec<String> = Vec::new();
+    for d in &drafts {
+        // Already-confirmed drafts only need a backfill if height is missing.
+        if d.status == "confirmed" && d.confirmation_height.is_some() {
+            continue;
+        }
+        let txid = match &d.txid {
+            Some(t) => t,
+            None => continue,
+        };
+        match client.get_raw_transaction(txid).await {
+            Ok(tx) => {
+                let confs = tx.get("confirmations").and_then(|v| v.as_i64()).unwrap_or(0);
+                if confs >= 1 {
+                    let height = tx
+                        .get("height")
+                        .and_then(|v| v.as_i64())
+                        .filter(|h| *h >= 0)
+                        .unwrap_or_else(|| (tip - confs + 1).max(0));
+                    confirmed_updates.push((d.id.clone(), height));
+                }
+                // confs == 0 → still in the mempool; leave it `broadcasted`.
+            }
+            // Node reachable but tx not found → candidate for `dropped` (apply the
+            // grace window below). An RPC-level "not found" is AppError::Rpc.
+            Err(AppError::Rpc(_)) => {
+                if d.status == "broadcasted" {
+                    maybe_dropped.push(d.id.clone());
+                }
+            }
+            // Transient transport error mid-loop: skip; the next tick retries.
+            Err(_) => {}
+        }
+    }
+
+    // 4. Persist under the lock: confirmations unconditionally, drops only after
+    //    the grace window (so a freshly-broadcast tx isn't prematurely killed).
+    let (n_conf, n_drop) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        for (id, height) in &confirmed_updates {
+            db::queries::update_tx_draft_confirmation(&conn, id, *height)?;
+        }
+        let mut n_drop = 0;
+        for id in &maybe_dropped {
+            if db::queries::draft_age_secs(&conn, id)? >= DROPPED_GRACE_SECS {
+                db::queries::update_tx_draft_status(
+                    &conn,
+                    id,
+                    "dropped",
+                    Some(
+                        "Broadcast but never confirmed — likely evicted from the mempool \
+                         (e.g. an auction bid that missed its window). The coins were not moved.",
+                    ),
+                    None,
+                )?;
+                n_drop += 1;
+            }
+        }
+        (confirmed_updates.len(), n_drop)
+    };
+
+    Ok(serde_json::json!({
+        "walletProfileId": profile_id,
+        "nodeReachable": true,
+        "checked": drafts.len(),
+        "confirmed": n_conf,
+        "dropped": n_drop,
+    }))
+}
+
 /// Read cached balances for a profile (or the active profile) without touching
 /// the node. Returns zeros when no profile is active.
 #[tauri::command]
@@ -555,9 +698,19 @@ pub async fn get_write_capability(
                 cap.reason = Some(format!("Start your local node ({url}) to send."));
             }
             Ok(info) => {
-                let synced = info.verification_progress.map(|p| p >= 0.9999).unwrap_or(true);
+                // "Synced" means the chain tip is reached (applied blocks caught up
+                // to the best known header). `verification_progress` is a heuristic
+                // that can plateau just under 1.0 (e.g. ~0.9997 on regtest), so it
+                // must NOT be the gate — that would block sending forever.
+                let synced = match info.headers {
+                    Some(h) if h > 0 => info.blocks >= h,
+                    _ => info.verification_progress.map(|p| p >= 0.9999).unwrap_or(true),
+                };
                 if !synced {
-                    let pct = (info.verification_progress.unwrap_or(0.0) * 100.0).floor() as i64;
+                    let pct = match info.headers {
+                        Some(h) if h > 0 => ((info.blocks as f64 / h as f64) * 100.0).floor() as i64,
+                        _ => (info.verification_progress.unwrap_or(0.0) * 100.0).floor() as i64,
+                    };
                     cap.can_write = false;
                     cap.reason = Some(format!(
                         "Your local node is still syncing ({pct}%). On-chain sends and transfers need a fully-synced node."

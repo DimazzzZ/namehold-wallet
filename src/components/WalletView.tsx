@@ -17,6 +17,7 @@ import {
   useBroadcastTxDraft,
 } from "../queries/wallet";
 import { useReadNames, useReadBalance } from "../queries/read";
+import { auctionPhase } from "../lib/auction";
 import { NameActionsModal } from "./NameActionsModal";
 import { WalletManager } from "./WalletManager";
 import { AddWalletForm } from "./AddWalletForm";
@@ -25,7 +26,13 @@ import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
 import { Dialog } from "./ui/Dialog";
 import { PageHeader } from "./ui/PageHeader";
-import { formatHns, hnsToDollarydoos, formatDate } from "../lib/utils";
+import {
+  formatHns,
+  hnsToDollarydoos,
+  dollarydoosToHns,
+  formatDate,
+  isLikelyHnsAddress,
+} from "../lib/utils";
 import { mapError } from "../lib/errors";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useUiStore } from "../stores/ui";
@@ -157,20 +164,29 @@ export function WalletView() {
     }
   };
 
-  const handleBuildDraft = async () => {
-    const doos = hnsToDollarydoos(sendAmount);
+  const handleBuildDraft = async (opts?: { max?: boolean }) => {
+    const max = opts?.max ?? false;
     if (!sendAddress.trim()) {
       showToast("Enter a destination address", "error");
       return;
     }
-    if (isNaN(doos) || doos <= 0) {
+    const doos = hnsToDollarydoos(sendAmount);
+    if (!max && (isNaN(doos) || doos <= 0)) {
       showToast("Invalid amount", "error");
       return;
     }
     setSendError(null);
     try {
-      const d = await buildDraft.mutateAsync({ toAddress: sendAddress.trim(), valueDoos: doos });
+      const d = await buildDraft.mutateAsync({
+        toAddress: sendAddress.trim(),
+        valueDoos: doos,
+        max,
+      });
       setDraft(d);
+      // Reflect the swept amount in the field so "Max" is transparent.
+      if (max && d.summary?.sendTotalDoos != null) {
+        setSendAmount(dollarydoosToHns(d.summary.sendTotalDoos));
+      }
     } catch (e) {
       showToast(mapError(e), "error");
     }
@@ -215,6 +231,23 @@ export function WalletView() {
       </div>
     );
   }
+
+  // Inline send-form validation (profile is non-null here). The backend
+  // address::decode stays authoritative at build; this is fast UI feedback.
+  const sendAmtDoos = hnsToDollarydoos(sendAmount);
+  const addressError =
+    sendAddress.trim() && !isLikelyHnsAddress(sendAddress, profile.network)
+      ? `Enter a valid ${profile.network} address (starts with ${
+          profile.network === "mainnet" ? "hs1" : profile.network === "testnet" ? "ts1" : "rs1"
+        }…)`
+      : null;
+  const amountError =
+    sendAmount.trim() && (isNaN(sendAmtDoos) || sendAmtDoos <= 0)
+      ? "Enter a positive amount"
+      : sendAmount.trim() && sendAmtDoos > spendable
+        ? "Amount exceeds your spendable balance"
+        : null;
+  const canMax = !!sendAddress.trim() && !addressError && spendable > 0;
 
   return (
     <div className="space-y-6">
@@ -370,6 +403,62 @@ export function WalletView() {
         </div>
       </div>
 
+      {/* Name-bound balances — surfaced only when there's value tied up in names
+          or in-flight auction bids, so the user can see funds that aren't liquid. */}
+      {((balances?.nameLockupDoos ?? 0) > 0 || (balances?.nameControlDoos ?? 0) > 0) && (
+        <div className="grid grid-cols-2 gap-4">
+          <div
+            className="bg-white rounded p-4 border border-gray-200"
+            data-testid="balance-locked-auctions"
+          >
+            <div className="text-sm text-gray-500">Locked in Auctions</div>
+            <div className="text-2xl font-bold">
+              {formatHns(balances?.nameLockupDoos ?? 0)}
+            </div>
+            <div className="text-xs text-gray-400">
+              HNS · in-flight bids (returned on reveal/redeem)
+            </div>
+          </div>
+          <div
+            className="bg-white rounded p-4 border border-gray-200"
+            data-testid="balance-name-value"
+          >
+            <div className="text-sm text-gray-500">Name Value</div>
+            <div className="text-2xl font-bold">
+              {formatHns(balances?.nameControlDoos ?? 0)}
+            </div>
+            <div className="text-xs text-gray-400">HNS · bound to names you control</div>
+          </div>
+        </div>
+      )}
+
+      {/* Reveal alert — names whose bids are in the REVEAL phase need a reveal tx
+          or the bid lockup stays stuck. Surfaced prominently so it isn't missed. */}
+      {!isWatchOnly &&
+        (() => {
+          const revealNeeded = names.filter(
+            (n) => (n.state ?? "").toUpperCase() === "REVEAL",
+          );
+          const first = revealNeeded[0];
+          if (!first) return null;
+          return (
+            <div
+              className="flex items-center justify-between gap-3 text-sm text-amber-900 bg-amber-50 border border-amber-300 rounded p-3"
+              data-testid="reveal-alert"
+            >
+              <div>
+                <strong>Action required: reveal your bid</strong> —{" "}
+                {revealNeeded.map((n) => `.${n.name}`).join(", ")}{" "}
+                {revealNeeded.length === 1 ? "is" : "are"} in the reveal phase. Reveal
+                before the window closes or your locked bid can't be reclaimed.
+              </div>
+              <Button size="sm" onClick={() => setManageName(first.name)}>
+                Reveal
+              </Button>
+            </div>
+          );
+        })()}
+
       {/* Actions */}
       {!isWatchOnly && (
         <div className="space-y-2">
@@ -439,7 +528,15 @@ export function WalletView() {
                 {names.map((n) => (
                   <tr key={n.name} className="border-t border-gray-100">
                     <td className="py-1 font-mono">.{n.name}</td>
-                    <td className="py-1">{n.state || "—"}</td>
+                    <td className="py-1">
+                      {n.state ? (
+                        <Badge variant={auctionPhase(n.state).variant}>
+                          {auctionPhase(n.state).label}
+                        </Badge>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                     <td className="py-1 text-xs text-gray-500">{n.height ? `#${n.height}` : "—"}</td>
                     <td className="py-1 text-xs text-gray-500">{n.renewal ? `#${n.renewal}` : "—"}</td>
                     <td className="py-1 text-right">
@@ -493,14 +590,25 @@ export function WalletView() {
                     <td className="py-2 pr-4">
                       <Badge
                         variant={
-                          d.status === "broadcasted"
+                          d.status === "confirmed"
                             ? "success"
-                            : d.status === "failed"
+                            : d.status === "broadcasted"
+                            ? "warning"
+                            : d.status === "failed" || d.status === "dropped"
                             ? "error"
                             : "default"
                         }
+                        title={d.errorMessage ?? undefined}
                       >
-                        {d.status}
+                        {d.status === "confirmed"
+                          ? d.confirmationHeight
+                            ? `Confirmed · #${d.confirmationHeight}`
+                            : "Confirmed"
+                          : d.status === "broadcasted"
+                          ? "Pending"
+                          : d.status === "dropped"
+                          ? "Not confirmed"
+                          : d.status}
                       </Badge>
                     </td>
                     <td className="py-2 text-xs font-mono truncate max-w-[120px]">
@@ -536,26 +644,59 @@ export function WalletView() {
             <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
               This sends real HNS. You'll review the fee and confirm before broadcasting.
             </div>
-            <Input
-              label="Destination Address"
-              value={sendAddress}
-              onChange={(e) => setSendAddress(e.target.value)}
-              placeholder={profile.network === "mainnet" ? "hs1q…" : "rs1q… / ts1q…"}
-            />
-            <Input
-              label="Amount (HNS)"
-              value={sendAmount}
-              onChange={(e) => setSendAmount(e.target.value)}
-              placeholder="1.0"
-              type="number"
-              step="0.000001"
-            />
+            <div>
+              <Input
+                label="Destination Address"
+                value={sendAddress}
+                onChange={(e) => setSendAddress(e.target.value)}
+                placeholder={profile.network === "mainnet" ? "hs1q…" : "rs1q… / ts1q…"}
+              />
+              {addressError && (
+                <div className="mt-1 text-xs text-red-600" data-testid="send-address-error">
+                  {addressError}
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="flex items-end gap-2">
+                <div className="flex-1">
+                  <Input
+                    label="Amount (HNS)"
+                    value={sendAmount}
+                    onChange={(e) => setSendAmount(e.target.value)}
+                    placeholder="1.0"
+                    type="number"
+                    step="0.000001"
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={!canMax || buildDraft.isPending}
+                  onClick={() => handleBuildDraft({ max: true })}
+                  title="Send your entire spendable balance (minus the network fee)"
+                >
+                  Max
+                </Button>
+              </div>
+              {amountError && (
+                <div className="mt-1 text-xs text-red-600" data-testid="send-amount-error">
+                  {amountError}
+                </div>
+              )}
+            </div>
             <div className="flex gap-2 justify-end">
               <Button variant="ghost" onClick={resetSend}>Cancel</Button>
               <Button
                 variant="primary"
-                onClick={handleBuildDraft}
-                disabled={!sendAddress.trim() || !sendAmount.trim() || buildDraft.isPending}
+                onClick={() => handleBuildDraft()}
+                disabled={
+                  !sendAddress.trim() ||
+                  !sendAmount.trim() ||
+                  !!addressError ||
+                  !!amountError ||
+                  buildDraft.isPending
+                }
               >
                 {buildDraft.isPending ? "Building…" : "Review"}
               </Button>

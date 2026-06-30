@@ -14,8 +14,9 @@
 //!     "id": <n> }` (bcurl / brpc convention used by hsd).
 //!   - `sendrawtransaction` takes a hex-encoded raw tx and returns the txid hex.
 //!   - `getnameinfo` / `getnameresource` take `["name"]`.
-//!   - `getcoinsbyaddress` requires the node's address index to be enabled
-//!     (`--index-address`); callers must handle the empty/err case.
+//!   - address coins are fetched over REST (`GET /coin/address/:addr`), NOT
+//!     JSON-RPC — hsd has no node `getcoinsbyaddress`. Requires the node's
+//!     address index (`--index-address`); callers handle the empty/err case.
 
 use reqwest::Client;
 use serde::de::DeserializeOwned;
@@ -231,11 +232,36 @@ impl NodeRpcClient {
             .await
     }
 
-    /// `getcoinsbyaddress` — UTXOs for an address. Requires node address index
-    /// (`--index-address`). Returns an empty list if the address has no coins.
+    /// UTXOs for an address via the node REST route `GET /coin/address/:addr`.
+    /// (hsd has NO `getcoinsbyaddress` JSON-RPC on the node — it's wallet-only;
+    /// the node serves address coins over REST when `--index-address` is enabled.)
+    /// Returns an empty list if the address has no coins; errors if the node
+    /// rejects the request (e.g. address index disabled).
     pub async fn get_coins_by_address(&self, address: &str) -> Result<Vec<NodeCoin>, AppError> {
-        self.call("getcoinsbyaddress", serde_json::json!([address]))
-            .await
+        let url = format!("{}/coin/address/{}", self.node_url, address);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth("x", Some(&self.api_key))
+            .send()
+            .await?;
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.map_err(|e| {
+            AppError::Rpc(format!("node returned non-JSON for coins (status {status}): {e}"))
+        })?;
+        if !status.is_success() {
+            // hsd surfaces failures as `{"error":{"message":…}}` (or `{"message":…}`),
+            // e.g. when the address index isn't enabled.
+            let msg = body
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .or_else(|| body.get("message").and_then(|m| m.as_str()))
+                .unwrap_or("address coin lookup failed");
+            return Err(AppError::Rpc(format!("{msg} (status {status})")));
+        }
+        serde_json::from_value(body)
+            .map_err(|e| AppError::Rpc(format!("malformed coins response: {e}")))
     }
 
     /// `gettxout` — a single UTXO by `(txid, vout)`. Returns `None` if the
@@ -259,6 +285,18 @@ impl NodeRpcClient {
     /// `getblockhash` — the block hash (display-order hex) at `height`.
     pub async fn get_block_hash(&self, height: i64) -> Result<String, AppError> {
         self.call("getblockhash", serde_json::json!([height])).await
+    }
+
+    /// `generatetoaddress` — mine `nblocks` to `address`. Regtest/simnet only;
+    /// used by the live-node integration tests to advance auction phases on
+    /// demand. Returns the array of mined block hashes.
+    pub async fn generate_to_address(
+        &self,
+        nblocks: u32,
+        address: &str,
+    ) -> Result<serde_json::Value, AppError> {
+        self.call("generatetoaddress", serde_json::json!([nblocks, address]))
+            .await
     }
 
     // --- Broadcast (write) -------------------------------------------------
@@ -325,7 +363,7 @@ pub struct BlockchainInfo {
     pub bestblockhash: Option<String>,
 }
 
-/// Minimal typed view of a node coin from `getcoinsbyaddress`.
+/// Minimal typed view of a node coin from `GET /coin/address/:addr`.
 ///
 /// Only the fields the UTXO sync / draft builder depends on are typed; the rest
 /// of hsd's coin shape is ignored by serde.

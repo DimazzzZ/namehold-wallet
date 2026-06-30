@@ -61,13 +61,38 @@ export interface HsdName {
   height: number | null;
   renewal: number | null;
   owner: { hash: string; index: number } | null;
-  stats: {
-    renewal_period_end: number | null;
-    blocks_until_expire: number | null;
-    days_until_expire: number | null;
-  } | null;
+  value?: number | null;
+  highest?: number | null;
+  /**
+   * Auction state stats from hsd `getnameinfo` (camelCase, as the Rust `HsdName`
+   * serializes). All optional: only the fields for the name's current phase are
+   * present, and the explorer path may omit the auction ones entirely.
+   */
+  stats: HsdNameStats | null;
   /** Non-zero block height while the name is mid-transfer (0/null otherwise). */
   transfer?: number | null;
+}
+
+export interface HsdNameStats {
+  renewalPeriodStart?: number | null;
+  renewalPeriodEnd?: number | null;
+  blocksUntilExpire?: number | null;
+  daysUntilExpire?: number | null;
+  // Auction phase windows + countdowns (present only in the relevant phase).
+  openPeriodStart?: number | null;
+  openPeriodEnd?: number | null;
+  bidPeriodStart?: number | null;
+  bidPeriodEnd?: number | null;
+  revealPeriodStart?: number | null;
+  revealPeriodEnd?: number | null;
+  blocksUntilOpen?: number | null;
+  blocksUntilBidding?: number | null;
+  blocksUntilReveal?: number | null;
+  blocksUntilClose?: number | null;
+  hoursUntilOpen?: number | null;
+  hoursUntilBidding?: number | null;
+  hoursUntilReveal?: number | null;
+  hoursUntilClose?: number | null;
 }
 
 export interface WalletConnection {
@@ -136,6 +161,8 @@ export interface Settings {
   node_rpc_api_key: string;
   /** hsd data directory ("prefix") used when the app starts hsd. Empty = ~/.hsd. */
   hsd_prefix: string;
+  /** Explicit path to the hsd binary. Empty = auto-discover (common dirs + PATH). */
+  hsd_path: string;
   /** HNSFans explorer used for node-free reads (balance + names). */
   explorer_api_url: string;
   /** Integer string, default "20". */
@@ -196,10 +223,19 @@ export interface TxDraftSummary {
   id: string;
   walletProfileId: string;
   action: string;
-  status: "draft" | "signed" | "broadcast_pending" | "broadcasted" | "failed";
+  status:
+    | "draft"
+    | "signed"
+    | "broadcast_pending"
+    | "broadcasted"
+    | "confirmed"
+    | "dropped"
+    | "failed";
   summary: TxSummary | null;
   errorMessage: string | null;
   txid: string | null;
+  /** Block height the tx was mined at, once `status` is "confirmed". */
+  confirmationHeight: number | null;
   createdAt: string;
 }
 

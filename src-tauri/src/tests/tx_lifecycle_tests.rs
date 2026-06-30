@@ -13,8 +13,8 @@ use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 use crate::commands::tx::{
-    broadcast_tx_draft, build_send_hns_draft, get_write_capability, sign_tx_draft,
-    sync_wallet_state,
+    broadcast_tx_draft, build_send_hns_draft, get_write_capability, refresh_tx_confirmations,
+    sign_tx_draft, sync_wallet_state,
 };
 use crate::db;
 use crate::error::AppError;
@@ -157,7 +157,7 @@ async fn full_lifecycle_build_sign_broadcast_succeeds() {
     let to = recv_addr();
 
     // 1. Build — no unlock required; accurate fee/change preview persisted.
-    let draft = build_send_hns_draft(app.state(), to.clone(), 500_000, Some(1))
+    let draft = build_send_hns_draft(app.state(), to.clone(), 500_000, Some(1), None)
         .await
         .expect("build draft");
     let draft_id = draft.id.clone();
@@ -211,7 +211,7 @@ async fn broadcast_failure_marks_draft_failed_and_errors() {
     let app = app_with(conn);
     let to = recv_addr();
 
-    let draft = build_send_hns_draft(app.state(), to, 500_000, Some(1))
+    let draft = build_send_hns_draft(app.state(), to, 500_000, Some(1), None)
         .await
         .unwrap();
     unlock(&app, PROFILE);
@@ -228,6 +228,125 @@ async fn broadcast_failure_marks_draft_failed_and_errors() {
     assert!(stored.signed_tx_hex.is_some(), "signed hex retained for inspection");
 }
 
+// --- confirmation tracking (broadcasted -> confirmed / dropped) ------------
+
+const DRAFT_TXID: &str = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0";
+
+/// Seed a `broadcasted` draft (with a txid) for the active profile.
+fn seed_broadcasted_draft(conn: &rusqlite::Connection, id: &str) {
+    db::queries::insert_tx_draft(conn, id, PROFILE, "send_hns", "00", "{}", "{}").unwrap();
+    db::queries::update_tx_draft_status(conn, id, "broadcasted", None, Some(DRAFT_TXID)).unwrap();
+}
+
+/// getblockchaininfo + getrawtransaction mocks (matched by method in the body).
+async fn mock_node(
+    server: &mut mockito::Server,
+    tip: i64,
+    getrawtx_body: &str,
+) -> (mockito::Mock, mockito::Mock) {
+    let info = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(format!(
+            r#"{{"result":{{"blocks":{tip},"headers":{tip}}},"error":null,"id":1}}"#
+        ))
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    let tx = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getrawtransaction".into()))
+        .with_body(getrawtx_body.to_string())
+        .create_async()
+        .await;
+    (info, tx)
+}
+
+#[tokio::test]
+async fn refresh_marks_a_mined_draft_confirmed() {
+    let mut server = mockito::Server::new_async().await;
+    let (_info, _tx) = mock_node(
+        &mut server,
+        437,
+        r#"{"result":{"confirmations":3,"height":435},"error":null,"id":1}"#,
+    )
+    .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    seed_broadcasted_draft(&conn, "drf1");
+    let app = app_with(conn);
+
+    let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
+    assert_eq!(res["nodeReachable"], serde_json::json!(true));
+    assert_eq!(res["confirmed"], serde_json::json!(1));
+
+    let row = draft_row(&app, "drf1");
+    assert_eq!(row.status, "confirmed");
+    assert_eq!(row.confirmation_height, Some(435));
+}
+
+#[tokio::test]
+async fn refresh_marks_a_long_unfound_draft_dropped() {
+    let mut server = mockito::Server::new_async().await;
+    // Node reachable, but the tx is not found (evicted / never confirmed).
+    let (_info, _tx) = mock_node(
+        &mut server,
+        500,
+        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
+    )
+    .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    seed_broadcasted_draft(&conn, "drf2");
+    // Backdate past the grace window so it's judged dropped, not still-pending.
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET created_at = datetime('now','-600 seconds') WHERE id = 'drf2'",
+        [],
+    )
+    .unwrap();
+    let app = app_with(conn);
+
+    let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
+    assert_eq!(res["dropped"], serde_json::json!(1));
+
+    let row = draft_row(&app, "drf2");
+    assert_eq!(row.status, "dropped");
+    assert!(row.error_message.is_some(), "dropped draft carries an explanation");
+}
+
+#[tokio::test]
+async fn refresh_keeps_a_fresh_unfound_draft_pending() {
+    // A just-broadcast tx the node hasn't indexed yet must NOT be killed early —
+    // it stays `broadcasted` until the grace window elapses.
+    let mut server = mockito::Server::new_async().await;
+    let (_info, _tx) = mock_node(
+        &mut server,
+        500,
+        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
+    )
+    .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    seed_broadcasted_draft(&conn, "drf3"); // created_at = now (age ~0s)
+    let app = app_with(conn);
+
+    let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
+    assert_eq!(res["dropped"], serde_json::json!(0));
+    assert_eq!(draft_row(&app, "drf3").status, "broadcasted");
+}
+
+#[tokio::test]
+async fn refresh_is_a_soft_noop_when_node_unreachable() {
+    // Unreachable node (nothing listening) → never reclassify drafts.
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    seed_broadcasted_draft(&conn, "drf4");
+    let app = app_with(conn);
+
+    let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
+    assert_eq!(res["nodeReachable"], serde_json::json!(false));
+    assert_eq!(draft_row(&app, "drf4").status, "broadcasted");
+}
+
 // --- guards -----------------------------------------------------------------
 
 #[tokio::test]
@@ -236,7 +355,7 @@ async fn build_rejects_non_positive_amount() {
     let app = app_with(conn);
     let to = recv_addr();
     for bad in [0i64, -1, -500_000] {
-        let err = build_send_hns_draft(app.state(), to.clone(), bad, Some(1))
+        let err = build_send_hns_draft(app.state(), to.clone(), bad, Some(1), None)
             .await
             .expect_err("non-positive amount must be rejected");
         assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
@@ -253,7 +372,7 @@ async fn build_rejects_watch_only_profile() {
     )
     .unwrap();
     let app = app_with(conn);
-    let err = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1))
+    let err = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
         .await
         .expect_err("watch-only profile cannot send");
     match err {
@@ -266,7 +385,7 @@ async fn build_rejects_watch_only_profile() {
 async fn broadcast_rejects_unsigned_draft() {
     let conn = seeded_conn("http://127.0.0.1:12037", 2_000_000);
     let app = app_with(conn);
-    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1))
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
         .await
         .unwrap();
     // Skip signing; broadcasting must refuse.
@@ -283,7 +402,7 @@ async fn broadcast_rejects_unsigned_draft() {
 async fn sign_rejects_profile_mismatch() {
     let conn = seeded_conn("http://127.0.0.1:12037", 2_000_000);
     let app = app_with(conn);
-    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1))
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
         .await
         .unwrap();
     // Unlock a session bound to a DIFFERENT profile id.
@@ -301,7 +420,7 @@ async fn sign_rejects_profile_mismatch() {
 async fn sign_rejects_when_locked() {
     let conn = seeded_conn("http://127.0.0.1:12037", 2_000_000);
     let app = app_with(conn);
-    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1))
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
         .await
         .unwrap();
     // No unlock at all.
@@ -328,7 +447,7 @@ async fn remote_node_source_can_broadcast() {
     db::queries::set_setting(&conn, "chain_source", "remote_node").unwrap();
     let app = app_with(conn);
 
-    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1))
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
         .await
         .expect("build");
     unlock(&app, PROFILE);
@@ -358,7 +477,7 @@ async fn explorer_source_refuses_broadcast_before_any_rpc() {
     db::queries::set_setting(&conn, "chain_source", "explorer").unwrap();
     let app = app_with(conn);
 
-    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1))
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
         .await
         .expect("build");
     unlock(&app, PROFILE);
@@ -393,10 +512,11 @@ async fn sync_wallet_state_fetches_coins_and_reports_reachable() {
         .with_body(r#"{"result":{"chain":"main","blocks":150000},"error":null,"id":1}"#)
         .create_async()
         .await;
+    // Address coins come from the node REST route, NOT JSON-RPC — return the raw
+    // coin array (no envelope).
     let _coins = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getcoinsbyaddress".into()))
-        .with_body(format!(r#"{{"result":[{coin}],"error":null,"id":1}}"#))
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body(format!(r#"[{coin}]"#))
         .create_async()
         .await;
     let _other = server
@@ -456,11 +576,11 @@ async fn write_capability_blocks_when_not_address_indexed() {
         .with_body(bi_body(0.9999))
         .create_async()
         .await;
-    // Synced, but the node doesn't serve getcoinsbyaddress (no address index).
+    // Synced, but the node's REST coin route rejects (address index disabled).
     let _coins = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getcoinsbyaddress".into()))
-        .with_body(r#"{"result":null,"error":{"message":"Method not found: getcoinsbyaddress.","code":-32601},"id":1}"#)
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_status(400)
+        .with_body(r#"{"error":{"message":"Address indexing not available."}}"#)
         .create_async()
         .await;
 
@@ -486,9 +606,8 @@ async fn write_capability_allows_when_synced_indexed_and_unlocked() {
         .create_async()
         .await;
     let _coins = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getcoinsbyaddress".into()))
-        .with_body(r#"{"result":[],"error":null,"id":1}"#)
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body("[]")
         .create_async()
         .await;
 
@@ -511,4 +630,85 @@ async fn sync_wallet_state_reports_unreachable_node_softly() {
         .await
         .expect("unreachable node must not error");
     assert_eq!(res["nodeReachable"], serde_json::json!(false));
+}
+
+// --- Send Max (sweep) -------------------------------------------------------
+
+#[tokio::test]
+async fn build_send_max_sweeps_all_coins_minus_fee() {
+    // One coin of 2,000,000 doos; max mode → output = inputTotal − fee, no change.
+    let conn = seeded_conn("http://127.0.0.1:12037", 2_000_000);
+    let app = app_with(conn);
+    let to = recv_addr();
+
+    let draft = build_send_hns_draft(app.state(), to, 0, Some(1), Some(true))
+        .await
+        .expect("max build");
+    let row = draft_row(&app, &draft.id);
+    let s = summary_of(&row);
+    assert_eq!(s.input_total_doos, 2_000_000);
+    assert_eq!(s.change_doos, 0, "sweep has no change");
+    assert_eq!(s.num_inputs, 1, "spends every coin");
+    assert_eq!(
+        s.send_total_doos,
+        s.input_total_doos - s.fee_doos,
+        "recipient gets inputTotal − fee",
+    );
+}
+
+// --- get_write_capability: synced = chain tip reached (blocks >= headers) ----
+
+/// getblockchaininfo body with explicit blocks/headers + (low) progress.
+fn bi_full(blocks: i64, headers: i64, progress: f64) -> String {
+    format!(
+        r#"{{"result":{{"chain":"main","blocks":{blocks},"headers":{headers},"verificationprogress":{progress}}},"error":null,"id":1}}"#
+    )
+}
+
+#[tokio::test]
+async fn write_capability_allows_at_tip_despite_low_progress() {
+    // Regtest-style: blocks == headers (tip reached) but progress only 0.9997.
+    // The OLD 0.9999 gate wrongly blocked this; tip-reached must allow writes.
+    let mut server = mockito::Server::new_async().await;
+    let _bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(bi_full(317, 317, 0.9997))
+        .create_async()
+        .await;
+    let _coins = server
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body("[]")
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+    unlock(&app, PROFILE);
+
+    let cap = get_write_capability(app.state()).await.expect("cap");
+    assert!(cap.can_write, "node at tip must allow writes; reason={:?}", cap.reason);
+}
+
+#[tokio::test]
+async fn write_capability_blocks_when_behind_tip() {
+    // blocks < headers → genuinely mid-sync → blocked, even with high progress.
+    let mut server = mockito::Server::new_async().await;
+    let _bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(bi_full(100, 200, 0.9999))
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+    unlock(&app, PROFILE);
+
+    let cap = get_write_capability(app.state()).await.expect("cap");
+    assert!(!cap.can_write, "behind tip must block writes");
+    assert!(
+        cap.reason.unwrap_or_default().to_lowercase().contains("syncing"),
+        "reason should mention syncing",
+    );
 }

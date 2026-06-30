@@ -10,6 +10,7 @@ mod discover_names_tests;
 mod hsd_extra_tests;
 mod hsd_parity_tests;
 mod hsd_types_tests;
+mod live_node_it;
 mod migration_tests;
 mod namebase_transfer_tests;
 mod node_status_tests;

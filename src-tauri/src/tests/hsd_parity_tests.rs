@@ -199,6 +199,7 @@ fn run_build_send(v: &Value) -> send::BuiltTransaction {
         v["params"]["amount"].as_u64().unwrap(),
         v["change"]["address"].as_str().unwrap(),
         v["params"]["rate"].as_u64().unwrap(),
+        false,
     )
     .expect("build_send")
 }

@@ -113,6 +113,7 @@ pub fn run() {
             commands::tx::estimate_tx_draft_fee,
             commands::tx::sign_tx_draft,
             commands::tx::broadcast_tx_draft,
+            commands::tx::refresh_tx_confirmations,
             commands::tx::list_tx_drafts,
             commands::tx::get_write_capability,
             commands::tx::get_wallet_balances,

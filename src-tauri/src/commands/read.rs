@@ -214,17 +214,34 @@ pub async fn discover_owned_names(
     Ok(serde_json::json!({ "discovered": owned.len(), "names": names, "partial": partial }))
 }
 
-/// Single-name lookup via the explorer.
+/// Single-name lookup with live auction state. Prefers the node (`getnameinfo`
+/// is the authoritative source of phase + countdown data, and works on regtest
+/// where there's no explorer), falling back to the HNSFans explorer when no node
+/// is reachable. Both paths normalize to the frontend `HsdName` shape.
 #[tauri::command]
 pub async fn read_name_info(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<serde_json::Value, AppError> {
-    let client = {
+    let (explorer, settings) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        explorer_client(&queries::get_settings(&conn)?)
+        let settings = queries::get_settings(&conn)?;
+        (explorer_client(&settings), settings)
     };
-    let info = client.get_name_info(&name).await?;
+
+    // Node first: `getnameinfo` returns `{ info: { name, state, stats:{…phase…} } }`
+    // (or null `info` for a name that has never been touched on-chain).
+    let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+    if let Ok(raw) = node.get_name_info(&name).await {
+        if let Some(info) = raw.get("info").filter(|v| !v.is_null()) {
+            if let Some(normalized) = crate::providers::hnsfans::normalize_name(info) {
+                return Ok(serde_json::to_value(&normalized)?);
+            }
+        }
+    }
+
+    // Fall back to the explorer (node-free / unreachable).
+    let info = explorer.get_name_info(&name).await?;
     Ok(serde_json::to_value(&info)?)
 }
 

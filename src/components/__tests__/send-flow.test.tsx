@@ -242,4 +242,45 @@ describe("WalletView send flow (asset safety)", () => {
       expect(invokeMock.mock.calls.map((c) => c[0])).not.toContain("build_send_hns_draft");
     });
   });
+
+  it("shows an inline error for a wrong-network address and disables Review", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+    fireEvent.click(screen.getByRole("button", { name: /Send HNS/i }));
+    // A mainnet hs1… address on a regtest wallet.
+    fireEvent.change(screen.getByPlaceholderText(/rs1q/i), {
+      target: { value: "hs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "1" } });
+
+    expect(await screen.findByTestId("send-address-error")).toHaveTextContent(/valid regtest address/i);
+    expect(screen.getByRole("button", { name: /Review/i })).toBeDisabled();
+  });
+
+  it("shows an inline error when the amount exceeds the spendable balance", async () => {
+    invokeMock.mockImplementation(routeInvoke()); // spendable = 5,000,000 doos (5 HNS)
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+    fireEvent.click(screen.getByRole("button", { name: /Send HNS/i }));
+    fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
+    fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "10" } }); // > 5 HNS
+
+    expect(await screen.findByTestId("send-amount-error")).toHaveTextContent(/exceeds your spendable/i);
+    expect(screen.getByRole("button", { name: /Review/i })).toBeDisabled();
+  });
+
+  it("Max builds a sweep draft (max:true)", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+    fireEvent.click(screen.getByRole("button", { name: /Send HNS/i }));
+    fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
+    fireEvent.click(screen.getByRole("button", { name: /^Max$/i }));
+
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find((c) => c[0] === "build_send_hns_draft");
+      expect(call?.[1]).toMatchObject({ toAddress: RECIPIENT, max: true });
+    });
+  });
 });

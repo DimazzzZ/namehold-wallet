@@ -874,11 +874,12 @@ pub struct TxDraftRow {
     pub status: String,
     pub error_message: Option<String>,
     pub txid: Option<String>,
+    pub confirmation_height: Option<i64>,
     pub created_at: String,
 }
 
 const DRAFT_COLS: &str = "id, wallet_profile_id, action, unsigned_tx_hex, signed_tx_hex, \
-     signing_inputs_json, summary_json, status, error_message, txid, created_at";
+     signing_inputs_json, summary_json, status, error_message, txid, confirmation_height, created_at";
 
 fn row_to_draft(row: &rusqlite::Row) -> rusqlite::Result<TxDraftRow> {
     Ok(TxDraftRow {
@@ -892,7 +893,8 @@ fn row_to_draft(row: &rusqlite::Row) -> rusqlite::Result<TxDraftRow> {
         status: row.get(7)?,
         error_message: row.get(8)?,
         txid: row.get(9)?,
-        created_at: row.get(10)?,
+        confirmation_height: row.get(10)?,
+        created_at: row.get(11)?,
     })
 }
 
@@ -909,6 +911,7 @@ impl TxDraftRow {
             summary,
             error_message: self.error_message.clone(),
             txid: self.txid.clone(),
+            confirmation_height: self.confirmation_height,
             created_at: self.created_at.clone(),
         }
     }
@@ -986,6 +989,60 @@ pub fn update_tx_draft_status(
         params![id, status, error_message, txid],
     )?;
     Ok(())
+}
+
+/// Mark a draft `confirmed` and record the block height it was mined at.
+pub fn update_tx_draft_confirmation(
+    conn: &rusqlite::Connection,
+    id: &str,
+    confirmation_height: i64,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE wallet_tx_drafts
+            SET status = 'confirmed', confirmation_height = ?2,
+                error_message = NULL, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![id, confirmation_height],
+    )?;
+    Ok(())
+}
+
+/// Seconds elapsed since a draft row was created (used as the grace window
+/// before a broadcast-but-unfound tx is judged `dropped`). Errors if absent.
+pub fn draft_age_secs(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<i64, AppError> {
+    let secs: i64 = conn.query_row(
+        "SELECT CAST((julianday('now') - julianday(created_at)) * 86400 AS INTEGER)
+         FROM wallet_tx_drafts WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    Ok(secs)
+}
+
+/// Drafts that have been broadcast (status `broadcasted` or already `confirmed`,
+/// for confirmation-depth refresh) and carry a txid — the set whose on-chain
+/// status the node should be re-polled for. Newest first.
+pub fn list_drafts_awaiting_confirmation(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<TxDraftRow>, AppError> {
+    let sql = format!(
+        "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
+         WHERE wallet_profile_id = ?1
+           AND status IN ('broadcasted','confirmed')
+           AND txid IS NOT NULL
+         ORDER BY created_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![profile_id], row_to_draft)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 /// All derived address strings for a profile (both branches). Used by the sync

@@ -61,6 +61,22 @@ pub struct HsdNameStats {
     pub renewal_period_end: Option<u64>,
     pub blocks_until_expire: Option<i64>,
     pub days_until_expire: Option<f64>,
+    // Auction-phase fields (present only in the relevant phase of a
+    // `getnameinfo` response; all optional so a name in any state parses).
+    pub open_period_start: Option<u64>,
+    pub open_period_end: Option<u64>,
+    pub bid_period_start: Option<u64>,
+    pub bid_period_end: Option<u64>,
+    pub reveal_period_start: Option<u64>,
+    pub reveal_period_end: Option<u64>,
+    pub blocks_until_open: Option<i64>,
+    pub blocks_until_bidding: Option<i64>,
+    pub blocks_until_reveal: Option<i64>,
+    pub blocks_until_close: Option<i64>,
+    pub hours_until_open: Option<f64>,
+    pub hours_until_bidding: Option<f64>,
+    pub hours_until_reveal: Option<f64>,
+    pub hours_until_close: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

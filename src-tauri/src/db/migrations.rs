@@ -12,6 +12,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("009", include_str!("../sql/009_node_rpc_settings.sql")),
     ("010", include_str!("../sql/010_drop_legacy_settings.sql")),
     ("011", include_str!("../sql/011_hsd_data_dir.sql")),
+    ("012", include_str!("../sql/012_tx_draft_confirmations.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {

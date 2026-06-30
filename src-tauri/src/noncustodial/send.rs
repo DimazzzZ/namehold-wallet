@@ -218,6 +218,34 @@ pub fn select_coins(
     ))
 }
 
+/// Sweep selection: spend ALL available coins into a single recipient output of
+/// `input_total - fee` (no change). Used by "Send Max". The recipient amount is
+/// `input_total - fee`; the caller reads it as `input_total - selection.fee`.
+pub fn select_all_coins(
+    available: &[SpendableCoin],
+    rate_per_byte: u64,
+) -> Result<Selection, AppError> {
+    if available.is_empty() {
+        return Err(AppError::InvalidInput(
+            "no spendable coins to send".to_string(),
+        ));
+    }
+    let input_total: u64 = available.iter().map(|c| c.value).sum();
+    // One recipient output, no change.
+    let fee = estimate_fee(available.len() as u64, 1, rate_per_byte);
+    if input_total <= fee || input_total - fee < DUST_THRESHOLD {
+        return Err(AppError::InvalidInput(format!(
+            "balance ({input_total}) is too low to cover the network fee ({fee})"
+        )));
+    }
+    Ok(Selection {
+        coins: available.to_vec(),
+        fee,
+        change: 0,
+        input_total,
+    })
+}
+
 /// Convert an hsd txid hex into the 32-byte prevout hash used by [`Outpoint`].
 ///
 /// Handshake does NOT byte-reverse hashes (unlike Bitcoin): the hash string the
@@ -274,17 +302,29 @@ pub fn build_send(
     amount: u64,
     change_address: &str,
     rate_per_byte: u64,
+    max: bool,
 ) -> Result<BuiltTransaction, AppError> {
     // Validate both addresses before touching keys so we fail fast.
     let to_output_addr = output_address_from_string(network, to_address)?;
     let change_output_addr = output_address_from_string(network, change_address)?;
 
-    let selection = select_coins(available, amount, rate_per_byte)?;
+    // Send Max sweeps all coins into one output of `input_total - fee` (no
+    // change); otherwise select coins to cover `amount` + fee.
+    let selection = if max {
+        select_all_coins(available, rate_per_byte)?
+    } else {
+        select_coins(available, amount, rate_per_byte)?
+    };
+    let recipient_amount = if max {
+        selection.input_total - selection.fee
+    } else {
+        amount
+    };
 
     // Recipient output first, then change (only if above dust — select_coins
     // already folded dust change into the fee, so `change == 0` means none).
     let mut outputs = vec![Output {
-        value: amount,
+        value: recipient_amount,
         address: to_output_addr,
         covenant: Covenant::default(),
     }];
@@ -559,6 +599,7 @@ mod tests {
             120_000,
             "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx",
             1,
+            false,
         )
         .expect("build");
         assert!(built.num_inputs >= 1);
@@ -577,7 +618,7 @@ mod tests {
         // Single input, comfortably above amount + fee => one change output.
         let coins = vec![coin(1, 2_000_000, 0, 0)];
         let built =
-            build_send(&mut session, Network::Main, ACCOUNT, &coins, addr, 500_000, addr, rate)
+            build_send(&mut session, Network::Main, ACCOUNT, &coins, addr, 500_000, addr, rate, false)
                 .expect("build");
         // Exact conservation: inputs == outputs + fee.
         assert_eq!(built.input_total, built.output_total + built.fee);
@@ -600,11 +641,33 @@ mod tests {
             120_000,
             "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx",
             1,
+            false,
         )
         .unwrap_err();
         assert!(matches!(
             err,
             AppError::Crypto(_) | AppError::InvalidInput(_)
         ));
+    }
+
+    #[test]
+    fn select_all_coins_sweeps_all_with_no_change() {
+        let coins = vec![coin(1, 1_000_000, 0, 0), coin(2, 2_000_000, 0, 1)];
+        let rate = 1;
+        let sel = select_all_coins(&coins, rate).expect("sweep");
+        assert_eq!(sel.coins.len(), 2, "spends every coin");
+        assert_eq!(sel.change, 0, "sweep has no change");
+        assert_eq!(sel.input_total, 3_000_000);
+        // One recipient output, no change.
+        assert_eq!(sel.fee, estimate_fee(2, 1, rate));
+        // Recipient receives input_total - fee.
+        assert_eq!(sel.input_total - sel.fee, 3_000_000 - estimate_fee(2, 1, rate));
+    }
+
+    #[test]
+    fn select_all_coins_rejects_when_balance_below_fee_plus_dust() {
+        let coins = vec![coin(1, 500, 0, 0)]; // can't cover fee + dust
+        let err = select_all_coins(&coins, 1).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
     }
 }

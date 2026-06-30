@@ -373,7 +373,7 @@ fn extract_name_array(body: &serde_json::Value) -> Vec<serde_json::Value> {
 ///     and `revoked` is a numeric flag (`0`/`1`);
 ///   * the older/object-style shape, where the hash is in `nameHash`, `owner`
 ///     is an object/string, and renewal stats live under `stats`.
-fn normalize_name(entry: &serde_json::Value) -> Option<HsdName> {
+pub(crate) fn normalize_name(entry: &serde_json::Value) -> Option<HsdName> {
     let name = entry
         .get("name")
         .and_then(|v| v.as_str())
@@ -396,6 +396,22 @@ fn normalize_name(entry: &serde_json::Value) -> Option<HsdName> {
         renewal_period_end: s.get("renewalPeriodEnd").and_then(|v| v.as_u64()),
         blocks_until_expire: s.get("blocksUntilExpire").and_then(|v| v.as_i64()),
         days_until_expire: s.get("daysUntilExpire").and_then(|v| v.as_f64()),
+        // Auction-phase stats — best-effort: the explorer may omit these, in
+        // which case the node `getnameinfo` path is the source of truth.
+        open_period_start: s.get("openPeriodStart").and_then(|v| v.as_u64()),
+        open_period_end: s.get("openPeriodEnd").and_then(|v| v.as_u64()),
+        bid_period_start: s.get("bidPeriodStart").and_then(|v| v.as_u64()),
+        bid_period_end: s.get("bidPeriodEnd").and_then(|v| v.as_u64()),
+        reveal_period_start: s.get("revealPeriodStart").and_then(|v| v.as_u64()),
+        reveal_period_end: s.get("revealPeriodEnd").and_then(|v| v.as_u64()),
+        blocks_until_open: s.get("blocksUntilOpen").and_then(|v| v.as_i64()),
+        blocks_until_bidding: s.get("blocksUntilBidding").and_then(|v| v.as_i64()),
+        blocks_until_reveal: s.get("blocksUntilReveal").and_then(|v| v.as_i64()),
+        blocks_until_close: s.get("blocksUntilClose").and_then(|v| v.as_i64()),
+        hours_until_open: s.get("hoursUntilOpen").and_then(|v| v.as_f64()),
+        hours_until_bidding: s.get("hoursUntilBidding").and_then(|v| v.as_f64()),
+        hours_until_reveal: s.get("hoursUntilReveal").and_then(|v| v.as_f64()),
+        hours_until_close: s.get("hoursUntilClose").and_then(|v| v.as_f64()),
     });
 
     // The explorer puts the name hash in `hash`; older payloads use `nameHash`.
@@ -582,6 +598,31 @@ mod tests {
         assert_eq!(name.revoked, Some(false));
         // The explorer name shape has no owner object.
         assert!(name.owner.is_none());
+    }
+
+    #[test]
+    fn normalize_name_maps_auction_phase_stats() {
+        // A BIDDING name carries the bid period + the countdown to reveal; the
+        // new optional stats fields must be parsed (camelCase from getnameinfo).
+        let entry = json!({
+            "name": "cuatesttld",
+            "state": "BIDDING",
+            "stats": {
+                "bidPeriodStart": 100,
+                "bidPeriodEnd": 110,
+                "blocksUntilReveal": 7,
+                "hoursUntilReveal": 1.17,
+            }
+        });
+        let name = normalize_name(&entry).expect("should normalize");
+        let stats = name.stats.expect("stats present");
+        assert_eq!(stats.bid_period_start, Some(100));
+        assert_eq!(stats.bid_period_end, Some(110));
+        assert_eq!(stats.blocks_until_reveal, Some(7));
+        assert_eq!(stats.hours_until_reveal, Some(1.17));
+        // Unrelated phase fields stay None.
+        assert_eq!(stats.blocks_until_close, None);
+        assert_eq!(stats.blocks_until_expire, None);
     }
 
     #[test]

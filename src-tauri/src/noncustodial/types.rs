@@ -82,6 +82,8 @@ pub struct TxDraftSummary {
     pub summary: serde_json::Value,
     pub error_message: Option<String>,
     pub txid: Option<String>,
+    /// Block height the tx was mined at, once `status` is `confirmed`.
+    pub confirmation_height: Option<i64>,
     pub created_at: String,
 }
 

@@ -100,7 +100,7 @@ function routeInvoke(o: Overrides = {}) {
               changeDoos: 3_998_590,
               inputTotalDoos: 5_000_000,
               numInputs: 1,
-              recipientAddress: "rs1qdest",
+              recipientAddress: "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2",
               txid: null,
               warnings: [],
             },
@@ -205,7 +205,7 @@ describe("WalletView (non-custodial)", () => {
     await screen.findByText("Primary");
     fireEvent.click(screen.getByRole("button", { name: /Send HNS/i }));
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), {
-      target: { value: "rs1qdest" },
+      target: { value: "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2" },
     });
     fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: /Review/i }));
