@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, within, waitFor } from "@testing-library/react";
+import { render, screen, within, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -109,6 +109,24 @@ describe("NamebaseDashboard — Expiring soon panel", () => {
     expect(within(soonRow).getByText("Off")).toBeInTheDocument();
     const laterRow = within(panel).getByText(".later").closest("tr")!;
     expect(within(laterRow).getByText("On")).toBeInTheDocument();
+  });
+
+  it("puts the bulk Transfer bar above Your Domains, not above Expiring soon", async () => {
+    invokeMock.mockImplementation(route());
+    render(<NamebaseDashboard />, { wrapper: wrapper() });
+
+    // Select all domains via the header checkbox → the bulk bar appears.
+    const headerCheckbox = (await screen.findAllByRole("checkbox"))[0]!;
+    fireEvent.click(headerCheckbox);
+
+    const bar = await screen.findByRole("button", { name: /Transfer Selected/i });
+    const expiring = screen.getByTestId("namebase-expiring");
+    // The bar is NOT inside the Expiring-soon panel, and comes AFTER it in the DOM
+    // (i.e. it sits with the Your Domains table below).
+    expect(expiring).not.toContainElement(bar);
+    expect(
+      expiring.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("is hidden when there are no expiring domains", async () => {

@@ -291,19 +291,6 @@ export function NamebaseDashboard() {
             </div>
           </div>
 
-          {/* Bulk Actions */}
-          {selectedDomains.size > 0 && (
-            <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded px-3 py-2">
-              <span className="text-sm text-blue-700">{selectedDomains.size} selected</span>
-              <Button size="sm" variant="primary" onClick={() => setBulkTransferOpen(true)}>
-                Transfer Selected
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setSelectedDomains(new Set())}>
-                Clear
-              </Button>
-            </div>
-          )}
-
           {/* Expiring soon — Namebase renewal calendar */}
           {renewals.length > 0 && (
             <div
@@ -358,6 +345,20 @@ export function NamebaseDashboard() {
                   </tbody>
                 </table>
               </div>
+            </div>
+          )}
+
+          {/* Bulk actions — acts on the Your Domains selection, so it sits directly
+              above that table (not above the Expiring-soon panel). */}
+          {selectedDomains.size > 0 && (
+            <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded px-3 py-2">
+              <span className="text-sm text-blue-700">{selectedDomains.size} selected</span>
+              <Button size="sm" variant="primary" onClick={() => setBulkTransferOpen(true)}>
+                Transfer Selected
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelectedDomains(new Set())}>
+                Clear
+              </Button>
             </div>
           )}
 
