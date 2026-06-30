@@ -1,0 +1,186 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.2.0 (blank = use src-tauri/tauri.conf.json)"
+        required: false
+        type: string
+      prerelease:
+        description: "Mark the release as a pre-release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  # Resolve the version (input > tag > tauri.conf.json), validate it, and open a
+  # DRAFT release that the per-OS build jobs upload their bundles to.
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      release_id: ${{ steps.draft.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve + validate version
+        id: resolve
+        # Untrusted/manual inputs are passed via env (never interpolated into the
+        # script) and the resolved version is regex-validated before any later use.
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+          PRERELEASE_INPUT: ${{ github.event.inputs.prerelease }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "${VERSION_INPUT:-}" ]; then
+            V="$VERSION_INPUT"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            V="${REF_NAME#v}"
+          else
+            V="$(jq -r .version src-tauri/tauri.conf.json)"
+          fi
+          if ! printf '%s' "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$'; then
+            echo "::error::Invalid version '$V' (expected semver like 1.2.3 or 1.2.3-rc.1)"
+            exit 1
+          fi
+          PRE=false
+          if [ "${PRERELEASE_INPUT:-false}" = "true" ] || printf '%s' "$V" | grep -Eq -- '-(alpha|beta|rc)'; then
+            PRE=true
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=$V prerelease=$PRE"
+
+      - name: Create draft release
+        id: draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+          PRERELEASE: ${{ steps.resolve.outputs.prerelease }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          PRE_FLAG=""
+          [ "$PRERELEASE" = "true" ] && PRE_FLAG="--prerelease"
+          # Idempotent: create the draft (tagging $SHA on manual runs); if a release
+          # for the tag already exists (re-run), just reuse it.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --target "$SHA" \
+              --draft \
+              --title "Namehold $TAG" \
+              --generate-notes \
+              $PRE_FLAG
+          fi
+          RID="$(gh release view "$TAG" --json databaseId --jq .databaseId)"
+          echo "release_id=$RID" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: prepare
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            rust_targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+          - platform: ubuntu-22.04
+            args: ""
+            rust_targets: ""
+          - platform: windows-latest
+            args: ""
+            rust_targets: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system dependencies (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            libssl-dev
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # On a manual run with a version override, sync it into the version files so
+      # the produced bundles are named for the release. Version is pre-validated in
+      # `prepare`; passed via env. jq is available on all GitHub-hosted runners.
+      - name: Sync version files
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          current="$(jq -r .version src-tauri/tauri.conf.json)"
+          if [ "$current" = "$VERSION" ]; then
+            echo "Version already $VERSION — no sync needed."
+            exit 0
+          fi
+          echo "Syncing version $current -> $VERSION"
+          tmp="$(mktemp)"
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > "$tmp" && mv "$tmp" src-tauri/tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v' package.json > "$tmp" && mv "$tmp" package.json
+          # First [package] version key in Cargo.toml only.
+          perl -0pi -e 's/^version = "[^"]*"/version = "'"$VERSION"'"/m if !$done++' src-tauri/Cargo.toml
+
+      - name: Build + upload bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # --- Code signing (optional; unset = unsigned bundles) ---
+          # macOS:   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+          #          APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+          # Updater: TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+        with:
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          args: ${{ matrix.args }}
+
+  publish:
+    name: Publish release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Un-draft the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: gh release edit "v$VERSION" --draft=false

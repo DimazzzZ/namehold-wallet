@@ -1,0 +1,33 @@
+name: Workflow Validation
+
+on:
+  push:
+    paths: [".github/workflows/**"]
+  pull_request:
+    paths: [".github/workflows/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate workflow YAML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse every workflow file
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          ok = True
+          for f in sorted(glob.glob(".github/workflows/*.yml") + glob.glob(".github/workflows/*.yaml")):
+              try:
+                  yaml.safe_load(open(f))
+                  print(f"✅ {f}")
+              except yaml.YAMLError as e:
+                  ok = False
+                  print(f"❌ {f}: {e}")
+          sys.exit(0 if ok else 1)
+          PY
