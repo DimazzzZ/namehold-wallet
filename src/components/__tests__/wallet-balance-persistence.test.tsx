@@ -141,4 +141,63 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
     expect(await screen.findByText("150.000000")).toBeInTheDocument();
     await waitFor(() => expect(callsForA()).toBeGreaterThan(initialCalls));
   });
+
+  it("Confirmed (read_balance) is pinned per wallet — no swap on fast switch", async () => {
+    // read_balance has no required profile arg server-side; the regression is the
+    // frontend must PIN it to the keyed wallet so a fetch can't return the active
+    // profile's data. The mock honors walletProfileId (the fixed backend) and the
+    // assertions prove the arg is always passed + values never swap.
+    const state = { active: "A" };
+    const confirmed: Record<string, number> = { A: 11 * HNS, B: 22 * HNS };
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([
+            mkProfile("A", "Wallet A", state.active === "A"),
+            mkProfile("B", "Wallet B", state.active === "B"),
+          ]);
+        case "set_active_wallet_profile":
+          state.active = String(args?.walletProfileId);
+          return Promise.resolve(mkProfile(state.active, `Wallet ${state.active}`, true));
+        case "read_balance": {
+          const id = String(args?.walletProfileId ?? state.active);
+          return Promise.resolve({
+            confirmed: confirmed[id] ?? 0,
+            unconfirmed: 0,
+            locked_confirmed: 0,
+            locked_unconfirmed: 0,
+          });
+        }
+        case "get_wallet_balances":
+          return Promise.resolve({ liquidDoos: 0, nameControlDoos: 0, nameLockupDoos: 0, totalDoos: 0 });
+        case "get_signer_session":
+          return Promise.resolve({ walletProfileId: null, unlocked: false, unlockedUntilEpochMs: 0 });
+        case "get_write_capability":
+          return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: null });
+        case "list_tx_drafts":
+          return Promise.resolve([]);
+        case "read_names":
+          return Promise.resolve([]);
+        default:
+          return Promise.resolve(null);
+      }
+    });
+    render(<WalletView />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("11.000000")).toBeInTheDocument(); // A's confirmed
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "B" } });
+    expect(await screen.findByText("22.000000")).toBeInTheDocument(); // B's confirmed
+    expect(screen.queryByText("11.000000")).toBeNull();
+
+    // Switch back to A → A's value again (the old bug left B's value stuck).
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "A" } });
+    expect(await screen.findByText("11.000000")).toBeInTheDocument();
+
+    // Every read_balance call pinned an explicit walletProfileId (the fix).
+    const rbCalls = invokeMock.mock.calls.filter((c) => c[0] === "read_balance");
+    expect(rbCalls.length).toBeGreaterThan(0);
+    expect(
+      rbCalls.every((c) => typeof (c[1] as { walletProfileId?: unknown })?.walletProfileId === "string"),
+    ).toBe(true);
+  });
 });

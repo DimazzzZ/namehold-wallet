@@ -129,7 +129,7 @@ async fn discovers_owned_name_and_excludes_transferred_away() {
 
     // read_names serves ONLY owned names — the inventory-only 'notmine' must NOT
     // appear, and the transferred-away 'gone' must NOT appear.
-    let listed = read_names(app.state()).await.expect("read_names");
+    let listed = read_names(app.state(), None).await.expect("read_names");
     let arr = listed.as_array().expect("array");
     let listed_names: Vec<&str> = arr.iter().filter_map(|v| v["name"].as_str()).collect();
     assert_eq!(listed_names, vec!["mine"], "Owned Names excludes inventory + transferred-away");

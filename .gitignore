@@ -49,3 +49,4 @@ src-tauri/target/release/bundle/
 # Build artifacts
 tsconfig.tsbuildinfo
 www.namebase.io.har
+CLAUDE.md

@@ -26,7 +26,11 @@ export function useReadBalance(): UseQueryResult<HsdBalance | null> {
     queryKey: ["read", "balance", profileId],
     enabled: profileId != null,
     queryFn: async () => {
-      const raw = await invoke<HsdBalance | null>("read_balance");
+      // Pin the read to THIS wallet so a fetch can never return another
+      // profile's balance (the active profile may flip mid-switch).
+      const raw = await invoke<HsdBalance | null>("read_balance", {
+        walletProfileId: profileId,
+      });
       return raw ?? null;
     },
     staleTime: Infinity,
@@ -37,12 +41,16 @@ export function useReadBalance(): UseQueryResult<HsdBalance | null> {
   });
 }
 
-/** Provider-aware list of owned / watched names. */
+/** Provider-aware list of owned / watched names, pinned to the active wallet. */
 export function useReadNames(): UseQueryResult<HsdName[]> {
+  const profileId = useActiveProfile().data?.id ?? null;
   return useQuery<HsdName[]>({
-    queryKey: ["read", "names"],
+    queryKey: ["read", "names", profileId],
+    enabled: profileId != null,
     queryFn: async () => {
-      const raw = await invoke<HsdName[] | null>("read_names");
+      const raw = await invoke<HsdName[] | null>("read_names", {
+        walletProfileId: profileId,
+      });
       return Array.isArray(raw) ? raw : [];
     },
     staleTime: STALE_TIME,
@@ -66,12 +74,16 @@ export function useReadNameInfo(
   });
 }
 
-/** Provider-aware, normalized transaction history. */
+/** Provider-aware, normalized transaction history, pinned to the active wallet. */
 export function useReadTransactions(): UseQueryResult<WalletTransactionRow[]> {
+  const profileId = useActiveProfile().data?.id ?? null;
   return useQuery<WalletTransactionRow[]>({
-    queryKey: ["read", "transactions"],
+    queryKey: ["read", "transactions", profileId],
+    enabled: profileId != null,
     queryFn: async () => {
-      const raw = await invoke<unknown>("read_transactions");
+      const raw = await invoke<unknown>("read_transactions", {
+        walletProfileId: profileId,
+      });
       const arr = Array.isArray(raw) ? (raw as unknown[]) : [];
       return arr.map((tx, i) =>
         normalizeTransaction(tx as Record<string, unknown>, i),

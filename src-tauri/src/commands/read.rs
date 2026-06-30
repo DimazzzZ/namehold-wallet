@@ -37,6 +37,26 @@ fn active_profile(state: &State<'_, AppState>) -> Result<Option<String>, AppErro
     }
 }
 
+/// Resolve which profile a read targets. An explicit `wallet_profile_id` (passed
+/// by the frontend, keyed to the query's wallet) wins so a read can NEVER return
+/// another profile's data — critical when the active profile changes mid-switch.
+/// Falls back to the active profile when no id is given or the id doesn't exist.
+fn resolve_profile(
+    state: &State<'_, AppState>,
+    wallet_profile_id: Option<String>,
+) -> Result<Option<String>, AppError> {
+    if let Some(id) = wallet_profile_id {
+        let id = id.trim().to_string();
+        if !id.is_empty() {
+            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+            if queries::get_wallet_profile(&conn, &id)?.is_some() {
+                return Ok(Some(id));
+            }
+        }
+    }
+    active_profile(state)
+}
+
 /// HNSFans explorer client from settings (`explorer_api_url`).
 fn explorer_client(settings: &std::collections::HashMap<String, String>) -> HnsFansClient {
     let url = settings
@@ -48,9 +68,13 @@ fn explorer_client(settings: &std::collections::HashMap<String, String>) -> HnsF
 }
 
 /// Balance via the explorer (profile addresses), falling back to the cache.
+/// `wallet_profile_id` pins the read to a specific wallet (defaults to active).
 #[tauri::command]
-pub async fn read_balance(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let id = match active_profile(&state)? {
+pub async fn read_balance(
+    state: State<'_, AppState>,
+    wallet_profile_id: Option<String>,
+) -> Result<serde_json::Value, AppError> {
+    let id = match resolve_profile(&state, wallet_profile_id)? {
         Some(id) => id,
         None => return Ok(serde_json::json!({"confirmed":0,"unconfirmed":0,"locked_confirmed":0,"locked_unconfirmed":0})),
     };
@@ -74,8 +98,11 @@ pub async fn read_balance(state: State<'_, AppState>) -> Result<serde_json::Valu
 /// migration *inventory* (`assets`) — those names live in the Portfolio /
 /// Migration views, not "Owned Names".
 #[tauri::command]
-pub async fn read_names(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let id = match active_profile(&state)? {
+pub async fn read_names(
+    state: State<'_, AppState>,
+    wallet_profile_id: Option<String>,
+) -> Result<serde_json::Value, AppError> {
+    let id = match resolve_profile(&state, wallet_profile_id)? {
         Some(id) => id,
         None => return Ok(serde_json::Value::Array(vec![])),
     };
@@ -246,9 +273,13 @@ pub async fn read_name_info(
 }
 
 /// Transaction history from the local (node-synced) cache.
+/// `wallet_profile_id` pins the read to a specific wallet (defaults to active).
 #[tauri::command]
-pub async fn read_transactions(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let id = match active_profile(&state)? {
+pub async fn read_transactions(
+    state: State<'_, AppState>,
+    wallet_profile_id: Option<String>,
+) -> Result<serde_json::Value, AppError> {
+    let id = match resolve_profile(&state, wallet_profile_id)? {
         Some(id) => id,
         None => return Ok(serde_json::Value::Array(vec![])),
     };

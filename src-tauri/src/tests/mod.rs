@@ -17,6 +17,7 @@ mod node_status_tests;
 mod provider_hnsfans_tests;
 mod query_extra_tests;
 mod query_tests;
+mod read_profile_isolation_tests;
 mod settings_cmd_tests;
 mod settings_tests;
 mod tx_lifecycle_tests;
