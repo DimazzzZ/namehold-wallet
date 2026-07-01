@@ -22,6 +22,8 @@ export interface NodeStatus {
   last_error: string | null;
   /** The failure is a chain/index mismatch hsd can't fix in place → offer re-sync. */
   index_mismatch: boolean;
+  /** Current read source: "local" (node synced) or "explorer" (fallback). */
+  read_source: "local" | "explorer";
 }
 
 /** Poll the hsd node status (binary, data dir, connected, height). */

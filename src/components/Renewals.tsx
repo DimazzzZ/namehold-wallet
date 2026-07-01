@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useAssets, useExportCsv } from "../queries/assets";
 import type { Asset } from "../types";
-import { formatDate } from "../lib/utils";
+import { formatDate, formatCount } from "../lib/utils";
 import { Button } from "./ui/Button";
 import { useUiStore } from "../stores/ui";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -32,7 +32,7 @@ export function Renewals() {
     if (!path) return;
     try {
       const count = await exportCsv.mutateAsync({ path });
-      showToast(`Exported ${count} TLDs`, "success");
+      showToast(`Exported ${formatCount(count)} TLDs`, "success");
     } catch (e) {
       showToast(`Export failed: ${e}`, "error");
     }

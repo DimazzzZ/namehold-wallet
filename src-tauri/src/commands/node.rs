@@ -196,6 +196,24 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         Some((msg, mismatch)) => (Some(msg), mismatch),
         None => (None, false),
     };
+    // Determine the current read source: "local" when the node is connected and
+    // synced, "explorer" otherwise. The frontend uses this to show which data
+    // source is active.
+    let node_synced = probe.as_ref().map(|p| {
+        if let Some(headers) = p.headers {
+            headers > 0 && p.height >= headers
+        } else if let Some(progress) = p.verification_progress {
+            progress >= 0.9999
+        } else {
+            true
+        }
+    }).unwrap_or(false);
+    let read_source = if probe.is_some() && node_synced {
+        "local"
+    } else {
+        "explorer"
+    };
+
     Ok(serde_json::json!({
         "binary": binary,
         "binary_found": version.is_some(),
@@ -211,6 +229,8 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         // True when the failure is a chain/index-flag mismatch hsd can't fix in
         // place — the UI offers a one-click re-sync for this case.
         "index_mismatch": index_mismatch,
+        // Current read source: "local" (node synced) or "explorer" (fallback).
+        "read_source": read_source,
     }))
 }
 

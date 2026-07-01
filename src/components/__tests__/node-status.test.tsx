@@ -36,6 +36,7 @@ type NodeOver = Partial<{
   headers: number | null;
   last_error: string | null;
   index_mismatch: boolean;
+  read_source: "local" | "explorer";
 }>;
 
 function nodeStatus(over: NodeOver = {}) {
@@ -52,6 +53,7 @@ function nodeStatus(over: NodeOver = {}) {
     headers: null,
     last_error: null,
     index_mismatch: false,
+    read_source: "explorer",
     ...over,
   };
 }
@@ -275,5 +277,50 @@ describe("Node status (truthful, RPC-based)", () => {
 
     expect(await screen.findByText("Node:")).toBeInTheDocument();
     expect(await screen.findByText("Offline")).toBeInTheDocument();
+  });
+
+  it("StatusStrip shows Source: Explorer when node is not synced", async () => {
+    invokeMock.mockImplementation(route(nodeStatus({ connected: false, read_source: "explorer" })));
+    render(<StatusStrip />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("Source:")).toBeInTheDocument();
+    expect(await screen.findByText("Explorer")).toBeInTheDocument();
+  });
+
+  it("StatusStrip shows Source: Local when node is connected and synced", async () => {
+    invokeMock.mockImplementation(
+      route(nodeStatus({ connected: true, process_alive: true, height: 100, headers: 100, read_source: "local" })),
+    );
+    render(<StatusStrip />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("Source:")).toBeInTheDocument();
+    expect(await screen.findByText("Local")).toBeInTheDocument();
+  });
+
+  it("Settings shows Read source: Explorer when node is not synced", async () => {
+    invokeMock.mockImplementation(route(nodeStatus({ connected: false, read_source: "explorer" })));
+    render(<Settings />, { wrapper: wrapper() });
+
+    expect(await screen.findByText(/Read source:/)).toBeInTheDocument();
+    expect(await screen.findByText("Explorer")).toBeInTheDocument();
+  });
+
+  it("Settings shows Read source: Local node cache when node is synced", async () => {
+    invokeMock.mockImplementation(
+      route(nodeStatus({ connected: true, process_alive: true, height: 100, headers: 100, read_source: "local" })),
+    );
+    render(<Settings />, { wrapper: wrapper() });
+
+    expect(await screen.findByText(/Read source:/)).toBeInTheDocument();
+    expect(await screen.findByText("Local node cache")).toBeInTheDocument();
+  });
+
+  it("Settings shows updated explorer description about fallback behavior", async () => {
+    invokeMock.mockImplementation(route(nodeStatus()));
+    render(<Settings />, { wrapper: wrapper() });
+
+    expect(
+      await screen.findByText(/when the node is connected and fully synced, reads come from the local node cache/i),
+    ).toBeInTheDocument();
   });
 });

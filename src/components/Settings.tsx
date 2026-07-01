@@ -94,7 +94,9 @@ export function Settings() {
             placeholder="https://e.hnsfans.com"
           />
           <div className="text-xs text-gray-500">
-            Balance and names are read from this explorer — no node required.
+            Balance and names are read from this explorer when the node is not
+            synced. When the node is connected and fully synced, reads come from
+            the local node cache instead.
           </div>
         </div>
 
@@ -316,7 +318,10 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
           </div>
         </div>
       )}
-      <div className="text-xs text-gray-500 space-y-0.5">
+        <div className="text-xs text-gray-500 space-y-0.5">
+        <div>
+          Read source: <span className="font-medium">{status?.read_source === "local" ? "Local node cache" : "Explorer"}</span>
+        </div>
         <div>
           Data dir: <code>{status?.data_dir ?? "…"}</code>
         </div>

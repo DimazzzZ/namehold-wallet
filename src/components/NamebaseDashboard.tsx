@@ -283,11 +283,11 @@ export function NamebaseDashboard() {
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-white rounded p-4 border border-gray-200">
               <div className="text-sm text-gray-500">Total Domains</div>
-              <div className="text-2xl font-bold">{domains.length}</div>
+              <div className="text-2xl font-bold">{formatCount(domains.length)}</div>
             </div>
             <div className="bg-white rounded p-4 border border-gray-200">
               <div className="text-sm text-gray-500">Staked Domains</div>
-              <div className="text-2xl font-bold text-purple-700">{stakedDomains.length}</div>
+              <div className="text-2xl font-bold text-purple-700">{formatCount(stakedDomains.length)}</div>
             </div>
           </div>
 
@@ -297,7 +297,7 @@ export function NamebaseDashboard() {
               className="bg-white rounded p-4 border border-gray-200"
               data-testid="namebase-expiring"
             >
-              <h3 className="text-sm font-semibold mb-1">Expiring soon ({renewals.length})</h3>
+              <h3 className="text-sm font-semibold mb-1">Expiring soon ({formatCount(renewals.length)})</h3>
               <p className="text-xs text-gray-500 mb-3">
                 These custodial domains expire soonest — renew on Namebase or move them
                 out before they lapse. Names with auto-renew <strong>off</strong> are the
@@ -352,7 +352,7 @@ export function NamebaseDashboard() {
               above that table (not above the Expiring-soon panel). */}
           {selectedDomains.size > 0 && (
             <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded px-3 py-2">
-              <span className="text-sm text-blue-700">{selectedDomains.size} selected</span>
+              <span className="text-sm text-blue-700">{formatCount(selectedDomains.size)} selected</span>
               <Button size="sm" variant="primary" onClick={() => setBulkTransferOpen(true)}>
                 Transfer Selected
               </Button>
@@ -365,7 +365,7 @@ export function NamebaseDashboard() {
           {/* Domain List */}
           {domains.length > 0 && (
             <div className="bg-white rounded p-4 border border-gray-200">
-              <h3 className="text-sm font-semibold mb-3">Your Domains ({domains.length})</h3>
+              <h3 className="text-sm font-semibold mb-3">Your Domains ({formatCount(domains.length)})</h3>
               <div className="max-h-96 overflow-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -508,11 +508,11 @@ export function NamebaseDashboard() {
       <Dialog
         open={bulkTransferOpen}
         onClose={() => setBulkTransferOpen(false)}
-        title={`Transfer ${selectedDomains.size} domains`}
+        title={`Transfer ${formatCount(selectedDomains.size)} domains`}
       >
         <div className="space-y-3">
           <p className="text-sm text-gray-600">
-            Transfer <strong>{selectedDomains.size}</strong> domains from Namebase to an HNS address.
+            Transfer <strong>{formatCount(selectedDomains.size)}</strong> domains from Namebase to an HNS address.
           </p>
           <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
             ⚠️ Beta — transfers are irreversible. Move <strong>one</strong> domain first
@@ -545,7 +545,7 @@ export function NamebaseDashboard() {
             </div>
           )}
           <div className="text-sm text-gray-600">
-            <p className="mb-2"><strong>Selected domains ({selectedDomains.size}):</strong></p>
+            <p className="mb-2"><strong>Selected domains ({formatCount(selectedDomains.size)}):</strong></p>
             <div className="max-h-32 overflow-auto bg-gray-50 rounded p-2 text-xs font-mono">
               {Array.from(selectedDomains).map((name) => `.${name}`).join(", ")}
             </div>
@@ -583,7 +583,7 @@ export function NamebaseDashboard() {
                 qc.invalidateQueries({ queryKey: ["namebase-domain-withdrawals"] });
               }}
             >
-              {transferPending ? "Transferring..." : `Transfer ${selectedDomains.size} Domains`}
+              {transferPending ? "Transferring..." : `Transfer ${formatCount(selectedDomains.size)} Domains`}
             </Button>
           </div>
         </div>

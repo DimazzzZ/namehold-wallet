@@ -164,7 +164,7 @@ describe("Namebase Withdraw HNS", () => {
     fireEvent.change(screen.getByPlaceholderText("0.0"), { target: { value: "2" } });
     // Breakdown: recipient gets 2, fee 1, total debited 3.
     expect(screen.getByText("Total debited")).toBeInTheDocument();
-    expect(screen.getByText("3 HNS")).toBeInTheDocument();
+    expect(screen.getByText("3.000000 HNS")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Withdraw$/i }));
     await waitFor(() => {
@@ -216,11 +216,11 @@ describe("Namebase Withdraw HNS", () => {
     // Enter a large amount: 120000 HNS
     fireEvent.change(screen.getByPlaceholderText("0.0"), { target: { value: "120000" } });
 
-    // The fee breakdown should show comma-formatted numbers.
-    // Recipient: 120,000  Fee: + 1  Total: 120,001
-    expect(screen.getByText("120,000 HNS")).toBeInTheDocument();
-    expect(screen.getByText("+ 1 HNS")).toBeInTheDocument();
-    expect(screen.getByText("120,001 HNS")).toBeInTheDocument();
+    // The fee breakdown should show comma-formatted numbers with 6 decimal places.
+    // Recipient: 120,000.000000  Fee: + 1.000000  Total: 120,001.000000
+    expect(screen.getByText("120,000.000000 HNS")).toBeInTheDocument();
+    expect(screen.getByText("+ 1.000000 HNS")).toBeInTheDocument();
+    expect(screen.getByText("120,001.000000 HNS")).toBeInTheDocument();
   });
 
   it("blocks a gross amount below the Namebase minimum", async () => {

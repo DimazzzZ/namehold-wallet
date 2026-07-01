@@ -99,36 +99,36 @@ describe("formatCount", () => {
 });
 
 describe("formatHnsAmount", () => {
-  it("formats integer with thousand separators", () => {
-    expect(formatHnsAmount(120002)).toBe("120,002");
+  it("formats integer with thousand separators and 6 decimal places", () => {
+    expect(formatHnsAmount(120002)).toBe("120,002.000000");
   });
 
-  it("formats decimal with thousand separators preserving precision", () => {
-    expect(formatHnsAmount(120002.4)).toBe("120,002.4");
+  it("formats decimal with thousand separators and 6 decimal places", () => {
+    expect(formatHnsAmount(120002.4)).toBe("120,002.400000");
   });
 
   it("formats large decimal with 6 decimal places", () => {
-    expect(formatHnsAmount(120002.400000)).toBe("120,002.4");
+    expect(formatHnsAmount(120002.400000)).toBe("120,002.400000");
   });
 
-  it("formats small number without separators", () => {
-    expect(formatHnsAmount(0.5)).toBe("0.5");
+  it("formats small number with 6 decimal places", () => {
+    expect(formatHnsAmount(0.5)).toBe("0.500000");
   });
 
-  it("formats zero", () => {
-    expect(formatHnsAmount(0)).toBe("0");
+  it("formats zero with 6 decimal places", () => {
+    expect(formatHnsAmount(0)).toBe("0.000000");
   });
 
-  it("formats millions", () => {
-    expect(formatHnsAmount(1000000)).toBe("1,000,000");
+  it("formats millions with 6 decimal places", () => {
+    expect(formatHnsAmount(1000000)).toBe("1,000,000.000000");
   });
 
-  it("formats string input", () => {
-    expect(formatHnsAmount("120002.4")).toBe("120,002.4");
+  it("formats string input with 6 decimal places", () => {
+    expect(formatHnsAmount("120002.4")).toBe("120,002.400000");
   });
 
-  it("preserves trailing zeros from string input", () => {
-    expect(formatHnsAmount("1000.50")).toBe("1,000.50");
+  it("normalizes trailing zeros from string input to 6 decimal places", () => {
+    expect(formatHnsAmount("1000.50")).toBe("1,000.500000");
   });
 
   it("returns raw string for non-finite values", () => {
@@ -139,7 +139,13 @@ describe("formatHnsAmount", () => {
     // IDs are never passed to formatHnsAmount — this test documents the contract
     const id = 123456789;
     // IDs stay raw as numbers; formatHnsAmount is only for HNS amounts
-    expect(formatHnsAmount(id)).toBe("123,456,789");
+    expect(formatHnsAmount(id)).toBe("123,456,789.000000");
+  });
+
+  it("always uses exactly 6 decimal places for consistency with formatHns", () => {
+    expect(formatHnsAmount(1)).toBe("1.000000");
+    expect(formatHnsAmount(0.123456)).toBe("0.123456");
+    expect(formatHnsAmount(100000.123456)).toBe("100,000.123456");
   });
 });
 

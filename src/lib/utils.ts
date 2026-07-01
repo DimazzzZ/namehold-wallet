@@ -60,19 +60,19 @@ export function formatHns(dollarydoos: number | null | undefined): string {
 }
 
 /**
- * Format a decimal HNS amount with thousands separators.
- * Preserves the original decimal precision of the input.
- * Example: 120002.4 → "120,002.4", 1000 → "1,000", 0.5 → "0.5"
+ * Format a decimal HNS amount with thousands separators and exactly 6
+ * fractional digits — matching the precision used by `formatHns` (which
+ * converts from dollarydoos via `.toFixed(6)`).
+ *
+ * Examples: 120002.4 → "120,002.400000", 1000 → "1,000.000000",
+ *           0.5 → "0.500000"
  */
 export function formatHnsAmount(value: number | string): string {
   const num = typeof value === "string" ? Number(value) : value;
   if (!Number.isFinite(num)) return String(value);
-  const str = String(value);
-  const dotIdx = str.indexOf(".");
-  const fractionDigits = dotIdx >= 0 ? str.length - dotIdx - 1 : 0;
   return num.toLocaleString("en-US", {
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits,
+    minimumFractionDigits: 6,
+    maximumFractionDigits: 6,
   });
 }
 
