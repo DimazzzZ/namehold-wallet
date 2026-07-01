@@ -24,6 +24,8 @@ src-tauri/gen/
 .idea/
 .mimocode/
 .clinerules/
+.cline/
+.github/copilot-instructions.md
 *.swp
 *.swo
 *~

@@ -14,7 +14,7 @@ import { Input } from "./ui/Input";
 import { Badge } from "./ui/Badge";
 import { Dialog } from "./ui/Dialog";
 import { mapError } from "../lib/errors";
-import { formatDate } from "../lib/utils";
+import { formatDate, formatCount, formatHnsAmount } from "../lib/utils";
 
 /** Whole days from now until an ISO date (negative = already past). */
 function daysUntil(iso: string): number | null {
@@ -241,13 +241,13 @@ export function NamebaseDashboard() {
             <div className="bg-white rounded p-4 border border-gray-200">
               <div className="text-sm text-gray-500">HNS Balance</div>
               <div className="text-2xl font-bold">
-                {account?.balance?.hns?.toLocaleString() || "—"}
+                {account?.balance?.hns != null ? formatCount(account.balance.hns) : "—"}
               </div>
             </div>
             <div className="bg-white rounded p-4 border border-gray-200">
               <div className="text-sm text-gray-500">BTC Balance</div>
               <div className="text-2xl font-bold">
-                {account?.balance?.btc || "—"}
+                {account?.balance?.btc != null ? formatCount(account.balance.btc) : "—"}
               </div>
             </div>
             <div
@@ -256,7 +256,7 @@ export function NamebaseDashboard() {
             >
               <div className="text-sm text-gray-500">Pending HNS</div>
               <div className="text-2xl font-bold">
-                {account?.pendingHns || "0"}
+                {account?.pendingHns != null ? formatCount(account.pendingHns) : "0"}
                 <span className="text-base font-normal text-gray-400"> HNS</span>
               </div>
               <div className="text-xs text-gray-400">Reserved on Namebase</div>
@@ -606,8 +606,8 @@ export function NamebaseDashboard() {
             />
             <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
               <span>
-                The recipient receives this amount; the {feeHns} HNS network fee is added
-                on top. Available: {availableHns.toLocaleString()} HNS.
+                The recipient receives this amount; the {formatCount(feeHns)} HNS network fee is added
+                on top. Available: {formatCount(availableHns)} HNS.
               </span>
               <button
                 type="button"
@@ -626,22 +626,22 @@ export function NamebaseDashboard() {
             <div className="bg-gray-50 border border-gray-200 rounded p-3 text-sm space-y-1">
               <div className="flex justify-between text-gray-600">
                 <span>Send to recipient</span>
-                <span className="font-mono">{amountNet} HNS</span>
+                <span className="font-mono">{formatHnsAmount(amountNet)} HNS</span>
               </div>
               <div className="flex justify-between text-gray-600">
                 <span>Network fee</span>
-                <span className="font-mono">+ {feeHns} HNS</span>
+                <span className="font-mono">+ {formatHnsAmount(feeHns)} HNS</span>
               </div>
               <div className="flex justify-between font-semibold text-gray-900 border-t border-gray-200 pt-1">
                 <span>Total debited</span>
-                <span className="font-mono">{grossHns} HNS</span>
+                <span className="font-mono">{formatHnsAmount(grossHns)} HNS</span>
               </div>
             </div>
           )}
           {overBalance && (
             <div className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800">
-              Not enough balance — need {grossHns} HNS including the {feeHns} HNS fee
-              (available {availableHns.toLocaleString()} HNS).
+              Not enough balance — need {formatCount(grossHns)} HNS including the {formatCount(feeHns)} HNS fee
+              (available {formatCount(availableHns)} HNS).
             </div>
           )}
           <div>
@@ -682,7 +682,7 @@ export function NamebaseDashboard() {
                   // gross − fee. The user entered the net, so send net + fee.
                   await withdrawHns.mutateAsync({ address: dest, amount: String(grossHns) });
                   showToast(
-                    `Withdrawal of ${amountNet} HNS requested (+${feeHns} HNS fee)`,
+                    `Withdrawal of ${formatHnsAmount(amountNet)} HNS requested (+${formatHnsAmount(feeHns)} HNS fee)`,
                     "success",
                   );
                   setWithdrawOpen(false);
