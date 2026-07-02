@@ -20,7 +20,7 @@ import { Input } from "./ui/Input";
 import type { Asset, MigrationStatus } from "../types";
 import { formatHns, formatDate } from "../lib/utils";
 import { mapError } from "../lib/errors";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "../lib/dialog";
 import { invoke } from "../lib/invoke";
 
 const MIGRATION_STATUSES: { value: string; label: string }[] = [

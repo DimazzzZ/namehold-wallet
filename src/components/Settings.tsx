@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useSettingsStore } from "../stores/settings";
 import { useNodeStatus, useStartHsd, useStopHsd, useResyncHsd } from "../queries/node";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "../lib/dialog";
 import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
