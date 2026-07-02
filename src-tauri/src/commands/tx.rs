@@ -117,7 +117,38 @@ pub async fn sync_wallet_state(
                 .ok_or_else(|| AppError::NotFound(format!("wallet profile {id}")))?,
             None => active_profile(&conn)?,
         };
-        let addresses = db::queries::get_profile_addresses(&conn, &profile.id)?;
+        let mut addresses = db::queries::get_profile_addresses(&conn, &profile.id)?;
+        // Auto-provision derived addresses if none exist yet (e.g., wallet
+        // created before the address-derivation step ran, or DB was migrated).
+        if addresses.is_empty() {
+            if let Ok(network) = derivation::network_from_profile(&profile.network) {
+                if let Ok(xpub) = crate::noncustodial::hd::ExtendedPubKey::from_xpub(
+                    network,
+                    &profile.account_xpub,
+                ) {
+                    if let Ok(recv) = derivation::ensure_addresses(
+                        &conn,
+                        &profile.id,
+                        0,
+                        network,
+                        &xpub,
+                        derivation::BRANCH_RECEIVE,
+                        20,
+                    ) {
+                        let _ = derivation::ensure_addresses(
+                            &conn,
+                            &profile.id,
+                            0,
+                            network,
+                            &xpub,
+                            derivation::BRANCH_CHANGE,
+                            20,
+                        );
+                        addresses = recv.into_iter().map(|d| d.address).collect();
+                    }
+                }
+            }
+        }
         let settings = db::queries::get_settings(&conn)?;
         (profile.id, addresses, settings)
     };

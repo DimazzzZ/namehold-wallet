@@ -124,11 +124,37 @@ pub async fn read_balance(
     }
 
     // Explorer fallback.
-    let (client, addrs) = {
+    let (client, mut addrs) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
         (explorer_client(&settings), queries::get_profile_addresses(&conn, &id)?)
     };
+    // Auto-provision derived addresses if none exist yet, so the explorer
+    // can look up the wallet's balance even if sync hasn't run.
+    if addrs.is_empty() {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        if let Ok(profile) = queries::get_wallet_profile(&conn, &id) {
+            if let Some(profile) = profile {
+                if let Ok(network) = crate::noncustodial::derivation::network_from_profile(&profile.network) {
+                    if let Ok(xpub) = crate::noncustodial::hd::ExtendedPubKey::from_xpub(
+                        network,
+                        &profile.account_xpub,
+                    ) {
+                        if let Ok(recv) = crate::noncustodial::derivation::ensure_addresses(
+                            &conn, &id, 0, network, &xpub,
+                            crate::noncustodial::derivation::BRANCH_RECEIVE, 20,
+                        ) {
+                            let _ = crate::noncustodial::derivation::ensure_addresses(
+                                &conn, &id, 0, network, &xpub,
+                                crate::noncustodial::derivation::BRANCH_CHANGE, 20,
+                            );
+                            addrs = recv.into_iter().map(|d| d.address).collect();
+                        }
+                    }
+                }
+            }
+        }
+    }
     if !addrs.is_empty() {
         if let Ok(balance) = client.get_balance(&addrs).await {
             // `HsdBalance` deserializes from the hsd node's camelCase RPC, so its
