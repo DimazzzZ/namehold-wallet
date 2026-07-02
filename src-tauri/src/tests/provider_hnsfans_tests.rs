@@ -149,3 +149,86 @@ async fn test_get_transactions_returns_empty_in_external_mode() {
         .expect("transactions call should succeed");
     assert_eq!(txs, serde_json::Value::Array(Vec::new()));
 }
+
+// --- get_name_info_optional: AVAILABLE normalization tests ---
+
+#[tokio::test]
+async fn test_get_name_info_optional_returns_none_on_404() {
+    // When the explorer returns 404 for a name, get_name_info_optional should
+    // return Ok(None) so the caller can synthesize an AVAILABLE response.
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("GET", "/api/names/neveropened")
+        .with_status(404)
+        .create_async()
+        .await;
+
+    let client = HnsFansClient::new(&server.url());
+    let result = client
+        .get_name_info_optional("neveropened")
+        .await
+        .expect("404 should not be an error");
+    assert!(result.is_none(), "404 should yield None for AVAILABLE synthesis");
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_get_name_info_optional_returns_none_on_empty_body() {
+    // An empty or unparseable body from a 200 response should also yield None
+    // so the caller treats the name as AVAILABLE.
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("GET", "/api/names/emptyname")
+        .with_status(200)
+        .with_body("{}")
+        .create_async()
+        .await;
+
+    let client = HnsFansClient::new(&server.url());
+    let result = client
+        .get_name_info_optional("emptyname")
+        .await
+        .expect("empty body should not be an error");
+    assert!(result.is_none(), "empty body should yield None for AVAILABLE synthesis");
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_get_name_info_optional_propagates_5xx_errors() {
+    // Real server errors (5xx) must propagate as Err, NOT be silently treated
+    // as AVAILABLE. This is critical to avoid false "name is available" when
+    // the explorer is simply down.
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("GET", "/api/names/servererror")
+        .with_status(500)
+        .create_async()
+        .await;
+
+    let client = HnsFansClient::new(&server.url());
+    let result = client.get_name_info_optional("servererror").await;
+    assert!(result.is_err(), "5xx should be an error, not None/AVAILABLE");
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_get_name_info_optional_returns_some_for_known_name() {
+    // A normal name with valid data should return Some(HsdName), not None.
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("GET", "/api/names/knownname")
+        .with_status(200)
+        .with_body(r#"{"name":"knownname","hash":"cafebabe","state":"CLOSED","height":5040,"value":400000,"renewal":329999,"transfer":0,"revoked":0}"#)
+        .create_async()
+        .await;
+
+    let client = HnsFansClient::new(&server.url());
+    let result = client
+        .get_name_info_optional("knownname")
+        .await
+        .expect("valid name should succeed");
+    let name = result.expect("known name should be Some");
+    assert_eq!(name.name, "knownname");
+    assert_eq!(name.state.as_deref(), Some("CLOSED"));
+    mock.assert_async().await;
+}

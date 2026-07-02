@@ -245,6 +245,11 @@ pub async fn discover_owned_names(
 /// is the authoritative source of phase + countdown data, and works on regtest
 /// where there's no explorer), falling back to the HNSFans explorer when no node
 /// is reachable. Both paths normalize to the frontend `HsdName` shape.
+///
+/// When the node confirms a name exists in the Handshake namespace but has never
+/// been opened on-chain (`info` is null), we synthesize an `AVAILABLE` response
+/// so the frontend can offer the "Open auction" action without treating the name
+/// as an error.
 #[tauri::command]
 pub async fn read_name_info(
     state: State<'_, AppState>,
@@ -260,16 +265,61 @@ pub async fn read_name_info(
     // (or null `info` for a name that has never been touched on-chain).
     let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
     if let Ok(raw) = node.get_name_info(&name).await {
+        // The node knows the name — `info` is present and carries auction state.
         if let Some(info) = raw.get("info").filter(|v| !v.is_null()) {
             if let Some(normalized) = crate::providers::hnsfans::normalize_name(info) {
                 return Ok(serde_json::to_value(&normalized)?);
             }
         }
+        // `info` is null → the name exists in the HNS namespace but has never
+        // been opened. Synthesize an AVAILABLE entry so the frontend can offer
+        // the "Open auction" action cleanly.
+        return Ok(serde_json::to_value(&crate::hsd::types::HsdName {
+            name: name.clone(),
+            name_hash: None,
+            state: Some("AVAILABLE".to_string()),
+            height: None,
+            renewal: None,
+            owner: None,
+            value: None,
+            highest: None,
+            registered: Some(false),
+            expired: None,
+            stats: None,
+            transfer: None,
+            revoked: None,
+        })?);
     }
 
-    // Fall back to the explorer (node-free / unreachable).
-    let info = explorer.get_name_info(&name).await?;
-    Ok(serde_json::to_value(&info)?)
+    // Node unreachable — fall back to the explorer.
+    //
+    // `get_name_info_optional` returns `Ok(None)` when the explorer reports the
+    // name is not found (HTTP 404 / empty body), which we treat as AVAILABLE so
+    // the user can start an auction.  Real transport failures (DNS, timeout,
+    // 5xx) still propagate as `Err` instead of silently degrading to
+    // AVAILABLE.
+    match explorer.get_name_info_optional(&name).await {
+        Ok(Some(info)) => Ok(serde_json::to_value(&info)?),
+        Ok(None) => {
+            // Explorer confirms the name is unknown — synthesize AVAILABLE.
+            Ok(serde_json::to_value(&crate::hsd::types::HsdName {
+                name: name.clone(),
+                name_hash: None,
+                state: Some("AVAILABLE".to_string()),
+                height: None,
+                renewal: None,
+                owner: None,
+                value: None,
+                highest: None,
+                registered: Some(false),
+                expired: None,
+                stats: None,
+                transfer: None,
+                revoked: None,
+            })?)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Transaction history from the local (node-synced) cache.

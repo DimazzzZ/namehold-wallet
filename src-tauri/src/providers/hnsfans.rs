@@ -177,6 +177,28 @@ impl HnsFansClient {
             .ok_or_else(|| AppError::Other(format!("HNSFans returned no data for {}", name)))
     }
 
+    /// Like [`get_name_info`], but returns `Ok(None)` when the explorer reports
+    /// the name is not found (HTTP 404 or empty/unparseable body) instead of
+    /// treating it as an error.  Real transport failures (DNS, timeout, 5xx)
+    /// still propagate as `Err`.
+    pub async fn get_name_info_optional(&self, name: &str) -> Result<Option<HsdName>, AppError> {
+        let url = format!("{}/api/names/{}", self.base_url, name.trim());
+        let resp = self.http.get(&url).send().await?;
+        // 404 → name unknown to the explorer (untouched / never opened).
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!(
+                "HNSFans name lookup failed for {}: status {}",
+                name,
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp.json().await?;
+        Ok(normalize_name(&body))
+    }
+
     /// Fetch recent transactions touching any watch address.
     ///
     /// The `e.hnsfans.com` explorer exposes `/api/txs/:hash` (single tx) and
