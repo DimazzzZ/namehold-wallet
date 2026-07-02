@@ -19,7 +19,8 @@ import {
   auctionPhase,
   nextTransition,
   formatCountdown,
-  recommendedAction,
+  AUCTION_PHASE_GUIDE,
+  hnsToDoos,
 } from "../lib/auction";
 import {
   DNS_RECORD_TYPES,
@@ -33,10 +34,9 @@ import {
  * One modal that exposes every name covenant action for a single name, wired to
  * the `build_*_draft` commands + the build→unlock→sign→broadcast runner.
  *
- * The header shows the name's live auction phase (from `read_name_info`) with a
- * countdown to the next transition and highlights the recommended action.
- * Records (REGISTER/UPDATE) use a typed row editor; an Advanced toggle exposes
- * the raw-JSON array for record types the row editor doesn't cover (DS, GLUE…).
+ * The modal is phase-guided: it shows the most relevant action for the name's
+ * current auction phase prominently, with a clear description. Advanced actions
+ * (transfer, revoke, etc.) are behind an "All actions" toggle.
  */
 export function NameActionsModal({
   name,
@@ -52,7 +52,7 @@ export function NameActionsModal({
   const { data: profile } = useActiveProfile();
   const { data: signer } = useSignerSession();
   const { data: writeCap } = useWriteCapability();
-  const { data: info } = useReadNameInfo(open ? name : null);
+  const { data: info, isLoading, isError, error } = useReadNameInfo(open ? name : null);
   const exec = useExecuteDraft();
 
   const build = {
@@ -69,24 +69,23 @@ export function NameActionsModal({
     revoke: useNameAction("build_revoke_draft"),
   };
 
-  const [bidValue, setBidValue] = useState("");
-  const [lockup, setLockup] = useState("");
+  // Bid inputs in HNS (human-readable), converted to doos on submit.
+  const [bidHns, setBidHns] = useState("");
+  const [lockupHns, setLockupHns] = useState("");
   const [recipient, setRecipient] = useState("");
   const [rows, setRows] = useState<DnsRow[]>([{ type: "TXT", value: "" }]);
   const [advanced, setAdvanced] = useState(false);
   const [recordsJson, setRecordsJson] = useState("[]");
+  const [showAllActions, setShowAllActions] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   const unlocked = signer?.unlocked ?? false;
-  // Every action here is an on-chain spend that needs the name's owner coin from
-  // a synced, address-indexed node. Gate all of them on write capability so the
-  // user gets a clear reason instead of a "wallet does not hold …" failure.
   const canWrite = writeCap?.canWrite ?? false;
   const lock = !!busy || !canWrite;
 
   const badge = auctionPhase(info?.state);
   const countdown = nextTransition(info?.state, info?.stats);
-  const recommended = recommendedAction(info?.state);
+  const guide = AUCTION_PHASE_GUIDE[badge.phase];
 
   const run = async (
     label: string,
@@ -135,118 +134,111 @@ export function NameActionsModal({
   const removeRow = (i: number) =>
     setRows((rs) => (rs.length > 1 ? rs.filter((_, j) => j !== i) : rs));
 
-  // Highlight the phase-recommended action button.
-  const isRec = (key: string) => recommended?.key === key;
+  // Render the phase-specific guided action.
+  const renderGuidedAction = () => {
+    if (!guide) return null;
 
-  return (
-    <Dialog open={open} onClose={onClose} title={`Manage .${name}`}>
-      <div className="space-y-4 text-sm">
-        {/* Phase header */}
-        <div
-          className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded p-2"
-          data-testid="name-phase"
-        >
-          <div className="flex items-center gap-2">
-            <Badge variant={badge.variant}>{badge.label}</Badge>
+    switch (badge.phase) {
+      case "AVAILABLE":
+        return (
+          <div className="space-y-2">
+            <div className="text-sm text-gray-700">{guide.description}</div>
+            <Button
+              variant="primary"
+              disabled={lock}
+              onClick={() => run("OPEN", () => build.open.mutateAsync({ name }))}
+            >
+              {busy === "OPEN" ? "Opening…" : guide.action}
+            </Button>
+          </div>
+        );
+
+      case "OPENING":
+        return (
+          <div className="text-sm text-gray-600">
+            {guide.description}
             {countdown && (
-              <span className="text-xs text-gray-600" data-testid="name-countdown">
+              <div className="mt-1 font-medium">
                 {countdown.label} {formatCountdown(countdown)}
-              </span>
+              </div>
             )}
           </div>
-          {(info?.highest ?? info?.value) != null && (
-            <span className="text-xs text-gray-500">
-              {info?.highest != null ? `High bid ${formatHns(info.highest)} HNS` : ""}
-              {info?.value != null ? ` · value ${formatHns(info.value)} HNS` : ""}
-            </span>
-          )}
-        </div>
+        );
 
-        {recommended && canWrite && (
-          <div
-            className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800"
-            data-testid="name-recommended"
-          >
-            <strong>{recommended.label}:</strong> {recommended.hint}
-          </div>
-        )}
-
-        {canWrite ? (
-          <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
-            Each action builds, signs (passphrase prompted in the secure window if
-            locked), and broadcasts an on-chain covenant.
-          </div>
-        ) : (
-          <div
-            className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800"
-            role="alert"
-            data-testid="name-actions-blocked"
-          >
-            <span className="font-semibold">Name actions unavailable.</span>{" "}
-            {writeCap?.reason ??
-              "Connect a fully-synced, address-indexed node and unlock your signer to manage names."}
-          </div>
-        )}
-
-        {/* Auction lifecycle */}
-        <section className="space-y-2">
-          <div className="font-medium text-gray-700">Auction</div>
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant={isRec("OPEN") ? "primary" : "secondary"} disabled={lock} onClick={() => run("OPEN", () => build.open.mutateAsync({ name }))}>
-              {busy === "OPEN" ? "…" : "Open"}
-            </Button>
-            <Button size="sm" variant={isRec("REVEAL") ? "primary" : "secondary"} disabled={lock} onClick={() => run("REVEAL", () => build.reveal.mutateAsync({ name }))}>
-              {busy === "REVEAL" ? "…" : "Reveal"}
-            </Button>
-            <Button size="sm" disabled={lock} onClick={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}>
-              {busy === "REDEEM" ? "…" : "Redeem"}
-            </Button>
-          </div>
-          <div className="flex items-end gap-2">
-            <Input label="Bid (HNS doos)" value={bidValue} onChange={(e) => setBidValue(e.target.value)} placeholder="1000000" />
-            <Input label="Lockup (doos)" value={lockup} onChange={(e) => setLockup(e.target.value)} placeholder=">= bid" />
+      case "BIDDING":
+        return (
+          <div className="space-y-3">
+            <div className="text-sm text-gray-700">{guide.description}</div>
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <Input
+                  label="Bid (HNS)"
+                  value={bidHns}
+                  onChange={(e) => setBidHns(e.target.value)}
+                  placeholder="10.0"
+                  type="number"
+                  step="0.000001"
+                />
+              </div>
+              <div className="flex-1">
+                <Input
+                  label="Lockup (HNS)"
+                  value={lockupHns}
+                  onChange={(e) => setLockupHns(e.target.value)}
+                  placeholder="≥ bid"
+                  type="number"
+                  step="0.000001"
+                />
+              </div>
+            </div>
+            <div className="text-xs text-gray-500">
+              Lockup must be ≥ bid. Excess is returned after reveal.
+            </div>
             <Button
-              size="sm"
-              variant={isRec("BID") ? "primary" : "secondary"}
-              disabled={lock || !bidValue || !lockup}
+              variant="primary"
+              disabled={lock || !bidHns || !lockupHns}
               onClick={() =>
                 run("BID", () =>
                   build.bid.mutateAsync({
                     name,
-                    bidValue: Number(bidValue),
-                    lockup: Number(lockup),
+                    bidValue: hnsToDoos(Number(bidHns)),
+                    lockup: hnsToDoos(Number(lockupHns)),
                   }),
                 )
               }
             >
-              {busy === "BID" ? "…" : "Bid"}
+              {busy === "BID" ? "Placing bid…" : guide.action}
             </Button>
           </div>
-        </section>
+        );
 
-        {/* Records (REGISTER / UPDATE) */}
-        <section className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="font-medium text-gray-700">DNS records (REGISTER / UPDATE)</div>
-            <button
-              type="button"
-              className="text-xs text-blue-600 hover:underline"
-              onClick={() => setAdvanced((a) => !a)}
-              data-testid="dns-advanced-toggle"
-            >
-              {advanced ? "Use row editor" : "Advanced (raw JSON)"}
-            </button>
+      case "REVEAL":
+        return (
+          <div className="space-y-2">
+            <div className="text-sm text-gray-700">{guide.description}</div>
+            <div className="flex gap-2">
+              <Button
+                variant="primary"
+                disabled={lock}
+                onClick={() => run("REVEAL", () => build.reveal.mutateAsync({ name }))}
+              >
+                {busy === "REVEAL" ? "Revealing…" : guide.action}
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={lock}
+                onClick={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}
+              >
+                {busy === "REDEEM" ? "…" : "Redeem (lost bid)"}
+              </Button>
+            </div>
           </div>
+        );
 
-          {advanced ? (
-            <textarea
-              className="w-full border border-gray-300 rounded px-2 py-1 font-mono text-xs h-20"
-              value={recordsJson}
-              onChange={(e) => setRecordsJson(e.target.value)}
-              placeholder='[{"type":"TXT","txt":["hello"]}]'
-              data-testid="dns-json"
-            />
-          ) : (
+      case "CLOSED":
+        return (
+          <div className="space-y-3">
+            <div className="text-sm text-gray-700">{guide.description}</div>
             <div className="space-y-2" data-testid="dns-rows">
               {rows.map((row, i) => (
                 <div key={i} className="flex items-center gap-2">
@@ -288,45 +280,246 @@ export function NameActionsModal({
                 + Add record
               </button>
             </div>
-          )}
-
-          <div className="flex gap-2">
-            <Button size="sm" variant={isRec("REGISTER") ? "primary" : "secondary"} disabled={lock} onClick={() => submitRecords("REGISTER")}>
-              {busy === "REGISTER" ? "…" : "Register"}
-            </Button>
-            <Button size="sm" disabled={lock} onClick={() => submitRecords("UPDATE")}>
-              {busy === "UPDATE" ? "…" : "Update"}
-            </Button>
-          </div>
-        </section>
-
-        {/* Ownership / lifecycle */}
-        <section className="space-y-2">
-          <div className="font-medium text-gray-700">Ownership</div>
-          <Input label="Transfer to address" value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="hs1q… / rs1q…" />
-          <div className="flex flex-wrap gap-2">
             <Button
-              size="sm"
-              variant="danger"
-              disabled={lock || !recipient.trim()}
-              onClick={() => run("TRANSFER", () => build.transfer.mutateAsync({ name, recipient: recipient.trim() }))}
+              variant="primary"
+              disabled={lock}
+              onClick={() => submitRecords("REGISTER")}
             >
-              {busy === "TRANSFER" ? "…" : "Transfer"}
-            </Button>
-            <Button size="sm" disabled={lock} onClick={() => run("FINALIZE", () => build.finalize.mutateAsync({ name }))}>
-              {busy === "FINALIZE" ? "…" : "Finalize"}
-            </Button>
-            <Button size="sm" disabled={lock} onClick={() => run("CANCEL", () => build.cancel.mutateAsync({ name }))}>
-              {busy === "CANCEL" ? "…" : "Cancel transfer"}
-            </Button>
-            <Button size="sm" disabled={lock} onClick={() => run("RENEW", () => build.renew.mutateAsync({ name }))}>
-              {busy === "RENEW" ? "…" : "Renew"}
-            </Button>
-            <Button size="sm" variant="danger" disabled={lock} onClick={() => run("REVOKE", () => build.revoke.mutateAsync({ name }))}>
-              {busy === "REVOKE" ? "…" : "Revoke"}
+              {busy === "REGISTER" ? "Registering…" : guide.action}
             </Button>
           </div>
-        </section>
+        );
+
+      default:
+        return null;
+    }
+  };
+
+  // Determine if the name is owned by the current wallet (has an owner and is registered)
+  const isOwned = !!info?.owner && info?.registered === true;
+
+  return (
+    <Dialog open={open} onClose={onClose} title={`.${name}`}>
+      <div className="space-y-4 text-sm">
+        {/* Loading state */}
+        {isLoading && (
+          <div className="text-center py-4">
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mx-auto"></div>
+            <div className="mt-2 text-sm text-gray-600">Loading name info...</div>
+          </div>
+        )}
+
+        {/* Error state */}
+        {isError && (
+          <div className="bg-red-50 border border-red-300 rounded p-3 text-sm text-red-800">
+            <div className="font-medium">Failed to load name info</div>
+            <div className="mt-1 text-xs">{error?.message || "Unknown error"}</div>
+          </div>
+        )}
+
+        {/* Phase header - only show when data is loaded and no error */}
+        {!isLoading && !isError && (
+          <div
+            className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded p-2"
+            data-testid="name-phase"
+          >
+            <div className="flex items-center gap-2">
+              <Badge variant={badge.variant}>{badge.label}</Badge>
+              {countdown && (
+                <span className="text-xs text-gray-600" data-testid="name-countdown">
+                  {countdown.label} {formatCountdown(countdown)}
+                </span>
+              )}
+            </div>
+            {(info?.highest ?? info?.value) != null && (
+              <span className="text-xs text-gray-500">
+                {info?.highest != null ? `High bid ${formatHns(info.highest)} HNS` : ""}
+                {info?.value != null ? ` · value ${formatHns(info.value)} HNS` : ""}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Write-capability gate */}
+        {!canWrite && (
+          <div
+            className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800"
+            role="alert"
+            data-testid="name-actions-blocked"
+          >
+            <span className="font-semibold">Name actions unavailable.</span>{" "}
+            {writeCap?.reason ??
+              "Connect a fully-synced, address-indexed node and unlock your signer to manage names."}
+          </div>
+        )}
+
+        {/* Phase-guided primary action - only show when data is loaded and no error */}
+        {!isLoading && !isError && guide && (
+          <div className="bg-blue-50 border border-blue-200 rounded p-3">
+            <div className="font-medium text-blue-900 mb-2">{guide.title}</div>
+            {renderGuidedAction()}
+          </div>
+        )}
+
+        {/* Advanced actions toggle */}
+        <div>
+          <button
+            type="button"
+            className="text-xs text-gray-500 hover:text-gray-700 hover:underline"
+            onClick={() => setShowAllActions((a) => !a)}
+            data-testid="all-actions-toggle"
+          >
+            {showAllActions ? "Hide advanced actions" : "Show all actions"}
+          </button>
+        </div>
+
+        {showAllActions && (
+          <div className="space-y-4 border-t border-gray-200 pt-4">
+            {/* Auction actions - always show for all names */}
+            <section className="space-y-2">
+              <div className="font-medium text-gray-700">Auction</div>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" disabled={lock} onClick={() => run("OPEN", () => build.open.mutateAsync({ name }))}>
+                  {busy === "OPEN" ? "…" : "Open"}
+                </Button>
+                <Button size="sm" variant="secondary" disabled={lock} onClick={() => run("REVEAL", () => build.reveal.mutateAsync({ name }))}>
+                  {busy === "REVEAL" ? "…" : "Reveal"}
+                </Button>
+                <Button size="sm" variant="secondary" disabled={lock} onClick={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}>
+                  {busy === "REDEEM" ? "…" : "Redeem"}
+                </Button>
+              </div>
+              <div className="flex items-end gap-2">
+                <Input label="Bid (HNS)" value={bidHns} onChange={(e) => setBidHns(e.target.value)} placeholder="10.0" type="number" step="0.000001" />
+                <Input label="Lockup (HNS)" value={lockupHns} onChange={(e) => setLockupHns(e.target.value)} placeholder="≥ bid" type="number" step="0.000001" />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={lock || !bidHns || !lockupHns}
+                  onClick={() =>
+                    run("BID", () =>
+                      build.bid.mutateAsync({
+                        name,
+                        bidValue: hnsToDoos(Number(bidHns)),
+                        lockup: hnsToDoos(Number(lockupHns)),
+                      }),
+                    )
+                  }
+                >
+                  {busy === "BID" ? "…" : "Bid"}
+                </Button>
+              </div>
+            </section>
+
+            {/* DNS records (REGISTER / UPDATE) - only show for owned names or when in CLOSED phase */}
+            {(isOwned || badge.phase === "CLOSED") && (
+              <section className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="font-medium text-gray-700">DNS records (REGISTER / UPDATE)</div>
+                  <button
+                    type="button"
+                    className="text-xs text-blue-600 hover:underline"
+                    onClick={() => setAdvanced((a) => !a)}
+                    data-testid="dns-advanced-toggle"
+                  >
+                    {advanced ? "Use row editor" : "Advanced (raw JSON)"}
+                  </button>
+                </div>
+
+                {advanced ? (
+                  <textarea
+                    className="w-full border border-gray-300 rounded px-2 py-1 font-mono text-xs h-20"
+                    value={recordsJson}
+                    onChange={(e) => setRecordsJson(e.target.value)}
+                    placeholder='[{"type":"TXT","txt":["hello"]}]'
+                    data-testid="dns-json"
+                  />
+                ) : (
+                  <div className="space-y-2" data-testid="dns-rows-advanced">
+                    {rows.map((row, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <select
+                          className="border border-gray-300 rounded px-2 py-1 text-xs"
+                          value={row.type}
+                          onChange={(e) => setRow(i, { type: e.target.value as DnsRecordType })}
+                          aria-label="record type"
+                        >
+                          {DNS_RECORD_TYPES.map((t) => (
+                            <option key={t} value={t}>
+                              {t}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          className="flex-1 border border-gray-300 rounded px-2 py-1 text-xs font-mono"
+                          value={row.value}
+                          onChange={(e) => setRow(i, { value: e.target.value })}
+                          placeholder={valuePlaceholder(row.type)}
+                          aria-label="record value"
+                        />
+                        <button
+                          type="button"
+                          className="text-xs text-gray-400 hover:text-red-600 px-1"
+                          onClick={() => removeRow(i)}
+                          aria-label="remove record"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      className="text-xs text-blue-600 hover:underline"
+                      onClick={addRow}
+                      data-testid="dns-add-row-advanced"
+                    >
+                      + Add record
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex gap-2">
+                  <Button size="sm" variant="secondary" disabled={lock} onClick={() => submitRecords("REGISTER")}>
+                    {busy === "REGISTER" ? "…" : "Register"}
+                  </Button>
+                  <Button size="sm" disabled={lock} onClick={() => submitRecords("UPDATE")}>
+                    {busy === "UPDATE" ? "…" : "Update"}
+                  </Button>
+                </div>
+              </section>
+            )}
+
+            {/* Ownership / lifecycle - only show for owned names */}
+            {isOwned && (
+              <section className="space-y-2">
+                <div className="font-medium text-gray-700">Ownership</div>
+                <Input label="Transfer to address" value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="hs1q… / rs1q…" />
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    disabled={lock || !recipient.trim()}
+                    onClick={() => run("TRANSFER", () => build.transfer.mutateAsync({ name, recipient: recipient.trim() }))}
+                  >
+                    {busy === "TRANSFER" ? "…" : "Transfer"}
+                  </Button>
+                  <Button size="sm" disabled={lock} onClick={() => run("FINALIZE", () => build.finalize.mutateAsync({ name }))}>
+                    {busy === "FINALIZE" ? "…" : "Finalize"}
+                  </Button>
+                  <Button size="sm" disabled={lock} onClick={() => run("CANCEL", () => build.cancel.mutateAsync({ name }))}>
+                    {busy === "CANCEL" ? "…" : "Cancel transfer"}
+                  </Button>
+                  <Button size="sm" disabled={lock} onClick={() => run("RENEW", () => build.renew.mutateAsync({ name }))}>
+                    {busy === "RENEW" ? "…" : "Renew"}
+                  </Button>
+                  <Button size="sm" variant="danger" disabled={lock} onClick={() => run("REVOKE", () => build.revoke.mutateAsync({ name }))}>
+                    {busy === "REVOKE" ? "…" : "Revoke"}
+                  </Button>
+                </div>
+              </section>
+            )}
+          </div>
+        )}
 
         <div className="flex justify-end">
           <Button variant="ghost" onClick={onClose} disabled={!!busy}>Close</Button>

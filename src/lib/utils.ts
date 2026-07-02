@@ -73,3 +73,30 @@ export function truncate(str: string, len: number): string {
   if (str.length <= len) return str;
   return str.slice(0, len) + "...";
 }
+
+/**
+ * Normalize a user-typed name into a form suitable for hsd name lookups.
+ *
+ * - trims whitespace
+ * - lowercases
+ * - strips a leading `.` (users sometimes type `.example`)
+ * - strips a trailing `.hsd` suffix (common TLD confusion)
+ * - collapses repeated dots
+ *
+ * Returns an empty string when the input is blank after normalization.
+ */
+export function normalizeNameInput(raw: string): string {
+  let name = raw.trim().toLowerCase();
+  if (!name) return "";
+  // Strip leading dot: ".example" → "example"
+  name = name.replace(/^\.+/, "");
+  // Strip trailing .hsd suffix: "example.hsd" → "example"
+  name = name.replace(/\.hsd$/i, "");
+  // Keep only valid Handshake name characters: a-z, 0-9, hyphens, dots
+  name = name.replace(/[^a-z0-9.\-]/g, "");
+  // Collapse repeated dots: "a..b" → "a.b"
+  name = name.replace(/\.{2,}/g, ".");
+  // Strip any remaining leading/trailing dots after collapse
+  name = name.replace(/^\.+|\.+$/g, "");
+  return name;
+}

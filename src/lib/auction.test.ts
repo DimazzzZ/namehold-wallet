@@ -4,6 +4,9 @@ import {
   nextTransition,
   formatCountdown,
   recommendedAction,
+  auctionGuidance,
+  hnsToDoos,
+  doosToHns,
 } from "./auction";
 import type { HsdNameStats } from "../types";
 
@@ -65,5 +68,55 @@ describe("recommendedAction", () => {
     expect(recommendedAction("REVEAL")?.key).toBe("REVEAL");
     expect(recommendedAction("CLOSED")?.key).toBe("REGISTER");
     expect(recommendedAction("OPENING")).toBeNull();
+  });
+});
+
+describe("auctionGuidance", () => {
+  it("returns full guidance for AVAILABLE", () => {
+    const g = auctionGuidance("AVAILABLE", null);
+    expect(g).not.toBeNull();
+    expect(g!.phase).toBe("AVAILABLE");
+    expect(g!.action).toBe("Open");
+    expect(g!.title).toBe("Open Auction");
+    expect(g!.countdown).toBeNull();
+  });
+
+  it("includes countdown when stats are present", () => {
+    const g = auctionGuidance("BIDDING", { blocksUntilReveal: 50, hoursUntilReveal: 8 });
+    expect(g).not.toBeNull();
+    expect(g!.phase).toBe("BIDDING");
+    expect(g!.action).toBe("Bid");
+    expect(g!.countdown).toEqual({ label: "Reveal starts in", blocks: 50, hours: 8 });
+  });
+
+  it("returns null for REVOKED / TRANSFER / OTHER", () => {
+    expect(auctionGuidance("REVOKED", null)).toBeNull();
+    expect(auctionGuidance("TRANSFER", null)).toBeNull();
+    expect(auctionGuidance("OTHER", null)).toBeNull();
+  });
+
+  it("handles null/undefined state as AVAILABLE", () => {
+    const g = auctionGuidance(null, null);
+    expect(g).not.toBeNull();
+    expect(g!.phase).toBe("AVAILABLE");
+  });
+});
+
+describe("hnsToDoos / doosToHns", () => {
+  it("converts HNS to doos (integer)", () => {
+    expect(hnsToDoos(1)).toBe(1_000_000);
+    expect(hnsToDoos(0.5)).toBe(500_000);
+    expect(hnsToDoos(100)).toBe(100_000_000);
+  });
+
+  it("converts doos to HNS", () => {
+    expect(doosToHns(1_000_000)).toBe(1);
+    expect(doosToHns(500_000)).toBe(0.5);
+    expect(doosToHns(0)).toBe(0);
+  });
+
+  it("round-trips correctly", () => {
+    const hns = 12.345678;
+    expect(doosToHns(hnsToDoos(hns))).toBeCloseTo(hns, 5);
   });
 });

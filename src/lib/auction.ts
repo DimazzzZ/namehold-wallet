@@ -125,3 +125,97 @@ export function recommendedAction(
       return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Acquisition-flow guidance
+// ---------------------------------------------------------------------------
+
+/** Short human description of what each auction step does. */
+export const AUCTION_PHASE_GUIDE: Record<
+  AuctionPhase,
+  { title: string; description: string; action: string; actionHint: string } | null
+> = {
+  AVAILABLE: {
+    title: "Open Auction",
+    description:
+      "Start a Vickrey auction for this name. The name enters a ~1-week bidding period.",
+    action: "Open",
+    actionHint: "Opens the auction on-chain. Costs a small network fee.",
+  },
+  OPENING: {
+    title: "Waiting for Bidding",
+    description:
+      "The auction is in the pre-bid opening period. Bidding will start automatically.",
+    action: "",
+    actionHint: "No action needed — bidding opens soon.",
+  },
+  BIDDING: {
+    title: "Place a Bid",
+    description:
+      "Place a blind bid. Your bid amount is encrypted — nobody sees it until the reveal phase.",
+    action: "Bid",
+    actionHint: "Enter your bid in HNS. You'll lock up at least this much.",
+  },
+  REVEAL: {
+    title: "Reveal Your Bid",
+    description:
+      "Reveal your bid to the network. If you don't reveal, you lose your locked funds.",
+    action: "Reveal",
+    actionHint: "Reveals your bid. Unrevealed bids forfeit their lockup.",
+  },
+  CLOSED: {
+    title: "Register Name",
+    description:
+      "The auction is over. Register the name to make it yours and set DNS records.",
+    action: "Register",
+    actionHint: "Finalizes ownership on-chain.",
+  },
+  REVOKED: null,
+  TRANSFER: null,
+  OTHER: null,
+};
+
+/** The guidance payload returned by [`auctionGuidance`]. */
+export interface AuctionGuidance {
+  phase: AuctionPhase;
+  badge: PhaseBadge;
+  title: string;
+  description: string;
+  action: string;
+  actionHint: string;
+  countdown: PhaseCountdown | null;
+}
+
+/**
+ * One-call acquisition guidance for a name's current state.
+ *
+ * Returns `null` when the phase has no acquisition guidance (REVOKED / TRANSFER
+ * / OTHER), letting the caller hide the guided panel entirely.
+ */
+export function auctionGuidance(
+  state: string | null | undefined,
+  stats: HsdNameStats | null | undefined,
+): AuctionGuidance | null {
+  const badge = auctionPhase(state);
+  const guide = AUCTION_PHASE_GUIDE[badge.phase];
+  if (!guide) return null;
+  return {
+    phase: badge.phase,
+    badge,
+    title: guide.title,
+    description: guide.description,
+    action: guide.action,
+    actionHint: guide.actionHint,
+    countdown: nextTransition(state, stats),
+  };
+}
+
+/** Convert HNS (human-readable) to doos (integer base unit). */
+export function hnsToDoos(hns: number): number {
+  return Math.round(hns * 1_000_000);
+}
+
+/** Convert doos to HNS for display. */
+export function doosToHns(doos: number): number {
+  return doos / 1_000_000;
+}

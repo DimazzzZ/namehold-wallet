@@ -1,0 +1,326 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import "@testing-library/jest-dom";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
+import type { ReactNode } from "react";
+
+// Tests for the simplified name-acquisition flow:
+//   * WalletView shows an "Auctions" link in the sidebar
+//   * AuctionsView renders input and opens the modal
+//   * NameActionsModal shows guided phase-based UI for AVAILABLE names
+//   * NameActionsModal shows guided UI for BIDDING/REVEAL/CLOSED names
+//   * Write-capability gating is preserved
+
+const invokeMock = vi.fn();
+vi.mock("../../lib/invoke", () => ({
+  invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock("@tauri-apps/plugin-fs", () => ({ readTextFile: vi.fn(), writeTextFile: vi.fn() }));
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  writeText: vi.fn(),
+  readText: vi.fn().mockResolvedValue(""),
+}));
+
+import { WalletView } from "../WalletView";
+import { AuctionsView } from "../AuctionsView";
+import { NameActionsModal } from "../NameActionsModal";
+
+const profile = {
+  id: "p1",
+  label: "Primary",
+  kind: "mnemonic_hot",
+  network: "regtest",
+  accountXpub: "xpubFAKE",
+  accountIndex: 0,
+  receiveDepth: 20,
+  changeDepth: 20,
+  receiveAddress: "rs1qexamplereceiveaddr",
+  lastSyncedHeight: 10,
+  lastSyncedAt: null,
+  watchOnly: false,
+  hasPassphrase: true,
+  active: true,
+};
+
+function wrapper(initialEntries = ["/wallet"]) {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return (
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={initialEntries}>{children}</MemoryRouter>
+      </QueryClientProvider>
+    );
+  };
+}
+
+beforeEach(() => invokeMock.mockReset());
+
+describe("WalletView — Auctions link", () => {
+  function routeWallet() {
+    return (cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "get_signer_session":
+          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+        case "get_write_capability":
+          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+        case "get_wallet_balances":
+          return Promise.resolve({ liquidDoos: 5_000_000, nameControlDoos: 0, nameLockupDoos: 0, totalDoos: 5_000_000 });
+        case "read_balance":
+          return Promise.resolve({ confirmed: 0, unconfirmed: 0, locked_confirmed: 0, locked_unconfirmed: 0 });
+        case "list_tx_drafts":
+          return Promise.resolve([]);
+        case "read_names":
+          return Promise.resolve([]);
+        default:
+          return Promise.resolve(null);
+      }
+    };
+  }
+
+  it("renders the Auctions link in the sidebar", async () => {
+    invokeMock.mockImplementation(routeWallet());
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+
+    expect(screen.getByText("Auctions")).toBeInTheDocument();
+  });
+});
+
+describe("AuctionsView — name lookup and modal", () => {
+  function routeAuctions() {
+    return (cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "get_signer_session":
+          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+        case "get_write_capability":
+          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+        default:
+          return Promise.resolve(null);
+      }
+    };
+  }
+
+  it("renders the page header and input", async () => {
+    invokeMock.mockImplementation(routeAuctions());
+    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
+
+    expect(await screen.findByText("Auctions")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("example")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Look up/i })).toBeInTheDocument();
+  });
+
+  it("Look up button is disabled when input is empty", async () => {
+    invokeMock.mockImplementation(routeAuctions());
+    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
+    await screen.findByText("Auctions");
+
+    const btn = screen.getByRole("button", { name: /Look up/i });
+    expect(btn).toBeDisabled();
+  });
+
+  it("enables Look up after typing a name and opens the modal on click", async () => {
+    invokeMock.mockImplementation(routeAuctions());
+    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
+    await screen.findByText("Auctions");
+
+    const input = screen.getByPlaceholderText("example");
+    fireEvent.change(input, { target: { value: "myname" } });
+
+    const btn = screen.getByRole("button", { name: /Look up/i });
+    expect(btn).not.toBeDisabled();
+
+    fireEvent.click(btn);
+
+    // Modal should open — it will show the name in the header
+    await waitFor(() => {
+      expect(screen.getByText(/\.myname/)).toBeInTheDocument();
+    });
+  });
+
+  it("Enter key in the input opens the modal", async () => {
+    invokeMock.mockImplementation(routeAuctions());
+    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
+    await screen.findByText("Auctions");
+
+    const input = screen.getByPlaceholderText("example");
+    fireEvent.change(input, { target: { value: "coolname" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(screen.getByText(/\.coolname/)).toBeInTheDocument();
+    });
+  });
+
+  it("strips invalid characters from input", async () => {
+    invokeMock.mockImplementation(routeAuctions());
+    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
+    await screen.findByText("Auctions");
+
+    const input = screen.getByPlaceholderText("example") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Hello World! 123" } });
+    expect(input.value).toBe("helloworld123");
+  });
+});
+
+describe("NameActionsModal — guided acquisition flow", () => {
+  function routeModal(nameInfo: Record<string, unknown> | null) {
+    return (cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "get_signer_session":
+          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+        case "get_write_capability":
+          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+        case "read_name_info":
+          return Promise.resolve(nameInfo);
+        default:
+          return Promise.resolve(null);
+      }
+    };
+  }
+
+  it("shows Open Auction for an AVAILABLE name", async () => {
+    invokeMock.mockImplementation(
+      routeModal({
+        name: "newname",
+        state: "AVAILABLE",
+        height: null,
+        renewal: null,
+        owner: null,
+        value: null,
+        highest: null,
+        stats: null,
+      }),
+    );
+    render(<NameActionsModal name="newname" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    // Should show the guided phase header
+    expect(await screen.findByText("Open Auction")).toBeInTheDocument();
+    expect(screen.getByText("Open")).toBeInTheDocument();
+  });
+
+  it("shows Bid for a BIDDING name", async () => {
+    invokeMock.mockImplementation(
+      routeModal({
+        name: "bidname",
+        state: "BIDDING",
+        height: 100,
+        renewal: 200,
+        owner: null,
+        value: null,
+        highest: 5_000_000,
+        stats: { blocksUntilReveal: 50, hoursUntilReveal: 8 },
+      }),
+    );
+    render(<NameActionsModal name="bidname" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("Place a Bid")).toBeInTheDocument();
+    expect(screen.getByText("Bid")).toBeInTheDocument();
+  });
+
+  it("shows Reveal for a REVEAL name", async () => {
+    invokeMock.mockImplementation(
+      routeModal({
+        name: "revealname",
+        state: "REVEAL",
+        height: 100,
+        renewal: 200,
+        owner: { hash: "abc", index: 0 },
+        value: null,
+        highest: 5_000_000,
+        stats: { blocksUntilClose: 20, hoursUntilClose: 4 },
+      }),
+    );
+    render(<NameActionsModal name="revealname" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("Reveal Your Bid")).toBeInTheDocument();
+    expect(screen.getAllByText("Reveal").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows Register for a CLOSED name", async () => {
+    invokeMock.mockImplementation(
+      routeModal({
+        name: "closedname",
+        state: "CLOSED",
+        height: 100,
+        renewal: 200,
+        owner: { hash: "abc", index: 0 },
+        value: 1_000_000,
+        highest: 2_000_000,
+        stats: { blocksUntilExpire: 100 },
+      }),
+    );
+    render(<NameActionsModal name="closedname" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("Register Name")).toBeInTheDocument();
+    expect(screen.getByText("Register")).toBeInTheDocument();
+  });
+
+  it("shows owner actions for CLOSED name when wallet owns it", async () => {
+    invokeMock.mockImplementation(
+      routeModal({
+        name: "ownedname",
+        state: "CLOSED",
+        height: 100,
+        renewal: 200,
+        owner: { hash: "abc", index: 0 },
+        value: 1_000_000,
+        highest: 2_000_000,
+        stats: { blocksUntilExpire: 100 },
+      }),
+    );
+    render(<NameActionsModal name="ownedname" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    // Should show the guided Register action
+    expect(await screen.findByText("Register Name")).toBeInTheDocument();
+    // Should also show the "Show all actions" toggle for owner actions
+    expect(screen.getByText("Show all actions")).toBeInTheDocument();
+  });
+});
+
+describe("NameActionsModal — write-capability gating", () => {
+  it("disables the primary action when canWrite is false", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "get_signer_session":
+          return Promise.resolve({ walletProfileId: profile.id, unlocked: false, unlockedUntilEpochMs: null });
+        case "get_write_capability":
+          return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: "Wallet is locked" });
+        case "read_name_info":
+          return Promise.resolve({
+            name: "gatedname",
+            state: "AVAILABLE",
+            height: null,
+            renewal: null,
+            owner: null,
+            value: null,
+            highest: null,
+            stats: null,
+          });
+        default:
+          return Promise.resolve(null);
+      }
+    });
+
+    render(<NameActionsModal name="gatedname" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    // Wait until the blocked banner appears, then assert the guided action is disabled.
+    expect(await screen.findByTestId("name-actions-blocked")).toHaveTextContent(/name actions unavailable/i);
+
+    await waitFor(() => {
+      const btn = screen.getByRole("button", { name: /Open/i });
+      expect(btn).toBeDisabled();
+    });
+  });
+});

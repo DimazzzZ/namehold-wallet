@@ -24,6 +24,7 @@ export interface PrimaryRoute {
  */
 export const PRIMARY_ROUTES: PrimaryRoute[] = [
   { key: "wallet", to: "/", label: "Wallet", description: "Balance, send, receive, and history" },
+  { key: "auctions", to: "/auctions", label: "Auctions", description: "Acquire new Handshake TLDs" },
   { key: "migration", to: "/migration", label: "Move from Namebase", description: "Guided transfer of your domains from Namebase" },
   { key: "portfolio", to: "/portfolio", label: "Portfolio", description: "Inventory, batches, renewals, and DNS", advanced: true },
   { key: "settings", to: "/settings", label: "Settings", description: "Configuration and safety" },

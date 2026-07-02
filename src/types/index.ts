@@ -57,6 +57,12 @@ export interface HsdBalance {
 
 export interface HsdName {
   name: string;
+  /**
+   * The name's on-chain auction state: AVAILABLE, OPENING, BIDDING, REVEAL,
+   * CLOSED, TRANSFER, REVOKED, etc.  The backend synthesizes `"AVAILABLE"`
+   * for names that have never been opened (node confirms the name is valid
+   * but `getnameinfo.info` is null, or the explorer returns 404).
+   */
   state: string | null;
   height: number | null;
   renewal: number | null;
@@ -71,6 +77,10 @@ export interface HsdName {
   stats: HsdNameStats | null;
   /** Non-zero block height while the name is mid-transfer (0/null otherwise). */
   transfer?: number | null;
+  /** True when the name is registered (CLOSED + owned). */
+  registered?: boolean | null;
+  /** True when the name's registration has expired. */
+  expired?: boolean | null;
 }
 
 export interface HsdNameStats {
@@ -280,6 +290,7 @@ export type AppRouteKey =
   | "portfolio"
   | "migration"
   | "wallet"
+  | "auctions"
   | "settings";
 
 export type PortfolioSectionKey = "inventory" | "batches" | "renewals" | "dns";

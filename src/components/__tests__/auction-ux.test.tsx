@@ -195,8 +195,8 @@ describe("NameActionsModal — phase header + DNS editor", () => {
     // Badge starts "Available" then settles to the live phase once read_name_info resolves.
     expect(await screen.findByText("Closed")).toBeInTheDocument();
     expect(within(await screen.findByTestId("name-phase")).getByText("Closed")).toBeInTheDocument();
-    // CLOSED → recommend Register.
-    expect(await screen.findByTestId("name-recommended")).toHaveTextContent(/Register/i);
+    // CLOSED → guided action shows Register.
+    expect(await screen.findByRole("button", { name: /^Register$/i })).toBeInTheDocument();
   });
 
   it("serializes the DNS row editor into the records array on Register", async () => {

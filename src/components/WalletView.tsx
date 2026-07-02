@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useWalletProfiles,
@@ -71,8 +72,8 @@ export function WalletView() {
   // persistent in-dialog error (not just a transient toast) and keep the dialog
   // open so the user can see exactly what happened before deciding to retry.
   const [sendError, setSendError] = useState<string | null>(null);
+  const navigate = useNavigate();
   const [manageName, setManageName] = useState<string | null>(null);
-  const [arbitraryName, setArbitraryName] = useState("");
   // Wallets manager modal (add / switch / delete). `addMode` opens it straight
   // to the add-wallet form.
   const [walletManagerOpen, setWalletManagerOpen] = useState(false);
@@ -382,19 +383,19 @@ export function WalletView() {
         )}
       </div>
 
-      {/* Balances — confirmed/unconfirmed come from the HNSFans explorer
-          (node-free); "Spendable (synced)" is what coin selection can use after
-          a node sync. */}
+      {/* Balances — confirmed/unconfirmed come from the synced node when
+          available, otherwise from the HNSFans explorer; "Spendable (synced)"
+          is what coin selection can use after a node sync. */}
       <div className="grid grid-cols-3 gap-4">
         <div className="bg-white rounded p-4 border border-gray-200">
           <div className="text-sm text-gray-500">Confirmed</div>
           <div className="text-2xl font-bold">{formatHns(readBalance?.confirmed ?? 0)}</div>
-          <div className="text-xs text-gray-400">HNS · via explorer</div>
+          <div className="text-xs text-gray-400">HNS</div>
         </div>
         <div className="bg-white rounded p-4 border border-gray-200">
           <div className="text-sm text-gray-500">Unconfirmed</div>
           <div className="text-2xl font-bold">{formatHns(readBalance?.unconfirmed ?? 0)}</div>
-          <div className="text-xs text-gray-400">HNS · via explorer</div>
+          <div className="text-xs text-gray-400">HNS</div>
         </div>
         <div className="bg-white rounded p-4 border border-gray-200">
           <div className="text-sm text-gray-500">Spendable (synced)</div>
@@ -490,27 +491,25 @@ export function WalletView() {
         </div>
       )}
 
+      {/* Quick link to the Auctions page */}
+      {!isWatchOnly && (
+        <div className="bg-white rounded p-4 border border-gray-200 flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium text-gray-900">Get a TLD</div>
+            <div className="text-xs text-gray-500">
+              Acquire new Handshake domains through the Vickrey auction system.
+            </div>
+          </div>
+          <Button size="sm" variant="primary" onClick={() => navigate("/auctions")}>
+            Auctions
+          </Button>
+        </div>
+      )}
+
       {/* Owned Names (from local name-state cache) */}
       <div className="bg-white rounded p-4 border border-gray-200">
         <div className="flex items-center justify-between mb-2">
           <div className="text-sm text-gray-500">Owned Names ({names.length})</div>
-          {!isWatchOnly && (
-            <div className="flex items-center gap-2">
-              <input
-                className="border border-gray-300 rounded px-2 py-1 text-xs"
-                value={arbitraryName}
-                onChange={(e) => setArbitraryName(e.target.value.toLowerCase())}
-                placeholder="name to act on (e.g. open/bid)"
-              />
-              <Button
-                size="sm"
-                disabled={!arbitraryName.trim()}
-                onClick={() => setManageName(arbitraryName.trim())}
-              >
-                Name actions
-              </Button>
-            </div>
-          )}
         </div>
         {names.length > 0 ? (
           <div className="max-h-60 overflow-auto">
