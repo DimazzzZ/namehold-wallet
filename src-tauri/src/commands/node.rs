@@ -200,10 +200,13 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     // synced, "explorer" otherwise. The frontend uses this to show which data
     // source is active.
     let node_synced = probe.as_ref().map(|p| {
-        if let Some(headers) = p.headers {
-            headers > 0 && p.height >= headers
-        } else if let Some(progress) = p.verification_progress {
+        // When verification_progress is available, it is the most reliable signal.
+        // A node can report height == headers while still only ~8% verified if it
+        // is far behind the real chain tip. Always gate on progress when present.
+        if let Some(progress) = p.verification_progress {
             progress >= 0.9999
+        } else if let Some(headers) = p.headers {
+            headers > 0 && p.height >= headers
         } else {
             true
         }

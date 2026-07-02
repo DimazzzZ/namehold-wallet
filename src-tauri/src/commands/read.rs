@@ -75,10 +75,13 @@ pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -
         return false;
     };
     // Connected — now check if synced.
-    let synced = if let Some(headers) = info.headers {
-        headers > 0 && info.blocks >= headers
-    } else if let Some(progress) = info.verification_progress {
+    // When verification_progress is available it is the most reliable signal —
+    // a node can report height == headers while still only ~8% verified if it
+    // is far behind the real chain tip. Always gate on progress when present.
+    let synced = if let Some(progress) = info.verification_progress {
         progress >= 0.9999
+    } else if let Some(headers) = info.headers {
+        headers > 0 && info.blocks >= headers
     } else {
         // No sync metadata: assume synced (e.g. regtest with a single miner).
         true

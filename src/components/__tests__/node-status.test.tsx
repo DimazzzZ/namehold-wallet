@@ -135,25 +135,26 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(await screen.findByText(/Syncing the chain — 40% · block 40000 \/ 100000/i)).toBeInTheDocument();
   });
 
-  it("Settings shows Connected at the chain tip even when progress < 100% (regtest)", async () => {
-    // blocks == headers (tip reached) but verificationprogress only 0.9997 — must
-    // read as Connected, not perpetually "Syncing".
+  it("Settings shows Syncing when blocks == headers but progress < 0.9999", async () => {
+    // blocks == headers (apparent tip) but verificationprogress only 0.9997 —
+    // the node is still far behind the real chain. Must show Syncing, not lie
+    // about being synced.
     invokeMock.mockImplementation(
       route(nodeStatus({ connected: true, process_alive: true, height: 317, headers: 317, verification_progress: 0.9997 })),
     );
     render(<Settings />, { wrapper: wrapper() });
 
-    expect(await screen.findByText(/Connected.*block 317/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Syncing/i)).toBeNull();
+    expect((await screen.findAllByText(/Syncing/i)).length).toBeGreaterThanOrEqual(1);
+    // The status badge must NOT say "Connected" — it should show "Syncing · 99.9%".
+    expect(screen.queryByText(/^Connected · block 317$/i)).toBeNull();
   });
 
-  it("Settings shows a 100% progress bar at the chain tip (always visible when connected)", async () => {
+  it("Settings shows Synced — 100% only when progress >= 0.9999", async () => {
     invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 317, headers: 317, verification_progress: 0.9997 })),
+      route(nodeStatus({ connected: true, process_alive: true, height: 317, headers: 317, verification_progress: 0.9999 })),
     );
     render(<Settings />, { wrapper: wrapper() });
 
-    // The progress block now renders even at the tip (was hidden when synced).
     const bar = await screen.findByTestId("node-sync-progress");
     expect(bar).toHaveTextContent(/Synced — 100% · block 317 \/ 317/i);
   });

@@ -699,17 +699,24 @@ pub async fn get_write_capability(
             }
             Ok(info) => {
                 // "Synced" means the chain tip is reached (applied blocks caught up
-                // to the best known header). `verification_progress` is a heuristic
-                // that can plateau just under 1.0 (e.g. ~0.9997 on regtest), so it
-                // must NOT be the gate — that would block sending forever.
-                let synced = match info.headers {
-                    Some(h) if h > 0 => info.blocks >= h,
-                    _ => info.verification_progress.map(|p| p >= 0.9999).unwrap_or(true),
+                // to the best known header). When `verification_progress` is
+                // available it is the most reliable signal — a node can report
+                // height == headers while still only ~8% verified if it is far
+                // behind the real chain tip. Always gate on progress when present.
+                let synced = match info.verification_progress {
+                    Some(p) => p >= 0.9999,
+                    None => match info.headers {
+                        Some(h) if h > 0 => info.blocks >= h,
+                        _ => true,
+                    },
                 };
                 if !synced {
-                    let pct = match info.headers {
-                        Some(h) if h > 0 => ((info.blocks as f64 / h as f64) * 100.0).floor() as i64,
-                        _ => (info.verification_progress.unwrap_or(0.0) * 100.0).floor() as i64,
+                    let pct = match info.verification_progress {
+                        Some(p) => (p * 100.0).floor() as i64,
+                        None => match info.headers {
+                            Some(h) if h > 0 => ((info.blocks as f64 / h as f64) * 100.0).floor() as i64,
+                            _ => 0,
+                        },
                     };
                     cap.can_write = false;
                     cap.reason = Some(format!(
