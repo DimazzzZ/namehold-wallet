@@ -128,7 +128,18 @@ pub async fn read_balance(
     };
     if !addrs.is_empty() {
         if let Ok(balance) = client.get_balance(&addrs).await {
-            return Ok(serde_json::to_value(&balance)?);
+            // `HsdBalance` deserializes from the hsd node's camelCase RPC, so its
+            // Serialize impl also emits camelCase (`lockedConfirmed`). The frontend
+            // contract for `read_balance` is snake_case (see the two json! paths
+            // above, src/types HsdBalance, and src/lib/zod.ts), so map explicitly
+            // here — returning the struct verbatim would silently drop the locked
+            // fields on the FE. Covered by read_balance_serializes_snake_case.
+            return Ok(serde_json::json!({
+                "confirmed": balance.confirmed,
+                "unconfirmed": balance.unconfirmed,
+                "locked_confirmed": balance.locked_confirmed.unwrap_or(0),
+                "locked_unconfirmed": balance.locked_unconfirmed.unwrap_or(0),
+            }));
         }
     }
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
