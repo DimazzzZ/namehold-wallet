@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::error::AppError;
 use crate::models::asset::Asset;
 use crate::models::batch::{Batch, BatchWithAssets};
@@ -58,7 +60,6 @@ pub fn list_assets(
                 param_idx = param_idx
             ));
             param_values.push(Box::new(format!("%{}%", q)));
-            param_idx += 1;
         }
     }
 

@@ -57,6 +57,7 @@ pub struct PendingPrompt {
 }
 
 /// Registry of in-flight prompts, stored on [`AppState`].
+#[allow(dead_code)]
 pub type SecurePromptRegistry = Mutex<HashMap<String, PendingPrompt>>;
 
 fn random_id() -> String {

@@ -18,6 +18,7 @@ pub(crate) struct CsvRow {
     #[serde(alias = "Notes", alias = "notes", alias = "Note", alias = "note", default)]
     pub(crate) notes: Option<String>,
     #[serde(alias = "has_sld", alias = "HasSld", alias = "has_sld", default)]
+    #[allow(dead_code)]
     pub(crate) has_sld: Option<String>,
     #[serde(alias = "Status", alias = "status", alias = "MigrationStatus", alias = "migration_status", default)]
     pub(crate) status: Option<String>,
