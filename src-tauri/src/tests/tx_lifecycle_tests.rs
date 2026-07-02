@@ -666,19 +666,15 @@ fn bi_full(blocks: i64, headers: i64, progress: f64) -> String {
 }
 
 #[tokio::test]
-async fn write_capability_allows_at_tip_despite_low_progress() {
-    // Regtest-style: blocks == headers (tip reached) but progress only 0.9997.
-    // The OLD 0.9999 gate wrongly blocked this; tip-reached must allow writes.
+async fn write_capability_blocks_at_tip_with_low_progress() {
+    // blocks == headers but verification_progress is only 0.9997 — the node
+    // reports "tip reached" while still far behind the real chain. The progress
+    // gate must block writes in this case.
     let mut server = mockito::Server::new_async().await;
     let _bi = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
         .with_body(bi_full(317, 317, 0.9997))
-        .create_async()
-        .await;
-    let _coins = server
-        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
-        .with_body("[]")
         .create_async()
         .await;
 
@@ -687,7 +683,12 @@ async fn write_capability_allows_at_tip_despite_low_progress() {
     unlock(&app, PROFILE);
 
     let cap = get_write_capability(app.state()).await.expect("cap");
-    assert!(cap.can_write, "node at tip must allow writes; reason={:?}", cap.reason);
+    assert!(!cap.can_write, "low progress must block writes even at apparent tip");
+    assert!(
+        cap.reason.as_deref().unwrap_or("").contains("syncing"),
+        "reason should mention syncing; got {:?}",
+        cap.reason,
+    );
 }
 
 #[tokio::test]
