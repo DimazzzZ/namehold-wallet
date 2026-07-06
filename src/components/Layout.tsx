@@ -5,6 +5,7 @@ import { Toast } from "./ui/Toast";
 import { StatusStrip } from "./ui/StatusStrip";
 import { PRIMARY_ROUTES } from "../lib/navigation";
 import { cn } from "../lib/utils";
+import { isTauri } from "../lib/runtime";
 
 export function Layout() {
   const settings = useSettingsStore((s) => s.settings);
@@ -63,6 +64,15 @@ export function Layout() {
         </div>
       </aside>
       <main className="flex-1 flex flex-col overflow-hidden">
+        {!isTauri && (
+          <div
+            className="px-6 py-1.5 text-xs text-blue-900 bg-blue-100 border-b border-blue-200"
+            data-testid="web-qa-banner"
+          >
+            🌐 <strong>Browser QA mode</strong> — mock backend active. No real wallet or
+            node connected. UI and navigation work; data is simulated.
+          </div>
+        )}
         <div
           className="px-6 py-1.5 text-xs text-amber-900 bg-amber-100 border-b border-amber-200"
           data-testid="beta-banner"

@@ -4,7 +4,7 @@ import type { Asset } from "../types";
 import { formatDate } from "../lib/utils";
 import { Button } from "./ui/Button";
 import { useUiStore } from "../stores/ui";
-import { save } from "@tauri-apps/plugin-dialog";
+import { save } from "../lib/dialog";
 
 export function Renewals() {
   const { data: assets = [], isLoading } = useAssets({});
