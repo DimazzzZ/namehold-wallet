@@ -13,8 +13,9 @@ use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 use crate::commands::tx::{
-    broadcast_tx_draft, build_send_hns_draft, get_write_capability, refresh_tx_confirmations,
-    sign_tx_draft, sync_wallet_state,
+    broadcast_tx_draft, build_send_hns_draft, estimate_tx_draft_fee, get_wallet_balances,
+    get_write_capability, list_tx_drafts, refresh_tx_confirmations, sign_tx_draft,
+    sync_wallet_state,
 };
 use crate::db;
 use crate::error::AppError;
