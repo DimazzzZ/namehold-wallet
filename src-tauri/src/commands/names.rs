@@ -27,24 +27,25 @@ use crate::noncustodial::types::TxDraftSummary;
 use crate::noncustodial::{address, bids, covenants, names, resource};
 use crate::AppState;
 
-fn random_id() -> String {
+pub(crate) fn random_id() -> String {
     let mut b = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut b);
     hex::encode(b)
 }
 
 /// Resolved, secret-free build context for a covenant action.
-struct Ctx {
-    profile_id: String,
-    network: Network,
-    account: u32,
-    account_xpub: ExtendedPubKey,
-    change_address: String,
-    funding: Vec<SpendableCoin>,
-    settings: std::collections::HashMap<String, String>,
+#[derive(Debug)]
+pub(crate) struct Ctx {
+    pub(crate) profile_id: String,
+    pub(crate) network: Network,
+    pub(crate) account: u32,
+    pub(crate) account_xpub: ExtendedPubKey,
+    pub(crate) change_address: String,
+    pub(crate) funding: Vec<SpendableCoin>,
+    pub(crate) settings: std::collections::HashMap<String, String>,
 }
 
-fn load_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
+pub(crate) fn load_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let id = queries::get_active_profile_id(&conn)?;
     if id.is_empty() {
@@ -76,7 +77,7 @@ fn load_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     })
 }
 
-fn fee_rate(ctx: &Ctx, fee_rate: Option<u64>) -> u64 {
+pub(crate) fn fee_rate(ctx: &Ctx, fee_rate: Option<u64>) -> u64 {
     fee_rate
         .or_else(|| {
             ctx.settings
@@ -88,15 +89,16 @@ fn fee_rate(ctx: &Ctx, fee_rate: Option<u64>) -> u64 {
 }
 
 /// Minimal view of `getnameinfo` we need to build covenants.
-struct NameState {
-    height: u32,
-    value: u64,
-    renewals: u32,
-    claimed: u32,
-    weak: bool,
+#[derive(Debug)]
+pub(crate) struct NameState {
+    pub(crate) height: u32,
+    pub(crate) value: u64,
+    pub(crate) renewals: u32,
+    pub(crate) claimed: u32,
+    pub(crate) weak: bool,
 }
 
-async fn fetch_name_state(client: &NodeRpcClient, name: &str) -> Result<NameState, AppError> {
+pub(crate) async fn fetch_name_state(client: &NodeRpcClient, name: &str) -> Result<NameState, AppError> {
     let v = client.get_name_info(name).await?;
     let info = v.get("info");
     let info = match info {
@@ -114,7 +116,7 @@ async fn fetch_name_state(client: &NodeRpcClient, name: &str) -> Result<NameStat
 }
 
 /// `getRenewalBlock`: internal-order 32-byte hash at `height - 2*renewalMaturity`.
-async fn renewal_block(client: &NodeRpcClient, network: Network) -> Result<[u8; 32], AppError> {
+pub(crate) async fn renewal_block(client: &NodeRpcClient, network: Network) -> Result<[u8; 32], AppError> {
     let tip = client.get_blockchain_info().await?.blocks;
     let maturity = network.name_params().renewal_maturity as i64;
     let height = (tip - 2 * maturity).max(0);
@@ -180,7 +182,7 @@ fn persist(
         .ok_or_else(|| AppError::Other("draft vanished after insert".into()))
 }
 
-fn name_input_from(coin: queries::NameCoin) -> NameInputSpec {
+pub(crate) fn name_input_from(coin: queries::NameCoin) -> NameInputSpec {
     NameInputSpec {
         txid: coin.txid,
         vout: coin.vout,

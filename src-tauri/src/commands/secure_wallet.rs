@@ -23,7 +23,7 @@ use crate::AppState;
 // --- small helpers ---------------------------------------------------------
 
 /// 16-byte random hex id for profiles.
-fn random_id() -> String {
+pub(crate) fn random_id() -> String {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
@@ -31,7 +31,7 @@ fn random_id() -> String {
 
 /// Validate the requested profile network against the `wallet_profiles.network`
 /// CHECK constraint and map it to a [`Network`].
-fn validate_network(s: &str) -> Result<(&'static str, Network), AppError> {
+pub(crate) fn validate_network(s: &str) -> Result<(&'static str, Network), AppError> {
     match s {
         "mainnet" => Ok(("mainnet", Network::Main)),
         "testnet" => Ok(("testnet", Network::Testnet)),
@@ -43,7 +43,7 @@ fn validate_network(s: &str) -> Result<(&'static str, Network), AppError> {
 }
 
 /// Non-secret fingerprint of an account xpub (first 8 bytes of its SHA-256).
-fn fingerprint(account_xpub: &str) -> String {
+pub(crate) fn fingerprint(account_xpub: &str) -> String {
     use sha2::{Digest, Sha256};
     let d = Sha256::digest(account_xpub.as_bytes());
     hex::encode(&d[..8])
@@ -55,7 +55,7 @@ fn read_settings(app: &AppHandle) -> Result<std::collections::HashMap<String, St
     db::queries::get_settings(&conn)
 }
 
-fn gap_limit(settings: &std::collections::HashMap<String, String>) -> u32 {
+pub(crate) fn gap_limit(settings: &std::collections::HashMap<String, String>) -> u32 {
     settings
         .get("address_gap_limit")
         .and_then(|s| s.parse::<u32>().ok())
@@ -63,7 +63,7 @@ fn gap_limit(settings: &std::collections::HashMap<String, String>) -> u32 {
         .unwrap_or(20)
 }
 
-fn session_ttl_ms(settings: &std::collections::HashMap<String, String>) -> u128 {
+pub(crate) fn session_ttl_ms(settings: &std::collections::HashMap<String, String>) -> u128 {
     let secs = settings
         .get("signer_session_timeout_seconds")
         .and_then(|s| s.parse::<u64>().ok())
@@ -110,7 +110,7 @@ const NO_PASSPHRASE_KEY: &str = "namehold::no-passphrase::v1";
 
 /// Map an entered passphrase to the (encryption key, `kdf` marker). An empty
 /// entry means "no passphrase": encrypt under the device-local key.
-fn resolve_secret_key(entered: &str) -> (String, &'static str) {
+pub(crate) fn resolve_secret_key(entered: &str) -> (String, &'static str) {
     if entered.is_empty() {
         (NO_PASSPHRASE_KEY.to_string(), "none")
     } else {
