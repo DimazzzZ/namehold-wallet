@@ -51,6 +51,22 @@ async fn node_status_reports_disconnected_when_no_node() {
     assert_eq!(v["verification_progress"], serde_json::Value::Null);
     assert!(v.get("headers").is_some());
     assert_eq!(v["headers"], serde_json::Value::Null);
+
+    // read_source is always present and defaults to "explorer" when not connected.
+    assert_eq!(v["read_source"], serde_json::json!("explorer"));
+}
+
+// --- is_node_ready_for_local_reads -------------------------------------------
+
+use crate::commands::read::is_node_ready_for_local_reads;
+
+#[tokio::test]
+async fn local_reads_not_ready_when_not_connected() {
+    let app = app_with(seeded_conn());
+    let state = app.state::<AppState>();
+
+    // Node is not connected → should not use local reads.
+    assert!(!is_node_ready_for_local_reads(&state).await);
 }
 
 // --- api-key resolution (talk to a node configured via hsd.conf) -------------
