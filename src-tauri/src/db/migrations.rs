@@ -41,3 +41,47 @@ pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_applies_all_migrations() {
+        let conn = Connection::open_in_memory().unwrap();
+        run(&conn).unwrap();
+        // All 12 migrations should be present
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 12, "expected 12 migrations, got {count}");
+    }
+
+    #[test]
+    fn run_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        run(&conn).unwrap();
+        run(&conn).unwrap(); // second run should not error
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 12);
+    }
+
+    #[test]
+    fn run_creates_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        run(&conn).unwrap();
+        // Spot-check that key tables exist
+        for table in &["assets", "batches", "settings", "wallet_profiles", "wallet_tx_drafts"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "table '{table}' should exist");
+        }
+    }
+}

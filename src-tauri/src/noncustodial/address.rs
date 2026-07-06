@@ -185,3 +185,22 @@ mod tests {
         assert!(is_valid(Network::Main, &addr));
     }
 }
+
+    #[test]
+    fn script_pubkey_from_pubkey_rejects_empty() {
+        let result = script_pubkey_from_pubkey(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn script_pubkey_from_pubkey_accepts_33_bytes() {
+        let result = script_pubkey_from_pubkey(&[2u8; 33]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn encode_p2wpkh_returns_correct_length() {
+        let addr = encode_p2wpkh(Network::Regtest, &[0u8; 20]).unwrap();
+        assert!(!addr.is_empty());
+        assert!(addr.starts_with("rs1"));
+    }

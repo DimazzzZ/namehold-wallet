@@ -1799,4 +1799,302 @@ mod noncustodial_query_tests {
         assert_eq!(sx["value"], 300000);
         assert_eq!(sx["address"], "rs1qother");
     }
+
+    // ── Additional coverage tests ────────────────────────────────────────
+
+    #[test]
+    fn get_dashboard_stats_returns_counts() {
+        let conn = db();
+        // Seed some assets with different statuses.
+        conn.execute(
+            "INSERT INTO assets (tld, status, is_staked) VALUES ('aaa','finalized_owned',1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status, is_staked) VALUES ('bbb','not_started',0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status, is_staked) VALUES ('ccc','finalized_owned',0)",
+            [],
+        )
+        .unwrap();
+
+        let stats = get_dashboard_stats(&conn).unwrap();
+        assert_eq!(stats["total"], 3);
+        assert_eq!(stats["staked"], 1);
+        assert_eq!(stats["unstaked"], 2);
+        assert_eq!(stats["status_counts"]["finalized_owned"], 2);
+        assert_eq!(stats["status_counts"]["not_started"], 1);
+        assert!(stats["recent_audit"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_known_wallet_addresses_deduplicates() {
+        let conn = db();
+        insert_wallet_snapshot(&conn, "w", 100, Some("rs1qaaa"), 1, None).unwrap();
+        insert_wallet_snapshot(&conn, "w", 200, Some("rs1qbbb"), 2, None).unwrap();
+        insert_wallet_snapshot(&conn, "w", 300, Some("rs1qaaa"), 3, None).unwrap();
+        // Empty / NULL addresses should be excluded.
+        insert_wallet_snapshot(&conn, "w", 400, None, 4, None).unwrap();
+        insert_wallet_snapshot(&conn, "w", 500, Some(""), 5, None).unwrap();
+
+        let addrs = get_known_wallet_addresses(&conn, 10).unwrap();
+        // Distinct, newest first: rs1qaaa (id 4th row) then rs1qbbb (2nd row).
+        assert_eq!(addrs, vec!["rs1qaaa".to_string(), "rs1qbbb".to_string()]);
+    }
+
+    #[test]
+    fn replace_and_get_wallet_addresses() {
+        let conn = db();
+        let inserted = replace_wallet_addresses(
+            &conn,
+            "wallet1",
+            &["rs1qone".into(), "rs1qtwo".into(), "  ".into()],
+        )
+        .unwrap();
+        // Blank address is skipped.
+        assert_eq!(inserted, 2);
+
+        let addrs = get_wallet_addresses_for_wallet(&conn, "wallet1", 10).unwrap();
+        assert_eq!(addrs.len(), 2);
+        assert!(addrs.contains(&"rs1qone".to_string()));
+        assert!(addrs.contains(&"rs1qtwo".to_string()));
+
+        // Re-upserting same addresses should not error (ON CONFLICT DO UPDATE).
+        let inserted2 = replace_wallet_addresses(&conn, "wallet1", &["rs1qone".into()]).unwrap();
+        assert_eq!(inserted2, 1);
+        let addrs2 = get_wallet_addresses_for_wallet(&conn, "wallet1", 10).unwrap();
+        assert_eq!(addrs2.len(), 2);
+    }
+
+    #[test]
+    fn get_inventory_tlds_returns_sorted() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld) VALUES ('zzz')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('aaa')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('mmm')", []).unwrap();
+
+        let tlds = get_inventory_tlds(&conn).unwrap();
+        assert_eq!(tlds, vec!["aaa", "mmm", "zzz"]);
+    }
+
+    #[test]
+    fn get_assets_by_tlds_returns_matches() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld, status) VALUES ('alpha','finalized_owned')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld, status) VALUES ('beta','not_started')", []).unwrap();
+
+        let assets = get_assets_by_tlds(&conn, &["beta".into(), "missing".into(), "alpha".into()])
+            .unwrap();
+        assert_eq!(assets.len(), 2);
+        assert_eq!(assets[0].tld, "beta");
+        assert_eq!(assets[1].tld, "alpha");
+    }
+
+    #[test]
+    fn update_profile_change_depth_bumps() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        update_profile_change_depth(&conn, "p1", 5).unwrap();
+        let p = get_wallet_profile(&conn, "p1").unwrap().unwrap();
+        assert_eq!(p.change_depth, 5);
+
+        // Should only increase, never decrease.
+        update_profile_change_depth(&conn, "p1", 3).unwrap();
+        let p2 = get_wallet_profile(&conn, "p1").unwrap().unwrap();
+        assert_eq!(p2.change_depth, 5);
+    }
+
+    #[test]
+    fn tx_draft_confirmation_and_age() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        insert_tx_draft(&conn, "d1", "p1", "send_hns", "", "{}", "{}").unwrap();
+
+        update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txid1")).unwrap();
+        update_tx_draft_confirmation(&conn, "d1", 12345).unwrap();
+        let d = get_tx_draft(&conn, "d1").unwrap().unwrap();
+        assert_eq!(d.status, "confirmed");
+        assert_eq!(d.confirmation_height, Some(12345));
+
+        let age = draft_age_secs(&conn, "d1").unwrap();
+        assert!(age >= 0);
+    }
+
+    #[test]
+    fn list_drafts_awaiting_confirmation_filters() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        // Draft status → should NOT appear.
+        insert_tx_draft(&conn, "d_draft", "p1", "send_hns", "", "{}", "{}").unwrap();
+        // Broadcasted with txid → should appear.
+        insert_tx_draft(&conn, "d_bcast", "p1", "send_hns", "", "{}", "{}").unwrap();
+        update_tx_draft_status(&conn, "d_bcast", "broadcasted", None, Some("txid1")).unwrap();
+        // Confirmed with txid → should appear.
+        insert_tx_draft(&conn, "d_conf", "p1", "send_hns", "", "{}", "{}").unwrap();
+        update_tx_draft_status(&conn, "d_conf", "confirmed", None, Some("txid2")).unwrap();
+        // Broadcasted but NO txid → should NOT appear.
+        insert_tx_draft(&conn, "d_notx", "p1", "send_hns", "", "{}", "{}").unwrap();
+        update_tx_draft_status(&conn, "d_notx", "broadcasted", None, None).unwrap();
+
+        let awaiting = list_drafts_awaiting_confirmation(&conn, "p1").unwrap();
+        let ids: Vec<&str> = awaiting.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"d_bcast"));
+        assert!(ids.contains(&"d_conf"));
+        assert!(!ids.contains(&"d_draft"));
+        assert!(!ids.contains(&"d_notx"));
+    }
+
+    #[test]
+    fn upsert_and_read_owned_names_explorer() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        let name = crate::hsd::types::HsdName {
+            name: "testname".into(),
+            name_hash: Some("aabb".into()),
+            state: Some("CLOSED".into()),
+            height: Some(100),
+            renewal: Some(200),
+            owner: None,
+            value: None,
+            highest: None,
+            registered: None,
+            expired: None,
+            stats: None,
+            transfer: None,
+            revoked: None,
+        };
+        upsert_owned_name(&conn, "p1", &name, "txid1", 0).unwrap();
+
+        let names = read_owned_names_explorer(&conn, "p1").unwrap();
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0]["name"], "testname");
+        assert_eq!(names[0]["owner"]["hash"], "txid1");
+
+        // Upsert again (update path).
+        let name2 = crate::hsd::types::HsdName {
+            name: "testname".into(),
+            name_hash: Some("ccdd".into()),
+            state: Some("REVOKED".into()),
+            height: Some(100),
+            renewal: Some(300),
+            owner: None,
+            value: None,
+            highest: None,
+            registered: None,
+            expired: None,
+            stats: None,
+            transfer: None,
+            revoked: None,
+        };
+        upsert_owned_name(&conn, "p1", &name2, "txid2", 1).unwrap();
+        let names2 = read_owned_names_explorer(&conn, "p1").unwrap();
+        assert_eq!(names2.len(), 1);
+        assert_eq!(names2[0]["owner"]["hash"], "txid2");
+    }
+
+    #[test]
+    fn get_name_coin_returns_none_for_missing() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        assert!(get_name_coin(&conn, "p1", "nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn find_unspent_covenant_utxo_returns_none_for_missing() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        assert!(find_unspent_covenant_utxo(&conn, "p1", "rs1qnone", 2)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn insert_bid_commitment_and_get() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        insert_bid_commitment(
+            &conn,
+            "p1",
+            "myname",
+            "aabb",
+            "rs1qbid",
+            1,
+            0,
+            100000,
+            200000,
+            "nonce123",
+            "blind456",
+        )
+        .unwrap();
+
+        // Inserting same commitment again should be a no-op (ON CONFLICT DO NOTHING).
+        insert_bid_commitment(
+            &conn,
+            "p1",
+            "myname",
+            "aabb",
+            "rs1qbid",
+            1,
+            0,
+            100000,
+            200000,
+            "nonce123",
+            "blind456",
+        )
+        .unwrap();
+
+        // Verify via raw SQL since get_bid_commitment may not be exposed.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bid_commitments WHERE wallet_profile_id = 'p1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn upsert_name_state_and_list_tracked() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        upsert_name_state(
+            &conn,
+            "p1",
+            "alpha",
+            &serde_json::json!({"info":{"name":"alpha","state":"CLOSED"}}),
+        )
+        .unwrap();
+        upsert_name_state(
+            &conn,
+            "p1",
+            "beta",
+            &serde_json::json!({"info":{"name":"beta","state":"OPEN"}}),
+        )
+        .unwrap();
+
+        let tracked = list_tracked_name_names(&conn, "p1").unwrap();
+        assert_eq!(tracked.len(), 2);
+        assert!(tracked.contains(&"alpha".to_string()));
+        assert!(tracked.contains(&"beta".to_string()));
+    }
+
+    #[test]
+    fn delete_wallet_profile_cascades() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        // Add a draft so cascade has something to delete.
+        insert_tx_draft(&conn, "d1", "p1", "send_hns", "", "{}", "{}").unwrap();
+        assert!(get_tx_draft(&conn, "d1").unwrap().is_some());
+
+        delete_wallet_profile(&conn, "p1").unwrap();
+        assert!(get_wallet_profile(&conn, "p1").unwrap().is_none());
+        // Draft should be gone via CASCADE.
+        assert!(get_tx_draft(&conn, "d1").unwrap().is_none());
+    }
 }
