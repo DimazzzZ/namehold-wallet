@@ -14,6 +14,7 @@ Namehold uses a consolidated sidebar with six primary sections:
 | **Portfolio** | Manage your TLDs | Inventory · Batches · Renewals · DNS |
 | **Migration** | Track Namebase transfers and verify ownership | Namebase · Sync & Verify |
 | **Wallet** | HNS balance, send, receive | — |
+| **Auctions** | Acquire new Handshake TLDs | — |
 | **Node** | hsd node connection and status | — |
 | **Settings** | Connection, write mode, preferences | — |
 
@@ -29,14 +30,15 @@ is in `READ-ONLY` or `WRITE` mode.
 5. [Receiving HNS](#5-receiving-hns)
 6. [Sending HNS](#6-sending-hns)
 7. [Receiving TLDs](#7-receiving-tlds)
-8. [Transferring TLDs](#8-transferring-tlds)
-9. [Tracking Migration](#9-tracking-migration)
-10. [Syncing with Your Wallet](#10-syncing-with-your-wallet)
-11. [Renewals](#11-renewals)
-12. [DNS Records](#12-dns-records)
-13. [Exporting Data](#13-exporting-data)
-14. [Security](#14-security)
-15. [Troubleshooting](#15-troubleshooting)
+8. [Acquiring New TLDs (Auctions)](#8-acquiring-new-tlds-auctions)
+9. [Transferring TLDs](#9-transferring-tlds)
+10. [Tracking Migration](#10-tracking-migration)
+11. [Syncing with Your Wallet](#11-syncing-with-your-wallet)
+12. [Renewals](#12-renewals)
+13. [DNS Records](#13-dns-records)
+14. [Exporting Data](#14-exporting-data)
+15. [Security](#15-security)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -247,7 +249,87 @@ TLDs arrive in your wallet when someone transfers them to you (e.g., from Nameba
 
 ---
 
-## 8. Transferring TLDs
+## 8. Acquiring New TLDs (Auctions)
+
+You can register new Handshake TLDs directly from Namehold through the
+on-chain Vickrey auction process. The entire flow is guided step-by-step
+inside the app.
+
+### How Handshake auctions work
+
+Every unclaimed Handshake name goes through a four-phase auction:
+
+| Phase | Duration | What happens |
+|-------|----------|--------------|
+| **Opening** | ~1 day (720 blocks) | The name enters the auction. No bids are accepted yet. |
+| **Bidding** | ~5 days (1 440 blocks) | Anyone can place sealed bids. You choose how much to bid and how much to lock up (the lockup can exceed the bid to obscure the real value). |
+| **Reveal** | ~2 days (720 blocks) | Bids are revealed. If you bid and don't reveal, you lose your locked funds. |
+| **Closed** | — | The winner is resolved. The highest bidder can register the name. |
+
+### Step-by-step: getting a new TLD
+
+1. Click **Auctions** in the sidebar.
+2. Type the name you want (without the leading dot) and click **Look up**
+   (or press Enter).
+3. The **Name Actions** modal opens and fetches the current auction state.
+4. Follow the guided action shown at the top of the modal:
+
+   | Current state | Guided action | What you provide |
+   |---------------|---------------|------------------|
+   | Available / Opening | **Open Auction** | Nothing extra — just confirm. |
+   | Bidding | **Place Bid** | Bid amount (HNS) and lockup amount (HNS). |
+   | Reveal | **Reveal Bid** | Nothing extra — just confirm. |
+   | Closed (you won) | **Register** | Optional DNS records for the TLD. |
+
+5. Each step builds a transaction draft, asks you to unlock the signer
+   (if locked), signs the draft, and broadcasts it.
+6. After broadcast, the modal shows the transaction ID and the phase
+   updates automatically on the next refresh.
+
+### Bid and lockup amounts
+
+- **Bid** — the actual value you are willing to pay. If you are the
+  highest bidder, this amount is deducted from your wallet.
+- **Lockup** — the total amount locked during the bidding phase. It can
+  be equal to or higher than your bid. A higher lockup makes it harder
+  for others to guess your real bid. Any lockup exceeding the bid is
+  returned to you after the reveal phase.
+
+Both values are entered in **HNS** (the app converts to dollarydoos
+internally).
+
+### DNS records
+
+After winning an auction, you can configure DNS records for your new TLD
+during the Register step. The modal provides a simple row editor:
+
+- Click **+ Add record** to add a new record.
+- Each row has a **Type** selector (TXT, A, AAAA, CNAME, NS, MX, SRV)
+  and a **Value** field.
+- Records are optional — you can register without any and add them later
+  via the Portfolio → DNS page.
+
+### Advanced actions
+
+Click **Show all actions** at the bottom of the Name Actions modal to
+reveal additional actions such as Update, Renew, Transfer, Finalize,
+Cancel, and Revoke. These are only relevant for names you already own.
+
+### Locked-in-auctions balance
+
+While you have active bids, the Wallet page shows a **Locked in Auctions**
+card displaying the total HNS currently locked in bids. This amount is
+not spendable until the auction ends and funds are released.
+
+### Reveal warning
+
+If you have names in the **Reveal** phase, a yellow alert banner appears
+at the top of the Wallet page reminding you to reveal your bids before
+the reveal window closes.
+
+---
+
+## 9. Transferring TLDs
 
 To send a TLD to another address (e.g., to a buyer):
 
@@ -272,7 +354,7 @@ To send a TLD to another address (e.g., to a buyer):
 
 ---
 
-## 9. Tracking Migration
+## 10. Tracking Migration
 
 Migration tracking helps you organize the process of moving TLDs from Namebase to your own wallet.
 
@@ -319,7 +401,7 @@ Batches help you organize TLDs into migration groups (e.g., "Test Batch 1", "Hig
 
 ---
 
-## 10. Syncing with Your Wallet
+## 11. Syncing with Your Wallet
 
 The **Migration → Sync & Verify** tab compares your imported inventory against what your wallet actually owns.
 
@@ -344,7 +426,7 @@ Each sync stores a snapshot of your wallet state. You can view the history at th
 
 ---
 
-## 11. Renewals
+## 12. Renewals
 
 The **Portfolio → Renewals** tab shows TLDs with known expiration data.
 
@@ -365,7 +447,7 @@ Renewal tracking is **read-only** in the current version. You cannot renew TLDs 
 
 ---
 
-## 12. DNS Records
+## 13. DNS Records
 
 The **Portfolio → DNS** tab shows resource records for names owned by your wallet.
 
@@ -391,7 +473,7 @@ The **Portfolio → DNS** tab shows resource records for names owned by your wal
 
 ---
 
-## 13. Exporting Data
+## 14. Exporting Data
 
 ### Export from TLD Inventory
 
@@ -413,7 +495,7 @@ The **Portfolio → DNS** tab shows resource records for names owned by your wal
 
 ---
 
-## 14. Security
+## 15. Security
 
 ### Read-only mode (default)
 
@@ -450,7 +532,7 @@ Namehold connects to hsd on `127.0.0.1` by default. If you configure a non-local
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 ### "Disconnected" on Wallet page
 
@@ -508,6 +590,7 @@ Namehold connects to hsd on `127.0.0.1` by default. If you configure a non-local
 | Check balance | Wallet | hsd connection |
 | Copy receive address | Wallet | hsd connection |
 | Send HNS | Wallet | Write mode + passphrase |
+| Acquire new TLD | Auctions | Write mode + passphrase |
 | Transfer TLD | Portfolio → Inventory | Write mode + passphrase |
 | Sync names | Migration → Sync & Verify | hsd connection |
 | View DNS records | Portfolio → DNS | hsd connection |
