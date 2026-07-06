@@ -39,6 +39,7 @@ pnpm-debug.log*
 
 # Testing
 coverage/
+.qa/
 
 # Rust
 **/*.rs.bk
