@@ -23,10 +23,10 @@ const TONE_TEXT: Record<StatusTone, string> = {
 
 /**
  * Compact, always-visible status for the non-custodial model: which wallet is
- * active, whether the signer is unlocked, and whether sending is possible (node
- * reachable + unlocked). Reads are always via the explorer, so there is no
- * "provider/node connection" probing of localhost here. Namebase status is NOT
- * shown here — it lives only in the Namebase section (the Migration workspace).
+ * active, whether the signer is unlocked, whether sending is possible (node
+ * reachable + unlocked), and which data source is active for reads (local node
+ * cache vs. explorer). Namebase status is NOT shown here — it lives only in
+ * the Namebase section (the Migration workspace).
  */
 export function StatusStrip({ className }: { className?: string }) {
   const navigate = useNavigate();
@@ -79,6 +79,20 @@ export function StatusStrip({ className }: { className?: string }) {
         value: canWrite ? "Ready" : "Unavailable",
         tone: canWrite ? "success" : "warning",
         detail: writeCap?.reason ?? undefined,
+        route: "/settings",
+      });
+
+      // Read source: "local" when the node is connected and synced, "explorer" otherwise.
+      const readSource = node?.read_source ?? "explorer";
+      result.push({
+        key: "source",
+        label: "Source",
+        value: readSource === "local" ? "Local" : "Explorer",
+        tone: readSource === "local" ? "success" : "info",
+        detail:
+          readSource === "local"
+            ? "Reading from local node cache (node synced)"
+            : "Reading from HNSFans explorer (node not synced)",
         route: "/settings",
       });
     }

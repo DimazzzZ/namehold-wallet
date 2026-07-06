@@ -36,6 +36,7 @@ type NodeOver = Partial<{
   headers: number | null;
   last_error: string | null;
   index_mismatch: boolean;
+  read_source: "local" | "explorer";
 }>;
 
 function nodeStatus(over: NodeOver = {}) {
@@ -52,6 +53,7 @@ function nodeStatus(over: NodeOver = {}) {
     headers: null,
     last_error: null,
     index_mismatch: false,
+    read_source: "explorer",
     ...over,
   };
 }
@@ -133,25 +135,26 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(await screen.findByText(/Syncing the chain — 40% · block 40000 \/ 100000/i)).toBeInTheDocument();
   });
 
-  it("Settings shows Connected at the chain tip even when progress < 100% (regtest)", async () => {
-    // blocks == headers (tip reached) but verificationprogress only 0.9997 — must
-    // read as Connected, not perpetually "Syncing".
+  it("Settings shows Syncing when blocks == headers but progress < 0.9999", async () => {
+    // blocks == headers (apparent tip) but verificationprogress only 0.9997 —
+    // the node is still far behind the real chain. Must show Syncing, not lie
+    // about being synced.
     invokeMock.mockImplementation(
       route(nodeStatus({ connected: true, process_alive: true, height: 317, headers: 317, verification_progress: 0.9997 })),
     );
     render(<Settings />, { wrapper: wrapper() });
 
-    expect(await screen.findByText(/Connected.*block 317/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Syncing/i)).toBeNull();
+    expect((await screen.findAllByText(/Syncing/i)).length).toBeGreaterThanOrEqual(1);
+    // The status badge must NOT say "Connected" — it should show "Syncing · 99.9%".
+    expect(screen.queryByText(/^Connected · block 317$/i)).toBeNull();
   });
 
-  it("Settings shows a 100% progress bar at the chain tip (always visible when connected)", async () => {
+  it("Settings shows Synced — 100% only when progress >= 0.9999", async () => {
     invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 317, headers: 317, verification_progress: 0.9997 })),
+      route(nodeStatus({ connected: true, process_alive: true, height: 317, headers: 317, verification_progress: 0.9999 })),
     );
     render(<Settings />, { wrapper: wrapper() });
 
-    // The progress block now renders even at the tip (was hidden when synced).
     const bar = await screen.findByTestId("node-sync-progress");
     expect(bar).toHaveTextContent(/Synced — 100% · block 317 \/ 317/i);
   });
@@ -275,5 +278,50 @@ describe("Node status (truthful, RPC-based)", () => {
 
     expect(await screen.findByText("Node:")).toBeInTheDocument();
     expect(await screen.findByText("Offline")).toBeInTheDocument();
+  });
+
+  it("StatusStrip shows Source: Explorer when node is not synced", async () => {
+    invokeMock.mockImplementation(route(nodeStatus({ connected: false, read_source: "explorer" })));
+    render(<StatusStrip />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("Source:")).toBeInTheDocument();
+    expect(await screen.findByText("Explorer")).toBeInTheDocument();
+  });
+
+  it("StatusStrip shows Source: Local when node is connected and synced", async () => {
+    invokeMock.mockImplementation(
+      route(nodeStatus({ connected: true, process_alive: true, height: 100, headers: 100, read_source: "local" })),
+    );
+    render(<StatusStrip />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("Source:")).toBeInTheDocument();
+    expect(await screen.findByText("Local")).toBeInTheDocument();
+  });
+
+  it("Settings shows Read source: Explorer when node is not synced", async () => {
+    invokeMock.mockImplementation(route(nodeStatus({ connected: false, read_source: "explorer" })));
+    render(<Settings />, { wrapper: wrapper() });
+
+    expect(await screen.findByText(/Read source:/)).toBeInTheDocument();
+    expect(await screen.findByText("Explorer")).toBeInTheDocument();
+  });
+
+  it("Settings shows Read source: Local node cache when node is synced", async () => {
+    invokeMock.mockImplementation(
+      route(nodeStatus({ connected: true, process_alive: true, height: 100, headers: 100, read_source: "local" })),
+    );
+    render(<Settings />, { wrapper: wrapper() });
+
+    expect(await screen.findByText(/Read source:/)).toBeInTheDocument();
+    expect(await screen.findByText("Local node cache")).toBeInTheDocument();
+  });
+
+  it("Settings shows updated explorer description about fallback behavior", async () => {
+    invokeMock.mockImplementation(route(nodeStatus()));
+    render(<Settings />, { wrapper: wrapper() });
+
+    expect(
+      await screen.findByText(/when the node is connected and fully synced, reads come from the local node cache/i),
+    ).toBeInTheDocument();
   });
 });

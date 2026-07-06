@@ -164,7 +164,7 @@ describe("Namebase Withdraw HNS", () => {
     fireEvent.change(screen.getByPlaceholderText("0.0"), { target: { value: "2" } });
     // Breakdown: recipient gets 2, fee 1, total debited 3.
     expect(screen.getByText("Total debited")).toBeInTheDocument();
-    expect(screen.getByText("3 HNS")).toBeInTheDocument();
+    expect(screen.getByText("3.000000 HNS")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Withdraw$/i }));
     await waitFor(() => {
@@ -188,6 +188,39 @@ describe("Namebase Withdraw HNS", () => {
     await openWithdraw();
     fireEvent.change(screen.getByPlaceholderText("0.0"), { target: { value: "999" } }); // > 100 avail
     expect(screen.getByRole("button", { name: /^Withdraw$/i })).toBeDisabled();
+  });
+
+  it("formats large HNS amounts with thousand separators in the fee breakdown", async () => {
+    // Override the account with a large balance to exercise comma formatting.
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_namebase_status") {
+        return Promise.resolve({
+          connected: true,
+          has_cookie: true,
+          account: {
+            balance: { hns: 250000, btc: 0 },
+            pendingHns: 0,
+            has2fa: false,
+            withdrawalFeeHns: 1,
+            minimums: { hns: 1 },
+          },
+        });
+      }
+      return routeInvoke(cmd);
+    });
+
+    render(<NamebaseDashboard />, { wrapper: wrapper() });
+    fireEvent.click(await screen.findByRole("button", { name: /Withdraw HNS/i }));
+    await screen.findByText(/Withdraw HNS from your Namebase balance/i);
+
+    // Enter a large amount: 120000 HNS
+    fireEvent.change(screen.getByPlaceholderText("0.0"), { target: { value: "120000" } });
+
+    // The fee breakdown should show comma-formatted numbers with 6 decimal places.
+    // Recipient: 120,000.000000  Fee: + 1.000000  Total: 120,001.000000
+    expect(screen.getByText("120,000.000000 HNS")).toBeInTheDocument();
+    expect(screen.getByText("+ 1.000000 HNS")).toBeInTheDocument();
+    expect(screen.getByText("120,001.000000 HNS")).toBeInTheDocument();
   });
 
   it("blocks a gross amount below the Namebase minimum", async () => {

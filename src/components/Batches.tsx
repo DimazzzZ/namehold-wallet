@@ -8,7 +8,7 @@ import { Dialog } from "./ui/Dialog";
 import { Badge } from "./ui/Badge";
 import { Select } from "./ui/Select";
 import { StatusBadge } from "./ui/StatusBadge";
-import { formatDate } from "../lib/utils";
+import { formatDate, formatCount } from "../lib/utils";
 import { useUiStore } from "../stores/ui";
 import type { BatchStatus, MigrationStatus } from "../types";
 
@@ -230,7 +230,7 @@ export function Batches() {
                 <div className="flex gap-2 mt-1">
                   <Badge variant={STATUS_VARIANTS[batch.status]}>{batch.status}</Badge>
                   <span className="text-xs text-gray-400">
-                    {batch.asset_count ?? 0} TLDs
+                    {formatCount(batch.asset_count ?? 0)} TLDs
                   </span>
                   <span className="text-xs text-gray-400">
                     {formatDate(batch.created_at)}

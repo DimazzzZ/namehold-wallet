@@ -2,6 +2,7 @@ mod assets_cmd_tests;
 mod batches_cmd_tests;
 mod command_helpers;
 mod compare_inventory_tests;
+mod contract_shape_tests;
 mod csv_cmd_tests;
 mod csv_extra_tests;
 mod csv_import_tests;
