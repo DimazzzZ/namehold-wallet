@@ -91,7 +91,7 @@ describe("NameActionsModal — node-readiness gating", () => {
     // Advanced actions are behind a toggle — open them to verify gating on actions
     // that are always present in the auction section for the current modal contract.
     fireEvent.click(screen.getByTestId("all-actions-toggle"));
-    expect(screen.getAllByRole("button", { name: /^Open$/i }).at(-1)).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: /^Open$/i }).slice(-1)[0]).toBeDisabled();
     expect(screen.getByRole("button", { name: /^Reveal$/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^Redeem$/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^Bid$/i })).toBeDisabled();
@@ -109,7 +109,7 @@ describe("NameActionsModal — node-readiness gating", () => {
     // Advanced actions are behind a toggle — open them to verify.
     fireEvent.click(screen.getByTestId("all-actions-toggle"));
     // In the current modal contract, always-available auction actions should be enabled.
-    expect(screen.getAllByRole("button", { name: /^Open$/i }).at(-1)).not.toBeDisabled();
+    expect(screen.getAllByRole("button", { name: /^Open$/i }).slice(-1)[0]).not.toBeDisabled();
     expect(screen.getByRole("button", { name: /^Reveal$/i })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: /^Redeem$/i })).not.toBeDisabled();
   });
