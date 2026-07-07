@@ -117,7 +117,38 @@ pub async fn sync_wallet_state(
                 .ok_or_else(|| AppError::NotFound(format!("wallet profile {id}")))?,
             None => active_profile(&conn)?,
         };
-        let addresses = db::queries::get_profile_addresses(&conn, &profile.id)?;
+        let mut addresses = db::queries::get_profile_addresses(&conn, &profile.id)?;
+        // Auto-provision derived addresses if none exist yet (e.g., wallet
+        // created before the address-derivation step ran, or DB was migrated).
+        if addresses.is_empty() {
+            if let Ok(network) = derivation::network_from_profile(&profile.network) {
+                if let Ok(xpub) = crate::noncustodial::hd::ExtendedPubKey::from_xpub(
+                    network,
+                    &profile.account_xpub,
+                ) {
+                    if let Ok(recv) = derivation::ensure_addresses(
+                        &conn,
+                        &profile.id,
+                        0,
+                        network,
+                        &xpub,
+                        derivation::BRANCH_RECEIVE,
+                        20,
+                    ) {
+                        let _ = derivation::ensure_addresses(
+                            &conn,
+                            &profile.id,
+                            0,
+                            network,
+                            &xpub,
+                            derivation::BRANCH_CHANGE,
+                            20,
+                        );
+                        addresses = recv.into_iter().map(|d| d.address).collect();
+                    }
+                }
+            }
+        }
         let settings = db::queries::get_settings(&conn)?;
         (profile.id, addresses, settings)
     };
@@ -699,17 +730,24 @@ pub async fn get_write_capability(
             }
             Ok(info) => {
                 // "Synced" means the chain tip is reached (applied blocks caught up
-                // to the best known header). `verification_progress` is a heuristic
-                // that can plateau just under 1.0 (e.g. ~0.9997 on regtest), so it
-                // must NOT be the gate — that would block sending forever.
-                let synced = match info.headers {
-                    Some(h) if h > 0 => info.blocks >= h,
-                    _ => info.verification_progress.map(|p| p >= 0.9999).unwrap_or(true),
+                // to the best known header). When `verification_progress` is
+                // available it is the most reliable signal — a node can report
+                // height == headers while still only ~8% verified if it is far
+                // behind the real chain tip. Always gate on progress when present.
+                let synced = match info.verification_progress {
+                    Some(p) => p >= 0.9999,
+                    None => match info.headers {
+                        Some(h) if h > 0 => info.blocks >= h,
+                        _ => true,
+                    },
                 };
                 if !synced {
-                    let pct = match info.headers {
-                        Some(h) if h > 0 => ((info.blocks as f64 / h as f64) * 100.0).floor() as i64,
-                        _ => (info.verification_progress.unwrap_or(0.0) * 100.0).floor() as i64,
+                    let pct = match info.verification_progress {
+                        Some(p) => (p * 100.0).floor() as i64,
+                        None => match info.headers {
+                            Some(h) if h > 0 => ((info.blocks as f64 / h as f64) * 100.0).floor() as i64,
+                            _ => 0,
+                        },
                     };
                     cap.can_write = false;
                     cap.reason = Some(format!(

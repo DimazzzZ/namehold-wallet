@@ -29,12 +29,33 @@ pub(crate) fn namebase_client(state: &AppState) -> Result<NamebaseClient, AppErr
     }
 }
 
+/// Build a Namebase client with an explicit cookie, still honoring the
+/// `namebase_base_url` test seam.  Used by `connect_namebase` which receives
+/// the cookie as a command parameter rather than reading it from settings.
+pub(crate) fn namebase_client_with_cookie(
+    state: &AppState,
+    cookie: &str,
+) -> Result<NamebaseClient, AppError> {
+    let base = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::get_settings(&db)?
+            .get("namebase_base_url")
+            .cloned()
+            .unwrap_or_default()
+    };
+    if base.trim().is_empty() {
+        NamebaseClient::new(cookie)
+    } else {
+        NamebaseClient::with_base_url(cookie, base.trim())
+    }
+}
+
 #[tauri::command]
 pub async fn connect_namebase(
     state: State<'_, AppState>,
     cookie: String,
 ) -> Result<serde_json::Value, AppError> {
-    let client = NamebaseClient::new(&cookie)?;
+    let client = namebase_client_with_cookie(&state, &cookie)?;
     let valid = client.check_session().await?;
     if !valid {
         return Err(AppError::Other("Invalid session cookie.".to_string()));
@@ -73,7 +94,7 @@ pub async fn get_namebase_status(state: State<'_, AppState>) -> Result<serde_jso
         return Ok(serde_json::json!({"connected": false, "has_cookie": false}));
     }
 
-    let client = NamebaseClient::new(&cookie)?;
+    let client = namebase_client(&state)?;
     match client.check_session().await {
         Ok(true) => {
             let account = client.get_account().await.ok();
@@ -85,15 +106,13 @@ pub async fn get_namebase_status(state: State<'_, AppState>) -> Result<serde_jso
 
 #[tauri::command]
 pub async fn fetch_namebase_domains(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let cookie = get_cookie(&state)?;
-    let client = NamebaseClient::new(&cookie)?;
+    let client = namebase_client(&state)?;
     client.get_domains().await
 }
 
 #[tauri::command]
 pub async fn fetch_namebase_staked(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let cookie = get_cookie(&state)?;
-    let client = NamebaseClient::new(&cookie)?;
+    let client = namebase_client(&state)?;
     client.get_staked_domains().await
 }
 
@@ -108,15 +127,13 @@ pub async fn fetch_namebase_renewals(state: State<'_, AppState>) -> Result<serde
 
 #[tauri::command]
 pub async fn fetch_namebase_withdrawals(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let cookie = get_cookie(&state)?;
-    let client = NamebaseClient::new(&cookie)?;
+    let client = namebase_client(&state)?;
     client.get_withdrawals().await
 }
 
 #[tauri::command]
 pub async fn import_from_namebase(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let cookie = get_cookie(&state)?;
-    let client = NamebaseClient::new(&cookie)?;
+    let client = namebase_client(&state)?;
 
     let domains = client.get_domains().await?;
     let staked_data = client.get_staked_domains().await?;
@@ -273,7 +290,6 @@ pub async fn namebase_withdraw_hns(
 
 #[tauri::command]
 pub async fn fetch_namebase_domain_withdrawals(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let cookie = get_cookie(&state)?;
-    let client = NamebaseClient::new(&cookie)?;
+    let client = namebase_client(&state)?;
     client.get_domain_withdrawals().await
 }

@@ -272,4 +272,187 @@ mod tests {
         assert_eq!(back[3]["keyTag"], 12345);
         assert_eq!(back[3]["digest"], "deadbeef");
     }
+
+    // --- encode error paths ---
+
+    #[test]
+    fn encode_rejects_unknown_record_type() {
+        let recs = vec![serde_json::json!({ "type": "UNKNOWN" })];
+        let err = encode(&recs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("unsupported record type"), "msg: {msg}");
+    }
+
+    #[test]
+    fn encode_rejects_missing_type_field() {
+        let recs = vec![serde_json::json!({ "ns": "ns1.example." })];
+        let err = encode(&recs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("missing 'type'"), "msg: {msg}");
+    }
+
+    #[test]
+    fn encode_rejects_txt_missing_txt_field() {
+        let recs = vec![serde_json::json!({ "type": "TXT" })];
+        let err = encode(&recs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("missing 'txt'"), "msg: {msg}");
+    }
+
+    #[test]
+    fn encode_rejects_ns_missing_ns_field() {
+        let recs = vec![serde_json::json!({ "type": "NS" })];
+        let err = encode(&recs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("missing 'ns'"), "msg: {msg}");
+    }
+
+    #[test]
+    fn encode_rejects_glue4_missing_address() {
+        let recs = vec![serde_json::json!({ "type": "GLUE4", "ns": "ns1.example." })];
+        let err = encode(&recs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("address"), "msg: {msg}");
+    }
+
+    #[test]
+    fn encode_rejects_synth4_missing_address() {
+        let recs = vec![serde_json::json!({ "type": "SYNTH4" })];
+        let err = encode(&recs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("address"), "msg: {msg}");
+    }
+
+    #[test]
+    fn encode_rejects_ds_missing_keytag() {
+        let recs = vec![serde_json::json!({ "type": "DS", "algorithm": 8, "digestType": 2, "digest": "deadbeef" })];
+        let err = encode(&recs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("missing 'keyTag'"), "msg: {msg}");
+    }
+
+    #[test]
+    fn encode_rejects_ds_invalid_hex() {
+        let recs = vec![serde_json::json!({ "type": "DS", "keyTag": 1, "algorithm": 8, "digestType": 2, "digest": "not-hex" })];
+        let err = encode(&recs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("invalid hex"), "msg: {msg}");
+    }
+
+    #[test]
+    fn encode_rejects_bad_ipv4() {
+        let recs = vec![serde_json::json!({ "type": "SYNTH4", "address": "not-an-ip" })];
+        let err = encode(&recs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("bad IPv4"), "msg: {msg}");
+    }
+
+    #[test]
+    fn encode_rejects_bad_ipv6() {
+        let recs = vec![serde_json::json!({ "type": "SYNTH6", "address": "not-an-ipv6" })];
+        let err = encode(&recs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("bad IPv6"), "msg: {msg}");
+    }
+
+    #[test]
+    fn encode_rejects_label_too_long() {
+        let long_label = "a".repeat(64);
+        let recs = vec![serde_json::json!({ "type": "NS", "ns": format!("{long_label}.example.") })];
+        let err = encode(&recs).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("label too long"), "msg: {msg}");
+    }
+
+    // --- decode error paths ---
+
+    #[test]
+    fn decode_rejects_unsupported_version() {
+        let buf = vec![99u8]; // version 99
+        let err = decode(&buf).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("unsupported resource version"), "msg: {msg}");
+    }
+
+    #[test]
+    fn decode_rejects_unknown_record_type() {
+        let buf = vec![0u8, 99u8]; // version 0, type 99
+        let err = decode(&buf).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("unknown resource record type"), "msg: {msg}");
+    }
+
+    #[test]
+    fn decode_handles_truncated_txt() {
+        let buf = vec![0u8, TYPE_TXT]; // version 0, TXT type, but no count
+        let err = decode(&buf).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("truncated"), "msg: {msg}");
+    }
+
+    #[test]
+    fn decode_handles_truncated_ds() {
+        let buf = vec![0u8, TYPE_DS, 0, 0]; // version 0, DS type, but truncated
+        let err = decode(&buf).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("truncated"), "msg: {msg}");
+    }
+
+    // --- additional record type tests ---
+
+    #[test]
+    fn glue6_round_trips() {
+        let recs = vec![serde_json::json!({ "type": "GLUE6", "ns": "ns1.example.", "address": "2001:db8::1" })];
+        let raw = encode(&recs).unwrap();
+        let back = decode(&raw).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0]["type"], "GLUE6");
+        assert_eq!(back[0]["ns"], "ns1.example.");
+        assert_eq!(back[0]["address"], "2001:db8::1");
+    }
+
+    #[test]
+    fn synth4_round_trips() {
+        let recs = vec![serde_json::json!({ "type": "SYNTH4", "address": "192.168.1.1" })];
+        let raw = encode(&recs).unwrap();
+        let back = decode(&raw).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0]["type"], "SYNTH4");
+        assert_eq!(back[0]["address"], "192.168.1.1");
+    }
+
+    #[test]
+    fn multiple_txt_strings_round_trip() {
+        let recs = vec![serde_json::json!({ "type": "TXT", "txt": ["a", "bb", "ccc"] })];
+        let raw = encode(&recs).unwrap();
+        let back = decode(&raw).unwrap();
+        assert_eq!(back[0]["txt"], serde_json::json!(["a", "bb", "ccc"]));
+    }
+
+    #[test]
+    fn empty_txt_array_round_trips() {
+        let recs = vec![serde_json::json!({ "type": "TXT", "txt": [] })];
+        let raw = encode(&recs).unwrap();
+        let back = decode(&raw).unwrap();
+        assert_eq!(back[0]["txt"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn name_with_trailing_dot_round_trips() {
+        let recs = vec![serde_json::json!({ "type": "NS", "ns": "ns1.example.com." })];
+        let raw = encode(&recs).unwrap();
+        let back = decode(&raw).unwrap();
+        assert_eq!(back[0]["ns"], "ns1.example.com.");
+    }
+
+    #[test]
+    fn ds_with_max_digest_length() {
+        let digest = "ab".repeat(255); // 255 bytes
+        let recs = vec![serde_json::json!({ "type": "DS", "keyTag": 65535, "algorithm": 255, "digestType": 255, "digest": digest })];
+        let raw = encode(&recs).unwrap();
+        let back = decode(&raw).unwrap();
+        assert_eq!(back[0]["keyTag"], 65535);
+        assert_eq!(back[0]["algorithm"], 255);
+        assert_eq!(back[0]["digestType"], 255);
+    }
 }

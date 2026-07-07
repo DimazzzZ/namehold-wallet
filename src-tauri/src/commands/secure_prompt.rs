@@ -57,9 +57,10 @@ pub struct PendingPrompt {
 }
 
 /// Registry of in-flight prompts, stored on [`AppState`].
+#[allow(dead_code)]
 pub type SecurePromptRegistry = Mutex<HashMap<String, PendingPrompt>>;
 
-fn random_id() -> String {
+pub(crate) fn random_id() -> String {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
@@ -147,7 +148,7 @@ pub async fn prompt_secure(
 /// a `reveal` payload (the mnemonic) or answering on another window's behalf.
 /// App commands are not ACL-gated in Tauri v2, so this in-command check is the
 /// real enforcement boundary.
-fn assert_owning_window(window: &tauri::WebviewWindow, prompt_id: &str) -> Result<(), AppError> {
+pub(crate) fn assert_owning_window(window: &tauri::WebviewWindow, prompt_id: &str) -> Result<(), AppError> {
     if window.label() != format!("secure-prompt-{prompt_id}") {
         return Err(AppError::Other("forbidden".into()));
     }

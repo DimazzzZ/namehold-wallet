@@ -3,6 +3,8 @@ import {
   dollarydoosToHns,
   hnsToDollarydoos,
   formatHns,
+  formatCount,
+  formatHnsAmount,
   cn,
   formatDate,
   truncate,
@@ -21,8 +23,12 @@ describe("dollarydoosToHns", () => {
     expect(dollarydoosToHns(500_000)).toBe("0.500000");
   });
 
-  it("converts large amount", () => {
-    expect(dollarydoosToHns(1_234_567_890)).toBe("1234.567890");
+  it("converts large amount with thousand separators", () => {
+    expect(dollarydoosToHns(1_234_567_890)).toBe("1,234.567890");
+  });
+
+  it("adds thousand separators for millions", () => {
+    expect(dollarydoosToHns(1_000_000_000_000)).toBe("1,000,000.000000");
   });
 
   it("converts small amount", () => {
@@ -67,6 +73,79 @@ describe("formatHns", () => {
 
   it("formats zero", () => {
     expect(formatHns(0)).toBe("0.000000");
+  });
+
+  it("formats large value with thousand separators", () => {
+    expect(formatHns(123_456_789_000_000)).toBe("123,456,789.000000");
+  });
+});
+
+describe("formatCount", () => {
+  it("formats small number without separators", () => {
+    expect(formatCount(42)).toBe("42");
+  });
+
+  it("adds thousand separators", () => {
+    expect(formatCount(120002)).toBe("120,002");
+  });
+
+  it("formats millions", () => {
+    expect(formatCount(1000000)).toBe("1,000,000");
+  });
+
+  it("handles zero", () => {
+    expect(formatCount(0)).toBe("0");
+  });
+});
+
+describe("formatHnsAmount", () => {
+  it("formats integer with thousand separators and 6 decimal places", () => {
+    expect(formatHnsAmount(120002)).toBe("120,002.000000");
+  });
+
+  it("formats decimal with thousand separators and 6 decimal places", () => {
+    expect(formatHnsAmount(120002.4)).toBe("120,002.400000");
+  });
+
+  it("formats large decimal with 6 decimal places", () => {
+    expect(formatHnsAmount(120002.400000)).toBe("120,002.400000");
+  });
+
+  it("formats small number with 6 decimal places", () => {
+    expect(formatHnsAmount(0.5)).toBe("0.500000");
+  });
+
+  it("formats zero with 6 decimal places", () => {
+    expect(formatHnsAmount(0)).toBe("0.000000");
+  });
+
+  it("formats millions with 6 decimal places", () => {
+    expect(formatHnsAmount(1000000)).toBe("1,000,000.000000");
+  });
+
+  it("formats string input with 6 decimal places", () => {
+    expect(formatHnsAmount("120002.4")).toBe("120,002.400000");
+  });
+
+  it("normalizes trailing zeros from string input to 6 decimal places", () => {
+    expect(formatHnsAmount("1000.50")).toBe("1,000.500000");
+  });
+
+  it("returns raw string for non-finite values", () => {
+    expect(formatHnsAmount("not-a-number")).toBe("not-a-number");
+  });
+
+  it("does NOT format IDs (IDs should not use this function)", () => {
+    // IDs are never passed to formatHnsAmount — this test documents the contract
+    const id = 123456789;
+    // IDs stay raw as numbers; formatHnsAmount is only for HNS amounts
+    expect(formatHnsAmount(id)).toBe("123,456,789.000000");
+  });
+
+  it("always uses exactly 6 decimal places for consistency with formatHns", () => {
+    expect(formatHnsAmount(1)).toBe("1.000000");
+    expect(formatHnsAmount(0.123456)).toBe("0.123456");
+    expect(formatHnsAmount(100000.123456)).toBe("100,000.123456");
   });
 });
 

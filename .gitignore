@@ -24,6 +24,8 @@ src-tauri/gen/
 .idea/
 .mimocode/
 .clinerules/
+.cline/
+.github/copilot-instructions.md
 *.swp
 *.swo
 *~
@@ -39,6 +41,7 @@ pnpm-debug.log*
 
 # Testing
 coverage/
+.qa/
 
 # Rust
 **/*.rs.bk

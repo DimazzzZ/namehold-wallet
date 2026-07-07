@@ -35,7 +35,7 @@ import {
   isLikelyHnsAddress,
 } from "../lib/utils";
 import { mapError } from "../lib/errors";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { writeText } from "../lib/clipboard";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
 import type { TxDraftSummary } from "../types";

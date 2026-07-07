@@ -57,6 +57,38 @@ fn resolve_profile(
     active_profile(state)
 }
 
+/// Check if the local hsd node is connected AND fully synced, making local
+/// cached data the preferred read source. Returns `true` when the node RPC
+/// answers and the chain is caught up (height ≥ headers, or progress ≥ 0.9999).
+pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -> bool {
+    let settings = {
+        let Ok(db) = state.db.lock() else {
+            return false;
+        };
+        match crate::db::queries::get_settings(&db) {
+            Ok(s) => s,
+            Err(_) => return false,
+        }
+    };
+    let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+    let Ok(info) = client.get_blockchain_info().await else {
+        return false;
+    };
+    // Connected — now check if synced.
+    // When verification_progress is available it is the most reliable signal —
+    // a node can report height == headers while still only ~8% verified if it
+    // is far behind the real chain tip. Always gate on progress when present.
+    let synced = if let Some(progress) = info.verification_progress {
+        progress >= 0.9999
+    } else if let Some(headers) = info.headers {
+        headers > 0 && info.blocks >= headers
+    } else {
+        // No sync metadata: assume synced (e.g. regtest with a single miner).
+        true
+    };
+    synced
+}
+
 /// HNSFans explorer client from settings (`explorer_api_url`).
 fn explorer_client(settings: &std::collections::HashMap<String, String>) -> HnsFansClient {
     let url = settings
@@ -67,7 +99,13 @@ fn explorer_client(settings: &std::collections::HashMap<String, String>) -> HnsF
     HnsFansClient::new(url)
 }
 
-/// Balance via the explorer (profile addresses), falling back to the cache.
+/// Balance read with automatic source selection:
+///   1. If the local hsd node is connected AND fully synced → use the local
+///      chain cache (authoritative, no network hop).
+///   2. Otherwise → fall back to the HNSFans explorer over the profile's
+///      watch addresses.
+///   3. If the explorer also fails → fall back to the local cache (last resort).
+///
 /// `wallet_profile_id` pins the read to a specific wallet (defaults to active).
 #[tauri::command]
 pub async fn read_balance(
@@ -78,14 +116,59 @@ pub async fn read_balance(
         Some(id) => id,
         None => return Ok(serde_json::json!({"confirmed":0,"unconfirmed":0,"locked_confirmed":0,"locked_unconfirmed":0})),
     };
-    let (client, addrs) = {
+
+    // Prefer local cache when the node is connected and synced.
+    if is_node_ready_for_local_reads(&state).await {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        return queries::read_cached_balance(&conn, &id);
+    }
+
+    // Explorer fallback.
+    let (client, mut addrs) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
         (explorer_client(&settings), queries::get_profile_addresses(&conn, &id)?)
     };
+    // Auto-provision derived addresses if none exist yet, so the explorer
+    // can look up the wallet's balance even if sync hasn't run.
+    if addrs.is_empty() {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        if let Ok(profile) = queries::get_wallet_profile(&conn, &id) {
+            if let Some(profile) = profile {
+                if let Ok(network) = crate::noncustodial::derivation::network_from_profile(&profile.network) {
+                    if let Ok(xpub) = crate::noncustodial::hd::ExtendedPubKey::from_xpub(
+                        network,
+                        &profile.account_xpub,
+                    ) {
+                        if let Ok(recv) = crate::noncustodial::derivation::ensure_addresses(
+                            &conn, &id, 0, network, &xpub,
+                            crate::noncustodial::derivation::BRANCH_RECEIVE, 20,
+                        ) {
+                            let _ = crate::noncustodial::derivation::ensure_addresses(
+                                &conn, &id, 0, network, &xpub,
+                                crate::noncustodial::derivation::BRANCH_CHANGE, 20,
+                            );
+                            addrs = recv.into_iter().map(|d| d.address).collect();
+                        }
+                    }
+                }
+            }
+        }
+    }
     if !addrs.is_empty() {
         if let Ok(balance) = client.get_balance(&addrs).await {
-            return Ok(serde_json::to_value(&balance)?);
+            // `HsdBalance` deserializes from the hsd node's camelCase RPC, so its
+            // Serialize impl also emits camelCase (`lockedConfirmed`). The frontend
+            // contract for `read_balance` is snake_case (see the two json! paths
+            // above, src/types HsdBalance, and src/lib/zod.ts), so map explicitly
+            // here — returning the struct verbatim would silently drop the locked
+            // fields on the FE. Covered by read_balance_serializes_snake_case.
+            return Ok(serde_json::json!({
+                "confirmed": balance.confirmed,
+                "unconfirmed": balance.unconfirmed,
+                "locked_confirmed": balance.locked_confirmed.unwrap_or(0),
+                "locked_unconfirmed": balance.locked_unconfirmed.unwrap_or(0),
+            }));
         }
     }
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -97,6 +180,10 @@ pub async fn read_balance(
 /// reads (no explorer/node fan-out), so this is instant and never includes the
 /// migration *inventory* (`assets`) — those names live in the Portfolio /
 /// Migration views, not "Owned Names".
+///
+/// When the local node is connected and synced, the node-synced cache is the
+/// primary source (authoritative). Otherwise, discovered (explorer-crawled)
+/// names are primary.
 #[tauri::command]
 pub async fn read_names(
     state: State<'_, AppState>,
@@ -106,15 +193,24 @@ pub async fn read_names(
         Some(id) => id,
         None => return Ok(serde_json::Value::Array(vec![])),
     };
+    // Check node readiness BEFORE acquiring the DB lock so we don't hold
+    // MutexGuard across the async RPC probe (MutexGuard is !Send).
+    let local_ready = is_node_ready_for_local_reads(&state).await;
+
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    // Discovered (node-free) owners; node-synced owners (gated on an unspent
-    // tracked UTXO). De-dup by name.
+
+    // When local is ready, prefer node-synced names first; otherwise discovered first.
     let discovered = queries::read_owned_names_explorer(&conn, &id)?;
     let cached = queries::read_cached_names(&conn, &id)?;
 
     let mut out: Vec<serde_json::Value> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    for v in discovered.into_iter().chain(cached) {
+    let (primary, secondary) = if local_ready {
+        (cached, discovered)
+    } else {
+        (discovered, cached)
+    };
+    for v in primary.into_iter().chain(secondary) {
         if let Some(n) = v.get("name").and_then(|x| x.as_str()) {
             if seen.insert(n.to_string()) {
                 out.push(v);

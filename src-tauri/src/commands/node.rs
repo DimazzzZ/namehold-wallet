@@ -36,7 +36,7 @@ pub(crate) fn pick_hsd_path(override_path: Option<&str>, candidates: &[String]) 
 
 /// Common hsd install locations to probe (a GUI-launched app has a minimal PATH,
 /// so the user's shell PATH isn't available — we must look in the usual dirs).
-fn hsd_candidates() -> Vec<String> {
+pub(crate) fn hsd_candidates() -> Vec<String> {
     let mut candidates = vec![
         "/opt/homebrew/bin/hsd".to_string(),
         "/usr/local/bin/hsd".to_string(),
@@ -60,7 +60,7 @@ fn hsd_candidates() -> Vec<String> {
 
 /// Locate the hsd binary: an explicit `hsd_path` override first, then common
 /// install dirs, then `which hsd`, then the bare name (resolved via PATH).
-fn find_hsd_binary(override_path: Option<&str>) -> String {
+pub(crate) fn find_hsd_binary(override_path: Option<&str>) -> String {
     if let Some(found) = pick_hsd_path(override_path, &hsd_candidates()) {
         return found;
     }
@@ -196,6 +196,27 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         Some((msg, mismatch)) => (Some(msg), mismatch),
         None => (None, false),
     };
+    // Determine the current read source: "local" when the node is connected and
+    // synced, "explorer" otherwise. The frontend uses this to show which data
+    // source is active.
+    let node_synced = probe.as_ref().map(|p| {
+        // When verification_progress is available, it is the most reliable signal.
+        // A node can report height == headers while still only ~8% verified if it
+        // is far behind the real chain tip. Always gate on progress when present.
+        if let Some(progress) = p.verification_progress {
+            progress >= 0.9999
+        } else if let Some(headers) = p.headers {
+            headers > 0 && p.height >= headers
+        } else {
+            true
+        }
+    }).unwrap_or(false);
+    let read_source = if probe.is_some() && node_synced {
+        "local"
+    } else {
+        "explorer"
+    };
+
     Ok(serde_json::json!({
         "binary": binary,
         "binary_found": version.is_some(),
@@ -211,6 +232,8 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         // True when the failure is a chain/index-flag mismatch hsd can't fix in
         // place — the UI offers a one-click re-sync for this case.
         "index_mismatch": index_mismatch,
+        // Current read source: "local" (node synced) or "explorer" (fallback).
+        "read_source": read_source,
     }))
 }
 
@@ -376,7 +399,7 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
 }
 
 /// Last few lines of the hsd log, for surfacing a startup failure reason.
-fn read_log_tail(path: &std::path::Path) -> String {
+pub(crate) fn read_log_tail(path: &std::path::Path) -> String {
     match std::fs::read_to_string(path) {
         Ok(s) if !s.trim().is_empty() => {
             let tail: Vec<&str> = s.trim_end().lines().rev().take(8).collect();
