@@ -183,6 +183,81 @@ On regtest, these periods are much shorter and blocks can be mined instantly.
 
 ---
 
+```
+
+---
+
+## 4. Rust Backend Coverage Policy
+
+### Goal
+
+Target **≥95% line coverage** for all meaningful backend logic in `src-tauri/`.
+
+### What counts as meaningful code (must be covered)
+
+- Validation and guard logic (network checks, profile resolution, amount checks)
+- Database reads and writes (queries, migrations, upserts)
+- Orchestration logic (build → sign → broadcast lifecycle, sync flows)
+- RPC error mapping and fallback paths (explorer ↔ local node)
+- Covenant / name action planning and persistence
+- Fee resolution and coin selection
+- Session / signer lifecycle rules
+
+### What may be excluded from coverage
+
+Only **thin framework / OS / Tauri glue** that exists purely to wire runtime APIs:
+
+- `src-tauri/src/lib.rs` `run()` entrypoint — `tauri::Builder`, plugin registration, `generate_handler!`
+- `WebviewWindowBuilder` open/close wiring in `secure_prompt.rs`
+- Direct `std::process::Command::new(...).spawn()` boundaries in `node.rs`
+- Any code that is fundamentally a framework adapter with no decision logic
+
+### Exclusion mechanism
+
+Use `#[coverage(off)]` via `cargo-llvm-cov`'s nightly cfg support. In `src-tauri/Cargo.toml`:
+
+```toml
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
+```
+
+In the crate root or module:
+
+```rust
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn thin_framework_glue() { /* OS / Tauri adapter only */ }
+```
+
+Every exclusion **must** have a short comment explaining why it is excluded.
+
+### Rules
+
+1. **Never blanket-exclude entire command modules** (`names.rs`, `tx.rs`, `read.rs`, `secure_wallet.rs`). If a module mixes logic and glue, **refactor first** (behavior-preserving), then test the extracted logic.
+2. **Prefer refactoring over exclusion.** Extract testable helpers from mixed modules; keep `#[tauri::command]` wrappers thin.
+3. **Document every exclusion.** Each `coverage(off)` annotation needs a comment: what it is and why it cannot be unit-tested.
+4. **Re-audit exclusions periodically.** If a framework API becomes testable (e.g., Tauri adds mock support for window events), remove the exclusion and add a test.
+
+### Testing hierarchy
+
+| Layer | What to test | Tooling |
+|-------|-------------|---------|
+| Unit | Pure helpers: validation, derivation, fee math, error mapping | `#[test]` / `#[tokio::test]` |
+| Integration | Command orchestration: DB + mockito RPC + Tauri mock app | `tauri::test::mock_builder`, `mockito`, in-memory SQLite |
+| Native | Secure window, folder picker, real Tauri IPC | `pnpm tauri dev` + `cua-driver` |
+| E2E chain | Send, auction lifecycle, covenant acceptance | `hsd --network=regtest` |
+
+### Regenerating coverage
+
+The saved report at `src-tauri/coverage/html/index.html` may be stale. Always regenerate before making decisions:
+
+```bash
+cd src-tauri && cargo llvm-cov --open
+```
+
+---
+
 ## Key Files
 
 | Area | File |

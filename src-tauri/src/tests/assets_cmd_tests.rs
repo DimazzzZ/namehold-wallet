@@ -1,4 +1,10 @@
 use crate::db;
+use crate::commands;
+use crate::AppState;
+use crate::tests::command_helpers::create_test_state;
+use tauri::Manager;
+
+// ── DB-query–layer tests (unchanged from existing) ──────────────────────
 
 #[test]
 fn test_list_assets_empty() {
@@ -152,4 +158,194 @@ fn test_bulk_update_tags() {
 
     let asset = db::queries::get_asset(&conn, assets[0].id).unwrap();
     assert_eq!(asset.tags, vec!["high_value", "premium"]);
+}
+
+// ── Command-layer tests (cover src-tauri/src/commands/assets.rs) ────────
+
+fn mock_app_with(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app")
+}
+
+#[tokio::test]
+async fn test_cmd_list_assets_empty() {
+    let state = create_test_state();
+    let app = mock_app_with(state);
+
+    let result = commands::assets::list_assets(
+        app.state::<AppState>(),
+        None, None, None, None, None,
+    )
+    .await;
+
+    let assets = result.unwrap();
+    assert!(assets.is_empty());
+}
+
+#[tokio::test]
+async fn test_cmd_list_assets_with_filtering() {
+    let state = create_test_state();
+    {
+        let db = state.db.lock().unwrap();
+        db.execute("INSERT INTO assets (tld, status, is_staked) VALUES ('abc', 'not_started', 0)", []).unwrap();
+        db.execute("INSERT INTO assets (tld, status, is_staked) VALUES ('xyz', 'finalized_owned', 1)", []).unwrap();
+    }
+
+    let app = mock_app_with(state);
+
+    let all = commands::assets::list_assets(
+        app.state::<AppState>(), None, None, None, None, None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(all.len(), 2);
+
+    let filtered = commands::assets::list_assets(
+        app.state::<AppState>(), Some("finalized_owned".to_string()), None, None, None, None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].tld, "xyz");
+}
+
+#[tokio::test]
+async fn test_cmd_get_asset() {
+    let state = create_test_state();
+    let asset_id: i64;
+    {
+        let db = state.db.lock().unwrap();
+        db.execute("INSERT INTO assets (tld, status) VALUES ('mytld', 'not_started')", []).unwrap();
+        let assets = db::queries::list_assets(&db, None, None, None, None, None).unwrap();
+        asset_id = assets[0].id;
+    }
+
+    let app = mock_app_with(state);
+
+    let asset = commands::assets::get_asset(app.state::<AppState>(), asset_id).await.unwrap();
+    assert_eq!(asset.tld, "mytld");
+    assert_eq!(asset.status.as_str(), "not_started");
+}
+
+#[tokio::test]
+async fn test_cmd_get_asset_not_found() {
+    let state = create_test_state();
+    let app = mock_app_with(state);
+
+    let result = commands::assets::get_asset(app.state::<AppState>(), 99999).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_cmd_update_asset() {
+    let state = create_test_state();
+    let asset_id: i64;
+    {
+        let db = state.db.lock().unwrap();
+        db.execute("INSERT INTO assets (tld, status) VALUES ('updatable', 'not_started')", []).unwrap();
+        let assets = db::queries::list_assets(&db, None, None, None, None, None).unwrap();
+        asset_id = assets[0].id;
+    }
+
+    let app = mock_app_with(state);
+
+    commands::assets::update_asset(
+        app.state::<AppState>(),
+        asset_id,
+        Some("finalized_owned".to_string()),
+        Some("Premium".to_string()),
+        None,
+        Some("updated note".to_string()),
+        Some(500_000),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let asset = commands::assets::get_asset(app.state::<AppState>(), asset_id).await.unwrap();
+    assert_eq!(asset.status.as_str(), "finalized_owned");
+    assert_eq!(asset.category.as_deref(), Some("Premium"));
+    assert_eq!(asset.notes.as_deref(), Some("updated note"));
+    assert_eq!(asset.hns_received, Some(500_000));
+}
+
+#[tokio::test]
+async fn test_cmd_bulk_update_status() {
+    let state = create_test_state();
+    let ids: Vec<i64>;
+    {
+        let db = state.db.lock().unwrap();
+        for i in 0..3 {
+            db.execute("INSERT INTO assets (tld, status) VALUES (?1, 'not_started')", [format!("b{}", i)]).unwrap();
+        }
+        let assets = db::queries::list_assets(&db, None, None, None, None, None).unwrap();
+        ids = assets.iter().map(|a| a.id).collect();
+    }
+
+    let app = mock_app_with(state);
+
+    let updated = commands::assets::bulk_update_status(
+        app.state::<AppState>(), ids.clone(), "waiting_transfer_tx".to_string(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated, 3);
+}
+
+#[tokio::test]
+async fn test_cmd_bulk_update_tags() {
+    let state = create_test_state();
+    let asset_id: i64;
+    {
+        let db = state.db.lock().unwrap();
+        db.execute("INSERT INTO assets (tld, status) VALUES ('tagged', 'not_started')", []).unwrap();
+        let assets = db::queries::list_assets(&db, None, None, None, None, None).unwrap();
+        asset_id = assets[0].id;
+    }
+
+    let app = mock_app_with(state);
+
+    commands::assets::bulk_update_tags(
+        app.state::<AppState>(), vec![asset_id], r#"["vip","urgent"]"#.to_string(),
+    )
+    .await
+    .unwrap();
+
+    let asset = commands::assets::get_asset(app.state::<AppState>(), asset_id).await.unwrap();
+    assert_eq!(asset.tags, vec!["vip", "urgent"]);
+}
+
+#[tokio::test]
+async fn test_cmd_delete_asset() {
+    let state = create_test_state();
+    let asset_id: i64;
+    {
+        let db = state.db.lock().unwrap();
+        db.execute("INSERT INTO assets (tld, status) VALUES ('deleteme', 'not_started')", []).unwrap();
+        let assets = db::queries::list_assets(&db, None, None, None, None, None).unwrap();
+        asset_id = assets[0].id;
+    }
+
+    let app = mock_app_with(state);
+
+    commands::assets::delete_asset(app.state::<AppState>(), asset_id).await.unwrap();
+
+    let remaining = commands::assets::list_assets(
+        app.state::<AppState>(), None, None, None, None, None,
+    )
+    .await
+    .unwrap();
+    assert!(remaining.is_empty());
+}
+
+#[tokio::test]
+async fn test_cmd_get_dashboard_stats() {
+    let state = create_test_state();
+    let app = mock_app_with(state);
+
+    let stats = commands::assets::get_dashboard_stats(app.state::<AppState>()).await.unwrap();
+    assert!(stats.is_object());
 }
