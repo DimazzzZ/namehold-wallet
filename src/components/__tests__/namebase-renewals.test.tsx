@@ -46,7 +46,7 @@ function route(opts: { connected?: boolean; renewals?: unknown[] } = {}) {
           connected,
           has_cookie: connected,
           account: connected
-            ? { balance: { hns: 100, btc: 0 }, pendingHns: 0, has2fa: false, withdrawalFeeHns: 1, minimums: { hns: 1 } }
+            ? { balance: { hns: 100, btc: 0 }, has2fa: false, withdrawalFeeHns: 1, minimums: { hns: 1 } }
             : undefined,
         });
       case "fetch_namebase_domains":

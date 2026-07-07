@@ -150,7 +150,10 @@ export function useConnectNamebase() {
   return useMutation({
     mutationFn: (cookie: string) =>
       invoke("connect_namebase", { cookie: cookie.trim() }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["namebase"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["namebase"] });
+      qc.invalidateQueries({ queryKey: ["sync"] });
+    },
   });
 }
 
@@ -158,13 +161,17 @@ export function useDisconnectNamebase() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => invoke("disconnect_namebase"),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["namebase"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["namebase"] });
+      qc.invalidateQueries({ queryKey: ["sync"] });
+    },
   });
 }
 
 export interface NamebaseImportResult {
   imported: number;
   staked_count: number;
+  staked_imported: number;
   [key: string]: unknown;
 }
 
@@ -176,6 +183,7 @@ export function useImportFromNamebase() {
       qc.invalidateQueries({ queryKey: ["assets"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["overview"] });
+      qc.invalidateQueries({ queryKey: ["sync"] });
     },
   });
 }

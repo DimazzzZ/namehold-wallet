@@ -48,7 +48,7 @@ function routeInvoke(cmd: string) {
       return Promise.resolve({
         connected: true,
         has_cookie: true,
-        account: { balance: { hns: 100, btc: 0 }, pendingHns: 0, has2fa: false, withdrawalFeeHns: 1, minimums: { hns: 1 } },
+        account: { balance: { hns: 100, btc: 0 }, has2fa: false, withdrawalFeeHns: 1, minimums: { hns: 1 } },
       });
     case "fetch_namebase_domains":
       return Promise.resolve({
@@ -57,7 +57,11 @@ function routeInvoke(cmd: string) {
         ],
       });
     case "fetch_namebase_staked":
-      return Promise.resolve({ stakedDomains: [] });
+      return Promise.resolve({
+        stakedDomains: [
+          { name: "brewery", owner_id: "o1", owned_since: "2020-08-08T07:17:57.086Z", auto_renew_active: true, status: "locked_for_subdomains", withdrawable: false },
+        ],
+      });
     case "namebase_transfer_domain":
       return Promise.resolve();
     default:
@@ -148,6 +152,33 @@ describe("Namebase transfer destination", () => {
   });
 });
 
+describe("NamebaseDashboard layout changes", () => {
+  it("shows staked domains table with withdrawable status", async () => {
+    render(<NamebaseDashboard />, { wrapper: wrapper() });
+    // Wait for the staked domains section to appear.
+    await screen.findByText(/Staked Domains/i);
+    expect(screen.getByText(/brewery/)).toBeInTheDocument();
+    // Withdrawable=false should show "No (locked)" badge.
+    expect(screen.getByText(/No \(locked\)/i)).toBeInTheDocument();
+    // Status should show "locked for subdomains".
+    expect(screen.getByText(/locked for subdomains/i)).toBeInTheDocument();
+  });
+
+  it("does not show a Pending HNS card", async () => {
+    render(<NamebaseDashboard />, { wrapper: wrapper() });
+    // The old "Pending HNS" label must not appear.
+    expect(screen.queryByText(/Pending HNS/i)).toBeNull();
+    // The old "Reserved on Namebase" subtitle must not appear.
+    expect(screen.queryByText(/Reserved on Namebase/i)).toBeNull();
+  });
+
+  it("shows HNS and BTC balance cards", async () => {
+    render(<NamebaseDashboard />, { wrapper: wrapper() });
+    await screen.findByText(/HNS Balance/i);
+    expect(screen.getByText(/BTC Balance/i)).toBeInTheDocument();
+  });
+});
+
 describe("Namebase Withdraw HNS", () => {
   async function openWithdraw() {
     render(<NamebaseDashboard />, { wrapper: wrapper() });
@@ -199,7 +230,6 @@ describe("Namebase Withdraw HNS", () => {
           has_cookie: true,
           account: {
             balance: { hns: 250000, btc: 0 },
-            pendingHns: 0,
             has2fa: false,
             withdrawalFeeHns: 1,
             minimums: { hns: 1 },
@@ -233,7 +263,6 @@ describe("Namebase Withdraw HNS", () => {
           has_cookie: true,
           account: {
             balance: { hns: 100, btc: 0 },
-            pendingHns: 0,
             has2fa: false,
             withdrawalFeeHns: 1,
             minimums: { hns: 5 },

@@ -38,5 +38,4 @@ export const PORTFOLIO_TABS: WorkspaceTab<PortfolioSectionKey>[] = [
 
 export const MIGRATION_TABS: WorkspaceTab<MigrationSectionKey>[] = [
   { key: "namebase", label: "Namebase", description: "Connect and transfer source" },
-  { key: "sync", label: "Sync & Verify", description: "Match on-chain ownership" },
 ];

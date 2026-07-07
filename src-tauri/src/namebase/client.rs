@@ -3,6 +3,21 @@ use std::time::Duration;
 
 use crate::error::AppError;
 
+/// Normalize a pasted cookie value: if the input looks like a full `Cookie:`
+/// header (starts with "cookie:" or contains "=" with whitespace), strip the
+/// prefix and trim. Otherwise use the value as-is.
+fn normalize_cookie(raw: &str) -> String {
+    let trimmed = raw.trim();
+    // If it starts with "Cookie:" or "cookie:", strip it.
+    if let Some(val) = trimmed.strip_prefix("Cookie:") {
+        return val.trim().to_string();
+    }
+    if let Some(val) = trimmed.strip_prefix("cookie:") {
+        return val.trim().to_string();
+    }
+    trimmed.to_string()
+}
+
 #[derive(Clone)]
 pub struct NamebaseClient {
     http: Client,
@@ -11,13 +26,14 @@ pub struct NamebaseClient {
 }
 
 impl NamebaseClient {
+    /// Default base URL for the Namebase Sunset API.
     pub fn new(cookie: &str) -> Result<Self, AppError> {
-        Self::with_base_url(cookie, "https://www.namebase.io")
+        Self::with_base_url(cookie, "https://sunset.namebase.io")
     }
 
     /// Construct against an explicit base URL. Used to point the client at a mock
     /// server in tests; production always uses `new` (the real Namebase host).
-    pub fn with_base_url(cookie: &str, base_url: &str) -> Result<Self, AppError> {
+    pub fn with_base_url(raw_cookie: &str, base_url: &str) -> Result<Self, AppError> {
         let http = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -25,8 +41,18 @@ impl NamebaseClient {
         Ok(Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
-            cookie: cookie.to_string(),
+            cookie: normalize_cookie(raw_cookie),
         })
+    }
+
+    /// Expose the base URL for diagnostic purposes.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Expose the cookie value for diagnostic purposes.
+    pub fn cookie_value(&self) -> &str {
+        &self.cookie
     }
 
     fn get(&self, path: &str) -> reqwest::RequestBuilder {
