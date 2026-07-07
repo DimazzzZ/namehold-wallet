@@ -18,9 +18,9 @@ import { Select } from "./ui/Select";
 import { Dialog } from "./ui/Dialog";
 import { Input } from "./ui/Input";
 import type { Asset, MigrationStatus } from "../types";
-import { formatHns, formatDate } from "../lib/utils";
+import { formatHns, formatDate, formatCount } from "../lib/utils";
 import { mapError } from "../lib/errors";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "../lib/dialog";
 import { invoke } from "../lib/invoke";
 
 const MIGRATION_STATUSES: { value: string; label: string }[] = [
@@ -87,7 +87,7 @@ export function TldInventory() {
     try {
       const result = await importCsv.mutateAsync(selected as string);
       showToast(
-        `Imported ${result.imported} TLDs${result.errors.length > 0 ? `, ${result.errors.length} errors` : ""}`,
+        `Imported ${formatCount(result.imported)} TLDs${result.errors.length > 0 ? `, ${formatCount(result.errors.length)} errors` : ""}`,
         result.errors.length > 0 ? "error" : "success",
       );
     } catch (e) {
@@ -103,7 +103,7 @@ export function TldInventory() {
     if (!path) return;
     try {
       const count = await exportCsv.mutateAsync({ path });
-      showToast(`Exported ${count} TLDs`, "success");
+      showToast(`Exported ${formatCount(count)} TLDs`, "success");
     } catch (e) {
       showToast(`Export failed: ${e}`, "error");
     }
@@ -115,7 +115,7 @@ export function TldInventory() {
       if (ids.length === 0) return;
       try {
         await bulkUpdateStatus.mutateAsync({ ids, status });
-        showToast(`Updated ${ids.length} TLDs to ${status}`, "success");
+        showToast(`Updated ${formatCount(ids.length)} TLDs to ${status}`, "success");
         clearSelection();
         setBulkStatusDialog(false);
       } catch (e) {
@@ -249,7 +249,7 @@ export function TldInventory() {
               try {
                 const result: any = await invoke("import_from_namebase");
                 showToast(
-                  `Imported ${result.imported} TLDs from Namebase (${result.staked_count} staked)`,
+                  `Imported ${formatCount(result.imported)} TLDs from Namebase (${formatCount(result.staked_count)} staked)`,
                   "success",
                 );
                 qc.invalidateQueries({ queryKey: ["assets"] });
@@ -397,7 +397,7 @@ export function TldInventory() {
                     id: ids[0]!,
                     tags: JSON.stringify([tag]),
                   });
-                  showToast(`Set tag "${tag}" on ${ids.length} TLDs`, "success");
+                  showToast(`Set tag "${tag}" on ${formatCount(ids.length)} TLDs`, "success");
                   clearSelection();
                   setBulkTagDialog(false);
                 } catch (e) {
@@ -437,7 +437,7 @@ export function TldInventory() {
                 const ids = Array.from(selectedAssetIds);
                 try {
                   await createBatch.mutateAsync({ name: batchName, asset_ids: ids });
-                  showToast(`Created batch "${batchName}" with ${ids.length} TLDs`, "success");
+                  showToast(`Created batch "${batchName}" with ${formatCount(ids.length)} TLDs`, "success");
                   clearSelection();
                   setBatchDialogOpen(false);
                   setBatchName("");

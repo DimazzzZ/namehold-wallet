@@ -1,5 +1,24 @@
 export function dollarydoosToHns(dollarydoos: number): string {
-  return (dollarydoos / 1_000_000).toFixed(6);
+  return addThousandSeparators((dollarydoos / 1_000_000).toFixed(6));
+}
+
+/**
+ * Insert commas every three digits left of the decimal point.
+ * "1234567.123456" → "1,234,567.123456"
+ * Purely cosmetic — never touches IDs or non-numeric strings.
+ */
+function addThousandSeparators(nStr: string): string {
+  const [intPart = "", decPart] = nStr.split(".");
+  const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return decPart != null ? `${withCommas}.${decPart}` : withCommas;
+}
+
+/**
+ * Format an integer count (domains, selected items, etc.) with thousand
+ * separators. NOT for IDs — those stay raw.
+ */
+export function formatCount(value: number): string {
+  return addThousandSeparators(String(value));
 }
 
 export function hnsToDollarydoos(hns: string): number {
@@ -38,6 +57,23 @@ export function isLikelyHnsAddress(addr: string, network: string): boolean {
 export function formatHns(dollarydoos: number | null | undefined): string {
   if (dollarydoos == null) return "—";
   return dollarydoosToHns(dollarydoos);
+}
+
+/**
+ * Format a decimal HNS amount with thousands separators and exactly 6
+ * fractional digits — matching the precision used by `formatHns` (which
+ * converts from dollarydoos via `.toFixed(6)`).
+ *
+ * Examples: 120002.4 → "120,002.400000", 1000 → "1,000.000000",
+ *           0.5 → "0.500000"
+ */
+export function formatHnsAmount(value: number | string): string {
+  const num = typeof value === "string" ? Number(value) : value;
+  if (!Number.isFinite(num)) return String(value);
+  return num.toLocaleString("en-US", {
+    minimumFractionDigits: 6,
+    maximumFractionDigits: 6,
+  });
 }
 
 export function cn(...classes: (string | false | null | undefined)[]): string {

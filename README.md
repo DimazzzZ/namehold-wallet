@@ -170,6 +170,20 @@ Output in `src-tauri/target/release/bundle/` — macOS `.app`/`.dmg`, Windows `.
 Linux `.AppImage`/`.deb`. CI (PR tests) and the cross-platform release pipeline live
 in [`.github/workflows`](.github/workflows).
 
+## macOS
+
+The macOS build is not code-signed. On first launch macOS may show:
+
+> "Namehold" can't be opened because Apple cannot check it for malicious software.
+
+To remove the quarantine flag, run:
+
+```bash
+xattr -cr /Applications/Namehold.app
+```
+
+Then open the app normally.
+
 ## Data location
 
 All app data lives in one SQLite file in your home folder (pairs with hsd's `~/.hsd`),

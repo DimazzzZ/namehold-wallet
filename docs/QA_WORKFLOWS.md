@@ -183,6 +183,10 @@ On regtest, these periods are much shorter and blocks can be mined instantly.
 
 ---
 
+```
+
+---
+
 ## 4. Rust Backend Coverage Policy
 
 ### Goal

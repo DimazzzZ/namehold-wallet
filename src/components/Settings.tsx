@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useSettingsStore } from "../stores/settings";
 import { useNodeStatus, useStartHsd, useStopHsd, useResyncHsd } from "../queries/node";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "../lib/dialog";
 import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
@@ -94,7 +94,9 @@ export function Settings() {
             placeholder="https://e.hnsfans.com"
           />
           <div className="text-xs text-gray-500">
-            Balance and names are read from this explorer — no node required.
+            Balance and names are read from this explorer when the node is not
+            synced. When the node is connected and fully synced, reads come from
+            the local node cache instead.
           </div>
         </div>
 
@@ -213,16 +215,21 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
   const height = status?.height ?? null;
   const headers = status?.headers ?? null;
   const progress = status?.verification_progress ?? null;
+  // When verification_progress is available it is the most reliable signal —
+  // a node can report height == headers while still only ~8% verified if it
+  // is far behind the real chain tip. Always gate on progress when present.
   const synced =
-    headers != null && headers > 0
-      ? height != null && height >= headers
-      : progress == null || progress >= 0.9999;
+    progress != null
+      ? progress >= 0.9999
+      : headers != null && headers > 0
+        ? height != null && height >= headers
+        : true;
   const pct =
-    headers != null && headers > 0 && height != null
-      ? Math.min(100, Math.floor((height / headers) * 1000) / 10)
-      : progress == null
-        ? 100
-        : Math.floor(progress * 1000) / 10; // 1 decimal
+    progress != null
+      ? Math.floor(progress * 1000) / 10
+      : headers != null && headers > 0 && height != null
+        ? Math.min(100, Math.floor((height / headers) * 1000) / 10)
+        : 100; // 1 decimal
   // Connected (RPC answers) → green; spawned but RPC not up yet → amber; else grey.
   const dotClass = connected ? "bg-green-500" : processAlive ? "bg-amber-500" : "bg-gray-300";
   const label = connected
@@ -316,7 +323,10 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
           </div>
         </div>
       )}
-      <div className="text-xs text-gray-500 space-y-0.5">
+        <div className="text-xs text-gray-500 space-y-0.5">
+        <div>
+          Read source: <span className="font-medium">{status?.read_source === "local" ? "Local node cache" : "Explorer"}</span>
+        </div>
         <div>
           Data dir: <code>{status?.data_dir ?? "…"}</code>
         </div>
