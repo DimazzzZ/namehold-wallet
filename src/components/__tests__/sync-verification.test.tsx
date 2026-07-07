@@ -44,7 +44,8 @@ describe("SyncVerification — compare inventory vs Namebase", () => {
       routeInvoke({
         providerKind: "namebase",
         providerLabel: "Namebase",
-        matched: ["examplename", "exampletld"],
+        matchedTransferable: ["examplename", "exampletld"],
+        matchedStaked: [],
         missingAtProvider: ["gone"],
         extraAtProvider: ["extra1", "extra2"],
       }),
@@ -54,7 +55,8 @@ describe("SyncVerification — compare inventory vs Namebase", () => {
     fireEvent.click(screen.getByRole("button", { name: /Compare inventory/i }));
 
     // Summary counts (always visible) reflect each bucket.
-    expect(await screen.findByText(/Still at Namebase: 2/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Still at Namebase \(transferable\): 2/i)).toBeInTheDocument();
+    expect(screen.getByText(/Still at Namebase \(staked\): 0/i)).toBeInTheDocument();
     expect(screen.getByText(/Left Namebase \/ elsewhere: 1/i)).toBeInTheDocument();
     expect(screen.getByText(/On Namebase only: 2/i)).toBeInTheDocument();
     // The relabeled bucket sections render their names.
@@ -67,7 +69,8 @@ describe("SyncVerification — compare inventory vs Namebase", () => {
       routeInvoke({
         providerKind: "namebase",
         providerLabel: "Namebase",
-        matched: [],
+        matchedTransferable: [],
+        matchedStaked: [],
         missingAtProvider: [],
         extraAtProvider: [],
       }),
@@ -78,7 +81,7 @@ describe("SyncVerification — compare inventory vs Namebase", () => {
 
     // A result panel appears even with empty buckets (the old bug showed nothing).
     expect(await screen.findByTestId("compare-report")).toBeInTheDocument();
-    expect(screen.getByText(/Still at Namebase: 0/i)).toBeInTheDocument();
+    expect(screen.getByText(/Still at Namebase \(transferable\): 0/i)).toBeInTheDocument();
     expect(screen.getByText(/import your domains on the Namebase tab first/i)).toBeInTheDocument();
   });
 
@@ -87,7 +90,8 @@ describe("SyncVerification — compare inventory vs Namebase", () => {
       routeInvoke({
         providerKind: "namebase",
         providerLabel: "Namebase",
-        matched: ["examplename"],
+        matchedTransferable: ["examplename"],
+        matchedStaked: [],
         missingAtProvider: [],
         extraAtProvider: [],
       }),
@@ -102,7 +106,7 @@ describe("SyncVerification — compare inventory vs Namebase", () => {
 
     const view = render(<SyncVerification />, { wrapper: Wrapper });
     fireEvent.click(screen.getByRole("button", { name: /Compare inventory/i }));
-    expect(await screen.findByText(/Still at Namebase: 1/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Still at Namebase \(transferable\): 1/i)).toBeInTheDocument();
     const comparesAfterFirst = invokeMock.mock.calls.filter(
       (c) => c[0] === "compare_inventory_with_provider",
     ).length;
@@ -112,7 +116,7 @@ describe("SyncVerification — compare inventory vs Namebase", () => {
     render(<SyncVerification />, { wrapper: Wrapper });
 
     // The previous result is shown immediately, without re-running compare.
-    expect(await screen.findByText(/Still at Namebase: 1/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Still at Namebase \(transferable\): 1/i)).toBeInTheDocument();
     await waitFor(() => {
       const comparesNow = invokeMock.mock.calls.filter(
         (c) => c[0] === "compare_inventory_with_provider",
