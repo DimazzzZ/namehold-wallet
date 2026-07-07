@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod commands;
 mod db;
 mod error;

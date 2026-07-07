@@ -87,6 +87,26 @@ Records JSON example for Update/Register:
 [{"type":"TXT","txt":["hello world"]},{"type":"NS","ns":"ns1.example."}]
 ```
 
+## Why regtest is the authoritative E2E layer
+
+Unit tests and mockito-backed integration tests validate **logic correctness in isolation** — they prove that the right RPC calls are made, the right DB rows are written, and the right errors are returned for bad inputs. But they cannot prove that:
+
+- A transaction built by our covenant/serialization code is **accepted by hsd's mempool**
+- A bid coin is correctly matched during reveal by the real chain state
+- A TRANSFER covenant is finalized after the lockup period expires
+- The address index (`getcoinsbyaddress`) returns the UTXOs we expect
+- Block confirmations advance as expected and trigger the right state transitions
+
+**Only regtest validates on-chain acceptance.** Treat it as the final gate before any release:
+
+1. **Unit tests** — pure logic, no I/O
+2. **Integration tests** — mock DB + mockito RPC, prove orchestration
+3. **Regtest** — real hsd, real chain, real broadcast, real confirmation
+
+If a flow passes unit + integration tests but fails on regtest, the regtest result is authoritative.
+
+---
+
 ## Notes / known caveats
 
 - Covenant **serialization + signing** match hsd v6.1.1 byte-for-byte and are
