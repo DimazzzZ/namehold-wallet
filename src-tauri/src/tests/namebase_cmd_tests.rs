@@ -489,13 +489,7 @@ async fn import_propagates_staked_api_error() {
 #[tokio::test]
 async fn connect_namebase_success_stores_cookie_and_returns_account() {
     let mut server = Server::new_async().await;
-    let _session_mock = server
-        .mock("GET", "/api/account")
-        .with_status(200)
-        .with_body(r#"{"email":"test@namebase.io"}"#)
-        .create_async()
-        .await;
-    let _account_mock = server
+    let _mock = server
         .mock("GET", "/api/account")
         .with_status(200)
         .with_body(r#"{"email":"test@namebase.io","balance":1000}"#)
@@ -545,7 +539,7 @@ async fn connect_namebase_rejects_invalid_session() {
         .await
         .expect_err("invalid session must be rejected");
     match err {
-        AppError::Other(m) => assert!(m.contains("Invalid session cookie"), "msg: {m}"),
+        AppError::Other(m) => assert!(m.contains("401"), "msg: {m}"),
         other => panic!("expected AppError::Other, got {other:?}"),
     }
 }

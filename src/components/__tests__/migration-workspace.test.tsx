@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -35,28 +35,16 @@ beforeEach(() => {
 });
 
 describe("MigrationWorkspace", () => {
-  it("renders the Namebase and Sync tabs", () => {
+  it("renders the Migration page title", () => {
     render(<MigrationWorkspace />, { wrapper: wrapper() });
-    const tabs = screen.getAllByRole("tab");
-    const labels = tabs.map((t) => t.textContent ?? "");
-    expect(labels.some((l) => /namebase/i.test(l))).toBe(true);
-    expect(labels.some((l) => /sync/i.test(l))).toBe(true);
+    expect(screen.getByText(/Migration/i)).toBeInTheDocument();
   });
 
-  it("defaults to the Namebase tab as selected", () => {
+  it("renders the NamebaseDashboard as the only content (no tabs)", () => {
     render(<MigrationWorkspace />, { wrapper: wrapper() });
-    const namebaseTab = screen
-      .getAllByRole("tab")
-      .find((t) => /namebase/i.test(t.textContent ?? ""))!;
-    expect(namebaseTab.getAttribute("aria-selected")).toBe("true");
-  });
-
-  it("switches selection to Sync & Verify when clicked", () => {
-    render(<MigrationWorkspace />, { wrapper: wrapper() });
-    const syncTab = screen
-      .getAllByRole("tab")
-      .find((t) => /sync/i.test(t.textContent ?? ""))!;
-    fireEvent.click(syncTab);
-    expect(syncTab.getAttribute("aria-selected")).toBe("true");
+    // The page should not show any tab role elements.
+    expect(screen.queryByRole("tab")).toBeNull();
+    // The NamebaseDashboard heading should be rendered (it's an h2 "Namebase").
+    expect(screen.getByRole("heading", { name: /^Namebase$/ })).toBeInTheDocument();
   });
 });

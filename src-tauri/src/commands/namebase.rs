@@ -56,12 +56,32 @@ pub async fn connect_namebase(
     cookie: String,
 ) -> Result<serde_json::Value, AppError> {
     let client = namebase_client_with_cookie(&state, &cookie)?;
-    let valid = client.check_session().await?;
-    if !valid {
-        return Err(AppError::Other("Invalid session cookie.".to_string()));
-    }
 
-    let account = client.get_account().await?;
+    // Check session with the client (which points at sunset.namebase.io)
+    let url = format!("{}/api/account", client.base_url());
+    let http = reqwest::Client::new();
+    let response = http
+        .get(&url)
+        .header("Cookie", client.cookie_value())
+        .header("User-Agent", "Namehold/0.1.0")
+        .send()
+        .await
+        .map_err(|e| {
+            AppError::Other(format!(
+                "Could not reach sunset.namebase.io: {}. Check your network connection.",
+                e
+            ))
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppError::Other(format!(
+            "Namebase returned HTTP {} — your session cookie may be expired or invalid. \
+             Make sure you copied the full cookie header from sunset.namebase.io",
+            status
+        )));
+    }
+    let account: serde_json::Value = response.json().await.unwrap_or_default();
 
     {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -148,12 +168,17 @@ pub async fn import_from_namebase(state: State<'_, AppState>) -> Result<serde_js
         .unwrap_or_default();
 
     let mut imported = 0;
+    let mut staked_imported = 0;
     let mut skipped = 0;
     let mut errors: Vec<String> = Vec::new();
+
+    // Collect names already seen from the transferable list.
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
 
+        // First pass: import all transferable domains.
         if let Some(arr) = domains["domains"].as_array() {
             for domain in arr {
                 let name = match domain["name"].as_str() {
@@ -161,6 +186,7 @@ pub async fn import_from_namebase(state: State<'_, AppState>) -> Result<serde_js
                     None => { skipped += 1; continue; }
                 };
 
+                seen_names.insert(name.clone());
                 let is_staked = staked_names.contains(&name);
                 let status = if is_staked { "do_not_touch_staked" } else { "not_started" };
 
@@ -178,10 +204,28 @@ pub async fn import_from_namebase(state: State<'_, AppState>) -> Result<serde_js
             }
         }
 
+        // Second pass: import staked-only domains that weren't in the transferable list.
+        for name in &staked_names {
+            if seen_names.contains(name) {
+                continue; // already imported in first pass
+            }
+            staked_imported += 1;
+            let _ = db.execute(
+                "INSERT INTO assets (tld, is_staked, status, category, notes)
+                 VALUES (?1, 1, 'do_not_touch_staked', 'Namebase', 'Imported from Namebase (staked)')
+                 ON CONFLICT(tld) DO UPDATE SET
+                   is_staked = 1,
+                   status = 'do_not_touch_staked',
+                   updated_at = datetime('now')",
+                rusqlite::params![name],
+            );
+        }
+
         db.execute(
             "INSERT INTO audit_log (action, detail) VALUES ('namebase_import', ?1)",
             [serde_json::json!({
                 "imported": imported,
+                "staked_imported": staked_imported,
                 "skipped": skipped,
                 "errors": errors.len(),
                 "staked_count": staked_names.len(),
@@ -191,6 +235,7 @@ pub async fn import_from_namebase(state: State<'_, AppState>) -> Result<serde_js
 
     Ok(serde_json::json!({
         "imported": imported,
+        "staked_imported": staked_imported,
         "skipped": skipped,
         "errors": errors,
         "staked_count": staked_names.len(),

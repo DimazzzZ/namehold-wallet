@@ -5,6 +5,7 @@ import { useUiStore } from "../stores/ui";
 import { useActiveProfile } from "../queries/wallet";
 import {
   useNamebaseDomainWithdrawals,
+  useNamebaseWithdrawals,
   useNamebaseRenewals,
   useWithdrawHns,
   namebaseStatus,
@@ -13,8 +14,9 @@ import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
 import { Badge } from "./ui/Badge";
 import { Dialog } from "./ui/Dialog";
+import { EmptyState } from "./ui/EmptyState";
 import { mapError } from "../lib/errors";
-import { formatDate, formatCount, formatHnsAmount } from "../lib/utils";
+import { formatDate, formatCount, formatHnsAmount, truncate } from "../lib/utils";
 
 /** Whole days from now until an ISO date (negative = already past). */
 function daysUntil(iso: string): number | null {
@@ -41,7 +43,6 @@ interface NamebaseDomain {
 
 interface NamebaseAccount {
   balance: { hns: number; btc: number };
-  pendingHns: number;
   has2fa: boolean;
   withdrawalFeeHns: number;
   minimums?: { hns?: number; btc?: number };
@@ -208,7 +209,9 @@ export function NamebaseDashboard() {
         <div className="bg-white rounded p-6 border border-gray-200 max-w-md">
           <h3 className="text-sm font-semibold mb-3">Connect to Namebase</h3>
           <p className="text-xs text-gray-500 mb-3">
-            Paste your session cookie from Namebase browser. Open Namebase → F12 → Network → copy Cookie header.
+            Paste your <code>nb-sunset</code> cookie from the Namebase Sunset site. Open{" "}
+            <strong>sunset.namebase.io</strong> → F12 → Network → find any request →
+            copy the <code>Cookie</code> header value (or just the <code>nb-sunset=...</code> part).
           </p>
           <Input
             label="Session Cookie"
@@ -237,7 +240,7 @@ export function NamebaseDashboard() {
             Custodial balance held by Namebase — separate from your on-chain wallet
             (the HNSFans/explorer balance).
           </div>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             <div className="bg-white rounded p-4 border border-gray-200">
               <div className="text-sm text-gray-500">HNS Balance</div>
               <div className="text-2xl font-bold">
@@ -249,17 +252,6 @@ export function NamebaseDashboard() {
               <div className="text-2xl font-bold">
                 {account?.balance?.btc != null ? formatCount(account.balance.btc) : "—"}
               </div>
-            </div>
-            <div
-              className="bg-white rounded p-4 border border-gray-200"
-              title="HNS in your Namebase custodial account that Namebase reports as pending/reserved and isn't part of your available balance. Separate from your on-chain wallet (the HNSFans/explorer balance)."
-            >
-              <div className="text-sm text-gray-500">Pending HNS</div>
-              <div className="text-2xl font-bold">
-                {account?.pendingHns != null ? formatCount(account.pendingHns) : "0"}
-                <span className="text-base font-normal text-gray-400"> HNS</span>
-              </div>
-              <div className="text-xs text-gray-400">Reserved on Namebase</div>
             </div>
           </div>
 
@@ -290,6 +282,53 @@ export function NamebaseDashboard() {
               <div className="text-2xl font-bold text-purple-700">{formatCount(stakedDomains.length)}</div>
             </div>
           </div>
+
+          {/* Staked domains table — enriched with withdrawable status */}
+          {stakedDomains.length > 0 && (
+            <div className="bg-white rounded p-4 border border-gray-200">
+              <h3 className="text-sm font-semibold mb-3">Staked Domains ({formatCount(stakedDomains.length)})</h3>
+              <p className="text-xs text-gray-500 mb-3">
+                These domains are staked for subdomains and cannot be transferred until unstaked.
+              </p>
+              <div className="max-h-72 overflow-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-500 border-b">
+                      <th className="px-2 py-1">Name</th>
+                      <th className="px-2 py-1">Status</th>
+                      <th className="px-2 py-1">Withdrawable</th>
+                      <th className="px-2 py-1">Auto-Renew</th>
+                      <th className="px-2 py-1">Owned Since</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stakedDomains.map((d) => {
+                      const withdrawable = (d as any).withdrawable === true;
+                      return (
+                        <tr key={d.name} className="border-t border-gray-100">
+                          <td className="px-2 py-1 font-mono">.{d.name}</td>
+                          <td className="px-2 py-1">
+                            <Badge variant={d.status === "locked_for_subdomains" ? "info" : "default"}>
+                              {d.status.replace(/_/g, " ")}
+                            </Badge>
+                          </td>
+                          <td className="px-2 py-1">
+                            {withdrawable ? (
+                              <Badge variant="success">Yes</Badge>
+                            ) : (
+                              <Badge variant="error">No (locked)</Badge>
+                            )}
+                          </td>
+                          <td className="px-2 py-1">{d.auto_renew_active ? "Yes" : "No"}</td>
+                          <td className="px-2 py-1 text-xs text-gray-400">{d.owned_since?.slice(0, 10)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* Expiring soon — Namebase renewal calendar */}
           {renewals.length > 0 && (
@@ -696,6 +735,129 @@ export function NamebaseDashboard() {
           </div>
         </div>
       </Dialog>
+
+      {/* Recent activity — collapsible section that replaces the old Transfers tab */}
+      {isConnected && (
+        <RecentActivity />
+      )}
+    </div>
+  );
+}
+
+/** Recent activity section: domain transfers + HNS withdrawals. Always visible. */
+function RecentActivity() {
+  const { data: domainTransfers = [], isLoading } = useNamebaseDomainWithdrawals();
+  const { data: withdrawals = [] } = useNamebaseWithdrawals();
+  const { data: profile } = useActiveProfile();
+  const myAddress = profile?.receiveAddress ?? null;
+  const hnsWithdrawals = useMemo(
+    () => withdrawals.filter((w) => w.currency?.toLowerCase() === "hns"),
+    [withdrawals],
+  );
+
+  return (
+    <div className="bg-white rounded p-4 border border-gray-200">
+      <div className="text-sm font-semibold text-gray-700 mb-3">
+        Recent activity ({domainTransfers.length + hnsWithdrawals.length})
+      </div>
+
+      <div className="space-y-4">
+          {/* Domain transfers */}
+          <div>
+            <h4 className="text-xs font-medium text-gray-500 mb-2">Domain transfers</h4>
+            {isLoading ? (
+              <div className="text-sm text-gray-400 py-2 text-center">Loading…</div>
+            ) : domainTransfers.length === 0 ? (
+              <EmptyState
+                title="No transfers yet"
+                description="Transfer a domain above and it'll appear here with live status."
+              />
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-100">
+                    <th className="py-1 font-medium">Domain</th>
+                    <th className="py-1 font-medium">Destination</th>
+                    <th className="py-1 font-medium">Status</th>
+                    <th className="py-1 font-medium">Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {domainTransfers.map((t) => {
+                    const { label, tone } = namebaseStatus(t.status);
+                    return (
+                      <tr key={t.id ?? t.domain} className="border-b border-gray-50">
+                        <td className="py-2 font-mono">.{t.domain}</td>
+                        <td className="py-2 font-mono text-xs text-gray-500">
+                          {truncate(t.destination_address, 16)}
+                          {!!myAddress && t.destination_address === myAddress && (
+                            <span className="ml-1 text-gray-400">(your wallet)</span>
+                          )}
+                        </td>
+                        <td className="py-2">
+                          <Badge variant={tone} title={t.status_note ?? undefined}>
+                            {label}
+                          </Badge>
+                        </td>
+                        <td className="py-2 text-xs text-gray-400">
+                          {t.updated_at || t.created_at
+                            ? formatDate(t.updated_at || t.created_at)
+                            : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* HNS withdrawals */}
+          <div>
+            <h4 className="text-xs font-medium text-gray-500 mb-2">HNS withdrawals</h4>
+            {hnsWithdrawals.length === 0 ? (
+              <EmptyState
+                title="No withdrawals yet"
+                description="Use 'Withdraw HNS' above to move funds to an address."
+              />
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-100">
+                    <th className="py-1 font-medium">Amount</th>
+                    <th className="py-1 font-medium">Destination</th>
+                    <th className="py-1 font-medium">Status</th>
+                    <th className="py-1 font-medium">Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {hnsWithdrawals.map((w) => {
+                    const { label, tone } = namebaseStatus(w.status);
+                    return (
+                      <tr key={w.id} className="border-b border-gray-50">
+                        <td className="py-2 font-mono">{formatHnsAmount(Number(w.amount) || 0)} HNS</td>
+                        <td className="py-2 font-mono text-xs text-gray-500">
+                          {truncate(w.destination_address, 16)}
+                          {!!myAddress && w.destination_address === myAddress && (
+                            <span className="ml-1 text-gray-400">(your wallet)</span>
+                          )}
+                        </td>
+                        <td className="py-2">
+                          <Badge variant={tone} title={w.status_note ?? undefined}>
+                            {label}
+                          </Badge>
+                        </td>
+                        <td className="py-2 text-xs text-gray-400">
+                          {w.created_at ? formatDate(w.created_at) : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+      </div>
     </div>
   );
 }
