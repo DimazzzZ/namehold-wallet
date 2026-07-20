@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -36,17 +36,21 @@ const mkProfile = (id: string, label: string, active: boolean) => ({
   active,
 });
 
+// Returns both the wrapper component (for render's `wrapper` option) and the
+// underlying QueryClient, so tests can drive cache invalidation directly —
+// the same mechanism every real mutation/sync-completion uses in the app
+// (`qc.invalidateQueries({ queryKey: ["wallet"] })`) — instead of depending on
+// a specific UI trigger's internal plumbing (e.g. background sync polling).
 function wrapper() {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/wallet"]}>{children}</MemoryRouter>
-      </QueryClientProvider>
-    );
-  };
+  const Wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={["/wallet"]}>{children}</MemoryRouter>
+    </QueryClientProvider>
+  );
+  return { Wrapper, qc };
 }
 
 // A stateful mock: tracks the active profile and per-wallet liquid balances, so
@@ -101,7 +105,7 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
   it("shows each wallet's own spendable balance, with no cross-wallet bleed on switch", async () => {
     const { impl } = makeBackend({ A: 100 * HNS, B: 200 * HNS });
     invokeMock.mockImplementation(impl);
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WalletView />, { wrapper: wrapper().Wrapper });
 
     // Wallet A's own balance.
     expect(await screen.findByText("100.000000")).toBeInTheDocument();
@@ -118,10 +122,11 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
     expect(balCalls.some((c) => (c[1] as { walletProfileId?: string })?.walletProfileId === "B")).toBe(true);
   });
 
-  it("does not auto-refetch — the balance changes only after Refresh", async () => {
+  it("does not auto-refetch — the balance changes only after an explicit invalidate", async () => {
     const backend = makeBackend({ A: 100 * HNS, B: 200 * HNS });
     invokeMock.mockImplementation(backend.impl);
-    render(<WalletView />, { wrapper: wrapper() });
+    const { Wrapper, qc } = wrapper();
+    render(<WalletView />, { wrapper: Wrapper });
 
     expect(await screen.findByText("100.000000")).toBeInTheDocument();
     const callsForA = () =>
@@ -130,14 +135,26 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
       ).length;
     const initialCalls = callsForA();
 
-    // The backend value changes, but with no Refresh the UI must NOT update.
+    // The backend value changes. useWalletBalances is configured with
+    // staleTime/gcTime: Infinity and refetchOnMount/WindowFocus/Reconnect:
+    // false (src/queries/wallet.ts), so nothing schedules a refetch on its
+    // own — there is no async event to wait out here, so we assert this
+    // synchronously rather than racing a fixed sleep against a timer that
+    // (by that same config) can never fire.
     backend.state.liquid.A = 150 * HNS;
-    await new Promise((r) => setTimeout(r, 50));
     expect(screen.getByText("100.000000")).toBeInTheDocument();
     expect(callsForA()).toBe(initialCalls); // no auto-refetch
 
-    // Refresh → the balance query is invalidated and picks up the new value.
-    fireEvent.click(screen.getByRole("button", { name: /Refresh/i }));
+    // An explicit cache invalidation — what every real wallet mutation and a
+    // completed background sync do via `qc.invalidateQueries({ queryKey:
+    // ["wallet"] })` (see useWalletMutation / useSyncStatus) — is what's
+    // actually supposed to pick up the new value. Driving it directly here
+    // (rather than through the async Sync button + backend poll machinery)
+    // keeps the test deterministic while still exercising the real
+    // persistence contract under test.
+    await act(async () => {
+      await qc.invalidateQueries({ queryKey: ["wallet"] });
+    });
     expect(await screen.findByText("150.000000")).toBeInTheDocument();
     await waitFor(() => expect(callsForA()).toBeGreaterThan(initialCalls));
   });
@@ -182,7 +199,7 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
           return Promise.resolve(null);
       }
     });
-    render(<WalletView />, { wrapper: wrapper() });
+    render(<WalletView />, { wrapper: wrapper().Wrapper });
 
     expect(await screen.findByText("11.000000")).toBeInTheDocument(); // A's confirmed
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "B" } });

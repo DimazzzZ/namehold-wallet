@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock("@tauri-apps/plugin-fs", () => ({ readTextFile: vi.fn(), writeTextFile: vi.fn() }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn(),
   readText: vi.fn().mockResolvedValue(""),
@@ -104,6 +105,9 @@ function loadSettings(over: Partial<Record<string, string>> = {}) {
       signer_session_timeout_seconds: "900",
       advanced_mode: "false",
       onboarding_complete: "true",
+      deadline_notify_enabled: "false",
+      deadline_notify_reveal_lead_blocks: "144",
+      deadline_notify_renewal_lead_days: "30",
       ...over,
     },
   });
@@ -133,6 +137,22 @@ describe("Node status (truthful, RPC-based)", () => {
     // pct is blocks/headers (40000/100000 = 40%), shown with the H/headers detail.
     expect(await screen.findByText(/Syncing · 40%/i)).toBeInTheDocument();
     expect(await screen.findByText(/Syncing the chain — 40% · block 40000 \/ 100000/i)).toBeInTheDocument();
+  });
+
+  it("Settings shows Syncing without denominator when blocks == headers but progress < 0.9999 (early IBD)", async () => {
+    // hsd in early IBD reports headers == height (hasn't learned peers' higher headers yet).
+    // This is 19% complete, so it's not synced. Must NOT show the confusing "/ 65027" denominator.
+    invokeMock.mockImplementation(
+      route(nodeStatus({ connected: true, process_alive: true, height: 65027, headers: 65027, verification_progress: 0.19 })),
+    );
+    render(<Settings />, { wrapper: wrapper() });
+
+    expect(await screen.findByText(/Syncing · 19%/i)).toBeInTheDocument();
+    // Check that we show the block height without a false denominator.
+    const syncText = await screen.findByText(/Syncing the chain — 19% · block 65027/i);
+    expect(syncText).toBeInTheDocument();
+    // The text should NOT contain the confusing "/ 65027" (because headers == height).
+    expect(syncText).not.toHaveTextContent(/\/ 65027/);
   });
 
   it("Settings shows Syncing when blocks == headers but progress < 0.9999", async () => {
@@ -323,5 +343,82 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(
       await screen.findByText(/when the node is connected and fully synced, reads come from the local node cache/i),
     ).toBeInTheDocument();
+  });
+});
+
+describe("Settings — bid backup export (Task 2 / C2)", () => {
+  it("shows a warning to back up alongside the seed, calls export_bid_commitments, and writes the file", async () => {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+    (save as unknown as ReturnType<typeof vi.fn>).mockResolvedValue("/tmp/bid-backup.json");
+
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "node_status":
+          return Promise.resolve(nodeStatus());
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "get_signer_session":
+          return Promise.resolve({ walletProfileId: null, unlocked: false, unlockedUntilEpochMs: 0 });
+        case "get_write_capability":
+          return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: null });
+        case "export_bid_commitments":
+          return Promise.resolve('[{"name":"example"}]');
+        default:
+          return Promise.resolve(null);
+      }
+    });
+    render(<Settings />, { wrapper: wrapper() });
+
+    // Warning copy about backing up alongside the seed.
+    expect(
+      await screen.findByText(/store it alongside your seed phrase/i),
+    ).toBeInTheDocument();
+
+    const button = await screen.findByTestId("export-bid-backup");
+    // The button is disabled until the active profile loads.
+    await waitFor(() => expect(button).not.toBeDisabled());
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(invokeMock.mock.calls.map((c) => c[0])).toContain("export_bid_commitments");
+    });
+    await waitFor(() => {
+      expect(writeTextFile).toHaveBeenCalledWith("/tmp/bid-backup.json", '[{"name":"example"}]');
+    });
+  });
+
+  it("does nothing when the save dialog is cancelled", async () => {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+    (save as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (writeTextFile as unknown as ReturnType<typeof vi.fn>).mockClear();
+
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "node_status":
+          return Promise.resolve(nodeStatus());
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "get_signer_session":
+          return Promise.resolve({ walletProfileId: null, unlocked: false, unlockedUntilEpochMs: 0 });
+        case "get_write_capability":
+          return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: null });
+        case "export_bid_commitments":
+          return Promise.resolve("[]");
+        default:
+          return Promise.resolve(null);
+      }
+    });
+    render(<Settings />, { wrapper: wrapper() });
+
+    const button = await screen.findByTestId("export-bid-backup");
+    await waitFor(() => expect(button).not.toBeDisabled());
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(invokeMock.mock.calls.map((c) => c[0])).toContain("export_bid_commitments");
+    });
+    expect(writeTextFile).not.toHaveBeenCalled();
   });
 });

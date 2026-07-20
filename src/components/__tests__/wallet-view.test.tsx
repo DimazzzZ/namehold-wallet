@@ -17,6 +17,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 }));
 
 import { WalletView } from "../WalletView";
+import type { SyncStatus } from "../../queries/sync";
 
 const baseProfile = {
   id: "p1",
@@ -29,7 +30,8 @@ const baseProfile = {
   changeDepth: 20,
   receiveAddress: "rs1qexamplereceiveaddr",
   lastSyncedHeight: 10,
-  lastSyncedAt: null,
+  lastSyncedAt: null as string | null,
+  lastExplorerSyncAt: null as string | null,
   watchOnly: false,
   hasPassphrase: true,
   active: true,
@@ -43,6 +45,7 @@ type Overrides = {
   draft?: unknown;
   spendableDoos?: number;
   confirmedDoos?: number;
+  renewals?: unknown;
 };
 
 function routeInvoke(o: Overrides = {}) {
@@ -82,6 +85,16 @@ function routeInvoke(o: Overrides = {}) {
         });
       case "list_tx_drafts":
         return Promise.resolve([]);
+      case "read_renewals":
+        return Promise.resolve(
+          o.renewals ?? {
+            walletProfileId: profile.id,
+            currentHeight: null,
+            heightSource: "unknown",
+            expiringSoonThresholdDays: 30,
+            names: [],
+          },
+        );
       case "read_names":
         return Promise.resolve([
           { name: "example", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
@@ -259,6 +272,67 @@ const secondProfile = {
   active: false,
 };
 
+describe("WalletView — last successful sync timestamp (Task 11 / S1)", () => {
+  it("shows a dash when the profile has never synced", async () => {
+    invokeMock.mockImplementation(
+      routeInvoke({ profile: { lastSyncedAt: null, lastExplorerSyncAt: null } }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    expect(screen.getByText(/Last successful sync:\s*—/)).toBeInTheDocument();
+  });
+
+  it("shows a formatted timestamp once the profile has synced", async () => {
+    invokeMock.mockImplementation(
+      routeInvoke({ profile: { lastSyncedAt: "2026-07-10 12:00:00" } }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    // formatDate() renders the naive-UTC sqlite timestamp in the user's
+    // locale — just prove it's no longer the "never synced" dash.
+    expect(screen.queryByText(/Last successful sync:\s*—/)).toBeNull();
+    expect(screen.getByText(/Last successful sync:/)).toBeInTheDocument();
+  });
+
+  // Finding 2 (review fix): explorer-only mode never advances `lastSyncedAt`
+  // (only the node-RPC step does) — `lastExplorerSyncAt` is the only
+  // freshness signal that moves there, so it alone must be enough to clear
+  // the dash.
+  it("shows a formatted timestamp from lastExplorerSyncAt alone (explorer-only mode, no node sync)", async () => {
+    invokeMock.mockImplementation(
+      routeInvoke({
+        profile: { lastSyncedAt: null, lastExplorerSyncAt: "2026-07-14 09:00:00" },
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    expect(screen.queryByText(/Last successful sync:\s*—/)).toBeNull();
+    expect(screen.getByText(/Last successful sync:/)).toBeInTheDocument();
+  });
+
+  // The line shows ONE timestamp — whichever sync path most recently
+  // completed — rather than two separately-labeled fields (see
+  // `latestTimestamp` in lib/utils.ts). Prove the newer of the two wins by
+  // making the explorer timestamp older than the node one and checking the
+  // rendered text matches the node timestamp's formatting, not the
+  // explorer's.
+  it("prefers the newer of lastSyncedAt / lastExplorerSyncAt when both are set", async () => {
+    const older = "2026-01-01 00:00:00";
+    const newer = "2026-07-14 09:00:00";
+    invokeMock.mockImplementation(
+      routeInvoke({ profile: { lastSyncedAt: newer, lastExplorerSyncAt: older } }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    const expected = new Date(`${newer.replace(" ", "T")}Z`).toLocaleString();
+    expect(screen.getByText(new RegExp(`Last successful sync:\\s*${expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`))).toBeInTheDocument();
+  });
+});
+
 describe("WalletView multi-wallet management", () => {
   it("shows Add wallet + Manage entry points with an active profile", async () => {
     invokeMock.mockImplementation(routeInvoke());
@@ -340,5 +414,203 @@ describe("WalletView multi-wallet management", () => {
     expect(await screen.findByText(/Import your wallet/i)).toBeInTheDocument();
     expect(screen.getByText(/Create a new wallet/i)).toBeInTheDocument();
     expect(screen.getByText(/Watch-only/i)).toBeInTheDocument();
+  });
+});
+
+// Task C: the Sync action becomes a Stop button while a background sync is
+// running (calling cancel_full_sync), and the repair progress line reports
+// the new, honest fields (repairCandidates is now the whole-run backlog;
+// repairRemaining converges to 0) instead of the old per-window "X / Y".
+function baseSyncStatus(overrides: Partial<SyncStatus>): SyncStatus {
+  return {
+    running: false,
+    step: "idle",
+    progressLabel: "",
+    repaired: 0,
+    repairCandidates: 0,
+    repairRemaining: 0,
+    discovered: 0,
+    namesSynced: 0,
+    errors: [],
+    startedAt: null,
+    finishedAt: null,
+    discoverAddressesTotal: 0,
+    discoverAddressesDone: 0,
+    discoverTxsScanned: 0,
+    discoverCandidates: 0,
+    discoverCurrentName: "",
+    waiting: false,
+    cancelRequested: false,
+    ...overrides,
+  };
+}
+
+describe("WalletView — sync Stop button + honest progress", () => {
+  it("shows a Stop button (not Sync) while running, and Stop invokes cancel_full_sync", async () => {
+    const base = routeInvoke({ unlocked: true, canWrite: true });
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_sync_status") {
+        return Promise.resolve(
+          baseSyncStatus({ running: true, step: "repair", progressLabel: "Repairing owned names…" }),
+        );
+      }
+      if (cmd === "cancel_full_sync") return Promise.resolve(null);
+      return base(cmd);
+    });
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    const stopBtn = await screen.findByRole("button", { name: /^Stop$/i });
+    expect(screen.queryByRole("button", { name: /^Sync$/i })).toBeNull();
+
+    fireEvent.click(stopBtn);
+    await waitFor(() => {
+      expect(invokeMock.mock.calls.some((c) => c[0] === "cancel_full_sync")).toBe(true);
+    });
+  });
+
+  it("shows a plain Sync button (not Stop) when idle", async () => {
+    invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true }));
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    expect(await screen.findByRole("button", { name: /^Sync$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Stop$/i })).toBeNull();
+  });
+
+  it("renders honest Checked/Owned/Remaining repair progress from the new fields", async () => {
+    const base = routeInvoke({ unlocked: true, canWrite: true });
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_sync_status") {
+        return Promise.resolve(
+          baseSyncStatus({
+            running: true,
+            step: "repair",
+            progressLabel: "Repairing owned names…",
+            repairCandidates: 540,
+            repairRemaining: 535,
+            repaired: 3,
+          }),
+        );
+      }
+      return base(cmd);
+    });
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    const panel = await screen.findByTestId("sync-status");
+    // 540 total - 535 remaining = 5 checked so far.
+    expect(panel.textContent).toMatch(/Checked: 5/);
+    expect(panel.textContent).toMatch(/Owned: \+3/);
+    expect(panel.textContent).toMatch(/Remaining: ~535/);
+    // The old "Repaired: X / Y" wording is gone.
+    expect(panel.textContent).not.toMatch(/Repaired:/);
+  });
+});
+
+describe("WalletView — punycode display (Task 4)", () => {
+  it("renders the decoded Unicode form of an xn-- owned name, but sends the RAW name to the backend on Manage", async () => {
+    const base = routeInvoke({ unlocked: true, canWrite: true });
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "read_names") {
+        return Promise.resolve([
+          {
+            name: "xn--e1adigm",
+            state: "CLOSED",
+            height: 100,
+            renewal: 200,
+            owner: { hash: "tx1", index: 0 },
+            registered: true,
+            stats: null,
+          },
+        ]);
+      }
+      return base(cmd);
+    });
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+
+    // The table renders the decoded Unicode label ("козел" is the Cyrillic
+    // decoding of xn--e1adigm), not the raw ACE form.
+    expect(await screen.findByText(".козел")).toBeInTheDocument();
+    expect(screen.queryByText(".xn--e1adigm")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Manage$/i }));
+
+    // Opening NameActionsModal must query the backend with the RAW on-chain
+    // name — punycode decoding is display-only and must never leak into an
+    // invoke() call.
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find((c) => c[0] === "read_name_info");
+      expect(call?.[1]).toEqual({ name: "xn--e1adigm" });
+    });
+    const capsCall = invokeMock.mock.calls.find(
+      (c) => c[0] === "get_name_action_capabilities",
+    );
+    expect(capsCall?.[1]).toMatchObject({ name: "xn--e1adigm" });
+
+    // The modal title shows the decoded name with the raw ACE form alongside
+    // it in parentheses, so the user can still see the on-chain form. (The
+    // table row behind the modal also shows ".козел", so there are two
+    // matches for that text — this asserts at least one, i.e. the modal's.)
+    expect((await screen.findAllByText(".козел")).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("(.xn--e1adigm)")).toBeInTheDocument();
+  });
+});
+
+describe("WalletView — expiring-soon renewal banner (Task 3 / C3)", () => {
+  const expiringRenewals = (source: string) => ({
+    walletProfileId: "p1",
+    currentHeight: 260000,
+    heightSource: "node",
+    expiringSoonThresholdDays: 30,
+    names: [
+      {
+        name: "urgentname",
+        state: "CLOSED",
+        renewalHeight: 156000,
+        expiresAtHeight: 261120,
+        blocksUntilExpire: 1120,
+        daysUntilExpire: 7.8,
+        source,
+        expiringSoon: true,
+      },
+    ],
+  });
+
+  it("shows the banner for a chain-sourced expiring name and Renew opens the modal with the raw name", async () => {
+    invokeMock.mockImplementation(
+      routeInvoke({ unlocked: true, canWrite: true, renewals: expiringRenewals("chain") }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    const alert = await screen.findByTestId("expiring-alert");
+    expect(alert.textContent).toMatch(/renew/i);
+    expect(alert.textContent).toContain(".urgentname");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Renew$/i }));
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find(
+        (c) => c[0] === "get_name_action_capabilities",
+      );
+      expect(call?.[1]).toMatchObject({ name: "urgentname" });
+    });
+  });
+
+  it("does NOT fire the banner from stale csv-import data", async () => {
+    invokeMock.mockImplementation(
+      routeInvoke({ unlocked: true, canWrite: true, renewals: expiringRenewals("csv-import") }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+    expect(screen.queryByTestId("expiring-alert")).toBeNull();
+  });
+
+  it("shows no banner when nothing is expiring", async () => {
+    invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true }));
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+    expect(screen.queryByTestId("expiring-alert")).toBeNull();
   });
 });

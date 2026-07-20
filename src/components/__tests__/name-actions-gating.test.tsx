@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 
 const invokeMock = vi.fn();
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("../../lib/invoke", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
@@ -28,6 +28,34 @@ const profile = {
 
 function route(canWrite: boolean, reason: string | null) {
   return (cmd: string) => {
+    if (cmd === "get_name_action_capabilities") {
+      return Promise.resolve({
+        name: "examplename",
+        phase: "CLOSED",
+        taskState: "wonNeedsRegister",
+        ownsName: true,
+        hasBidCommitment: false,
+        hasRevealCoin: false,
+        hasOwnerCoin: true,
+        canOpen: { allowed: false, reason: null },
+        canBid: { allowed: false, reason: "Phase is CLOSED" },
+        canReveal: { allowed: false, reason: "No commitment" },
+        canRedeem: { allowed: false, reason: null },
+        canRegister: { allowed: canWrite, reason: canWrite ? null : reason },
+        canUpdate: { allowed: canWrite, reason: canWrite ? null : reason },
+        canTransfer: { allowed: canWrite, reason: canWrite ? null : reason },
+        canFinalize: { allowed: false, reason: null },
+        canCancelTransfer: { allowed: false, reason: null },
+        canRenew: { allowed: canWrite, reason: canWrite ? null : reason },
+        canRevoke: { allowed: canWrite, reason: canWrite ? null : reason },
+        nextActionKey: "REGISTER",
+        nextActionLabel: "Register Name",
+        nextActionReason: canWrite ? null : reason,
+        countdownLabel: null,
+        countdownBlocks: null,
+        countdownHours: null,
+      });
+    }
     switch (cmd) {
       case "list_wallet_profiles":
         return Promise.resolve([profile]);
@@ -39,6 +67,18 @@ function route(canWrite: boolean, reason: string | null) {
           broadcasterAvailable: canWrite,
           canWrite,
           reason,
+        });
+      case "read_name_info":
+        return Promise.resolve({
+          name: "examplename",
+          state: "CLOSED",
+          registered: true,
+          height: 5040,
+          renewal: 329999,
+          owner: { hash: "deadbeef", address: "hs1qwallet" },
+          value: 100000,
+          highest: 100000,
+          stats: { openPeriodStart: 5000, biddingPeriodEnd: 5040, revealPeriodEnd: 5540 },
         });
       default:
         return Promise.resolve(null);
@@ -66,12 +106,23 @@ describe("NameActionsModal — node-readiness gating", () => {
     );
     render(<NameActionsModal name="examplename" open onClose={() => {}} />, { wrapper: wrapper() });
 
-    // The blocked banner shows the precise reason (once write-capability loads)…
-    expect(await screen.findByText(/still syncing \(40%\)/i)).toBeInTheDocument();
-    expect(screen.getByTestId("name-actions-blocked")).toBeInTheDocument();
-    // …and the spend actions are disabled, so no confusing backend error fires.
-    expect(screen.getByRole("button", { name: /^Transfer$/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /^Finalize$/i })).toBeDisabled();
+    // Wait for write-capability gating to settle, then assert on the banner itself.
+    const blocked = await screen.findByTestId("name-actions-blocked");
+    expect(blocked).toHaveTextContent(/name actions unavailable/i);
+
+    // The mocked name is CLOSED/owned, so the guided action is Register and it
+    // should be disabled.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Register$/i })).toBeDisabled();
+    });
+
+    // Advanced actions are behind a toggle — open them to verify gating on actions
+    // that are always present in the auction section for the current modal contract.
+    fireEvent.click(screen.getByTestId("all-actions-toggle"));
+    expect(screen.getAllByRole("button", { name: /^Open$/i }).slice(-1)[0]).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Reveal$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Redeem$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Bid$/i })).toBeDisabled();
     // Close stays available.
     expect(screen.getByRole("button", { name: /^Close$/i })).not.toBeDisabled();
   });
@@ -80,11 +131,13 @@ describe("NameActionsModal — node-readiness gating", () => {
     invokeMock.mockImplementation(route(true, null));
     render(<NameActionsModal name="examplename" open onClose={() => {}} />, { wrapper: wrapper() });
 
-    // No blocked banner; Transfer becomes available once a recipient is entered.
+    // No blocked banner.
     await waitForWritable();
     expect(screen.queryByTestId("name-actions-blocked")).toBeNull();
-    // Transfer needs a recipient; Finalize (no input) should be enabled now.
-    expect(screen.getByRole("button", { name: /^Finalize$/i })).not.toBeDisabled();
+    // Register should be enabled since canWrite is true and canRegister is allowed.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^Register$/i })).not.toBeDisabled();
+    });
   });
 });
 
