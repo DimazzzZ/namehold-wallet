@@ -57,6 +57,12 @@ export interface HsdBalance {
 
 export interface HsdName {
   name: string;
+  /**
+   * The name's on-chain auction state: AVAILABLE, OPENING, BIDDING, REVEAL,
+   * CLOSED, TRANSFER, REVOKED, etc.  The backend synthesizes `"AVAILABLE"`
+   * for names that have never been opened (node confirms the name is valid
+   * but `getnameinfo.info` is null, or the explorer returns 404).
+   */
   state: string | null;
   height: number | null;
   renewal: number | null;
@@ -71,6 +77,10 @@ export interface HsdName {
   stats: HsdNameStats | null;
   /** Non-zero block height while the name is mid-transfer (0/null otherwise). */
   transfer?: number | null;
+  /** True when the name is registered (CLOSED + owned). */
+  registered?: boolean | null;
+  /** True when the name's registration has expired. */
+  expired?: boolean | null;
 }
 
 export interface HsdNameStats {
@@ -173,6 +183,15 @@ export interface Settings {
   advanced_mode: string;
   /** "true" | "false" — marks first-run onboarding as complete. */
   onboarding_complete: string;
+  /**
+   * "true" | "false" — OS notifications for reveal/renewal deadlines (I1).
+   * Opt-in: off by default so no OS permission prompt fires unasked.
+   */
+  deadline_notify_enabled: string;
+  /** Integer string, blocks of lead time before a reveal window closes. */
+  deadline_notify_reveal_lead_blocks: string;
+  /** Float string, days of lead time before a renewal is due. */
+  deadline_notify_renewal_lead_days: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +213,11 @@ export interface WalletProfileSummary {
   receiveAddress: string | null;
   lastSyncedHeight: number | null;
   lastSyncedAt: string | null;
+  /** Stamped once at the end of a clean explorer-driven sync run (repair +
+   *  discover), separately from `lastSyncedAt` (which only the node-RPC
+   *  step advances). In explorer-only mode (no local node) this is the
+   *  only freshness signal that ever moves. */
+  lastExplorerSyncAt: string | null;
   watchOnly: boolean;
   /** False when the wallet was created without a passphrase (kdf='none'); the
    *  signer then unlocks in one click with no passphrase prompt. */
@@ -280,11 +304,12 @@ export type AppRouteKey =
   | "portfolio"
   | "migration"
   | "wallet"
+  | "auctions"
   | "settings";
 
 export type PortfolioSectionKey = "inventory" | "batches" | "renewals" | "dns";
 
-export type MigrationSectionKey = "namebase" | "transfers" | "sync";
+export type MigrationSectionKey = "namebase" | "sync";
 
 export type StatusTone = "default" | "info" | "success" | "warning" | "error";
 
@@ -324,5 +349,97 @@ export interface WalletTransactionRow {
   height: number | null;
   timestamp: string | null;
   tone: StatusTone;
+}
+
+// ---------------------------------------------------------------------------
+// Auction capability / task-state types
+// ---------------------------------------------------------------------------
+
+export type AuctionTaskState =
+  | "availableToOpen"
+  | "waitingForBidding"
+  | "readyToBid"
+  | "readyToReveal"
+  | "wonNeedsRegister"
+  | "lostNeedsRedeem"
+  | "transferPendingFinalize"
+  | "ownedNoUrgentAction"
+  | "expiringSoon"
+  | "unavailableOther";
+
+export interface NameActionCapability {
+  allowed: boolean;
+  reason: string | null;
+}
+
+export interface NameActionCapabilities {
+  name: string;
+  phase: string;
+  taskState: AuctionTaskState;
+  ownsName: boolean;
+  hasBidCommitment: boolean;
+  /** Unspent COV_BID coin for this name — what a REVEAL actually spends.
+   * Gates `canReveal`. Backend fix (Task 6 / I2 Part 3): `hasRevealCoin`
+   * (below) only ever becomes true AFTER a reveal, so it can never gate
+   * revealing itself — it gates `canRedeem` instead. */
+  hasBidCoin: boolean;
+  hasRevealCoin: boolean;
+  hasOwnerCoin: boolean;
+  canOpen: NameActionCapability;
+  canBid: NameActionCapability;
+  canReveal: NameActionCapability;
+  canRedeem: NameActionCapability;
+  canRegister: NameActionCapability;
+  canUpdate: NameActionCapability;
+  canTransfer: NameActionCapability;
+  canFinalize: NameActionCapability;
+  canCancelTransfer: NameActionCapability;
+  canRenew: NameActionCapability;
+  canRevoke: NameActionCapability;
+  nextActionKey: string | null;
+  nextActionLabel: string | null;
+  nextActionReason: string | null;
+  countdownLabel: string | null;
+  countdownBlocks: number | null;
+  countdownHours: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Renewals (chain-driven, Task 3 / C3)
+// ---------------------------------------------------------------------------
+
+/** Where a renewal row's expiry data comes from. */
+export type RenewalSource = "chain" | "csv-import";
+
+/** Where the current chain height used for the computation comes from. */
+export type HeightSource = "node" | "explorer" | "unknown";
+
+/** One name in the Renewals view (`read_renewals`). */
+export interface RenewalRow {
+  name: string;
+  state: string | null;
+  renewalHeight: number | null;
+  expiresAtHeight: number | null;
+  blocksUntilExpire: number | null;
+  daysUntilExpire: number | null;
+  source: RenewalSource;
+  expiringSoon: boolean;
+}
+
+/** Response of `read_renewals`. */
+export interface RenewalsResponse {
+  walletProfileId: string | null;
+  currentHeight: number | null;
+  heightSource: HeightSource;
+  expiringSoonThresholdDays: number;
+  names: RenewalRow[];
+}
+
+/** Result of a successful `recover_bid_commitment` call. Non-secret. */
+export interface RecoveredBidCommitment {
+  name: string;
+  address: string;
+  bidValueDoos: number;
+  lockupValueDoos: number;
 }
 

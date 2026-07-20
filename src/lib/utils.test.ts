@@ -7,6 +7,7 @@ import {
   formatHnsAmount,
   cn,
   formatDate,
+  latestTimestamp,
   truncate,
 } from "./utils";
 
@@ -216,6 +217,30 @@ describe("formatDate", () => {
 
   it("returns the raw string for an unparseable value (never 'Invalid Date')", () => {
     expect(formatDate("not-a-date")).toBe("not-a-date");
+  });
+});
+
+describe("latestTimestamp (Task 11 review, Finding 2)", () => {
+  it("returns null when both are null", () => {
+    expect(latestTimestamp(null, null)).toBeNull();
+  });
+
+  it("returns the non-null one when only one is set", () => {
+    expect(latestTimestamp("2026-07-10 12:00:00", null)).toBe("2026-07-10 12:00:00");
+    expect(latestTimestamp(null, "2026-07-10 12:00:00")).toBe("2026-07-10 12:00:00");
+  });
+
+  it("returns the newer of two SQLite naive-UTC timestamps", () => {
+    const older = "2026-01-01 00:00:00";
+    const newer = "2026-07-14 09:00:00";
+    expect(latestTimestamp(older, newer)).toBe(newer);
+    expect(latestTimestamp(newer, older)).toBe(newer);
+  });
+
+  it("compares across mixed formats (SQLite naive vs. ISO with Z)", () => {
+    const older = "2026-01-01 00:00:00";
+    const newer = "2026-07-14T09:00:00Z";
+    expect(latestTimestamp(older, newer)).toBe(newer);
   });
 });
 

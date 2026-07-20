@@ -80,32 +80,79 @@ export function cn(...classes: (string | false | null | undefined)[]): string {
   return classes.filter(Boolean).join(" ");
 }
 
+// Normalize before parsing so we don't double-stamp a timezone. Inputs vary:
+//   * Namebase ISO already carries a tz: "2026-06-26T00:00:00Z" / "…+02:00"
+//   * SQLite naive UTC: "2026-06-26 00:00:00" (space, no tz)
+//   * date-only: "2026-06-26"
+// A naive value is treated as UTC; a value that already has a tz is left as-is.
+function normalizeTimestamp(s: string): string {
+  const hasTz = /[zZ]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s);
+  if (hasTz) return s;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T00:00:00Z`;
+  return `${s.replace(" ", "T")}Z`;
+}
+
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   const s = iso.trim();
   if (!s) return "—";
 
-  // Normalize before parsing so we don't double-stamp a timezone. Inputs vary:
-  //   * Namebase ISO already carries a tz: "2026-06-26T00:00:00Z" / "…+02:00"
-  //   * SQLite naive UTC: "2026-06-26 00:00:00" (space, no tz)
-  //   * date-only: "2026-06-26"
-  // A naive value is treated as UTC; a value that already has a tz is left as-is.
-  const hasTz = /[zZ]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s);
-  let normalized = s;
-  if (!hasTz) {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-      normalized = `${s}T00:00:00Z`;
-    } else {
-      normalized = `${s.replace(" ", "T")}Z`;
-    }
-  }
-
-  const d = new Date(normalized);
+  const d = new Date(normalizeTimestamp(s));
   if (Number.isNaN(d.getTime())) return s; // unparseable → show the raw value, never "Invalid Date"
   return d.toLocaleString();
+}
+
+/**
+ * The more recent of two nullable timestamps (same SQLite/ISO formats
+ * `formatDate` understands), or whichever one is present when only one is,
+ * or `null` when neither is. Used to show a single "Last successful sync"
+ * line that reflects whichever sync path — node-RPC (`lastSyncedAt`) or
+ * explorer (`lastExplorerSyncAt`) — most recently completed, since only ONE
+ * of the two advances in a given sync mode (Task 11 review, Finding 2).
+ */
+export function latestTimestamp(
+  a: string | null | undefined,
+  b: string | null | undefined
+): string | null {
+  const at = a?.trim();
+  const bt = b?.trim();
+  if (!at) return bt || null;
+  if (!bt) return at;
+  const da = new Date(normalizeTimestamp(at));
+  const db = new Date(normalizeTimestamp(bt));
+  if (Number.isNaN(da.getTime())) return bt;
+  if (Number.isNaN(db.getTime())) return at;
+  return db > da ? bt : at;
 }
 
 export function truncate(str: string, len: number): string {
   if (str.length <= len) return str;
   return str.slice(0, len) + "...";
+}
+
+/**
+ * Normalize a user-typed name into a form suitable for hsd name lookups.
+ *
+ * - trims whitespace
+ * - lowercases
+ * - strips a leading `.` (users sometimes type `.example`)
+ * - strips a trailing `.hsd` suffix (common TLD confusion)
+ * - collapses repeated dots
+ *
+ * Returns an empty string when the input is blank after normalization.
+ */
+export function normalizeNameInput(raw: string): string {
+  let name = raw.trim().toLowerCase();
+  if (!name) return "";
+  // Strip leading dot: ".example" → "example"
+  name = name.replace(/^\.+/, "");
+  // Strip trailing .hsd suffix: "example.hsd" → "example"
+  name = name.replace(/\.hsd$/i, "");
+  // Keep only valid Handshake name characters: a-z, 0-9, hyphens, dots
+  name = name.replace(/[^a-z0-9.\-]/g, "");
+  // Collapse repeated dots: "a..b" → "a.b"
+  name = name.replace(/\.{2,}/g, ".");
+  // Strip any remaining leading/trailing dots after collapse
+  name = name.replace(/^\.+|\.+$/g, "");
+  return name;
 }

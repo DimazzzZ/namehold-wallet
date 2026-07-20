@@ -21,6 +21,9 @@ const DEFAULT_SETTINGS: Settings = {
   signer_session_timeout_seconds: "900",
   advanced_mode: "false",
   onboarding_complete: "false",
+  deadline_notify_enabled: "false",
+  deadline_notify_reveal_lead_blocks: "144",
+  deadline_notify_renewal_lead_days: "30",
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

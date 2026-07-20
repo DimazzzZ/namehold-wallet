@@ -42,6 +42,7 @@ const handlers: Record<string, Handler> = {
       receiveAddress: "hs1q9g6...(mock)",
       lastSyncedHeight: 100000,
       lastSyncedAt: new Date().toISOString(),
+      lastExplorerSyncAt: new Date().toISOString(),
       watchOnly: false,
       hasPassphrase: false,
       active: true,
@@ -115,6 +116,45 @@ const handlers: Record<string, Handler> = {
     },
   ],
 
+  read_renewals: () => ({
+    walletProfileId: "webqa-profile",
+    currentHeight: 100_000,
+    heightSource: "explorer",
+    expiringSoonThresholdDays: 30,
+    names: [
+      {
+        name: "example",
+        state: "CLOSED",
+        renewalHeight: 100_000 - 105_120 + 10_000,
+        expiresAtHeight: 110_000,
+        blocksUntilExpire: 10_000,
+        daysUntilExpire: 69.4,
+        source: "chain",
+        expiringSoon: false,
+      },
+      {
+        name: "urgent",
+        state: "CLOSED",
+        renewalHeight: 100_000 - 105_120 + 1_000,
+        expiresAtHeight: 101_000,
+        blocksUntilExpire: 1_000,
+        daysUntilExpire: 6.9,
+        source: "chain",
+        expiringSoon: true,
+      },
+      {
+        name: "legacycsv",
+        state: "CLOSED",
+        renewalHeight: null,
+        expiresAtHeight: 500_000,
+        blocksUntilExpire: null,
+        daysUntilExpire: 42.5,
+        source: "csv-import",
+        expiringSoon: false,
+      },
+    ],
+  }),
+
   read_name_info: (_args) => {
     const name = (_args?.name as string) ?? "unknown";
     return {
@@ -185,6 +225,12 @@ const handlers: Record<string, Handler> = {
 
   // ── Drafts ────────────────────────────────────────────────────────────
   list_tx_drafts: () => [],
+
+  // ── Bid commitment recovery / backup ────────────────────────────────────
+  recover_bid_commitment: () => {
+    throw new Error("bid value doesn't match any unspent bid coin for this name");
+  },
+  export_bid_commitments: () => "[]",
 
   build_send_hns_draft: (_args) => ({
     id: "draft-mock-001",

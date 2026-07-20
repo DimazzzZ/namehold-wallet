@@ -42,4 +42,20 @@ describe("mapError (non-custodial)", () => {
   it("handles Error objects", () => {
     expect(mapError(new Error("status 403 Forbidden"))).toMatch(/rate-limited/i);
   });
+
+  it("prefixes the mapped message with the mutation stage when given one", () => {
+    expect(mapError("insufficient funds", "build")).toBe(
+      "Build failed: Insufficient HNS balance for this transaction.",
+    );
+    expect(mapError("wallet locked", "sign")).toBe(
+      "Sign failed: Your signer is locked — click Unlock first.",
+    );
+    expect(mapError("some raw broadcast error", "broadcast")).toBe(
+      "Broadcast failed: some raw broadcast error",
+    );
+  });
+
+  it("has no stage prefix when no stage is given (unchanged default behavior)", () => {
+    expect(mapError("insufficient funds")).toBe("Insufficient HNS balance for this transaction.");
+  });
 });

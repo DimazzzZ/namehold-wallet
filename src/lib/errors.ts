@@ -28,19 +28,73 @@ const ERROR_MAP: Record<string, string> = {
   "insufficient funds": "Insufficient HNS balance for this transaction.",
 };
 
-export function mapError(error: unknown): string {
+/**
+ * Which leg of the build → unlock/sign → broadcast pipeline threw. Used to
+ * prefix the mapped error so the user knows how far a mutation got before it
+ * failed (e.g. a signed-but-not-yet-broadcast tx behaves very differently
+ * from one that never got built).
+ */
+export type MutationStage = "build" | "sign" | "broadcast";
+
+/**
+ * Wraps an error thrown mid-pipeline (see `useExecuteDraft`) so a caller that
+ * cares can recover which stage (sign/broadcast) threw, while every existing
+ * caller that just does `String(error)` / `mapError(error)` on it — with no
+ * idea `StagedError` exists — keeps seeing byte-identical output, since
+ * `toString()` delegates straight to the original error.
+ */
+export class StagedError extends Error {
+  readonly stage: MutationStage;
+  readonly original: unknown;
+
+  constructor(stage: MutationStage, original: unknown) {
+    super(String(original));
+    this.name = "StagedError";
+    this.stage = stage;
+    this.original = original;
+  }
+
+  toString(): string {
+    return String(this.original);
+  }
+}
+
+/** Stage of a `StagedError`, or `undefined` for any other error shape. */
+export function stageOf(error: unknown): MutationStage | undefined {
+  return error instanceof StagedError ? error.stage : undefined;
+}
+
+/** The wrapped original error for a `StagedError`, else the value itself. */
+export function unwrapStaged(error: unknown): unknown {
+  return error instanceof StagedError ? error.original : error;
+}
+
+const STAGE_LABEL: Record<MutationStage, string> = {
+  build: "Build failed",
+  sign: "Sign failed",
+  broadcast: "Broadcast failed",
+};
+
+export function mapError(error: unknown, stage?: MutationStage): string {
   const raw = String(error);
-  
+  let mapped: string | undefined;
+
   for (const [pattern, message] of Object.entries(ERROR_MAP)) {
     if (raw.toLowerCase().includes(pattern.toLowerCase())) {
-      return message;
+      mapped = message;
+      break;
     }
   }
 
-  // Strip technical prefixes
-  return raw
-    .replace(/^Error invoking remote method .*?: /, "")
-    .replace(/^HTTP error: /, "")
-    .replace(/^error: /i, "")
-    .trim() || "An unexpected error occurred";
+  if (mapped === undefined) {
+    // Strip technical prefixes
+    mapped =
+      raw
+        .replace(/^Error invoking remote method .*?: /, "")
+        .replace(/^HTTP error: /, "")
+        .replace(/^error: /i, "")
+        .trim() || "An unexpected error occurred";
+  }
+
+  return stage ? `${STAGE_LABEL[stage]}: ${mapped}` : mapped;
 }
