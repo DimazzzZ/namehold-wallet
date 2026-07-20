@@ -4,6 +4,7 @@
 //! a real Namebase session. The client's `with_base_url` constructor is the test
 //! seam that points at the mock.
 
+use crate::error::AppError;
 use crate::namebase::client::NamebaseClient;
 
 // ---------------------------------------------------------------------------
@@ -379,5 +380,176 @@ async fn test_withdraw_hns_error_fallback_when_no_error_field() {
     let err = client.withdraw_hns("hs1qtest", "5").await.expect_err("should error");
     let msg = format!("{err}");
     assert!(msg.contains("status 400"), "msg: {msg}");
+    m.assert_async().await;
+}
+
+// ---------------------------------------------------------------------------
+// Set-Cookie capture (Task 5)
+// ---------------------------------------------------------------------------
+
+/// A response carrying `Set-Cookie: nb-sunset=NEW; Path=/` must update the jar:
+/// the next request sends the replaced value, `current_cookie()` reflects it
+/// immediately, and cookies from the original string that weren't touched by
+/// the response survive untouched (same value, same relative order).
+#[tokio::test]
+async fn test_set_cookie_replaces_named_cookie_and_preserves_others() {
+    let mut server = mockito::Server::new_async().await;
+    let first = server
+        .mock("GET", "/api/domains")
+        .match_header("cookie", "nb-sunset=OLD; session=abc123")
+        .with_status(200)
+        .with_header("set-cookie", "nb-sunset=NEW; Path=/")
+        .with_body(r#"{"domains":[]}"#)
+        .create_async()
+        .await;
+    let second = server
+        .mock("GET", "/api/domains/staked")
+        .match_header("cookie", "nb-sunset=NEW; session=abc123")
+        .with_status(200)
+        .with_body(r#"{"stakedDomains":[]}"#)
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("nb-sunset=OLD; session=abc123", &server.url())
+        .expect("client should construct");
+
+    client.get_domains().await.expect("first call should succeed");
+    assert_eq!(client.current_cookie(), "nb-sunset=NEW; session=abc123");
+
+    client.get_staked_domains().await.expect("second call should send the updated cookie");
+
+    first.assert_async().await;
+    second.assert_async().await;
+}
+
+/// Multiple `Set-Cookie` headers on one response are all applied, and a cookie
+/// not mentioned by any of them is left alone.
+#[tokio::test]
+async fn test_set_cookie_multiple_headers_all_applied() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/account")
+        .with_status(200)
+        .with_header("set-cookie", "nb-sunset=NEW1")
+        .with_header("set-cookie", "extra=NEW2")
+        .with_body(r#"{"email":"a@b.com"}"#)
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("nb-sunset=OLD; keep=me", &server.url()).unwrap();
+    client.get_account().await.expect("should succeed");
+
+    assert_eq!(client.current_cookie(), "nb-sunset=NEW1; keep=me; extra=NEW2");
+    m.assert_async().await;
+}
+
+/// `Max-Age=0` on a `Set-Cookie` header deletes that cookie from the jar rather
+/// than storing an empty value.
+#[tokio::test]
+async fn test_set_cookie_max_age_zero_deletes_cookie() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/account")
+        .with_status(200)
+        .with_header("set-cookie", "nb-sunset=; Max-Age=0")
+        .with_body(r#"{"email":"a@b.com"}"#)
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("nb-sunset=OLD; keep=me", &server.url()).unwrap();
+    client.get_account().await.expect("should succeed");
+
+    assert_eq!(client.current_cookie(), "keep=me");
+    m.assert_async().await;
+}
+
+/// An `Expires` date far in the past also deletes the cookie (naive HTTP-date
+/// parsing is enough per the task brief).
+#[tokio::test]
+async fn test_set_cookie_expires_in_past_deletes_cookie() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/account")
+        .with_status(200)
+        .with_header("set-cookie", "nb-sunset=; Expires=Wed, 09 Jun 2021 10:18:14 GMT")
+        .with_body(r#"{"email":"a@b.com"}"#)
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("nb-sunset=OLD; keep=me", &server.url()).unwrap();
+    client.get_account().await.expect("should succeed");
+
+    assert_eq!(client.current_cookie(), "keep=me");
+    m.assert_async().await;
+}
+
+/// Bare (non `name=value`) cookie fixtures — as used by the constructor tests
+/// above — must round-trip byte-for-byte when nothing touches them.
+#[tokio::test]
+async fn test_current_cookie_round_trips_bare_token() {
+    let client = NamebaseClient::with_base_url("test-cookie-123", "https://example.com").unwrap();
+    assert_eq!(client.current_cookie(), "test-cookie-123");
+}
+
+// ---------------------------------------------------------------------------
+// Session-expired detection (Task 5)
+// ---------------------------------------------------------------------------
+
+/// An HTML login page served with HTTP 200 (Namebase's soft-expiry behavior)
+/// must surface as a typed `NamebaseSessionExpired` error, not a JSON parse
+/// error.
+#[tokio::test]
+async fn test_get_account_html_200_is_session_expired_not_parse_error() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/account")
+        .with_status(200)
+        .with_body("<!doctype html><html><body>Please log in</body></html>")
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    let err = client.get_account().await.expect_err("HTML body should be treated as session-expired");
+    assert!(
+        matches!(err, AppError::NamebaseSessionExpired),
+        "expected NamebaseSessionExpired, got: {err:?}"
+    );
+    m.assert_async().await;
+}
+
+/// A non-JSON `content-type` on an otherwise-200 response is treated the same
+/// way, even if the body happens not to start with `<`.
+#[tokio::test]
+async fn test_get_domains_non_json_content_type_is_session_expired() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/domains")
+        .with_status(200)
+        .with_header("content-type", "text/plain")
+        .with_body("please log in")
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    let err = client.get_domains().await.expect_err("non-JSON content-type should be session-expired");
+    assert!(matches!(err, AppError::NamebaseSessionExpired), "got: {err:?}");
+    m.assert_async().await;
+}
+
+/// `check_session` must also treat an HTML 200 as "not connected" rather than
+/// reporting a live session.
+#[tokio::test]
+async fn test_check_session_html_200_returns_false() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/account")
+        .with_status(200)
+        .with_body("<html>login</html>")
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    let result = client.check_session().await.expect("check_session should not error on HTML");
+    assert!(!result, "HTML login page should not count as a valid session");
     m.assert_async().await;
 }

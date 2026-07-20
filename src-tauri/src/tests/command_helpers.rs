@@ -20,5 +20,6 @@ pub fn create_test_state() -> crate::AppState {
         signer: Mutex::new(None),
         secure_prompts: Mutex::new(std::collections::HashMap::new()),
         hsd_child: Mutex::new(None),
+        sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default())),
     }
 }

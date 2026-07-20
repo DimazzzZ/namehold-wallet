@@ -15,7 +15,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -172,6 +172,55 @@ fn node_start_error_is_none_without_a_failing_log() {
     // A log with no error markers → None (don't cry wolf on a clean start).
     std::fs::write(dir.join("namehold-hsd.log"), "[info] (chain) Chain is loading.\n").unwrap();
     assert!(node_start_error(&dir.to_string_lossy()).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- start_hsd refuses hsd below the minimum supported version (S3) ----------
+
+use crate::commands::node::start_hsd;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn start_hsd_refuses_hsd_below_minimum_version() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join("namehold_start_hsd_min_version_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // A fake "hsd" that answers --version with an old release, so the
+    // minimum-version gate in `start_hsd` trips before any real process is
+    // spawned. This exercises the actual refusal path (not just the pure
+    // parse/compare helpers) without depending on a real hsd binary.
+    let fake_hsd = dir.join("hsd");
+    std::fs::write(&fake_hsd, "#!/bin/sh\necho \"7.9.9\"\n").unwrap();
+    let mut perms = std::fs::metadata(&fake_hsd).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fake_hsd, perms).unwrap();
+
+    let data_dir = dir.join("data");
+
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::set_setting(&conn, "hsd_path", &fake_hsd.to_string_lossy()).unwrap();
+    db::queries::set_setting(&conn, "hsd_prefix", &data_dir.to_string_lossy()).unwrap();
+    // Unroutable RPC so the "adopt an already-running node" probe fails
+    // deterministically and falls through to the version-gated spawn path.
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+
+    let app = app_with(conn);
+    let result = start_hsd(app.state()).await;
+
+    let err = result.expect_err("hsd 7.9.9 must be refused");
+    let msg = err.to_string();
+    assert!(msg.contains("7.9.9"), "names the found version: {msg}");
+    assert!(msg.contains("8.0.0"), "names the minimum version: {msg}");
+    assert!(msg.to_lowercase().contains("upgrade"), "gives actionable guidance: {msg}");
+
+    // The gate must trip before `cmd.spawn()` — no child left behind.
+    assert!(app.state::<AppState>().hsd_child.lock().unwrap().is_none());
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

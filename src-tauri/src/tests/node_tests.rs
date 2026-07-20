@@ -206,4 +206,121 @@ fn test_hsd_candidates_does_not_contain_duplicates() {
     assert_eq!(candidates.len(), sorted.len(), "candidates should not contain duplicates");
 }
 
+// --- parse_hsd_version tests ---
+
+#[test]
+fn test_parse_hsd_version_plain() {
+    assert_eq!(node::parse_hsd_version("8.0.0"), Some((8, 0, 0)));
+}
+
+#[test]
+fn test_parse_hsd_version_v_prefix() {
+    assert_eq!(node::parse_hsd_version("v8.0.0"), Some((8, 0, 0)));
+}
+
+#[test]
+fn test_parse_hsd_version_capital_v_prefix() {
+    assert_eq!(node::parse_hsd_version("V8.0.0"), Some((8, 0, 0)));
+}
+
+#[test]
+fn test_parse_hsd_version_prerelease_suffix() {
+    assert_eq!(node::parse_hsd_version("8.0.0-rc.1"), Some((8, 0, 0)));
+}
+
+#[test]
+fn test_parse_hsd_version_build_suffix() {
+    assert_eq!(node::parse_hsd_version("8.0.0+build.5"), Some((8, 0, 0)));
+}
+
+#[test]
+fn test_parse_hsd_version_whitespace_trimmed() {
+    assert_eq!(node::parse_hsd_version("  8.0.0  \n"), Some((8, 0, 0)));
+}
+
+#[test]
+fn test_parse_hsd_version_missing_patch_defaults_zero() {
+    assert_eq!(node::parse_hsd_version("8.1"), Some((8, 1, 0)));
+}
+
+#[test]
+fn test_parse_hsd_version_major_only_defaults_zero() {
+    assert_eq!(node::parse_hsd_version("8"), Some((8, 0, 0)));
+}
+
+#[test]
+fn test_parse_hsd_version_older_version() {
+    assert_eq!(node::parse_hsd_version("2.5.2"), Some((2, 5, 2)));
+}
+
+#[test]
+fn test_parse_hsd_version_garbage() {
+    assert_eq!(node::parse_hsd_version("not a version"), None);
+}
+
+#[test]
+fn test_parse_hsd_version_empty() {
+    assert_eq!(node::parse_hsd_version(""), None);
+}
+
+#[test]
+fn test_parse_hsd_version_whitespace_only() {
+    assert_eq!(node::parse_hsd_version("   "), None);
+}
+
+#[test]
+fn test_parse_hsd_version_lone_v_no_digits() {
+    assert_eq!(node::parse_hsd_version("v"), None);
+}
+
+#[test]
+fn test_parse_hsd_version_trailing_dot() {
+    // "8." leaves an empty minor segment, which fails to parse as u32.
+    assert_eq!(node::parse_hsd_version("8."), None);
+}
+
+// --- HSD_MIN_VERSION comparison tests ---
+
+#[test]
+fn test_min_version_is_8_0_0() {
+    assert_eq!(node::HSD_MIN_VERSION, (8, 0, 0));
+}
+
+#[test]
+fn test_version_below_min_is_rejected() {
+    let found = node::parse_hsd_version("7.9.9").unwrap();
+    assert!(found < node::HSD_MIN_VERSION);
+}
+
+#[test]
+fn test_version_major_below_min_is_rejected() {
+    let found = node::parse_hsd_version("2.5.2").unwrap();
+    assert!(found < node::HSD_MIN_VERSION);
+}
+
+#[test]
+fn test_version_equal_min_is_accepted() {
+    let found = node::parse_hsd_version("8.0.0").unwrap();
+    assert!(found >= node::HSD_MIN_VERSION);
+}
+
+#[test]
+fn test_version_above_min_is_accepted() {
+    let found = node::parse_hsd_version("9.0.0").unwrap();
+    assert!(found >= node::HSD_MIN_VERSION);
+}
+
+#[test]
+fn test_version_patch_above_min_is_accepted() {
+    let found = node::parse_hsd_version("8.0.1").unwrap();
+    assert!(found >= node::HSD_MIN_VERSION);
+}
+
+#[test]
+fn test_version_prerelease_of_min_is_accepted() {
+    // parse drops the prerelease tag, so 8.0.0-rc.1 parses to exactly 8.0.0.
+    let found = node::parse_hsd_version("8.0.0-rc.1").unwrap();
+    assert!(found >= node::HSD_MIN_VERSION);
+}
+
 // --- (reserve section for future tests) ---

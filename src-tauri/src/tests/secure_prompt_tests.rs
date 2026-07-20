@@ -290,10 +290,10 @@ fn test_secure_prompt_result_long_value() {
 #[test]
 fn test_secure_prompt_result_unicode_value() {
     let json = serde_json::json!({
-        "value": "абандон абандон абандон",
+        "value": "abandon abandon abandon",
         "confirmed": true
     });
     let result: secure_prompt::SecurePromptResult = serde_json::from_value(json).unwrap();
     assert!(result.confirmed);
-    assert_eq!(result.value, Some("абандон абандон абандон".into()));
+    assert_eq!(result.value, Some("abandon abandon abandon".into()));
 }

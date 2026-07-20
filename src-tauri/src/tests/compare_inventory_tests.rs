@@ -17,7 +17,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -53,7 +53,7 @@ async fn compare_buckets_inventory_against_namebase() {
 
     let r = compare_inventory_with_provider(app.state()).await.expect("compare ok");
     assert_eq!(r.provider_label, "Namebase");
-    assert_eq!(r.matched, vec!["a".to_string(), "b".to_string()]); // still at Namebase
+    assert_eq!(r.matched_transferable, vec!["a".to_string(), "b".to_string()]); // still at Namebase
     assert_eq!(r.missing_at_provider, vec!["c".to_string()]); // left Namebase / not there
     assert_eq!(r.extra_at_provider, vec!["d".to_string()]); // on Namebase, not in inventory
     m.assert_async().await;

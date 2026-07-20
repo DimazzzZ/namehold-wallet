@@ -23,6 +23,7 @@ use tauri::Manager;
 
 use crate::commands::names::{
     build_bid_draft, build_open_draft, build_register_draft, build_reveal_draft,
+    build_redeem_draft,
 };
 use crate::commands::tx::{
     broadcast_tx_draft, build_send_hns_draft, refresh_tx_confirmations, sign_tx_draft,
@@ -102,7 +103,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -279,3 +280,138 @@ async fn live_auction_open_bid_reveal_register() {
     // Final state is CLOSED (registered names stay CLOSED on-chain).
     assert_eq!(node_state(&cl, &name).await.as_deref(), Some("CLOSED"));
 }
+
+#[tokio::test]
+async fn live_auction_open_bid_reveal_redeem() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_auction_open_bid_reveal_redeem: set HNS_IT_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+
+    // Fund the wallet.
+    cl.generate_to_address(101, &addr).await.expect("fund");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // A per-run-unique name (avoid collisions with names already on the node).
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("loser{tip}");
+
+    // OPEN → advance to BIDDING.
+    let open = build_open_draft(app.state(), name.clone(), Some(1)).await.expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(
+        mine_until(&cl, &name, "BIDDING", &addr, 30).await,
+        "name {name} did not reach BIDDING; state={:?}",
+        node_state(&cl, &name).await
+    );
+
+    // BID → advance to REVEAL.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let bid = build_bid_draft(app.state(), name.clone(), 500_000, 1_000_000, Some(1))
+        .await
+        .expect("build bid");
+    execute(&app, &cl, &addr, bid.id).await;
+    assert!(
+        mine_until(&cl, &name, "REVEAL", &addr, 30).await,
+        "name {name} did not reach REVEAL; state={:?}",
+        node_state(&cl, &name).await
+    );
+
+    // REVEAL → advance to CLOSED.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1)).await.expect("build reveal");
+    execute(&app, &cl, &addr, reveal.id).await;
+    assert!(
+        mine_until(&cl, &name, "CLOSED", &addr, 40).await,
+        "name {name} did not reach CLOSED; state={:?}",
+        node_state(&cl, &name).await
+    );
+
+    // Do NOT insert tracked_name_states for this name. The sync therefore
+    // won't pick up the owner coin → wallet sees no owner → can redeem.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // REDEEM: there is an unspent reveal coin at the bid commitment address.
+    // The wallet can reclaim it without needing the name's owner coin.
+    let redeem = build_redeem_draft(app.state(), name.clone(), Some(1)).await.expect("build redeem");
+    execute(&app, &cl, &addr, redeem.id).await;
+
+    // After redeem, the name stays CLOSED on-chain.
+    assert_eq!(node_state(&cl, &name).await.as_deref(), Some("CLOSED"));
+}
+
+#[tokio::test]
+async fn live_auction_register_transfer_finalize() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_auction_register_transfer_finalize: set HNS_IT_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+
+    // Fund the wallet.
+    cl.generate_to_address(101, &addr).await.expect("fund");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // A per-run-unique name (avoid collisions with names already on the node).
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("transfer{tip}");
+
+    // OPEN → advance to BIDDING.
+    let open = build_open_draft(app.state(), name.clone(), Some(1)).await.expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await, "name {name} did not reach BIDDING");
+
+    // BID → advance to REVEAL.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let bid = build_bid_draft(app.state(), name.clone(), 1_000_000, 2_000_000, Some(1)).await.expect("build bid");
+    execute(&app, &cl, &addr, bid.id).await;
+    assert!(mine_until(&cl, &name, "REVEAL", &addr, 30).await, "name {name} did not reach REVEAL");
+
+    // REVEAL → advance to CLOSED.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1)).await.expect("build reveal");
+    execute(&app, &cl, &addr, reveal.id).await;
+    assert!(mine_until(&cl, &name, "CLOSED", &addr, 40).await, "name {name} did not reach CLOSED");
+
+    // Track the name so sync picks up the owner coin.
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO tracked_name_states (wallet_profile_id, name, name_hash_hex, state) VALUES (?1, ?2, '', 'UNKNOWN')",
+            params![PROFILE, name],
+        ).unwrap();
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // REGISTER the won name.
+    let records = vec![serde_json::json!({"type":"TXT","txt":["cua-agent-verified"]})];
+    let reg = build_register_draft(app.state(), name.clone(), Some(records), Some(1)).await.expect("build register");
+    execute(&app, &cl, &addr, reg.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // TRANSFER the registered name to a second address (leaf 0/1).
+    // Derive address for branch=0 child_index=1.
+    let (_sk, pk2, addr2) = crate::noncustodial::hd::derive_address(NET, &seed(), 0, 0, 1).unwrap();
+    use crate::commands::names::build_transfer_draft;
+    let transfer = build_transfer_draft(app.state(), name.clone(), addr2.clone(), Some(1)).await.expect("build transfer");
+    execute(&app, &cl, &addr, transfer.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // After TRANSFER, the name stays on-chain in some state still allowing finalize.
+    use crate::commands::names::build_finalize_draft;
+    let finalize = build_finalize_draft(app.state(), name.clone(), Some(1)).await.expect("build finalize");
+    execute(&app, &cl, &addr, finalize.id).await;
+
+    // After finalize, the name is at the new address. Check state.
+    assert_eq!(node_state(&cl, &name).await.as_deref(), Some("CLOSED"));
+}
+
+

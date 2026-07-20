@@ -36,11 +36,11 @@ fn test_migrations_run_idempotent() {
     // Running migrations again should be a no-op (idempotent).
     crate::db::migrations::run(&conn).unwrap();
 
-    // Verify all 12 migrations are recorded.
+    // Verify all 13 migrations are recorded.
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 12);
+    assert_eq!(count, 13);
 }
 
 #[test]

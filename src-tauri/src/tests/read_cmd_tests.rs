@@ -27,7 +27,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -72,8 +72,11 @@ fn add_cached_tx(
     conn: &rusqlite::Connection,
     profile: &str,
     txid: &str,
-    action: &str,
-    name: &str,
+    // Kept for call-site readability (what action/name this cached tx is
+    // standing in for); `read_cached_transactions` derives direction from
+    // `raw_json` alone, so the fields themselves aren't read here.
+    _action: &str,
+    _name: &str,
 ) {
     // `read_cached_transactions` reads from `wallet_transactions_cache` and
     // classifies direction from `raw_json` outputs + our addresses/outpoints.
@@ -260,22 +263,9 @@ async fn discover_owned_names_no_active_profile_returns_zero() {
     assert_eq!(val["names"], serde_json::json!([]));
 }
 
-// ---------------------------------------------------------------------------
-// discover_owned_names — active profile but no addresses
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn discover_owned_names_empty_addresses_returns_zero() {
-    let conn = empty_db();
-    add_profile(&conn, "P1", "regtest");
-    db::queries::set_active_profile(&conn, "P1").unwrap();
-    // No derived_addresses seeded → early return.
-
-    let app = app_with(conn);
-    let val = discover_owned_names(app.state()).await.unwrap();
-    assert_eq!(val["discovered"], serde_json::json!(0));
-    assert_eq!(val["names"], serde_json::json!([]));
-}
+// Note: "active profile but no addresses → discovered 0" is already covered
+// by `discovery_no_addresses_is_empty` in discover_names_tests.rs (identical
+// setup/assertion) — not duplicated here.
 
 // ---------------------------------------------------------------------------
 // read_name_info — exercises the full code path (node + explorer fallback).
@@ -477,8 +467,8 @@ async fn compare_inventory_with_provider_matches_and_extras() {
 
     let app = app_with(conn);
     let result = compare_inventory_with_provider(app.state()).await.unwrap();
-    assert!(result.matched.contains(&"alpha".to_string()));
-    assert!(result.matched.contains(&"bravo".to_string()));
+    assert!(result.matched_transferable.contains(&"alpha".to_string()));
+    assert!(result.matched_transferable.contains(&"bravo".to_string()));
     assert!(result.missing_at_provider.contains(&"delta".to_string()));
     assert!(result.extra_at_provider.contains(&"charlie".to_string()));
     assert_eq!(result.provider_kind, "namebase");
@@ -500,7 +490,7 @@ async fn compare_inventory_with_provider_empty_inventory() {
     db::queries::set_setting(&conn, "namebase_base_url", &server.url()).unwrap();
     let app = app_with(conn);
     let result = compare_inventory_with_provider(app.state()).await.unwrap();
-    assert!(result.matched.is_empty());
+    assert!(result.matched_transferable.is_empty());
     assert!(result.missing_at_provider.is_empty());
     assert_eq!(result.extra_at_provider, vec!["alpha".to_string()]);
 }

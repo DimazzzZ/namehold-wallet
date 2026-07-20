@@ -47,8 +47,10 @@ fn test_schema_version_tracking() {
         .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
         .unwrap();
     // 001..009, 010 (drop legacy settings), 011 (re-add hsd data dir),
-    // 012 (tx-draft confirmation tracking).
-    assert_eq!(count, 12);
+    // 012 (tx-draft confirmation tracking), 013 (owner address column),
+    // 014 (bid reveal-end-height estimate), 015 (coin reservation, I3),
+    // 016 (last_explorer_sync_at, Task 11 review Finding 2).
+    assert_eq!(count, 16);
 }
 
 #[test]

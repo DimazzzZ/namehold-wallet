@@ -29,7 +29,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -743,6 +743,73 @@ async fn namebase_client_with_cookie_uses_base_url_from_settings() {
         .unwrap();
     let result = client.check_session().await;
     assert!(result.is_ok(), "should reach mock server: {:?}", result.err());
+}
+
+// =========================================================================
+// Cookie persistence after Set-Cookie rotation (Task 5)
+// =========================================================================
+
+/// When a Namebase response rotates the session cookie via `Set-Cookie`, the
+/// command layer must write the updated cookie string back to settings so the
+/// next command (and the next app launch) uses it instead of the stale paste.
+#[tokio::test]
+async fn fetch_domains_persists_rotated_cookie_to_settings() {
+    let mut server = Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/domains")
+        .with_status(200)
+        .with_header("set-cookie", "nb-sunset=ROTATED")
+        .with_body(r#"{"domains":[]}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url());
+    db::queries::set_setting(&conn, "namebase_cookie", "nb-sunset=OLD").unwrap();
+    let app = app_with(conn);
+
+    fetch_namebase_domains(app.state::<AppState>())
+        .await
+        .expect("fetch_domains should succeed");
+
+    let state = app.state::<AppState>();
+    let db = state.db.lock().unwrap();
+    let settings = db::queries::get_settings(&db).unwrap();
+    assert_eq!(
+        settings.get("namebase_cookie").map(|s| s.as_str()),
+        Some("nb-sunset=ROTATED"),
+        "rotated cookie should be persisted"
+    );
+    m.assert_async().await;
+}
+
+/// A response that doesn't rotate the cookie must not rewrite settings (no-op
+/// write when nothing changed).
+#[tokio::test]
+async fn fetch_domains_does_not_touch_settings_when_cookie_unchanged() {
+    let mut server = Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/domains")
+        .with_status(200)
+        .with_body(r#"{"domains":[]}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url());
+    db::queries::set_setting(&conn, "namebase_cookie", "nb-sunset=STABLE").unwrap();
+    let app = app_with(conn);
+
+    fetch_namebase_domains(app.state::<AppState>())
+        .await
+        .expect("fetch_domains should succeed");
+
+    let state = app.state::<AppState>();
+    let db = state.db.lock().unwrap();
+    let settings = db::queries::get_settings(&db).unwrap();
+    assert_eq!(
+        settings.get("namebase_cookie").map(|s| s.as_str()),
+        Some("nb-sunset=STABLE"),
+    );
+    m.assert_async().await;
 }
 
 #[tokio::test]
