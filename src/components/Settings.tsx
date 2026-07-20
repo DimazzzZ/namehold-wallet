@@ -1,11 +1,34 @@
 import { useState, useEffect } from "react";
 import { useSettingsStore } from "../stores/settings";
 import { useNodeStatus, useStartHsd, useStopHsd, useResyncHsd } from "../queries/node";
-import { open } from "../lib/dialog";
+import { useActiveProfile, useExportBidCommitments } from "../queries/wallet";
+import { open, save } from "../lib/dialog";
+import { isTauri } from "../lib/runtime";
+import {
+  checkNotificationPermission,
+  requestNotificationPermission,
+  type PermissionStatus,
+} from "../lib/notifications";
 import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
 import { useUiStore } from "../stores/ui";
+
+/**
+ * Validate the explorer base URL field (Task 11 / S1). Empty is allowed —
+ * it falls back to the backend's own default (`DEFAULT_EXPLORER_URL`) — but
+ * anything non-empty must carry an `http(s)://` scheme, since the backend
+ * builds requests as `${url}/api/...` and a bare host/path would silently
+ * fail every explorer call. Returns an error message, or `null` when valid.
+ */
+export function validateExplorerUrl(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  if (!/^https?:\/\/[^\s]+$/i.test(trimmed)) {
+    return "Explorer URL must start with http:// or https://";
+  }
+  return null;
+}
 
 /**
  * One coherent settings model for the non-custodial wallet:
@@ -19,6 +42,8 @@ import { useUiStore } from "../stores/ui";
 export function Settings() {
   const { settings, loaded, saveAll } = useSettingsStore();
   const showToast = useUiStore((s) => s.showToast);
+  const { data: profile } = useActiveProfile();
+  const exportBids = useExportBidCommitments();
 
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -35,6 +60,9 @@ export function Settings() {
         address_gap_limit: settings.address_gap_limit,
         signer_session_timeout_seconds: settings.signer_session_timeout_seconds,
         advanced_mode: settings.advanced_mode,
+        deadline_notify_enabled: settings.deadline_notify_enabled,
+        deadline_notify_reveal_lead_blocks: settings.deadline_notify_reveal_lead_blocks,
+        deadline_notify_renewal_lead_days: settings.deadline_notify_renewal_lead_days,
       });
     }
   }, [settings]);
@@ -47,6 +75,12 @@ export function Settings() {
     setForm((prev) => ({ ...prev, [key]: value }));
     setDirty(true);
   };
+
+  // Explorer base URL is used as `${url}/api/...` by the backend
+  // (HnsFansClient / explorer_client_from_settings — Task 11 / S1), so it
+  // must carry a scheme; empty is allowed (falls back to the backend
+  // default). Returns null when valid.
+  const explorerUrlError = validateExplorerUrl(form.explorer_api_url ?? "");
 
   // Pick the hsd data directory with the native folder browser (Finder).
   const pickDataDir = async () => {
@@ -66,15 +100,53 @@ export function Settings() {
   };
 
   const handleSave = async () => {
+    if (explorerUrlError) {
+      showToast(explorerUrlError, "error");
+      return;
+    }
+    // Normalize the trailing slash the same way the backend does
+    // (`HnsFansClient::new` trims it) so the value shown here always matches
+    // what's actually used — a stray slash would build `//api/...` URLs.
+    const normalized = {
+      ...form,
+      explorer_api_url: (form.explorer_api_url ?? "").trim().replace(/\/+$/, ""),
+    };
     setSaving(true);
     try {
-      await saveAll(form);
+      await saveAll(normalized);
+      setForm(normalized);
       setDirty(false);
       showToast("Settings saved", "success");
     } catch (e) {
       showToast(`Failed to save: ${e}`, "error");
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Export every bid commitment (value, blind, nonce) for the active wallet
+  // as a JSON backup file. This is the ONLY off-chain copy of a bid's true
+  // value/nonce — losing it (without this backup) makes the lockup
+  // unrecoverable unless the user still remembers their bid amount.
+  const handleExportBidBackup = async () => {
+    if (!profile) {
+      showToast("No active wallet profile", "error");
+      return;
+    }
+    try {
+      const json = await exportBids.mutateAsync(profile.id);
+      const path = await save({
+        filters: [{ name: "JSON", extensions: ["json"] }],
+        defaultPath: `${profile.label || "wallet"}-bid-backup.json`,
+      });
+      if (!path) return;
+      if (isTauri()) {
+        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+        await writeTextFile(path, json);
+      }
+      showToast("Bid backup exported", "success");
+    } catch (e) {
+      showToast(`Bid backup export failed: ${e}`, "error");
     }
   };
 
@@ -88,16 +160,23 @@ export function Settings() {
 
         <div className="space-y-2">
           <Input
-            label="Explorer URL (reads)"
+            label="Explorer base URL (reads)"
             value={form.explorer_api_url ?? ""}
             onChange={(e) => updateField("explorer_api_url", e.target.value)}
             placeholder="https://e.hnsfans.com"
+            data-testid="explorer-url-input"
           />
-          <div className="text-xs text-gray-500">
-            Balance and names are read from this explorer when the node is not
-            synced. When the node is connected and fully synced, reads come from
-            the local node cache instead.
-          </div>
+          {explorerUrlError ? (
+            <div className="text-xs text-red-600" data-testid="explorer-url-error">
+              {explorerUrlError}
+            </div>
+          ) : (
+            <div className="text-xs text-gray-500">
+              Balance and names are read from this explorer when the node is not
+              synced. When the node is connected and fully synced, reads come from
+              the local node cache instead. Takes effect on the next Sync/read.
+            </div>
+          )}
         </div>
 
         <div className="space-y-2 pt-2 border-t border-gray-100">
@@ -155,6 +234,40 @@ export function Settings() {
         </div>
       </div>
 
+      {/* Backup: bid commitments (value/blind/nonce) are the only off-chain
+          copy — losing the DB row without a backup can make an in-flight
+          lockup unrecoverable. */}
+      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-700">Backup</h3>
+        <div className="text-xs text-gray-500">
+          Your bid commitments (amount, blind, nonce) for open auctions live
+          only in this wallet&apos;s local database — the blockchain only ever
+          sees the blind. Export a backup and store it alongside your seed
+          phrase, in case this device is lost.
+        </div>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={handleExportBidBackup}
+          disabled={exportBids.isPending || !profile}
+          data-testid="export-bid-backup"
+        >
+          {exportBids.isPending ? "Exporting…" : "Export bid backup"}
+        </Button>
+      </div>
+
+      {/* Deadline notifications (I1): opt-in OS alerts before a reveal
+          window or renewal deadline is missed. */}
+      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-700">Notifications</h3>
+        <div className="text-xs text-gray-500">
+          Get an OS notification before a bid&apos;s reveal window closes
+          (miss it and the lockup is forfeit) or a name&apos;s renewal is due.
+          Checked on app start and every ~10 minutes.
+        </div>
+        <NotificationSettings form={form} updateField={updateField} />
+      </div>
+
       {/* Advanced (collapsed by default — rarely changed). */}
       <details className="bg-white rounded border border-gray-200 group">
         <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-gray-700">
@@ -186,7 +299,7 @@ export function Settings() {
 
       {dirty && (
         <StickyFooter>
-          <Button onClick={handleSave} disabled={saving}>
+          <Button onClick={handleSave} disabled={saving || !!explorerUrlError}>
             {saving ? "Saving…" : "Save settings"}
           </Button>
         </StickyFooter>
@@ -316,8 +429,10 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
             ) : (
               <>
                 Syncing the chain — {pct}% · block {status?.height ?? "?"}
-                {headers ? ` / ${headers}` : ""}. Spendable balance and sending become
-                available once it finishes.
+                {headers != null && height != null && headers > height
+                  ? ` / ${headers}`
+                  : ""}
+                . Spendable balance and sending become available once it finishes.
               </>
             )}
           </div>
@@ -369,6 +484,95 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
             </Button>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Enable/disable toggle + lead-time inputs for the deadline notification
+ * scanner (I1). The toggle drives an immediate OS permission request (must
+ * happen from this user gesture — macOS silently denies requests made
+ * without one) independent of the outer form's Save button; the enabled
+ * flag and lead times themselves are plain form fields saved the same way
+ * as every other setting.
+ */
+function NotificationSettings({
+  form,
+  updateField,
+}: {
+  form: Record<string, string>;
+  updateField: (key: string, value: string) => void;
+}) {
+  const [permission, setPermission] = useState<PermissionStatus | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const enabled = form.deadline_notify_enabled === "true";
+
+  useEffect(() => {
+    checkNotificationPermission().then(setPermission);
+  }, []);
+
+  const onToggle = async (checked: boolean) => {
+    updateField("deadline_notify_enabled", checked ? "true" : "false");
+    if (!checked) return;
+    setRequesting(true);
+    try {
+      const status = await requestNotificationPermission();
+      setPermission(status);
+    } finally {
+      setRequesting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => onToggle(e.target.checked)}
+          data-testid="deadline-notify-toggle"
+        />
+        Enable deadline notifications
+      </label>
+
+      {enabled && (
+        <>
+          {permission === "denied" && (
+            <div
+              className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2"
+              data-testid="notification-permission-denied"
+            >
+              OS notifications are blocked for this app. Enable them in your
+              system notification settings — deadlines will still show
+              in-app, but you won&apos;t get an alert when the app isn&apos;t
+              open.
+            </div>
+          )}
+          {permission === "unsupported" && (
+            <div className="text-xs text-gray-500">
+              OS notifications aren&apos;t available outside the desktop app.
+            </div>
+          )}
+          {requesting && (
+            <div className="text-xs text-gray-500">Requesting permission…</div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <Input
+              label="Reveal window lead time (blocks)"
+              value={form.deadline_notify_reveal_lead_blocks ?? ""}
+              onChange={(e) => updateField("deadline_notify_reveal_lead_blocks", e.target.value)}
+              placeholder="144"
+            />
+            <Input
+              label="Renewal lead time (days)"
+              value={form.deadline_notify_renewal_lead_days ?? ""}
+              onChange={(e) => updateField("deadline_notify_renewal_lead_days", e.target.value)}
+              placeholder="30"
+            />
+          </div>
+        </>
       )}
     </div>
   );

@@ -5,6 +5,7 @@ import { Layout } from "./components/Layout";
 import { PortfolioWorkspace } from "./components/PortfolioWorkspace";
 import { MigrationWorkspace } from "./components/MigrationWorkspace";
 import { WalletView } from "./components/WalletView";
+import { AuctionsView } from "./components/AuctionsView";
 import { Settings } from "./components/Settings";
 import { Onboarding } from "./components/Onboarding";
 import { useSettingsStore } from "./stores/settings";
@@ -38,6 +39,7 @@ function AppRoutes() {
       <Route element={<Layout />}>
         {/* Wallet-first: the wallet is the default landing screen. */}
         <Route path="/" element={<WalletView />} />
+        <Route path="/auctions" element={<AuctionsView />} />
         <Route path="/migration" element={<MigrationWorkspace />} />
         <Route path="/portfolio" element={<PortfolioWorkspace />} />
         <Route path="/settings" element={<Settings />} />

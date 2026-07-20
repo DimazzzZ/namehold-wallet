@@ -1,8 +1,15 @@
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
 import { normalizeTransaction } from "../lib/providerMode";
 import { useActiveProfile } from "./wallet";
-import type { HsdBalance, HsdName, WalletTransactionRow } from "../types";
+import type {
+  HsdBalance,
+  HsdName,
+  NameActionCapabilities,
+  RecoveredBidCommitment,
+  RenewalsResponse,
+  WalletTransactionRow,
+} from "../types";
 
 /**
  * Read query layer (explorer-backed, node-free). Balance + names come from the
@@ -57,6 +64,27 @@ export function useReadNames(): UseQueryResult<HsdName[]> {
   });
 }
 
+/**
+ * Chain-driven renewal/expiry data, pinned to the active wallet. Days until
+ * expiry are computed live by the backend (`read_renewals`) from tracked chain
+ * state + the current height — the stale CSV-imported columns are only a
+ * per-row fallback, honestly marked `source: "csv-import"`.
+ */
+export function useReadRenewals(): UseQueryResult<RenewalsResponse | null> {
+  const profileId = useActiveProfile().data?.id ?? null;
+  return useQuery<RenewalsResponse | null>({
+    queryKey: ["read", "renewals", profileId],
+    enabled: profileId != null,
+    queryFn: async () => {
+      const raw = await invoke<RenewalsResponse | null>("read_renewals", {
+        walletProfileId: profileId,
+      });
+      return raw && Array.isArray(raw.names) ? raw : null;
+    },
+    staleTime: STALE_TIME,
+  });
+}
+
 /** Provider-aware single-name lookup. */
 export function useReadNameInfo(
   name: string | null | undefined,
@@ -71,6 +99,85 @@ export function useReadNameInfo(
       return raw ?? null;
     },
     staleTime: STALE_TIME,
+  });
+}
+
+/**
+ * Backend-driven name action capabilities for a specific name.
+ * Fetches `get_name_action_capabilities` to evaluate what actions are
+ * available right now for the active wallet.
+ */
+export function useNameActionCapabilities(
+  name: string | null | undefined,
+  walletProfileId?: string | null,
+): UseQueryResult<NameActionCapabilities | null> {
+  const profileId = walletProfileId ?? null;
+  return useQuery<NameActionCapabilities | null>({
+    queryKey: ["read", "nameCapabilities", profileId, name ?? ""],
+    enabled: Boolean(name && name.trim().length > 0),
+    queryFn: async () => {
+      // Pin the evaluation to THIS wallet so capabilities can never reflect
+      // another profile's owned-name evidence (the active profile may flip
+      // mid-switch).
+      const raw = await invoke<NameActionCapabilities | null>(
+        "get_name_action_capabilities",
+        { name: name!.trim(), walletProfileId: profileId },
+      );
+      return raw ?? null;
+    },
+    staleTime: STALE_TIME,
+  });
+}
+
+/**
+ * Batch form of `useNameActionCapabilities` — one invoke for a whole list of
+ * names instead of one per name (F5 fix: AuctionsView used to spawn N+1
+ * capability fetches, one per row). Pinned to a specific wallet the same way
+ * as the single-name hook, and re-fetches whenever the name list changes.
+ *
+ * Returns `[]` while disabled/loading so callers can `.map` unconditionally.
+ */
+export function useNamesActionCapabilities(
+  names: string[],
+  walletProfileId?: string | null,
+): UseQueryResult<NameActionCapabilities[]> {
+  const profileId = walletProfileId ?? null;
+  // A stable, order-independent key so an unrelated re-render (e.g. the same
+  // names in a new array instance) doesn't retrigger a refetch.
+  const namesKey = [...names].sort().join(",");
+  return useQuery<NameActionCapabilities[]>({
+    queryKey: ["read", "namesCapabilities", profileId, namesKey],
+    enabled: names.length > 0,
+    queryFn: async () => {
+      const raw = await invoke<NameActionCapabilities[] | null>(
+        "get_names_action_capabilities",
+        { names, walletProfileId: profileId },
+      );
+      return Array.isArray(raw) ? raw : [];
+    },
+    staleTime: STALE_TIME,
+  });
+}
+
+/**
+ * Recover a lost `bid_commitments` row: given a candidate bid value (in
+ * doos), the backend recomputes the nonce/blind from the account xpub and
+ * compares it against the on-chain blind of the profile's unspent BID coins.
+ * On success it invalidates the `["read"]` prefix (so `nameCapabilities`
+ * re-fetches and the REVEAL flow unlocks) and `["wallet"]`.
+ */
+export function useRecoverBidCommitment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      walletProfileId: string | null;
+      name: string;
+      bidValueDoos: number;
+    }) => invoke<RecoveredBidCommitment>("recover_bid_commitment", args as Record<string, unknown>),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["read"] });
+      qc.invalidateQueries({ queryKey: ["wallet"] });
+    },
   });
 }
 

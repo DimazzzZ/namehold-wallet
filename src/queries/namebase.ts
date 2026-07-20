@@ -124,6 +124,14 @@ export function useNamebaseStatus() {
     queryKey: ["namebase", "status"],
     queryFn: () => invoke<NamebaseStatus>("get_namebase_status"),
     retry: false,
+    // Keep-alive: while connected, poll every ~10 minutes so an app left open
+    // extends the Namebase session and picks up any server-side cookie
+    // rotation. Stops polling once disconnected (no point hammering a dead
+    // session) — see queries/sync.ts::useSyncStatus for the same pattern.
+    refetchInterval: (query) => {
+      const d = query.state.data as NamebaseStatus | undefined;
+      return d?.connected ? 10 * 60 * 1000 : false;
+    },
   });
 }
 

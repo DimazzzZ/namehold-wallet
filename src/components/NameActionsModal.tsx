@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useActiveProfile,
@@ -7,36 +7,45 @@ import {
   useNameAction,
   useExecuteDraft,
 } from "../queries/wallet";
-import { useReadNameInfo } from "../queries/read";
+import {
+  useReadNameInfo,
+  useNameActionCapabilities,
+  useRecoverBidCommitment,
+} from "../queries/read";
 import { Button } from "./ui/Button";
-import { Input } from "./ui/Input";
 import { Dialog } from "./ui/Dialog";
 import { Badge } from "./ui/Badge";
+import { BidForm } from "./name-actions/BidForm";
+import { DnsRecordsEditor } from "./name-actions/DnsRecordsEditor";
+import { GuidedAction } from "./name-actions/GuidedAction";
+import { OwnershipActions } from "./name-actions/OwnershipActions";
 import { useUiStore } from "../stores/ui";
-import { mapError } from "../lib/errors";
+import { mapError, stageOf, unwrapStaged } from "../lib/errors";
 import { formatHns } from "../lib/utils";
+import { displayName } from "../lib/idn";
 import {
   auctionPhase,
   nextTransition,
   formatCountdown,
-  recommendedAction,
+  AUCTION_PHASE_GUIDE,
+  hnsToDoos,
+  taskSummaryFromCapabilities,
+  validateBidInputs,
 } from "../lib/auction";
-import {
-  DNS_RECORD_TYPES,
-  rowsToRecords,
-  valuePlaceholder,
-  type DnsRecordType,
-  type DnsRow,
-} from "../lib/dnsRecords";
+import { rowsToRecords, type DnsRow } from "../lib/dnsRecords";
+import type { NameActionCapability } from "../types";
 
 /**
  * One modal that exposes every name covenant action for a single name, wired to
  * the `build_*_draft` commands + the build→unlock→sign→broadcast runner.
  *
- * The header shows the name's live auction phase (from `read_name_info`) with a
- * countdown to the next transition and highlights the recommended action.
- * Records (REGISTER/UPDATE) use a typed row editor; an Advanced toggle exposes
- * the raw-JSON array for record types the row editor doesn't cover (DS, GLUE…).
+ * The modal is task-driven: it uses backend capability data to show the most
+ * relevant action, with clear disabled reasons when actions aren't available.
+ *
+ * Task 13 (F6): this file is the thin orchestrator — it owns all state, the
+ * mutation runner, and the modal layout; the widgets live in
+ * `./name-actions/` (`GuidedAction`, `BidForm`, `DnsRecordsEditor`,
+ * `OwnershipActions`) and receive state + callbacks as props.
  */
 export function NameActionsModal({
   name,
@@ -52,8 +61,17 @@ export function NameActionsModal({
   const { data: profile } = useActiveProfile();
   const { data: signer } = useSignerSession();
   const { data: writeCap } = useWriteCapability();
-  const { data: info } = useReadNameInfo(open ? name : null);
+  const { data: info, isLoading, isError, error } = useReadNameInfo(open ? name : null);
+  const { data: caps } = useNameActionCapabilities(
+    open ? name : null,
+    profile?.id ?? null,
+  );
   const exec = useExecuteDraft();
+  const recoverBid = useRecoverBidCommitment();
+
+  // Display-only: the decoded Unicode form of `name`, if it's an IDN. Every
+  // backend call in this component keeps using the raw `name` prop.
+  const decodedName = displayName(name);
 
   const build = {
     open: useNameAction("build_open_draft"),
@@ -69,24 +87,93 @@ export function NameActionsModal({
     revoke: useNameAction("build_revoke_draft"),
   };
 
-  const [bidValue, setBidValue] = useState("");
-  const [lockup, setLockup] = useState("");
+  // Bid inputs in HNS (human-readable), converted to doos on submit.
+  const [bidHns, setBidHns] = useState("");
+  const [lockupHns, setLockupHns] = useState("");
+  const [recoverHns, setRecoverHns] = useState("");
   const [recipient, setRecipient] = useState("");
   const [rows, setRows] = useState<DnsRow[]>([{ type: "TXT", value: "" }]);
   const [advanced, setAdvanced] = useState(false);
   const [recordsJson, setRecordsJson] = useState("[]");
+  const [showAllActions, setShowAllActions] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   const unlocked = signer?.unlocked ?? false;
-  // Every action here is an on-chain spend that needs the name's owner coin from
-  // a synced, address-indexed node. Gate all of them on write capability so the
-  // user gets a clear reason instead of a "wallet does not hold …" failure.
   const canWrite = writeCap?.canWrite ?? false;
   const lock = !!busy || !canWrite;
 
+  // Client-side bid validation (F4 fix) — shared pure rule (`validateBidInputs`)
+  // feeding the single `BidForm` component both the guided and advanced
+  // sections render.
+  const bidValidation = validateBidInputs(bidHns, lockupHns);
+  const { formValid: bidFormValid, bidError: bidInputError, lockupError: lockupInputError } = bidValidation;
+  const bidNum = Number(bidHns);
+  const lockupNum = Number(lockupHns);
+  // What the forfeit warning shows as "X" — the raw lockup input as typed, so
+  // it always matches what the user is about to lock up (falls back to "0"
+  // before anything is entered, never a stale/guessed number).
+  const forfeitLockupText = lockupHns.trim() || "0";
+
   const badge = auctionPhase(info?.state);
   const countdown = nextTransition(info?.state, info?.stats);
-  const recommended = recommendedAction(info?.state);
+  const guide = AUCTION_PHASE_GUIDE[badge.phase];
+  const summary = taskSummaryFromCapabilities(caps);
+
+  // Whether the name is owned by the current wallet.
+  const isOwned = caps?.ownsName ?? (!!info?.owner && info?.registered === true);
+
+  // Owned names with no urgent auction task (already registered, nothing to
+  // finalize) auto-expand the management section, so the user isn't forced to
+  // click "Manage actions" to see their Transfer/Renew/Finalize/Revoke
+  // controls. Names still mid-flow (just-won/needs-register, lost/needs-redeem)
+  // keep their dedicated guided action up front instead, to avoid duplicating
+  // it inside the advanced section. Gated on `caps` (not the pre-caps `isOwned`
+  // fallback) so a still-loading response can't transiently look like
+  // "owned, no task" and expand a section that collapses back once the real
+  // taskState arrives. Fires once when this becomes true; the user can still
+  // collapse it afterward via the toggle.
+  const shouldAutoExpandManagement =
+    caps?.ownsName === true &&
+    caps.taskState !== "wonNeedsRegister" &&
+    caps.taskState !== "lostNeedsRedeem";
+  useEffect(() => {
+    if (shouldAutoExpandManagement) setShowAllActions(true);
+  }, [shouldAutoExpandManagement]);
+
+  // Whether there are any user-actionable controls in this modal beyond plain info.
+  // Falls back to phase-based check when capabilities haven't loaded yet.
+  const hasRelevantActions =
+    // Phase-based fallback (used when caps are null/loading)
+    badge.phase === "AVAILABLE" ||
+    badge.phase === "BIDDING" ||
+    badge.phase === "REVEAL" ||
+    // Capability-based (authoritative when loaded)
+    caps?.taskState === "wonNeedsRegister" ||
+    caps?.taskState === "lostNeedsRedeem" ||
+    caps?.taskState === "transferPendingFinalize" ||
+    // Owned names have update/transfer/renew/revoke actions
+    (caps?.ownsName === true);
+
+  // Show the advanced toggle only when there are meaningful extra actions behind it.
+  const showAdvancedToggle = hasRelevantActions && (
+    // Auction-phase advanced actions are always meaningful.
+    badge.phase !== "CLOSED" ||
+    // For CLOSED owned names: only show if there are ownership actions the user may want.
+    (caps?.ownsName === true)
+  );
+
+  // Use capabilities to determine if an action is disabled and why.
+  const actionDisabled = (_actionKey: string, cap?: NameActionCapability): boolean => {
+    if (lock) return true;
+    if (cap && !cap.allowed) return true;
+    return false;
+  };
+
+  const actionReason = (cap?: NameActionCapability): string | null => {
+    if (!canWrite) return writeCap?.reason ?? "Writing is not available";
+    if (cap && !cap.allowed) return cap.reason;
+    return null;
+  };
 
   const run = async (
     label: string,
@@ -94,12 +181,43 @@ export function NameActionsModal({
   ) => {
     if (!profile) return;
     setBusy(label);
+    let draft: { id: string };
     try {
-      const draft = await builder();
+      draft = await builder();
+    } catch (e) {
+      showToast(mapError(e, "build"), "error");
+      setBusy(null);
+      return;
+    }
+    try {
       const result = await exec.run(draft.id, profile.id, unlocked);
       showToast(`${label} broadcast — ${result.txid.slice(0, 12)}…`, "success");
       qc.invalidateQueries({ queryKey: ["wallet"] });
+      qc.invalidateQueries({ queryKey: ["read"] });
       onClose();
+    } catch (e) {
+      // exec.run() tags its rejection with which leg of unlock→sign→broadcast
+      // threw (see useExecuteDraft) — thread that through to the toast.
+      showToast(mapError(unwrapStaged(e), stageOf(e)), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Recover a lost bid_commitments row from the on-chain BID coin + a
+  // user-remembered bid amount (see `recover_bid_commitment`). Needs only the
+  // account xpub (public), so it works without unlocking the signer.
+  const handleRecoverBid = async () => {
+    if (!recoverHns) return;
+    setBusy("RECOVER");
+    try {
+      await recoverBid.mutateAsync({
+        walletProfileId: profile?.id ?? null,
+        name,
+        bidValueDoos: hnsToDoos(Number(recoverHns)),
+      });
+      showToast("Bid commitment recovered — you can reveal now.", "success");
+      setRecoverHns("");
     } catch (e) {
       showToast(mapError(e), "error");
     } finally {
@@ -135,48 +253,90 @@ export function NameActionsModal({
   const removeRow = (i: number) =>
     setRows((rs) => (rs.length > 1 ? rs.filter((_, j) => j !== i) : rs));
 
-  // Highlight the phase-recommended action button.
-  const isRec = (key: string) => recommended?.key === key;
+  const submitBid = () =>
+    run("BID", () =>
+      build.bid.mutateAsync({
+        name,
+        bidValue: hnsToDoos(bidNum),
+        lockup: hnsToDoos(lockupNum),
+      }),
+    );
 
   return (
-    <Dialog open={open} onClose={onClose} title={`Manage .${name}`}>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={
+        decodedName === name ? (
+          `.${name}`
+        ) : (
+          <>
+            .{decodedName}{" "}
+            <span className="text-xs font-normal text-gray-400">(.{name})</span>
+          </>
+        )
+      }
+    >
       <div className="space-y-4 text-sm">
-        {/* Phase header */}
-        <div
-          className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded p-2"
-          data-testid="name-phase"
-        >
-          <div className="flex items-center gap-2">
-            <Badge variant={badge.variant}>{badge.label}</Badge>
-            {countdown && (
-              <span className="text-xs text-gray-600" data-testid="name-countdown">
-                {countdown.label} {formatCountdown(countdown)}
-              </span>
-            )}
-          </div>
-          {(info?.highest ?? info?.value) != null && (
-            <span className="text-xs text-gray-500">
-              {info?.highest != null ? `High bid ${formatHns(info.highest)} HNS` : ""}
-              {info?.value != null ? ` · value ${formatHns(info.value)} HNS` : ""}
-            </span>
-          )}
-        </div>
-
-        {recommended && canWrite && (
-          <div
-            className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800"
-            data-testid="name-recommended"
-          >
-            <strong>{recommended.label}:</strong> {recommended.hint}
+        {/* Loading state */}
+        {isLoading && (
+          <div className="text-center py-4">
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mx-auto"></div>
+            <div className="mt-2 text-sm text-gray-600">Loading name info...</div>
           </div>
         )}
 
-        {canWrite ? (
-          <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
-            Each action builds, signs (passphrase prompted in the secure window if
-            locked), and broadcasts an on-chain covenant.
+        {/* Error state */}
+        {isError && (
+          <div className="bg-red-50 border border-red-300 rounded p-3 text-sm text-red-800">
+            <div className="font-medium">Failed to load name info</div>
+            <div className="mt-1 text-xs">{error?.message || "Unknown error"}</div>
           </div>
-        ) : (
+        )}
+
+        {/* Phase header - only show when data is loaded and no error */}
+        {!isLoading && !isError && (
+          <div
+            className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded p-2"
+            data-testid="name-phase"
+          >
+            <div className="flex items-center gap-2">
+              {/* Show task state badge when available, fall back to phase */}
+              {summary ? (
+                <Badge variant={summary.variant}>{summary.label}</Badge>
+              ) : (
+                <Badge variant={badge.variant}>{badge.label}</Badge>
+              )}
+              {countdown && (
+                <span className="text-xs text-gray-600" data-testid="name-countdown">
+                  {countdown.label} {formatCountdown(countdown)}
+                </span>
+              )}
+            </div>
+            {(info?.highest ?? info?.value) != null && (
+              <span className="text-xs text-gray-500">
+                {info?.highest != null ? `High bid ${formatHns(info.highest)} HNS` : ""}
+                {info?.value != null ? ` · value ${formatHns(info.value)} HNS` : ""}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Ownership indicator — shown when the wallet controls this name */}
+        {isOwned && (
+          <div className="bg-green-50 border border-green-200 rounded p-2 text-xs text-green-800" data-testid="ownership-indicator">
+            <span className="font-semibold">Owned by this wallet</span>
+            {caps?.taskState === "ownedNoUrgentAction" && (
+              <span> — This name is registered and controlled by your wallet.</span>
+            )}
+            {caps?.taskState === "wonNeedsRegister" && (
+              <span> — You won the auction. Register to finalize ownership.</span>
+            )}
+          </div>
+        )}
+
+        {/* Write-capability gate — only show when there are relevant actions */}
+        {!canWrite && hasRelevantActions && (
           <div
             className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800"
             role="alert"
@@ -188,145 +348,201 @@ export function NameActionsModal({
           </div>
         )}
 
-        {/* Auction lifecycle */}
-        <section className="space-y-2">
-          <div className="font-medium text-gray-700">Auction</div>
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant={isRec("OPEN") ? "primary" : "secondary"} disabled={lock} onClick={() => run("OPEN", () => build.open.mutateAsync({ name }))}>
-              {busy === "OPEN" ? "…" : "Open"}
-            </Button>
-            <Button size="sm" variant={isRec("REVEAL") ? "primary" : "secondary"} disabled={lock} onClick={() => run("REVEAL", () => build.reveal.mutateAsync({ name }))}>
-              {busy === "REVEAL" ? "…" : "Reveal"}
-            </Button>
-            <Button size="sm" disabled={lock} onClick={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}>
-              {busy === "REDEEM" ? "…" : "Redeem"}
-            </Button>
-          </div>
-          <div className="flex items-end gap-2">
-            <Input label="Bid (HNS doos)" value={bidValue} onChange={(e) => setBidValue(e.target.value)} placeholder="1000000" />
-            <Input label="Lockup (doos)" value={lockup} onChange={(e) => setLockup(e.target.value)} placeholder=">= bid" />
-            <Button
-              size="sm"
-              variant={isRec("BID") ? "primary" : "secondary"}
-              disabled={lock || !bidValue || !lockup}
-              onClick={() =>
-                run("BID", () =>
-                  build.bid.mutateAsync({
-                    name,
-                    bidValue: Number(bidValue),
-                    lockup: Number(lockup),
-                  }),
-                )
-              }
-            >
-              {busy === "BID" ? "…" : "Bid"}
-            </Button>
-          </div>
-        </section>
+        {/* Guided action - only show when loaded and no error.
+            For CLOSED phase, only show when there is an actionable task
+            (won/register, lost/redeem, or owned).
+            Skip for third-party CLOSED names. */}
+        {!isLoading && !isError && guide && (
+          (badge.phase !== "CLOSED" || caps?.ownsName || caps?.taskState === "wonNeedsRegister" || caps?.taskState === "lostNeedsRedeem") ? (
+            <div className="bg-blue-50 border border-blue-200 rounded p-3">
+              <div className="font-medium text-blue-900 mb-2">
+                {summary?.nextActionLabel ?? guide.title}
+              </div>
+              <GuidedAction
+                badge={badge}
+                guide={guide}
+                countdown={countdown}
+                caps={caps}
+                summary={summary}
+                busy={busy}
+                actionDisabled={actionDisabled}
+                actionReason={actionReason}
+                onOpen={() => run("OPEN", () => build.open.mutateAsync({ name }))}
+                onReveal={() => run("REVEAL", () => build.reveal.mutateAsync({ name }))}
+                onRedeem={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}
+                onRegister={() => submitRecords("REGISTER")}
+                bidHns={bidHns}
+                onBidChange={setBidHns}
+                lockupHns={lockupHns}
+                onLockupChange={setLockupHns}
+                bidError={bidInputError}
+                lockupError={lockupInputError}
+                bidFormValid={bidFormValid}
+                forfeitLockupText={forfeitLockupText}
+                onBid={submitBid}
+                recoverHns={recoverHns}
+                onRecoverHnsChange={setRecoverHns}
+                onRecoverBid={handleRecoverBid}
+                rows={rows}
+                onRowChange={setRow}
+                onAddRow={addRow}
+                onRemoveRow={removeRow}
+              />
+            </div>
+          ) : badge.phase === "CLOSED" ? (
+            <div className="bg-blue-50 border border-blue-200 rounded p-3">
+              <div className="font-medium text-blue-900 mb-2">Name details</div>
+              <div className="text-sm text-gray-700">
+                This name is already registered. No auction actions are needed for this name.
+                <div className="mt-1 text-xs text-gray-500">
+                  Phase: {badge.label}
+                  {info?.value != null && ` · Value: ${formatHns(info.value)} HNS`}
+                </div>
+              </div>
+            </div>
+          ) : null
+        )}
 
-        {/* Records (REGISTER / UPDATE) */}
-        <section className="space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="font-medium text-gray-700">DNS records (REGISTER / UPDATE)</div>
+        {/* Advanced actions toggle — only when relevant actions exist */}
+        {showAdvancedToggle && (
+          <div>
             <button
               type="button"
               className="text-xs text-blue-600 hover:underline"
-              onClick={() => setAdvanced((a) => !a)}
-              data-testid="dns-advanced-toggle"
+              onClick={() => setShowAllActions((a) => !a)}
+              data-testid="all-actions-toggle"
             >
-              {advanced ? "Use row editor" : "Advanced (raw JSON)"}
+              {showAllActions
+                ? "Hide advanced actions"
+                : caps?.ownsName
+                  ? "Manage actions"
+                  : "Show all actions"
+              }
             </button>
           </div>
+        )}
 
-          {advanced ? (
-            <textarea
-              className="w-full border border-gray-300 rounded px-2 py-1 font-mono text-xs h-20"
-              value={recordsJson}
-              onChange={(e) => setRecordsJson(e.target.value)}
-              placeholder='[{"type":"TXT","txt":["hello"]}]'
-              data-testid="dns-json"
-            />
-          ) : (
-            <div className="space-y-2" data-testid="dns-rows">
-              {rows.map((row, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <select
-                    className="border border-gray-300 rounded px-2 py-1 text-xs"
-                    value={row.type}
-                    onChange={(e) => setRow(i, { type: e.target.value as DnsRecordType })}
-                    aria-label="record type"
-                  >
-                    {DNS_RECORD_TYPES.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    className="flex-1 border border-gray-300 rounded px-2 py-1 text-xs font-mono"
-                    value={row.value}
-                    onChange={(e) => setRow(i, { value: e.target.value })}
-                    placeholder={valuePlaceholder(row.type)}
-                    aria-label="record value"
-                  />
+        {showAllActions && (
+          <div className="space-y-4 border-t border-gray-200 pt-4">
+            {/* Auction actions - always show for all names */}
+            <section className="space-y-2">
+              <div className="font-medium text-gray-700">Auction</div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm" variant="secondary"
+                  disabled={actionDisabled("OPEN", caps?.canOpen)}
+                  title={actionReason(caps?.canOpen) ?? ""}
+                  onClick={() => run("OPEN", () => build.open.mutateAsync({ name }))}
+                >
+                  {busy === "OPEN" ? "…" : "Open"}
+                </Button>
+                <Button
+                  size="sm" variant="secondary"
+                  disabled={actionDisabled("REVEAL", caps?.canReveal)}
+                  title={actionReason(caps?.canReveal) ?? ""}
+                  onClick={() => run("REVEAL", () => build.reveal.mutateAsync({ name }))}
+                >
+                  {busy === "REVEAL" ? "…" : "Reveal"}
+                </Button>
+                <Button
+                  size="sm" variant="secondary"
+                  disabled={actionDisabled("REDEEM", caps?.canRedeem)}
+                  title={actionReason(caps?.canRedeem) ?? ""}
+                  onClick={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}
+                >
+                  {busy === "REDEEM" ? "…" : "Redeem"}
+                </Button>
+              </div>
+              <BidForm
+                variant="advanced"
+                bidHns={bidHns}
+                onBidChange={setBidHns}
+                lockupHns={lockupHns}
+                onLockupChange={setLockupHns}
+                bidError={bidInputError}
+                lockupError={lockupInputError}
+                forfeitLockupText={forfeitLockupText}
+                disabled={actionDisabled("BID", caps?.canBid) || !bidFormValid}
+                busy={busy === "BID"}
+                onSubmit={submitBid}
+                idleLabel="Bid"
+                busyLabel="…"
+                submitTitle={actionReason(caps?.canBid) ?? ""}
+              />
+            </section>
+
+            {/* DNS records (REGISTER / UPDATE) - only show for owned names */}
+            {isOwned && (
+              <section className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="font-medium text-gray-700">DNS records (REGISTER / UPDATE)</div>
                   <button
                     type="button"
-                    className="text-xs text-gray-400 hover:text-red-600 px-1"
-                    onClick={() => removeRow(i)}
-                    aria-label="remove record"
+                    className="text-xs text-blue-600 hover:underline"
+                    onClick={() => setAdvanced((a) => !a)}
+                    data-testid="dns-advanced-toggle"
                   >
-                    ✕
+                    {advanced ? "Use row editor" : "Advanced (raw JSON)"}
                   </button>
                 </div>
-              ))}
-              <button
-                type="button"
-                className="text-xs text-blue-600 hover:underline"
-                onClick={addRow}
-                data-testid="dns-add-row"
-              >
-                + Add record
-              </button>
-            </div>
-          )}
 
-          <div className="flex gap-2">
-            <Button size="sm" variant={isRec("REGISTER") ? "primary" : "secondary"} disabled={lock} onClick={() => submitRecords("REGISTER")}>
-              {busy === "REGISTER" ? "…" : "Register"}
-            </Button>
-            <Button size="sm" disabled={lock} onClick={() => submitRecords("UPDATE")}>
-              {busy === "UPDATE" ? "…" : "Update"}
-            </Button>
-          </div>
-        </section>
+                {advanced ? (
+                  <textarea
+                    className="w-full border border-gray-300 rounded px-2 py-1 font-mono text-xs h-20"
+                    value={recordsJson}
+                    onChange={(e) => setRecordsJson(e.target.value)}
+                    placeholder='[{"type":"TXT","txt":["hello"]}]'
+                    data-testid="dns-json"
+                  />
+                ) : (
+                  <DnsRecordsEditor
+                    variant="advanced"
+                    rows={rows}
+                    onRowChange={setRow}
+                    onAddRow={addRow}
+                    onRemoveRow={removeRow}
+                  />
+                )}
 
-        {/* Ownership / lifecycle */}
-        <section className="space-y-2">
-          <div className="font-medium text-gray-700">Ownership</div>
-          <Input label="Transfer to address" value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="hs1q… / rs1q…" />
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              variant="danger"
-              disabled={lock || !recipient.trim()}
-              onClick={() => run("TRANSFER", () => build.transfer.mutateAsync({ name, recipient: recipient.trim() }))}
-            >
-              {busy === "TRANSFER" ? "…" : "Transfer"}
-            </Button>
-            <Button size="sm" disabled={lock} onClick={() => run("FINALIZE", () => build.finalize.mutateAsync({ name }))}>
-              {busy === "FINALIZE" ? "…" : "Finalize"}
-            </Button>
-            <Button size="sm" disabled={lock} onClick={() => run("CANCEL", () => build.cancel.mutateAsync({ name }))}>
-              {busy === "CANCEL" ? "…" : "Cancel transfer"}
-            </Button>
-            <Button size="sm" disabled={lock} onClick={() => run("RENEW", () => build.renew.mutateAsync({ name }))}>
-              {busy === "RENEW" ? "…" : "Renew"}
-            </Button>
-            <Button size="sm" variant="danger" disabled={lock} onClick={() => run("REVOKE", () => build.revoke.mutateAsync({ name }))}>
-              {busy === "REVOKE" ? "…" : "Revoke"}
-            </Button>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm" variant="secondary"
+                    disabled={actionDisabled("REGISTER", caps?.canRegister)}
+                    title={actionReason(caps?.canRegister) ?? ""}
+                    onClick={() => submitRecords("REGISTER")}
+                  >
+                    {busy === "REGISTER" ? "…" : "Register"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={actionDisabled("UPDATE", caps?.canUpdate)}
+                    title={actionReason(caps?.canUpdate) ?? ""}
+                    onClick={() => submitRecords("UPDATE")}
+                  >
+                    {busy === "UPDATE" ? "…" : "Update"}
+                  </Button>
+                </div>
+              </section>
+            )}
+
+            {/* Ownership / lifecycle - only show for owned names */}
+            {isOwned && (
+              <OwnershipActions
+                caps={caps}
+                busy={busy}
+                recipient={recipient}
+                onRecipientChange={setRecipient}
+                actionDisabled={actionDisabled}
+                actionReason={actionReason}
+                onTransfer={() => run("TRANSFER", () => build.transfer.mutateAsync({ name, recipient: recipient.trim() }))}
+                onFinalize={() => run("FINALIZE", () => build.finalize.mutateAsync({ name }))}
+                onCancelTransfer={() => run("CANCEL", () => build.cancel.mutateAsync({ name }))}
+                onRenew={() => run("RENEW", () => build.renew.mutateAsync({ name }))}
+                onRevoke={() => run("REVOKE", () => build.revoke.mutateAsync({ name }))}
+              />
+            )}
           </div>
-        </section>
+        )}
 
         <div className="flex justify-end">
           <Button variant="ghost" onClick={onClose} disabled={!!busy}>Close</Button>

@@ -19,6 +19,7 @@ import { Dialog } from "./ui/Dialog";
 import { Input } from "./ui/Input";
 import type { Asset, MigrationStatus } from "../types";
 import { formatHns, formatDate, formatCount } from "../lib/utils";
+import { displayName } from "../lib/idn";
 import { mapError } from "../lib/errors";
 import { open, save } from "../lib/dialog";
 import { invoke } from "../lib/invoke";
@@ -144,7 +145,7 @@ export function TldInventory() {
       size: 160,
       cell: (info) => (
         <span className="font-mono font-semibold text-sm">
-          .{info.getValue<string>()}
+          .{displayName(info.getValue<string>())}
         </span>
       ),
     },
@@ -509,7 +510,10 @@ export function TldInventory() {
                   on-chain name covenant. It cannot be undone.
                 </div>
                 <p className="text-sm text-gray-600">
-                  Name: <strong>.{tld}</strong>
+                  Name: <strong>.{tld ? displayName(tld) : tld}</strong>
+                  {tld && displayName(tld) !== tld && (
+                    <span className="ml-1 text-xs text-gray-400">(.{tld})</span>
+                  )}
                 </p>
                 <Input
                   label="Destination Address"
@@ -517,6 +521,9 @@ export function TldInventory() {
                   onChange={(e) => setTransferAddress(e.target.value)}
                   placeholder={activeProfile?.network === "mainnet" ? "hs1q…" : "rs1q… / ts1q…"}
                 />
+                {/* Confirm-to-type intentionally compares against the RAW
+                    on-chain name (`tld`), not the decoded display form —
+                    that's what the covenant actually signs. */}
                 <Input
                   label={`Type "${tld}" to confirm`}
                   value={transferConfirmName}

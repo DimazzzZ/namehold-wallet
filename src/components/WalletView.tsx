@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useWalletProfiles,
@@ -7,8 +8,6 @@ import {
   useWriteCapability,
   useWalletBalances,
   useTxDrafts,
-  useSyncWalletState,
-  useDiscoverOwnedNames,
   useUnlockSigner,
   useLockSigner,
   useSetActiveProfile,
@@ -16,8 +15,15 @@ import {
   useSignTxDraft,
   useBroadcastTxDraft,
 } from "../queries/wallet";
-import { useReadNames, useReadBalance } from "../queries/read";
-import { auctionPhase } from "../lib/auction";
+import {
+  useReadNames,
+  useReadBalance,
+  useReadRenewals,
+  useNamesActionCapabilities,
+} from "../queries/read";
+import { useStartFullSync, useSyncStatus, useCancelFullSync } from "../queries/sync";
+import { auctionPhase, formatCountdown } from "../lib/auction";
+import { displayName } from "../lib/idn";
 import { NameActionsModal } from "./NameActionsModal";
 import { WalletManager } from "./WalletManager";
 import { AddWalletForm } from "./AddWalletForm";
@@ -31,13 +37,14 @@ import {
   hnsToDollarydoos,
   dollarydoosToHns,
   formatDate,
+  latestTimestamp,
   isLikelyHnsAddress,
 } from "../lib/utils";
 import { mapError } from "../lib/errors";
 import { writeText } from "../lib/clipboard";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
-import type { TxDraftSummary } from "../types";
+import type { NameActionCapabilities, TxDraftSummary } from "../types";
 
 export function WalletView() {
   const qc = useQueryClient();
@@ -51,9 +58,20 @@ export function WalletView() {
   const { data: readBalance } = useReadBalance();
   const { data: drafts = [] } = useTxDrafts();
   const { data: names = [] } = useReadNames();
+  const { data: renewals } = useReadRenewals();
+  // Capability-driven urgency alerts (F2 fix) — ONE batch fetch pinned to the
+  // active wallet, replacing the old raw-phase filters below that showed a
+  // false "you lost, redeem" for any CLOSED/unowned name even when this
+  // wallet never placed a bid. Watch-only profiles never show these alerts
+  // (no actions to take), so skip the fetch entirely for them.
+  const { data: nameCaps = [], isError: nameCapsError } = useNamesActionCapabilities(
+    profile?.watchOnly ? [] : names.map((n) => n.name),
+    profile?.id ?? null,
+  );
 
-  const sync = useSyncWalletState();
-  const discoverNames = useDiscoverOwnedNames();
+  const startSync = useStartFullSync();
+  const cancelSync = useCancelFullSync();
+  const syncStatus = useSyncStatus();
   const unlock = useUnlockSigner();
   const lock = useLockSigner();
   const setActive = useSetActiveProfile();
@@ -71,8 +89,8 @@ export function WalletView() {
   // persistent in-dialog error (not just a transient toast) and keep the dialog
   // open so the user can see exactly what happened before deciding to retry.
   const [sendError, setSendError] = useState<string | null>(null);
+  const navigate = useNavigate();
   const [manageName, setManageName] = useState<string | null>(null);
-  const [arbitraryName, setArbitraryName] = useState("");
   // Wallets manager modal (add / switch / delete). `addMode` opens it straight
   // to the add-wallet form.
   const [walletManagerOpen, setWalletManagerOpen] = useState(false);
@@ -106,42 +124,23 @@ export function WalletView() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Refresh is best-effort. Reads (balance/names) and owned-name discovery come
-  // from the explorer (node-free); the local node is OPTIONAL and only needed to
-  // sync spendable coins. Neither a missing node nor a busy explorer should raise
-  // a scary error toast — they're expected conditions, surfaced as calm info.
+  // Sync runs all reconciliation in a background thread.
+  // The frontend polls status via useSyncStatus (persistent across navigation).
   const handleSync = async () => {
-    // Node sync: soft-fail. A missing node already returns nodeReachable:false;
-    // any other node error just means "couldn't sync spendable coins right now".
-    let nodeReachable = false;
     try {
-      const res = (await sync.mutateAsync(undefined)) as { nodeReachable?: boolean } | undefined;
-      nodeReachable = res?.nodeReachable !== false;
-    } catch {
-      nodeReachable = false;
+      await startSync.mutateAsync();
+      showToast("Sync started in background", "info");
+    } catch (e) {
+      showToast(mapError(e), "error");
     }
+  };
 
-    // Explorer discovery of owned names: best-effort, may be partial if the
-    // explorer rate-limits mid-crawl.
-    const found = (await discoverNames.mutateAsync().catch(() => undefined)) as
-      | { discovered?: number; partial?: boolean }
-      | undefined;
-
-    if (found?.partial) {
-      showToast(
-        "The explorer is busy (rate-limited). Some names may be missing — Refresh again shortly.",
-        "info",
-      );
-    } else if (nodeReachable) {
-      showToast("Synced", "success");
-    } else {
-      const n = found?.discovered ?? 0;
-      showToast(
-        n > 0
-          ? `Found ${n} owned name${n === 1 ? "" : "s"}. Connect a local node to sync spendable coins.`
-          : "Reads refreshed. Connect a local node to sync spendable coins.",
-        "info",
-      );
+  const handleCancelSync = async () => {
+    try {
+      await cancelSync.mutateAsync();
+      showToast("Stopping sync…", "info");
+    } catch (e) {
+      showToast(mapError(e), "error");
     }
   };
 
@@ -267,13 +266,58 @@ export function WalletView() {
             )}
           </>
         }
-        actions={[
-          {
-            label: sync.isPending || discoverNames.isPending ? "Refreshing…" : "Refresh",
-            onClick: handleSync,
-          },
-        ]}
+        actions={
+          syncStatus.data?.running
+            ? [
+                {
+                  label: syncStatus.data.cancelRequested ? "Stopping…" : "Stop",
+                  variant: "danger",
+                  disabled: syncStatus.data.cancelRequested,
+                  loading: cancelSync.isPending,
+                  onClick: handleCancelSync,
+                },
+              ]
+            : [
+                {
+                  label: "Sync",
+                  onClick: handleSync,
+                },
+              ]
+        }
       />
+
+      {syncStatus.data?.running && (
+        <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm text-blue-800" data-testid="sync-status">
+          <div className="font-medium">{syncStatus.data.progressLabel}</div>
+          <div className="text-xs mt-1 space-y-0.5">
+            <div>Step: {syncStatus.data.step}{syncStatus.data.waiting ? " (waiting for explorer…)" : ""}</div>
+            {syncStatus.data.repairCandidates > 0 && (
+              <div>
+                Checked: {Math.max(0, syncStatus.data.repairCandidates - syncStatus.data.repairRemaining)}
+                {" "}· Owned: +{syncStatus.data.repaired} · Remaining: ~{syncStatus.data.repairRemaining}
+              </div>
+            )}
+            {syncStatus.data.step === "discover" && syncStatus.data.discoverAddressesTotal > 0 && (
+              <div>Addresses: {syncStatus.data.discoverAddressesDone} / {syncStatus.data.discoverAddressesTotal}</div>
+            )}
+            {syncStatus.data.step === "discover" && syncStatus.data.discoverTxsScanned > 0 && (
+              <div>Transactions scanned: {syncStatus.data.discoverTxsScanned}</div>
+            )}
+            {syncStatus.data.discoverCandidates > 0 && (
+              <div>Candidate names found: {syncStatus.data.discoverCandidates}</div>
+            )}
+            {syncStatus.data.discoverCurrentName && (
+              <div>Checking: {syncStatus.data.discoverCurrentName}</div>
+            )}
+            {syncStatus.data.discovered > 0 && (
+              <div>Newly discovered: {syncStatus.data.discovered}</div>
+            )}
+            {syncStatus.data.errors?.length > 0 && (
+              <div className="text-red-600">Errors: {syncStatus.data.errors.join("; ")}</div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Profile quick-switch + manage */}
       <div className="flex items-center gap-2 text-sm">
@@ -382,19 +426,19 @@ export function WalletView() {
         )}
       </div>
 
-      {/* Balances — confirmed/unconfirmed come from the HNSFans explorer
-          (node-free); "Spendable (synced)" is what coin selection can use after
-          a node sync. */}
+      {/* Balances — confirmed/unconfirmed come from the synced node when
+          available, otherwise from the HNSFans explorer; "Spendable (synced)"
+          is what coin selection can use after a node sync. */}
       <div className="grid grid-cols-3 gap-4">
         <div className="bg-white rounded p-4 border border-gray-200">
           <div className="text-sm text-gray-500">Confirmed</div>
           <div className="text-2xl font-bold">{formatHns(readBalance?.confirmed ?? 0)}</div>
-          <div className="text-xs text-gray-400">HNS · via explorer</div>
+          <div className="text-xs text-gray-400">HNS</div>
         </div>
         <div className="bg-white rounded p-4 border border-gray-200">
           <div className="text-sm text-gray-500">Unconfirmed</div>
           <div className="text-2xl font-bold">{formatHns(readBalance?.unconfirmed ?? 0)}</div>
-          <div className="text-xs text-gray-400">HNS · via explorer</div>
+          <div className="text-xs text-gray-400">HNS</div>
         </div>
         <div className="bg-white rounded p-4 border border-gray-200">
           <div className="text-sm text-gray-500">Spendable (synced)</div>
@@ -432,28 +476,140 @@ export function WalletView() {
         </div>
       )}
 
-      {/* Reveal alert — names whose bids are in the REVEAL phase need a reveal tx
-          or the bid lockup stays stuck. Surfaced prominently so it isn't missed. */}
+      {/* Degraded notice (Task 12 review folded into Task 14): the batch
+          capabilities query silently renders nothing while loading (the
+          transient window is short and self-healing per Task 12's review),
+          but a PERSISTENT failure (isError) must not look identical to "no
+          urgent tasks" — it means we genuinely can't tell. */}
+      {!isWatchOnly && nameCapsError && (
+        <div
+          className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
+          data-testid="urgent-tasks-degraded"
+        >
+          Couldn't verify urgent auction tasks — data may be stale.
+        </div>
+      )}
+
+      {/* Auction urgency alerts (F2 fix) — driven ENTIRELY by the backend
+          capability model (taskState), not raw phase filters. The old
+          phase-based filters showed "you lost, redeem" for ANY CLOSED name
+          with no owner — including names this wallet never bid on — and
+          never showed a countdown. Capabilities are the single source of
+          truth for "does this wallet actually have a redeemable/revealable/
+          registerable coin for this name". */}
       {!isWatchOnly &&
         (() => {
-          const revealNeeded = names.filter(
-            (n) => (n.state ?? "").toUpperCase() === "REVEAL",
+          const capsByName = new Map<string, NameActionCapabilities>(
+            nameCaps.map((c) => [c.name, c]),
           );
-          const first = revealNeeded[0];
-          if (!first) return null;
+          // Countdown fragment for a name's capabilities — honest: when the
+          // backend has no live countdown (e.g. node unreachable/no stats),
+          // this is null and the banner renders WITHOUT a countdown fragment
+          // rather than fabricating one.
+          const countdownFragment = (name: string): string | null => {
+            const c = capsByName.get(name);
+            if (!c || c.countdownBlocks == null) return null;
+            return formatCountdown({
+              label: c.countdownLabel ?? "",
+              blocks: c.countdownBlocks,
+              hours: c.countdownHours,
+            });
+          };
+
+          const revealNeeded = names.filter(
+            (n) => capsByName.get(n.name)?.taskState === "readyToReveal",
+          );
+          const wonNeeded = names.filter(
+            (n) => capsByName.get(n.name)?.taskState === "wonNeedsRegister",
+          );
+          // Only a name whose capability model says lostNeedsRedeem — i.e. we
+          // hold a redeemable reveal coin for it — surfaces here. A CLOSED
+          // name with no owner that this wallet never bid on (or already
+          // redeemed) never reaches this state, so it never shows a false
+          // "you lost" banner.
+          const lostNeeded = names.filter(
+            (n) => capsByName.get(n.name)?.taskState === "lostNeedsRedeem",
+          );
+          if (revealNeeded.length === 0 && wonNeeded.length === 0 && lostNeeded.length === 0) return null;
+
+          const revealCountdown = revealNeeded.length > 0 ? countdownFragment(revealNeeded[0]!.name) : null;
+
+          return (
+            <>
+              {revealNeeded.length > 0 && (
+                <div
+                  className="flex items-center justify-between gap-3 text-sm text-amber-900 bg-amber-50 border border-amber-300 rounded p-3"
+                  data-testid="reveal-alert"
+                >
+                  <div>
+                    <strong>Action required: reveal your bid</strong> —{" "}
+                    {revealNeeded.map((n) => `.${displayName(n.name)}`).join(", ")}{" "}
+                    {revealNeeded.length === 1 ? "is" : "are"} in the reveal phase. Reveal
+                    before the window closes or your locked bid can't be reclaimed.
+                    {revealCountdown && <> Reveal ends in {revealCountdown}.</>}
+                  </div>
+                  <Button size="sm" onClick={() => setManageName(revealNeeded[0]!.name)}>
+                    Reveal
+                  </Button>
+                </div>
+              )}
+              {wonNeeded.length > 0 && (
+                <div
+                  className="flex items-center justify-between gap-3 text-sm text-green-900 bg-green-50 border border-green-300 rounded p-3"
+                  data-testid="register-alert"
+                >
+                  <div>
+                    <strong>Won! Register now</strong> —{" "}
+                    {wonNeeded.map((n) => `.${displayName(n.name)}`).join(", ")}{" "}
+                    {wonNeeded.length === 1 ? "was" : "were"} won. Register to
+                    finalize ownership and set DNS records.
+                  </div>
+                  <Button size="sm" onClick={() => setManageName(wonNeeded[0]!.name)}>
+                    Register
+                  </Button>
+                </div>
+              )}
+              {lostNeeded.length > 0 && (
+                <div
+                  className="flex items-center justify-between gap-3 text-sm text-red-900 bg-red-50 border border-red-300 rounded p-3"
+                  data-testid="redeem-alert"
+                >
+                  <div>
+                    <strong>Lost bid — redeem lockup</strong> —{" "}
+                    {lostNeeded.map((n) => `.${displayName(n.name)}`).join(", ")}{" "}
+                    {lostNeeded.length === 1 ? "was" : "were"} not won. Redeem your
+                    reveal coin to reclaim the funds.
+                  </div>
+                  <Button size="sm" onClick={() => setManageName(lostNeeded[0]!.name)}>
+                    Redeem
+                  </Button>
+                </div>
+              )}
+            </>
+          );
+        })()}
+
+      {/* Renewal urgency alert — chain-sourced only: CSV-imported expiry data
+          is stale by definition and must not fire a "renew now" alarm. */}
+      {!isWatchOnly &&
+        (() => {
+          const expiring = (renewals?.names ?? []).filter(
+            (r) => r.expiringSoon && r.source === "chain",
+          );
+          if (expiring.length === 0) return null;
           return (
             <div
-              className="flex items-center justify-between gap-3 text-sm text-amber-900 bg-amber-50 border border-amber-300 rounded p-3"
-              data-testid="reveal-alert"
+              className="flex items-center justify-between gap-3 text-sm text-red-900 bg-red-50 border border-red-300 rounded p-3"
+              data-testid="expiring-alert"
             >
               <div>
-                <strong>Action required: reveal your bid</strong> —{" "}
-                {revealNeeded.map((n) => `.${n.name}`).join(", ")}{" "}
-                {revealNeeded.length === 1 ? "is" : "are"} in the reveal phase. Reveal
-                before the window closes or your locked bid can't be reclaimed.
+                <strong>Renew soon — name{expiring.length === 1 ? "" : "s"} expiring</strong>{" "}
+                — {expiring.map((r) => `.${displayName(r.name)}`).join(", ")}{" "}
+                {expiring.length === 1 ? "is" : "are"} close to the end of the renewal
+                window. Renew now — an expired Handshake name is lost forever.
               </div>
-              <Button size="sm" onClick={() => setManageName(first.name)}>
-                Reveal
+              <Button size="sm" onClick={() => setManageName(expiring[0]!.name)}>
+                Renew
               </Button>
             </div>
           );
@@ -490,27 +646,25 @@ export function WalletView() {
         </div>
       )}
 
+      {/* Quick link to the Auctions page */}
+      {!isWatchOnly && (
+        <div className="bg-white rounded p-4 border border-gray-200 flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium text-gray-900">Get a TLD</div>
+            <div className="text-xs text-gray-500">
+              Acquire new Handshake domains through the Vickrey auction system.
+            </div>
+          </div>
+          <Button size="sm" variant="primary" onClick={() => navigate("/auctions")}>
+            Auctions
+          </Button>
+        </div>
+      )}
+
       {/* Owned Names (from local name-state cache) */}
       <div className="bg-white rounded p-4 border border-gray-200">
         <div className="flex items-center justify-between mb-2">
           <div className="text-sm text-gray-500">Owned Names ({names.length})</div>
-          {!isWatchOnly && (
-            <div className="flex items-center gap-2">
-              <input
-                className="border border-gray-300 rounded px-2 py-1 text-xs"
-                value={arbitraryName}
-                onChange={(e) => setArbitraryName(e.target.value.toLowerCase())}
-                placeholder="name to act on (e.g. open/bid)"
-              />
-              <Button
-                size="sm"
-                disabled={!arbitraryName.trim()}
-                onClick={() => setManageName(arbitraryName.trim())}
-              >
-                Name actions
-              </Button>
-            </div>
-          )}
         </div>
         {names.length > 0 ? (
           <div className="max-h-60 overflow-auto">
@@ -527,7 +681,7 @@ export function WalletView() {
               <tbody>
                 {names.map((n) => (
                   <tr key={n.name} className="border-t border-gray-100">
-                    <td className="py-1 font-mono">.{n.name}</td>
+                    <td className="py-1 font-mono">.{displayName(n.name)}</td>
                     <td className="py-1">
                       {n.state ? (
                         <Badge variant={auctionPhase(n.state).variant}>
@@ -553,7 +707,7 @@ export function WalletView() {
           </div>
         ) : (
           <div className="text-gray-400 text-sm py-4 text-center">
-            {discoverNames.isPending
+            {false
               ? "Scanning the explorer for names this wallet owns…"
               : "No owned names found yet. Click Refresh to scan for names this wallet owns."}
           </div>
@@ -626,7 +780,9 @@ export function WalletView() {
 
       <div className="text-xs text-gray-400">
         Profile: {profile.id.slice(0, 8)}… | Last synced height:{" "}
-        {profile.lastSyncedHeight ?? "—"} | xpub: {profile.accountXpub.slice(0, 16)}…
+        {profile.lastSyncedHeight ?? "—"} | Last successful sync:{" "}
+        {formatDate(latestTimestamp(profile.lastSyncedAt, profile.lastExplorerSyncAt))} | xpub:{" "}
+        {profile.accountXpub.slice(0, 16)}…
       </div>
 
       {manageName && (

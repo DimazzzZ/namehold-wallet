@@ -9,6 +9,7 @@ import { Badge } from "./ui/Badge";
 import { Select } from "./ui/Select";
 import { StatusBadge } from "./ui/StatusBadge";
 import { formatDate, formatCount } from "../lib/utils";
+import { displayName } from "../lib/idn";
 import { useUiStore } from "../stores/ui";
 import type { BatchStatus, MigrationStatus } from "../types";
 
@@ -146,7 +147,7 @@ export function Batches() {
               <tbody>
                 {batchDetail.assets.map((asset) => (
                   <tr key={asset.id} className="border-t border-gray-100">
-                    <td className="px-3 py-2 font-mono">.{asset.tld}</td>
+                    <td className="px-3 py-2 font-mono">.{displayName(asset.tld)}</td>
                     <td className="px-3 py-2">
                       <StatusBadge status={asset.status as MigrationStatus} />
                     </td>
@@ -178,7 +179,7 @@ export function Batches() {
                   className="flex items-center justify-between py-1 px-2 hover:bg-gray-50 rounded cursor-pointer"
                   onClick={() => handleAddToBatch([asset.id])}
                 >
-                  <span className="font-mono text-sm">.{asset.tld}</span>
+                  <span className="font-mono text-sm">.{displayName(asset.tld)}</span>
                   <StatusBadge status={asset.status as MigrationStatus} />
                 </div>
               ))}
@@ -292,7 +293,7 @@ export function Batches() {
                         });
                       }}
                     />
-                    <span className="font-mono text-sm">.{asset.tld}</span>
+                    <span className="font-mono text-sm">.{displayName(asset.tld)}</span>
                     <StatusBadge status={asset.status as MigrationStatus} />
                   </label>
                 ))

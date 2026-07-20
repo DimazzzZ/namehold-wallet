@@ -8,7 +8,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { writeText, readText } from "@tauri-apps/plugin-clipboard-manager";
+import { scheduleClipboardClear, CLIPBOARD_CLEAR_MS } from "./clipboard-clear";
 
 interface PromptRequest {
   mode: "passphrase" | "passphrase_new" | "reveal" | "import";
@@ -42,6 +43,7 @@ const STYLE = `
     user-select: all; }
   .row { display: flex; gap: 8px; align-items: center; }
   .row.end { margin-top: auto; justify-content: flex-end; }
+  .hint { font-size: 11px; color: #888; }
   label.chk { font-size: 13px; display: flex; gap: 8px; align-items: center; }
   button { padding: 9px 16px; font-size: 14px; border-radius: 8px; border: 1px solid #bbb;
     background: #fff; cursor: pointer; }
@@ -122,16 +124,26 @@ function render(req: PromptRequest) {
     const phrase = el("div", { className: "phrase", textContent: req.payload ?? "" });
     wrap.append(phrase);
     const copy = el("button", { textContent: "Copy" });
+    const clipboardHint = el("div", {
+      className: "hint",
+      textContent: "Clipboard clears automatically ~30s after copying.",
+    });
     copy.onclick = async () => {
+      const value = req.payload ?? "";
       try {
-        await writeText(req.payload ?? "");
+        await writeText(value);
         copy.textContent = "Copied";
         setTimeout(() => (copy.textContent = "Copy"), 1500);
+        // Auto-clear: only wipes the clipboard if it still holds this exact
+        // value by then (see clipboard-clear.ts for the compare/fallback
+        // rationale) — so a seed phrase never lingers in the clipboard
+        // indefinitely.
+        scheduleClipboardClear(value, { readText, writeText }, CLIPBOARD_CLEAR_MS);
       } catch {
         /* clipboard unavailable; ignore */
       }
     };
-    wrap.append(el("div", { className: "row" }, [copy]));
+    wrap.append(el("div", { className: "row" }, [copy]), clipboardHint);
     const chk = el("input", { type: "checkbox" });
     const lab = el("label", { className: "chk" }, [chk, "I have written down my recovery phrase"]);
     wrap.append(lab);

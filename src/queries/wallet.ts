@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
+import { StagedError } from "../lib/errors";
 import type {
   WalletProfileSummary,
   SignerSessionSummary,
@@ -155,6 +156,11 @@ export function useDiscoverOwnedNames() {
   return useWalletMutation<void>("discover_owned_names");
 }
 
+/** Repair owned-name cache: reconcile inventory + tracked names against live explorer data. */
+export function useRepairOwnedNames() {
+  return useWalletMutation<void>("repair_owned_names");
+}
+
 export function useBuildSendDraft() {
   const qc = useQueryClient();
   return useMutation({
@@ -204,9 +210,31 @@ export function useBidCommitments() {
 }
 
 /**
+ * Export every bid commitment (name, value, blind, nonce, address, txids) for
+ * a profile as a JSON string, for the user to save as a local backup file.
+ * Contains secret material — callers must warn the user to store it alongside
+ * their seed.
+ */
+export function useExportBidCommitments() {
+  return useMutation({
+    mutationFn: (walletProfileId: string | null) =>
+      invoke<string>("export_bid_commitments", { walletProfileId }),
+  });
+}
+
+/**
  * Execute a built draft end-to-end: unlock the signer (if locked), sign, then
  * broadcast. Returns an async runner; the caller passes the draft id, the
  * active profile id, and whether the signer is already unlocked.
+ *
+ * A rejection from `run()` is a `StagedError` tagging which leg threw
+ * ("sign" covers both the unlock-if-needed step and the sign step, since
+ * unlocking only exists to get to signing; "broadcast" is the final leg).
+ * `StagedError#toString()` delegates to the original error, so any existing
+ * caller that just does `mapError(e)` / `String(e)` on the rejection — with
+ * no idea `StagedError` exists — keeps seeing byte-identical output.
+ * `unlock`/`sign`/`broadcast` are also returned for callers that need the
+ * raw mutation objects.
  */
 export function useExecuteDraft() {
   const unlock = useUnlockSigner();
@@ -218,10 +246,28 @@ export function useExecuteDraft() {
     unlocked: boolean,
   ): Promise<BroadcastResult> => {
     if (!unlocked) {
-      await unlock.mutateAsync(profileId);
+      try {
+        await unlock.mutateAsync(profileId);
+      } catch (e) {
+        throw new StagedError("sign", e);
+      }
     }
-    await sign.mutateAsync(draftId);
-    return broadcast.mutateAsync(draftId);
+    try {
+      await sign.mutateAsync(draftId);
+    } catch (e) {
+      throw new StagedError("sign", e);
+    }
+    try {
+      return await broadcast.mutateAsync(draftId);
+    } catch (e) {
+      throw new StagedError("broadcast", e);
+    }
   };
-  return { run, pending: unlock.isPending || sign.isPending || broadcast.isPending };
+  return {
+    run,
+    pending: unlock.isPending || sign.isPending || broadcast.isPending,
+    unlock,
+    sign,
+    broadcast,
+  };
 }

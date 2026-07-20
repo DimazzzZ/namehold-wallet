@@ -17,6 +17,7 @@ import { Dialog } from "./ui/Dialog";
 import { EmptyState } from "./ui/EmptyState";
 import { mapError } from "../lib/errors";
 import { formatDate, formatCount, formatHnsAmount, truncate } from "../lib/utils";
+import { displayName } from "../lib/idn";
 
 /** Whole days from now until an ISO date (negative = already past). */
 function daysUntil(iso: string): number | null {
@@ -79,6 +80,10 @@ export function NamebaseDashboard() {
     queryKey: ["namebase", "status"],
     queryFn: () => invoke<{ connected: boolean; has_cookie: boolean; account?: NamebaseAccount; error?: string }>("get_namebase_status"),
     retry: false,
+    // Keep-alive: while connected, poll every ~10 minutes so leaving this
+    // dashboard open extends the Namebase session and picks up any
+    // server-side cookie rotation instead of letting it go stale silently.
+    refetchInterval: (query) => (query.state.data?.connected ? 10 * 60 * 1000 : false),
   });
 
   const { data: domainsData } = useQuery({
@@ -306,7 +311,7 @@ export function NamebaseDashboard() {
                       const withdrawable = (d as any).withdrawable === true;
                       return (
                         <tr key={d.name} className="border-t border-gray-100">
-                          <td className="px-2 py-1 font-mono">.{d.name}</td>
+                          <td className="px-2 py-1 font-mono">.{displayName(d.name)}</td>
                           <td className="px-2 py-1">
                             <Badge variant={d.status === "locked_for_subdomains" ? "info" : "default"}>
                               {d.status.replace(/_/g, " ")}
@@ -358,7 +363,7 @@ export function NamebaseDashboard() {
                       const autoRenew = autoRenewByDomain.get(r.domain);
                       return (
                         <tr key={r.domain} className="border-t border-gray-100">
-                          <td className="px-2 py-1 font-mono">.{r.domain}</td>
+                          <td className="px-2 py-1 font-mono">.{displayName(r.domain)}</td>
                           <td className={`px-2 py-1 ${expiryColor(days)}`}>
                             {formatDate(r.estimated_date)}
                             {days != null && (
@@ -435,7 +440,7 @@ export function NamebaseDashboard() {
                               onChange={() => toggleDomain(d.name)}
                             />
                           </td>
-                          <td className="px-2 py-1 font-mono">.{d.name}</td>
+                          <td className="px-2 py-1 font-mono">.{displayName(d.name)}</td>
                           <td className="px-2 py-1">
                             {isStaked ? (
                               <Badge variant="warning">Staked</Badge>
@@ -480,11 +485,12 @@ export function NamebaseDashboard() {
       <Dialog
         open={!!transferTarget}
         onClose={() => setTransferTarget(null)}
-        title={`Transfer .${transferTarget?.name || ""}`}
+        title={`Transfer .${transferTarget ? displayName(transferTarget.name) : ""}`}
       >
         <div className="space-y-3">
           <p className="text-sm text-gray-600">
-            Transfer <strong>.{transferTarget?.name}</strong> from Namebase to an HNS address.
+            Transfer <strong>.{transferTarget ? displayName(transferTarget.name) : ""}</strong> from
+            Namebase to an HNS address.
           </p>
           <div>
             <Input
@@ -526,7 +532,7 @@ export function NamebaseDashboard() {
                 setTransferPending(true);
                 try {
                   await invoke("namebase_transfer_domain", { name: transferTarget.name, address: dest });
-                  showToast(`Transfer initiated for .${transferTarget.name}`, "success");
+                  showToast(`Transfer initiated for .${displayName(transferTarget.name)}`, "success");
                   setTransferTarget(null);
                   qc.invalidateQueries({ queryKey: ["namebase-withdrawals"] });
                   qc.invalidateQueries({ queryKey: ["namebase-domain-withdrawals"] });
@@ -586,7 +592,7 @@ export function NamebaseDashboard() {
           <div className="text-sm text-gray-600">
             <p className="mb-2"><strong>Selected domains ({formatCount(selectedDomains.size)}):</strong></p>
             <div className="max-h-32 overflow-auto bg-gray-50 rounded p-2 text-xs font-mono">
-              {Array.from(selectedDomains).map((name) => `.${name}`).join(", ")}
+              {Array.from(selectedDomains).map((name) => `.${displayName(name)}`).join(", ")}
             </div>
           </div>
           <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
@@ -787,7 +793,7 @@ function RecentActivity() {
                     const { label, tone } = namebaseStatus(t.status);
                     return (
                       <tr key={t.id ?? t.domain} className="border-b border-gray-50">
-                        <td className="py-2 font-mono">.{t.domain}</td>
+                        <td className="py-2 font-mono">.{displayName(t.domain)}</td>
                         <td className="py-2 font-mono text-xs text-gray-500">
                           {truncate(t.destination_address, 16)}
                           {!!myAddress && t.destination_address === myAddress && (
