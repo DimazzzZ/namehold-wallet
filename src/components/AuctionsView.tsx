@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useWriteCapability, useActiveProfile } from "../queries/wallet";
+import { useWriteCapability, useActiveProfile, useTxDrafts } from "../queries/wallet";
 import { useReadNames, useNamesActionCapabilities } from "../queries/read";
 import {
   auctionPhase,
@@ -27,6 +27,11 @@ import type { HsdName, NameActionCapabilities } from "../types";
 export function AuctionsView() {
   const { data: writeCap } = useWriteCapability();
   const { data: names = [] } = useReadNames();
+  // Guard against a resolved-but-null query result (e.g. a test double that
+  // doesn't implement `list_tx_drafts` returns `null`, not `undefined`, so
+  // the `= []` destructuring default alone wouldn't catch it).
+  const { data: draftsData } = useTxDrafts();
+  const drafts = draftsData ?? [];
   // Resolve the active wallet once here (not inside the inline TaskRow, which
   // remounts every render and would trigger a profile-refetch storm) so every
   // capability fetch is pinned to this wallet.
@@ -51,6 +56,28 @@ export function AuctionsView() {
     if (phase === "CLOSED") return n.owner != null && n.registered === false;
     return false;
   });
+
+  // Just-broadcast OPEN drafts, surfaced as synthetic rows so a freshly
+  // opened name doesn't sit invisible until the next sync tracks it as
+  // OPENING (`useReadNames` only reflects names already in local state).
+  // Deduped against `activeTasks` by name — once the name is genuinely
+  // tracked (e.g. synced into OPENING), the real row wins and the synthetic
+  // one disappears, so there's never a double entry for the same name.
+  const activeTaskNames = new Set(activeTasks.map((n) => n.name));
+  const pendingOpenNames = Array.from(
+    new Set(
+      drafts
+        .filter(
+          (d) =>
+            d.action === "open" &&
+            (d.status === "signed" ||
+              d.status === "broadcast_pending" ||
+              d.status === "broadcasted") &&
+            !!d.summary?.name,
+        )
+        .map((d) => d.summary!.name as string),
+    ),
+  ).filter((name) => !activeTaskNames.has(name));
 
   // ONE batch capability fetch for the whole list (F5 fix — this used to be
   // an N+1 invoke, one `get_name_action_capabilities` call per row, fired
@@ -134,6 +161,26 @@ export function AuctionsView() {
     );
   };
 
+  // A just-broadcast OPEN with no tracked state yet — the modal's Open button
+  // is already correctly disabled (Task 1's `canOpen`/`taskState` reflect the
+  // pending open), so "View" just routes there with the RAW name.
+  const PendingOpenRow = ({ name }: { name: string }) => (
+    <tr key={name} className="border-t border-gray-100">
+      <td className="py-1 font-mono">.{displayName(name)}</td>
+      <td className="py-1">
+        <Badge variant="warning">Opening — pending confirmation</Badge>
+      </td>
+      <td className="py-1 text-xs text-gray-500">—</td>
+      <td className="py-1 text-right">
+        <Button size="sm" variant="ghost" onClick={() => handleOpenManagement(name)}>
+          View
+        </Button>
+      </td>
+    </tr>
+  );
+
+  const totalActiveCount = activeTasks.length + pendingOpenNames.length;
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -180,9 +227,9 @@ export function AuctionsView() {
       {/* Actionable auction tasks */}
       <div className="bg-white rounded p-4 border border-gray-200">
         <div className="text-sm text-gray-500 mb-2">
-          Active Auctions ({activeTasks.length})
+          Active Auctions ({totalActiveCount})
         </div>
-        {activeTasks.length > 0 ? (
+        {totalActiveCount > 0 ? (
           <div className="max-h-60 overflow-auto">
             <table className="w-full text-sm">
               <thead>
@@ -196,6 +243,12 @@ export function AuctionsView() {
               <tbody>
                 {sortedTasks.map((n) => (
                   <TaskRow key={n.name} name={n} />
+                ))}
+                {/* Pending-opens are not urgent (nothing to act on yet — the
+                    Open button is already correctly disabled in the modal),
+                    so they sit below the real, actionable tasks. */}
+                {pendingOpenNames.map((name) => (
+                  <PendingOpenRow key={name} name={name} />
                 ))}
               </tbody>
             </table>

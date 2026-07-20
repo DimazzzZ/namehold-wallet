@@ -734,7 +734,10 @@ export function WalletView() {
                 {drafts.map((d) => (
                   <tr key={d.id} className="border-t border-gray-100">
                     <td className="py-2 pr-4 text-xs text-gray-500">{formatDate(d.createdAt)}</td>
-                    <td className="py-2 pr-4">{d.action}</td>
+                    <td className="py-2 pr-4">
+                      {d.action}
+                      {d.summary?.name ? ` · .${displayName(d.summary.name)}` : ""}
+                    </td>
                     <td className="py-2 pr-4 font-mono">
                       {d.summary ? formatHns(d.summary.sendTotalDoos) : "—"}
                     </td>

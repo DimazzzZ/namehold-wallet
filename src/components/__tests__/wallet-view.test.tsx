@@ -46,6 +46,7 @@ type Overrides = {
   spendableDoos?: number;
   confirmedDoos?: number;
   renewals?: unknown;
+  drafts?: unknown[];
 };
 
 function routeInvoke(o: Overrides = {}) {
@@ -84,7 +85,9 @@ function routeInvoke(o: Overrides = {}) {
           locked_unconfirmed: 0,
         });
       case "list_tx_drafts":
-        return Promise.resolve([]);
+        return Promise.resolve(o.drafts ?? []);
+      case "refresh_tx_confirmations":
+        return Promise.resolve(null);
       case "read_renewals":
         return Promise.resolve(
           o.renewals ?? {
@@ -612,5 +615,83 @@ describe("WalletView — expiring-soon renewal banner (Task 3 / C3)", () => {
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
     expect(screen.queryByTestId("expiring-alert")).toBeNull();
+  });
+});
+
+describe("WalletView — Recent transactions shows the name (Task 2)", () => {
+  it("renders the decoded name next to the action for an 'open' draft", async () => {
+    invokeMock.mockImplementation(
+      routeInvoke({
+        unlocked: true,
+        canWrite: true,
+        drafts: [
+          {
+            id: "d-open-1",
+            walletProfileId: "p1",
+            action: "open",
+            status: "broadcasted",
+            summary: {
+              action: "open",
+              sendTotalDoos: 0,
+              feeDoos: 1000,
+              changeDoos: 0,
+              inputTotalDoos: 1000,
+              numInputs: 1,
+              recipientAddress: null,
+              txid: null,
+              warnings: [],
+              name: "example",
+            },
+            errorMessage: null,
+            txid: "abc123txid",
+            confirmationHeight: null,
+            createdAt: "2026-01-01",
+          },
+        ],
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    const row = await screen.findByText(/open/i, { selector: "td" });
+    expect(row.textContent).toMatch(/open/i);
+    expect(row.textContent).toContain(".example");
+  });
+
+  it("shows no name fragment when the draft summary has no name (e.g. a plain send)", async () => {
+    invokeMock.mockImplementation(
+      routeInvoke({
+        unlocked: true,
+        canWrite: true,
+        drafts: [
+          {
+            id: "d-send-1",
+            walletProfileId: "p1",
+            action: "send_hns",
+            status: "confirmed",
+            summary: {
+              action: "send_hns",
+              sendTotalDoos: 1_000_000,
+              feeDoos: 1410,
+              changeDoos: 0,
+              inputTotalDoos: 1_000_000,
+              numInputs: 1,
+              recipientAddress: "rs1qexample",
+              txid: null,
+              warnings: [],
+            },
+            errorMessage: null,
+            txid: "def456txid",
+            confirmationHeight: 500,
+            createdAt: "2026-01-01",
+          },
+        ],
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    const row = await screen.findByText(/send_hns/i, { selector: "td" });
+    expect(row.textContent?.trim()).toBe("send_hns");
   });
 });

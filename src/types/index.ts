@@ -241,6 +241,9 @@ export interface TxSummary {
   recipientAddress: string | null;
   txid: string | null;
   warnings: string[];
+  /** The name a name-covenant action (open/bid/reveal/…) applies to. Written
+   *  by the backend for name-action drafts; absent for plain sends. */
+  name?: string | null;
 }
 
 export interface TxDraftSummary {
