@@ -15,6 +15,13 @@ use std::time::Duration;
 use crate::error::AppError;
 use crate::hsd::types::{HsdBalance, HsdName, HsdNameStats, HsdOwner};
 
+/// The default explorer API host, serving the documented `/api/addresses`,
+/// `/api/names`, and `/api/txs` routes. This is now the SOLE hard-coded
+/// occurrence of the URL in the app (Task 11 / S1) — every construction site
+/// goes through [`crate::providers::explorer_client_from_settings`], which
+/// falls back to this constant only when `explorer_api_url` is unset/blank.
+pub const DEFAULT_EXPLORER_URL: &str = "https://e.hnsfans.com";
+
 pub struct HnsFansClient {
     http: Client,
     base_url: String,
@@ -24,9 +31,7 @@ impl HnsFansClient {
     pub fn new(base_url: &str) -> Self {
         let trimmed = base_url.trim_end_matches('/');
         let base = if trimmed.is_empty() {
-            // Default to the explorer API host that serves the documented
-            // `/api/addresses`, `/api/names`, and `/api/txs` routes.
-            "https://e.hnsfans.com".to_string()
+            DEFAULT_EXPLORER_URL.to_string()
         } else {
             trimmed.to_string()
         };
@@ -173,8 +178,52 @@ impl HnsFansClient {
             )));
         }
         let body: serde_json::Value = resp.json().await?;
-        normalize_name(&body)
-            .ok_or_else(|| AppError::Other(format!("HNSFans returned no data for {}", name)))
+        normalize_name(&body).ok_or_else(|| {
+            AppError::ExplorerFormat(format!(
+                "HNSFans returned an unrecognized name payload for {} (200 OK, no `name` field)",
+                name
+            ))
+        })
+    }
+
+    /// Like [`get_name_info`], but returns `Ok(None)` when the explorer reports
+    /// the name is not found (HTTP 404 or empty/unparseable body) instead of
+    /// treating it as an error.  Real transport failures (DNS, timeout, 5xx)
+    /// still propagate as `Err`.
+    pub async fn get_name_info_optional(&self, name: &str) -> Result<Option<HsdName>, AppError> {
+        let url = format!("{}/api/names/{}", self.base_url, name.trim());
+        let resp = self.http.get(&url).send().await?;
+        // 404 → name unknown to the explorer (untouched / never opened).
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            return Err(AppError::Other(format!(
+                "HNSFans name lookup failed for {}: status {}",
+                name,
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp.json().await?;
+        match normalize_name(&body) {
+            Some(n) => Ok(Some(n)),
+            None => {
+                // A recognized "genuinely no data" body (Task 11 / S1): the
+                // explorer's own empty-object convention for "nothing here"
+                // (mirrored by the existing `{}` contract test). Distinct
+                // from a NON-empty body that just doesn't have `name` — that
+                // is the explorer's shape drifting, not an empty answer, and
+                // must be loud rather than silently read as "not found".
+                if looks_like_empty_payload(&body) {
+                    Ok(None)
+                } else {
+                    Err(AppError::ExplorerFormat(format!(
+                        "HNSFans returned an unrecognized name payload for {} (200 OK, no `name` field): {}",
+                        name, body
+                    )))
+                }
+            }
+        }
     }
 
     /// Fetch recent transactions touching any watch address.
@@ -229,6 +278,15 @@ impl HnsFansClient {
             )));
         }
         let body: serde_json::Value = resp.json().await?;
+        // The recognized shape always carries a `result` array (empty when the
+        // address has no txs). Its total absence on a 200 means the explorer's
+        // contract drifted — loud error, not a silent "0 transactions".
+        if !has_array_field(&body, "result") {
+            return Err(AppError::ExplorerFormat(format!(
+                "HNSFans returned an unrecognized txs payload for address {} (200 OK, no `result` array): {}",
+                address, body
+            )));
+        }
         let total = body.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
         let hashes = body
             .get("result")
@@ -256,11 +314,23 @@ impl HnsFansClient {
             )));
         }
         let body: serde_json::Value = resp.json().await?;
+        // The recognized shape always carries an `outputs` array (empty for a
+        // tx with no name-bearing outputs). Its total absence on a 200 means
+        // the explorer's contract drifted — loud error, not a silent "no
+        // named outputs" that makes ownership resolution falsely conclude a
+        // name was transferred away.
+        if !has_array_field(&body, "outputs") {
+            return Err(AppError::ExplorerFormat(format!(
+                "HNSFans returned an unrecognized tx payload for {} (200 OK, no `outputs` array): {}",
+                hash, body
+            )));
+        }
         Ok(parse_named_outputs(&body))
     }
 
     /// The current owner outpoint `(txid, index)` of a name, from the newest
-    /// entry of `/api/names/:name/history`. `None` if the name has no history.
+    /// entry of `/api/names/:name/history`. `None` if the name has no history
+    /// (a recognized-but-empty `result`/bare array).
     pub async fn get_name_current_owner(
         &self,
         name: &str,
@@ -275,8 +345,129 @@ impl HnsFansClient {
             )));
         }
         let body: serde_json::Value = resp.json().await?;
+        // Recognized shapes: `{ "result": [...] }` (possibly empty) or a bare
+        // `[...]` array. Anything else on a 200 is a format drift — loud
+        // error, not a silent "no owner history" (which would make repair
+        // conclude every owned name was transferred away).
+        if !history_shape_recognized(&body) {
+            return Err(AppError::ExplorerFormat(format!(
+                "HNSFans returned an unrecognized history payload for {} (200 OK, no `result`/array shape): {}",
+                name, body
+            )));
+        }
         Ok(newest_owner_outpoint(&body))
     }
+}
+
+// ---------------------------------------------------------------------------
+// ExplorerProvider trait (Task 11 / S1)
+// ---------------------------------------------------------------------------
+//
+// The explorer read surface that `commands/sync.rs` and `commands/read.rs`
+// actually call, extracted so a future non-HNSFans explorer could implement
+// it instead of `HnsFansClient` without touching call sites.
+//
+// Deliberately NOT `dyn`-compatible: these are native `async fn`s in a trait
+// (stable since Rust 1.75 — no `async-trait` crate needed), which the
+// compiler desugars to an anonymous `impl Future` return that can't be
+// boxed into a trait object without extra machinery. That's fine here —
+// every call site already holds (or constructs, via
+// [`crate::providers::explorer_client_from_settings`]) a *concrete* client,
+// never a trait object, so a generic bound (`impl ExplorerProvider` /
+// `<C: ExplorerProvider>`) gets the same swappability with zero new
+// dependencies and far less churn than making this `dyn`-safe. If a second
+// explorer implementation ever needs runtime (not compile-time) selection,
+// revisit with `async-trait` or a hand-boxed `Pin<Box<dyn Future>>` then.
+pub trait ExplorerProvider {
+    /// Like a plain name lookup, but `Ok(None)` for "explorer confirms this
+    /// name has no data" (404, or a recognized-empty 200 body) instead of an
+    /// error — callers use this to synthesize an AVAILABLE result.
+    async fn get_name_info_optional(&self, name: &str) -> Result<Option<HsdName>, AppError>;
+
+    /// The current owner outpoint `(txid, index)` of a name, or `None` if it
+    /// has no recorded history.
+    async fn get_name_current_owner(&self, name: &str)
+        -> Result<Option<(String, u32)>, AppError>;
+
+    /// The name-bearing outputs of a single tx.
+    async fn get_tx_named_outputs(&self, hash: &str) -> Result<Vec<NamedOutput>, AppError>;
+
+    /// One page of the txids an address participated in, plus the total count.
+    async fn get_address_txids(
+        &self,
+        address: &str,
+        limit: u32,
+        offset: u32,
+    ) -> Result<(Vec<String>, u64), AppError>;
+
+    /// Aggregate balance across a set of watch addresses.
+    async fn get_balance(&self, addresses: &[String]) -> Result<HsdBalance, AppError>;
+}
+
+impl ExplorerProvider for HnsFansClient {
+    async fn get_name_info_optional(&self, name: &str) -> Result<Option<HsdName>, AppError> {
+        HnsFansClient::get_name_info_optional(self, name).await
+    }
+
+    async fn get_name_current_owner(
+        &self,
+        name: &str,
+    ) -> Result<Option<(String, u32)>, AppError> {
+        HnsFansClient::get_name_current_owner(self, name).await
+    }
+
+    async fn get_tx_named_outputs(&self, hash: &str) -> Result<Vec<NamedOutput>, AppError> {
+        HnsFansClient::get_tx_named_outputs(self, hash).await
+    }
+
+    async fn get_address_txids(
+        &self,
+        address: &str,
+        limit: u32,
+        offset: u32,
+    ) -> Result<(Vec<String>, u64), AppError> {
+        HnsFansClient::get_address_txids(self, address, limit, offset).await
+    }
+
+    async fn get_balance(&self, addresses: &[String]) -> Result<HsdBalance, AppError> {
+        HnsFansClient::get_balance(self, addresses).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Loud-degradation helpers (Task 11 / S1)
+// ---------------------------------------------------------------------------
+//
+// A handful of client methods above need to tell "the explorer recognizably
+// says there's nothing here" apart from "the explorer's response shape
+// changed and we can't tell what it means". The former is `Ok(None)`/`Ok(
+// empty)`; the latter is `Err(AppError::ExplorerFormat)`. These helpers gate
+// on the *wrapper* being present (even empty), not on there being any data.
+
+/// `true` when `body` is a JSON value that legitimately carries no data — an
+/// empty object `{}`, an empty array `[]`, or `null`. This is the explorer's
+/// existing "nothing here" convention (see `get_name_info_optional`'s `{}`
+/// contract test); anything with content beyond that boundary is unrecognized
+/// shape, not a clean "no data".
+fn looks_like_empty_payload(body: &serde_json::Value) -> bool {
+    match body {
+        serde_json::Value::Null => true,
+        serde_json::Value::Object(m) => m.is_empty(),
+        serde_json::Value::Array(a) => a.is_empty(),
+        _ => false,
+    }
+}
+
+/// `true` when `body` has `key` set to a JSON array (possibly empty) — the
+/// normal, recognized wrapper shape for a list endpoint.
+fn has_array_field(body: &serde_json::Value, key: &str) -> bool {
+    body.get(key).map(|v| v.is_array()).unwrap_or(false)
+}
+
+/// `true` when `body` is a recognized `/api/names/:name/history` shape: a
+/// `result` array (possibly empty) or a bare top-level array.
+fn history_shape_recognized(body: &serde_json::Value) -> bool {
+    has_array_field(body, "result") || body.is_array()
 }
 
 /// A name-bearing transaction output as flattened by `/api/txs/:hash`.
@@ -484,6 +675,26 @@ mod tests {
         // A normal URL is preserved verbatim.
         let client = HnsFansClient::new("https://my.node:1234");
         assert_eq!(client.base_url, "https://my.node:1234");
+    }
+
+    #[test]
+    fn explorer_client_from_settings_defaults_when_blank_or_missing() {
+        // Task 11 / S1: the shared factory falls back to the same default as
+        // `HnsFansClient::new("")` when `explorer_api_url` is absent, empty,
+        // or whitespace-only — and uses a configured URL verbatim otherwise.
+        let empty = std::collections::HashMap::new();
+        let client = crate::providers::explorer_client_from_settings(&empty);
+        assert_eq!(client.base_url, DEFAULT_EXPLORER_URL);
+
+        let mut blank = std::collections::HashMap::new();
+        blank.insert("explorer_api_url".to_string(), "   ".to_string());
+        let client = crate::providers::explorer_client_from_settings(&blank);
+        assert_eq!(client.base_url, DEFAULT_EXPLORER_URL);
+
+        let mut custom = std::collections::HashMap::new();
+        custom.insert("explorer_api_url".to_string(), "https://my.explorer:9999/".to_string());
+        let client = crate::providers::explorer_client_from_settings(&custom);
+        assert_eq!(client.base_url, "https://my.explorer:9999");
     }
 
     #[test]

@@ -19,3 +19,25 @@ pub use signer::{
     LocalHotSigner, PlaceholderSigner, SignRequest, SignedTx, SignerBackend, SignerMode,
     WriteCapability,
 };
+#[allow(unused_imports)]
+pub use hnsfans::ExplorerProvider;
+
+/// The ONE place settings turn into an explorer client (Task 11 / S1).
+///
+/// Before this, `HnsFansClient::new(...)` was constructed at three separate
+/// call sites (`commands/sync.rs` x2, `commands/read.rs`), each re-deriving
+/// `explorer_api_url` from settings with its own copy of the
+/// trim/filter-empty/default logic — and the default URL was hard-coded at
+/// each of those sites too. Every construction site now calls this instead,
+/// so there is exactly one settings key read and one fallback default
+/// ([`hnsfans::DEFAULT_EXPLORER_URL`]) in the whole app.
+pub fn explorer_client_from_settings(
+    settings: &crate::models::settings::SettingsMap,
+) -> hnsfans::HnsFansClient {
+    let url = settings
+        .get("explorer_api_url")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(hnsfans::DEFAULT_EXPLORER_URL);
+    hnsfans::HnsFansClient::new(url)
+}

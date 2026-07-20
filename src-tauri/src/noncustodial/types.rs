@@ -23,6 +23,14 @@ pub struct WalletProfileSummary {
     pub receive_address: Option<String>,
     pub last_synced_height: Option<i64>,
     pub last_synced_at: Option<String>,
+    /// Stamped once, outside the per-name loop, at the end of a clean
+    /// explorer-driven sync run (repair + discover, no cancellation, no
+    /// `SYNC_MAX_CONSECUTIVE_ERRORS` abort) — see `commands/sync.rs`'s
+    /// "Done" block. Distinct from `last_synced_at`, which only ever
+    /// advances via the node-RPC step: in explorer-only mode (no local node)
+    /// `last_synced_at` never moves, so the frontend needs this field to
+    /// show real freshness (Task 11 review, Finding 2).
+    pub last_explorer_sync_at: Option<String>,
     pub watch_only: bool,
     /// Whether unlocking this profile requires a passphrase. False when the vault
     /// was created without one (`kdf='none'`, device-local key) — the UI uses

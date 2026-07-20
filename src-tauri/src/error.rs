@@ -25,6 +25,20 @@ pub enum AppError {
     NotFound(String),
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+    /// A Namebase response had a successful HTTP status but its body looks like
+    /// the HTML login page rather than API JSON — Namebase's way of soft-expiring
+    /// a session without a 401. Kept distinct from `Other` so the client layer
+    /// can raise this instead of an ugly JSON-parse error.
+    #[error("Namebase session expired — reconnect with a fresh cookie")]
+    NamebaseSessionExpired,
+    /// An explorer answered with a successful HTTP status, but its response
+    /// body doesn't match the shape the client expects (e.g. a renamed/removed
+    /// field). Kept distinct from `Other`/transport errors so callers can tell
+    /// "the explorer's contract drifted" apart from "the name genuinely has no
+    /// data" or "the explorer is unreachable" — conflating these used to make
+    /// a format change degrade silently into "you own nothing" (Task 11 / S1).
+    #[error("Explorer response format unrecognized: {0}")]
+    ExplorerFormat(String),
     #[error("{0}")]
     Other(String),
 }

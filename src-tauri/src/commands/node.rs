@@ -96,6 +96,45 @@ fn get_hsd_version(binary: &str) -> Option<String> {
     }
 }
 
+/// Minimum supported hsd release line. Below this, the wallet's index-flag and
+/// RPC-shape assumptions (`--index-address`/`--index-tx`, `getblockchaininfo`
+/// fields this code reads) aren't guaranteed to hold — hsd 8.x is what's been
+/// verified against.
+pub(crate) const HSD_MIN_VERSION: (u32, u32, u32) = (8, 0, 0);
+
+/// Parse a semver-ish "major[.minor[.patch]]" prefix out of `hsd --version`
+/// output. Tolerates a leading `v`/`V`, a trailing pre-release/build suffix
+/// (`-rc.1`, `+build.5`), surrounding whitespace, and a missing minor/patch
+/// (defaulted to 0). Returns `None` when no leading integer major version can
+/// be found (empty input, garbage, or a lone `v`/`V` with no digits).
+pub(crate) fn parse_hsd_version(raw: &str) -> Option<(u32, u32, u32)> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let s = s.strip_prefix(['v', 'V']).unwrap_or(s);
+    let core = s.split(|c: char| c == '-' || c == '+' || c.is_whitespace()).next()?;
+    if core.is_empty() {
+        return None;
+    }
+    let mut parts = core.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = match parts.next() {
+        Some(p) => p.parse().ok()?,
+        None => 0,
+    };
+    let patch: u32 = match parts.next() {
+        Some(p) => p.parse().ok()?,
+        None => 0,
+    };
+    Some((major, minor, patch))
+}
+
+/// Render a `(major, minor, patch)` tuple as `"major.minor.patch"` for error text.
+fn format_version(v: (u32, u32, u32)) -> String {
+    format!("{}.{}.{}", v.0, v.1, v.2)
+}
+
 /// The configured hsd data directory, or hsd's own default (`~/.hsd`) when unset.
 fn resolve_data_dir(state: &AppState) -> Result<String, AppError> {
     let configured = {
@@ -298,6 +337,36 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         .map_err(|e| AppError::Other(format!("cannot create data dir {data_dir}: {e}")))?;
 
     let binary = find_hsd_binary(configured_hsd_path(&state).as_deref());
+
+    // Refuse to spawn a too-old hsd: it may silently lack the index flags or
+    // RPC fields this wallet relies on. If the version can't be determined at
+    // all (binary missing, or output we can't parse), don't block here — a
+    // missing binary fails naturally at `cmd.spawn()` below with its own clear
+    // error, and unparseable-but-present output is more likely a future hsd
+    // version's format changing than an actual incompatibility, so we warn and
+    // proceed rather than lock users out.
+    if let Some(raw) = get_hsd_version(&binary) {
+        match parse_hsd_version(&raw) {
+            Some(found) if found < HSD_MIN_VERSION => {
+                return Err(AppError::Other(format!(
+                    "hsd {} (found at {binary}) is older than the minimum supported \
+                     version {}. This wallet relies on index flags and RPC behavior \
+                     introduced in hsd 8.x. Upgrade hsd — e.g. `npm install -g hsd@latest` \
+                     or `brew upgrade hsd` — then try again.",
+                    raw.trim(),
+                    format_version(HSD_MIN_VERSION),
+                )));
+            }
+            Some(_) => {}
+            None => {
+                eprintln!(
+                    "warning: could not parse hsd version output ({raw:?}) from {binary}; \
+                     skipping minimum-version check"
+                );
+            }
+        }
+    }
+
     let mut cmd = Command::new(&binary);
     cmd.arg(format!("--prefix={data_dir}"));
     if !api_key.trim().is_empty() {

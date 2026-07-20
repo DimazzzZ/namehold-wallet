@@ -13,11 +13,14 @@ mod wallet_delete;
 mod tests;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::Manager;
 
 use crate::commands::secure_prompt::PendingPrompt;
 use crate::noncustodial::session::SignerSession;
+use crate::commands::sync::SyncStatus;
+use tokio::sync::Mutex as AsyncMutex;
 
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
@@ -33,6 +36,8 @@ pub struct AppState {
     /// Handle to the hsd node the app started this session, if any. Used to
     /// report running state and to stop the node. Not persisted across restarts.
     pub hsd_child: Mutex<Option<std::process::Child>>,
+    /// Persistent sync session progress. Survives page navigation.
+    pub sync_status: Arc<AsyncMutex<SyncStatus>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -41,6 +46,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Store everything under ~/.namehold (pairs with the node's ~/.hsd),
             // rather than the OS app-data dir derived from the bundle identifier.
@@ -60,7 +66,37 @@ pub fn run() {
                 signer: Mutex::new(None),
                 secure_prompts: Mutex::new(HashMap::new()),
                 hsd_child: Mutex::new(None),
+                sync_status: Arc::new(AsyncMutex::new(SyncStatus::default())),
             });
+
+            // Deadline scanner (I1): on start + every ~10 minutes, look for
+            // reveal windows / renewals closing soon and fire an OS
+            // notification (gated + deduped inside `scan_deadline_notifications`
+            // itself — this loop just decides WHEN to ask).
+            //
+            // Design choice: a single Tauri-managed background task beats a
+            // frontend timer here — it runs independently of which page is
+            // open (or whether any window is focused at all), and
+            // `tokio::time::interval`'s first `tick()` resolves immediately,
+            // so "on start" and "every 10 min" are the same loop, not two
+            // mechanisms. It does not persist across a full app quit (there is
+            // no OS-level background service), but the very next launch
+            // re-scans right away, so nothing missed while closed goes
+            // unnoticed for more than "until the user reopens the app".
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+                loop {
+                    interval.tick().await;
+                    let state = handle.state::<AppState>();
+                    if let Err(e) =
+                        commands::deadlines::scan_deadline_notifications(handle.clone(), state).await
+                    {
+                        eprintln!("deadline scan failed: {e}");
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -104,6 +140,11 @@ pub fn run() {
             commands::read::discover_owned_names,
             commands::read::read_name_info,
             commands::read::read_transactions,
+            commands::read::read_renewals,
+            commands::read::repair_owned_names,
+            commands::sync::start_full_sync,
+            commands::sync::get_sync_status,
+            commands::sync::cancel_full_sync,
             commands::read::compare_inventory_with_provider,
             commands::secure_prompt::secure_prompt_fetch,
             commands::secure_prompt::secure_prompt_submit,
@@ -124,6 +165,8 @@ pub fn run() {
             commands::tx::broadcast_tx_draft,
             commands::tx::refresh_tx_confirmations,
             commands::tx::list_tx_drafts,
+            commands::tx::delete_tx_draft,
+            commands::tx::release_tx_draft_reservation,
             commands::tx::get_write_capability,
             commands::tx::get_wallet_balances,
             commands::names::build_open_draft,
@@ -137,7 +180,41 @@ pub fn run() {
             commands::names::build_finalize_draft,
             commands::names::build_cancel_draft,
             commands::names::build_revoke_draft,
+            commands::names::get_name_action_capabilities,
+            commands::names::get_names_action_capabilities,
+            commands::bids::recover_bid_commitment,
+            commands::bids::export_bid_commitments,
+            commands::deadlines::scan_deadline_notifications,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // `RunEvent::Exit` fires exactly once, right before the event loop
+            // stops, regardless of how the app is closing (last window closed,
+            // Cmd+Q, `AppHandle::exit`/`restart`, `ExitRequested` left
+            // unprevented, …) — so hooking only this one event is enough to
+            // reap the hsd child on every exit path. `ExitRequested` fires
+            // earlier and can be cancelled by a listener (`api.prevent_exit()`),
+            // so it's the wrong place to kill anything: it may not represent an
+            // actual exit at all.
+            if let tauri::RunEvent::Exit = event {
+                let state = app_handle.state::<AppState>();
+                let child = match state.hsd_child.lock() {
+                    Ok(mut guard) => guard.take(),
+                    Err(poisoned) => poisoned.into_inner().take(),
+                };
+                if let Some(mut child) = child {
+                    // Best-effort: never let a stuck hsd block the app from
+                    // closing. `kill()` + `wait()` on an already-exited child are
+                    // harmless no-ops (kill fails silently, wait returns
+                    // immediately), so this is safe to run unconditionally.
+                    if let Err(e) = child.kill() {
+                        eprintln!("hsd shutdown: kill failed (may already be dead): {e}");
+                    }
+                    if let Err(e) = child.wait() {
+                        eprintln!("hsd shutdown: wait failed: {e}");
+                    }
+                }
+            }
+        });
 }

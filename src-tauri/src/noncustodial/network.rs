@@ -79,6 +79,11 @@ impl Default for Network {
     }
 }
 
+/// Nominal blocks per day at Handshake's ~10-minute block target (hsd
+/// `networks.js` `pow.targetSpacing` = 600s). Used to convert block distances
+/// into human days; exact only in expectation.
+pub const BLOCKS_PER_DAY: f64 = 144.0;
+
 /// Name-auction consensus parameters (hsd `networks.js` `names`). Block counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NameParams {

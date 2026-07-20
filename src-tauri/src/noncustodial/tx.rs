@@ -256,6 +256,19 @@ impl Output {
         self.write(&mut w);
         w.into_bytes()
     }
+
+    /// The exact serialized size of this output in bytes: `value(8) +
+    /// address(1 + 1 + len(hash)) + covenant(1 + varint(count) +
+    /// sum(varint(len) + len) per item)`.
+    ///
+    /// Outputs carry no witness data, so this is the output's full
+    /// contribution to both the txid-hash size and the broadcast vsize (I4:
+    /// fee estimation must measure the REAL covenant encoding — REGISTER,
+    /// UPDATE, and FINALIZE items can make this far larger than a plain
+    /// P2WPKH output — rather than assume a flat per-output constant).
+    pub fn encoded_len(&self) -> usize {
+        self.encode().len()
+    }
 }
 
 /// A Handshake transaction.

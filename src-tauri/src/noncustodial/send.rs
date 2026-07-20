@@ -46,6 +46,15 @@ pub const DEFAULT_FEE_RATE_PER_BYTE: u64 = 1;
 /// relay floor that is well under 1000, so we use a conservative round floor.
 pub const DUST_THRESHOLD: u64 = 1000;
 
+/// How long a coin reservation (`tracked_utxos.reserved_by_draft_id`) stays
+/// valid before it is considered abandoned (I3). There is no background
+/// sweeper: expiry is enforced lazily, opportunistically, wherever
+/// [`load_spendable_coins`] runs — a reservation older than this is ignored
+/// for selection purposes AND cleared so it doesn't need to be re-checked.
+/// One hour comfortably covers a user reviewing a preview before signing,
+/// while still recovering promptly from a crashed/abandoned build.
+pub const RESERVATION_TTL_SECS: i64 = 3600;
+
 /// Serialized size (bytes) of one P2WPKH input *including* its witness.
 ///
 /// Non-witness part: outpoint(36) + sequence(4) = 40 bytes.
@@ -92,6 +101,131 @@ pub fn estimate_fee(n_inputs: u64, n_outputs: u64, rate_per_byte: u64) -> u64 {
     estimate_size(n_inputs, n_outputs).saturating_mul(rate_per_byte.max(MIN_FEE_RATE_PER_BYTE))
 }
 
+/// Estimated transaction size in bytes for `n_inputs` P2WPKH inputs, ONE
+/// "primary" output of `primary_vbytes` bytes, and `n_plain_outputs` flat
+/// P2WPKH outputs (typically a 0/1 change output).
+///
+/// `primary_vbytes` is the output's REAL serialized length (see
+/// [`crate::noncustodial::tx::Output::encoded_len`]), not the flat
+/// [`OUTPUT_VBYTES`] approximation — covenant items (REGISTER/UPDATE
+/// resource records, FINALIZE, …) can make a covenant output far larger than
+/// a plain P2WPKH output (I4). Handshake outputs carry no witness data, so
+/// every covenant byte counts fully toward vsize; there is no discount to
+/// apply here.
+pub fn estimate_size_with_primary(n_inputs: u64, primary_vbytes: u64, n_plain_outputs: u64) -> u64 {
+    TX_OVERHEAD_VBYTES + n_inputs * INPUT_VBYTES + primary_vbytes + n_plain_outputs * OUTPUT_VBYTES
+}
+
+/// Fee in dollarydoos for [`estimate_size_with_primary`] at `rate`
+/// (dollarydoos per byte, floored at [`MIN_FEE_RATE_PER_BYTE`]).
+pub fn estimate_fee_with_primary(
+    n_inputs: u64,
+    primary_vbytes: u64,
+    n_plain_outputs: u64,
+    rate_per_byte: u64,
+) -> u64 {
+    estimate_size_with_primary(n_inputs, primary_vbytes, n_plain_outputs)
+        .saturating_mul(rate_per_byte.max(MIN_FEE_RATE_PER_BYTE))
+}
+
+/// Release stale `reserved_by_draft_id` claims for a profile (I3), so an
+/// abandoned build doesn't lock its coins out of future selection forever.
+/// Two cases are cleared:
+///   1. Dangling — the claiming draft row no longer exists (e.g. a delete
+///      that, for whatever reason, didn't clear the reservation itself).
+///   2. Expired — the claiming draft is older than [`RESERVATION_TTL_SECS`]
+///      AND has not reached (or possibly reached) the chain (`status` is not
+///      `broadcasted` / `confirmed` / `broadcast_pending`). There's no
+///      separate "reserved at" timestamp; the draft's own `created_at`
+///      doubles as the reservation age, and `created_at` is never refreshed
+///      on broadcast — a draft signed and broadcast within the review window
+///      can still cross the TTL while its inputs are genuinely in flight
+///      (accepted to the node's mempool, but `tracked_utxos.spent_by_txid`
+///      not yet set — that only happens on the next `sync_wallet_state`,
+///      which can be minutes away). Without this status guard the TTL sweep
+///      would free that in-flight coin for re-selection by another draft —
+///      the node would reject the resulting double-spend, but the
+///      reservation invariant (each unspent coin claimed by at most one live
+///      draft) would already be violated for the window in between.
+///      `broadcast_pending` (a transport-ambiguous broadcast attempt — see
+///      `commands::tx::broadcast_tx_draft`) gets the same exclusion: the tx
+///      may already be sitting in the node's mempool even though we never
+///      got a definitive answer. `broadcasted`/`confirmed`/`broadcast_pending`
+///      drafts release their reservation through their own status
+///      transitions instead (broadcast rejection, or
+///      `refresh_tx_confirmations` judging the tx `dropped`), never through
+///      the TTL.
+///
+/// Called opportunistically wherever coin selection reads `tracked_utxos`
+/// (see [`load_spendable_coins`]) rather than from a background job. Returns
+/// the number of coins released.
+pub fn release_stale_reservations(conn: &Connection, profile_id: &str) -> Result<usize, AppError> {
+    let dangling = conn.execute(
+        "UPDATE tracked_utxos SET reserved_by_draft_id = NULL
+         WHERE wallet_profile_id = ?1
+           AND reserved_by_draft_id IS NOT NULL
+           AND reserved_by_draft_id NOT IN (SELECT id FROM wallet_tx_drafts)",
+        params![profile_id],
+    )?;
+    let expired = conn.execute(
+        &format!(
+            "UPDATE tracked_utxos SET reserved_by_draft_id = NULL
+             WHERE wallet_profile_id = ?1
+               AND reserved_by_draft_id IS NOT NULL
+               AND reserved_by_draft_id IN (
+                   SELECT id FROM wallet_tx_drafts
+                   WHERE created_at < datetime('now', '-{RESERVATION_TTL_SECS} seconds')
+                     AND status NOT IN ('broadcasted', 'confirmed', 'broadcast_pending')
+               )"
+        ),
+        params![profile_id],
+    )?;
+    Ok(dangling + expired)
+}
+
+/// Load ONLY the still-unspent liquid coins reserved by `draft_id` (I3),
+/// largest-first — the exact set `insert_tx_draft_reserving_coins` claimed at
+/// build time. Re-signing a draft selects from this set (when non-empty) so
+/// the signed inputs are always the reserved ones: selecting from the full
+/// pool instead could drift onto a larger coin that synced in after the
+/// build, which was never reserved and could be claimed by another draft
+/// before this one broadcasts. Selection over exactly the build-time set is
+/// deterministic (same coins, same largest-first order), so the re-signed tx
+/// spends what the preview promised.
+pub fn load_reserved_coins(
+    conn: &Connection,
+    profile_id: &str,
+    draft_id: &str,
+) -> Result<Vec<SpendableCoin>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT u.txid, u.vout, u.value_doos, d.branch, d.child_index
+         FROM tracked_utxos u
+         JOIN derived_addresses d
+           ON d.wallet_profile_id = u.wallet_profile_id
+          AND d.address = u.address
+         WHERE u.wallet_profile_id = ?1
+           AND u.reserved_by_draft_id = ?2
+           AND u.spent_by_txid IS NULL
+           AND u.covenant_type = 0
+           AND u.spend_class = 'liquid_hns'
+         ORDER BY u.value_doos DESC, u.txid ASC, u.vout ASC",
+    )?;
+    let rows = stmt.query_map(params![profile_id, draft_id], |row| {
+        Ok(SpendableCoin {
+            txid: row.get(0)?,
+            vout: row.get::<_, i64>(1)? as u32,
+            value: row.get::<_, i64>(2)? as u64,
+            branch: row.get::<_, i64>(3)? as u32,
+            child_index: row.get::<_, i64>(4)? as u32,
+        })
+    })?;
+    let mut coins = Vec::new();
+    for c in rows {
+        coins.push(c?);
+    }
+    Ok(coins)
+}
+
 /// Load all spendable coins for a profile: unspent, covenant-free
 /// (`covenant_type = 0`), and classified as liquid HNS.
 ///
@@ -100,10 +234,20 @@ pub fn estimate_fee(n_inputs: u64, n_outputs: u64, rate_per_byte: u64) -> u64 {
 /// the two on `(wallet_profile_id, address)` so each [`SpendableCoin`] carries
 /// the derivation path. A coin is unspent when `spent_by_txid IS NULL`.
 /// Ordered largest-first for deterministic selection.
+///
+/// Coins reserved by another, still-live draft (I3) are excluded — two drafts
+/// built before either broadcasts must not be able to select the same UTXOs.
+/// `own_draft_id`, when set, is the id of the draft this call is re-selecting
+/// for (e.g. re-signing an existing draft): coins that draft itself already
+/// reserved remain visible to it. Stale reservations are released first (see
+/// [`release_stale_reservations`]) so they never wrongly exclude a coin.
 pub fn load_spendable_coins(
     conn: &Connection,
     profile_id: &str,
+    own_draft_id: Option<&str>,
 ) -> Result<Vec<SpendableCoin>, AppError> {
+    release_stale_reservations(conn, profile_id)?;
+
     let mut stmt = conn.prepare(
         "SELECT u.txid, u.vout, u.value_doos, d.branch, d.child_index
          FROM tracked_utxos u
@@ -114,9 +258,10 @@ pub fn load_spendable_coins(
            AND u.spent_by_txid IS NULL
            AND u.covenant_type = 0
            AND u.spend_class = 'liquid_hns'
+           AND (u.reserved_by_draft_id IS NULL OR u.reserved_by_draft_id = ?2)
          ORDER BY u.value_doos DESC, u.txid ASC, u.vout ASC",
     )?;
-    let rows = stmt.query_map(params![profile_id], |row| {
+    let rows = stmt.query_map(params![profile_id, own_draft_id], |row| {
         Ok(SpendableCoin {
             txid: row.get(0)?,
             vout: row.get::<_, i64>(1)? as u32,
@@ -458,14 +603,13 @@ mod tests {
         assert!(matches!(err, AppError::InvalidInput(_)));
     }
 
-    /// In-memory DB with the non-custodial profile + chain-cache schema and a
-    /// single profile row, mirroring `derivation.rs`'s test fixture.
+    /// In-memory DB with the FULL migration chain (needed for
+    /// `wallet_tx_drafts` + `reserved_by_draft_id`, used by the reservation
+    /// tests below) and a single profile row, mirroring `derivation.rs`'s
+    /// test fixture.
     fn mem_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../sql/006_noncustodial_wallet_profiles.sql"))
-            .unwrap();
-        conn.execute_batch(include_str!("../sql/007_noncustodial_chain_cache.sql"))
-            .unwrap();
+        crate::db::migrations::run(&conn).unwrap();
         conn.execute(
             "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub)
              VALUES ('p1', 'Test', 'watch_only_xpub', 'mainnet', 'xpubPLACEHOLDER')",
@@ -546,7 +690,7 @@ mod tests {
         // Excluded: address not in derived_addresses (no join row).
         insert_utxo(&conn, &txid_e, 0, "hs1qforeign", 999_999, 0, "liquid_hns", None);
 
-        let coins = load_spendable_coins(&conn, "p1").expect("load");
+        let coins = load_spendable_coins(&conn, "p1", None).expect("load");
 
         // Only the two genuinely-spendable coins, largest-first.
         assert_eq!(coins.len(), 2);
@@ -560,10 +704,179 @@ mod tests {
         assert_eq!(coins[1].child_index, 5);
     }
 
+    /// Insert a minimal `wallet_tx_drafts` row for reservation tests, with a
+    /// controllable `created_at` so TTL expiry can be exercised.
+    fn insert_draft_row(conn: &Connection, id: &str, created_at: Option<&str>) {
+        conn.execute(
+            "INSERT INTO wallet_tx_drafts
+                (id, wallet_profile_id, action, unsigned_tx_hex, signing_inputs_json, summary_json)
+             VALUES (?1, 'p1', 'send_hns', '', '{}', '{}')",
+            params![id],
+        )
+        .unwrap();
+        if let Some(ts) = created_at {
+            conn.execute(
+                "UPDATE wallet_tx_drafts SET created_at = ?1 WHERE id = ?2",
+                params![ts, id],
+            )
+            .unwrap();
+        }
+    }
+
+    fn reserve(conn: &Connection, txid: &str, vout: u32, draft_id: &str) {
+        conn.execute(
+            "UPDATE tracked_utxos SET reserved_by_draft_id = ?1
+             WHERE wallet_profile_id = 'p1' AND txid = ?2 AND vout = ?3",
+            params![draft_id, txid, vout as i64],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn load_spendable_coins_excludes_coins_reserved_by_another_live_draft() {
+        let conn = mem_db();
+        let txid_a = hex::encode([0xaa; 32]);
+        insert_derived(&conn, 0, 5, "hs1qrecv");
+        insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+        insert_draft_row(&conn, "draft-a", None);
+        reserve(&conn, &txid_a, 0, "draft-a");
+
+        // A fresh selection (no own draft id) must not see draft-a's coin.
+        let coins = load_spendable_coins(&conn, "p1", None).expect("load");
+        assert!(coins.is_empty(), "reserved coin must be excluded");
+
+        // A DIFFERENT draft's re-selection must also not see it.
+        let coins = load_spendable_coins(&conn, "p1", Some("draft-b")).expect("load");
+        assert!(coins.is_empty(), "coin reserved by another draft stays excluded");
+    }
+
+    #[test]
+    fn load_spendable_coins_includes_coins_reserved_by_own_draft_id() {
+        let conn = mem_db();
+        let txid_a = hex::encode([0xaa; 32]);
+        insert_derived(&conn, 0, 5, "hs1qrecv");
+        insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+        insert_draft_row(&conn, "draft-a", None);
+        reserve(&conn, &txid_a, 0, "draft-a");
+
+        // Re-selecting for the SAME draft (e.g. re-signing) must see its own
+        // reserved coin.
+        let coins = load_spendable_coins(&conn, "p1", Some("draft-a")).expect("load");
+        assert_eq!(coins.len(), 1);
+        assert_eq!(coins[0].txid, txid_a);
+    }
+
+    #[test]
+    fn load_spendable_coins_reclaims_ttl_expired_reservation() {
+        let conn = mem_db();
+        let txid_a = hex::encode([0xaa; 32]);
+        insert_derived(&conn, 0, 5, "hs1qrecv");
+        insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+        // A draft created well past the TTL — its claim is stale.
+        insert_draft_row(&conn, "draft-old", Some("2000-01-01T00:00:00Z"));
+        reserve(&conn, &txid_a, 0, "draft-old");
+
+        let coins = load_spendable_coins(&conn, "p1", None).expect("load");
+        assert_eq!(coins.len(), 1, "TTL-expired reservation must be reclaimed");
+        assert_eq!(coins[0].txid, txid_a);
+
+        // The stale reservation was also opportunistically cleared in the DB,
+        // not just skipped for this one read.
+        let reserved: Option<String> = conn
+            .query_row(
+                "SELECT reserved_by_draft_id FROM tracked_utxos WHERE txid = ?1",
+                params![txid_a],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(reserved.is_none(), "expired reservation should be cleared, not just ignored");
+    }
+
+    /// Finding 1 (Task 5 review): a reservation belonging to a draft that has
+    /// already reached the chain (or may have — `broadcast_pending`, Finding
+    /// 2) must NOT be swept by the TTL just because `created_at` (build time,
+    /// never refreshed on broadcast) is old. Freeing it would reopen a
+    /// double-select window while `tracked_utxos.spent_by_txid` is still
+    /// NULL pending the next sync.
+    #[test]
+    fn load_spendable_coins_keeps_ttl_expired_reservation_of_an_in_flight_draft() {
+        for status in ["broadcasted", "confirmed", "broadcast_pending"] {
+            let conn = mem_db();
+            let txid_a = hex::encode([0xaa; 32]);
+            insert_derived(&conn, 0, 5, "hs1qrecv");
+            insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+            // Well past RESERVATION_TTL_SECS.
+            insert_draft_row(&conn, "draft-inflight", Some("2000-01-01T00:00:00Z"));
+            conn.execute(
+                "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = 'draft-inflight'",
+                params![status],
+            )
+            .unwrap();
+            reserve(&conn, &txid_a, 0, "draft-inflight");
+
+            let coins = load_spendable_coins(&conn, "p1", None).expect("load");
+            assert!(
+                coins.is_empty(),
+                "status={status}: an in-flight draft's coin must stay reserved past the TTL"
+            );
+
+            let reserved: Option<String> = conn
+                .query_row(
+                    "SELECT reserved_by_draft_id FROM tracked_utxos WHERE txid = ?1",
+                    params![txid_a],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                reserved.as_deref(),
+                Some("draft-inflight"),
+                "status={status}: reservation must not be cleared by the TTL sweep"
+            );
+        }
+    }
+
+    /// Control for Finding 1: a draft that was only ever built (never signed
+    /// or broadcast, `status = 'draft'`) must still be released once its
+    /// reservation crosses the TTL — the status guard must not accidentally
+    /// make ALL expired reservations sticky.
+    #[test]
+    fn load_spendable_coins_still_reclaims_ttl_expired_reservation_of_a_never_signed_draft() {
+        let conn = mem_db();
+        let txid_a = hex::encode([0xaa; 32]);
+        insert_derived(&conn, 0, 5, "hs1qrecv");
+        insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+        // insert_draft_row leaves status at its table default, 'draft'.
+        insert_draft_row(&conn, "draft-abandoned", Some("2000-01-01T00:00:00Z"));
+        reserve(&conn, &txid_a, 0, "draft-abandoned");
+
+        let coins = load_spendable_coins(&conn, "p1", None).expect("load");
+        assert_eq!(
+            coins.len(),
+            1,
+            "a built-but-never-signed draft's TTL-expired reservation must still be reclaimed"
+        );
+        assert_eq!(coins[0].txid, txid_a);
+    }
+
+    #[test]
+    fn load_spendable_coins_reclaims_dangling_reservation() {
+        // A reservation pointing at a draft id that no longer exists (e.g. the
+        // draft row was deleted without going through the release path) must
+        // not permanently lock the coin out of selection.
+        let conn = mem_db();
+        let txid_a = hex::encode([0xaa; 32]);
+        insert_derived(&conn, 0, 5, "hs1qrecv");
+        insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+        reserve(&conn, &txid_a, 0, "no-such-draft");
+
+        let coins = load_spendable_coins(&conn, "p1", None).expect("load");
+        assert_eq!(coins.len(), 1, "dangling reservation must be reclaimed");
+    }
+
     #[test]
     fn load_spendable_coins_empty_when_none() {
         let conn = mem_db();
-        assert!(load_spendable_coins(&conn, "p1").unwrap().is_empty());
+        assert!(load_spendable_coins(&conn, "p1", None).unwrap().is_empty());
     }
 
     #[test]

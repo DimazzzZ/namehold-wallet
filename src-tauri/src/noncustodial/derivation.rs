@@ -162,6 +162,50 @@ pub fn ensure_addresses(
     Ok(derived)
 }
 
+/// Allocate the NEXT UNUSED receive address for covenant outputs (OPEN/BID).
+///
+/// "Used" means the derived receive address is referenced by any tracked UTXO
+/// (coins ever landed there per sync) or by any bid commitment (a bid draft was
+/// already built to it, even if not yet broadcast/synced — so back-to-back bids
+/// never share an address). The next index is `max(used) + 1` (0 on a fresh
+/// wallet), keeping the used range contiguous for gap-limit scanning.
+///
+/// The allocated address is persisted to `derived_addresses`, so the sync scan
+/// (`get_profile_addresses`) and the coin lookups that JOIN on that table see
+/// it immediately.
+pub fn next_unused_receive_address(
+    conn: &Connection,
+    profile_id: &str,
+    account_index: u32,
+    network: Network,
+    account_xpub: &ExtendedPubKey,
+) -> Result<DerivedAddress, AppError> {
+    let max_used: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(d.child_index) FROM derived_addresses d
+             WHERE d.wallet_profile_id = ?1 AND d.account_index = ?2 AND d.branch = ?3
+               AND (EXISTS (SELECT 1 FROM tracked_utxos u
+                            WHERE u.wallet_profile_id = d.wallet_profile_id
+                              AND u.address = d.address)
+                 OR EXISTS (SELECT 1 FROM bid_commitments b
+                            WHERE b.wallet_profile_id = d.wallet_profile_id
+                              AND b.address = d.address))",
+            params![profile_id, account_index as i64, BRANCH_RECEIVE as i64],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let next = match max_used {
+        Some(m) => (m as u32)
+            .checked_add(1)
+            .ok_or_else(|| AppError::InvalidInput("receive child index overflow".into()))?,
+        None => 0,
+    };
+    let derived = derive_one(network, account_xpub, BRANCH_RECEIVE, next)?;
+    persist_address(conn, profile_id, account_index, &derived)?;
+    Ok(derived)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +258,8 @@ mod tests {
         conn.execute_batch(include_str!("../sql/006_noncustodial_wallet_profiles.sql"))
             .unwrap();
         conn.execute_batch(include_str!("../sql/007_noncustodial_chain_cache.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../sql/008_noncustodial_name_state.sql"))
             .unwrap();
         // Insert a profile to satisfy the FK on derived_addresses.
         conn.execute(
@@ -307,6 +353,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn next_unused_receive_address_rotates_past_utxo_and_bid_usage() {
+        let conn = mem_db();
+        let xpub = test_xpub();
+
+        // Fresh wallet: nothing used → index 0, and it gets persisted.
+        let a0 = next_unused_receive_address(&conn, "p1", 0, Network::Main, &xpub).unwrap();
+        assert_eq!((a0.branch, a0.child_index), (BRANCH_RECEIVE, 0));
+        assert_eq!(max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(), Some(0));
+
+        // Derived-but-unused lookahead must NOT advance the allocator.
+        ensure_addresses(&conn, "p1", 0, Network::Main, &xpub, BRANCH_RECEIVE, 5).unwrap();
+        let still0 = next_unused_receive_address(&conn, "p1", 0, Network::Main, &xpub).unwrap();
+        assert_eq!(still0.child_index, 0);
+
+        // A tracked UTXO at index 0 marks it used → next allocation is 1.
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, spend_class)
+             VALUES ('aa', 0, 'p1', ?1, '00', 1000, 0, 'liquid_hns')",
+            params![&a0.address],
+        )
+        .unwrap();
+        let a1 = next_unused_receive_address(&conn, "p1", 0, Network::Main, &xpub).unwrap();
+        assert_eq!(a1.child_index, 1);
+        assert_ne!(a1.address, a0.address);
+
+        // A bid commitment at index 1 (not yet broadcast/synced) also counts as
+        // used → a second back-to-back bid gets index 2.
+        conn.execute(
+            "INSERT INTO bid_commitments
+                (wallet_profile_id, name, name_hash_hex, address, branch, child_index,
+                 bid_value_doos, lockup_value_doos, nonce_hex, blind_hex)
+             VALUES ('p1', 'n1', 'aabb', ?1, 0, 1, 100, 200, '11', '22')",
+            params![&a1.address],
+        )
+        .unwrap();
+        let a2 = next_unused_receive_address(&conn, "p1", 0, Network::Main, &xpub).unwrap();
+        assert_eq!(a2.child_index, 2);
+        // And the allocation is registered for the sync scan.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM derived_addresses
+                 WHERE wallet_profile_id = 'p1' AND branch = 0 AND address = ?1",
+                params![&a2.address],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

@@ -50,6 +50,19 @@ pub(crate) fn namebase_client_with_cookie(
     }
 }
 
+/// Write the client's current cookie back to settings if it differs from
+/// `before` — i.e. the server rotated it via `Set-Cookie` during this
+/// command's calls. A no-op write is skipped so an unchanged session doesn't
+/// churn the `settings` table on every dashboard poll.
+fn persist_cookie_if_changed(state: &AppState, before: &str, client: &NamebaseClient) -> Result<(), AppError> {
+    let after = client.current_cookie();
+    if after != before {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::set_setting(&db, "namebase_cookie", &after)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn connect_namebase(
     state: State<'_, AppState>,
@@ -57,35 +70,20 @@ pub async fn connect_namebase(
 ) -> Result<serde_json::Value, AppError> {
     let client = namebase_client_with_cookie(&state, &cookie)?;
 
-    // Check session with the client (which points at sunset.namebase.io)
-    let url = format!("{}/api/account", client.base_url());
-    let http = reqwest::Client::new();
-    let response = http
-        .get(&url)
-        .header("Cookie", client.cookie_value())
-        .header("User-Agent", "Namehold/0.1.0")
-        .send()
-        .await
-        .map_err(|e| {
-            AppError::Other(format!(
-                "Could not reach sunset.namebase.io: {}. Check your network connection.",
-                e
-            ))
-        })?;
+    let account = client.get_account().await.map_err(|e| {
+        AppError::Other(format!(
+            "Namebase rejected the session ({}). Make sure you copied the full cookie header from sunset.namebase.io",
+            e
+        ))
+    })?;
 
-    let status = response.status();
-    if !status.is_success() {
-        return Err(AppError::Other(format!(
-            "Namebase returned HTTP {} — your session cookie may be expired or invalid. \
-             Make sure you copied the full cookie header from sunset.namebase.io",
-            status
-        )));
-    }
-    let account: serde_json::Value = response.json().await.unwrap_or_default();
-
+    // Store whatever the client's jar ends up holding (not the raw paste) —
+    // if Namebase rotated the cookie on this very first request, we want the
+    // rotated value on disk, not the one the user pasted.
+    let final_cookie = client.current_cookie();
     {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::set_setting(&db, "namebase_cookie", &cookie)?;
+        db::queries::set_setting(&db, "namebase_cookie", &final_cookie)?;
         db.execute(
             "INSERT INTO audit_log (action, detail) VALUES ('namebase_connect', ?1)",
             [serde_json::json!({"status": "connected"}).to_string()],
@@ -115,25 +113,34 @@ pub async fn get_namebase_status(state: State<'_, AppState>) -> Result<serde_jso
     }
 
     let client = namebase_client(&state)?;
-    match client.check_session().await {
+    let before = client.current_cookie();
+    let result = match client.check_session().await {
         Ok(true) => {
             let account = client.get_account().await.ok();
-            Ok(serde_json::json!({"connected": true, "has_cookie": true, "account": account}))
+            serde_json::json!({"connected": true, "has_cookie": true, "account": account})
         }
-        _ => Ok(serde_json::json!({"connected": false, "has_cookie": true, "error": "Session expired"})),
-    }
+        _ => serde_json::json!({"connected": false, "has_cookie": true, "error": "Session expired"}),
+    };
+    persist_cookie_if_changed(&state, &before, &client)?;
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn fetch_namebase_domains(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     let client = namebase_client(&state)?;
-    client.get_domains().await
+    let before = client.current_cookie();
+    let result = client.get_domains().await?;
+    persist_cookie_if_changed(&state, &before, &client)?;
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn fetch_namebase_staked(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     let client = namebase_client(&state)?;
-    client.get_staked_domains().await
+    let before = client.current_cookie();
+    let result = client.get_staked_domains().await?;
+    persist_cookie_if_changed(&state, &before, &client)?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -142,21 +149,29 @@ pub async fn fetch_namebase_renewals(state: State<'_, AppState>) -> Result<serde
     // (and so this honors any future base-url override), unlike the other fetch_*
     // commands which hard-code the real host.
     let client = namebase_client(&state)?;
-    client.get_renewals().await
+    let before = client.current_cookie();
+    let result = client.get_renewals().await?;
+    persist_cookie_if_changed(&state, &before, &client)?;
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn fetch_namebase_withdrawals(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     let client = namebase_client(&state)?;
-    client.get_withdrawals().await
+    let before = client.current_cookie();
+    let result = client.get_withdrawals().await?;
+    persist_cookie_if_changed(&state, &before, &client)?;
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn import_from_namebase(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     let client = namebase_client(&state)?;
+    let before = client.current_cookie();
 
     let domains = client.get_domains().await?;
     let staked_data = client.get_staked_domains().await?;
+    persist_cookie_if_changed(&state, &before, &client)?;
 
     let staked_names: std::collections::HashSet<String> = staked_data["stakedDomains"]
         .as_array()
@@ -261,7 +276,9 @@ pub async fn namebase_transfer_domain(
     })?;
 
     let client = namebase_client(&state)?;
+    let before = client.current_cookie();
     client.transfer_domain(&name, &address).await?;
+    persist_cookie_if_changed(&state, &before, &client)?;
 
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db.execute(
@@ -322,7 +339,9 @@ pub async fn namebase_withdraw_hns(
     }
 
     let client = namebase_client(&state)?;
+    let before = client.current_cookie();
     client.withdraw_hns(&address, amount.trim()).await?;
+    persist_cookie_if_changed(&state, &before, &client)?;
 
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db.execute(
@@ -336,5 +355,8 @@ pub async fn namebase_withdraw_hns(
 #[tauri::command]
 pub async fn fetch_namebase_domain_withdrawals(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     let client = namebase_client(&state)?;
-    client.get_domain_withdrawals().await
+    let before = client.current_cookie();
+    let result = client.get_domain_withdrawals().await?;
+    persist_cookie_if_changed(&state, &before, &client)?;
+    Ok(result)
 }

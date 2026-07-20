@@ -5,6 +5,7 @@
   "windows": ["secure-prompt-*"],
   "permissions": [
     "core:default",
-    "clipboard-manager:allow-write-text"
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-text"
   ]
 }

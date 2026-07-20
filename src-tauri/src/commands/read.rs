@@ -9,6 +9,7 @@ use crate::db::queries;
 use crate::error::AppError;
 use crate::providers::hnsfans::HnsFansClient;
 use crate::AppState;
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -41,7 +42,7 @@ fn active_profile(state: &State<'_, AppState>) -> Result<Option<String>, AppErro
 /// by the frontend, keyed to the query's wallet) wins so a read can NEVER return
 /// another profile's data — critical when the active profile changes mid-switch.
 /// Falls back to the active profile when no id is given or the id doesn't exist.
-fn resolve_profile(
+pub(crate) fn resolve_profile(
     state: &State<'_, AppState>,
     wallet_profile_id: Option<String>,
 ) -> Result<Option<String>, AppError> {
@@ -61,19 +62,19 @@ fn resolve_profile(
 /// cached data the preferred read source. Returns `true` when the node RPC
 /// answers and the chain is caught up (height ≥ headers, or progress ≥ 0.9999).
 pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -> bool {
+    node_tip_height_if_synced(state).await.is_some()
+}
+
+/// The live node tip height, but ONLY when the node is connected AND fully
+/// synced (same gate as [`is_node_ready_for_local_reads`] — this is its
+/// height-carrying form). `None` when the node is unreachable or catching up.
+pub(crate) async fn node_tip_height_if_synced(state: &State<'_, AppState>) -> Option<i64> {
     let settings = {
-        let Ok(db) = state.db.lock() else {
-            return false;
-        };
-        match crate::db::queries::get_settings(&db) {
-            Ok(s) => s,
-            Err(_) => return false,
-        }
+        let db = state.db.lock().ok()?;
+        crate::db::queries::get_settings(&db).ok()?
     };
     let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
-    let Ok(info) = client.get_blockchain_info().await else {
-        return false;
-    };
+    let info = client.get_blockchain_info().await.ok()?;
     // Connected — now check if synced.
     // When verification_progress is available it is the most reliable signal —
     // a node can report height == headers while still only ~8% verified if it
@@ -86,17 +87,14 @@ pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -
         // No sync metadata: assume synced (e.g. regtest with a single miner).
         true
     };
-    synced
+    synced.then_some(info.blocks)
 }
 
-/// HNSFans explorer client from settings (`explorer_api_url`).
+/// HNSFans explorer client from settings (`explorer_api_url`). Thin wrapper
+/// kept for call-site brevity — the actual construction is centralized in
+/// [`crate::providers::explorer_client_from_settings`] (Task 11 / S1).
 fn explorer_client(settings: &std::collections::HashMap<String, String>) -> HnsFansClient {
-    let url = settings
-        .get("explorer_api_url")
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("https://e.hnsfans.com");
-    HnsFansClient::new(url)
+    crate::providers::explorer_client_from_settings(settings)
 }
 
 /// Balance read with automatic source selection:
@@ -177,13 +175,20 @@ pub async fn read_balance(
 
 /// Names this wallet actually OWNS on-chain — the union of node-free discovered
 /// owners ([`discover_owned_names`]) and node-synced owners. Both are pure DB
-/// reads (no explorer/node fan-out), so this is instant and never includes the
-/// migration *inventory* (`assets`) — those names live in the Portfolio /
-/// Migration views, not "Owned Names".
+/// reads, so this is instant and never includes the migration *inventory*
+/// (`assets`) — those names live in the Portfolio / Migration views, not
+/// "Owned Names".
+///
+/// This command is strictly DB-only: it never constructs an explorer client
+/// or makes network calls. Ownership reconciliation (including surfacing
+/// transferred/migrated inventory names) happens exclusively through the Sync
+/// flow (`repair_owned_names` / `discover_owned_names`), which writes results
+/// into `tracked_name_states` — `read_names` just reads that table back.
 ///
 /// When the local node is connected and synced, the node-synced cache is the
-/// primary source (authoritative). Otherwise, discovered (explorer-crawled)
-/// names are primary.
+/// primary source (authoritative); otherwise discovered (explorer-crawled,
+/// but previously persisted) names are primary. Either way both sources come
+/// from the DB.
 #[tauri::command]
 pub async fn read_names(
     state: State<'_, AppState>,
@@ -197,14 +202,28 @@ pub async fn read_names(
     // MutexGuard across the async RPC probe (MutexGuard is !Send).
     let local_ready = is_node_ready_for_local_reads(&state).await;
 
-    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let out = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        collect_read_names_data(&conn, &id, local_ready)?
+    };
 
-    // When local is ready, prefer node-synced names first; otherwise discovered first.
-    let discovered = queries::read_owned_names_explorer(&conn, &id)?;
-    let cached = queries::read_cached_names(&conn, &id)?;
+    Ok(serde_json::Value::Array(out))
+}
+
+/// Synchronous helper that collects all DB data for `read_names`.
+/// The MutexGuard is dropped when this returns, so no !Send value crosses
+/// an async boundary.
+fn collect_read_names_data(
+    conn: &rusqlite::Connection,
+    id: &str,
+    local_ready: bool,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let discovered = queries::read_owned_names_explorer(conn, id)?;
+    let cached = queries::read_cached_names(conn, id)?;
 
     let mut out: Vec<serde_json::Value> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
+
     let (primary, secondary) = if local_ready {
         (cached, discovered)
     } else {
@@ -217,7 +236,8 @@ pub async fn read_names(
             }
         }
     }
-    Ok(serde_json::Value::Array(out))
+
+    Ok(out)
 }
 
 /// Discover the names this wallet owns, node-free, by crawling the explorer.
@@ -247,7 +267,7 @@ pub async fn discover_owned_names(
     if addrs.is_empty() {
         return Ok(serde_json::json!({ "discovered": 0, "names": [] }));
     }
-    let addr_set: HashSet<&str> = addrs.iter().map(|s| s.as_str()).collect();
+    let addr_set: HashSet<String> = addrs.iter().cloned().collect();
 
     // 1. Crawl: collect candidate names from name-outputs paying our addresses.
     // `partial` flips true if a request errored (e.g. explorer rate-limit), so
@@ -298,42 +318,40 @@ pub async fn discover_owned_names(
         }
     }
 
-    // 2 + 3. Confirm current ownership and resolve live state.
-    let mut owned: Vec<(crate::hsd::types::HsdName, String, u32)> = Vec::new();
+    // 2 + 3. Confirm current ownership (via explorer history, NOT the dead
+    // `owner.hash` field) and resolve live state.
+    let mut owned: Vec<(crate::hsd::types::HsdName, String, u32, String)> = Vec::new();
     for name in &candidates {
         sleep(DISCOVERY_THROTTLE).await;
-        let (owner_txid, owner_vout) = match client.get_name_current_owner(name).await {
-            Ok(Some(o)) => o,
-            _ => continue,
-        };
-        sleep(DISCOVERY_THROTTLE).await;
-        let owner_outputs = match client.get_tx_named_outputs(&owner_txid).await {
-            Ok(o) => o,
-            Err(_) => continue,
-        };
-        let owned_by_us = owner_outputs
-            .iter()
-            .find(|o| o.index == owner_vout)
-            .map(|o| addr_set.contains(o.address.as_str()))
-            .unwrap_or(false);
-        if !owned_by_us {
+        let resolution =
+            match crate::commands::sync::resolve_owner_via_history(&client, name, &addr_set).await
+            {
+                Ok(Some(r)) => r,
+                _ => continue,
+            };
+        if !resolution.owned_by_wallet {
             continue;
         }
         sleep(DISCOVERY_THROTTLE).await;
         if let Ok(info) = client.get_name_info(name).await {
-            owned.push((info, owner_txid, owner_vout));
+            owned.push((
+                info,
+                resolution.owner_txid,
+                resolution.owner_vout,
+                resolution.owner_address,
+            ));
         }
     }
 
     // 4. Persist confirmed owned names.
     {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        for (info, txid, vout) in &owned {
-            queries::upsert_owned_name(&conn, &id, info, txid, *vout)?;
+        for (info, txid, vout, owner_address) in &owned {
+            queries::upsert_owned_name(&conn, &id, info, txid, *vout, owner_address)?;
         }
     }
 
-    let names: Vec<&String> = owned.iter().map(|(n, _, _)| &n.name).collect();
+    let names: Vec<&String> = owned.iter().map(|(n, _, _, _)| &n.name).collect();
     Ok(serde_json::json!({ "discovered": owned.len(), "names": names, "partial": partial }))
 }
 
@@ -341,6 +359,11 @@ pub async fn discover_owned_names(
 /// is the authoritative source of phase + countdown data, and works on regtest
 /// where there's no explorer), falling back to the HNSFans explorer when no node
 /// is reachable. Both paths normalize to the frontend `HsdName` shape.
+///
+/// When the node confirms a name exists in the Handshake namespace but has never
+/// been opened on-chain (`info` is null), we synthesize an `AVAILABLE` response
+/// so the frontend can offer the "Open auction" action without treating the name
+/// as an error.
 #[tauri::command]
 pub async fn read_name_info(
     state: State<'_, AppState>,
@@ -352,20 +375,71 @@ pub async fn read_name_info(
         (explorer_client(&settings), settings)
     };
 
-    // Node first: `getnameinfo` returns `{ info: { name, state, stats:{…phase…} } }`
+    // Node first — but ONLY when it is fully synced. An unsynced node answers
+    // `getnameinfo` with a stale/partial `state`, which would feed a wrong
+    // `badge.phase` to the modal. Gate on the same sync check as the balance/name
+    // reads so an unsynced node falls through to the explorer path below.
+    // `getnameinfo` returns `{ info: { name, state, stats:{…phase…} } }`
     // (or null `info` for a name that has never been touched on-chain).
     let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
-    if let Ok(raw) = node.get_name_info(&name).await {
-        if let Some(info) = raw.get("info").filter(|v| !v.is_null()) {
-            if let Some(normalized) = crate::providers::hnsfans::normalize_name(info) {
-                return Ok(serde_json::to_value(&normalized)?);
+    if is_node_ready_for_local_reads(&state).await {
+        if let Ok(raw) = node.get_name_info(&name).await {
+            // The node knows the name — `info` is present and carries auction state.
+            if let Some(info) = raw.get("info").filter(|v| !v.is_null()) {
+                if let Some(normalized) = crate::providers::hnsfans::normalize_name(info) {
+                    return Ok(serde_json::to_value(&normalized)?);
+                }
             }
+            // `info` is null → the name exists in the HNS namespace but has never
+            // been opened. Synthesize an AVAILABLE entry so the frontend can offer
+            // the "Open auction" action cleanly.
+            return Ok(serde_json::to_value(&crate::hsd::types::HsdName {
+                name: name.clone(),
+                name_hash: None,
+                state: Some("AVAILABLE".to_string()),
+                height: None,
+                renewal: None,
+                owner: None,
+                value: None,
+                highest: None,
+                registered: Some(false),
+                expired: None,
+                stats: None,
+                transfer: None,
+                revoked: None,
+            })?);
         }
     }
 
-    // Fall back to the explorer (node-free / unreachable).
-    let info = explorer.get_name_info(&name).await?;
-    Ok(serde_json::to_value(&info)?)
+    // Node unreachable or not synced — fall back to the explorer.
+    //
+    // `get_name_info_optional` returns `Ok(None)` when the explorer reports the
+    // name is not found (HTTP 404 / empty body), which we treat as AVAILABLE so
+    // the user can start an auction.  Real transport failures (DNS, timeout,
+    // 5xx) still propagate as `Err` instead of silently degrading to
+    // AVAILABLE.
+    match explorer.get_name_info_optional(&name).await {
+        Ok(Some(info)) => Ok(serde_json::to_value(&info)?),
+        Ok(None) => {
+            // Explorer confirms the name is unknown — synthesize AVAILABLE.
+            Ok(serde_json::to_value(&crate::hsd::types::HsdName {
+                name: name.clone(),
+                name_hash: None,
+                state: Some("AVAILABLE".to_string()),
+                height: None,
+                renewal: None,
+                owner: None,
+                value: None,
+                highest: None,
+                registered: Some(false),
+                expired: None,
+                stats: None,
+                transfer: None,
+                revoked: None,
+            })?)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Transaction history from the local (node-synced) cache.
@@ -383,6 +457,303 @@ pub async fn read_transactions(
     Ok(serde_json::Value::Array(queries::read_cached_transactions(&conn, &id)?))
 }
 
+// ============================================================================
+// Renewals (Task 3 / C3): days-until-expiry computed LIVE from chain data
+// ============================================================================
+
+/// One name in the Renewals view.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenewalRow {
+    pub name: String,
+    pub state: Option<String>,
+    /// Chain renewal height (`tracked_name_states.renewal_height`), when known.
+    pub renewal_height: Option<i64>,
+    /// `renewal_height + renewal_window` for chain rows; the CSV column for
+    /// csv-import rows.
+    pub expires_at_height: Option<i64>,
+    pub blocks_until_expire: Option<i64>,
+    pub days_until_expire: Option<f64>,
+    /// `"chain"` — computed from tracked chain state; `"csv-import"` — stale
+    /// CSV columns from the `assets` inventory (fallback only).
+    pub source: String,
+    /// `days_until_expire` known and ≤ the threshold (incl. negative = lapsed).
+    pub expiring_soon: bool,
+}
+
+/// Response of `read_renewals`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenewalsResponse {
+    pub wallet_profile_id: Option<String>,
+    /// The height days were computed against, when one is known.
+    pub current_height: Option<i64>,
+    /// `"node"` — live height from a connected, fully synced node.
+    /// `"explorer"` — estimate persisted by the last sync (explorer name-stats
+    /// snapshots and/or the last node-synced height), extrapolated by wall
+    /// time at ~10-minute blocks. NOT a live read.
+    /// `"unknown"` — no height available; chain days are null, never invented.
+    pub height_source: String,
+    /// Frontend copy of [`crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS`].
+    pub expiring_soon_threshold_days: f64,
+    pub names: Vec<RenewalRow>,
+}
+
+fn empty_renewals() -> RenewalsResponse {
+    RenewalsResponse {
+        wallet_profile_id: None,
+        current_height: None,
+        height_source: "unknown".into(),
+        expiring_soon_threshold_days: crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS,
+        names: Vec::new(),
+    }
+}
+
+/// Best persisted estimate of the current chain height when no synced node is
+/// available, extrapolated to "now" by elapsed wall time (~10-minute blocks).
+/// Extrapolation matters for safety: a stale snapshot UNDERestimates the
+/// height and therefore INFLATES days-until-expiry — the dangerous direction.
+///
+/// Candidates (max wins):
+/// * per-name explorer/node stats snapshots persisted in
+///   `tracked_name_states.raw_json` — `renewalPeriodEnd - blocksUntilExpire`
+///   is the chain height the stats were computed at, aged by `updated_at`;
+/// * `wallet_profiles.last_synced_height`, aged by `last_synced_at`.
+pub(crate) fn estimate_persisted_height(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Option<i64>, AppError> {
+    let mut best: Option<i64> = None;
+    let mut consider = |h: Option<i64>| {
+        if let Some(h) = h {
+            best = Some(best.map_or(h, |b| b.max(h)));
+        }
+    };
+
+    // Per-name stats snapshots. raw_json is either the explorer HsdName shape
+    // (stats at the root) or the node getnameinfo result ({"info": {...}}).
+    let mut stmt = conn.prepare(
+        "SELECT raw_json,
+                CAST((strftime('%s','now') - strftime('%s', updated_at)) / 600 AS INTEGER)
+         FROM tracked_name_states
+         WHERE wallet_profile_id = ?1 AND raw_json IS NOT NULL",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![profile_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (raw, elapsed_blocks) = row?;
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        let info = match v.get("info") {
+            Some(i) if !i.is_null() => i,
+            _ => &v,
+        };
+        let Some(stats) = info.get("stats").filter(|s| !s.is_null()) else {
+            continue;
+        };
+        let end = stats.get("renewalPeriodEnd").and_then(|x| x.as_i64());
+        let until = stats.get("blocksUntilExpire").and_then(|x| x.as_i64());
+        if let (Some(end), Some(until)) = (end, until) {
+            consider(Some(end - until + elapsed_blocks.max(0)));
+        }
+    }
+
+    // Last node-synced height (stale, but still a floor), aged the same way.
+    let profile_snapshot: Option<(Option<i64>, i64)> = conn
+        .query_row(
+            "SELECT last_synced_height,
+                    CAST((strftime('%s','now') - strftime('%s', COALESCE(last_synced_at, datetime('now')))) / 600 AS INTEGER)
+             FROM wallet_profiles WHERE id = ?1",
+            rusqlite::params![profile_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((Some(h), elapsed_blocks)) = profile_snapshot {
+        consider(Some(h + elapsed_blocks.max(0)));
+    }
+
+    Ok(best)
+}
+
+/// Pure DB + math core of `read_renewals` (testable without Tauri state).
+///
+/// `live_node_height` is the tip of a connected, fully synced node when one is
+/// available (→ `heightSource: "node"`); otherwise the best persisted estimate
+/// from the last sync is used (`"explorer"`), and when nothing is available at
+/// all (`"unknown"`) chain rows keep `days_until_expire: null` — the number is
+/// never fabricated.
+///
+/// Row sources:
+/// * every owned name (same ownership semantics as `read_names`) with a chain
+///   `renewal_height` → `source: "chain"`, days computed live;
+/// * an owned name without chain renewal data falls back to the `assets` CSV
+///   columns when present → `source: "csv-import"`;
+/// * CSV inventory rows with expiry data for names not otherwise covered are
+///   included as `"csv-import"` (the `assets` inventory is global, not
+///   per-profile — same as the legacy Renewals screen).
+pub(crate) fn compute_renewals(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    live_node_height: Option<i64>,
+) -> Result<RenewalsResponse, AppError> {
+    use crate::noncustodial::network::{Network, BLOCKS_PER_DAY};
+
+    let threshold = crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS;
+    let network = queries::get_wallet_profile(conn, profile_id)?
+        .and_then(|p| Network::from_str_opt(&p.network))
+        .unwrap_or_default();
+    let renewal_window = network.name_params().renewal_window as i64;
+
+    let (current_height, height_source) = match live_node_height {
+        Some(h) => (Some(h), "node"),
+        None => match estimate_persisted_height(conn, profile_id)? {
+            Some(h) => (Some(h), "explorer"),
+            None => (None, "unknown"),
+        },
+    };
+
+    // CSV expiry columns from the migration inventory (fallback source).
+    let mut csv: std::collections::HashMap<String, (Option<String>, Option<i64>, Option<f64>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT tld, name_state, expires_at_height, days_until_expire
+             FROM assets
+             WHERE expires_at_height IS NOT NULL OR days_until_expire IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get(1)?, row.get(2)?, row.get(3)?),
+            ))
+        })?;
+        let mut map = std::collections::HashMap::new();
+        for r in rows {
+            let (tld, data) = r?;
+            map.insert(tld.trim().to_lowercase(), data);
+        }
+        map
+    };
+
+    let expiring = |days: Option<f64>| days.map(|d| d <= threshold).unwrap_or(false);
+    // Safety override for CSV-imported rows: `days_until_expire` is a
+    // point-in-time snapshot from an unverified/legacy import path (no current
+    // code writes these `assets` columns — see task-3 report), so we do NOT
+    // trust its exact value or recompute it wholesale. But it and a known
+    // `current_height` share the same axis (both are Handshake chain
+    // heights — the column is literally named/exported as "Expires At
+    // Height"), so once the chain has clearly passed it we CAN safely
+    // override to expired styling rather than replay a stale reassurance
+    // (green "200d" for an already-expired name is the dangerous direction;
+    // see Finding 1). When not yet past, the stored value is left untouched.
+    let csv_row = |name: &str, (state, expires_at, days): (Option<String>, Option<i64>, Option<f64>)| {
+        let (days, blocks, forced_expired) = match (current_height, expires_at) {
+            (Some(h), Some(exp)) if h > exp => {
+                let blocks = exp - h; // negative: already past the imported expiry height
+                (Some(blocks as f64 / BLOCKS_PER_DAY), Some(blocks), true)
+            }
+            _ => (days, None, false),
+        };
+        RenewalRow {
+            name: name.to_string(),
+            state,
+            renewal_height: None,
+            expires_at_height: expires_at,
+            blocks_until_expire: blocks,
+            days_until_expire: days,
+            source: "csv-import".into(),
+            expiring_soon: forced_expired || expiring(days),
+        }
+    };
+
+    let mut names: Vec<RenewalRow> = Vec::new();
+
+    // Owned names — same union as `read_names` (node-synced cache + explorer
+    // discoveries), so the Renewals screen covers exactly what the wallet owns.
+    for v in collect_read_names_data(conn, profile_id, live_node_height.is_some())? {
+        let Some(name) = v.get("name").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let key = name.trim().to_lowercase();
+        let state = v.get("state").and_then(|x| x.as_str()).map(|s| s.to_string());
+        let renewal_height = v.get("renewal").and_then(|x| x.as_i64());
+
+        match renewal_height {
+            Some(renewal) => {
+                // Chain data: expiry = renewal height + network renewal window.
+                csv.remove(&key);
+                let expires_at = renewal + renewal_window;
+                let blocks = current_height.map(|h| expires_at - h);
+                let days = blocks.map(|b| b as f64 / BLOCKS_PER_DAY);
+                names.push(RenewalRow {
+                    name: key,
+                    state,
+                    renewal_height: Some(renewal),
+                    expires_at_height: Some(expires_at),
+                    blocks_until_expire: blocks,
+                    days_until_expire: days,
+                    source: "chain".into(),
+                    expiring_soon: expiring(days),
+                });
+            }
+            None => match csv.remove(&key) {
+                // No chain renewal data → stale CSV columns, honestly marked.
+                Some(data) => names.push(csv_row(&key, data)),
+                None => names.push(RenewalRow {
+                    name: key,
+                    state,
+                    renewal_height: None,
+                    expires_at_height: None,
+                    blocks_until_expire: None,
+                    days_until_expire: None,
+                    source: "chain".into(),
+                    expiring_soon: false,
+                }),
+            },
+        }
+    }
+
+    // Remaining CSV inventory rows (names not owned/tracked by this profile).
+    for (tld, data) in csv {
+        names.push(csv_row(&tld, data));
+    }
+
+    // Most urgent first; unknown-expiry rows last.
+    names.sort_by(|a, b| match (a.days_until_expire, b.days_until_expire) {
+        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+    .then_with(|| a.name.cmp(&b.name)));
+
+    Ok(RenewalsResponse {
+        wallet_profile_id: Some(profile_id.to_string()),
+        current_height,
+        height_source: height_source.into(),
+        expiring_soon_threshold_days: threshold,
+        names,
+    })
+}
+
+/// Renewal/expiry data for the Renewals screen, computed LIVE from chain data
+/// (never the stale CSV import alone — see [`compute_renewals`]).
+/// `wallet_profile_id` pins the read to a specific wallet (defaults to active).
+#[tauri::command]
+pub async fn read_renewals(
+    state: State<'_, AppState>,
+    wallet_profile_id: Option<String>,
+) -> Result<RenewalsResponse, AppError> {
+    let id = match resolve_profile(&state, wallet_profile_id)? {
+        Some(id) => id,
+        None => return Ok(empty_renewals()),
+    };
+    // Probe the node BEFORE taking the DB lock (the guard is !Send).
+    let live_height = node_tip_height_if_synced(&state).await;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    compute_renewals(&conn, &id, live_height)
+}
+
 /// Reconcile the local inventory (asset TLDs) against the names Namebase still
 /// lists for the account.
 #[derive(Debug, Serialize)]
@@ -390,11 +761,13 @@ pub async fn read_transactions(
 pub struct InventoryComparison {
     pub provider_kind: String,
     pub provider_label: String,
-    /// In inventory AND still at Namebase.
-    pub matched: Vec<String>,
+    /// In inventory AND present in Namebase transferable domains.
+    pub matched_transferable: Vec<String>,
+    /// In inventory AND present in Namebase staked domains.
+    pub matched_staked: Vec<String>,
     /// In inventory but NOT at Namebase (transferred out / no longer custodial).
     pub missing_at_provider: Vec<String>,
-    /// At Namebase but NOT in the local inventory (not imported/tracked).
+    /// At Namebase (transferable or staked) but NOT in the local inventory.
     pub extra_at_provider: Vec<String>,
 }
 
@@ -415,14 +788,19 @@ pub async fn compare_inventory_with_provider(
     // (not connected / unreachable) instead of swallowing them into a false
     // "everything is missing".
     let client = crate::commands::namebase::namebase_client(&state)?;
-    let domains = client.get_domains().await.map_err(|_| {
-        AppError::Other(
-            "Couldn't reach Namebase — connect your account in the Namebase tab and try again."
-                .to_string(),
-        )
-    })?;
+    // Fetch both transferable and staked domains.
+    let (domains, staked) = {
+        let d = client.get_domains().await.map_err(|_| {
+            AppError::Other(
+                "Couldn't reach Namebase — connect your account in the Namebase tab and try again."
+                    .to_string(),
+            )
+        })?;
+        let s = client.get_staked_domains().await.unwrap_or_default();
+        (d, s)
+    };
 
-    let nb_set: HashSet<String> = domains["domains"]
+    let nb_transferable: HashSet<String> = domains["domains"]
         .as_array()
         .map(|arr| {
             arr.iter()
@@ -430,29 +808,146 @@ pub async fn compare_inventory_with_provider(
                 .collect()
         })
         .unwrap_or_default();
+
+    let nb_staked: HashSet<String> = staked["stakedDomains"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|d| d["name"].as_str().map(|s| s.trim().to_lowercase()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Union of all names at Namebase (transferable + staked).
+    let nb_all: HashSet<String> = nb_transferable.union(&nb_staked).cloned().collect();
     let inv_set: HashSet<String> = local_names.iter().cloned().collect();
 
-    let mut matched = Vec::new();
+    let mut matched_transferable = Vec::new();
+    let mut matched_staked = Vec::new();
     let mut missing_at_provider = Vec::new();
     for n in &local_names {
-        if nb_set.contains(n) {
-            matched.push(n.clone());
+        if nb_staked.contains(n) {
+            matched_staked.push(n.clone());
+        } else if nb_transferable.contains(n) {
+            matched_transferable.push(n.clone());
         } else {
             missing_at_provider.push(n.clone());
         }
     }
     let mut extra_at_provider: Vec<String> =
-        nb_set.into_iter().filter(|n| !inv_set.contains(n)).collect();
+        nb_all.into_iter().filter(|n| !inv_set.contains(n)).collect();
 
-    matched.sort();
+    matched_transferable.sort();
+    matched_staked.sort();
     missing_at_provider.sort();
     extra_at_provider.sort();
 
     Ok(InventoryComparison {
         provider_kind: "namebase".to_string(),
         provider_label: "Namebase".to_string(),
-        matched,
+        matched_transferable,
+        matched_staked,
         missing_at_provider,
         extra_at_provider,
     })
+}
+
+/// Reconcile owned names in the local cache against live explorer data,
+/// repairing missing/incorrect fields so the owned-names list and auctions
+/// view are accurate.
+///
+/// This is the in-app fix for the common case where:
+/// - Namebase-transferred names are in the `assets` inventory but NOT in
+///   `tracked_name_states` (or have incomplete `raw_json`)
+/// - Explorer-discovered names lack `registered` / `expired` because the node
+///   RPC payload doesn't include those fields
+///
+/// The command looks up each name in the explorer, determines if the wallet
+/// still owns it, and upserts an authoritative `tracked_name_states` row.
+#[tauri::command]
+pub async fn repair_owned_names(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
+    let id = match active_profile(&state)? {
+        Some(id) => id,
+        None => return Ok(serde_json::json!({"repaired":0,"discovered":0,"errors":[]})),
+    };
+    let (client, inventory_tlds, tracked, all_addresses) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let settings = queries::get_settings(&conn)?;
+        (
+            explorer_client(&settings),
+            queries::get_inventory_tlds(&conn)?,
+            queries::list_tracked_name_names(&conn, &id)?,
+            queries::get_profile_addresses(&conn, &id)?,
+        )
+    };
+    let addr_set: HashSet<String> = all_addresses.iter().cloned().collect();
+
+    // Build the candidate set: inventory TLDs + currently tracked names.
+    let mut candidates: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for name in inventory_tlds.iter().chain(tracked.iter()) {
+        let n = name.trim().to_lowercase();
+        if n.is_empty() || !seen.insert(n.clone()) {
+            continue;
+        }
+        candidates.push(n);
+    }
+
+    let mut errors: Vec<String> = Vec::new();
+    let mut repaired = 0u32;
+
+    for name in &candidates {
+        sleep(DISCOVERY_THROTTLE).await;
+        let info_opt = match client.get_name_info_optional(name).await {
+            Ok(v) => v,
+            Err(e) => {
+                errors.push(format!("{name}: lookup failed — {e}"));
+                continue;
+            }
+        };
+
+        // Resolve the CURRENT owner the correct way: via `/history` + the owner
+        // tx's output *address* (Task 2), NOT the dead `info.owner.hash` (a txid).
+        // Throttle again here: `get_name_info_optional` above and the resolver's
+        // first internal call are two separate explorer HTTP calls, so every
+        // call must be preceded by a sleep.
+        sleep(DISCOVERY_THROTTLE).await;
+        let resolution =
+            crate::commands::sync::resolve_owner_via_history(&client, name, &addr_set).await;
+
+        match resolution {
+            Ok(Some(res)) if res.owned_by_wallet => {
+                if let Some(info) = &info_opt {
+                    // Upsert with live explorer data (includes `registered`/`expired`)
+                    // and advance the inventory row to finalized_owned.
+                    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+                    queries::upsert_owned_name(
+                        &conn, &id, info, &res.owner_txid, res.owner_vout, &res.owner_address,
+                    )?;
+                    queries::mark_asset_finalized_owned(&conn, name, info.state.as_deref())?;
+                    repaired += 1;
+                } else {
+                    // Owned per history but name-info 404'd — record the check.
+                    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+                    queries::touch_asset_synced(&conn, name)?;
+                }
+            }
+            // Checked and not owned: stamp last_synced_at so repeated runs converge.
+            Ok(_) => {
+                let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+                queries::touch_asset_synced(&conn, name)?;
+            }
+            Err(e) => {
+                errors.push(format!("{name}: owner resolution failed — {e}"));
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "repaired": repaired,
+        "errors": errors,
+        "candidates": candidates.len(),
+    }))
 }

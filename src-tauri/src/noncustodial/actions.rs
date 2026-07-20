@@ -15,7 +15,7 @@ use crate::error::AppError;
 use crate::noncustodial::address;
 use crate::noncustodial::hd::bip44_path;
 use crate::noncustodial::network::Network;
-use crate::noncustodial::send::{estimate_fee, SpendableCoin, DUST_THRESHOLD};
+use crate::noncustodial::send::{estimate_fee_with_primary, SpendableCoin, DUST_THRESHOLD};
 use crate::noncustodial::session::SignerSession;
 use crate::noncustodial::tx::{
     output_address_from_string, sighash, Covenant, Input, Outpoint, Output, Transaction,
@@ -108,6 +108,20 @@ pub fn build_plan(
     let base_in = if name_input.is_some() { 1u64 } else { 0 };
     let name_value = name_input.as_ref().map(|n| n.value).unwrap_or(0);
 
+    // The primary output's REAL serialized size (I4): covenant items (name
+    // hash, height, resource, renewal block, …) can make a REGISTER/UPDATE/
+    // FINALIZE/TRANSFER output far larger than a plain P2WPKH output.
+    // Serialize the actual output and measure it rather than assuming the
+    // flat per-output constant, so large-resource covenant txs aren't
+    // underpriced below min-relay.
+    let primary_addr = output_address_from_string(network, &primary.address)?;
+    let primary_vbytes = Output {
+        value: 0,
+        address: primary_addr,
+        covenant: primary.covenant.clone(),
+    }
+    .encoded_len() as u64;
+
     let mut taken = 0usize; // funding coins used
     let (fee, change) = loop {
         let funded: u64 = funding[..taken].iter().map(|c| c.value).sum();
@@ -115,8 +129,10 @@ pub fn build_plan(
         let n_in = base_in + taken as u64;
 
         if n_in >= 1 {
-            let fee_wc = estimate_fee(n_in, 2, rate);
-            let fee_nc = estimate_fee(n_in, 1, rate);
+            // 1 plain output = the change output when one is produced; 0 when
+            // the primary is the only output.
+            let fee_wc = estimate_fee_with_primary(n_in, primary_vbytes, 1, rate);
+            let fee_nc = estimate_fee_with_primary(n_in, primary_vbytes, 0, rate);
             if total_in >= primary.value + fee_wc {
                 let change = total_in - primary.value - fee_wc;
                 if change >= DUST_THRESHOLD {
@@ -344,5 +360,142 @@ mod tests {
         assert!(!signed_hex.is_empty());
         // txid is the no-witness hash, identical pre/post signing.
         assert_eq!(txid, res.txid);
+    }
+
+    // --- I4: fee estimation must account for covenant output sizes ---------
+
+    fn name_spec(value: u64) -> NameInputSpec {
+        NameInputSpec {
+            txid: hex::encode([0xaa; 32]),
+            vout: 0,
+            value,
+            branch: 0,
+            child_index: 3,
+            sighash_type: sighash::ALL,
+        }
+    }
+
+    /// A covenant-free primary output is byte-for-byte a plain P2WPKH output
+    /// (32 bytes), so `build_plan`'s fee must match the flat plain-send
+    /// estimator `send::estimate_fee` still used for ordinary sends. This
+    /// pins the new per-output measurement against a regression in the
+    /// degenerate (no covenant) case — requirement 4 (plain sends unchanged).
+    #[test]
+    fn empty_covenant_primary_output_matches_flat_plain_send_estimate() {
+        use crate::noncustodial::send::estimate_fee;
+
+        let funding = vec![coin(1, 1_000_000, 0)];
+        let res = build_plan(
+            Network::Main,
+            0,
+            None,
+            PrimaryOutput { value: 100_000, address: ADDR.into(), covenant: Covenant::default() },
+            &funding,
+            ADDR,
+            1,
+        )
+        .unwrap();
+        let n_in = res.plan.inputs.len() as u64;
+        let n_out = res.plan.outputs.len() as u64;
+        assert_eq!(res.fee, estimate_fee(n_in, n_out, 1));
+    }
+
+    /// A REGISTER covenant carrying a large resource record set must be
+    /// estimated (and thus priced) larger than the same REGISTER with a tiny
+    /// resource, and the delta must equal EXACTLY the real serialized byte
+    /// growth of the covenant output (varint length prefix + payload) — not
+    /// some coarse approximation. Before the fix, both were charged the same
+    /// flat per-output constant.
+    #[test]
+    fn register_with_large_resource_increases_fee_by_exact_encoded_len_delta() {
+        let nh = [7u8; 32];
+        let renewal_block = [8u8; 32];
+        let small_resource = vec![0xEEu8; 4];
+        let large_resource = vec![0xEEu8; 300]; // far beyond a flat P2WPKH output
+
+        let addr = output_address_from_string(Network::Main, ADDR).unwrap();
+        let small_cov = covenants::register(&nh, 100, &small_resource, &renewal_block);
+        let large_cov = covenants::register(&nh, 100, &large_resource, &renewal_block);
+        let small_vbytes = Output { value: 0, address: addr.clone(), covenant: small_cov.clone() }
+            .encoded_len();
+        let large_vbytes =
+            Output { value: 0, address: addr, covenant: large_cov.clone() }.encoded_len();
+        assert!(
+            large_vbytes > small_vbytes + 250,
+            "large resource must dominate the output size: small={small_vbytes} large={large_vbytes}"
+        );
+
+        let funding = vec![coin(1, 5_000_000, 1)];
+        let small = build_plan(
+            Network::Main,
+            0,
+            Some(name_spec(1_000_000)),
+            PrimaryOutput { value: 1_000_000, address: ADDR.into(), covenant: small_cov },
+            &funding,
+            ADDR,
+            1,
+        )
+        .unwrap();
+        let large = build_plan(
+            Network::Main,
+            0,
+            Some(name_spec(1_000_000)),
+            PrimaryOutput { value: 1_000_000, address: ADDR.into(), covenant: large_cov },
+            &funding,
+            ADDR,
+            1,
+        )
+        .unwrap();
+
+        assert!(large.fee > small.fee, "large={} small={}", large.fee, small.fee);
+        assert_eq!(
+            large.fee - small.fee,
+            (large_vbytes - small_vbytes) as u64,
+            "fee delta must equal the exact covenant-output byte delta at rate=1"
+        );
+    }
+
+    /// At the relay-floor rate, a REGISTER with a large resource must pay a
+    /// fee that covers at least 1 dollarydoo per byte of the ACTUAL signed
+    /// broadcast size (min-relay) — not the size a flat per-output constant
+    /// would have (under-)estimated. Our estimator is exact for standard
+    /// P2WPKH inputs/change plus a measured covenant output, so this holds
+    /// with equality, not just `>=`.
+    #[test]
+    fn register_plan_fee_at_rate_one_covers_actual_signed_tx_size() {
+        let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+        let master = ExtendedPrivKey::from_seed(&seed).unwrap();
+        let mut session = SignerSession::unlock("p1".into(), Network::Main, master, 60_000);
+
+        let nh = [9u8; 32];
+        let renewal_block = [3u8; 32];
+        let big_resource = vec![0x42u8; 400]; // a large resource record set
+        let cov = covenants::register(&nh, 500, &big_resource, &renewal_block);
+
+        let funding = vec![coin(1, 5_000_000, 1)];
+        let res = build_plan(
+            Network::Main,
+            0,
+            Some(name_spec(1_000_000)),
+            PrimaryOutput { value: 1_000_000, address: ADDR.into(), covenant: cov },
+            &funding,
+            ADDR,
+            crate::noncustodial::send::MIN_FEE_RATE_PER_BYTE,
+        )
+        .unwrap();
+
+        let (signed_hex, _txid) = sign_plan(&mut session, &res.plan).unwrap();
+        let actual_len = hex::decode(&signed_hex).unwrap().len() as u64;
+
+        assert!(
+            res.fee >= actual_len * crate::noncustodial::send::MIN_FEE_RATE_PER_BYTE,
+            "fee {} must cover the actual size {} at the min-relay rate",
+            res.fee,
+            actual_len
+        );
+        assert_eq!(
+            res.fee, actual_len,
+            "fee should exactly equal the actual signed size at rate=1"
+        );
     }
 }
