@@ -1433,34 +1433,39 @@ pub fn list_tx_drafts(
     Ok(out)
 }
 
-/// Whether a not-yet-terminal `bid` draft already exists for `name` in this
-/// profile (I2 bid-multiplicity guard, part 2 of the check — part 1 is an
-/// unspent on-chain BID coin, see [`find_unspent_covenant_utxos_by_name_hash`]).
+/// Whether a not-yet-terminal draft of `action` already exists for `name` in
+/// this profile. Generic form of the I2 bid-multiplicity guard's draft check
+/// (part 2 — part 1 is an unspent on-chain covenant coin, see
+/// [`find_unspent_covenant_utxos_by_name_hash`]); reused by the Task 1
+/// double-open guard (`action = "open"`) so both guards share one
+/// implementation instead of duplicating the `summary_json` parse.
 ///
 /// "Not-yet-terminal" = `draft`, `signed`, `broadcast_pending`, or
-/// `broadcasted`: a second build must not be able to queue a second bid for
-/// the same name while an earlier one might still land on-chain. `confirmed`
-/// is deliberately excluded here — a confirmed bid already has an unspent BID
-/// coin, which part (a) of the guard catches; `dropped`/`failed` drafts never
-/// reached (or will never reach) the chain and must not block a retry.
+/// `broadcasted`: a second build must not be able to queue a second action
+/// for the same name while an earlier one might still land on-chain.
+/// `confirmed` is deliberately excluded here — a confirmed action already has
+/// an unspent covenant coin, which part (a) of each guard catches;
+/// `dropped`/`failed` drafts never reached (or will never reach) the chain
+/// and must not block a retry.
 ///
 /// There is no `name` column on `wallet_tx_drafts` — the name lives inside
 /// `summary_json` (see [`ActionSummary`] in `commands::names`) — so this
-/// filters by `action = 'bid'` + status in SQL, then parses `summary_json` in
-/// Rust to match the exact name (avoids relying on the `json1` SQLite
-/// extension and avoids substring false-positives from a raw `LIKE`).
-pub fn has_pending_bid_draft_for_name(
+/// filters by `action` + status in SQL, then parses `summary_json` in Rust to
+/// match the exact name (avoids relying on the `json1` SQLite extension and
+/// avoids substring false-positives from a raw `LIKE`).
+pub fn has_pending_draft_for_name(
     conn: &rusqlite::Connection,
     profile_id: &str,
+    action: &str,
     name: &str,
 ) -> Result<bool, AppError> {
     let sql = format!(
         "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
-         WHERE wallet_profile_id = ?1 AND action = 'bid'
+         WHERE wallet_profile_id = ?1 AND action = ?2
            AND status IN ('draft','signed','broadcast_pending','broadcasted')"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![profile_id], row_to_draft)?;
+    let rows = stmt.query_map(params![profile_id, action], row_to_draft)?;
     for r in rows {
         let row = r?;
         let matches_name = serde_json::from_str::<serde_json::Value>(&row.summary_json)
@@ -1472,6 +1477,16 @@ pub fn has_pending_bid_draft_for_name(
         }
     }
     Ok(false)
+}
+
+/// Thin `action = "bid"` wrapper over [`has_pending_draft_for_name`] — kept so
+/// `build_bid_draft`'s call site (and its existing tests) are untouched.
+pub fn has_pending_bid_draft_for_name(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+) -> Result<bool, AppError> {
+    has_pending_draft_for_name(conn, profile_id, "bid", name)
 }
 
 // --- Cache-backed read model (non-custodial) ------------------------------
@@ -2858,6 +2873,31 @@ mod noncustodial_query_tests {
         )
         .unwrap();
         assert!(!has_pending_bid_draft_for_name(&conn, "p1", "gamma").unwrap());
+    }
+
+    /// The generic [`has_pending_draft_for_name`] behind the bid wrapper works
+    /// for any action — exercised here with `"open"` (Task 1's double-open
+    /// guard), independently of `has_pending_bid_draft_for_name`'s own
+    /// regression coverage above.
+    #[test]
+    fn has_pending_draft_for_name_generalizes_to_open_action() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        assert!(!has_pending_draft_for_name(&conn, "p1", "open", "alpha").unwrap());
+
+        insert_tx_draft(
+            &conn, "d1", "p1", "open", "",
+            "{}", r#"{"action":"open","name":"alpha"}"#,
+        )
+        .unwrap();
+        assert!(has_pending_draft_for_name(&conn, "p1", "open", "alpha").unwrap());
+        // A different action for the same name never counts.
+        assert!(!has_pending_draft_for_name(&conn, "p1", "bid", "alpha").unwrap());
+        // A different name is unaffected.
+        assert!(!has_pending_draft_for_name(&conn, "p1", "open", "beta").unwrap());
+
+        update_tx_draft_status(&conn, "d1", "dropped", None, None).unwrap();
+        assert!(!has_pending_draft_for_name(&conn, "p1", "open", "alpha").unwrap());
     }
 
     #[test]

@@ -2260,3 +2260,163 @@ fn insert_bid_commitment_duplicate_errors_instead_of_silently_dropping() {
         .unwrap();
     assert_eq!(count, 1, "the original commitment must survive the rejected duplicate");
 }
+
+// ============================================================================
+// Task 1: double-open protection — `build_open_draft`'s guard (mirrors the
+// I2 bid-multiplicity guard above) + `can_open`/task-state reflecting a
+// pending open.
+// ============================================================================
+
+/// A second OPEN for the same name must be rejected while an earlier `open`
+/// draft is still not-yet-terminal (draft/signed/broadcast_pending/broadcasted).
+#[tokio::test]
+async fn build_open_draft_rejects_second_open_when_a_draft_is_already_pending() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        // Second funding UTXO so the second (rejected) build's own
+        // `build_plan` doesn't fail on insufficient funds before ever
+        // reaching the guard — mirrors `insert_extra_funding`'s role in the
+        // bid-multiplicity tests above.
+        insert_extra_funding(&conn, &id, &"55".repeat(32));
+        id
+    };
+    let app = mock_app_with(state);
+
+    names::build_open_draft(app.state(), "duplicateopen".into(), None)
+        .await
+        .expect("first open draft should build");
+
+    let err = names::build_open_draft(app.state(), "duplicateopen".into(), None)
+        .await
+        .expect_err("second open on the same name must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("already being opened"),
+        "error should state the guard's reason, got: {msg}"
+    );
+
+    // Exactly one open draft — the rejected attempt must not have persisted
+    // anything.
+    let state: tauri::State<crate::AppState> = app.state();
+    let conn = state.db.lock().unwrap();
+    let draft_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM wallet_tx_drafts WHERE wallet_profile_id = ?1 AND action = 'open'",
+            rusqlite::params![&profile_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(draft_count, 1, "rejected retry must not persist a second draft");
+}
+
+/// Even without any local draft history, an unspent COV_OPEN coin for the
+/// name anywhere in the profile (e.g. imported/recovered wallet state) must
+/// block a second open.
+#[tokio::test]
+async fn build_open_draft_rejects_when_an_unspent_open_coin_already_exists() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        insert_extra_funding(&conn, &id, &"66".repeat(32));
+        let addr = first_derived_address(&conn, &id);
+        let cov = covenant_json_for("existingopen", crate::noncustodial::sync::COV_OPEN, "OPEN");
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &"77".repeat(32),
+            &addr,
+            crate::noncustodial::sync::COV_OPEN,
+            0,
+            Some(&cov),
+        );
+        id
+    };
+    let app = mock_app_with(state);
+
+    let err = names::build_open_draft(app.state(), "existingopen".into(), None)
+        .await
+        .expect_err("an open on a name with an existing unspent OPEN coin must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("already being opened"),
+        "error should state the guard's reason, got: {msg}"
+    );
+
+    // Nothing was written — the rejected attempt must not persist a draft.
+    let state: tauri::State<crate::AppState> = app.state();
+    let conn = state.db.lock().unwrap();
+    let draft_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM wallet_tx_drafts WHERE wallet_profile_id = ?1 AND action = 'open'",
+            rusqlite::params![&profile_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(draft_count, 0, "rejected attempt must not persist a draft");
+}
+
+/// The double-open guard is name-hash-scoped — an open on a different name
+/// must never be blocked by an already-pending open elsewhere.
+#[tokio::test]
+async fn build_open_draft_allows_open_on_a_different_name() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        insert_extra_funding(&conn, &id, &"88".repeat(32));
+    }
+    let app = mock_app_with(state);
+
+    names::build_open_draft(app.state(), "opena".into(), None)
+        .await
+        .expect("first open should build");
+    names::build_open_draft(app.state(), "openb".into(), None)
+        .await
+        .expect("an open on a different name must not be blocked by the first open");
+}
+
+/// End-to-end through `get_name_action_capabilities`: a pending `open` draft
+/// disables `can_open` with a clear reason and surfaces `taskState` as
+/// `waitingForBidding` (the existing variant reused per the Task 1 brief)
+/// while the phase is still AVAILABLE.
+#[tokio::test]
+async fn capabilities_reflect_pending_open_disables_can_open_and_waits_for_bidding() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_blockchain_and_name(&mut server, 1.0, Some("AVAILABLE")).await;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        db::queries::insert_tx_draft(
+            &conn,
+            "d_open",
+            &id,
+            "open",
+            "",
+            "{}",
+            r#"{"action":"open","name":"testname"}"#,
+        )
+        .unwrap();
+        id
+    };
+    let app = mock_app_with(state);
+    let caps = names::get_name_action_capabilities(app.state(), "testname".into(), Some(profile_id))
+        .await
+        .expect("capabilities should resolve via the node path");
+
+    assert!(!caps.can_open.allowed, "can_open must be disallowed while an open is pending");
+    assert!(
+        caps.can_open.reason.as_deref().unwrap_or("").contains("already opening"),
+        "reason should mention the pending open, got: {:?}",
+        caps.can_open.reason
+    );
+    assert_eq!(
+        caps.task_state,
+        names::AuctionTaskState::WaitingForBidding,
+        "task state should reuse WaitingForBidding for a pending open, per the Task 1 brief"
+    );
+}

@@ -311,6 +311,15 @@ pub(crate) struct NameActionContext {
     pub name_height: Option<i64>,
     pub transfer_has_items: Option<bool>,
     pub existing_bid_count: i64,
+    /// Task 1: an OPEN for this name is already pending — either an unspent
+    /// COV_OPEN coin (broadcast, awaiting confirmation) or a not-yet-terminal
+    /// `open` draft (queued/signed/broadcast_pending/broadcasted). Mirrors the
+    /// exact two checks `build_open_draft`'s own double-open guard enforces,
+    /// so `can_open` and the task state reflect the same rule the backend
+    /// gate applies. Only catches OUR OWN pending open — someone ELSE having
+    /// already opened the name is a phase change (AVAILABLE -> OPENING),
+    /// which `can_open`'s phase check already handles separately.
+    pub has_pending_open: bool,
 }
 
 /// Gather wallet evidence from the DB for a name.
@@ -376,6 +385,29 @@ pub(crate) fn find_name_action_context(
         .map(|v| v.iter().filter(|b| b.name == name).count() as i64)
         .unwrap_or(0);
 
+    // Task 1: pending-OPEN evidence, mirroring the two checks
+    // `build_open_draft`'s guard enforces — (a) an unspent COV_OPEN coin for
+    // this name anywhere in the profile, OR (b) a not-yet-terminal `open`
+    // draft. Either makes `can_open` reflect the pending state instead of
+    // staying "allowed" until the user hits the guard directly.
+    let has_pending_open_coin = names::hash_name(name)
+        .ok()
+        .map(hex::encode)
+        .map(|nh_hex| {
+            queries::find_unspent_covenant_utxos_by_name_hash(
+                conn,
+                profile_id,
+                sync::COV_OPEN as i64,
+                &nh_hex,
+            )
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    let has_pending_open_draft =
+        queries::has_pending_draft_for_name(conn, profile_id, "open", name).unwrap_or(false);
+    let has_pending_open = has_pending_open_coin || has_pending_open_draft;
+
     Ok(NameActionContext {
         has_bid_commitment: bid.is_some(),
         has_bid_coin: bid_coin.is_some(),
@@ -385,6 +417,7 @@ pub(crate) fn find_name_action_context(
         name_height: nh,
         transfer_has_items: transfer,
         existing_bid_count,
+        has_pending_open,
     })
 }
 
@@ -623,10 +656,17 @@ fn build_name_action_capabilities(
     days_until_expire_override: Option<f64>,
 ) -> NameActionCapabilities {
     // 4. Derive capabilities with strengthened validation rules.
+    // Task 1: `can_open` also reflects a pending OPEN for this name (our own
+    // unconfirmed OPEN coin or a not-yet-terminal `open` draft) — the same
+    // rule `build_open_draft`'s guard enforces server-side, so the button
+    // disables with a clear reason instead of staying enabled until the user
+    // hits the guard directly.
     let can_open = NameActionCapability {
-        allowed: phase == "AVAILABLE" || phase.is_empty(),
+        allowed: (phase == "AVAILABLE" || phase.is_empty()) && !action_ctx.has_pending_open,
         reason: if phase != "AVAILABLE" && !phase.is_empty() {
             Some(format!("name is in phase '{phase}', not AVAILABLE"))
+        } else if action_ctx.has_pending_open {
+            Some("an auction is already opening for this name (pending confirmation)".into())
         } else {
             None
         },
@@ -783,7 +823,7 @@ fn build_name_action_capabilities(
             })
         })
     });
-    let task_state = derive_auction_task_state(&phase, owns_name, action_ctx.has_bid_commitment, action_ctx.has_bid_coin, action_ctx.has_reveal_coin, action_ctx.has_owner_coin, action_ctx.owner_covenant_type, days_until_expire);
+    let task_state = derive_auction_task_state(&phase, owns_name, action_ctx.has_bid_commitment, action_ctx.has_bid_coin, action_ctx.has_reveal_coin, action_ctx.has_owner_coin, action_ctx.owner_covenant_type, days_until_expire, action_ctx.has_pending_open);
 
     // 6. Determine next action.
     let (next_action_key, next_action_label, next_action_reason) = next_action_for_task(&task_state);
@@ -874,6 +914,12 @@ fn conservative_capabilities(name: &str, reason: &str) -> NameActionCapabilities
 /// only `has_bid_coin` is meaningful for the REVEAL-phase branch below;
 /// `has_reveal_coin` remains meaningful only for the post-auction CLOSED
 /// branch (a losing reveal coin waiting to be redeemed).
+///
+/// `has_pending_open` (Task 1): when true and the phase hasn't reached
+/// OPENING yet (still "AVAILABLE"/""), this returns [`AuctionTaskState::WaitingForBidding`]
+/// instead of [`AuctionTaskState::AvailableToOpen`] — we reuse the existing
+/// variant (its "Wait for Bidding" label reads fine for "your OPEN is
+/// confirming") rather than adding a new one.
 #[allow(clippy::too_many_arguments)]
 pub fn derive_auction_task_state(
     phase: &str,
@@ -884,12 +930,19 @@ pub fn derive_auction_task_state(
     has_owner_coin: bool,
     owner_covenant_type: Option<i64>,
     days_until_expire: Option<f64>,
+    has_pending_open: bool,
 ) -> AuctionTaskState {
     let expiring_soon = days_until_expire
         .map(|d| d <= EXPIRING_SOON_THRESHOLD_DAYS)
         .unwrap_or(false);
     match phase {
-        "AVAILABLE" | "" => AuctionTaskState::AvailableToOpen,
+        "AVAILABLE" | "" => {
+            if has_pending_open {
+                AuctionTaskState::WaitingForBidding
+            } else {
+                AuctionTaskState::AvailableToOpen
+            }
+        }
         "OPENING" => AuctionTaskState::WaitingForBidding,
         "BIDDING" => {
             if has_bid_commitment {
@@ -1045,6 +1098,7 @@ pub async fn build_open_draft(
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let nh = names::hash_name(&name)?;
+    let nh_hex = hex::encode(nh);
     let raw = names::raw_name(&name)?;
     // OPEN output goes to the next unused wallet receive address (value 0).
     let recv = {
@@ -1066,7 +1120,55 @@ pub async fn build_open_draft(
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "open", &name, None, &res)
+
+    // --- Single critical section: double-open guard (Task 1, mirrors the I2
+    // bid-multiplicity guard in `build_bid_draft` above) + draft insert/coin
+    // reservation, ALL under one held MutexGuard.
+    //
+    // Safety rule: don't let this wallet broadcast a second OPEN for a name
+    // it already opened. The UI already gates this (`can_open`, which now
+    // reflects `has_pending_open` too), but that's advisory only — a second
+    // window, a stale UI, or a replayed call can still reach this command
+    // directly, so the rule must be enforced here. Two checks, either of
+    // which blocks a second open:
+    //   (a) an unspent COV_OPEN coin for this name anywhere in the profile —
+    //       our OPEN is already live on-chain (or awaiting confirmation);
+    //   (b) a not-yet-terminal `open` draft for this name — one is already
+    //       queued/signed/broadcast and might still land.
+    // This deliberately does NOT fetch node state to detect someone ELSE
+    // having already opened the name — that's a phase change the UI's
+    // `can_open` (phase != AVAILABLE) already catches; this guard only
+    // stops OUR OWN duplicate broadcasts.
+    //
+    // Both checks AND the write below (draft insert + coin reservation) share
+    // ONE MutexGuard — no unlock/relock in between. Without that, two
+    // concurrent calls could both pass the checks before either had written
+    // anything (classic TOCTOU); `state.db` is a plain (non-reentrant)
+    // `std::sync::Mutex`, so holding it across `persist_with_conn` (rather
+    // than calling `persist`, which would try to lock it again and deadlock)
+    // is what makes this section atomic — the second caller simply blocks on
+    // `lock()` until the first is done, then sees the first's writes and is
+    // rejected by the same checks.
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+
+    let existing_open_coins = queries::find_unspent_covenant_utxos_by_name_hash(
+        &conn,
+        &ctx.profile_id,
+        sync::COV_OPEN as i64,
+        &nh_hex,
+    )?;
+    if !existing_open_coins.is_empty() {
+        return Err(AppError::InvalidInput(format!(
+            "an auction for '{name}' is already being opened — wait for it to confirm"
+        )));
+    }
+    if queries::has_pending_draft_for_name(&conn, &ctx.profile_id, "open", &name)? {
+        return Err(AppError::InvalidInput(format!(
+            "an auction for '{name}' is already being opened — wait for it to confirm"
+        )));
+    }
+
+    persist_with_conn(&conn, &ctx.profile_id, "open", &name, None, &res)
 }
 
 // --- BID -------------------------------------------------------------------
