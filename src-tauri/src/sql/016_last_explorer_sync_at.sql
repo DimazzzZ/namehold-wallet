@@ -1,0 +1,17 @@
+-- Task 11 review, Finding 2 (Important): the "Last successful sync" line in
+-- the UI reads `wallet_profiles.last_synced_at`, which only ever advances via
+-- the node-RPC sync step (`apply_node_sync_batch` -> `update_profile_sync`).
+-- In explorer-only mode (no local node configured — the exact mode Task 11
+-- exists for) that step never runs, so the timestamp stays NULL forever even
+-- after a fully successful explorer-driven repair+discover run.
+--
+-- This adds a SEPARATE column, stamped once at the very end of a clean
+-- explorer sync run (see `commands/sync.rs`'s "Done" block in
+-- `start_full_sync`'s background thread) — outside the per-name repair/
+-- discover loops entirely, so the windowed-convergence/memo/cancel/backoff
+-- logic in those loops is untouched. "Clean" means the run reached the end
+-- without a cancellation and without either step aborting after
+-- `SYNC_MAX_CONSECUTIVE_ERRORS` (the only thing that pushes into
+-- `SyncStatus.errors`) — an aborted or cancelled run leaves this column
+-- exactly as it was, so it never overstates freshness.
+ALTER TABLE wallet_profiles ADD COLUMN last_explorer_sync_at TEXT;

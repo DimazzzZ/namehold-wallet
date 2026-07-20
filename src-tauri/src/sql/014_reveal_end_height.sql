@@ -1,0 +1,15 @@
+-- Persist an estimate of the reveal-window close height alongside each bid
+-- commitment, so a background deadline scanner can warn before the window
+-- closes and the lockup is forfeited (I1).
+--
+-- Populated at `build_bid_draft` time, where the live `getnameinfo` "height"
+-- (the auction's OPEN height, which the BID covenant itself carries as its
+-- `start` item) is known: reveal_end_height = start + (treeInterval + 1) +
+-- biddingPeriod + revealPeriod (network name params) — the name spends
+-- `treeInterval + 1` blocks OPENING before BIDDING even starts, so that
+-- period is part of the estimate too. Left NULL for commitments the scanner
+-- cannot derive this for (rows recovered via `recover_bid_commitment`, which
+-- has no live auction-start height to work from, and any pre-existing rows
+-- from before this column existed) — the scanner skips NULL rows rather than
+-- guessing.
+ALTER TABLE bid_commitments ADD COLUMN reveal_end_height INTEGER;

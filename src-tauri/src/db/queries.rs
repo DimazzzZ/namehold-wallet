@@ -629,6 +629,150 @@ pub fn get_assets_by_tlds(
     Ok(assets)
 }
 
+/// Select the next window of names to re-check during a background repair sweep.
+///
+/// Candidates are the union of inventory TLDs (`assets`) and this profile's
+/// tracked names not already in `assets`. Rows whose `last_synced_at` falls
+/// within the last `min_age_hours` are excluded so a background loop converges
+/// instead of re-checking the same ~hundreds of names every run. Ordering is
+/// oldest-first (`NULL`/never-synced first, then `name ASC` as an explicit,
+/// deterministic tiebreak — see below), LIMIT `max` — so successive runs page
+/// through the whole inventory.
+///
+/// Known limitation: tracked-only names (no `assets` row) always report
+/// `last_synced_at = NULL` here, because `touch_asset_synced`/
+/// `mark_asset_finalized_owned` only ever `UPDATE assets ... WHERE tld = ?`,
+/// which is a no-op when the tld isn't in `assets`. So a tracked-only name
+/// always sorts into the NULL group and never "converges" the way inventory
+/// rows do (its `last_synced_at` never advances). This is why the ORDER BY
+/// has an explicit `name ASC` tiebreak: `repair_step_windowed`'s caller-side
+/// `attempted` set relies on repeated calls with a GROWING `max` returning a
+/// stable, strictly-increasing prefix of the same ordering, so that
+/// filtering out already-attempted names always surfaces the next unseen
+/// ones instead of re-fetching the same top-`max` rows forever (which, before
+/// this tiebreak was added, could happen if ties broke inconsistently).
+pub fn list_repair_candidates(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    max: u32,
+    min_age_hours: i64,
+) -> Result<Vec<String>, AppError> {
+    let age_modifier = format!("-{} hours", min_age_hours);
+    let mut stmt = conn.prepare(
+        "SELECT name, last_synced_at FROM (
+             SELECT tld AS name, last_synced_at FROM assets
+             UNION
+             SELECT name AS name, NULL AS last_synced_at
+               FROM tracked_name_states
+              WHERE wallet_profile_id = ?1
+                AND name NOT IN (SELECT tld FROM assets)
+         )
+         WHERE last_synced_at IS NULL OR last_synced_at <= datetime('now', ?2)
+         ORDER BY (last_synced_at IS NOT NULL), last_synced_at ASC, name ASC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(
+        params![profile_id, age_modifier, max as i64],
+        |row| row.get::<_, String>(0),
+    )?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Count how many candidates [`list_repair_candidates`] would return with an
+/// unbounded window — i.e. the total backlog of names still needing a repair
+/// check this run (same UNION + recency filter, no `LIMIT`). Used to seed an
+/// honest, monotonically-shrinking "remaining" progress figure for the
+/// background repair convergence loop, which pages through the backlog in
+/// fixed-size windows. Inherits the same known limitation documented on
+/// [`list_repair_candidates`]: tracked-only names always match (never stamped),
+/// so the caller de-duplicates already-attempted names via an in-run set.
+pub fn count_repair_candidates(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    min_age_hours: i64,
+) -> Result<u32, AppError> {
+    let age_modifier = format!("-{} hours", min_age_hours);
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM (
+             SELECT tld AS name, last_synced_at FROM assets
+             UNION
+             SELECT name AS name, NULL AS last_synced_at
+               FROM tracked_name_states
+              WHERE wallet_profile_id = ?1
+                AND name NOT IN (SELECT tld FROM assets)
+         )
+         WHERE last_synced_at IS NULL OR last_synced_at <= datetime('now', ?2)",
+        params![profile_id, age_modifier],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(0) as u32)
+}
+
+/// Mark an inventory asset as confirmed-owned on-chain: advance `status` to
+/// `finalized_owned`, record the live `name_state`, and stamp `last_synced_at`.
+/// Staked names (`do_not_touch_staked`) are never auto-advanced. A `tld` that
+/// isn't in `assets` (e.g. a tracked-only name) simply updates zero rows.
+pub fn mark_asset_finalized_owned(
+    conn: &rusqlite::Connection,
+    tld: &str,
+    name_state: Option<&str>,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE assets
+            SET status = 'finalized_owned',
+                name_state = ?2,
+                last_synced_at = datetime('now'),
+                updated_at = datetime('now')
+          WHERE tld = ?1 AND status != 'do_not_touch_staked'",
+        params![tld, name_state],
+    )?;
+    Ok(())
+}
+
+/// Record that an inventory asset was checked during a repair sweep but is not
+/// (or not yet) owned by this wallet: stamp `last_synced_at` only, leaving the
+/// `status` untouched. This is what lets repeated repair runs converge instead
+/// of re-checking not-owned names forever. A `tld` not in `assets` updates zero
+/// rows.
+pub fn touch_asset_synced(conn: &rusqlite::Connection, tld: &str) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE assets
+            SET last_synced_at = datetime('now'),
+                updated_at = datetime('now')
+          WHERE tld = ?1",
+        params![tld],
+    )?;
+    Ok(())
+}
+
+/// Collect inventory TLDs whose `last_synced_at` falls within the last `hours`
+/// — i.e. names a recent repair or discover sweep already checked. Used by
+/// `discover_step` as a "recently checked" memo so it skips re-verifying names
+/// still fresh from a prior run (resumable across Sync clicks).
+///
+/// Only `assets` rows are considered: a discovered-but-foreign name with no
+/// `assets` row is never stamped by `touch_asset_synced` (that UPDATE is a
+/// no-op), so it can't appear here — an accepted gap, such names are few.
+pub fn list_recently_synced_tlds(
+    conn: &rusqlite::Connection,
+    hours: i64,
+) -> Result<Vec<String>, AppError> {
+    let age_modifier = format!("-{} hours", hours);
+    let mut stmt = conn.prepare(
+        "SELECT tld FROM assets WHERE last_synced_at >= datetime('now', ?1)",
+    )?;
+    let rows = stmt.query_map(params![age_modifier], |row| row.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 // =============================================================================
 // Non-custodial wallet helpers
 //
@@ -649,7 +793,8 @@ const PROFILE_COLS: &str = "id, label, kind, network, account_xpub, account_inde
      last_synced_at, watch_only, \
      (SELECT CASE WHEN s.kdf IS NULL OR s.kdf = 'none' THEN 0 ELSE 1 END \
         FROM wallet_secrets s WHERE s.wallet_profile_id = wallet_profiles.id) \
-        AS has_passphrase";
+        AS has_passphrase, \
+     last_explorer_sync_at";
 
 fn row_to_profile(
     row: &rusqlite::Row,
@@ -672,6 +817,7 @@ fn row_to_profile(
         watch_only: row.get::<_, i64>(11)? != 0,
         // NULL (watch-only / no secret row) -> no passphrase.
         has_passphrase: row.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
+        last_explorer_sync_at: row.get(13)?,
         active,
     })
 }
@@ -804,6 +950,27 @@ pub fn update_profile_sync(
                 updated_at = datetime('now')
          WHERE id = ?1",
         params![id, height],
+    )?;
+    Ok(())
+}
+
+/// Stamp `last_explorer_sync_at` for a profile (Task 11 review, Finding 2).
+///
+/// Called exactly ONCE, from the "Done" block of `start_full_sync`'s
+/// background thread (`commands/sync.rs`) — never from inside
+/// `repair_step_windowed`/`discover_step` — and only when that run reached
+/// the end with no cancellation and no `SYNC_MAX_CONSECUTIVE_ERRORS` abort.
+/// This is a plain, separate timestamp from `update_profile_sync`'s
+/// `last_synced_at` (which only the node-RPC step advances): explorer-only
+/// mode has no node step, so without this column the UI's "Last successful
+/// sync" line stayed "—" forever even after fully successful explorer syncs.
+pub fn stamp_explorer_sync(conn: &rusqlite::Connection, id: &str) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE wallet_profiles
+            SET last_explorer_sync_at = datetime('now'),
+                updated_at = datetime('now')
+         WHERE id = ?1",
+        params![id],
     )?;
     Ok(())
 }
@@ -944,6 +1111,117 @@ pub fn insert_tx_draft(
     Ok(())
 }
 
+/// Insert a new draft AND atomically claim its input coins (`tracked_utxos.
+/// reserved_by_draft_id`) in one transaction (I3) — either both the draft row
+/// and every reservation land, or neither does. There is never a window where
+/// the draft exists but its inputs are still free for another draft to pick,
+/// or vice versa.
+///
+/// Each input is claimed with a conditional `UPDATE ... WHERE (reserved_by_draft_id
+/// IS NULL OR = this draft) AND spent_by_txid IS NULL`, so a coin already
+/// claimed by a *different*, still-live draft (or since spent) cannot be
+/// silently stolen. If any input fails to claim — e.g. two builds raced past
+/// their own `load_spendable_coins` read before either persisted — the whole
+/// transaction rolls back (the draft row disappears with it) and this
+/// returns `AppError::InvalidInput`, so the second build fails fast with a
+/// clear "try again" error instead of quietly producing a transaction that
+/// would only surface as a double-spend later, at broadcast time.
+#[allow(clippy::too_many_arguments)]
+pub fn insert_tx_draft_reserving_coins(
+    conn: &rusqlite::Connection,
+    id: &str,
+    profile_id: &str,
+    action: &str,
+    unsigned_tx_hex: &str,
+    signing_inputs_json: &str,
+    summary_json: &str,
+    inputs: &[(String, u32)],
+) -> Result<(), AppError> {
+    let tx = conn.unchecked_transaction()?;
+
+    // Self-heal stale reservations first so an abandoned earlier draft never
+    // blocks a legitimate new one.
+    crate::noncustodial::send::release_stale_reservations(&tx, profile_id)?;
+
+    tx.execute(
+        "INSERT INTO wallet_tx_drafts
+            (id, wallet_profile_id, action, unsigned_tx_hex, signing_inputs_json, summary_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, profile_id, action, unsigned_tx_hex, signing_inputs_json, summary_json],
+    )?;
+
+    for (txid, vout) in inputs {
+        let claimed = tx.execute(
+            "UPDATE tracked_utxos SET reserved_by_draft_id = ?1
+             WHERE wallet_profile_id = ?2 AND txid = ?3 AND vout = ?4
+               AND spent_by_txid IS NULL
+               AND (reserved_by_draft_id IS NULL OR reserved_by_draft_id = ?1)",
+            params![id, profile_id, txid, *vout as i64],
+        )?;
+        if claimed == 0 {
+            // Dropping `tx` without commit() rolls back everything above,
+            // including the draft insert.
+            return Err(AppError::InvalidInput(
+                "one or more coins for this transaction were just reserved by another \
+                 pending draft (or already spent) — please try again"
+                    .to_string(),
+            ));
+        }
+    }
+
+    tx.commit()?;
+    Ok(())
+}
+
+/// Release every coin reservation held by a draft (I3): on delete, on
+/// broadcast rejection, and when a draft is found `dropped` (evicted /
+/// never confirmed) so its coins become selectable again without waiting out
+/// the full TTL. A no-op if the draft holds no reservations.
+pub fn release_reserved_utxos_for_draft(
+    conn: &rusqlite::Connection,
+    draft_id: &str,
+) -> Result<usize, AppError> {
+    let n = conn.execute(
+        "UPDATE tracked_utxos SET reserved_by_draft_id = NULL WHERE reserved_by_draft_id = ?1",
+        params![draft_id],
+    )?;
+    Ok(n)
+}
+
+/// Delete a draft and release any coins it had reserved, atomically. Refuses
+/// to delete a draft that has actually reached, or may have reached, the
+/// chain (`broadcasted` / `confirmed` / `broadcast_pending` — the last is a
+/// transport-ambiguous broadcast attempt where the node may already hold the
+/// tx, see `commands::tx::broadcast_tx_draft`) — deleting it would both
+/// discard real tx history and free its reservation for re-selection while
+/// the coin might genuinely be spent; those age out via their own status
+/// lifecycle instead. `signed`/`draft`/`failed`/`dropped` drafts — nothing
+/// irreversible has happened, or the node definitively rejected the tx — can
+/// always be discarded.
+pub fn delete_tx_draft(conn: &rusqlite::Connection, id: &str) -> Result<(), AppError> {
+    let tx = conn.unchecked_transaction()?;
+    let status: Option<String> = tx
+        .query_row(
+            "SELECT status FROM wallet_tx_drafts WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let status = status.ok_or_else(|| AppError::NotFound(format!("draft {id}")))?;
+    if status == "broadcasted" || status == "confirmed" || status == "broadcast_pending" {
+        return Err(AppError::InvalidInput(
+            "cannot delete a draft that has already been broadcast".to_string(),
+        ));
+    }
+    tx.execute(
+        "UPDATE tracked_utxos SET reserved_by_draft_id = NULL WHERE reserved_by_draft_id = ?1",
+        params![id],
+    )?;
+    tx.execute("DELETE FROM wallet_tx_drafts WHERE id = ?1", params![id])?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Fetch one draft, or `None`.
 pub fn get_tx_draft(
     conn: &rusqlite::Connection,
@@ -993,23 +1271,55 @@ pub fn update_tx_draft_status(
 }
 
 /// Mark a draft `confirmed` and record the block height it was mined at.
+/// `txid` is optional and only overwrites the stored value when `Some` (via
+/// `COALESCE`) — needed when a `broadcast_pending` draft (which has no DB
+/// txid, only a locally-computed one) is promoted straight to `confirmed` in
+/// one step (I5 / broadcast_pending auto-resolution).
 pub fn update_tx_draft_confirmation(
     conn: &rusqlite::Connection,
     id: &str,
     confirmation_height: i64,
+    txid: Option<&str>,
 ) -> Result<(), AppError> {
     conn.execute(
         "UPDATE wallet_tx_drafts
             SET status = 'confirmed', confirmation_height = ?2,
+                txid = COALESCE(?3, txid),
                 error_message = NULL, updated_at = datetime('now')
          WHERE id = ?1",
-        params![id, confirmation_height],
+        params![id, confirmation_height, txid],
     )?;
     Ok(())
 }
 
-/// Seconds elapsed since a draft row was created (used as the grace window
-/// before a broadcast-but-unfound tx is judged `dropped`). Errors if absent.
+/// Revert a `confirmed` draft back to `broadcasted` and clear its recorded
+/// height (I5 reorg handling): the node no longer knows the tx at the height
+/// it was previously confirmed at, so it re-enters mempool tracking — the
+/// existing eviction-grace logic in `refresh_tx_confirmations` then decides
+/// whether it eventually lands again or is judged `dropped`. The txid is
+/// preserved (it never changes). `note` explains the revert via
+/// `error_message` (surfaced to the user), mirroring the `dropped` path.
+pub fn revert_tx_draft_to_broadcasted(
+    conn: &rusqlite::Connection,
+    id: &str,
+    note: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE wallet_tx_drafts
+            SET status = 'broadcasted', confirmation_height = NULL,
+                error_message = ?2, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![id, note],
+    )?;
+    Ok(())
+}
+
+/// Seconds elapsed since a draft row was created (`created_at`). Errors if
+/// absent. NOTE: the eviction/failure grace windows deliberately do NOT use
+/// this — they key off [`draft_updated_age_secs`], because `created_at` never
+/// moves: an old draft that re-enters tracking (e.g. a confirmed draft
+/// reorg-reverted back to `broadcasted`) would flunk a created_at-based grace
+/// instantly and be mislabeled `dropped` forever (Task 8 review).
 pub fn draft_age_secs(
     conn: &rusqlite::Connection,
     id: &str,
@@ -1023,22 +1333,63 @@ pub fn draft_age_secs(
     Ok(secs)
 }
 
-/// Drafts that have been broadcast (status `broadcasted` or already `confirmed`,
-/// for confirmation-depth refresh) and carry a txid — the set whose on-chain
-/// status the node should be re-polled for. Newest first.
+/// Seconds elapsed since a draft row was last updated (`updated_at`). Used as
+/// the grace window before a) a `broadcast_pending` draft the node
+/// definitively doesn't know about is judged `failed`, and b) a `broadcasted`
+/// -but-unfound draft is judged `dropped` — measured from the draft's last
+/// update rather than its original creation, since a draft can sit in earlier
+/// statuses (`draft`/`signed`) for an arbitrary user-paced amount of time
+/// before ever being broadcast, and a reorg-reverted `confirmed` draft
+/// re-enters `broadcasted` tracking with its `updated_at` freshly set by the
+/// revert (giving it a full new window instead of an instant drop; Task 8
+/// review). Every status transition (`update_tx_draft_status`,
+/// `update_tx_draft_confirmation`, `revert_tx_draft_to_broadcasted`) sets
+/// `updated_at = datetime('now')`, so "last update" always means "when it
+/// entered its current status".
+pub fn draft_updated_age_secs(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<i64, AppError> {
+    let secs: i64 = conn.query_row(
+        "SELECT CAST((julianday('now') - julianday(updated_at)) * 86400 AS INTEGER)
+         FROM wallet_tx_drafts WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    Ok(secs)
+}
+
+/// Drafts whose on-chain status the node should be re-polled for (I5):
+/// `broadcasted` (mempool → confirmed/dropped), `broadcast_pending`
+/// (transport-ambiguous broadcasts — txid is computed locally by the caller,
+/// not read from this row, since the DB `txid` column is NULL until the node
+/// confirms it knows the tx), and `confirmed` drafts that have NOT yet
+/// reached `finality_depth` confirmations at `tip_height` (I5 core: keep
+/// re-verifying a confirmed tx until it's deeply buried, so a reorg that
+/// un-mines it is caught instead of trusting a stale `confirmed` status
+/// forever). A `confirmed` row with no recorded height (shouldn't normally
+/// happen, but tolerated) is always included so it can be backfilled. Newest
+/// first.
 pub fn list_drafts_awaiting_confirmation(
     conn: &rusqlite::Connection,
     profile_id: &str,
+    tip_height: i64,
+    finality_depth: i64,
 ) -> Result<Vec<TxDraftRow>, AppError> {
     let sql = format!(
         "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
          WHERE wallet_profile_id = ?1
-           AND status IN ('broadcasted','confirmed')
-           AND txid IS NOT NULL
+           AND (
+             status = 'broadcast_pending'
+             OR (status = 'broadcasted' AND txid IS NOT NULL)
+             OR (status = 'confirmed' AND txid IS NOT NULL
+                 AND (confirmation_height IS NULL
+                      OR (?2 - confirmation_height + 1) < ?3))
+           )
          ORDER BY created_at DESC"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![profile_id], row_to_draft)?;
+    let rows = stmt.query_map(params![profile_id, tip_height, finality_depth], row_to_draft)?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
@@ -1082,6 +1433,47 @@ pub fn list_tx_drafts(
     Ok(out)
 }
 
+/// Whether a not-yet-terminal `bid` draft already exists for `name` in this
+/// profile (I2 bid-multiplicity guard, part 2 of the check — part 1 is an
+/// unspent on-chain BID coin, see [`find_unspent_covenant_utxos_by_name_hash`]).
+///
+/// "Not-yet-terminal" = `draft`, `signed`, `broadcast_pending`, or
+/// `broadcasted`: a second build must not be able to queue a second bid for
+/// the same name while an earlier one might still land on-chain. `confirmed`
+/// is deliberately excluded here — a confirmed bid already has an unspent BID
+/// coin, which part (a) of the guard catches; `dropped`/`failed` drafts never
+/// reached (or will never reach) the chain and must not block a retry.
+///
+/// There is no `name` column on `wallet_tx_drafts` — the name lives inside
+/// `summary_json` (see [`ActionSummary`] in `commands::names`) — so this
+/// filters by `action = 'bid'` + status in SQL, then parses `summary_json` in
+/// Rust to match the exact name (avoids relying on the `json1` SQLite
+/// extension and avoids substring false-positives from a raw `LIKE`).
+pub fn has_pending_bid_draft_for_name(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+) -> Result<bool, AppError> {
+    let sql = format!(
+        "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
+         WHERE wallet_profile_id = ?1 AND action = 'bid'
+           AND status IN ('draft','signed','broadcast_pending','broadcasted')"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![profile_id], row_to_draft)?;
+    for r in rows {
+        let row = r?;
+        let matches_name = serde_json::from_str::<serde_json::Value>(&row.summary_json)
+            .ok()
+            .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s == name))
+            .unwrap_or(false);
+        if matches_name {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 // --- Cache-backed read model (non-custodial) ------------------------------
 
 /// Balance for a profile from the local UTXO cache, shaped like the frontend
@@ -1108,8 +1500,19 @@ pub fn read_cached_names(
     conn: &rusqlite::Connection,
     profile_id: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
+    // COV_REGISTER = 6. The owner UTXO's covenant type determines if the name
+    // is already registered (covenant >= 6) or just won (covenant < 6, e.g.
+    // REVEAL=4). We derive `registered` from the covenant type rather than
+    // relying on `raw_json` because the node RPC response (getnameinfo) never
+    // includes a `registered` field — only the explorer API provides it.
     let mut stmt = conn.prepare(
-        "SELECT n.name, n.state, n.height, n.renewal_height, n.owner_txid, n.owner_vout
+        "SELECT n.name, n.state, n.height, n.renewal_height, n.owner_txid, n.owner_vout,
+                (SELECT u.covenant_type FROM tracked_utxos u
+                 WHERE u.wallet_profile_id = n.wallet_profile_id
+                   AND u.txid = n.owner_txid
+                   AND u.vout = n.owner_vout
+                   AND u.spent_by_txid IS NULL) AS covenant_type,
+                n.owner_address
          FROM tracked_name_states n
          WHERE n.wallet_profile_id = ?1
            AND EXISTS (
@@ -1128,15 +1531,24 @@ pub fn read_cached_names(
         let renewal: Option<i64> = row.get(3)?;
         let owner_txid: Option<String> = row.get(4)?;
         let owner_vout: Option<i64> = row.get(5)?;
+        let covenant_type: Option<i64> = row.get(6)?;
+        let owner_address: Option<String> = row.get(7)?;
         let owner = owner_txid.map(|hash| {
             serde_json::json!({ "hash": hash, "index": owner_vout.unwrap_or(0) })
         });
+
+        // Derive registered from covenant type: >= COV_REGISTER (6) means registered.
+        let registered = covenant_type.map(|ct| ct >= 6).unwrap_or(false);
+
         Ok(serde_json::json!({
             "name": name,
             "state": state,
             "height": height,
             "renewal": renewal,
             "owner": owner,
+            "owner_address": owner_address,
+            "registered": Some(registered),
+            "expired": None::<bool>,
             "stats": serde_json::Value::Null,
         }))
     })?;
@@ -1155,17 +1567,19 @@ pub fn upsert_owned_name(
     name: &crate::hsd::types::HsdName,
     owner_txid: &str,
     owner_vout: u32,
+    owner_address: &str,
 ) -> Result<(), AppError> {
     conn.execute(
         "INSERT INTO tracked_name_states
             (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout,
-             height, renewal_height, raw_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             owner_address, height, renewal_height, raw_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(wallet_profile_id, name) DO UPDATE SET
             name_hash_hex  = excluded.name_hash_hex,
             state          = excluded.state,
             owner_txid     = excluded.owner_txid,
             owner_vout     = excluded.owner_vout,
+            owner_address  = excluded.owner_address,
             height         = excluded.height,
             renewal_height = excluded.renewal_height,
             raw_json       = excluded.raw_json,
@@ -1177,6 +1591,7 @@ pub fn upsert_owned_name(
             name.state.clone().unwrap_or_else(|| "UNKNOWN".to_string()),
             owner_txid,
             owner_vout as i64,
+            owner_address,
             name.height.map(|h| h as i64),
             name.renewal.map(|r| r as i64),
             serde_json::to_string(name).unwrap_or_default(),
@@ -1189,12 +1604,16 @@ pub fn upsert_owned_name(
 /// `HsdName`. Unlike [`read_cached_names`] this is NOT gated on `tracked_utxos`
 /// (which only a node sync fills) — it returns the names whose current owner
 /// outpoint was recorded by node-free discovery (`owner_txid IS NOT NULL`).
+///
+/// Also extracts `registered` and `expired` from the persisted `raw_json`
+/// when available, so the frontend has accurate registration-status metadata
+/// even when the local node is not fully synced.
 pub fn read_owned_names_explorer(
     conn: &rusqlite::Connection,
     profile_id: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT name, state, height, renewal_height, owner_txid, owner_vout
+        "SELECT name, state, height, renewal_height, owner_txid, owner_vout, raw_json, owner_address
          FROM tracked_name_states
          WHERE wallet_profile_id = ?1 AND owner_txid IS NOT NULL
          ORDER BY name",
@@ -1206,14 +1625,45 @@ pub fn read_owned_names_explorer(
         let renewal: Option<i64> = row.get(3)?;
         let owner_txid: Option<String> = row.get(4)?;
         let owner_vout: Option<i64> = row.get(5)?;
+        let raw_json: Option<String> = row.get(6)?;
+        let owner_address: Option<String> = row.get(7)?;
         let owner = owner_txid
             .map(|hash| serde_json::json!({ "hash": hash, "index": owner_vout.unwrap_or(0) }));
+
+        // Extract registered/expired from the persisted raw JSON.
+        // The node RPC (getnameinfo) never includes `registered` — only the explorer.
+        // When raw_json has `registered: null` but the name is CLOSED with an
+        // owner_txid and a set renewal (far in the future from height), we can safely
+        // derive `registered: true`. The name is clearly already owned and registered.
+        let (registered, expired) = raw_json.as_deref().and_then(|j| {
+            let v: serde_json::Value = serde_json::from_str(j).ok()?;
+            let raw_reg = v.get("registered").and_then(|x| x.as_bool());
+            let raw_exp = v.get("expired").and_then(|x| x.as_bool());
+            // If raw_json explicitly has registered, use it.
+            if raw_reg.is_some() {
+                return Some((raw_reg, raw_exp));
+            }
+            // raw_json has no `registered` field (node response) → derive from context.
+            // CLOSED state + renewal set = already registered.
+            let state = v.get("state").and_then(|x| x.as_str()).unwrap_or("");
+            let renewal = v.get("renewal").and_then(|x| x.as_u64());
+            let derived_reg = if state == "CLOSED" && renewal.unwrap_or(0) > 0 {
+                Some(true)
+            } else {
+                None
+            };
+            Some((derived_reg, raw_exp))
+        }).unwrap_or((None, None));
+
         Ok(serde_json::json!({
             "name": name,
             "state": state,
             "height": height,
             "renewal": renewal,
             "owner": owner,
+            "owner_address": owner_address,
+            "registered": registered,
+            "expired": expired,
             "stats": serde_json::Value::Null,
         }))
     })?;
@@ -1237,6 +1687,53 @@ pub fn list_tracked_name_names(
         out.push(r?);
     }
     Ok(out)
+}
+
+/// Local (Sync-populated) evidence about a tracked name — the phase (`state`),
+/// the recorded current-owner address (from explorer/history reconciliation),
+/// and the raw name-info JSON. This carries NO spend authority on its own: a
+/// spendable owner coin still requires a node-synced `tracked_utxos` row (see
+/// [`get_name_coin`]). Used by `get_name_action_capabilities` to classify a name
+/// as "owned but not locally manageable" when the node is unreachable.
+#[derive(Debug, Clone)]
+pub struct TrackedNameRow {
+    pub name: String,
+    pub state: Option<String>,
+    pub owner_address: Option<String>,
+    pub raw_json: Option<String>,
+    /// Chain renewal height (`getnameinfo().info.renewal` / explorer
+    /// `renewal`), when sync has recorded one. Used by the
+    /// `get_name_action_capabilities` node-unreachable fallback to derive
+    /// `days_until_expire` the same way `read_renewals` does (renewal height +
+    /// network renewal window vs. a persisted height estimate) instead of
+    /// leaving the expiry alarm silent for lack of live node stats.
+    pub renewal_height: Option<i64>,
+}
+
+/// Fetch the tracked-name-state row for `name` under `profile_id`, if one exists.
+pub fn get_tracked_name_state(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+) -> Result<Option<TrackedNameRow>, AppError> {
+    let row = conn
+        .query_row(
+            "SELECT name, state, owner_address, raw_json, renewal_height
+             FROM tracked_name_states
+             WHERE wallet_profile_id = ?1 AND name = ?2",
+            params![profile_id, name],
+            |row| {
+                Ok(TrackedNameRow {
+                    name: row.get(0)?,
+                    state: row.get(1)?,
+                    owner_address: row.get(2)?,
+                    raw_json: row.get(3)?,
+                    renewal_height: row.get(4)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
 }
 
 /// Cached transaction history for a profile, normalized to the flat shape the
@@ -1413,42 +1910,158 @@ pub fn get_name_coin(
     Ok(row)
 }
 
-/// Find an unspent tracked UTXO at `address` with a given covenant type, with
-/// its derivation path. Used to locate our BID coin (to reveal) or a losing
-/// REVEAL coin (to redeem).
+/// Extract `items[index]` (hex string, lowercased) from a stored covenant
+/// JSON blob (`{"type":..,"action":..,"items":[...]}`, exactly as written by
+/// `noncustodial::sync::covenant_json`). Returns `None` when the blob is
+/// absent, unparseable, has no such item, or the item is empty. Shared parser
+/// for every covenant-item lookup (name hash at items[0], BID blind at
+/// items[3], …) so the JSON shape is decoded in exactly one place.
+pub fn covenant_item_hex(covenant_json: Option<&str>, index: usize) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(covenant_json?).ok()?;
+    let h = v.get("items")?.as_array()?.get(index)?.as_str()?;
+    if h.is_empty() {
+        return None;
+    }
+    Some(h.to_ascii_lowercase())
+}
+
+/// Extract the name-hash hex from a stored covenant JSON blob — every
+/// Handshake name covenant carries the name hash as items[0].
+fn covenant_name_hash_hex(covenant_json: Option<&str>) -> Option<String> {
+    covenant_item_hex(covenant_json, 0)
+}
+
+/// Row-map a `tracked_utxos JOIN derived_addresses` result into a [`NameCoin`].
+/// Shared by [`find_unspent_covenant_utxo`] and
+/// [`find_unspent_covenant_utxos_by_name_hash`] so the column layout is
+/// decoded in exactly one place.
+fn row_to_name_coin(row: &rusqlite::Row) -> rusqlite::Result<NameCoin> {
+    Ok(NameCoin {
+        txid: row.get(0)?,
+        vout: row.get::<_, i64>(1)? as u32,
+        value: row.get::<_, i64>(2)? as u64,
+        address: row.get(3)?,
+        branch: row.get::<_, i64>(4)? as u32,
+        child_index: row.get::<_, i64>(5)? as u32,
+        covenant_type: row.get(6)?,
+        covenant_json: row.get(7)?,
+        name_height: row.get(8)?,
+    })
+}
+
+/// Find the unspent tracked UTXO at `address` with a given covenant type whose
+/// covenant belongs to `name` (matched by `name_hash_hex` against the covenant
+/// items), with its derivation path. Used to locate our BID coin (to reveal)
+/// or a losing REVEAL coin (to redeem).
+///
+/// The name-hash filter is what makes reveal/redeem safe when several names'
+/// coins share one address (all pre-rotation bids sit on receive[0]): without
+/// it, a lookup for name A could grab name B's coin and either get rejected by
+/// the node or — if unnoticed until the reveal window closes — forfeit the
+/// entire lockup.
+///
+/// Returns:
+/// - `Ok(Some)` — exactly one coin matches `name_hash_hex`;
+/// - `Ok(None)` — no coin for this name at this address (caller surfaces a
+///   "sync first?" error naming the name);
+/// - `Err` — MORE than one coin matches (e.g. a double bid on the same name at
+///   one address). Picking arbitrarily could pair the coin with the wrong
+///   stored nonce, so we refuse instead of guessing.
+///
+/// Documented fallback: a candidate whose `covenant_json` is NULL/unparseable
+/// (possible only for degenerate/legacy rows — the sync path always stores
+/// items for name covenants) is accepted ONLY when it is the single candidate
+/// at this address+type, i.e. when the `bid_commitments.name` → address
+/// association that produced `address` is unambiguous on its own.
 pub fn find_unspent_covenant_utxo(
     conn: &rusqlite::Connection,
     profile_id: &str,
     address: &str,
     covenant_type: i64,
+    name: &str,
+    name_hash_hex: &str,
 ) -> Result<Option<NameCoin>, AppError> {
-    let row = conn
-        .query_row(
-            "SELECT u.txid, u.vout, u.value_doos, u.address, d.branch, d.child_index,
-                    u.covenant_type, u.covenant_json, NULL
-             FROM tracked_utxos u
-             JOIN derived_addresses d
-               ON d.wallet_profile_id = u.wallet_profile_id AND d.address = u.address
-             WHERE u.wallet_profile_id = ?1 AND u.address = ?2
-               AND u.covenant_type = ?3 AND u.spent_by_txid IS NULL
-             LIMIT 1",
-            params![profile_id, address, covenant_type],
-            |row| {
-                Ok(NameCoin {
-                    txid: row.get(0)?,
-                    vout: row.get::<_, i64>(1)? as u32,
-                    value: row.get::<_, i64>(2)? as u64,
-                    address: row.get(3)?,
-                    branch: row.get::<_, i64>(4)? as u32,
-                    child_index: row.get::<_, i64>(5)? as u32,
-                    covenant_type: row.get(6)?,
-                    covenant_json: row.get(7)?,
-                    name_height: row.get(8)?,
-                })
-            },
-        )
-        .optional()?;
-    Ok(row)
+    let mut stmt = conn.prepare(
+        "SELECT u.txid, u.vout, u.value_doos, u.address, d.branch, d.child_index,
+                u.covenant_type, u.covenant_json, NULL
+         FROM tracked_utxos u
+         JOIN derived_addresses d
+           ON d.wallet_profile_id = u.wallet_profile_id AND d.address = u.address
+         WHERE u.wallet_profile_id = ?1 AND u.address = ?2
+           AND u.covenant_type = ?3 AND u.spent_by_txid IS NULL
+         ORDER BY u.txid, u.vout",
+    )?;
+    let candidates: Vec<NameCoin> = stmt
+        .query_map(params![profile_id, address, covenant_type], row_to_name_coin)?
+        .collect::<Result<_, _>>()?;
+
+    let want = name_hash_hex.to_ascii_lowercase();
+    let total = candidates.len();
+    let mut matches: Vec<NameCoin> = Vec::new();
+    let mut unknown: Vec<NameCoin> = Vec::new();
+    for c in candidates {
+        match covenant_name_hash_hex(c.covenant_json.as_deref()) {
+            Some(h) if h == want => matches.push(c),
+            Some(_) => {} // another name's coin — never touch it
+            None => unknown.push(c),
+        }
+    }
+    match matches.len() {
+        1 => return Ok(matches.pop()),
+        0 => {}
+        n => {
+            return Err(AppError::InvalidInput(format!(
+                "{n} unspent coins (covenant type {covenant_type}) at {address} match \
+                 name '{name}' — cannot pick one safely (multiple bids on the same \
+                 name at one address?); resolve manually before spending"
+            )))
+        }
+    }
+    // Fallback: a lone candidate with no readable covenant items.
+    if total == 1 && unknown.len() == 1 {
+        return Ok(unknown.pop());
+    }
+    Ok(None)
+}
+
+/// Find ALL unspent tracked UTXOs of `covenant_type` across EVERY address of
+/// `profile_id` whose covenant belongs to `name_hash_hex`.
+///
+/// Unlike [`find_unspent_covenant_utxo`] (address-scoped, used once we already
+/// know the coin's address from a `bid_commitments` row), this scans the whole
+/// profile. It exists for bid-commitment recovery: when the commitment row is
+/// lost, the coin's address is exactly what's missing, so lookup can't be
+/// address-scoped. Reuses [`covenant_name_hash_hex`] — the same Rust-side
+/// covenant_json parser as the address-scoped lookup — so both stay in sync.
+///
+/// Callers must independently verify each candidate (e.g. by recomputing the
+/// bid blind for a proposed value) before trusting it; multiple coins can
+/// legitimately match the same name (e.g. two bids at different addresses).
+pub fn find_unspent_covenant_utxos_by_name_hash(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    covenant_type: i64,
+    name_hash_hex: &str,
+) -> Result<Vec<NameCoin>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT u.txid, u.vout, u.value_doos, u.address, d.branch, d.child_index,
+                u.covenant_type, u.covenant_json, NULL
+         FROM tracked_utxos u
+         JOIN derived_addresses d
+           ON d.wallet_profile_id = u.wallet_profile_id AND d.address = u.address
+         WHERE u.wallet_profile_id = ?1
+           AND u.covenant_type = ?2 AND u.spent_by_txid IS NULL
+         ORDER BY u.txid, u.vout",
+    )?;
+    let candidates: Vec<NameCoin> = stmt
+        .query_map(params![profile_id, covenant_type], row_to_name_coin)?
+        .collect::<Result<_, _>>()?;
+
+    let want = name_hash_hex.to_ascii_lowercase();
+    Ok(candidates
+        .into_iter()
+        .filter(|c| covenant_name_hash_hex(c.covenant_json.as_deref()).as_deref() == Some(want.as_str()))
+        .collect())
 }
 
 // --- Bid commitments (secret blind/nonce; backend-only) --------------------
@@ -1468,8 +2081,29 @@ pub struct BidCommitmentRow {
     pub blind_hex: String,
     pub bid_txid: Option<String>,
     pub reveal_txid: Option<String>,
+    /// Estimated height at which the reveal window closes (`start +
+    /// (treeInterval + 1) + biddingPeriod + revealPeriod`), when derivable —
+    /// see `014_reveal_end_height.sql`. `None` for commitments recovered via
+    /// `recover_bid_commitment` or written before this column existed.
+    pub reveal_end_height: Option<i64>,
 }
 
+/// Insert a bid commitment row. Errors (rather than silently no-op'ing) when a
+/// row with the same `(wallet_profile_id, name, blind_hex)` already exists.
+///
+/// I2 fix: this used to be `ON CONFLICT ... DO NOTHING`, so a re-bid that
+/// happened to recompute the same blind (e.g. a race replaying the same
+/// value/address) would silently drop the new commitment row while the
+/// caller went on to build and persist the tx draft anyway — a direct path
+/// to an unrevealable bid (the on-chain BID coin exists but its true
+/// value/nonce were never (re-)persisted). Callers that build a tx draft from
+/// this MUST treat an `Err` here as fatal and abort before persisting the
+/// draft (see `commands::names::build_bid_draft`) — never build-then-ignore.
+///
+/// `commands::bids::recover_bid_commitment` is the one legitimate idempotent
+/// caller (re-running recovery for an already-recovered bid should succeed,
+/// not error) — it checks [`bid_commitment_exists`] first and skips the
+/// insert entirely rather than relying on this function's conflict handling.
 #[allow(clippy::too_many_arguments)]
 pub fn insert_bid_commitment(
     conn: &rusqlite::Connection,
@@ -1484,7 +2118,7 @@ pub fn insert_bid_commitment(
     nonce_hex: &str,
     blind_hex: &str,
 ) -> Result<(), AppError> {
-    conn.execute(
+    let changed = conn.execute(
         "INSERT INTO bid_commitments
             (wallet_profile_id, name, name_hash_hex, address, branch, child_index,
              bid_value_doos, lockup_value_doos, nonce_hex, blind_hex)
@@ -1495,11 +2129,38 @@ pub fn insert_bid_commitment(
             bid_value, lockup, nonce_hex, blind_hex
         ],
     )?;
+    if changed == 0 {
+        return Err(AppError::InvalidInput(format!(
+            "a bid commitment for '{name}' with this exact value/address already exists \
+             — refusing to silently drop it (that would leave an unrevealable bid)"
+        )));
+    }
     Ok(())
 }
 
+/// Whether a bid commitment with this exact `(wallet_profile_id, name,
+/// blind_hex)` key already exists — the idempotency check
+/// `recover_bid_commitment` uses to make re-running recovery for an
+/// already-recovered bid a safe no-op instead of hitting
+/// [`insert_bid_commitment`]'s honest conflict error.
+pub fn bid_commitment_exists(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+    blind_hex: &str,
+) -> Result<bool, AppError> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bid_commitments
+         WHERE wallet_profile_id = ?1 AND name = ?2 AND blind_hex = ?3)",
+        params![profile_id, name, blind_hex],
+        |r| r.get(0),
+    )?;
+    Ok(exists)
+}
+
 const BID_COLS: &str = "name, name_hash_hex, address, branch, child_index, \
-     bid_value_doos, lockup_value_doos, nonce_hex, blind_hex, bid_txid, reveal_txid";
+     bid_value_doos, lockup_value_doos, nonce_hex, blind_hex, bid_txid, reveal_txid, \
+     reveal_end_height";
 
 fn row_to_bid(row: &rusqlite::Row) -> rusqlite::Result<BidCommitmentRow> {
     Ok(BidCommitmentRow {
@@ -1514,7 +2175,45 @@ fn row_to_bid(row: &rusqlite::Row) -> rusqlite::Result<BidCommitmentRow> {
         blind_hex: row.get(8)?,
         bid_txid: row.get(9)?,
         reveal_txid: row.get(10)?,
+        reveal_end_height: row.get(11)?,
     })
+}
+
+/// Persist the reveal-window-close height estimate for the bid commitment
+/// just inserted by `build_bid_draft` (the only caller with a live auction
+/// `start` height to compute it from — see `014_reveal_end_height.sql`).
+pub fn set_reveal_end_height(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    blind_hex: &str,
+    reveal_end_height: i64,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE bid_commitments SET reveal_end_height = ?3
+         WHERE wallet_profile_id = ?1 AND blind_hex = ?2",
+        params![profile_id, blind_hex, reveal_end_height],
+    )?;
+    Ok(())
+}
+
+/// Every un-revealed bid commitment across ALL profiles with a known
+/// reveal-window-close estimate — the deadline scanner's input. Un-revealed =
+/// `reveal_txid IS NULL` (once revealed there is no more reveal deadline).
+pub fn list_pending_reveal_deadlines(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<(String, String, i64)>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT wallet_profile_id, name, reveal_end_height FROM bid_commitments
+         WHERE reveal_txid IS NULL AND reveal_end_height IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 /// The most recent bid commitment for a name (used to reveal).
@@ -1895,6 +2594,129 @@ mod noncustodial_query_tests {
     }
 
     #[test]
+    fn list_repair_candidates_excludes_recently_synced_and_orders_oldest_first() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // never synced (NULL) — highest priority
+        conn.execute("INSERT INTO assets (tld) VALUES ('never')", []).unwrap();
+        // synced long ago — eligible
+        conn.execute(
+            "INSERT INTO assets (tld, last_synced_at) VALUES ('old', datetime('now','-3 days'))",
+            [],
+        )
+        .unwrap();
+        // synced just now — within the 12h window, excluded
+        conn.execute(
+            "INSERT INTO assets (tld, last_synced_at) VALUES ('fresh', datetime('now'))",
+            [],
+        )
+        .unwrap();
+
+        let got = list_repair_candidates(&conn, "p1", 150, 12).unwrap();
+        // 'fresh' is excluded; NULL sorts before the aged timestamp.
+        assert_eq!(got, vec!["never".to_string(), "old".to_string()]);
+    }
+
+    #[test]
+    fn list_repair_candidates_unions_tracked_names_and_respects_limit() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        conn.execute("INSERT INTO assets (tld) VALUES ('inv')", []).unwrap();
+        // A tracked name not in `assets` must appear as a candidate...
+        conn.execute(
+            "INSERT INTO tracked_name_states (wallet_profile_id, name, name_hash_hex, state)
+             VALUES ('p1','tracked','hh','CLOSED')",
+            [],
+        )
+        .unwrap();
+        // ...but one that IS in assets must not be duplicated.
+        conn.execute(
+            "INSERT INTO tracked_name_states (wallet_profile_id, name, name_hash_hex, state)
+             VALUES ('p1','inv','hh2','CLOSED')",
+            [],
+        )
+        .unwrap();
+
+        let mut got = list_repair_candidates(&conn, "p1", 150, 12).unwrap();
+        got.sort();
+        assert_eq!(got, vec!["inv".to_string(), "tracked".to_string()]);
+
+        // LIMIT is honored.
+        let limited = list_repair_candidates(&conn, "p1", 1, 12).unwrap();
+        assert_eq!(limited.len(), 1);
+    }
+
+    #[test]
+    fn mark_asset_finalized_owned_advances_status_but_skips_staked() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld, status) VALUES ('own','not_started')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('stk','do_not_touch_staked')",
+            [],
+        )
+        .unwrap();
+
+        mark_asset_finalized_owned(&conn, "own", Some("CLOSED")).unwrap();
+        mark_asset_finalized_owned(&conn, "stk", Some("CLOSED")).unwrap();
+
+        let (status, name_state, synced): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT status, name_state, last_synced_at FROM assets WHERE tld='own'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "finalized_owned");
+        assert_eq!(name_state.as_deref(), Some("CLOSED"));
+        assert!(synced.is_some());
+
+        // Staked row is untouched.
+        let staked_status: String = conn
+            .query_row("SELECT status FROM assets WHERE tld='stk'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(staked_status, "do_not_touch_staked");
+    }
+
+    #[test]
+    fn touch_asset_synced_stamps_timestamp_without_changing_status() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld, status) VALUES ('x','not_started')", []).unwrap();
+        touch_asset_synced(&conn, "x").unwrap();
+        let (status, synced): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, last_synced_at FROM assets WHERE tld='x'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "not_started");
+        assert!(synced.is_some());
+    }
+
+    #[test]
+    fn list_recently_synced_tlds_returns_only_fresh_rows() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO assets (tld, status, last_synced_at) VALUES ('fresh','not_started', datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status, last_synced_at) VALUES ('old','not_started', datetime('now','-3 days'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('never','not_started')",
+            [],
+        )
+        .unwrap();
+        let got = list_recently_synced_tlds(&conn, 12).unwrap();
+        assert_eq!(got, vec!["fresh".to_string()], "only the within-12h row is memoized");
+    }
+
+    #[test]
     fn update_profile_change_depth_bumps() {
         let conn = db();
         seed_profile(&conn, "p1");
@@ -1915,13 +2737,52 @@ mod noncustodial_query_tests {
         insert_tx_draft(&conn, "d1", "p1", "send_hns", "", "{}", "{}").unwrap();
 
         update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txid1")).unwrap();
-        update_tx_draft_confirmation(&conn, "d1", 12345).unwrap();
+        update_tx_draft_confirmation(&conn, "d1", 12345, None).unwrap();
         let d = get_tx_draft(&conn, "d1").unwrap().unwrap();
         assert_eq!(d.status, "confirmed");
         assert_eq!(d.confirmation_height, Some(12345));
+        assert_eq!(d.txid.as_deref(), Some("txid1"), "existing txid preserved when None passed");
 
         let age = draft_age_secs(&conn, "d1").unwrap();
         assert!(age >= 0);
+
+        let updated_age = draft_updated_age_secs(&conn, "d1").unwrap();
+        assert!(updated_age >= 0);
+    }
+
+    #[test]
+    fn update_tx_draft_confirmation_can_set_txid() {
+        // Used when promoting a `broadcast_pending` draft straight to
+        // `confirmed` in one step: the draft has no DB txid yet (only a
+        // locally-computed one), so the confirmation write must be able to
+        // persist it too.
+        let conn = db();
+        seed_profile(&conn, "p1");
+        insert_tx_draft(&conn, "d1", "p1", "send_hns", "", "{}", "{}").unwrap();
+        update_tx_draft_status(&conn, "d1", "broadcast_pending", None, None).unwrap();
+
+        update_tx_draft_confirmation(&conn, "d1", 999, Some("computed_txid")).unwrap();
+        let d = get_tx_draft(&conn, "d1").unwrap().unwrap();
+        assert_eq!(d.status, "confirmed");
+        assert_eq!(d.confirmation_height, Some(999));
+        assert_eq!(d.txid.as_deref(), Some("computed_txid"));
+    }
+
+    #[test]
+    fn revert_tx_draft_to_broadcasted_clears_height_and_sets_note() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        insert_tx_draft(&conn, "d1", "p1", "send_hns", "", "{}", "{}").unwrap();
+        update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txid1")).unwrap();
+        update_tx_draft_confirmation(&conn, "d1", 12345, None).unwrap();
+
+        revert_tx_draft_to_broadcasted(&conn, "d1", "reorg: tx no longer found at recorded height")
+            .unwrap();
+        let d = get_tx_draft(&conn, "d1").unwrap().unwrap();
+        assert_eq!(d.status, "broadcasted");
+        assert_eq!(d.confirmation_height, None);
+        assert_eq!(d.txid.as_deref(), Some("txid1"), "txid must survive the revert");
+        assert!(d.error_message.unwrap().contains("reorg"));
     }
 
     #[test]
@@ -1933,19 +2794,70 @@ mod noncustodial_query_tests {
         // Broadcasted with txid → should appear.
         insert_tx_draft(&conn, "d_bcast", "p1", "send_hns", "", "{}", "{}").unwrap();
         update_tx_draft_status(&conn, "d_bcast", "broadcasted", None, Some("txid1")).unwrap();
-        // Confirmed with txid → should appear.
+        // Confirmed with txid, shallow (well within finality depth) → should appear.
         insert_tx_draft(&conn, "d_conf", "p1", "send_hns", "", "{}", "{}").unwrap();
         update_tx_draft_status(&conn, "d_conf", "confirmed", None, Some("txid2")).unwrap();
+        update_tx_draft_confirmation(&conn, "d_conf", 990, None).unwrap();
         // Broadcasted but NO txid → should NOT appear.
         insert_tx_draft(&conn, "d_notx", "p1", "send_hns", "", "{}", "{}").unwrap();
         update_tx_draft_status(&conn, "d_notx", "broadcasted", None, None).unwrap();
+        // broadcast_pending (no txid yet — it's only known locally) → should appear.
+        insert_tx_draft(&conn, "d_pending", "p1", "send_hns", "", "{}", "{}").unwrap();
+        update_tx_draft_status(&conn, "d_pending", "broadcast_pending", None, None).unwrap();
+        // Confirmed, deeply buried (>= finality depth) → should NOT appear.
+        insert_tx_draft(&conn, "d_buried", "p1", "send_hns", "", "{}", "{}").unwrap();
+        update_tx_draft_status(&conn, "d_buried", "confirmed", None, Some("txid3")).unwrap();
+        update_tx_draft_confirmation(&conn, "d_buried", 100, None).unwrap();
 
-        let awaiting = list_drafts_awaiting_confirmation(&conn, "p1").unwrap();
+        // tip = 1000, finality depth = 12: d_conf has 1000-990+1=11 confs (< 12,
+        // still shallow); d_buried has 1000-100+1=901 confs (>= 12, buried).
+        let awaiting = list_drafts_awaiting_confirmation(&conn, "p1", 1000, 12).unwrap();
         let ids: Vec<&str> = awaiting.iter().map(|d| d.id.as_str()).collect();
         assert!(ids.contains(&"d_bcast"));
         assert!(ids.contains(&"d_conf"));
+        assert!(ids.contains(&"d_pending"));
         assert!(!ids.contains(&"d_draft"));
         assert!(!ids.contains(&"d_notx"));
+        assert!(!ids.contains(&"d_buried"), "deeply-buried confirmed draft must stop being polled");
+    }
+
+    #[test]
+    fn has_pending_bid_draft_for_name_matches_in_flight_bid_drafts() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        assert!(!has_pending_bid_draft_for_name(&conn, "p1", "alpha").unwrap());
+
+        // A `draft`-status bid for "alpha" counts as pending.
+        insert_tx_draft(
+            &conn, "d1", "p1", "bid", "",
+            "{}", r#"{"action":"bid","name":"alpha"}"#,
+        )
+        .unwrap();
+        assert!(has_pending_bid_draft_for_name(&conn, "p1", "alpha").unwrap());
+        // A different name is unaffected.
+        assert!(!has_pending_bid_draft_for_name(&conn, "p1", "beta").unwrap());
+
+        // Once dropped/failed, it no longer blocks a retry.
+        update_tx_draft_status(&conn, "d1", "dropped", None, None).unwrap();
+        assert!(!has_pending_bid_draft_for_name(&conn, "p1", "alpha").unwrap());
+
+        // signed / broadcast_pending / broadcasted all still count as pending.
+        for status in ["signed", "broadcast_pending", "broadcasted"] {
+            update_tx_draft_status(&conn, "d1", status, None, None).unwrap();
+            assert!(
+                has_pending_bid_draft_for_name(&conn, "p1", "alpha").unwrap(),
+                "status {status} should still be considered pending"
+            );
+        }
+
+        // A non-bid action for the same name never counts, even in `draft`.
+        update_tx_draft_status(&conn, "d1", "draft", None, None).unwrap();
+        insert_tx_draft(
+            &conn, "d2", "p1", "reveal", "",
+            "{}", r#"{"action":"reveal","name":"gamma"}"#,
+        )
+        .unwrap();
+        assert!(!has_pending_bid_draft_for_name(&conn, "p1", "gamma").unwrap());
     }
 
     #[test]
@@ -1968,12 +2880,13 @@ mod noncustodial_query_tests {
             transfer: None,
             revoked: None,
         };
-        upsert_owned_name(&conn, "p1", &name, "txid1", 0).unwrap();
+        upsert_owned_name(&conn, "p1", &name, "txid1", 0, "rs1qaddr1").unwrap();
 
         let names = read_owned_names_explorer(&conn, "p1").unwrap();
         assert_eq!(names.len(), 1);
         assert_eq!(names[0]["name"], "testname");
         assert_eq!(names[0]["owner"]["hash"], "txid1");
+        assert_eq!(names[0]["owner_address"], "rs1qaddr1");
 
         // Upsert again (update path).
         let name2 = crate::hsd::types::HsdName {
@@ -1991,10 +2904,44 @@ mod noncustodial_query_tests {
             transfer: None,
             revoked: None,
         };
-        upsert_owned_name(&conn, "p1", &name2, "txid2", 1).unwrap();
+        upsert_owned_name(&conn, "p1", &name2, "txid2", 1, "rs1qaddr2").unwrap();
         let names2 = read_owned_names_explorer(&conn, "p1").unwrap();
         assert_eq!(names2.len(), 1);
         assert_eq!(names2[0]["owner"]["hash"], "txid2");
+    }
+
+    #[test]
+    fn upsert_owned_name_updates_owner_address_on_conflict() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        let name = crate::hsd::types::HsdName {
+            name: "conflictname".into(),
+            name_hash: Some("aabb".into()),
+            state: Some("CLOSED".into()),
+            height: Some(100),
+            renewal: Some(200),
+            owner: None,
+            value: None,
+            highest: None,
+            registered: None,
+            expired: None,
+            stats: None,
+            transfer: None,
+            revoked: None,
+        };
+        upsert_owned_name(&conn, "p1", &name, "txid1", 0, "rs1qoriginal").unwrap();
+
+        let names = read_owned_names_explorer(&conn, "p1").unwrap();
+        assert_eq!(names[0]["owner_address"], "rs1qoriginal");
+
+        // Repeat the upsert for the same (profile, name) with a new address —
+        // the ON CONFLICT path should overwrite owner_address, not append/ignore it.
+        upsert_owned_name(&conn, "p1", &name, "txid1", 0, "rs1qupdated").unwrap();
+
+        let names_after = read_owned_names_explorer(&conn, "p1").unwrap();
+        assert_eq!(names_after.len(), 1);
+        assert_eq!(names_after[0]["owner_address"], "rs1qupdated");
     }
 
     #[test]
@@ -2008,9 +2955,98 @@ mod noncustodial_query_tests {
     fn find_unspent_covenant_utxo_returns_none_for_missing() {
         let conn = db();
         seed_profile(&conn, "p1");
-        assert!(find_unspent_covenant_utxo(&conn, "p1", "rs1qnone", 2)
-            .unwrap()
-            .is_none());
+        assert!(
+            find_unspent_covenant_utxo(&conn, "p1", "rs1qnone", 3, "somename", "aabb")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn find_unspent_covenant_utxos_by_name_hash_scans_all_addresses() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1',0,0,0,'rs1qaddr0','0014','02'),
+                    ('p1',0,0,1,'rs1qaddr1','0014','02')",
+            [],
+        )
+        .unwrap();
+        let cov_a = |addr_marker: &str| {
+            serde_json::json!({
+                "type": 3, "action": "BID",
+                "items": ["namehash1", "64000000", "72617728", addr_marker],
+            })
+            .to_string()
+        };
+        // Two BID coins for the SAME name hash at two DIFFERENT addresses.
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+             VALUES ('aa', 0, 'p1', 'rs1qaddr0', '00', 2000, 3, ?1, 'name_lockup', NULL)",
+            params![cov_a("blindA")],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+             VALUES ('bb', 0, 'p1', 'rs1qaddr1', '00', 3000, 3, ?1, 'name_lockup', NULL)",
+            params![cov_a("blindB")],
+        )
+        .unwrap();
+        // A different name's coin — must never be returned.
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+             VALUES ('cc', 0, 'p1', 'rs1qaddr0', '00', 4000, 3, ?1, 'name_lockup', NULL)",
+            params![serde_json::json!({
+                "type": 3, "action": "BID",
+                "items": ["othernamehash", "64000000", "72617728", "blindC"],
+            })
+            .to_string()],
+        )
+        .unwrap();
+        // A spent coin — must never be returned.
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+             VALUES ('dd', 0, 'p1', 'rs1qaddr1', '00', 5000, 3, ?1, 'name_lockup', 'spendingtx')",
+            params![cov_a("blindD")],
+        )
+        .unwrap();
+
+        let coins = find_unspent_covenant_utxos_by_name_hash(&conn, "p1", 3, "namehash1").unwrap();
+        let mut txids: Vec<&str> = coins.iter().map(|c| c.txid.as_str()).collect();
+        txids.sort();
+        assert_eq!(txids, vec!["aa", "bb"]);
+
+        // Missing name hash -> empty, not an error.
+        assert!(
+            find_unspent_covenant_utxos_by_name_hash(&conn, "p1", 3, "nosuchhash")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn covenant_item_hex_extracts_and_lowercases() {
+        let json = serde_json::json!({
+            "type": 3, "action": "BID",
+            "items": ["AABB", "64000000", "7261", "CCDD"],
+        })
+        .to_string();
+        assert_eq!(covenant_item_hex(Some(&json), 0).as_deref(), Some("aabb"));
+        assert_eq!(covenant_item_hex(Some(&json), 3).as_deref(), Some("ccdd"));
+        assert_eq!(covenant_item_hex(Some(&json), 9), None); // out of range
+        assert_eq!(covenant_item_hex(None, 0), None);
+        assert_eq!(covenant_item_hex(Some("not json"), 0), None);
     }
 
     #[test]
@@ -2032,8 +3068,10 @@ mod noncustodial_query_tests {
         )
         .unwrap();
 
-        // Inserting same commitment again should be a no-op (ON CONFLICT DO NOTHING).
-        insert_bid_commitment(
+        // I2: inserting the exact same commitment again must error, not
+        // silently no-op — a silent drop here is a direct path to an
+        // unrevealable bid (see `insert_bid_commitment` doc comment).
+        let result = insert_bid_commitment(
             &conn,
             "p1",
             "myname",
@@ -2045,8 +3083,8 @@ mod noncustodial_query_tests {
             200000,
             "nonce123",
             "blind456",
-        )
-        .unwrap();
+        );
+        assert!(result.is_err(), "duplicate commitment insert must error");
 
         // Verify via raw SQL since get_bid_commitment may not be exposed.
         let count: i64 = conn
@@ -2056,7 +3094,23 @@ mod noncustodial_query_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 1, "no second row, and the first must not be lost");
+    }
+
+    #[test]
+    fn bid_commitment_exists_reflects_exact_key() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        assert!(!bid_commitment_exists(&conn, "p1", "myname", "blind456").unwrap());
+        insert_bid_commitment(
+            &conn, "p1", "myname", "aabb", "rs1qbid", 1, 0, 100000, 200000,
+            "nonce123", "blind456",
+        )
+        .unwrap();
+        assert!(bid_commitment_exists(&conn, "p1", "myname", "blind456").unwrap());
+        // Different name or different blind is not a match.
+        assert!(!bid_commitment_exists(&conn, "p1", "othername", "blind456").unwrap());
+        assert!(!bid_commitment_exists(&conn, "p1", "myname", "otherblind").unwrap());
     }
 
     #[test]

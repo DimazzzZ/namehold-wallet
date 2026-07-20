@@ -13,6 +13,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("010", include_str!("../sql/010_drop_legacy_settings.sql")),
     ("011", include_str!("../sql/011_hsd_data_dir.sql")),
     ("012", include_str!("../sql/012_tx_draft_confirmations.sql")),
+    ("013", include_str!("../sql/013_owner_address.sql")),
+    ("014", include_str!("../sql/014_reveal_end_height.sql")),
+    ("015", include_str!("../sql/015_coin_reservation.sql")),
+    ("016", include_str!("../sql/016_last_explorer_sync_at.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -50,11 +54,11 @@ mod tests {
     fn run_applies_all_migrations() {
         let conn = Connection::open_in_memory().unwrap();
         run(&conn).unwrap();
-        // All 12 migrations should be present
+        // All 16 migrations should be present
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 12, "expected 12 migrations, got {count}");
+        assert_eq!(count, 16, "expected 16 migrations, got {count}");
     }
 
     #[test]
@@ -65,7 +69,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 12);
+        assert_eq!(count, 16);
     }
 
     #[test]
