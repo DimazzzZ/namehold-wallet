@@ -2262,6 +2262,59 @@ pub fn list_bid_commitments(
     Ok(out)
 }
 
+/// Names this profile currently holds an *auction position* in — opened, bid,
+/// or revealed, but not (yet) owned. Complements [`read_cached_names`] /
+/// [`read_owned_names_explorer`] (owned-only) so a name like an in-progress
+/// `.namehold` open can surface on the Auctions view before it's won.
+///
+/// Union of two sources, deduplicated and sorted (`BTreeSet`):
+///   - [`list_tx_drafts`] filtered to `action IN (open, bid, reveal)` AND
+///     `status IN (signed, broadcast_pending, broadcasted, confirmed)` — the
+///     name comes from `summary_json.name` (drafts have no `name` column, see
+///     [`has_pending_draft_for_name`] for the same parse idiom). `draft` status
+///     is excluded (never queued to chain, could vanish); `dropped`/`failed`
+///     are excluded (terminal, never landed and never will).
+///   - [`list_bid_commitments`] — every bid/reveal commitment's `name`, which
+///     covers a recovered bid whose draft was pruned or never existed locally.
+///
+/// Names that are already OWNED (an unspent owner coin — see [`get_name_coin`])
+/// are excluded even if an old bid commitment still references them: once
+/// owned, the name belongs in "Owned Names", not "in progress". Pure DB reads,
+/// no network calls.
+pub fn auction_position_names(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<String>, AppError> {
+    const RELEVANT_ACTIONS: [&str; 3] = ["open", "bid", "reveal"];
+    const IN_FLIGHT_STATUSES: [&str; 4] =
+        ["signed", "broadcast_pending", "broadcasted", "confirmed"];
+
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    for draft in list_tx_drafts(conn, profile_id)? {
+        if !RELEVANT_ACTIONS.contains(&draft.action.as_str())
+            || !IN_FLIGHT_STATUSES.contains(&draft.status.as_str())
+        {
+            continue;
+        }
+        if let Some(name) = draft.summary.get("name").and_then(|n| n.as_str()) {
+            names.insert(name.to_string());
+        }
+    }
+
+    for bid in list_bid_commitments(conn, profile_id)? {
+        names.insert(bid.name);
+    }
+
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        if get_name_coin(conn, profile_id, &name)?.is_none() {
+            out.push(name);
+        }
+    }
+    Ok(out)
+}
+
 pub fn set_bid_txid(
     conn: &rusqlite::Connection,
     profile_id: &str,

@@ -137,6 +137,7 @@ pub fn run() {
             commands::node::stop_hsd,
             commands::read::read_balance,
             commands::read::read_names,
+            commands::read::read_auction_position_names,
             commands::read::discover_owned_names,
             commands::read::read_name_info,
             commands::read::read_transactions,

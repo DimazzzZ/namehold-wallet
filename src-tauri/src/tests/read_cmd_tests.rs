@@ -11,8 +11,8 @@ use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 use crate::commands::read::{
-    compare_inventory_with_provider, discover_owned_names, read_balance, read_name_info,
-    read_names, read_transactions,
+    compare_inventory_with_provider, discover_owned_names, read_auction_position_names,
+    read_balance, read_name_info, read_names, read_transactions,
 };
 use crate::db;
 use crate::AppState;
@@ -505,4 +505,242 @@ async fn compare_inventory_with_provider_namebase_unreachable() {
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(err_msg.contains("Couldn't reach Namebase"));
+}
+
+// ---------------------------------------------------------------------------
+// read_auction_position_names — helpers
+// ---------------------------------------------------------------------------
+
+/// Insert a `wallet_tx_drafts` row for `name` under `action`, then move it to
+/// `status` (drafts are always created in `draft` status by `insert_tx_draft`,
+/// so a non-`draft` target status goes through `update_tx_draft_status`,
+/// mirroring how the real build/sign/broadcast pipeline advances a draft).
+fn add_draft(
+    conn: &rusqlite::Connection,
+    id: &str,
+    profile: &str,
+    action: &str,
+    name: &str,
+    status: &str,
+) {
+    let summary = serde_json::json!({ "name": name }).to_string();
+    db::queries::insert_tx_draft(conn, id, profile, action, "00", "[]", &summary).unwrap();
+    if status != "draft" {
+        db::queries::update_tx_draft_status(conn, id, status, None, None).unwrap();
+    }
+}
+
+/// Insert a minimal `bid_commitments` row for `name` (no matching draft) —
+/// stands in for a recovered bid.
+fn add_bid_commitment(conn: &rusqlite::Connection, profile: &str, name: &str, blind_hex: &str) {
+    db::queries::insert_bid_commitment(
+        conn, profile, name, "aabb", "addr", 0, 0, 1_000_000, 2_000_000, "nonce", blind_hex,
+    )
+    .unwrap();
+}
+
+/// Seed a spendable owner coin for `name` — a `tracked_name_states` row whose
+/// `owner_txid`/`owner_vout` match an unspent `tracked_utxos` row, joined
+/// through a `derived_addresses` row (the exact 3-way join `get_name_coin`
+/// requires). `txid` must be unique per call within a test so multiple owned
+/// names in the same profile don't collide on the `tracked_utxos` primary key.
+fn seed_owner_coin(conn: &rusqlite::Connection, profile: &str, name: &str, txid: &str) {
+    let addr = format!("addr-{txid}");
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, height)
+         VALUES (?1, ?2, 'aabb', 'CLOSED', ?3, 0, 100)",
+        params![profile, name, txid],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO derived_addresses
+            (wallet_profile_id, account_index, branch, child_index,
+             address, script_pubkey_hex, public_key_hex)
+         VALUES (?1, 0, 0, 0, ?2, '00', '00')",
+        params![profile, addr],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, covenant_type, spend_class, spent_by_txid)
+         VALUES (?1, 0, ?2, ?3, '00', 10000, 6, 'name_control', NULL)",
+        params![txid, profile, addr],
+    )
+    .unwrap();
+}
+
+fn auction_position_names(val: &serde_json::Value) -> Vec<String> {
+    val.as_array()
+        .expect("array")
+        .iter()
+        .map(|v| v.as_str().expect("string entry").to_string())
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// read_auction_position_names — no profile returns empty array
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn auction_positions_no_profile_returns_empty() {
+    let app = app_with(empty_db());
+    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    assert_eq!(val, serde_json::json!([]));
+}
+
+// ---------------------------------------------------------------------------
+// read_auction_position_names — confirmed open-draft is listed
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn auction_positions_confirmed_open_draft_listed() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_draft(&conn, "d1", "W1", "open", "namehold", "confirmed");
+
+    let app = app_with(conn);
+    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    assert_eq!(auction_position_names(&val), vec!["namehold".to_string()]);
+}
+
+// ---------------------------------------------------------------------------
+// read_auction_position_names — broadcasted bid-draft is listed
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn auction_positions_broadcasted_bid_draft_listed() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_draft(&conn, "d1", "W1", "bid", "example", "broadcasted");
+
+    let app = app_with(conn);
+    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    assert_eq!(auction_position_names(&val), vec!["example".to_string()]);
+}
+
+// ---------------------------------------------------------------------------
+// read_auction_position_names — draft / dropped / failed open NOT listed
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn auction_positions_draft_status_open_not_listed() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_draft(&conn, "d1", "W1", "open", "notyetqueued", "draft");
+
+    let app = app_with(conn);
+    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    assert_eq!(val, serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn auction_positions_dropped_status_open_not_listed() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_draft(&conn, "d1", "W1", "open", "dropped-name", "dropped");
+
+    let app = app_with(conn);
+    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    assert_eq!(val, serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn auction_positions_failed_status_open_not_listed() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_draft(&conn, "d1", "W1", "open", "failed-name", "failed");
+
+    let app = app_with(conn);
+    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    assert_eq!(val, serde_json::json!([]));
+}
+
+// ---------------------------------------------------------------------------
+// read_auction_position_names — bid_commitment with no draft is listed
+// (recovered bid)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn auction_positions_bid_commitment_without_draft_listed() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_bid_commitment(&conn, "W1", "recovered", "blind1");
+
+    let app = app_with(conn);
+    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    assert_eq!(auction_position_names(&val), vec!["recovered".to_string()]);
+}
+
+// ---------------------------------------------------------------------------
+// read_auction_position_names — owned name excluded even with an old bid
+// commitment
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn auction_positions_owned_name_excluded_despite_old_bid_commitment() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_bid_commitment(&conn, "W1", "wonname", "blind1");
+    seed_owner_coin(
+        &conn,
+        "W1",
+        "wonname",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+    );
+
+    let app = app_with(conn);
+    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    assert_eq!(val, serde_json::json!([]), "owned name must be excluded");
+}
+
+// ---------------------------------------------------------------------------
+// read_auction_position_names — per-wallet isolation
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn auction_positions_profile_isolation() {
+    let conn = empty_db();
+    add_profile(&conn, "A", "regtest");
+    add_profile(&conn, "B", "regtest");
+    db::queries::set_active_profile(&conn, "A").unwrap();
+    add_draft(&conn, "dA", "A", "open", "onlya", "confirmed");
+    add_draft(&conn, "dB", "B", "open", "onlyb", "confirmed");
+
+    let app = app_with(conn);
+    let a = read_auction_position_names(app.state(), Some("A".into()))
+        .await
+        .unwrap();
+    assert_eq!(auction_position_names(&a), vec!["onlya".to_string()]);
+
+    let b = read_auction_position_names(app.state(), Some("B".into()))
+        .await
+        .unwrap();
+    assert_eq!(auction_position_names(&b), vec!["onlyb".to_string()]);
+}
+
+// ---------------------------------------------------------------------------
+// read_auction_position_names — distinct (open + bid draft for the same
+// name → one entry)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn auction_positions_distinct_open_and_bid_same_name() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_draft(&conn, "d1", "W1", "open", "dupname", "confirmed");
+    add_draft(&conn, "d2", "W1", "bid", "dupname", "broadcasted");
+
+    let app = app_with(conn);
+    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    assert_eq!(auction_position_names(&val), vec!["dupname".to_string()]);
 }

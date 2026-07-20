@@ -240,6 +240,35 @@ fn collect_read_names_data(
     Ok(out)
 }
 
+/// Names this wallet currently holds an *auction position* in — opened, bid,
+/// or revealed, but not yet owned (e.g. an in-progress `.namehold` open that
+/// hasn't won its auction). Complements [`read_names`], which only returns
+/// names already OWNED; this is what lets the Auctions view surface a name
+/// the wallet has a stake in before ownership lands.
+///
+/// Strictly DB-only, like `read_names` — no RPC/network calls. The frontend
+/// layers live auction phase / capabilities on top via the existing
+/// capability batch.
+#[tauri::command]
+pub async fn read_auction_position_names(
+    state: State<'_, AppState>,
+    wallet_profile_id: Option<String>,
+) -> Result<serde_json::Value, AppError> {
+    let id = match resolve_profile(&state, wallet_profile_id)? {
+        Some(id) => id,
+        None => return Ok(serde_json::Value::Array(vec![])),
+    };
+
+    let names = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        queries::auction_position_names(&conn, &id)?
+    };
+
+    Ok(serde_json::Value::Array(
+        names.into_iter().map(serde_json::Value::String).collect(),
+    ))
+}
+
 /// Discover the names this wallet owns, node-free, by crawling the explorer.
 ///
 /// For each derived address: list the txs it touched, fetch each tx's detail
