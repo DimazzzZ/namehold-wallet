@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useWriteCapability, useActiveProfile, useTxDrafts } from "../queries/wallet";
-import { useReadNames, useNamesActionCapabilities } from "../queries/read";
+import { useWriteCapability, useActiveProfile } from "../queries/wallet";
+import { useReadNames, useNamesActionCapabilities, useAuctionPositions } from "../queries/read";
 import {
   auctionPhase,
   taskSummaryFromCapabilities,
@@ -14,7 +14,25 @@ import { Badge } from "./ui/Badge";
 import { PageHeader } from "./ui/PageHeader";
 import { normalizeNameInput } from "../lib/utils";
 import { displayName } from "../lib/idn";
-import type { HsdName, NameActionCapabilities } from "../types";
+import type { HsdName, NameActionCapabilities, AuctionTaskState } from "../types";
+
+/**
+ * Live task states that count as "still in the auction" for a position name
+ * (one with a draft/commitment but no owner coin). A position is only ever
+ * DISPLAYED when its current capabilities land in this set — this is what
+ * makes the list self-cleaning: a won+registered name flips to `ownsName`
+ * (excluded upstream by the backend before it even becomes a position) and a
+ * lost+redeemed one settles into `unavailableOther`/no-caps, so both quietly
+ * drop off without any extra bookkeeping here.
+ */
+const ACTIVE_POSITION_TASK_STATES = new Set<AuctionTaskState>([
+  "availableToOpen",
+  "waitingForBidding",
+  "readyToBid",
+  "readyToReveal",
+  "wonNeedsRegister",
+  "lostNeedsRedeem",
+]);
 
 /**
  * Auctions page — wallet-first entry point for acquiring new Handshake TLDs.
@@ -27,15 +45,11 @@ import type { HsdName, NameActionCapabilities } from "../types";
 export function AuctionsView() {
   const { data: writeCap } = useWriteCapability();
   const { data: names = [] } = useReadNames();
-  // Guard against a resolved-but-null query result (e.g. a test double that
-  // doesn't implement `list_tx_drafts` returns `null`, not `undefined`, so
-  // the `= []` destructuring default alone wouldn't catch it).
-  const { data: draftsData } = useTxDrafts();
-  const drafts = draftsData ?? [];
   // Resolve the active wallet once here (not inside the inline TaskRow, which
   // remounts every render and would trigger a profile-refetch storm) so every
   // capability fetch is pinned to this wallet.
   const activeProfileId = useActiveProfile().data?.id ?? null;
+  const { data: positionNames = [] } = useAuctionPositions(activeProfileId);
 
   const canWrite = writeCap?.canWrite ?? false;
 
@@ -57,44 +71,56 @@ export function AuctionsView() {
     return false;
   });
 
-  // Just-broadcast OPEN drafts, surfaced as synthetic rows so a freshly
-  // opened name doesn't sit invisible until the next sync tracks it as
-  // OPENING (`useReadNames` only reflects names already in local state).
-  // Deduped against `activeTasks` by name — once the name is genuinely
-  // tracked (e.g. synced into OPENING), the real row wins and the synthetic
-  // one disappears, so there's never a double entry for the same name.
-  const activeTaskNames = new Set(activeTasks.map((n) => n.name));
-  const pendingOpenNames = Array.from(
-    new Set(
-      drafts
-        .filter(
-          (d) =>
-            d.action === "open" &&
-            (d.status === "signed" ||
-              d.status === "broadcast_pending" ||
-              d.status === "broadcasted") &&
-            !!d.summary?.name,
-        )
-        .map((d) => d.summary!.name as string),
-    ),
-  ).filter((name) => !activeTaskNames.has(name));
+  // Auction positions (open/bid/reveal drafts + bid commitments) that aren't
+  // already owned. Dedup against ALL owned names (not just `activeTasks`) so
+  // a won+registered name that's still lingering in the positions table
+  // (backend hasn't caught up) never double-shows: it's already present via
+  // `activeTasks`/owned, and this is purely additive for names not otherwise
+  // tracked yet (e.g. a confirmed OPEN not yet synced into OPENING).
+  const ownedNames = new Set(names.map((n) => n.name));
+  const dedupedPositionNames = positionNames.filter((n) => !ownedNames.has(n));
 
   // ONE batch capability fetch for the whole list (F5 fix — this used to be
   // an N+1 invoke, one `get_name_action_capabilities` call per row, fired
-  // from a per-row component that remounted every render).
+  // from a per-row component that remounted every render). Positions ride
+  // along in the SAME batch so they get real phase/taskState/countdown —
+  // this is what lets a position row be display-filtered by live caps below,
+  // instead of showing a floor "pending confirmation" placeholder forever.
   const { data: capsList = [] } = useNamesActionCapabilities(
-    activeTasks.map((n) => n.name),
+    [...activeTasks.map((n) => n.name), ...dedupedPositionNames],
     activeProfileId,
   );
   const capsByName = new Map<string, NameActionCapabilities>(
     capsList.map((c) => [c.name, c]),
   );
 
+  // Only show a position once its live caps land in an active-auction task
+  // state — this is what makes the list self-clean by lifecycle (a won and
+  // registered name is excluded upstream by the backend before it's even a
+  // position; a lost-and-redeemed one settles into `unavailableOther`/no
+  // caps and quietly drops here) rather than needing separate bookkeeping.
+  const positionRows: HsdName[] = dedupedPositionNames
+    .filter((name) => {
+      const caps = capsByName.get(name);
+      return caps != null && ACTIVE_POSITION_TASK_STATES.has(caps.taskState);
+    })
+    .map((name) => ({
+      name,
+      state: null,
+      height: null,
+      renewal: null,
+      owner: null,
+      stats: null,
+      registered: false,
+    }));
+
+  const allTasks = [...activeTasks, ...positionRows];
+
   // Sort by urgency: readyToReveal → wonNeedsRegister → lostNeedsRedeem →
   // expiringSoon → everything else, then by soonest countdown within a tier,
   // so a time-critical row (e.g. reveal window closing) can never be buried
   // under a long list of "waiting" rows.
-  const sortedTasks = [...activeTasks].sort((a, b) => {
+  const sortedTasks = [...allTasks].sort((a, b) => {
     const capsA = capsByName.get(a.name);
     const capsB = capsByName.get(b.name);
     const rankA = capsA ? taskStateUrgencyRank(capsA.taskState) : 4;
@@ -123,8 +149,17 @@ export function AuctionsView() {
       capsByName.get(n.name),
     );
 
+    // A confirmed-open position whose live caps haven't caught up to a real
+    // phase yet (node/explorer not synced) still reads as `availableToOpen`
+    // from the capability model — but this row only exists because we KNOW
+    // an open is already in flight for it, so the label/button must never
+    // read as "not yet started" / invite a re-open ("Open Auction").
+    const isPendingPhaseOpen = summary?.taskState === "availableToOpen";
+
     // Use capabilities when available; fall back to phase only as last resort.
-    const displayLabel = summary?.label ?? auctionPhase(n.state).label;
+    const displayLabel = isPendingPhaseOpen
+      ? "In auction"
+      : (summary?.label ?? auctionPhase(n.state).label);
     const displayVariant = summary?.variant ?? auctionPhase(n.state).variant;
     const nextLabel = summary?.nextActionLabel ?? auctionPhase(n.state).label;
 
@@ -154,32 +189,16 @@ export function AuctionsView() {
             variant="ghost"
             onClick={() => handleOpenManagement(n.name)}
           >
-            {nextLabel === "Wait for Bidding" || nextLabel === "Owned" ? "View" : nextLabel}
+            {isPendingPhaseOpen || nextLabel === "Wait for Bidding" || nextLabel === "Owned"
+              ? "View"
+              : nextLabel}
           </Button>
         </td>
       </tr>
     );
   };
 
-  // A just-broadcast OPEN with no tracked state yet — the modal's Open button
-  // is already correctly disabled (Task 1's `canOpen`/`taskState` reflect the
-  // pending open), so "View" just routes there with the RAW name.
-  const PendingOpenRow = ({ name }: { name: string }) => (
-    <tr key={name} className="border-t border-gray-100">
-      <td className="py-1 font-mono">.{displayName(name)}</td>
-      <td className="py-1">
-        <Badge variant="warning">Opening — pending confirmation</Badge>
-      </td>
-      <td className="py-1 text-xs text-gray-500">—</td>
-      <td className="py-1 text-right">
-        <Button size="sm" variant="ghost" onClick={() => handleOpenManagement(name)}>
-          View
-        </Button>
-      </td>
-    </tr>
-  );
-
-  const totalActiveCount = activeTasks.length + pendingOpenNames.length;
+  const totalActiveCount = allTasks.length;
 
   return (
     <div className="space-y-6">
@@ -243,12 +262,6 @@ export function AuctionsView() {
               <tbody>
                 {sortedTasks.map((n) => (
                   <TaskRow key={n.name} name={n} />
-                ))}
-                {/* Pending-opens are not urgent (nothing to act on yet — the
-                    Open button is already correctly disabled in the modal),
-                    so they sit below the real, actionable tasks. */}
-                {pendingOpenNames.map((name) => (
-                  <PendingOpenRow key={name} name={name} />
                 ))}
               </tbody>
             </table>

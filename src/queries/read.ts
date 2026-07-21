@@ -65,6 +65,33 @@ export function useReadNames(): UseQueryResult<HsdName[]> {
 }
 
 /**
+ * Names with an open auction position for this wallet (open/bid/reveal draft
+ * in signed/broadcast_pending/broadcasted/confirmed status, OR a bid
+ * commitment) that are NOT already owned (no unspent owner coin) — i.e. the
+ * backend's `read_auction_position_names`. A pure name list, no phase: the
+ * caller pairs it with `useNamesActionCapabilities` to get live phase/task
+ * state per name. Parameterized on `walletProfileId` (rather than resolving
+ * the active profile internally like `useReadNames`) so callers that already
+ * pin a profile id (e.g. AuctionsView) can share the exact same id across
+ * both queries.
+ */
+export function useAuctionPositions(
+  walletProfileId: string | null,
+): UseQueryResult<string[]> {
+  return useQuery<string[]>({
+    queryKey: ["read", "auctionPositions", walletProfileId],
+    enabled: walletProfileId != null,
+    queryFn: async () => {
+      const raw = await invoke<string[] | null>("read_auction_position_names", {
+        walletProfileId,
+      });
+      return Array.isArray(raw) ? raw : [];
+    },
+    staleTime: STALE_TIME,
+  });
+}
+
+/**
  * Chain-driven renewal/expiry data, pinned to the active wallet. Days until
  * expiry are computed live by the backend (`read_renewals`) from tracked chain
  * state + the current height — the stale CSV-imported columns are only a
