@@ -17,6 +17,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("014", include_str!("../sql/014_reveal_end_height.sql")),
     ("015", include_str!("../sql/015_coin_reservation.sql")),
     ("016", include_str!("../sql/016_last_explorer_sync_at.sql")),
+    ("017", include_str!("../sql/017_backfill_bid_txids.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -54,11 +55,11 @@ mod tests {
     fn run_applies_all_migrations() {
         let conn = Connection::open_in_memory().unwrap();
         run(&conn).unwrap();
-        // All 16 migrations should be present
+        // All 17 migrations should be present
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 16, "expected 16 migrations, got {count}");
+        assert_eq!(count, 17, "expected 17 migrations, got {count}");
     }
 
     #[test]
@@ -69,7 +70,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 16);
+        assert_eq!(count, 17);
     }
 
     #[test]
@@ -87,5 +88,269 @@ mod tests {
                 .unwrap();
             assert!(exists, "table '{table}' should exist");
         }
+    }
+
+    // -- 017 backfill ---------------------------------------------------
+
+    fn seed_profile(conn: &Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO wallet_profiles
+                (id, label, kind, network, account_xpub, account_index, watch_only)
+             VALUES (?1, ?2, 'watch_only_xpub', 'regtest', 'xpub-fake', 0, 1)",
+            rusqlite::params![id, format!("profile {id}")],
+        )
+        .unwrap();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn seed_commitment(
+        conn: &Connection,
+        profile_id: &str,
+        name: &str,
+        blind_hex: &str,
+        bid_txid: Option<&str>,
+        reveal_txid: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO bid_commitments
+                (wallet_profile_id, name, name_hash_hex, address, branch, child_index,
+                 bid_value_doos, lockup_value_doos, nonce_hex, blind_hex, bid_txid, reveal_txid)
+             VALUES (?1, ?2, 'deadbeef', 'hs1qfake', 0, 0, 100000000, 200000000, 'nonce', ?3, ?4, ?5)",
+            rusqlite::params![profile_id, name, blind_hex, bid_txid, reveal_txid],
+        )
+        .unwrap();
+    }
+
+    fn seed_draft(
+        conn: &Connection,
+        id: &str,
+        profile_id: &str,
+        action: &str,
+        status: &str,
+        name: &str,
+        txid: &str,
+    ) {
+        let summary_json = format!(r#"{{"name":"{name}","txid":"{txid}"}}"#);
+        conn.execute(
+            "INSERT INTO wallet_tx_drafts
+                (id, wallet_profile_id, action, unsigned_tx_hex, signing_inputs_json,
+                 summary_json, status)
+             VALUES (?1, ?2, ?3, 'deadbeef', '[]', ?4, ?5)",
+            rusqlite::params![id, profile_id, action, summary_json, status],
+        )
+        .unwrap();
+    }
+
+    fn run_backfill(conn: &Connection) {
+        conn.execute_batch(include_str!("../sql/017_backfill_bid_txids.sql"))
+            .unwrap();
+    }
+
+    fn get_bid_txid(conn: &Connection, profile_id: &str, name: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT bid_txid FROM bid_commitments WHERE wallet_profile_id = ?1 AND name = ?2",
+            rusqlite::params![profile_id, name],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn get_reveal_txid(conn: &Connection, profile_id: &str, name: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT reveal_txid FROM bid_commitments WHERE wallet_profile_id = ?1 AND name = ?2",
+            rusqlite::params![profile_id, name],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn backfill_fills_bid_txid_from_confirmed_bid_draft() {
+        let conn = Connection::open_in_memory().unwrap();
+        run(&conn).unwrap();
+
+        seed_profile(&conn, "profile-a");
+        seed_commitment(&conn, "profile-a", "namehold", "blind-1", None, None);
+        seed_draft(
+            &conn,
+            "draft-1",
+            "profile-a",
+            "bid",
+            "confirmed",
+            "namehold",
+            "d0788cec550272e5631c",
+        );
+
+        run_backfill(&conn);
+
+        assert_eq!(
+            get_bid_txid(&conn, "profile-a", "namehold"),
+            Some("d0788cec550272e5631c".to_string())
+        );
+    }
+
+    #[test]
+    fn backfill_fills_reveal_txid_from_confirmed_reveal_draft() {
+        let conn = Connection::open_in_memory().unwrap();
+        run(&conn).unwrap();
+
+        seed_profile(&conn, "profile-a");
+        seed_commitment(
+            &conn,
+            "profile-a",
+            "namehold",
+            "blind-1",
+            Some("bid-txid-already-set"),
+            None,
+        );
+        seed_draft(
+            &conn,
+            "draft-reveal-1",
+            "profile-a",
+            "reveal",
+            "confirmed",
+            "namehold",
+            "reveal-txid-abc",
+        );
+
+        run_backfill(&conn);
+
+        assert_eq!(
+            get_reveal_txid(&conn, "profile-a", "namehold"),
+            Some("reveal-txid-abc".to_string())
+        );
+        // bid_txid untouched by the reveal backfill.
+        assert_eq!(
+            get_bid_txid(&conn, "profile-a", "namehold"),
+            Some("bid-txid-already-set".to_string())
+        );
+    }
+
+    #[test]
+    fn backfill_is_idempotent_and_never_overwrites_an_existing_txid() {
+        let conn = Connection::open_in_memory().unwrap();
+        run(&conn).unwrap();
+
+        seed_profile(&conn, "profile-a");
+        // Already backfilled/forward-written row: must not be touched even
+        // though a *different* txid is sitting in a matching draft.
+        seed_commitment(
+            &conn,
+            "profile-a",
+            "already-set",
+            "blind-1",
+            Some("original-txid"),
+            None,
+        );
+        seed_draft(
+            &conn,
+            "draft-1",
+            "profile-a",
+            "bid",
+            "confirmed",
+            "already-set",
+            "different-txid-should-not-apply",
+        );
+
+        // NULL row that should get backfilled.
+        seed_commitment(&conn, "profile-a", "null-name", "blind-2", None, None);
+        seed_draft(
+            &conn,
+            "draft-2",
+            "profile-a",
+            "bid",
+            "confirmed",
+            "null-name",
+            "fresh-txid",
+        );
+
+        run_backfill(&conn);
+        run_backfill(&conn); // second run must be a no-op
+
+        assert_eq!(
+            get_bid_txid(&conn, "profile-a", "already-set"),
+            Some("original-txid".to_string()),
+            "pre-existing txid must never be overwritten"
+        );
+        assert_eq!(
+            get_bid_txid(&conn, "profile-a", "null-name"),
+            Some("fresh-txid".to_string())
+        );
+
+        // Run once more for good measure — values must be stable.
+        run_backfill(&conn);
+        assert_eq!(
+            get_bid_txid(&conn, "profile-a", "already-set"),
+            Some("original-txid".to_string())
+        );
+        assert_eq!(
+            get_bid_txid(&conn, "profile-a", "null-name"),
+            Some("fresh-txid".to_string())
+        );
+    }
+
+    #[test]
+    fn backfill_respects_per_wallet_isolation() {
+        let conn = Connection::open_in_memory().unwrap();
+        run(&conn).unwrap();
+
+        seed_profile(&conn, "profile-a");
+        seed_profile(&conn, "profile-b");
+
+        // profile-a has a bare commitment with no matching draft of its own.
+        seed_commitment(&conn, "profile-a", "shared-name", "blind-a", None, None);
+        // profile-b has a confirmed draft for the SAME name.
+        seed_draft(
+            &conn,
+            "draft-b",
+            "profile-b",
+            "bid",
+            "confirmed",
+            "shared-name",
+            "profile-b-txid",
+        );
+
+        run_backfill(&conn);
+
+        assert_eq!(
+            get_bid_txid(&conn, "profile-a", "shared-name"),
+            None,
+            "a draft from profile B must never backfill profile A's commitment"
+        );
+    }
+
+    #[test]
+    fn backfill_skips_dropped_and_failed_drafts() {
+        let conn = Connection::open_in_memory().unwrap();
+        run(&conn).unwrap();
+
+        seed_profile(&conn, "profile-a");
+        seed_commitment(&conn, "profile-a", "namehold", "blind-1", None, None);
+        seed_draft(
+            &conn,
+            "draft-dropped",
+            "profile-a",
+            "bid",
+            "dropped",
+            "namehold",
+            "dropped-txid",
+        );
+        seed_draft(
+            &conn,
+            "draft-failed",
+            "profile-a",
+            "bid",
+            "failed",
+            "namehold",
+            "failed-txid",
+        );
+
+        run_backfill(&conn);
+
+        assert_eq!(
+            get_bid_txid(&conn, "profile-a", "namehold"),
+            None,
+            "dropped/failed drafts must not be used as a backfill source"
+        );
     }
 }
