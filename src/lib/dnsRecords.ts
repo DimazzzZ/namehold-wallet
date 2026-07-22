@@ -1,50 +1,99 @@
-// Convert a simple {type, value} row editor into the hsd resource-record array
-// that `build_register_draft` / `build_update_draft` accept (the same shape the
-// raw-JSON textarea used: `[{"type":"TXT","txt":["…"]}, …]`).
+// Convert a simple {type, ...fields} row editor into the hsd resource-record
+// array that `build_register_draft` / `build_update_draft` accept (the same
+// shape the raw-JSON textarea used, e.g. `[{"type":"TXT","txt":["…"]}, …]`).
 //
-// We cover the common record types with a single "value" field; anything more
-// exotic (DS, GLUE4, …) is left to the Advanced raw-JSON editor, so the backend
-// contract is unchanged either way.
+// The record-type set mirrors what the Rust backend (`resource.rs::encode`)
+// actually supports for Handshake root-zone resources. A/AAAA/CNAME are NOT
+// valid hsd record types — the backend rejects them, so they are intentionally
+// absent here.
 
-export type DnsRecordType = "A" | "AAAA" | "CNAME" | "NS" | "TXT";
+export type DnsRecordType = "DS" | "NS" | "GLUE4" | "GLUE6" | "SYNTH4" | "SYNTH6" | "TXT";
 
-export const DNS_RECORD_TYPES: DnsRecordType[] = ["A", "AAAA", "CNAME", "NS", "TXT"];
+export const DNS_RECORD_TYPES: DnsRecordType[] = [
+  "DS",
+  "NS",
+  "GLUE4",
+  "GLUE6",
+  "SYNTH4",
+  "SYNTH6",
+  "TXT",
+];
 
 export interface DnsRow {
   type: DnsRecordType;
-  value: string;
+  /** Single-value types: NS (nameserver), SYNTH4/SYNTH6 (address), TXT (text). */
+  value?: string;
+  /** GLUE4/GLUE6 nameserver name. */
+  ns?: string;
+  /** GLUE4/GLUE6 address (IPv4/IPv6). */
+  address?: string;
+  /** DS fields (held as text inputs; converted to numbers in rowToRecord). */
+  keyTag?: string;
+  algorithm?: string;
+  digestType?: string;
+  digest?: string;
 }
 
 /** Placeholder/help text per record type for the editor inputs. */
 export function valuePlaceholder(type: DnsRecordType): string {
   switch (type) {
-    case "A":
-      return "1.2.3.4";
-    case "AAAA":
-      return "2001:db8::1";
-    case "CNAME":
-      return "target.example.";
     case "NS":
       return "ns1.example.";
+    case "GLUE4":
+      return "1.2.3.4";
+    case "GLUE6":
+      return "2001:db8::1";
+    case "SYNTH4":
+      return "1.2.3.4";
+    case "SYNTH6":
+      return "2001:db8::1";
     case "TXT":
       return "free text";
+    case "DS":
+      return "";
   }
 }
 
-/** Serialize one row to its hsd record object (null if the value is blank). */
+/** Serialize one row to its hsd record object (null if required fields are blank). */
 export function rowToRecord(row: DnsRow): Record<string, unknown> | null {
-  const v = row.value.trim();
-  if (!v) return null;
   switch (row.type) {
-    case "A":
-    case "AAAA":
-      return { type: row.type, address: v };
-    case "CNAME":
-      return { type: "CNAME", target: v };
-    case "NS":
-      return { type: "NS", ns: v };
-    case "TXT":
+    case "TXT": {
+      const v = (row.value ?? "").trim();
+      if (!v) return null;
       return { type: "TXT", txt: [v] };
+    }
+    case "NS": {
+      const v = (row.value ?? "").trim();
+      if (!v) return null;
+      return { type: "NS", ns: v };
+    }
+    case "SYNTH4":
+    case "SYNTH6": {
+      const v = (row.value ?? "").trim();
+      if (!v) return null;
+      return { type: row.type, address: v };
+    }
+    case "GLUE4":
+    case "GLUE6": {
+      const ns = (row.ns ?? "").trim();
+      const address = (row.address ?? "").trim();
+      if (!ns || !address) return null;
+      return { type: row.type, ns, address };
+    }
+    case "DS": {
+      const keyTag = (row.keyTag ?? "").trim();
+      const algorithm = (row.algorithm ?? "").trim();
+      const digestType = (row.digestType ?? "").trim();
+      const digest = (row.digest ?? "").trim();
+      if (!keyTag || !algorithm || !digestType || !digest) return null;
+      return {
+        type: "DS",
+        keyTag: Number(keyTag),
+        algorithm: Number(algorithm),
+        digestType: Number(digestType),
+        digest,
+      };
+    }
   }
 }
 

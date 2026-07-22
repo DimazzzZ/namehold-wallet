@@ -10,7 +10,7 @@ interface ResourceRecord {
   ns?: string;
   address?: string;
   txt?: string[];
-  hash?: number;
+  keyTag?: number;
   algorithm?: number;
   digestType?: number;
   digest?: string;
@@ -52,7 +52,7 @@ function RecordTable({ records }: { records: ResourceRecord[] }) {
               {rec.type === "GLUE4" && `${rec.ns} → ${rec.address}`}
               {rec.type === "GLUE6" && `${rec.ns} → ${rec.address}`}
               {rec.type === "TXT" && rec.txt?.join(" ")}
-              {rec.type === "DS" && `${rec.hash} ${rec.algorithm} ${rec.digestType} ${rec.digest}`}
+              {rec.type === "DS" && `${rec.keyTag} ${rec.algorithm} ${rec.digestType} ${rec.digest}`}
               {rec.type === "SYNTH4" && rec.address}
               {rec.type === "SYNTH6" && rec.address}
             </td>
