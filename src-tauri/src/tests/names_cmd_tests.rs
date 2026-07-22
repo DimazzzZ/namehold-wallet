@@ -2229,6 +2229,105 @@ async fn build_bid_draft_allows_bid_on_a_different_name() {
         .expect("a bid on a different name must not be blocked by the first bid");
 }
 
+/// Task 1 (bug fix): `build_bid_draft` must persist the on-chain bid txid
+/// onto its own commitment row at build time — this is what lets the
+/// "which bids are mine" join (`merge_name_bids`) recognize the user's own
+/// bid against the explorer's list. Before this fix `bid_txid` was written
+/// only in tests (`queries::set_bid_txid`), never by the production build
+/// flow, so a real bid always showed "yours: 0".
+#[tokio::test]
+async fn build_bid_draft_persists_bid_txid_on_its_commitment() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        id
+    };
+    let app = mock_app_with(state);
+
+    let draft = names::build_bid_draft(app.state(), "namea".into(), 1000, 2000, None)
+        .await
+        .expect("bid draft should build");
+    // The top-level `TxDraftSummary.txid` (backed by `wallet_tx_drafts.txid`)
+    // stays NULL until broadcast — the deterministic pre-signing txid lives
+    // in `summary.txid` (the embedded `ActionSummary`, built from
+    // `res.txid` at persist time). That is the value the fix must copy onto
+    // `bid_commitments.bid_txid`.
+    let draft_txid = draft
+        .summary
+        .get("txid")
+        .and_then(|v| v.as_str())
+        .expect("draft summary must carry a txid")
+        .to_string();
+
+    let state: tauri::State<crate::AppState> = app.state();
+    let conn = state.db.lock().unwrap();
+    let bid_txid: Option<String> = conn
+        .query_row(
+            "SELECT bid_txid FROM bid_commitments
+             WHERE wallet_profile_id = ?1 AND name = 'namea'",
+            rusqlite::params![&profile_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        bid_txid,
+        Some(draft_txid),
+        "bid_commitments.bid_txid must be set to the draft's on-chain txid, not left NULL"
+    );
+}
+
+/// Companion fix for `build_reveal_draft`: the reveal txid must land on the
+/// SAME commitment row (keyed by name), otherwise the reveal-deadline
+/// scanner (which reads `reveal_txid`) never sees a revealed bid as
+/// resolved.
+#[tokio::test]
+async fn build_reveal_draft_persists_reveal_txid_on_its_commitment() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        let addr = first_derived_address(&conn, &id);
+        let cov_a = covenant_json_for("namea", crate::noncustodial::sync::COV_BID, "BID");
+        seed_covenant_coin(&conn, &id, &"aa".repeat(32), &addr, crate::noncustodial::sync::COV_BID, 2000, Some(&cov_a));
+        seed_bid_commitment(&conn, &id, "namea", &addr);
+        id
+    };
+    let app = mock_app_with(state);
+
+    let draft = names::build_reveal_draft(app.state(), "namea".into(), None)
+        .await
+        .expect("reveal draft for namea should build");
+    let draft_txid = draft
+        .summary
+        .get("txid")
+        .and_then(|v| v.as_str())
+        .expect("reveal draft summary must carry a txid")
+        .to_string();
+
+    let state: tauri::State<crate::AppState> = app.state();
+    let conn = state.db.lock().unwrap();
+    let reveal_txid: Option<String> = conn
+        .query_row(
+            "SELECT reveal_txid FROM bid_commitments
+             WHERE wallet_profile_id = ?1 AND name = 'namea'",
+            rusqlite::params![&profile_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        reveal_txid,
+        Some(draft_txid),
+        "bid_commitments.reveal_txid must be set to the reveal draft's on-chain txid, not left NULL"
+    );
+}
+
 /// I2 part 2: the `insert_bid_commitment` ON CONFLICT fix. Simulates a
 /// same-value re-bid landing on the exact same (name, blind) key by calling
 /// the query function directly with the multiplicity guard bypassed (the

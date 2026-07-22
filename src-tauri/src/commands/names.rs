@@ -1310,7 +1310,17 @@ pub async fn build_bid_draft(
         + params.reveal_period as i64;
     queries::set_reveal_end_height(&conn, &ctx.profile_id, &hex::encode(blind), reveal_end_height)?;
 
-    persist_with_conn(&conn, &ctx.profile_id, "bid", &name, None, &res)
+    let summary = persist_with_conn(&conn, &ctx.profile_id, "bid", &name, None, &res)?;
+    // Task 1 fix: stamp the on-chain bid txid onto this commitment NOW, while
+    // still under the same held `conn` lock as the multiplicity guard and the
+    // commitment/draft writes above — no unlock/relock, guard untouched.
+    // `res.txid` is the deterministic pre-signing Handshake txid (no-witness
+    // hash, identical before/after signing), verbatim, not reversed. Without
+    // this, `bid_commitments.bid_txid` stays NULL forever (it was previously
+    // only ever set by tests), which is what makes `merge_name_bids` unable
+    // to recognize a real bid as the wallet's own.
+    queries::set_bid_txid(&conn, &ctx.profile_id, &hex::encode(blind), &res.txid)?;
+    Ok(summary)
 }
 
 // --- REVEAL ----------------------------------------------------------------
@@ -1368,7 +1378,18 @@ pub async fn build_reveal_draft(
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "reveal", &name, None, &res)
+    let summary = persist(&state, &ctx.profile_id, "reveal", &name, None, &res)?;
+    // Task 1 fix (companion to build_bid_draft): stamp the reveal txid onto
+    // the SAME commitment row (keyed by name — `set_bid_reveal_txid`), so the
+    // reveal-deadline scanner (which reads `reveal_txid`) can see this bid as
+    // resolved. `persist` already released its own lock, so this takes a
+    // short separate one; there is no multi-step guard to protect here (only
+    // one write).
+    {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        queries::set_bid_reveal_txid(&conn, &ctx.profile_id, &name, &res.txid)?;
+    }
+    Ok(summary)
 }
 
 // --- REDEEM ----------------------------------------------------------------
