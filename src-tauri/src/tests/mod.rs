@@ -32,6 +32,7 @@ mod renewals_tests;
 mod repair_convergence_tests;
 mod repair_owned_names_tests;
 mod settings_tests;
+mod sign_name_message_tests;
 mod sync_race_tests;
 mod tx_lifecycle_tests;
 mod wallet_delete_tests;

@@ -164,6 +164,7 @@ pub fn run() {
             commands::tx::build_send_hns_draft,
             commands::tx::estimate_tx_draft_fee,
             commands::tx::sign_tx_draft,
+            commands::tx::sign_name_message,
             commands::tx::broadcast_tx_draft,
             commands::tx::refresh_tx_confirmations,
             commands::tx::list_tx_drafts,

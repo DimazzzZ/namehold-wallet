@@ -19,6 +19,7 @@ import { BidForm } from "./name-actions/BidForm";
 import { DnsRecordsEditor } from "./name-actions/DnsRecordsEditor";
 import { GuidedAction } from "./name-actions/GuidedAction";
 import { NameBidsPanel } from "./name-actions/NameBidsPanel";
+import { NameSignMessage } from "./name-actions/NameSignMessage";
 import { OwnershipActions } from "./name-actions/OwnershipActions";
 import { useUiStore } from "../stores/ui";
 import { mapError, stageOf, unwrapStaged } from "../lib/errors";
@@ -544,6 +545,10 @@ export function NameActionsModal({
                 onRevoke={() => run("REVOKE", () => build.revoke.mutateAsync({ name }))}
               />
             )}
+
+            {/* Sign message (Task 3) — Namebase-style domain-claim verification,
+                owned names only; the component itself gates on caps.ownsName. */}
+            <NameSignMessage name={name} profileId={profile?.id ?? null} caps={caps} />
           </div>
         )}
 

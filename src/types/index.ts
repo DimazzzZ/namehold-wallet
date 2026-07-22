@@ -279,6 +279,21 @@ export interface WriteCapability {
   reason: string | null;
 }
 
+/**
+ * Result of `sign_name_message`: an hsd `signmessagewithname`-compatible
+ * signature over an exact message, produced with the wallet key that owns a
+ * name — used for third-party domain-claim verification (e.g. Namebase).
+ * Not a spend; the private key never leaves the backend.
+ */
+export interface NameSignature {
+  /** base64 of a 64-byte compact (low-S, non-recoverable) ECDSA signature. */
+  signature: string;
+  /** hex-encoded 33-byte compressed public key of the owning key. */
+  publicKey: string;
+  /** The owner address the key derives to, for cross-checking. */
+  address: string;
+}
+
 export interface WalletBalances {
   liquidDoos: number;
   nameControlDoos: number;

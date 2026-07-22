@@ -11,6 +11,7 @@ pub mod bids;
 pub mod covenants;
 pub mod derivation;
 pub mod hd;
+pub mod message;
 pub mod names;
 pub mod network;
 pub mod resource;

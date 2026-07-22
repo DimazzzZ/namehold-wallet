@@ -8,6 +8,7 @@ import type {
   WalletBalances,
   TxDraftSummary,
   BroadcastResult,
+  NameSignature,
 } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -189,6 +190,52 @@ export function useBroadcastTxDraft() {
     mutationFn: (draftId: string) => invoke<BroadcastResult>("broadcast_tx_draft", { draftId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["wallet"] }),
   });
+}
+
+/** True for the "Wallet locked" / "wallet is locked" `AppError` text (see
+ *  `error.rs::AppError::WalletLocked` and its `sign_tx_draft`-style profile
+ *  -mismatch message, which is deliberately NOT matched here — only the
+ *  literal locked-signer error should trigger an automatic unlock+retry). */
+function isWalletLockedError(e: unknown): boolean {
+  return /wallet (is )?locked/i.test(String(e));
+}
+
+/**
+ * Sign an arbitrary message with the wallet key that owns a name (hsd
+ * `signmessagewithname` parity — see `sign_name_message`), for domain-claim
+ * verification flows such as Namebase's. Not a spend: no draft, no broadcast.
+ *
+ * If the signer is locked, transparently unlocks (for `walletProfileId`) and
+ * retries the sign once — mirrors `useExecuteDraft`'s unlock-if-needed step,
+ * minus the broadcast leg this command has no use for.
+ */
+export function useSignNameMessage() {
+  const unlock = useUnlockSigner();
+  const sign = useMutation({
+    mutationFn: (a: { name: string; message: string; walletProfileId: string | null }) =>
+      invoke<NameSignature>("sign_name_message", {
+        name: a.name,
+        message: a.message,
+        walletProfileId: a.walletProfileId,
+      }),
+  });
+
+  const run = async (
+    name: string,
+    message: string,
+    walletProfileId: string | null,
+  ): Promise<NameSignature> => {
+    try {
+      return await sign.mutateAsync({ name, message, walletProfileId });
+    } catch (e) {
+      if (!isWalletLockedError(e)) throw e;
+      // Locked — unlock this wallet's signer, then retry the sign once.
+      await unlock.mutateAsync(walletProfileId ?? "");
+      return await sign.mutateAsync({ name, message, walletProfileId });
+    }
+  };
+
+  return { run, pending: unlock.isPending || sign.isPending, unlock, sign };
 }
 
 /** Build a covenant/name-action draft via one of the `build_*_draft` commands. */

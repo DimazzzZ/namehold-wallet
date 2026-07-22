@@ -519,6 +519,74 @@ pub async fn sign_tx_draft(
     }
 }
 
+/// Sign an arbitrary message with the wallet key that owns `name`, reproducing
+/// hsd's `signmessagewithname` byte-for-byte (see `noncustodial::message`).
+/// Used to satisfy third-party domain-claim verification (e.g. Namebase),
+/// which asks the user to sign an exact message with the owning key and paste
+/// the resulting signature back.
+///
+/// Not a spend: builds and broadcasts nothing. Requires the signer to be
+/// unlocked for the SAME wallet profile that owns `name` — the private key
+/// never leaves this function.
+#[tauri::command]
+pub async fn sign_name_message(
+    state: State<'_, AppState>,
+    name: String,
+    message: String,
+    wallet_profile_id: Option<String>,
+) -> Result<serde_json::Value, AppError> {
+    let id = crate::commands::read::resolve_profile(&state, wallet_profile_id)?
+        .ok_or_else(|| AppError::InvalidInput("no wallet profile selected".to_string()))?;
+
+    // 1. DB: resolve the account index + the name's owner coin (branch/index),
+    // and the signer-session ttl. `get_name_coin` only returns a hit when this
+    // profile currently holds the name's owner UTXO (mirrors hsd `isClosed` —
+    // no coin, no proof of ownership to sign for).
+    let (account, coin, ttl_ms) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let profile = db::queries::get_wallet_profile(&conn, &id)?
+            .ok_or_else(|| AppError::NotFound(format!("wallet profile {id}")))?;
+        let coin = db::queries::get_name_coin(&conn, &id, &name)?.ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "wallet does not own '{name}' (sync/own it first)"
+            ))
+        })?;
+        let settings = db::queries::get_settings(&conn)?;
+        (profile.account_index as u32, coin, session_ttl_ms(&settings))
+    };
+
+    // 2. Signer: mirror `sign_tx_draft`'s unlock + per-profile gate — the
+    // unlocked session must belong to the SAME profile the coin was resolved
+    // under, so one wallet's unlocked signer can never sign on another's
+    // behalf.
+    let (signature, pubkey) = {
+        let mut slot = state.signer.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
+        if !session.is_unlocked() {
+            return Err(AppError::WalletLocked);
+        }
+        if session.wallet_profile_id() != id {
+            return Err(AppError::InvalidInput(
+                "the unlocked signer is for a different wallet profile".to_string(),
+            ));
+        }
+        session.touch(ttl_ms);
+
+        let network = session.network();
+        let path = crate::noncustodial::hd::bip44_path(network, account, coin.branch, coin.child_index);
+        let child = session.master()?.derive_path(&path)?;
+        let signature = crate::noncustodial::message::sign_handshake_message(&child.secret, &message);
+        let pubkey = child.compressed_pubkey();
+        (signature, pubkey)
+    };
+
+    Ok(serde_json::json!({
+        "signature": signature,
+        "publicKey": hex::encode(pubkey),
+        "address": coin.address,
+    }))
+}
+
 // --- broadcast -------------------------------------------------------------
 
 /// Broadcast a signed draft via node RPC.
