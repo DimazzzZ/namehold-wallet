@@ -11,10 +11,12 @@ use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 use crate::commands::read::{
-    compare_inventory_with_provider, discover_owned_names, read_auction_position_names,
-    read_balance, read_name_info, read_names, read_transactions,
+    compare_inventory_with_provider, discover_owned_names, empty_name_bids_response,
+    merge_name_bids, read_auction_position_names, read_balance, read_name_bids, read_name_info,
+    read_names, read_transactions,
 };
 use crate::db;
+use crate::hsd::types::{HsdBid, HsdName};
 use crate::AppState;
 
 // ---------------------------------------------------------------------------
@@ -743,4 +745,276 @@ async fn auction_positions_distinct_open_and_bid_same_name() {
     let app = app_with(conn);
     let val = read_auction_position_names(app.state(), None).await.unwrap();
     assert_eq!(auction_position_names(&val), vec!["dupname".to_string()]);
+}
+
+// ---------------------------------------------------------------------------
+// read_name_bids / merge_name_bids — helpers
+// ---------------------------------------------------------------------------
+
+/// A minimal `HsdName` carrying only `bids` + the aggregate fields
+/// `merge_name_bids` passes through verbatim.
+fn hsd_name_with_bids(name: &str, bids: Vec<HsdBid>) -> HsdName {
+    HsdName {
+        name: name.to_string(),
+        name_hash: None,
+        state: Some("REVEAL".to_string()),
+        height: None,
+        renewal: None,
+        owner: None,
+        value: Some(0),
+        highest: Some(5_000_000),
+        registered: None,
+        expired: None,
+        stats: None,
+        transfer: None,
+        revoked: None,
+        bids: Some(bids),
+    }
+}
+
+fn hsd_bid(txid: Option<&str>) -> HsdBid {
+    HsdBid {
+        txid: txid.map(|s| s.to_string()),
+        index: Some(0),
+        lockup: Some(2_000_000),
+        value: None,
+        revealed: None,
+        win: None,
+        reveal: None,
+        time: None,
+    }
+}
+
+/// A `bid_commitments` row for `name`, already carrying a `bid_txid` (as if
+/// the bid tx had been broadcast). `merge_name_bids` is a pure function that
+/// receives an already profile-scoped slice — profile id is deliberately not
+/// a field here (that scoping happens one layer up, in `list_bid_commitments`).
+fn bid_commitment_row(name: &str, bid_txid: &str, bid_value_doos: i64) -> db::queries::BidCommitmentRow {
+    db::queries::BidCommitmentRow {
+        name: name.to_string(),
+        name_hash_hex: "aabb".to_string(),
+        address: "addr".to_string(),
+        branch: 0,
+        child_index: 0,
+        bid_value_doos,
+        lockup_value_doos: bid_value_doos + 500_000,
+        nonce_hex: "nonce".to_string(),
+        blind_hex: "blind".to_string(),
+        bid_txid: Some(bid_txid.to_string()),
+        reveal_txid: None,
+        reveal_end_height: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// merge_name_bids — pure join, no DB / no network
+// ---------------------------------------------------------------------------
+
+#[test]
+fn merge_name_bids_matched_txid_is_mine_with_plaintext_value() {
+    let info = hsd_name_with_bids(
+        "foo",
+        vec![hsd_bid(Some("txA")), hsd_bid(Some("txB"))],
+    );
+    let commitments = vec![bid_commitment_row("foo", "txA", 1_500_000)];
+
+    let val = merge_name_bids(&info, &commitments, "foo");
+    let bids = val["bids"].as_array().expect("bids array");
+    assert_eq!(bids.len(), 2);
+
+    assert_eq!(bids[0]["txid"], "txA");
+    assert_eq!(bids[0]["mine"], true);
+    assert_eq!(bids[0]["myValue"], 1_500_000);
+
+    assert_eq!(bids[1]["txid"], "txB");
+    assert_eq!(bids[1]["mine"], false);
+    assert!(bids[1]["myValue"].is_null());
+
+    assert_eq!(val["myBidCount"], 1);
+    assert_eq!(val["state"], "REVEAL");
+    assert_eq!(val["highest"], 5_000_000);
+}
+
+#[test]
+fn merge_name_bids_commitment_for_another_name_does_not_mark_mine() {
+    // Same txid, but the commitment belongs to a DIFFERENT name — must not
+    // mark the bid as mine even though the txid matches exactly.
+    let info = hsd_name_with_bids("foo", vec![hsd_bid(Some("txA"))]);
+    let commitments = vec![bid_commitment_row("othername", "txA", 1_500_000)];
+
+    let val = merge_name_bids(&info, &commitments, "foo");
+    let bids = val["bids"].as_array().expect("bids array");
+    assert_eq!(bids[0]["mine"], false);
+    assert!(bids[0]["myValue"].is_null());
+    assert_eq!(val["myBidCount"], 0);
+}
+
+#[test]
+fn merge_name_bids_bid_without_txid_never_matches() {
+    let info = hsd_name_with_bids("foo", vec![hsd_bid(None)]);
+    let commitments = vec![bid_commitment_row("foo", "txA", 1_500_000)];
+
+    let val = merge_name_bids(&info, &commitments, "foo");
+    let bids = val["bids"].as_array().expect("bids array");
+    assert!(bids[0]["txid"].is_null());
+    assert_eq!(bids[0]["mine"], false);
+    assert!(bids[0]["myValue"].is_null());
+    assert_eq!(val["myBidCount"], 0);
+}
+
+#[test]
+fn merge_name_bids_no_bids_yields_empty_array_and_zero_count() {
+    let info = hsd_name_with_bids("foo", vec![]);
+    let val = merge_name_bids(&info, &[], "foo");
+    assert_eq!(val["bids"], serde_json::json!([]));
+    assert_eq!(val["myBidCount"], 0);
+}
+
+#[test]
+fn merge_name_bids_none_bids_on_info_yields_empty_array() {
+    // `info.bids == None` (e.g. a node-sourced HsdName, or an explorer entry
+    // with no `bids` key at all) must degrade to an empty array, not panic.
+    let mut info = hsd_name_with_bids("foo", vec![]);
+    info.bids = None;
+    let val = merge_name_bids(&info, &[], "foo");
+    assert_eq!(val["bids"], serde_json::json!([]));
+    assert_eq!(val["myBidCount"], 0);
+}
+
+// ---------------------------------------------------------------------------
+// read_name_bids — command-level (no profile / explorer degradation)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_name_bids_no_profile_returns_empty_response() {
+    let app = app_with(empty_db());
+    let val = read_name_bids(app.state(), "foo".into(), None).await.unwrap();
+    assert_eq!(val, empty_name_bids_response("foo"));
+}
+
+#[tokio::test]
+async fn read_name_bids_explorer_404_returns_empty_response_not_error() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("GET", "/api/names/ghostname")
+        .with_status(404)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "ghostname".into(), None)
+        .await
+        .unwrap();
+    assert_eq!(val, empty_name_bids_response("ghostname"));
+}
+
+#[tokio::test]
+async fn read_name_bids_matches_own_commitment_and_computes_count() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("GET", "/api/names/foo")
+        .with_status(200)
+        .with_body(
+            r#"{
+                "name": "foo",
+                "state": "REVEAL",
+                "highest": 5000000,
+                "bids": [
+                    { "txid": "txA", "index": 0, "lockup": 2000000 },
+                    { "txid": "txB", "index": 1, "lockup": 3000000 }
+                ]
+            }"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+    db::queries::insert_bid_commitment(
+        &conn, "W1", "foo", "aabb", "addr", 0, 0, 1_500_000, 2_000_000, "nonce", "blind1",
+    )
+    .unwrap();
+    db::queries::set_bid_txid(&conn, "W1", "blind1", "txA").unwrap();
+
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "foo".into(), Some("W1".into()))
+        .await
+        .unwrap();
+
+    let bids = val["bids"].as_array().expect("bids array");
+    assert_eq!(bids.len(), 2);
+    let by_txid = |t: &str| bids.iter().find(|b| b["txid"] == t).unwrap();
+    assert_eq!(by_txid("txA")["mine"], true);
+    assert_eq!(by_txid("txA")["myValue"], 1_500_000);
+    assert_eq!(by_txid("txB")["mine"], false);
+    assert!(by_txid("txB")["myValue"].is_null());
+    assert_eq!(val["myBidCount"], 1);
+    assert_eq!(val["state"], "REVEAL");
+    assert_eq!(val["highest"], 5_000_000);
+}
+
+#[tokio::test]
+async fn read_name_bids_per_wallet_isolation() {
+    // Two profiles each hold a commitment matching one of the two bids the
+    // explorer reports. A commitment belonging to the OTHER profile must
+    // never mark a bid as "mine" for the profile being queried.
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("GET", "/api/names/foo")
+        .with_status(200)
+        .with_body(
+            r#"{
+                "name": "foo",
+                "state": "REVEAL",
+                "bids": [
+                    { "txid": "txA", "index": 0, "lockup": 2000000 },
+                    { "txid": "txB", "index": 1, "lockup": 3000000 }
+                ]
+            }"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "A", "regtest");
+    add_profile(&conn, "B", "regtest");
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+
+    db::queries::insert_bid_commitment(
+        &conn, "A", "foo", "aabb", "addr", 0, 0, 1_500_000, 2_000_000, "nonce", "blindA",
+    )
+    .unwrap();
+    db::queries::set_bid_txid(&conn, "A", "blindA", "txA").unwrap();
+
+    db::queries::insert_bid_commitment(
+        &conn, "B", "foo", "aabb", "addr", 0, 0, 2_500_000, 3_000_000, "nonce", "blindB",
+    )
+    .unwrap();
+    db::queries::set_bid_txid(&conn, "B", "blindB", "txB").unwrap();
+
+    let app = app_with(conn);
+
+    let val_a = read_name_bids(app.state(), "foo".into(), Some("A".into()))
+        .await
+        .unwrap();
+    let bids_a = val_a["bids"].as_array().expect("bids array");
+    let by_txid_a = |t: &str| bids_a.iter().find(|b| b["txid"] == t).unwrap();
+    assert_eq!(by_txid_a("txA")["mine"], true);
+    assert_eq!(by_txid_a("txB")["mine"], false, "B's commitment must not leak into A's view");
+    assert_eq!(val_a["myBidCount"], 1);
+
+    let val_b = read_name_bids(app.state(), "foo".into(), Some("B".into()))
+        .await
+        .unwrap();
+    let bids_b = val_b["bids"].as_array().expect("bids array");
+    let by_txid_b = |t: &str| bids_b.iter().find(|b| b["txid"] == t).unwrap();
+    assert_eq!(by_txid_b("txA")["mine"], false, "A's commitment must not leak into B's view");
+    assert_eq!(by_txid_b("txB")["mine"], true);
+    assert_eq!(val_b["myBidCount"], 1);
 }

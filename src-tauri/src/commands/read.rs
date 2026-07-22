@@ -436,6 +436,7 @@ pub async fn read_name_info(
                 stats: None,
                 transfer: None,
                 revoked: None,
+                bids: None,
             })?);
         }
     }
@@ -465,10 +466,136 @@ pub async fn read_name_info(
                 stats: None,
                 transfer: None,
                 revoked: None,
+                bids: None,
             })?)
         }
         Err(e) => Err(e),
     }
+}
+
+/// Empty `read_name_bids` response — used whenever there is nothing to show
+/// (no resolved profile, or the explorer has no data for the name). Never an
+/// error: the auction bids panel must degrade gracefully, not break.
+pub(crate) fn empty_name_bids_response(name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "state": null,
+        "highest": null,
+        "value": null,
+        "bids": [],
+        "myBidCount": 0
+    })
+}
+
+/// Pure join: shape the explorer's per-bid detail for `name` into the
+/// frontend contract, marking which bids are the caller's own from LOCAL
+/// `bid_commitments` only.
+///
+/// Honesty (Vickrey): this NEVER fabricates another bidder's value — `value`
+/// on each returned bid is exactly what the explorer reported (which is
+/// nothing, pre-REVEAL). `myValue` comes only from plaintext we already hold
+/// locally (`bid_value_doos` on a matching commitment), never inferred.
+///
+/// `commitments` MUST already be scoped to the resolved profile by the
+/// caller (per-wallet read isolation) — this function additionally matches
+/// only commitments for `name`, so a stray commitment for a different name
+/// (even within the same profile) can never mark a bid as "mine". A bid
+/// without a `txid` (not yet indexed) can never match and is reported with
+/// `mine:false, myValue:null`, but still counts in the returned `bids` array.
+pub(crate) fn merge_name_bids(
+    info: &crate::hsd::types::HsdName,
+    commitments: &[queries::BidCommitmentRow],
+    name: &str,
+) -> serde_json::Value {
+    use std::collections::HashMap;
+
+    let mine_by_txid: HashMap<&str, i64> = commitments
+        .iter()
+        .filter(|c| c.name == name)
+        .filter_map(|c| c.bid_txid.as_deref().map(|txid| (txid, c.bid_value_doos)))
+        .collect();
+
+    let mut my_bid_count: u32 = 0;
+    let bids: Vec<serde_json::Value> = info
+        .bids
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|bid| {
+            let my_value = bid
+                .txid
+                .as_deref()
+                .and_then(|txid| mine_by_txid.get(txid).copied());
+            let is_mine = my_value.is_some();
+            if is_mine {
+                my_bid_count += 1;
+            }
+            serde_json::json!({
+                "txid": bid.txid,
+                "index": bid.index,
+                "lockup": bid.lockup,
+                "value": bid.value,
+                "revealed": bid.revealed,
+                "win": bid.win,
+                "reveal": bid.reveal,
+                "time": bid.time,
+                "mine": is_mine,
+                "myValue": my_value,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "name": name,
+        "state": info.state,
+        "highest": info.highest,
+        "value": info.value,
+        "bids": bids,
+        "myBidCount": my_bid_count,
+    })
+}
+
+/// Per-bid detail for a name from the HNSFans explorer, with the caller's own
+/// bids marked via LOCAL `bid_commitments` (plaintext bid/lockup values this
+/// wallet already holds — never fabricated from the explorer, which cannot
+/// reveal a competitor's true value before REVEAL). Read-only; feeds the
+/// auction bids panel inside the name actions modal.
+///
+/// Node `getnameinfo` has no per-bid array (aggregates only — see
+/// `HsdName.bids` doc), so this always goes through the explorer. Degrades to
+/// an empty response (never an error/panic) when no profile resolves or the
+/// explorer has nothing for the name; a real transport failure still
+/// propagates as `Err`. `wallet_profile_id` pins the read to a specific
+/// wallet (defaults to active) — critical so a bid from another wallet is
+/// never marked "mine".
+#[tauri::command]
+pub async fn read_name_bids(
+    state: State<'_, AppState>,
+    name: String,
+    wallet_profile_id: Option<String>,
+) -> Result<serde_json::Value, AppError> {
+    let id = match resolve_profile(&state, wallet_profile_id)? {
+        Some(id) => id,
+        None => return Ok(empty_name_bids_response(&name)),
+    };
+
+    let client = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let settings = queries::get_settings(&conn)?;
+        explorer_client(&settings)
+    };
+
+    let info = match client.get_name_info_optional(&name).await? {
+        Some(info) => info,
+        None => return Ok(empty_name_bids_response(&name)),
+    };
+
+    let commitments = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        queries::list_bid_commitments(&conn, &id)?
+    };
+
+    Ok(merge_name_bids(&info, &commitments, &name))
 }
 
 /// Transaction history from the local (node-synced) cache.

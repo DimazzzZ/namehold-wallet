@@ -2972,6 +2972,7 @@ mod noncustodial_query_tests {
             stats: None,
             transfer: None,
             revoked: None,
+            bids: None,
         };
         upsert_owned_name(&conn, "p1", &name, "txid1", 0, "rs1qaddr1").unwrap();
 
@@ -2996,6 +2997,7 @@ mod noncustodial_query_tests {
             stats: None,
             transfer: None,
             revoked: None,
+            bids: None,
         };
         upsert_owned_name(&conn, "p1", &name2, "txid2", 1, "rs1qaddr2").unwrap();
         let names2 = read_owned_names_explorer(&conn, "p1").unwrap();
@@ -3022,6 +3024,7 @@ mod noncustodial_query_tests {
             stats: None,
             transfer: None,
             revoked: None,
+            bids: None,
         };
         upsert_owned_name(&conn, "p1", &name, "txid1", 0, "rs1qoriginal").unwrap();
 

@@ -45,6 +45,29 @@ pub struct HsdName {
     pub stats: Option<HsdNameStats>,
     pub transfer: Option<serde_json::Value>,
     pub revoked: Option<bool>,
+    /// Per-bid detail for this name, sourced only from the HNSFans explorer
+    /// (`getnameinfo` on the node returns only aggregates — no per-bid array).
+    /// `None` when the source didn't supply a `bids` array at all (e.g. a
+    /// node-sourced `HsdName`); `Some(vec![])` when it did but there are no
+    /// bids yet. Always the LAST field — see `read_name_bids` (Task 1).
+    pub bids: Option<Vec<HsdBid>>,
+}
+
+/// A single bid on a name, as reported by the HNSFans explorer's `bids` array.
+/// Every field is optional and defensive — a bid without a `txid` (not yet
+/// broadcast/indexed) is still kept so it counts toward totals; it simply
+/// can't be matched to a local commitment (see `merge_name_bids`).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HsdBid {
+    pub txid: Option<String>,
+    pub index: Option<u32>,
+    pub lockup: Option<u64>,
+    pub value: Option<u64>,
+    pub revealed: Option<bool>,
+    pub win: Option<bool>,
+    pub reveal: Option<serde_json::Value>,
+    pub time: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

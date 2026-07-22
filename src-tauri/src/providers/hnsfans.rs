@@ -13,7 +13,7 @@ use reqwest::Client;
 use std::time::Duration;
 
 use crate::error::AppError;
-use crate::hsd::types::{HsdBalance, HsdName, HsdNameStats, HsdOwner};
+use crate::hsd::types::{HsdBalance, HsdBid, HsdName, HsdNameStats, HsdOwner};
 
 /// The default explorer API host, serving the documented `/api/addresses`,
 /// `/api/names`, and `/api/txs` routes. This is now the SOLE hard-coded
@@ -633,6 +633,15 @@ pub(crate) fn normalize_name(entry: &serde_json::Value) -> Option<HsdName> {
             .or_else(|| v.as_u64().map(|n| n != 0))
     });
 
+    // Per-bid detail (Task 1 / auction bids panel). Only the HNSFans explorer
+    // supplies this — node `getnameinfo` has no `bids` array, so this stays
+    // `None` for node-sourced entries (nothing to map). A bid entry missing
+    // `txid` is still kept (see `normalize_bid`) so it counts toward totals.
+    let bids = entry
+        .get("bids")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(normalize_bid).collect());
+
     Some(HsdName {
         name,
         name_hash,
@@ -650,6 +659,24 @@ pub(crate) fn normalize_name(entry: &serde_json::Value) -> Option<HsdName> {
         stats,
         transfer,
         revoked,
+        bids,
+    })
+}
+
+/// Normalize a single entry of a name's `bids` array (HNSFans explorer only).
+/// Every field is optional and defensively extracted — a bid missing `txid`
+/// (not yet broadcast/indexed by the explorer) is still returned so it counts
+/// toward `myBidCount`/totals; it just can't be matched to a local commitment.
+fn normalize_bid(entry: &serde_json::Value) -> Option<HsdBid> {
+    Some(HsdBid {
+        txid: entry.get("txid").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        index: entry.get("index").and_then(|v| v.as_u64()).map(|n| n as u32),
+        lockup: entry.get("lockup").and_then(|v| v.as_u64()),
+        value: entry.get("value").and_then(|v| v.as_u64()),
+        revealed: entry.get("revealed").and_then(|v| v.as_bool()),
+        win: entry.get("win").and_then(|v| v.as_bool()),
+        reveal: entry.get("reveal").cloned().filter(|v| !v.is_null()),
+        time: entry.get("time").and_then(|v| v.as_u64()),
     })
 }
 
@@ -844,6 +871,69 @@ mod tests {
         assert!(name.transfer.is_none());
         // `revoked: 1` normalizes to true.
         assert_eq!(name.revoked, Some(true));
+    }
+
+    #[test]
+    fn normalize_name_maps_bids_array() {
+        // Task 1: the explorer's per-bid detail — only source of per-bid data
+        // (node `getnameinfo` has none). Every field is extracted.
+        let entry = json!({
+            "name": "cuatesttld",
+            "state": "REVEAL",
+            "bids": [
+                {
+                    "txid": "aaaa",
+                    "index": 0,
+                    "lockup": 2_000_000,
+                    "value": 1_000_000,
+                    "revealed": true,
+                    "win": false,
+                    "reveal": "bbbb",
+                    "time": 1234567
+                }
+            ]
+        });
+        let name = normalize_name(&entry).expect("should normalize");
+        let bids = name.bids.expect("bids present");
+        assert_eq!(bids.len(), 1);
+        let bid = &bids[0];
+        assert_eq!(bid.txid.as_deref(), Some("aaaa"));
+        assert_eq!(bid.index, Some(0));
+        assert_eq!(bid.lockup, Some(2_000_000));
+        assert_eq!(bid.value, Some(1_000_000));
+        assert_eq!(bid.revealed, Some(true));
+        assert_eq!(bid.win, Some(false));
+        assert_eq!(bid.reveal, Some(json!("bbbb")));
+        assert_eq!(bid.time, Some(1234567));
+    }
+
+    #[test]
+    fn normalize_name_without_bids_field_leaves_bids_none() {
+        // A node-sourced (or older-shape) payload with no `bids` array at all
+        // must leave `HsdName.bids` as `None`, not `Some(vec![])` — the
+        // distinction matters for `read_name_bids`'s empty-response contract.
+        let entry = json!({ "name": "x", "state": "CLOSED" });
+        let name = normalize_name(&entry).expect("should normalize");
+        assert!(name.bids.is_none());
+    }
+
+    #[test]
+    fn normalize_bid_without_txid_is_still_kept() {
+        // A bid missing `txid` (not yet indexed) must still be counted — it
+        // just can't be matched to a local commitment later.
+        let entry = json!({
+            "name": "cuatesttld",
+            "bids": [
+                { "lockup": 500_000 },
+                { "txid": "cccc", "lockup": 900_000 }
+            ]
+        });
+        let name = normalize_name(&entry).expect("should normalize");
+        let bids = name.bids.expect("bids present");
+        assert_eq!(bids.len(), 2);
+        assert!(bids[0].txid.is_none());
+        assert_eq!(bids[0].lockup, Some(500_000));
+        assert_eq!(bids[1].txid.as_deref(), Some("cccc"));
     }
 
     #[test]
