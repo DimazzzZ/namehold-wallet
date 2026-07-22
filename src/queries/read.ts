@@ -6,6 +6,7 @@ import type {
   HsdBalance,
   HsdName,
   NameActionCapabilities,
+  NameBids,
   RecoveredBidCommitment,
   RenewalsResponse,
   WalletTransactionRow,
@@ -150,6 +151,33 @@ export function useNameActionCapabilities(
         "get_name_action_capabilities",
         { name: name!.trim(), walletProfileId: profileId },
       );
+      return raw ?? null;
+    },
+    staleTime: STALE_TIME,
+  });
+}
+
+/**
+ * Explorer-backed per-bid detail for a single name (Task 2), joined against
+ * this wallet's own bid_commitments so `mine`/`myValue` are trustworthy.
+ * Modeled exactly on `useNameActionCapabilities`: pinned to `walletProfileId`
+ * (not the internally-resolved active profile) so a fast profile switch can
+ * never attribute another wallet's bids as "mine". Degrades to `null` on
+ * explorer-down / name-not-found (the backend never errors for this read).
+ */
+export function useNameBids(
+  name: string | null | undefined,
+  walletProfileId: string | null,
+): UseQueryResult<NameBids | null> {
+  const profileId = walletProfileId ?? null;
+  return useQuery<NameBids | null>({
+    queryKey: ["read", "nameBids", profileId, name ?? ""],
+    enabled: Boolean(name && name.trim().length > 0),
+    queryFn: async () => {
+      const raw = await invoke<NameBids | null>("read_name_bids", {
+        name: name!.trim(),
+        walletProfileId: profileId,
+      });
       return raw ?? null;
     },
     staleTime: STALE_TIME,

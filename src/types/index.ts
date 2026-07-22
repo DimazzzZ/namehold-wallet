@@ -408,6 +408,39 @@ export interface NameActionCapabilities {
 }
 
 // ---------------------------------------------------------------------------
+// Name bids (explorer-backed per-bid detail, Task 1 / Task 2)
+// ---------------------------------------------------------------------------
+
+export interface NameBid {
+  txid: string | null;
+  index: number | null;
+  /** The public LOCKUP (doos) — an upper bound, NOT the true bid. */
+  lockup: number | null;
+  /** The revealed true bid (doos); null/absent pre-REVEAL for others. */
+  value: number | null;
+  /** Whether THIS bid has been revealed on-chain. */
+  revealed: boolean | null;
+  /** Winner flag (meaningful at CLOSED). */
+  win: boolean | null;
+  reveal: unknown | null;
+  time: number | null;
+  /** True iff this bid matches one of MY local bid_commitments. */
+  mine: boolean;
+  /** MY plaintext true bid (doos) — present only when `mine` is true. */
+  myValue: number | null;
+}
+
+export interface NameBids {
+  name: string;
+  state: string | null;
+  /** Top-level high bid (doos), populated at REVEAL/CLOSED. */
+  highest: number | null;
+  value: number | null;
+  bids: NameBid[];
+  myBidCount: number;
+}
+
+// ---------------------------------------------------------------------------
 // Renewals (chain-driven, Task 3 / C3)
 // ---------------------------------------------------------------------------
 

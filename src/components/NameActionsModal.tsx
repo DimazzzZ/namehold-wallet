@@ -18,6 +18,7 @@ import { Badge } from "./ui/Badge";
 import { BidForm } from "./name-actions/BidForm";
 import { DnsRecordsEditor } from "./name-actions/DnsRecordsEditor";
 import { GuidedAction } from "./name-actions/GuidedAction";
+import { NameBidsPanel } from "./name-actions/NameBidsPanel";
 import { OwnershipActions } from "./name-actions/OwnershipActions";
 import { useUiStore } from "../stores/ui";
 import { mapError, stageOf, unwrapStaged } from "../lib/errors";
@@ -402,6 +403,8 @@ export function NameActionsModal({
             </div>
           ) : null
         )}
+
+        <NameBidsPanel name={name} profileId={profile?.id ?? null} phase={badge.phase} />
 
         {/* Advanced actions toggle — only when relevant actions exist */}
         {showAdvancedToggle && (
