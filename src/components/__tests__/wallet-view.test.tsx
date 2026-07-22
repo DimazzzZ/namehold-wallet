@@ -47,6 +47,7 @@ type Overrides = {
   confirmedDoos?: number;
   renewals?: unknown;
   drafts?: unknown[];
+  names?: unknown[];
 };
 
 function routeInvoke(o: Overrides = {}) {
@@ -99,9 +100,11 @@ function routeInvoke(o: Overrides = {}) {
           },
         );
       case "read_names":
-        return Promise.resolve([
-          { name: "example", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
-        ]);
+        return Promise.resolve(
+          o.names ?? [
+            { name: "example", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
+          ],
+        );
       case "build_send_hns_draft":
         return Promise.resolve(
           o.draft ?? {
@@ -252,6 +255,54 @@ describe("WalletView (non-custodial)", () => {
     await screen.findByText("Primary");
     expect(await screen.findByText(/Owned Names/i)).toBeInTheDocument();
     expect(await screen.findByText(/\.example/)).toBeInTheDocument();
+  });
+
+  const multiNames = [
+    { name: "example", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
+    { name: "another", state: "CLOSED", height: 101, renewal: 201, owner: { hash: "tx2", index: 0 }, stats: null },
+    // "козёл" (Russian for "goat") — its ACE/raw form is xn--g1afek0h.
+    { name: "xn--g1afek0h", state: "CLOSED", height: 102, renewal: 202, owner: { hash: "tx3", index: 0 }, stats: null },
+  ];
+
+  it("Owned Names filter: narrows by ASCII substring, unicode substring, and clears back to full list", async () => {
+    invokeMock.mockImplementation(routeInvoke({ unlocked: false, names: multiNames }));
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    // All three rows present up front, including the decoded unicode name.
+    expect(await screen.findByText(/\.example/)).toBeInTheDocument();
+    expect(screen.getByText(/\.another/)).toBeInTheDocument();
+    expect(screen.getByText(/\.козёл/)).toBeInTheDocument();
+    expect(screen.getByText("Owned Names (3)")).toBeInTheDocument();
+
+    const filterInput = screen.getByPlaceholderText(/filter/i);
+
+    // ASCII substring narrows to the matching raw name.
+    fireEvent.change(filterInput, { target: { value: "exam" } });
+    expect(screen.getByText(/\.example/)).toBeInTheDocument();
+    expect(screen.queryByText(/\.another/)).toBeNull();
+    expect(screen.queryByText(/\.козёл/)).toBeNull();
+    expect(screen.getByText("Owned Names (1 of 3)")).toBeInTheDocument();
+
+    // Unicode substring that only appears in the decoded displayName still
+    // finds the underlying xn-- row.
+    fireEvent.change(filterInput, { target: { value: "коз" } });
+    expect(screen.getByText(/\.козёл/)).toBeInTheDocument();
+    expect(screen.queryByText(/\.example/)).toBeNull();
+    expect(screen.queryByText(/\.another/)).toBeNull();
+    expect(screen.getByText("Owned Names (1 of 3)")).toBeInTheDocument();
+
+    // A query matching nothing shows a message instead of an empty table.
+    fireEvent.change(filterInput, { target: { value: "zzzznotfound" } });
+    expect(screen.getByText(/No names match/i)).toBeInTheDocument();
+    expect(screen.getByText("Owned Names (0 of 3)")).toBeInTheDocument();
+
+    // Clearing the input restores the full list.
+    fireEvent.change(filterInput, { target: { value: "" } });
+    expect(screen.getByText(/\.example/)).toBeInTheDocument();
+    expect(screen.getByText(/\.another/)).toBeInTheDocument();
+    expect(screen.getByText(/\.козёл/)).toBeInTheDocument();
+    expect(screen.getByText("Owned Names (3)")).toBeInTheDocument();
   });
 
   it("watch-only profiles hide spend + unlock controls", async () => {

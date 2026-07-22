@@ -58,6 +58,18 @@ export function WalletView() {
   const { data: readBalance } = useReadBalance();
   const { data: drafts = [] } = useTxDrafts();
   const { data: names = [] } = useReadNames();
+  const [nameQuery, setNameQuery] = useState("");
+  // Substring filter for the Owned Names list. Matches on BOTH the raw ACE
+  // name (as stored on-chain) and its decoded displayName, so a unicode
+  // substring (e.g. from a `.козёл`-style label) still finds the underlying
+  // `xn--` row. Never run the query through normalizeNameInput — that strips
+  // non-ASCII characters and would break unicode search entirely.
+  const q = nameQuery.trim().toLowerCase();
+  const filteredNames = q
+    ? names.filter(
+        (n) => n.name.toLowerCase().includes(q) || displayName(n.name).toLowerCase().includes(q),
+      )
+    : names;
   const { data: renewals } = useReadRenewals();
   // Capability-driven urgency alerts (F2 fix) — ONE batch fetch pinned to the
   // active wallet, replacing the old raw-phase filters below that showed a
@@ -663,48 +675,63 @@ export function WalletView() {
 
       {/* Owned Names (from local name-state cache) */}
       <div className="bg-white rounded p-4 border border-gray-200">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-sm text-gray-500">Owned Names ({names.length})</div>
+        <div className="flex items-center justify-between mb-2 gap-2">
+          <div className="text-sm text-gray-500">
+            Owned Names ({filteredNames.length}
+            {filteredNames.length !== names.length ? ` of ${names.length}` : ""})
+          </div>
+          <input
+            className="border border-gray-300 rounded px-2 py-1.5 text-sm w-48"
+            value={nameQuery}
+            onChange={(e) => setNameQuery(e.target.value)}
+            placeholder="Filter…"
+          />
         </div>
         {names.length > 0 ? (
-          <div className="max-h-60 overflow-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b">
-                  <th className="py-1">Name</th>
-                  <th className="py-1">State</th>
-                  <th className="py-1">Height</th>
-                  <th className="py-1">Renewal</th>
-                  <th className="py-1"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {names.map((n) => (
-                  <tr key={n.name} className="border-t border-gray-100">
-                    <td className="py-1 font-mono">.{displayName(n.name)}</td>
-                    <td className="py-1">
-                      {n.state ? (
-                        <Badge variant={auctionPhase(n.state).variant}>
-                          {auctionPhase(n.state).label}
-                        </Badge>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td className="py-1 text-xs text-gray-500">{n.height ? `#${n.height}` : "—"}</td>
-                    <td className="py-1 text-xs text-gray-500">{n.renewal ? `#${n.renewal}` : "—"}</td>
-                    <td className="py-1 text-right">
-                      {!isWatchOnly && (
-                        <Button size="sm" variant="ghost" onClick={() => setManageName(n.name)}>
-                          Manage
-                        </Button>
-                      )}
-                    </td>
+          filteredNames.length > 0 ? (
+            <div className="max-h-60 overflow-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b">
+                    <th className="py-1">Name</th>
+                    <th className="py-1">State</th>
+                    <th className="py-1">Height</th>
+                    <th className="py-1">Renewal</th>
+                    <th className="py-1"></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {filteredNames.map((n) => (
+                    <tr key={n.name} className="border-t border-gray-100">
+                      <td className="py-1 font-mono">.{displayName(n.name)}</td>
+                      <td className="py-1">
+                        {n.state ? (
+                          <Badge variant={auctionPhase(n.state).variant}>
+                            {auctionPhase(n.state).label}
+                          </Badge>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="py-1 text-xs text-gray-500">{n.height ? `#${n.height}` : "—"}</td>
+                      <td className="py-1 text-xs text-gray-500">{n.renewal ? `#${n.renewal}` : "—"}</td>
+                      <td className="py-1 text-right">
+                        {!isWatchOnly && (
+                          <Button size="sm" variant="ghost" onClick={() => setManageName(n.name)}>
+                            Manage
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-gray-400 text-sm py-4 text-center">
+              No names match &quot;{nameQuery.trim()}&quot;
+            </div>
+          )
         ) : (
           <div className="text-gray-400 text-sm py-4 text-center">
             {false
