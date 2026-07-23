@@ -1,12 +1,10 @@
 /**
- * Settings — explorer base URL: config + validation + factory usage
- * (Task 11 / S1).
+ * Settings — Autostart HSD checkbox.
  *
- * The backend already builds explorer requests as `${explorer_api_url}/api/...`
- * (see `providers::explorer_client_from_settings`), so a value without an
- * `http(s)://` scheme would silently break every explorer call. This covers
- * the one bit of non-trivial UI logic here: client-side validation blocking
- * Save on a malformed URL, and a normal save persisting a normalized value.
+ * The Rust setup hook reads `autostart_hsd` from the SQLite settings table on
+ * app launch to decide whether to spawn hsd automatically. Here we only cover
+ * the frontend surface: default value, render/toggle, and that Save persists
+ * the change via `update_setting`.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
@@ -28,7 +26,7 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   requestPermission: vi.fn().mockResolvedValue("default"),
 }));
 
-import { Settings, validateExplorerUrl } from "../Settings";
+import { Settings } from "../Settings";
 import { useSettingsStore } from "../../stores/settings";
 
 function route(cmd: string) {
@@ -54,7 +52,12 @@ function route(cmd: string) {
     case "get_signer_session":
       return Promise.resolve({ walletProfileId: null, unlocked: false, unlockedUntilEpochMs: 0 });
     case "get_write_capability":
-      return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: null });
+      return Promise.resolve({
+        signerUnlocked: false,
+        broadcasterAvailable: false,
+        canWrite: false,
+        reason: null,
+      });
     case "update_setting":
       return Promise.resolve(null);
     default:
@@ -101,54 +104,40 @@ beforeEach(() => {
   loadSettings();
 });
 
-describe("validateExplorerUrl (unit)", () => {
-  it("accepts empty (falls back to the backend default)", () => {
-    expect(validateExplorerUrl("")).toBeNull();
-    expect(validateExplorerUrl("   ")).toBeNull();
-  });
-
-  it("accepts http:// and https:// URLs", () => {
-    expect(validateExplorerUrl("https://e.hnsfans.com")).toBeNull();
-    expect(validateExplorerUrl("http://127.0.0.1:8080")).toBeNull();
-  });
-
-  it("rejects a URL without a scheme", () => {
-    expect(validateExplorerUrl("e.hnsfans.com")).toMatch(/http/i);
-  });
-
-  it("rejects a non-http(s) scheme", () => {
-    expect(validateExplorerUrl("ftp://e.hnsfans.com")).toMatch(/http/i);
-  });
-});
-
-describe("Settings — explorer base URL (Task 11 / S1)", () => {
-  it("shows an inline error and disables Save for a malformed URL", async () => {
+describe("Settings — Autostart HSD checkbox", () => {
+  it("renders the checkbox checked by default (DEFAULT_SETTINGS.autostart_hsd = 'true')", async () => {
     render(<Settings />, { wrapper: wrapper() });
-    const input = await screen.findByTestId("explorer-url-input");
-
-    fireEvent.change(input, { target: { value: "not-a-url" } });
-    // Trigger `dirty` so the Save footer renders.
-    expect(await screen.findByTestId("explorer-url-error")).toBeInTheDocument();
-    const saveButton = await screen.findByRole("button", { name: /Save settings/i });
-    expect(saveButton).toBeDisabled();
+    const box = await screen.findByTestId("autostart-hsd-checkbox");
+    expect(box).toBeChecked();
+    // The label text is visible next to the checkbox.
+    expect(
+      screen.getByText(/Autostart HSD when the app launches/i),
+    ).toBeInTheDocument();
   });
 
-  it("saves a normalized (no trailing slash) URL and clears dirty state", async () => {
+  it("renders unchecked when the setting is 'false'", async () => {
+    loadSettings({ autostart_hsd: "false" });
     render(<Settings />, { wrapper: wrapper() });
-    const input = await screen.findByTestId("explorer-url-input");
+    const box = await screen.findByTestId("autostart-hsd-checkbox");
+    expect(box).not.toBeChecked();
+  });
 
-    fireEvent.change(input, { target: { value: "https://my.explorer.example/" } });
-    expect(screen.queryByTestId("explorer-url-error")).toBeNull();
+  it("persists a toggle to 'false' via update_setting when Save is clicked", async () => {
+    render(<Settings />, { wrapper: wrapper() });
+    const box = await screen.findByTestId("autostart-hsd-checkbox");
+    fireEvent.click(box); // "true" -> "false"
+    expect(box).not.toBeChecked();
 
-    const saveButton = await screen.findByRole("button", { name: /Save settings/i });
-    expect(saveButton).not.toBeDisabled();
-    fireEvent.click(saveButton);
+    const save = await screen.findByRole("button", { name: /Save settings/i });
+    fireEvent.click(save);
 
     await waitFor(() => {
       const call = invokeMock.mock.calls.find(
-        (c) => c[0] === "update_setting" && c[1]?.key === "explorer_api_url",
+        (c) =>
+          c[0] === "update_setting" &&
+          (c[1] as { key?: string })?.key === "autostart_hsd",
       );
-      expect(call?.[1]?.value).toBe("https://my.explorer.example");
+      expect(call?.[1]).toEqual({ key: "autostart_hsd", value: "false" });
     });
   });
 });

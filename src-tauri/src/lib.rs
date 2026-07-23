@@ -97,6 +97,43 @@ pub fn run() {
                 }
             });
 
+            // Autostart hsd (default ON). Fires once at launch, before any
+            // window trigger, so the node comes up without a "Node: Offline"
+            // flash while the frontend mounts. Fire-and-forget: any failure
+            // (misconfigured paths, version gate, spawn error) is logged and
+            // left for the user to resolve via Settings — it never blocks app
+            // startup. `start_hsd` is idempotent (it adopts an already-running
+            // node via RPC rather than spawning a duplicate), so this is safe
+            // even when the user launched hsd manually beforehand.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let state = handle.state::<AppState>();
+                let enabled = {
+                    match state.db.lock() {
+                        Ok(db) => match crate::db::queries::get_settings(&db) {
+                            // Missing key → default ON, matching DEFAULT_SETTINGS.
+                            Ok(settings) => {
+                                settings.get("autostart_hsd").map(String::as_str) != Some("false")
+                            }
+                            Err(e) => {
+                                eprintln!("autostart: could not read settings ({e}); defaulting ON");
+                                true
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("autostart: settings DB lock poisoned ({e}); skipping");
+                            return;
+                        }
+                    }
+                };
+                if !enabled {
+                    return;
+                }
+                if let Err(e) = commands::node::start_hsd(state).await {
+                    eprintln!("hsd autostart skipped: {e}");
+                }
+            });
+
             // Chain scanner (Feature 3, Stage 2): a background task that walks
             // blocks from the fully-synced local node and indexes BID/REVEAL
             // covenant outputs per name into `name_bid_outpoints`. This is what

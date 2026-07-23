@@ -56,6 +56,7 @@ export function Settings() {
         node_rpc_api_key: settings.node_rpc_api_key,
         hsd_prefix: settings.hsd_prefix,
         hsd_path: settings.hsd_path,
+        autostart_hsd: settings.autostart_hsd,
         explorer_api_url: settings.explorer_api_url,
         address_gap_limit: settings.address_gap_limit,
         signer_session_timeout_seconds: settings.signer_session_timeout_seconds,
@@ -228,6 +229,23 @@ export function Settings() {
           <div className="text-xs text-gray-500">
             Leave empty to auto-detect. Set this if the app can't find your hsd
             install (e.g. <code>$(which hsd)</code>). Save settings to apply.
+          </div>
+
+          <label className="flex items-center gap-2 text-sm pt-2">
+            <input
+              type="checkbox"
+              checked={form.autostart_hsd === "true"}
+              onChange={(e) =>
+                updateField("autostart_hsd", e.target.checked ? "true" : "false")
+              }
+              data-testid="autostart-hsd-checkbox"
+            />
+            Autostart HSD when the app launches
+          </label>
+          <div className="text-xs text-gray-500">
+            Starts hsd against your data dir on launch. If a node is already
+            running, Namehold adopts it instead of starting a duplicate. Change
+            takes effect on the next launch.
           </div>
 
           <NodeControl dirty={dirty} hsdPathConfigured={!!settings.hsd_path?.trim()} />
