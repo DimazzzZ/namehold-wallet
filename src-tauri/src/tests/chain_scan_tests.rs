@@ -84,6 +84,56 @@ fn read_indexed_bids_lowercases_name_hash_query() {
     assert_eq!(out.len(), 1);
 }
 
+/// The scanner's REVEAL→BID matching: a REVEAL for a nameHash attaches to the
+/// EARLIEST unmatched BID (height ASC, then bid_txid ASC, then bid_vout ASC),
+/// and a second REVEAL for the same name attaches to the NEXT unmatched BID —
+/// never double-matching one BID. This drives the exact UPDATE `scan_block`
+/// runs (the scanner loop is a thin wrapper around this SQL).
+fn apply_reveal(c: &Connection, name_hash: &str, reveal_txid: &str, reveal_value: i64) {
+    c.execute(
+        "UPDATE name_bid_outpoints
+         SET reveal_txid = ?1, reveal_value_doos = ?2
+         WHERE rowid = (
+             SELECT rowid FROM name_bid_outpoints
+             WHERE name_hash_hex = ?3 AND reveal_txid IS NULL
+             ORDER BY height ASC, bid_txid ASC, bid_vout ASC
+             LIMIT 1
+         )",
+        params![reveal_txid, reveal_value, name_hash],
+    )
+    .unwrap();
+}
+
+#[test]
+fn reveal_matches_earliest_unmatched_bid_for_same_name() {
+    let c = conn();
+    // Two BIDs for the same name at different heights, plus one for another name.
+    seed_bid(&c, "bidLate", 0, "hn", Some("multi"), 3_000_000, 210, None, None);
+    seed_bid(&c, "bidEarly", 0, "hn", Some("multi"), 2_000_000, 205, None, None);
+    seed_bid(&c, "bidOther", 0, "other", Some("other"), 1_000_000, 205, None, None);
+
+    // First REVEAL → earliest BID (height 205 wins over 210).
+    apply_reveal(&c, "hn", "rvA", 1_800_000);
+    // Second REVEAL for the same name → the NEXT unmatched BID (height 210).
+    apply_reveal(&c, "hn", "rvB", 2_500_000);
+
+    let out = read_indexed_bids(&c, "hn").unwrap();
+    assert_eq!(out.len(), 2);
+    // Ordered by height ASC in read_indexed_bids.
+    assert_eq!(out[0].txid.as_deref(), Some("bidEarly"));
+    assert_eq!(out[0].value, Some(1_800_000)); // first reveal → earliest bid
+    assert_eq!(out[0].revealed, Some(true));
+    assert_eq!(out[1].txid.as_deref(), Some("bidLate"));
+    assert_eq!(out[1].value, Some(2_500_000)); // second reveal → next bid
+    assert_eq!(out[1].revealed, Some(true));
+
+    // The other name's BID is never touched by these reveals.
+    let other = read_indexed_bids(&c, "other").unwrap();
+    assert_eq!(other.len(), 1);
+    assert_eq!(other[0].revealed, Some(false));
+    assert_eq!(other[0].value, None);
+}
+
 #[test]
 fn scan_cursor_defaults_to_zero_and_can_advance() {
     let c = conn();

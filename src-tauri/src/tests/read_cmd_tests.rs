@@ -1020,6 +1020,66 @@ async fn read_name_bids_per_wallet_isolation() {
 }
 
 // ---------------------------------------------------------------------------
+// read_name_bids — node synced but scanner hasn't reached the name's auction
+// height yet → fall through to the explorer (don't serve an empty local index)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_name_bids_falls_through_to_explorer_when_scanner_behind() {
+    let mut server = mockito::Server::new_async().await;
+    // Node reports fully synced so the node-first branch is entered.
+    let _node = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    // Explorer returns a bid the local index does NOT have.
+    let _explorer = server
+        .mock("GET", "/api/names/behindname")
+        .with_status(200)
+        .with_body(
+            r#"{"name":"behindname","state":"BIDDING","highest":4200000,
+                "bids":[{"txid":"txExplorer","index":0,"lockup":4200000}]}"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+    // Name opened at height 900; scanner cursor left at 100 → scanner has NOT
+    // reached the auction, so scanner_covers is false and we fall through.
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, height)
+         VALUES ('W1', 'behindname', '', 'BIDDING', NULL, NULL, 900)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE chain_scan_cursor SET last_height = 100 WHERE id = 1",
+        [],
+    )
+    .unwrap();
+
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "behindname".into(), Some("W1".into()))
+        .await
+        .unwrap();
+    // Served from the explorer fallback, not the (empty) local index.
+    let bids = val["bids"].as_array().expect("bids array");
+    assert_eq!(bids.len(), 1);
+    assert_eq!(bids[0]["txid"], "txExplorer");
+    assert_eq!(val["highest"], 4_200_000);
+}
+
+// ---------------------------------------------------------------------------
 // records_from_resource — pure helper (Manage DNS: current records prefill)
 // ---------------------------------------------------------------------------
 
