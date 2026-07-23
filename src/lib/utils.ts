@@ -1,5 +1,26 @@
+import type { TxSummary } from "../types";
+
 export function dollarydoosToHns(dollarydoos: number): string {
   return addThousandSeparators((dollarydoos / 1_000_000).toFixed(6));
+}
+
+/**
+ * Doos that actually LEAVE the wallet for a draft (excluding the fee, which is
+ * shown separately). Covenant name-actions (update/renew/register/reveal/bid/
+ * open/redeem/cancel) carry the name's locked value onto your OWN new coin —
+ * the backend funds that output by spending the name coin itself, so nothing
+ * leaves beyond the fee → 0. Only a genuine transfer to another party
+ * (send_hns / transfer / finalize — the actions that set `recipientAddress`)
+ * moves value out of the wallet.
+ *
+ * This is why a DNS UPDATE is NOT "222 HNS": that 222 is the name's locked
+ * value being re-homed to your own coin, not a cost. `sendTotalDoos` (the
+ * primary output value) is only a real outflow when it goes to a recipient.
+ */
+export function netSpendDoos(
+  s: Pick<TxSummary, "sendTotalDoos" | "recipientAddress">,
+): number {
+  return s.recipientAddress != null ? s.sendTotalDoos : 0;
 }
 
 /**

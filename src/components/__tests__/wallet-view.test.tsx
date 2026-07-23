@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -255,6 +255,72 @@ describe("WalletView (non-custodial)", () => {
     await screen.findByText("Primary");
     expect(await screen.findByText(/Owned Names/i)).toBeInTheDocument();
     expect(await screen.findByText(/\.example/)).toBeInTheDocument();
+  });
+
+  it("Recent transactions: a covenant UPDATE shows net Amount 0 (name value carried, not spent), a send shows its amount", async () => {
+    const drafts = [
+      {
+        id: "u1",
+        walletProfileId: baseProfile.id,
+        action: "update",
+        status: "broadcasted",
+        summary: {
+          action: "update",
+          // 222 HNS — the name's locked value, re-homed to your OWN new coin.
+          sendTotalDoos: 222_000_000,
+          feeDoos: 2620,
+          changeDoos: 0,
+          inputTotalDoos: 222_100_000,
+          numInputs: 2,
+          recipientAddress: null,
+          txid: null,
+          warnings: [],
+          name: "ecology",
+        },
+        errorMessage: null,
+        txid: null,
+        createdAt: "2026-07-22",
+      },
+      {
+        id: "s1",
+        walletProfileId: baseProfile.id,
+        action: "send_hns",
+        status: "broadcasted",
+        summary: {
+          action: "send_hns",
+          sendTotalDoos: 1_000_000,
+          feeDoos: 1410,
+          changeDoos: 0,
+          inputTotalDoos: 1_001_410,
+          numInputs: 1,
+          recipientAddress: "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2",
+          txid: null,
+          warnings: [],
+          name: null,
+        },
+        errorMessage: null,
+        txid: null,
+        createdAt: "2026-07-22",
+      },
+    ];
+    invokeMock.mockImplementation(routeInvoke({ unlocked: false, drafts }));
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    // The UPDATE row must NOT present the 222 HNS name value as a cost...
+    const updateRow = (await screen.findByText(/update · \.ecology/)).closest("tr")!;
+    expect(screen.queryByText("222.000000")).not.toBeInTheDocument();
+    // ...it shows net 0 in Amount, with an explanatory tooltip about the
+    // carried value.
+    expect(within(updateRow).getByText("0.000000")).toBeInTheDocument();
+    expect(
+      within(updateRow).getByTitle(
+        /Name value 222\.000000 HNS is carried to your own new coin/i,
+      ),
+    ).toBeInTheDocument();
+    // A real send still shows its outgoing amount.
+    const sendRow = screen.getByText("send_hns").closest("tr")!;
+    expect(within(sendRow).getByText("1.000000")).toBeInTheDocument();
   });
 
   const multiNames = [

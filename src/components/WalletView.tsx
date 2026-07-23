@@ -34,6 +34,7 @@ import { Dialog } from "./ui/Dialog";
 import { PageHeader } from "./ui/PageHeader";
 import {
   formatHns,
+  netSpendDoos,
   hnsToDollarydoos,
   dollarydoosToHns,
   formatDate,
@@ -765,8 +766,19 @@ export function WalletView() {
                       {d.action}
                       {d.summary?.name ? ` · .${displayName(d.summary.name)}` : ""}
                     </td>
-                    <td className="py-2 pr-4 font-mono">
-                      {d.summary ? formatHns(d.summary.sendTotalDoos) : "—"}
+                    <td
+                      className="py-2 pr-4 font-mono"
+                      title={
+                        d.summary &&
+                        d.summary.recipientAddress == null &&
+                        d.summary.sendTotalDoos > 0
+                          ? `Name value ${formatHns(
+                              d.summary.sendTotalDoos,
+                            )} HNS is carried to your own new coin — not spent; only the fee applies.`
+                          : undefined
+                      }
+                    >
+                      {d.summary ? formatHns(netSpendDoos(d.summary)) : "—"}
                     </td>
                     <td className="py-2 pr-4 font-mono text-xs text-gray-500">
                       {d.summary ? formatHns(d.summary.feeDoos) : "—"}
