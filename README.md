@@ -43,8 +43,10 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   raw-JSON fallback.
 
 ### Node-free reads
-- Balances and owned names are read from the **HNSFans explorer** — no node
-  required just to view your wallet. A local node is needed **only to send or
+- Reads are **node-free by default** via the HNSFans explorer — no node required
+  just to view your wallet. When your local hsd is synced, the app automatically
+  switches to **node-authoritative** reads (owned names, balances, bid history)
+  for faster, more reliable data. A local node is needed **only to send or
   perform name actions**.
 
 ### Move from Namebase (one feature, not the core)

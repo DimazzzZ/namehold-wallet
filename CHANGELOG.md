@@ -1,5 +1,38 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Node-only reads + chain scanner** — owned names, balances, and per-name bid
+  history read directly from the local hsd node when synced, eliminating explorer
+  dependency for synced wallets. A background chain scanner indexes BID/REVEAL
+  outpoints for honest bid display.
+- **DNS record prefill** — the Manage DNS editor in the Name Actions modal now
+  prefills existing on-chain records (`getnameresource`) so you can edit rather
+  than re-enter from scratch.
+- **Autostart hsd** — the app starts hsd on launch by default (toggleable in
+  Settings → Connections). If hsd is already running, it adopts the existing node.
+- **Message signing** — sign an arbitrary message with the wallet key that owns a
+  name (proves name ownership off-chain).
+- **Richer DNS editor** — real hsd record types (DS, GLUE4/6, SYNTH4/6) with
+  multi-field editing; raw-JSON advanced toggle.
+- **Owned-names filter** — substring search for the Owned Names list.
+- **Per-bid detail in auctions** — `NameBidsPanel` shows individual bids with
+  lockup/revealed values, marks your own bids, and computes an honest "highest"
+  (only revealed values count).
+- **Active Auctions view** — names with an open auction position merged into a
+  live-phase list; pending-OPEN surfacing; double-open guard.
+
+### Changed
+- **WalletView density polish** — CopyField, Disclosure, and truncateMiddle
+  primitives; xpub collapsed by default; balance cards consolidated.
+
+### Fixed
+- Recent transactions Amount now shows net cost (bid value), not the name's
+  total locked value.
+- Bid commitments now persist `bid_txid`/`reveal_txid` at build time (+ backfill
+  for pre-fix commitments) so own-bid marking is reliable.
+
 ## [0.1.0] - 2026-06-30
 
 ### Added

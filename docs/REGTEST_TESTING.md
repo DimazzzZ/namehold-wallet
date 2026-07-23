@@ -128,8 +128,10 @@ The following scenarios must be validated against a running regtest node to conf
 
 1. Start a regtest hsd node:
    ```bash
-   hsd --network=regtest --http-port=12037 --api-key=testkey --listen --validate=0
+   hsd --network=regtest --index-address --index-tx --api-key=testkey --listen
    ```
+   Node RPC listens on `127.0.0.1:14037` (regtest's default), NOT the mainnet
+   port 12037.
 
 2. Mine an initial set of blocks so names can be opened:
    ```bash

@@ -28,6 +28,10 @@ hsd --index-address --index-tx --api-key=<your-key>
   enable … indexing"). If your existing chain was synced without these indexes, it
   must be re-synced with them — the app detects this and offers a one-click re-sync
   (it moves the old `blocks/`, `chain/`, `tree/` aside and re-syncs).
+- **Autostart is on by default.** The app starts hsd for you on launch (toggleable
+  under Settings → Connections → "Autostart HSD when the app launches"). If hsd is
+  already running when the app starts, it adopts the existing node via RPC instead
+  of spawning a new one.
 - Then in the app: **Settings → Node RPC** → URL `http://127.0.0.1:12037`, API key
   `<your-key>`; click **Sync** to pull your UTXOs; **Send** is now enabled.
 

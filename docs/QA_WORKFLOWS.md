@@ -80,7 +80,7 @@ Full end-to-end lifecycle validation with real hsd RPC. This is the only mode wh
    ```bash
    hsd --network=regtest --daemon
    ```
-3. The app configured to connect to `http://127.0.0.1:12037` (default regtest RPC port).
+3. The app configured to connect to `http://127.0.0.1:14037` (regtest RPC port).
 4. The regtest wallet funded by mining blocks:
    ```bash
    hsd-cli rpc generate 200
@@ -120,7 +120,7 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] Node data directory field + Browse button (Tauri only)
 - [ ] Start/Stop hsd buttons reflect node state
 - [ ] Sync progress bar shows during sync, 100% when synced
-- [ ] Read source label: "Explorer" when node not synced, "Local node cache" when synced
+- [ ] Read source label: "Explorer" when node not synced, "Local" when synced
 - [ ] Last error shown when node start fails
 - [ ] Re-sync button appears on index mismatch
 

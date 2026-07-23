@@ -1,602 +1,507 @@
 # Namehold — User Manual
 
-Your local desktop wallet for managing Handshake TLDs and HNS.
+Your local desktop wallet for **Handshake (HNS)**: hold HNS, run the full name
+auction lifecycle, manage the names you own, and edit on-chain DNS — all
+non-custodially, with your keys encrypted on your own machine.
+
+> **Beta software.** Transactions and Namebase transfers are irreversible. Always
+> test with a single name or a small amount before moving everything.
 
 ---
 
-## Navigation
+## Contents
 
-Namehold uses a consolidated sidebar with six primary sections:
-
-| Section | Purpose | Sub-tabs |
-|---------|---------|----------|
-| **Overview** | Portfolio and infrastructure summary at a glance | — |
-| **Portfolio** | Manage your TLDs | Inventory · Batches · Renewals · DNS |
-| **Migration** | Track Namebase transfers and verify ownership | Namebase · Sync & Verify |
-| **Wallet** | HNS balance, send, receive | — |
-| **Auctions** | Acquire new Handshake TLDs | — |
-| **Node** | hsd node connection and status | — |
-| **Settings** | Connection, write mode, preferences | — |
-
-The header badges show the active network (e.g. `mainnet`) and whether the app
-is in `READ-ONLY` or `WRITE` mode.
-
-## Table of Contents
-
-1. [Getting Started](#1-getting-started)
-2. [Connecting to hsd](#2-connecting-to-hsd)
-3. [Importing TLDs](#3-importing-tlds)
-4. [Viewing Your Portfolio](#4-viewing-your-portfolio)
-5. [Receiving HNS](#5-receiving-hns)
-6. [Sending HNS](#6-sending-hns)
-7. [Receiving TLDs](#7-receiving-tlds)
-8. [Acquiring New TLDs (Auctions)](#8-acquiring-new-tlds-auctions)
-9. [Transferring TLDs](#9-transferring-tlds)
-10. [Tracking Migration](#10-tracking-migration)
-11. [Syncing with Your Wallet](#11-syncing-with-your-wallet)
-12. [Renewals](#12-renewals)
-13. [DNS Records](#13-dns-records)
-14. [Exporting Data](#14-exporting-data)
+1. [What Namehold is](#1-what-namehold-is)
+2. [Install and first run](#2-install-and-first-run)
+3. [Sidebar and header](#3-sidebar-and-header)
+4. [Wallet page](#4-wallet-page)
+5. [Signer: lock and unlock](#5-signer-lock-and-unlock)
+6. [Write capability (when Send and name actions are enabled)](#6-write-capability)
+7. [Send HNS](#7-send-hns)
+8. [Auctions](#8-auctions)
+9. [DNS records editor](#9-dns-records-editor)
+10. [Managing names you own](#10-managing-names-you-own)
+11. [Node control](#11-node-control)
+12. [Move from Namebase](#12-move-from-namebase)
+13. [Portfolio (Advanced mode)](#13-portfolio-advanced-mode)
+14. [Data location and macOS quarantine](#14-data-location-and-macos-quarantine)
 15. [Security](#15-security)
 16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
-## 1. Getting Started
+## 1. What Namehold is
 
-### What is Namehold?
+Namehold is a **non-custodial** Handshake wallet. It holds your keys locally in
+an encrypted vault (Argon2id + AES-256-GCM), signs transactions on your device,
+and never sends your seed anywhere. There is **no external wallet service** — the
+wallet talks directly to the Handshake network:
 
-Namehold is a local desktop app that helps you manage Handshake TLDs (top-level domains) and HNS coins. It connects to your local hsd node to verify ownership, check balances, and perform transactions.
+- **Reads (balances, owned names, name info): no node required.** Data comes from
+  the HNSFans explorer by default. When your local hsd is synced, the wallet
+  automatically switches to node-authoritative reads (faster, more reliable).
+- **Writes (Send HNS, name actions): local hsd required.** Broadcasting a
+  Handshake transaction and finding your unspent coins needs a local
+  **address-indexed** hsd node — no hosted provider offers that today.
+
+Your **secrets never touch the web UI.** Passphrases and recovery phrases are
+entered and displayed only inside a small **Rust-owned secure window**.
+
+---
+
+## 2. Install and first run
 
 ### Prerequisites
 
-Before using Namehold, you need:
+- The Namehold desktop app (macOS `.dmg`, Windows `.msi`, or Linux `.AppImage`/`.deb`).
+- To **send HNS or perform name actions**, you also need [hsd](https://github.com/handshake-org/hsd)
+  — the app can start it for you (see [Node control](#11-node-control)). Reads
+  work without hsd.
 
-- **hsd** — the Handshake full node software, running on your computer
-- **A wallet** — created inside hsd (the `primary` wallet by default)
+### First launch — Onboarding
 
-### Install hsd
+On first launch the **Welcome to Namehold** screen opens. Pick one of three flows,
+enter a **Wallet Name** and pick a **Network** (Mainnet / Testnet / Regtest), then
+click the corresponding button:
 
-```bash
-npm install -g hs-client
-```
+| Flow | Button | What it does |
+|------|--------|--------------|
+| **Import your wallet** (recommended for existing users) | "Import in secure window" | Opens the secure window; paste your 12/24-word phrase + an optional BIP-39 passphrase. |
+| **Watch-only (read-only)** | "Add watch-only wallet" | Adds a wallet from an account xpub. Cannot sign or send. |
+| **Create a new wallet** | "Create in secure window" | Opens the secure window; sets a passphrase and displays your recovery phrase for backup. |
 
-### Start hsd
+The **recovery phrase is only ever shown in the secure window** — the React UI
+never sees it. Confirm the backup before continuing.
 
-```bash
-# Mainnet
-hsd --api-key=YOUR_SECRET_API_KEY
+### Adding more wallets later
 
-# Testnet (for testing)
-hsd --testnet --api-key=YOUR_SECRET_API_KEY
-
-# Regtest (for development)
-hsd --regtest --api-key=YOUR_SECRET_API_KEY
-```
-
-Replace `YOUR_SECRET_API_KEY` with a strong random string. You can generate one with:
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
-
-### Launch Namehold
-
-Open the Namehold app. On first launch you'll be guided through creating or
-importing a wallet. Once a wallet is selected, you'll land on the **Overview**
-page with empty data.
+From the account bar at the top of the Wallet page, use **Add wallet** and
+**Manage wallets** to switch between wallets, reveal a wallet's phrase in the
+secure window, or delete one you no longer need.
 
 ---
 
-## 2. Connecting to hsd
+## 3. Sidebar and header
 
-Namehold needs to connect to your local hsd node to read wallet data and perform transactions.
+The sidebar has five top-level sections (Portfolio is Advanced-only):
 
-### Step-by-step
+| Section | Purpose |
+|---------|---------|
+| **Wallet** | Balance, receive, send, recent transactions, owned names. Default page. |
+| **Auctions** | Look up a name, place bids, reveal, register, see active auctions. |
+| **Move from Namebase** | Guided migration off the custodial Namebase service. |
+| **Portfolio** (Advanced) | Inventory · Batches · Renewals · DNS — for larger migrations. |
+| **Settings** | Connections, node control, backups, notifications, advanced options. |
 
-1. Click **Node** or **Settings** in the left sidebar
-2. Fill in the connection details:
+The header shows two badges:
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| **Wallet API URL** | `http://127.0.0.1:12039` | The wallet REST API address |
-| **Node API URL** | `http://127.0.0.1:12037` | The node REST API address |
-| **API Key** | (empty) | The `--api-key` you set when starting hsd |
-| **Wallet ID** | `primary` | The wallet name inside hsd |
-| **Network** | `mainnet` | mainnet, testnet, or regtest |
-
-3. Click the **Wallet** page in the sidebar to verify the connection shows "Connected"
-
-### Default ports
-
-| Network | Wallet Port | Node Port |
-|---------|-------------|-----------|
-| mainnet | 12039 | 12037 |
-| testnet | 13039 | 13037 |
-| regtest | 14039 | 14037 |
-
-### Security warning
-
-If you enter a non-localhost URL (anything other than `127.0.0.1` or `localhost`), the app will show a warning. Only use local connections for security.
+- **Network** chip (e.g. `mainnet`, `regtest`).
+- **CAN SEND** (green) / **READ-ONLY** (grey) — the current write capability
+  (see [section 6](#6-write-capability)). This is a status indicator, **not**
+  a toggle. There is no "Write Mode" switch.
 
 ---
 
-## 3. Importing TLDs
+## 4. Wallet page
 
-### CSV format
+### Balance card
 
-Create a CSV file with your TLDs. Example:
+A single card shows your spendable balance in HNS as the hero number, with:
 
-```csv
-Name,Staked,Category,Notes
-crypto,true,Premium,High-value TLD
-wallet,false,Finance,Finance TLD
-defi,false,Finance,DeFi related
-nft,false,Art,NFT marketplace
-test,false,Test,Migration test
-```
+- **Confirmed / Unconfirmed** — coins that are on-chain vs. still in mempool.
+- **Locked in Auctions** — total HNS locked in active bids (unspendable until
+  the auction ends and coins are released).
+- **Name Value** — total value of coins tied up in name covenants.
 
-**Supported columns:**
-- **Name** (required) — the TLD name, with or without leading dot
-- **Staked** — `true`, `1`, `yes`, or `staked` = staked; anything else = unstaked
-- **Category** — free text (e.g., Premium, Finance, Art)
-- **Tags** — comma-separated tags (e.g., `high_value,test`)
-- **Notes** — free text notes
+### Receive and share
 
-### How to import
+A "Receive & share" card holds your receive address with a **Copy** button and a
+network badge (`hs1…` mainnet, `ts1…` testnet, `rs1…` regtest). A **Show QR** /
+**Hide QR** toggle renders a QR code (off by default).
 
-1. Go to **Portfolio → Inventory**
-2. Click **Import CSV**
-3. Select your CSV file
-4. The app will import all rows and show a summary
+Below that, a collapsible disclosure — **Show account public key (xpub)** —
+reveals the account xpub. This is only useful if you're moving names off
+Namebase (Namebase uses it to compute your Handshake addresses). Otherwise
+leave it closed.
 
-### What happens on import
+### Owned Names
 
-- Staked TLDs are automatically set to **Do Not Touch** status
-- Unstaked TLDs start as **Not Started**
-- Duplicate TLD names are updated (not duplicated)
-- An audit log entry is created
+The Owned Names table lists names your wallet controls, with a phase badge
+(`OPENING`, `BIDDING`, `REVEAL`, `CLOSED`, etc.) and a **substring filter** at
+the top. Click any row to open the Name Actions modal.
 
----
+### Recent transactions
 
-## 4. Viewing Your Portfolio
+Send/receive history from the local cache, with block height and confirmation
+status. Auction-related entries (BID, REVEAL, REGISTER, TRANSFER, FINALIZE)
+show the net cost, not the full lockup.
 
-### Overview
+### Urgency alerts
 
-The **Overview** page shows:
-- Key portfolio metrics (total TLDs, in wallet, pending migration, expiring soon)
-- A status breakdown of TLDs by migration status
-- Recent activity from the audit log
-- System status (Node, Wallet, Balance)
+Yellow/red alert banners appear when a name needs your attention:
 
-### Portfolio → Inventory
-
-The main table (under **Portfolio → Inventory**) shows all your TLDs with:
-- Name, Status, Category, HNS State, Expiration, Notes, Updated date
-
-**Filters:**
-- **Staked/Unstaked** dropdown
-- **Status** dropdown (e.g., Not Started, Finalized, etc.)
-- **Sort by** Name, Status, Category, or Updated
-- **Search** box (searches name, notes, category)
-
-**Bulk actions** (select rows with checkboxes):
-- Update Status — change migration status for multiple TLDs
-- Set Tags — assign tags to multiple TLDs
-- Create Batch — create a migration batch from selected TLDs
-- Transfer — send a TLD to another address (write mode only)
+- **Reveal alert** — bids you haven't revealed yet, with a countdown.
+- **Register alert** — you won an auction; register the name now.
+- **Redeem alert** — you lost a bid; redeem your lockup.
+- **Expiring alert** — names approaching their renewal deadline.
 
 ---
 
-## 5. Receiving HNS
+## 5. Signer: lock and unlock
 
-To receive HNS, you need to share your wallet's receive address.
+Your **signer** is the in-memory decrypted key material used to sign
+transactions. It is **locked by default** and unlocks only when you enter the
+wallet passphrase.
 
-1. Go to the **Wallet** page
-2. Find the **Receive Address** section
-3. Click **Copy** to copy the address to your clipboard
-4. Share this address with the sender
+- **Unlock**: click **Unlock** on the account bar. If the wallet has a
+  passphrase, the secure window opens for entry. If not, it unlocks directly.
+- **Lock**: click **Lock** to zero the signer immediately.
+- **Auto-lock**: after a configurable idle timeout (Settings → Advanced → "Signer
+  session timeout", default 900 s), the signer auto-locks.
 
-The address starts with `rs1q...` (mainnet) or `ts1q...` (testnet).
-
-### Refreshing your balance
-
-Your balance updates automatically every 30 seconds. To refresh manually, navigate away from the Wallet page and back, or restart the app.
-
----
-
-## 6. Sending HNS
-
-Sending HNS requires **Write Mode** to be enabled.
-
-### Step-by-step
-
-1. Go to **Settings** and enable **Write Mode**
-2. Enter your **Wallet Passphrase** in Settings (stored in memory only, lost on restart)
-3. Go to the **Wallet** page
-4. Click **Send HNS**
-5. Enter:
-   - **Destination Address** — the recipient's Handshake address
-   - **Amount** — in HNS (e.g., `1.5`)
-   - **Wallet Passphrase** — if not saved in Settings
-6. Review the warning message
-7. Click **Send HNS**
-
-### Important notes
-
-- The passphrase is your hsd wallet passphrase (set when you created the wallet)
-- Transactions cannot be undone
-- The app converts HNS to dollarydoos automatically (1 HNS = 1,000,000 dollarydoos)
-- An audit log entry is created for every send
+The passphrase is **never** stored on disk — you re-enter it each session (or
+leave it blank at creation for wallets with no passphrase).
 
 ---
 
-## 7. Receiving TLDs
+## 6. Write capability
 
-TLDs arrive in your wallet when someone transfers them to you (e.g., from Namebase).
+"Write capability" is the app's honest answer to "can I send or do name actions
+right now?" It's shown in three places: the header **CAN SEND / READ-ONLY**
+badge, next to the **Send** button, and inside the Name Actions modal's red
+"blocked" alert.
 
-### How to check if TLDs arrived
+You can write when **all** of these hold:
 
-1. Go to **Migration → Sync & Verify**
-2. Click **Sync Now** (or **Compare Names** to preview without updating)
-3. The app fetches all names from your wallet and compares them with your imported inventory
-4. Matched names are automatically marked as **Finalized**
+1. **Signer unlockable** — a wallet is loaded and either unlocked or has a
+   passphrase you can enter.
+2. **Node reachable** — local hsd RPC responds.
+3. **Node synced** — hsd's `verification_progress` is ≥ 99.99% (or blocks meet
+   headers on a network without a progress value, e.g. regtest with a single
+   miner).
+4. **Address-indexed** — hsd was started with `--index-address` (required to
+   discover your unspent coins).
 
-### What the sync shows
-
-- **Matched** — TLDs in both your inventory and wallet
-- **Extra in Wallet** — names in your wallet but not in your inventory
-- **Not in Wallet** — TLDs in your inventory but not yet received
+When any condition fails, the reason is shown in plain text (e.g. "Node not
+synced (12%)", "hsd not address-indexed — re-sync required", "Signer locked").
 
 ---
 
-## 8. Acquiring New TLDs (Auctions)
+## 7. Send HNS
 
-You can register new Handshake TLDs directly from Namehold through the
-on-chain Vickrey auction process. The entire flow is guided step-by-step
-inside the app.
+On the Wallet page, click **Send HNS**. The Send dialog has:
 
-### How Handshake auctions work
+1. **Address** — the recipient's Handshake address. Format validated on the fly
+   (`hs1…` mainnet, `ts1…` testnet, `rs1…` regtest).
+2. **Amount** in HNS, with a **Max** button to sweep the wallet.
+3. **Review** button — builds a draft (`build_send_draft`) and shows Amount,
+   Fee, Change, Inputs, and destination. **No key is touched yet.**
+4. **Sign & Broadcast** — unlocks the signer (secure window if locked), signs
+   the draft, and broadcasts it.
 
-Every unclaimed Handshake name goes through a four-phase auction:
+If the broadcast fails, the dialog stays open with a persistent "Not sent"
+error so you don't lose your inputs. On success, the transaction shows up under
+Recent transactions and transitions Pending → Confirmed as blocks arrive.
 
-| Phase | Duration | What happens |
-|-------|----------|--------------|
-| **Opening** | ~1 day (720 blocks) | The name enters the auction. No bids are accepted yet. |
-| **Bidding** | ~5 days (1 440 blocks) | Anyone can place sealed bids. You choose how much to bid and how much to lock up (the lockup can exceed the bid to obscure the real value). |
-| **Reveal** | ~2 days (720 blocks) | Bids are revealed. If you bid and don't reveal, you lose your locked funds. |
-| **Closed** | — | The winner is resolved. The highest bidder can register the name. |
+---
 
-### Step-by-step: getting a new TLD
+## 8. Auctions
+
+Handshake name auctions are Vickrey-style sealed-bid auctions. Every unclaimed
+name goes through four phases:
+
+| Phase | Duration (mainnet) | What happens |
+|-------|--------------------|--------------|
+| **Opening** | ~1 day (720 blocks) | Name enters the auction. No bids accepted yet. |
+| **Bidding** | ~5 days (1 440 blocks) | Anyone can place sealed bids. Bid + lockup can differ to obscure your real bid. |
+| **Reveal** | ~10 days (1 440 blocks) | Bids revealed. **Fail to reveal and you lose your lockup.** |
+| **Closed** | — | Highest bidder pays the **second-highest** bid and can register the name. |
+
+### Looking up a name
 
 1. Click **Auctions** in the sidebar.
-2. Type the name you want (without the leading dot) and click **Look up**
-   (or press Enter).
-3. The **Name Actions** modal opens and fetches the current auction state.
-4. Follow the guided action shown at the top of the modal:
+2. Type the name (without leading dot) and click **Look up** (or press Enter).
+3. The **Name Actions modal** opens and fetches the current state.
+4. Follow the guided action at the top:
 
-   | Current state | Guided action | What you provide |
-   |---------------|---------------|------------------|
-   | Available / Opening | **Open Auction** | Nothing extra — just confirm. |
-   | Bidding | **Place Bid** | Bid amount (HNS) and lockup amount (HNS). |
-   | Reveal | **Reveal Bid** | Nothing extra — just confirm. |
-   | Closed (you won) | **Register** | Optional DNS records for the TLD. |
+| Current state | Guided action | What you provide |
+|---------------|---------------|------------------|
+| Available / Opening | **Open Auction** | Nothing — just confirm. |
+| Bidding | **Place Bid** | Bid (HNS) and Lockup (HNS). |
+| Reveal | **Reveal Bid** | Nothing — just confirm. |
+| Closed (you won) | **Register** | Optional DNS records. |
+| Closed (you lost) | **Redeem** | Nothing — reclaim your lockup. |
 
-5. Each step builds a transaction draft, asks you to unlock the signer
-   (if locked), signs the draft, and broadcasts it.
-6. After broadcast, the modal shows the transaction ID and the phase
-   updates automatically on the next refresh.
+Each step builds a draft, unlocks the signer if needed (secure window), signs,
+and broadcasts. The transaction ID and new phase appear on the next refresh.
 
-### Bid and lockup amounts
+### Bid vs. lockup
 
-- **Bid** — the actual value you are willing to pay. If you are the
-  highest bidder, this amount is deducted from your wallet.
-- **Lockup** — the total amount locked during the bidding phase. It can
-  be equal to or higher than your bid. A higher lockup makes it harder
-  for others to guess your real bid. Any lockup exceeding the bid is
-  returned to you after the reveal phase.
+- **Bid** — the actual value you're willing to pay. If you win, you pay the
+  second-highest bid; if you lose you get everything back.
+- **Lockup** — the total locked while bidding. `lockup ≥ bid`. Anything above
+  your bid is a decoy and is refunded after reveal.
 
-Both values are entered in **HNS** (the app converts to dollarydoos
-internally).
+Both are entered in HNS.
 
-### DNS records
+### Active Auctions
 
-After winning an auction, you can configure DNS records for your new TLD
-during the Register step. The modal provides a simple row editor:
+The Auctions page shows all names you currently have positions in — pending
+OPEN, open bids, reveals owed — merged into a single list with live phase.
+The **Locked in Auctions** balance on the Wallet page mirrors the HNS tied up
+here.
 
-- Click **+ Add record** to add a new record.
-- Each row has a **Type** selector (TXT, A, AAAA, CNAME, NS, MX, SRV)
-  and a **Value** field.
-- Records are optional — you can register without any and add them later
-  via the Portfolio → DNS page.
+### Reveal alert
+
+A yellow banner appears on the Wallet page any time you have bids in the
+Reveal phase, with a countdown. **If you don't reveal, you lose your lockup.**
 
 ### Advanced actions
 
-Click **Show all actions** at the bottom of the Name Actions modal to
-reveal additional actions such as Update, Renew, Transfer, Finalize,
-Cancel, and Revoke. These are only relevant for names you already own.
-
-### Locked-in-auctions balance
-
-While you have active bids, the Wallet page shows a **Locked in Auctions**
-card displaying the total HNS currently locked in bids. This amount is
-not spendable until the auction ends and funds are released.
-
-### Reveal warning
-
-If you have names in the **Reveal** phase, a yellow alert banner appears
-at the top of the Wallet page reminding you to reveal your bids before
-the reveal window closes.
+Click **Show all actions** at the bottom of the Name Actions modal to reveal
+Update, Renew, Transfer, Finalize, Cancel, and Revoke — only relevant for
+names you already own.
 
 ---
 
-## 9. Transferring TLDs
+## 9. DNS records editor
 
-To send a TLD to another address (e.g., to a buyer):
+The DNS editor lives inside the Name Actions modal (Register and Update
+actions) and, in Advanced mode, on **Portfolio → DNS** for owned names.
 
-### Step-by-step
+### Prefilled from the chain
 
-1. Enable **Write Mode** in Settings
-2. Enter your **Wallet Passphrase** in Settings
-3. Go to **Portfolio → Inventory**
-4. Select the TLD you want to transfer (check the box)
-5. Click **Transfer** in the bulk action bar
-6. Enter the **Destination Address**
-7. Enter your **Wallet Passphrase** (if not saved)
-8. Review the warning
-9. Click **Transfer**
-
-### Important notes
-
-- Transfers are on-chain transactions and cannot be undone
-- Only one TLD can be transferred at a time
-- The transfer creates a TRANSFER covenant on the blockchain
-- The recipient must finalize the transfer to complete it
-
----
-
-## 10. Tracking Migration
-
-Migration tracking helps you organize the process of moving TLDs from Namebase to your own wallet.
-
-<p align="center">
-  <img src="assets/namebase-migration.png" alt="Namebase migration" width="700" />
-</p>
-
-### Migration statuses
-
-| Status | Meaning |
-|--------|---------|
-| **Not Started** | No action taken yet |
-| **Transfer Requested** | Transfer initiated in Namebase |
-| **Waiting TX** | Waiting for the transfer transaction |
-| **TX Seen** | Transfer transaction detected on-chain |
-| **Waiting Finalize** | Waiting for finalization |
-| **Finalized** | TLD is owned by your wallet |
-| **Failed/Stuck** | Transfer failed or stuck |
-| **Do Not Touch** | Staked TLD — do not migrate |
-
-### Updating statuses
-
-1. Select TLDs in the inventory
-2. Click **Update Status**
-3. Choose the new status
-
-### Creating batches
-
-Batches help you organize TLDs into migration groups (e.g., "Test Batch 1", "High Value").
-
-1. Select TLDs in the inventory
-2. Click **Create Batch**
-3. Enter a batch name
-4. The batch appears under **Portfolio → Batches**
-
-### Recommended workflow
-
-1. **Start with 1 low-value test TLD** — verify the process works
-2. **Then 5-10 TLDs** — small batch
-3. **Then larger batches** — once confident
-4. **Do high-value TLDs last** — after all test batches succeed
-5. **Keep HNS on Namebase** until all unstaked TLDs are received
-6. **Withdraw HNS last** — after all TLDs are safely in your wallet
-
----
-
-## 11. Syncing with Your Wallet
-
-The **Migration → Sync & Verify** tab compares your imported inventory against what your wallet actually owns.
-
-### Sync Now
-
-Click **Sync Now** to:
-1. Fetch all names from your wallet
-2. Match them against your imported TLDs
-3. Update matched TLDs to **Finalized** status
-4. Store a wallet snapshot (balance, address, name count)
-
-### Compare Names
-
-Click **Compare Names** to see the diff without updating any statuses:
-- **Matched** — in both inventory and wallet
-- **Missing** — in inventory but not in wallet (expected for non-finalized TLDs)
-- **Extra** — in wallet but not in inventory
-
-### Wallet Snapshots
-
-Each sync stores a snapshot of your wallet state. You can view the history at the bottom of the **Sync & Verify** tab.
-
----
-
-## 12. Renewals
-
-The **Portfolio → Renewals** tab shows TLDs with known expiration data.
-
-### What it shows
-
-- TLD name, status, name state
-- Days until expire (color-coded: red <30d, yellow <90d, green >90d)
-- Expiration block height
-- Last synced time
-
-### How expiration data is populated
-
-Expiration data comes from hsd during sync. Run a sync to populate this data.
-
-### Renewal tracking
-
-Renewal tracking is **read-only** in the current version. You cannot renew TLDs directly from the app yet.
-
----
-
-## 13. DNS Records
-
-The **Portfolio → DNS** tab shows resource records for names owned by your wallet.
-
-### How to view records
-
-1. Select an owned name from the dropdown
-2. Click **Fetch Records**
-3. The app shows:
-   - Name state, height, days until expire
-   - Resource records (NS, DS, TXT, GLUE4, GLUE6, SYNTH4, SYNTH6)
+When you open the editor for a name that already has records on-chain, the
+wallet fetches them via `getnameresource` and **prefills the editor** so you
+can edit rather than re-enter. Prefill needs a synced node; without one, the
+editor opens empty.
 
 ### Record types
 
-| Type | Description |
-|------|-------------|
-| **NS** | Nameserver delegation |
-| **DS** | DNSSEC delegation signer |
-| **TXT** | Text records |
-| **GLUE4** | IPv4 glue records |
-| **GLUE6** | IPv6 glue records |
-| **SYNTH4** | Synthetic IPv4 records |
-| **SYNTH6** | Synthetic IPv6 records |
+| Type | Fields |
+|------|--------|
+| **TXT** | One or more text strings |
+| **NS** | Nameserver hostname |
+| **DS** | Key tag, algorithm, digest type, digest hex |
+| **GLUE4** / **GLUE6** | Hostname + IPv4/IPv6 address |
+| **SYNTH4** / **SYNTH6** | Hostname + IPv4/IPv6 address (synthesized) |
+
+Click **+ Add record** to append a row. Records are optional — you can register
+a name with no records and add them later via an Update.
+
+### Raw-JSON advanced view
+
+A toggle switches the editor into raw-JSON mode for unusual records or when
+you already have a records object you want to paste. Example:
+
+```json
+[{"type":"TXT","txt":["hello world"]},{"type":"NS","ns":"ns1.example."}]
+```
 
 ---
 
-## 14. Exporting Data
+## 10. Managing names you own
 
-### Export from TLD Inventory
+In the Name Actions modal for an owned name, click **Show all actions**:
 
-1. Click **Export CSV** at the top of the inventory
-2. Choose where to save the file
-3. The export includes all visible columns
+| Action | What it does |
+|--------|--------------|
+| **Update** | Replace the on-chain DNS records (uses the DNS editor). |
+| **Renew** | Extend the name's expiry. |
+| **Transfer** | Start a transfer to another Handshake address. Enters a `TRANSFER` covenant. |
+| **Finalize** | Complete a transfer after the lockup period (mainnet: ~2 days). |
+| **Cancel** | Revert a pending transfer before it's finalized. |
+| **Revoke** | Permanently burn the name (irreversible). |
 
-### Export from Renewals
+All of these need the signer unlocked and a synced node.
 
-1. Click **Export CSV** on the **Portfolio → Renewals** tab
-2. Exports TLDs with expiration data
+---
 
-### What's exported
+## 11. Node control
 
-- Name, Status, Staked, Category, Tags, Notes
-- HNS Received, Transfer TX, Finalize TX
-- Name State, Expires At Height, Last Synced
-- Created, Updated timestamps
+All node settings live under **Settings → Connections**.
+
+### Fields
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| **Explorer base URL (reads)** | `https://e.hnsfans.com` | For node-free reads. |
+| **Node RPC URL (sending)** | `http://127.0.0.1:12037` | Mainnet. Testnet 13037, regtest 14037. |
+| **Node RPC API key** | (empty) | Match hsd's `--api-key`. |
+| **Node data directory (`hsd --prefix`)** | (system default) | Use **Browse…** to pick. |
+| **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. |
+| **Autostart HSD when the app launches** | **on** | Toggle off to keep hsd manual. |
+
+### Start, stop, status
+
+Below the settings, the **NodeControl** panel shows a live status dot
+(Connected · Starting · Stopped · Syncing %), the read source (**Local** or
+**Explorer**), the data directory and hsd version. Buttons:
+
+- **Start hsd** — spawns hsd with the required flags (`--index-address
+  --index-tx`). If hsd is already running, it adopts it via RPC.
+- **Stop hsd** — stops the node.
+- **Re-sync node data** — appears only when the app detects an
+  **index mismatch** (hsd's existing chain was synced without `--index-address`).
+  hsd cannot add indexes retroactively, so this moves the old `blocks/`,
+  `chain/`, `tree/` aside and resyncs with the right flags. Expect this to
+  take hours the first time.
+
+### Ports
+
+| Network | RPC port |
+|---------|---------|
+| Mainnet | 12037 |
+| Testnet | 13037 |
+| Regtest | 14037 |
+
+---
+
+## 12. Move from Namebase
+
+**Move from Namebase** is a guided helper for migrating off the custodial
+Namebase service. It is **not** the wallet's core function — a wallet works
+standalone.
+
+1. Paste your Namebase session cookie to connect.
+2. Review your custodial domains, spotting **expiring soon** entries.
+3. **Transfer** names out to your own wallet address (Namebase-initiated).
+4. **Withdraw HNS** to your address.
+5. **Compare** your imported inventory against what Namebase still holds.
+
+On-chain finalization of the transfers uses the same node-backed write path
+as the rest of the wallet (Signer unlock → sign → broadcast).
+
+---
+
+## 13. Portfolio (Advanced mode)
+
+Enable **Settings → Advanced → "Show Portfolio in the sidebar"** to reveal the
+**Portfolio** section with four sub-tabs: **Inventory · Batches · Renewals · DNS**.
+Intended for managing a larger migration.
+
+### CSV import
+
+```csv
+Name,Staked,Category,Tags,Notes
+crypto,true,Premium,"high_value,operational",High-value TLD
+wallet,false,Finance,"medium_value",Finance TLD
+```
+
+- **Name** (required; leading dots stripped)
+- **Staked** — `true`, `1`, `yes`, or `staked` → the row is marked
+  `do_not_touch_staked` so it's never migrated.
+- **Category**, **Tags** (comma-separated), **Notes** — free text.
+
+### Migration statuses
+
+`not_started` → `namebase_transfer_requested` → `waiting_transfer_tx` →
+`transfer_seen_on_chain` → `waiting_finalize` → `finalized_owned`, plus
+`failed_or_stuck` and `do_not_touch_staked`.
+
+### Batches, Renewals, DNS
+
+- **Batches** — group names into migration batches ("Test batch 1", "High value").
+- **Renewals** — TLDs with known expiration, colour-coded by days remaining.
+- **DNS** — records for owned names (same editor as the modal).
+
+---
+
+## 14. Data location and macOS quarantine
+
+### Data location
+
+All app data lives in one SQLite file in your home folder (pairs with hsd's
+`~/.hsd`), on every platform:
+
+```
+~/.namehold/portfolio.db
+```
+
+It holds your wallet profiles, the encrypted vault, the local chain cache, and
+the Portfolio inventory / batches / audit log.
+
+### macOS quarantine
+
+The macOS build is not code-signed. On first launch macOS may show:
+
+> "Namehold" can't be opened because Apple cannot check it for malicious software.
+
+Remove the quarantine flag:
+
+```bash
+xattr -cr /Applications/Namehold.app
+```
+
+Then open the app normally.
 
 ---
 
 ## 15. Security
 
-### Read-only mode (default)
-
-By default, Namehold is in **read-only mode**. This means:
-- You can view all data
-- You can import/export CSV
-- You can create batches
-- You **cannot** send HNS, transfer TLDs, or perform any write operations
-
-### Write mode
-
-To enable write operations:
-1. Go to **Settings**
-2. Toggle **Write Mode** to Enabled
-3. A warning will appear
-
-### Wallet passphrase
-
-Your wallet passphrase is needed for all write operations. It is:
-- Stored in **memory only** (not saved to disk)
-- **Lost on app restart** (you'll need to re-enter it)
-- Never logged or exposed in the UI
-
-### Localhost only
-
-Namehold connects to hsd on `127.0.0.1` by default. If you configure a non-localhost URL, the app will show a security warning.
-
-### What Namehold never does
-
-- Never asks for or stores your seed phrase
-- Never stores private keys
-- Never logs API keys or passphrases
-- Never connects to remote servers (unless you configure it)
+- **Non-custodial.** Your keys live on your device, encrypted at rest with
+  Argon2id + AES-256-GCM. Nothing is custodied.
+- **Secrets never reach the web layer.** Passphrase entry and recovery-phrase
+  display happen in a small Rust-owned secure window, and signing happens in
+  Rust. Your JavaScript UI never sees them.
+- **Local-only.** No cloud, no telemetry. The only outbound HTTP is to the
+  HNSFans explorer (reads) and, if configured, your own hsd node.
+- **Localhost-first.** Namehold connects to hsd on `127.0.0.1` by default;
+  non-localhost URLs are allowed but warned about.
+- **Auto-lock.** The unlocked signer times out after a configurable idle
+  period (Settings → Advanced → Signer session timeout, default 15 min).
+- **What Namehold never does.** Never asks for or transmits your seed phrase,
+  never logs passphrases or private keys, never talks to a remote wallet
+  service.
 
 ---
 
 ## 16. Troubleshooting
 
-### "Disconnected" on Wallet page
+### Header shows "READ-ONLY" and Send is disabled
 
-- Make sure hsd is running
-- Check that the API key in Settings matches your hsd `--api-key`
-- Verify the wallet URL and port are correct
-- Make sure you're using the right network (mainnet/testnet/regtest)
+Hover the button (or open the Send dialog) to see the exact reason. Common
+ones:
 
-### "Write mode is disabled"
+- **"Signer locked"** — click **Unlock** on the account bar.
+- **"Node not synced (N%)"** — wait for hsd to finish syncing.
+- **"hsd not address-indexed"** — hsd was started without `--index-address`.
+  Restart hsd from Settings → Connections; the app adds the flag. If your
+  chain was already synced without it, use **Re-sync node data**.
+- **"Node unreachable"** — check that hsd is running (Settings shows a red dot)
+  and the RPC URL/API key match.
 
-- Go to Settings and enable Write Mode
-- Write Mode must be enabled for send, transfer, renew, and finalize operations
+### The DNS editor opens empty for a name I know has records
 
-### "Enter wallet passphrase"
+Prefill needs a synced node. If you're on Explorer reads only, the editor
+starts empty. Start / wait for hsd and re-open the modal.
 
-- Enter your hsd wallet passphrase in Settings
-- Or enter it directly in the send/transfer dialog
-- The passphrase is the one you set when creating your hsd wallet
+### "Cannot retroactively enable indexing" from hsd
+
+hsd cannot add an index to an already-synced chain. In Settings the app shows
+the **Re-sync node data** button — this moves the old `blocks/`, `chain/`,
+`tree/` aside and resyncs with `--index-address --index-tx`. Expect a few
+hours on mainnet.
+
+### Balance shows 0 after import
+
+A freshly imported wallet won't show any HNS until:
+1. The node is synced,
+2. The address index has caught up,
+3. **Sync** has been clicked (or the auto-sync loop has run once).
+
+### Send fails with "Not sent"
+
+The dialog stays open with the exact error. Common causes: not enough HNS to
+cover amount + fee, the node lost peers mid-broadcast, or the network
+temporarily rejected the tx. Fix the issue and click Sign & Broadcast again —
+the draft is still there.
 
 ### CSV import shows errors
 
-- Check that your CSV has a "Name" column
-- Make sure TLD names don't have leading/trailing spaces
-- Check for duplicate rows (duplicates are updated, not errors)
-
-### Sync shows "Extra in Wallet"
-
-- These are names in your wallet that aren't in your imported inventory
-- You can import them by adding them to your CSV and re-importing
-
-### Balance shows 0
-
-- Make sure hsd is fully synced with the blockchain
-- Check that you're looking at the right wallet ID
-- Verify the network matches (mainnet/testnet/regtest)
-
-### Transaction fails
-
-- Check that your wallet has enough HNS for the transaction + fee
-- Make sure the wallet passphrase is correct
-- Verify the destination address is valid
-- Check that hsd is connected to the network
+Check that your CSV has a `Name` column, names don't have leading/trailing
+spaces, and duplicate rows are OK (they're updated, not errors).
 
 ---
 
-## Quick Reference
-
-| Action | Page | Requirements |
-|--------|------|-------------|
-| View summary | Overview | None |
-| View TLDs | Portfolio → Inventory | None |
-| Import CSV | Portfolio → Inventory | None |
-| Export CSV | Portfolio → Inventory / Renewals | None |
-| Create batch | Portfolio → Inventory / Batches | None |
-| Check balance | Wallet | hsd connection |
-| Copy receive address | Wallet | hsd connection |
-| Send HNS | Wallet | Write mode + passphrase |
-| Acquire new TLD | Auctions | Write mode + passphrase |
-| Transfer TLD | Portfolio → Inventory | Write mode + passphrase |
-| Sync names | Migration → Sync & Verify | hsd connection |
-| View DNS records | Portfolio → DNS | hsd connection |
-| View renewals | Portfolio → Renewals | hsd connection |
-| Node status | Node | None |
-
----
-
-*Namehold v0.1.0 — your HNS network wallet*
+*Namehold — non-custodial Handshake wallet. See `CHANGELOG.md` for what's new.*
