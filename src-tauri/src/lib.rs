@@ -97,6 +97,21 @@ pub fn run() {
                 }
             });
 
+            // Chain scanner (Feature 3, Stage 2): a background task that walks
+            // blocks from the fully-synced local node and indexes BID/REVEAL
+            // covenant outputs per name into `name_bid_outpoints`. This is what
+            // lets `read_name_bids` show ALL bidders — not just the wallet's
+            // own — without touching the HNSFans explorer once the node is
+            // authoritative. The scanner idles (30s poll) when the node is
+            // disconnected or still syncing, and sleeps (10s) when it's caught
+            // up to the tip. Resumable via `chain_scan_cursor` — the cost of
+            // an app restart is one `getblockchaininfo` + one cursor read, not
+            // a re-scan.
+            let db_path_str = db_path.to_string_lossy().to_string();
+            tauri::async_runtime::spawn(async move {
+                commands::chain_scan::run_chain_scanner(db_path_str).await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -2079,6 +2079,84 @@ pub fn find_unspent_covenant_utxos_by_name_hash(
         .collect())
 }
 
+/// A distinct (nameHash, optional rawName) pair pulled from every unspent
+/// name-covenant coin the wallet holds. Emitted by
+/// [`list_unspent_wallet_name_hashes`] for node-only owned-name discovery: the
+/// caller resolves each nameHash → name via `getnamebyhash`, falling back to
+/// `raw_name_hex` when the node can't resolve the hash (or the wrapper isn't
+/// available). Duplicates are collapsed — the wallet may hold several coins for
+/// the same name (OPEN + BID + REVEAL + owner), but only one `getnameinfo` per
+/// name is worth doing per sync pass.
+#[derive(Debug, Clone)]
+pub struct WalletNameHash {
+    pub name_hash_hex: String,
+    /// Hex-encoded rawName from covenant items[2], present only for OPEN, BID,
+    /// and FINALIZE covenants (see `noncustodial::covenants`). REVEAL/REDEEM/
+    /// REGISTER/UPDATE/RENEW/TRANSFER carry only the nameHash.
+    pub raw_name_hex: Option<String>,
+}
+
+/// List every distinct nameHash referenced by an unspent name-covenant coin in
+/// the profile's `tracked_utxos`, together with the coin's `rawName` (items[2])
+/// when the covenant type carries it (OPEN=2, BID=3, FINALIZE=10). Used by the
+/// node-only owned-name discovery path: each hash is a name the wallet either
+/// has an active auction position in OR currently owns.
+pub fn list_unspent_wallet_name_hashes(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<WalletNameHash>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT u.covenant_type, u.covenant_json
+         FROM tracked_utxos u
+         WHERE u.wallet_profile_id = ?1
+           AND u.spend_class IN ('name_control', 'name_lockup')
+           AND u.spent_by_txid IS NULL",
+    )?;
+    let rows = stmt.query_map(params![profile_id], |r| {
+        let cov_type: i64 = r.get(0)?;
+        let cov_json: Option<String> = r.get(1)?;
+        Ok((cov_type, cov_json))
+    })?;
+
+    let mut seen: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let (cov_type, cov_json) = row?;
+        let name_hash = match covenant_name_hash_hex(cov_json.as_deref()) {
+            Some(h) => h,
+            None => continue,
+        };
+        // items[2] carries rawName ONLY for OPEN/BID/FINALIZE — see
+        // `noncustodial::covenants`. For every other covenant type items[2] is
+        // something else (a nonce for REVEAL, a resource blob for REGISTER/UPDATE,
+        // …) and must NOT be read as a name.
+        let raw = if cov_type as u8 == crate::noncustodial::sync::COV_OPEN
+            || cov_type as u8 == crate::noncustodial::sync::COV_BID
+            || cov_type as u8 == crate::noncustodial::sync::COV_FINALIZE
+        {
+            covenant_item_hex(cov_json.as_deref(), 2)
+        } else {
+            None
+        };
+        // Keep the first non-None rawName seen for a given hash.
+        seen.entry(name_hash)
+            .and_modify(|existing| {
+                if existing.is_none() && raw.is_some() {
+                    *existing = raw.clone();
+                }
+            })
+            .or_insert(raw);
+    }
+
+    Ok(seen
+        .into_iter()
+        .map(|(name_hash_hex, raw_name_hex)| WalletNameHash {
+            name_hash_hex,
+            raw_name_hex,
+        })
+        .collect())
+}
+
 // --- Bid commitments (secret blind/nonce; backend-only) --------------------
 
 /// A persisted bid commitment. `nonce_hex`/`blind_hex` are SECRET wallet state
@@ -3129,6 +3207,73 @@ mod noncustodial_query_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn list_unspent_wallet_name_hashes_dedups_and_extracts_rawname() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        // "namehold" = 6e616d65686f6c64 hex — carried as rawName in a BID's
+        // items[2] (OPEN/BID/FINALIZE only).
+        let raw_namehold = "6e616d65686f6c64";
+        let bid = serde_json::json!({
+            "type": 3, "action": "BID",
+            "items": ["hashA", "64000000", raw_namehold, "blind"],
+        })
+        .to_string();
+        // A REVEAL coin for the SAME name hash — items[2] is a nonce, NOT a
+        // name, so it must NOT be read as rawName. The dedup should still keep
+        // the rawName recovered from the BID above.
+        let reveal = serde_json::json!({
+            "type": 4, "action": "REVEAL",
+            "items": ["hashA", "64000000", "deadbeefnonce"],
+        })
+        .to_string();
+        // A REGISTER coin for a DIFFERENT name hash, no rawName recoverable.
+        let register = serde_json::json!({
+            "type": 6, "action": "REGISTER",
+            "items": ["hashB", "64000000", "aa", "bb"],
+        })
+        .to_string();
+        for (txid, addr, cov_type, spend_class, cov, spent) in [
+            ("t1", "rs1qa", 3, "name_lockup", &bid, None::<&str>),
+            ("t2", "rs1qa", 4, "name_control", &reveal, None),
+            ("t3", "rs1qa", 6, "name_control", &register, None),
+            // A spent name coin — must be excluded.
+            ("t4", "rs1qa", 3, "name_lockup", &bid, Some("spendtx")),
+            // A liquid coin — no name covenant, must be excluded.
+        ] {
+            conn.execute(
+                "INSERT INTO tracked_utxos
+                    (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                     value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+                 VALUES (?1, 0, 'p1', ?2, '00', 1000, ?3, ?4, ?5, ?6)",
+                params![txid, addr, cov_type as i64, cov, spend_class, spent],
+            )
+            .unwrap();
+        }
+        // A plain liquid coin.
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+             VALUES ('t5', 0, 'p1', 'rs1qa', '00', 9000, 0, NULL, 'liquid_hns', NULL)",
+            [],
+        )
+        .unwrap();
+
+        let mut out = list_unspent_wallet_name_hashes(&conn, "p1").unwrap();
+        out.sort_by(|a, b| a.name_hash_hex.cmp(&b.name_hash_hex));
+        // Only hashA (from BID+REVEAL, deduped) and hashB (REGISTER) — spent and
+        // liquid coins excluded.
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name_hash_hex, "hasha");
+        // rawName recovered from the BID coin, even though REVEAL for the same
+        // hash carries a nonce at items[2].
+        assert_eq!(out[0].raw_name_hex.as_deref(), Some(raw_namehold));
+        assert_eq!(out[1].name_hash_hex, "hashb");
+        // REGISTER carries no rawName.
+        assert_eq!(out[1].raw_name_hex, None);
     }
 
     #[test]

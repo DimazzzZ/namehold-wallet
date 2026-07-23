@@ -313,21 +313,54 @@ pub async fn start_full_sync(
             }
             let _node_ok = sync_node_step(&db_path, &profile_id).await;
 
-            // Step 2: Repair owned names from inventory + tracked
+            // Is the node authoritative (connected AND fully synced)? When it is,
+            // the explorer-backed repair/discover steps below are redundant: Step 1
+            // already refreshed the wallet's coins from the node, and owned-name
+            // state is kept current by the node coin scan plus the wallet's own
+            // covenant writes. HNSFans is only a PRE-SYNC workaround — once the
+            // node is caught up we stop calling it. (Re-checked here, per run, so a
+            // node that later falls out of sync transparently re-enables the
+            // explorer path on the next Sync.)
+            let node_authoritative = {
+                let settings = open_conn(&db_path)
+                    .ok()
+                    .and_then(|c| queries::get_settings(&c).ok());
+                match settings {
+                    Some(s) => crate::commands::read::node_ready_from_settings(&s).await,
+                    None => false,
+                }
+            };
+
+            // Step 2: Repair owned names from inventory + tracked (explorer only).
             {
                 let mut s = status.lock().await;
                 s.step = "repair".into();
-                s.progress_label = "Repairing owned names…".into();
+                s.progress_label = if node_authoritative {
+                    "Repairing owned names via node…".into()
+                } else {
+                    "Repairing owned names…".into()
+                };
             }
-            repair_step(&status, &db_path, &profile_id).await;
+            if !node_authoritative {
+                repair_step(&status, &db_path, &profile_id).await;
+            }
 
-            // Step 3: Minimal explorer discovery
+            // Step 3: Minimal explorer discovery (skipped when the node is synced —
+            // node-backed discovery runs in Step 1 / node_discover_step).
             {
                 let mut s = status.lock().await;
                 s.step = "discover".into();
-                s.progress_label = "Scanning explorer for names…".into();
+                s.progress_label = if node_authoritative {
+                    "Scanning node for names…".into()
+                } else {
+                    "Scanning explorer for names…".into()
+                };
             }
-            discover_step(&status, &db_path, &profile_id).await;
+            if node_authoritative {
+                node_discover_step(&db_path, &profile_id).await;
+            } else {
+                discover_step(&status, &db_path, &profile_id).await;
+            }
 
             // Done — but if either step observed a cancellation request, report
             // the run as cancelled rather than complete.
@@ -386,7 +419,7 @@ pub async fn cancel_full_sync(state: State<'_, AppState>) -> Result<(), AppError
 /// connection: WAL mode, `busy_timeout` (so a connection that finds the DB
 /// momentarily locked by a concurrent writer waits and retries instead of
 /// failing immediately with "database is locked"), and `foreign_keys = ON`.
-fn open_conn(db_path: &str) -> Result<rusqlite::Connection, AppError> {
+pub(crate) fn open_conn(db_path: &str) -> Result<rusqlite::Connection, AppError> {
     let conn = crate::db::connection::open(std::path::Path::new(db_path))?;
     crate::db::migrations::run(&conn)?;
     Ok(conn)
@@ -450,6 +483,85 @@ async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
         Err(_) => return false,
     };
     apply_node_sync_batch(&mut conn, profile_id, &all_coins, height).is_ok()
+}
+
+/// Node-only owned-name discovery. Replaces `discover_step` when the local
+/// node is authoritative (connected + fully synced). Precondition:
+/// `sync_node_step` just refreshed the wallet's `tracked_utxos` from the node.
+///
+/// Mechanism: enumerate the name hashes referenced by the wallet's unspent
+/// name-covenant coins (which cover every name the wallet has an active
+/// auction position in OR currently owns), resolve each to a name string (via
+/// hsd `getnamebyhash`, falling back to the coin's own `rawName` items[2]
+/// for OPEN/BID/FINALIZE covenants), then `getnameinfo` and upsert into
+/// `tracked_name_states` so `read_names` serves them.
+///
+/// Best-effort: transient RPC failures on individual names are skipped rather
+/// than aborting the pass — the next Sync run picks them up. Only the wallet
+/// profile's own coins are visible here, so this NEVER hits the network for
+/// other bidders' data — that's the per-bid explorer path (Stage 2 replaces
+/// it with the chain scanner).
+async fn node_discover_step(db_path: &str, profile_id: &str) {
+    let (settings, hashes) = {
+        let conn = match open_conn(db_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let settings = match queries::get_settings(&conn) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let hashes = queries::list_unspent_wallet_name_hashes(&conn, profile_id).unwrap_or_default();
+        (settings, hashes)
+    };
+    if hashes.is_empty() {
+        return;
+    }
+
+    let client = NodeRpcClient::from_settings(&settings);
+
+    // Resolve each hash → name (prefer node's `getnamebyhash`; fall back to the
+    // coin's own rawName when the node can't resolve it). De-dup so we call
+    // getnameinfo at most once per name.
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for h in &hashes {
+        let resolved = match client.get_name_by_hash(&h.name_hash_hex).await {
+            Ok(Some(n)) => Some(n),
+            Ok(None) | Err(_) => h
+                .raw_name_hex
+                .as_deref()
+                .and_then(|hex| hex::decode(hex).ok())
+                .and_then(|bytes| String::from_utf8(bytes).ok()),
+        };
+        if let Some(name) = resolved {
+            let trimmed = name.trim().to_ascii_lowercase();
+            if !trimmed.is_empty() {
+                names.insert(trimmed);
+            }
+        }
+    }
+    if names.is_empty() {
+        return;
+    }
+
+    // Fetch each name's authoritative state from the node.
+    let mut fetched: Vec<(String, serde_json::Value)> = Vec::new();
+    for name in &names {
+        if let Ok(info) = client.get_name_info(name).await {
+            fetched.push((name.clone(), info));
+        }
+    }
+
+    // Upsert in a single transaction so a mid-write DB error can't leave
+    // `tracked_name_states` half-updated.
+    if let Ok(mut conn) = open_conn(db_path) {
+        if let Ok(tx) = conn.transaction() {
+            for (name, info) in &fetched {
+                let _ = crate::noncustodial::sync::upsert_name_state(&tx, profile_id, name, info);
+            }
+            let _ = tx.commit();
+        }
+    }
 }
 
 /// How many inventory/tracked names one background repair *window* re-checks.

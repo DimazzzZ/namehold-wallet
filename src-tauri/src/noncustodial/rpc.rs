@@ -226,6 +226,34 @@ impl NodeRpcClient {
         self.call("getnameinfo", serde_json::json!([name])).await
     }
 
+    /// `getnamebyhash` — resolve a nameHash (hex) to its raw name string.
+    ///
+    /// Handshake stores nameHash-only covenants (REVEAL/REDEEM/REGISTER/UPDATE/
+    /// RENEW/TRANSFER) whose payloads don't carry the plaintext name. This RPC
+    /// is the way to recover the name from a hash — used when node-only owned
+    /// name discovery scans wallet coins and needs to resolve their name.
+    ///
+    /// Returns `Ok(Some(name))` on success, `Ok(None)` when the node can't
+    /// resolve the hash (unknown / not-yet-committed name), and `Err` on a
+    /// transport-level failure. hsd may serialize an unresolved hash as either
+    /// a JSON `null` result or an error envelope — both degrade to `None` so
+    /// callers can fall back to the paired covenant's `rawName` when present.
+    pub async fn get_name_by_hash(&self, name_hash_hex: &str) -> Result<Option<String>, AppError> {
+        match self
+            .call::<serde_json::Value>("getnamebyhash", serde_json::json!([name_hash_hex]))
+            .await
+        {
+            Ok(serde_json::Value::String(name)) if !name.is_empty() => Ok(Some(name)),
+            // Non-string / null / missing — hash is unknown to the node.
+            Ok(_) => Ok(None),
+            // "Method not found" and similar surface as Rpc errors: treat them
+            // as "hash not resolvable" so the caller can fall through, rather
+            // than aborting the whole discovery pass.
+            Err(AppError::Rpc(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// `getnameresource` — current DNS resource for a name (params: `["name"]`).
     pub async fn get_name_resource(&self, name: &str) -> Result<serde_json::Value, AppError> {
         self.call("getnameresource", serde_json::json!([name]))
@@ -285,6 +313,18 @@ impl NodeRpcClient {
     /// `getblockhash` — the block hash (display-order hex) at `height`.
     pub async fn get_block_hash(&self, height: i64) -> Result<String, AppError> {
         self.call("getblockhash", serde_json::json!([height])).await
+    }
+
+    /// `getblock` (verbose + verboseTx) — full block with decoded transactions.
+    ///
+    /// hsd returns `{ hash, height, tx: [ { hash, inputs, outputs: [ { value,
+    /// address: { hash, version, string }, covenant: { type, action, items } }
+    /// ] } ] }` when called with `(hash, true, true)`. Used by the chain
+    /// scanner to index BID/REVEAL covenants per block without a per-tx
+    /// `getrawtransaction` roundtrip.
+    pub async fn get_block(&self, hash: &str) -> Result<serde_json::Value, AppError> {
+        self.call("getblock", serde_json::json!([hash, true, true]))
+            .await
     }
 
     /// `generatetoaddress` — mine `nblocks` to `address`. Regtest/simnet only;

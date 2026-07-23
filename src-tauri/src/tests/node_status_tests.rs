@@ -69,6 +69,66 @@ async fn local_reads_not_ready_when_not_connected() {
     assert!(!is_node_ready_for_local_reads(&state).await);
 }
 
+// --- node_ready_from_settings (the settings-based gate used by the background
+//     sync thread, which has no State<AppState>) --------------------------------
+
+use crate::commands::read::node_ready_from_settings;
+
+/// Build a settings map pointing the node RPC at a mockito server URL.
+fn settings_for_url(url: &str) -> std::collections::HashMap<String, String> {
+    let mut s = std::collections::HashMap::new();
+    s.insert("node_rpc_url".to_string(), url.to_string());
+    s.insert("node_rpc_api_key".to_string(), "x".to_string());
+    s
+}
+
+#[tokio::test]
+async fn node_ready_from_settings_true_when_synced() {
+    let mut server = mockito::Server::new_async().await;
+    // getblockchaininfo → fully synced (progress ≥ 0.9999).
+    let _m = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "result": { "blocks": 1000, "headers": 1000, "verification_progress": 1.0 },
+                "error": null, "id": null
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    assert!(node_ready_from_settings(&settings_for_url(&server.url())).await);
+}
+
+#[tokio::test]
+async fn node_ready_from_settings_false_while_syncing() {
+    let mut server = mockito::Server::new_async().await;
+    // Node answers but is far behind (low verification progress) → NOT ready,
+    // so the explorer fallback must stay active.
+    let _m = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "result": { "blocks": 80, "headers": 1000, "verification_progress": 0.08 },
+                "error": null, "id": null
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    assert!(!node_ready_from_settings(&settings_for_url(&server.url())).await);
+}
+
+#[tokio::test]
+async fn node_ready_from_settings_false_when_unreachable() {
+    // Unroutable node → probe fails → not ready.
+    assert!(!node_ready_from_settings(&settings_for_url("http://127.0.0.1:1")).await);
+}
+
 // --- api-key resolution (talk to a node configured via hsd.conf) -------------
 
 use crate::noncustodial::rpc::resolve_node_api_key;

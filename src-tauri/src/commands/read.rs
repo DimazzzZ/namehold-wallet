@@ -73,7 +73,18 @@ pub(crate) async fn node_tip_height_if_synced(state: &State<'_, AppState>) -> Op
         let db = state.db.lock().ok()?;
         crate::db::queries::get_settings(&db).ok()?
     };
-    let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+    node_tip_height_if_synced_from_settings(&settings).await
+}
+
+/// Settings-based form of [`node_tip_height_if_synced`], usable outside a
+/// `State<AppState>` context (e.g. the background sync thread, which holds only
+/// a bare DB connection). Returns the node tip height iff the node RPC answers
+/// AND the chain is fully synced. This is the single source of truth for the
+/// "is the node authoritative?" gate — the `State`-based helper delegates here.
+pub(crate) async fn node_tip_height_if_synced_from_settings(
+    settings: &std::collections::HashMap<String, String>,
+) -> Option<i64> {
+    let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(settings);
     let info = client.get_blockchain_info().await.ok()?;
     // Connected — now check if synced.
     // When verification_progress is available it is the most reliable signal —
@@ -90,11 +101,191 @@ pub(crate) async fn node_tip_height_if_synced(state: &State<'_, AppState>) -> Op
     synced.then_some(info.blocks)
 }
 
+/// Settings-based readiness gate: `true` when the local node is connected AND
+/// fully synced, making node/local data the authoritative read source. Mirrors
+/// [`is_node_ready_for_local_reads`] for callers that only have settings/a DB
+/// connection (the background sync thread).
+pub(crate) async fn node_ready_from_settings(
+    settings: &std::collections::HashMap<String, String>,
+) -> bool {
+    node_tip_height_if_synced_from_settings(settings).await.is_some()
+}
+
 /// HNSFans explorer client from settings (`explorer_api_url`). Thin wrapper
 /// kept for call-site brevity — the actual construction is centralized in
 /// [`crate::providers::explorer_client_from_settings`] (Task 11 / S1).
 fn explorer_client(settings: &std::collections::HashMap<String, String>) -> HnsFansClient {
     crate::providers::explorer_client_from_settings(settings)
+}
+
+/// Node-only owned-name discovery for [`discover_owned_names`]. Resolves the
+/// wallet's name-covenant coins to names via the node (`getnamebyhash` with a
+/// rawName fallback), fetches each name's `getnameinfo`, and upserts an
+/// authoritative `tracked_name_states` row — no explorer calls. Returns the
+/// same `{ discovered, names }` shape as the explorer path.
+async fn discover_owned_names_via_node(
+    state: &State<'_, AppState>,
+    profile_id: &str,
+) -> Result<serde_json::Value, AppError> {
+    let (settings, hashes) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let settings = queries::get_settings(&conn)?;
+        let hashes = queries::list_unspent_wallet_name_hashes(&conn, profile_id)?;
+        (settings, hashes)
+    };
+
+    let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+
+    // Resolve each hash → name (node's getnamebyhash, else the coin's rawName).
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for h in &hashes {
+        let resolved = match client.get_name_by_hash(&h.name_hash_hex).await {
+            Ok(Some(n)) => Some(n),
+            Ok(None) | Err(_) => h
+                .raw_name_hex
+                .as_deref()
+                .and_then(|hex| hex::decode(hex).ok())
+                .and_then(|bytes| String::from_utf8(bytes).ok()),
+        };
+        if let Some(name) = resolved {
+            let trimmed = name.trim().to_ascii_lowercase();
+            if !trimmed.is_empty() {
+                names.insert(trimmed);
+            }
+        }
+    }
+
+    let mut fetched: Vec<(String, serde_json::Value)> = Vec::new();
+    for name in &names {
+        if let Ok(info) = client.get_name_info(name).await {
+            fetched.push((name.clone(), info));
+        }
+    }
+
+    let discovered_names: Vec<String> = fetched.iter().map(|(n, _)| n.clone()).collect();
+    {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        for (name, info) in &fetched {
+            crate::noncustodial::sync::upsert_name_state(&conn, profile_id, name, info)?;
+        }
+    }
+
+    Ok(serde_json::json!({
+        "discovered": discovered_names.len(),
+        "names": discovered_names,
+    }))
+}
+
+/// Node-only owned-name reconciliation for [`repair_owned_names`]. For each
+/// candidate name, ask the node for authoritative state via `getnameinfo` and
+/// resolve the owner outpoint's address via `gettxout` — the same information
+/// the explorer path derives from `/history`, without HNSFans.
+async fn repair_owned_names_via_node(
+    state: &State<'_, AppState>,
+    profile_id: &str,
+) -> Result<serde_json::Value, AppError> {
+    let (settings, inventory_tlds, tracked, all_addresses) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        (
+            queries::get_settings(&conn)?,
+            queries::get_inventory_tlds(&conn)?,
+            queries::list_tracked_name_names(&conn, profile_id)?,
+            queries::get_profile_addresses(&conn, profile_id)?,
+        )
+    };
+    let addr_set: HashSet<String> = all_addresses.iter().cloned().collect();
+
+    let mut candidates: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for name in inventory_tlds.iter().chain(tracked.iter()) {
+        let n = name.trim().to_lowercase();
+        if n.is_empty() || !seen.insert(n.clone()) {
+            continue;
+        }
+        candidates.push(n);
+    }
+
+    let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+
+    let mut errors: Vec<String> = Vec::new();
+    let mut repaired = 0u32;
+
+    for name in &candidates {
+        // Authoritative name state from the node.
+        let info_result = match client.get_name_info(name).await {
+            Ok(v) => v,
+            Err(e) => {
+                errors.push(format!("{name}: getnameinfo failed — {e}"));
+                continue;
+            }
+        };
+        let info_opt = info_result
+            .get("info")
+            .cloned()
+            .filter(|v| !v.is_null());
+
+        // Resolve the current owner outpoint's address:
+        //   info.owner.{hash,index} IS the current owner UTXO (or null when the
+        //   name has no live owner — e.g. never OPENed, or fully released). We
+        //   ask the node for that specific output via `gettxout` and read its
+        //   address; if it belongs to one of our derived addresses, we own it.
+        let owner = info_opt.as_ref().and_then(|i| i.get("owner"));
+        let owner_txid = owner
+            .and_then(|o| o.get("hash"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let owner_vout = owner.and_then(|o| o.get("index")).and_then(|v| v.as_u64());
+
+        let (owner_addr, owner_txid_str, owner_vout_u32) = match (owner_txid, owner_vout) {
+            (Some(t), Some(v)) if !t.is_empty() && t != "0".repeat(t.len()) => {
+                match client.get_tx_out(&t, v as u32).await {
+                    Ok(Some(txo)) => {
+                        let addr = txo
+                            .get("address")
+                            .and_then(|a| a.get("string").or_else(|| a.get("hash")))
+                            .and_then(|s| s.as_str())
+                            .map(|s| s.to_string());
+                        (addr, Some(t), Some(v as u32))
+                    }
+                    _ => (None, Some(t), Some(v as u32)),
+                }
+            }
+            _ => (None, None, None),
+        };
+
+        let owned_by_wallet = owner_addr
+            .as_deref()
+            .map(|a| addr_set.contains(a))
+            .unwrap_or(false);
+
+        match (owned_by_wallet, info_opt, owner_txid_str, owner_vout_u32, owner_addr) {
+            (true, Some(info), Some(txid), Some(vout), Some(addr)) => {
+                let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+                // Reuse the existing upsert — it accepts a `getnameinfo.info`
+                // payload (the same shape the explorer's `get_name_info_optional`
+                // returns) plus (owner_txid, owner_vout, owner_address).
+                let info_shaped: crate::hsd::types::HsdName =
+                    serde_json::from_value(info).map_err(|e| {
+                        AppError::Rpc(format!("malformed node getnameinfo for {name}: {e}"))
+                    })?;
+                queries::upsert_owned_name(&conn, profile_id, &info_shaped, &txid, vout, &addr)?;
+                queries::mark_asset_finalized_owned(&conn, name, info_shaped.state.as_deref())?;
+                repaired += 1;
+            }
+            _ => {
+                // Not owned per node (or unresolvable owner): stamp so repeated
+                // runs converge instead of re-checking forever.
+                let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+                queries::touch_asset_synced(&conn, name)?;
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "repaired": repaired,
+        "errors": errors,
+        "candidates": candidates.len(),
+    }))
 }
 
 /// Balance read with automatic source selection:
@@ -288,6 +479,18 @@ pub async fn discover_owned_names(
         Some(id) => id,
         None => return Ok(serde_json::json!({ "discovered": 0, "names": [] })),
     };
+
+    // Node-only path: when the local node is authoritative (connected + fully
+    // synced) we ignore the HNSFans explorer entirely. Owned names are derived
+    // from the wallet's own name-covenant coins (already refreshed into
+    // `tracked_utxos` by `sync_node_step`) — the coin's covenant items[0] gives
+    // us the nameHash, resolved to a name via `getnamebyhash` (or the paired
+    // OPEN/BID/FINALIZE covenant's rawName). This is the "post-sync workaround
+    // retired" path described in the Feature 3 plan.
+    if is_node_ready_for_local_reads(&state).await {
+        return discover_owned_names_via_node(&state, &id).await;
+    }
+
     let (client, addrs) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
@@ -555,6 +758,68 @@ pub(crate) fn merge_name_bids(
     })
 }
 
+/// Shape chain-scanner-indexed bids (`name_bid_outpoints`) into the frontend
+/// contract, marking the caller's own bids from LOCAL `bid_commitments`.
+///
+/// Same honesty guarantees as [`merge_name_bids`]: `value` is only what the
+/// scanner observed on-chain (the REVEAL output value, `None` pre-reveal); a
+/// bid is "mine" only when its txid matches a local commitment, and `myValue`
+/// is the plaintext bid value we already hold — never inferred from a
+/// competitor's coin. `commitments` MUST be scoped to the resolved profile by
+/// the caller.
+pub(crate) fn merge_indexed_bids(
+    indexed: &[crate::hsd::types::HsdBid],
+    commitments: &[queries::BidCommitmentRow],
+    name: &str,
+) -> serde_json::Value {
+    use std::collections::HashMap;
+
+    let mine_by_txid: HashMap<&str, i64> = commitments
+        .iter()
+        .filter(|c| c.name == name)
+        .filter_map(|c| c.bid_txid.as_deref().map(|txid| (txid, c.bid_value_doos)))
+        .collect();
+
+    // The highest revealed value we observed on-chain, for the aggregate.
+    let highest = indexed.iter().filter_map(|b| b.value).max();
+
+    let mut my_bid_count: u32 = 0;
+    let bids: Vec<serde_json::Value> = indexed
+        .iter()
+        .map(|bid| {
+            let my_value = bid
+                .txid
+                .as_deref()
+                .and_then(|txid| mine_by_txid.get(txid).copied());
+            let is_mine = my_value.is_some();
+            if is_mine {
+                my_bid_count += 1;
+            }
+            serde_json::json!({
+                "txid": bid.txid,
+                "index": bid.index,
+                "lockup": bid.lockup,
+                "value": bid.value,
+                "revealed": bid.revealed,
+                "win": bid.win,
+                "reveal": bid.reveal,
+                "time": bid.time,
+                "mine": is_mine,
+                "myValue": my_value,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "name": name,
+        "state": null,
+        "highest": highest,
+        "value": highest,
+        "bids": bids,
+        "myBidCount": my_bid_count,
+    })
+}
+
 /// Per-bid detail for a name from the HNSFans explorer, with the caller's own
 /// bids marked via LOCAL `bid_commitments` (plaintext bid/lockup values this
 /// wallet already holds — never fabricated from the explorer, which cannot
@@ -579,20 +844,53 @@ pub async fn read_name_bids(
         None => return Ok(empty_name_bids_response(&name)),
     };
 
-    let client = {
+    // Node-only path: when the node is authoritative AND the chain scanner has
+    // indexed past the name's auction height, serve bids from the local
+    // `name_bid_outpoints` table — no HNSFans call. Fall through to the
+    // explorer when the scanner hasn't caught up yet.
+    if is_node_ready_for_local_reads(&state).await {
+        let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name(&name)?);
+        let (indexed_bids, commitments, scanner_height, name_height) = {
+            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+            let indexed = crate::commands::chain_scan::read_indexed_bids(&conn, &name_hash_hex)?;
+            let comms = queries::list_bid_commitments(&conn, &id)?;
+            let cursor_h = crate::commands::chain_scan::scan_cursor_height(&conn);
+            // The name's on-chain height (auction OPEN height) — if we have a
+            // tracked_name_states row, use its `height`; otherwise fall through.
+            let nh: Option<i64> = conn
+                .query_row(
+                    "SELECT height FROM tracked_name_states WHERE wallet_profile_id = ?1 AND name = ?2",
+                    rusqlite::params![id, name],
+                    |r| r.get(0),
+                )
+                .ok()
+                .flatten();
+            (indexed, comms, cursor_h, nh)
+        };
+
+        // Only serve from the index if the scanner has reached the name's
+        // auction height (so we're confident we've seen all BIDs). If the
+        // name_height is unknown (name never opened?), or the scanner hasn't
+        // caught up, fall through to the explorer.
+        let scanner_covers = name_height
+            .map(|nh| scanner_height >= nh)
+            .unwrap_or(false);
+
+        if scanner_covers {
+            return Ok(merge_indexed_bids(&indexed_bids, &commitments, &name));
+        }
+    }
+
+    // Explorer fallback (pre-sync or scanner hasn't reached the name yet).
+    let (client, commitments) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        explorer_client(&settings)
+        (explorer_client(&settings), queries::list_bid_commitments(&conn, &id)?)
     };
 
     let info = match client.get_name_info_optional(&name).await? {
         Some(info) => info,
         None => return Ok(empty_name_bids_response(&name)),
-    };
-
-    let commitments = {
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        queries::list_bid_commitments(&conn, &id)?
     };
 
     Ok(merge_name_bids(&info, &commitments, &name))
@@ -1028,6 +1326,15 @@ pub async fn repair_owned_names(
         Some(id) => id,
         None => return Ok(serde_json::json!({"repaired":0,"discovered":0,"errors":[]})),
     };
+
+    // Node-only path: when the node is authoritative, `getnameinfo`'s
+    // `owner:{hash,index}` IS the current owner outpoint — no explorer history
+    // crawl needed. We iterate the same candidate set (inventory TLDs + tracked
+    // names) but resolve state and ownership directly against the node.
+    if is_node_ready_for_local_reads(&state).await {
+        return repair_owned_names_via_node(&state, &id).await;
+    }
+
     let (client, inventory_tlds, tracked, all_addresses) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;

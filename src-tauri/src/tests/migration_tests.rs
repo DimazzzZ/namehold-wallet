@@ -50,8 +50,9 @@ fn test_schema_version_tracking() {
     // 012 (tx-draft confirmation tracking), 013 (owner address column),
     // 014 (bid reveal-end-height estimate), 015 (coin reservation, I3),
     // 016 (last_explorer_sync_at, Task 11 review Finding 2),
-    // 017 (backfill bid_commitments.bid_txid/reveal_txid for pre-fix rows).
-    assert_eq!(count, 17);
+    // 017 (backfill bid_commitments.bid_txid/reveal_txid for pre-fix rows),
+    // 018 (name_bid_outpoints + chain_scan_cursor for the chain scanner).
+    assert_eq!(count, 18);
 }
 
 #[test]

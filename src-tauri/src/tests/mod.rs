@@ -1,6 +1,7 @@
 mod assets_cmd_tests;
 mod batches_cmd_tests;
 mod bids_cmd_tests;
+mod chain_scan_tests;
 mod command_helpers;
 mod compare_inventory_tests;
 mod contract_shape_tests;
