@@ -105,3 +105,47 @@ export function rowsToRecords(rows: DnsRow[]): Record<string, unknown>[] | null 
   const recs = rows.map(rowToRecord).filter((r): r is Record<string, unknown> => r !== null);
   return recs.length > 0 ? recs : null;
 }
+
+// ---------------------------------------------------------------------------
+// Inverse: hsd record → editor row (for prefilling current records from node)
+// ---------------------------------------------------------------------------
+
+/** Convert a single hsd record object back into an editor row. Returns `null`
+ *  for unrecognized types (they're silently dropped from the row editor; the
+ *  user can still see/edit them in the raw-JSON Advanced mode). */
+export function recordToRow(rec: Record<string, unknown>): DnsRow | null {
+  if (!rec || typeof rec !== "object") return null;
+  switch (rec.type) {
+    case "TXT": {
+      const txt = Array.isArray(rec.txt) ? rec.txt : [];
+      return { type: "TXT", value: txt.map(String).join(" ") };
+    }
+    case "NS":
+      return { type: "NS", value: String(rec.ns ?? "") };
+    case "SYNTH4":
+    case "SYNTH6":
+      return { type: rec.type as "SYNTH4" | "SYNTH6", value: String(rec.address ?? "") };
+    case "GLUE4":
+    case "GLUE6":
+      return {
+        type: rec.type as "GLUE4" | "GLUE6",
+        ns: String(rec.ns ?? ""),
+        address: String(rec.address ?? ""),
+      };
+    case "DS":
+      return {
+        type: "DS",
+        keyTag: String(rec.keyTag ?? ""),
+        algorithm: String(rec.algorithm ?? ""),
+        digestType: String(rec.digestType ?? ""),
+        digest: String(rec.digest ?? ""),
+      };
+    default:
+      return null;
+  }
+}
+
+/** Convert an array of hsd records into editor rows, dropping unknown types. */
+export function recordsToRows(records: Record<string, unknown>[]): DnsRow[] {
+  return records.map(recordToRow).filter((r): r is DnsRow => r !== null);
+}

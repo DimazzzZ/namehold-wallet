@@ -13,7 +13,7 @@ use tauri::Manager;
 use crate::commands::read::{
     compare_inventory_with_provider, discover_owned_names, empty_name_bids_response,
     merge_name_bids, read_auction_position_names, read_balance, read_name_bids, read_name_info,
-    read_names, read_transactions,
+    read_name_records, read_names, read_transactions, records_from_resource,
 };
 use crate::db;
 use crate::hsd::types::{HsdBid, HsdName};
@@ -1017,4 +1017,61 @@ async fn read_name_bids_per_wallet_isolation() {
     assert_eq!(by_txid_b("txA")["mine"], false, "A's commitment must not leak into B's view");
     assert_eq!(by_txid_b("txB")["mine"], true);
     assert_eq!(val_b["myBidCount"], 1);
+}
+
+// ---------------------------------------------------------------------------
+// records_from_resource — pure helper (Manage DNS: current records prefill)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn records_from_resource_extracts_array() {
+    let res = serde_json::json!({
+        "records": [
+            { "type": "NS", "ns": "ns1.example." },
+            { "type": "DS", "keyTag": 12345, "algorithm": 8, "digestType": 2, "digest": "aa" }
+        ]
+    });
+    let recs = records_from_resource(&res);
+    assert_eq!(recs.len(), 2);
+    assert_eq!(recs[0]["type"], "NS");
+    assert_eq!(recs[1]["type"], "DS");
+}
+
+#[test]
+fn records_from_resource_handles_null_missing_and_non_array() {
+    // `records` absent → empty.
+    assert!(records_from_resource(&serde_json::json!({})).is_empty());
+    // `records: null` (hsd shape for a name with no resource) → empty.
+    assert!(records_from_resource(&serde_json::json!({ "records": null })).is_empty());
+    // Non-object top-level (e.g. a literal null from a name that was never
+    // opened) → empty; must not panic.
+    assert!(records_from_resource(&serde_json::Value::Null).is_empty());
+    // Wrong type for `records` (defensively): still empty.
+    assert!(records_from_resource(&serde_json::json!({ "records": "oops" })).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// read_name_records — command-level (no-profile / no-node graceful degradation)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_name_records_no_profile_returns_empty_array() {
+    let app = app_with(empty_db());
+    let val = read_name_records(app.state(), "foo".into(), None).await.unwrap();
+    assert_eq!(val, serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn read_name_records_node_not_ready_returns_empty_array() {
+    // With a resolved profile but no reachable/synced node, the command must
+    // soft-degrade to `[]` rather than error — the frontend then shows its
+    // "connect & sync a node to view/edit records" hint.
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    let app = app_with(conn);
+    let val = read_name_records(app.state(), "foo".into(), Some("W1".into()))
+        .await
+        .unwrap();
+    assert_eq!(val, serde_json::json!([]));
 }

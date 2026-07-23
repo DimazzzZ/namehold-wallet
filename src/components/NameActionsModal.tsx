@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useActiveProfile,
@@ -11,6 +11,7 @@ import {
   useReadNameInfo,
   useNameActionCapabilities,
   useRecoverBidCommitment,
+  useNameRecords,
 } from "../queries/read";
 import { Button } from "./ui/Button";
 import { Dialog } from "./ui/Dialog";
@@ -34,7 +35,7 @@ import {
   taskSummaryFromCapabilities,
   validateBidInputs,
 } from "../lib/auction";
-import { rowsToRecords, type DnsRow } from "../lib/dnsRecords";
+import { rowsToRecords, recordsToRows, type DnsRow } from "../lib/dnsRecords";
 import type { NameActionCapability } from "../types";
 
 /**
@@ -123,6 +124,40 @@ export function NameActionsModal({
 
   // Whether the name is owned by the current wallet.
   const isOwned = caps?.ownsName ?? (!!info?.owner && info?.registered === true);
+
+  // Current DNS records for owned names, read from the node (`getnameresource`).
+  // Used to seed the editor once per open so the user sees/edits/deletes the
+  // name's existing records (UPDATE replaces the resource wholesale, so the
+  // editor must start from the full current set).
+  const { data: currentRecords, isLoading: recordsLoading } = useNameRecords(
+    open && isOwned ? name : null,
+    profile?.id ?? null,
+  );
+
+  // Seed the editor from the loaded records EXACTLY ONCE per (name, open). A
+  // refetch (Update invalidates the `["read"]` prefix) must NOT clobber the
+  // user's in-progress edits; closing resets the guard so re-opening re-reads
+  // the fresh (post-Update) records.
+  const seededForName = useRef<string | null>(null);
+  useEffect(() => {
+    if (!open || !isOwned) return;
+    if (seededForName.current === name) return;
+    if (recordsLoading || currentRecords === undefined) return;
+    // Only overwrite the row editor when the name actually HAS records to
+    // prefill. When it has none (a freshly-won name, or no synced node),
+    // leave `rows` at its default blank TXT row — seeding a blank here would
+    // race with, and clobber, a value the user just typed while the query was
+    // still in flight.
+    const seeded = recordsToRows(currentRecords ?? []);
+    if (seeded.length) {
+      setRows(seeded);
+      setRecordsJson(JSON.stringify(currentRecords, null, 2));
+    }
+    seededForName.current = name;
+  }, [open, isOwned, name, recordsLoading, currentRecords]);
+  useEffect(() => {
+    if (!open) seededForName.current = null;
+  }, [open]);
 
   // Owned names with no urgent auction task (already registered, nothing to
   // finalize) auto-expand the management section, so the user isn't forced to
@@ -245,8 +280,15 @@ export function NameActionsModal({
       showToast(mapError(e), "error");
       return;
     }
-    const builder = label === "REGISTER" ? build.register : build.update;
-    run(label, () => builder.mutateAsync({ name, records: recs }));
+    if (label === "REGISTER") {
+      // REGISTER keeps the existing semantics: `null` records → empty resource.
+      run(label, () => build.register.mutateAsync({ name, records: recs }));
+      return;
+    }
+    // UPDATE replaces the resource wholesale. An empty editor means "delete all
+    // records", which must send `[]` (empty resource), NOT `null` —
+    // `build_update_draft` expects a `Vec`, so `null` would break it.
+    run(label, () => build.update.mutateAsync({ name, records: recs ?? [] }));
   };
 
   const setRow = (i: number, patch: Partial<DnsRow>) =>
@@ -489,6 +531,18 @@ export function NameActionsModal({
                     {advanced ? "Use row editor" : "Advanced (raw JSON)"}
                   </button>
                 </div>
+
+                {/* Loading / empty-hint for current records */}
+                {recordsLoading && (
+                  <div className="text-xs text-gray-500" data-testid="dns-records-loading">
+                    Loading current records...
+                  </div>
+                )}
+                {!recordsLoading && currentRecords?.length === 0 && (
+                  <div className="text-xs text-gray-400" data-testid="dns-records-hint">
+                    No records shown — connect &amp; sync a node to view/edit existing records.
+                  </div>
+                )}
 
                 {advanced ? (
                   <textarea

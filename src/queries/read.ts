@@ -185,6 +185,34 @@ export function useNameBids(
 }
 
 /**
+ * Current DNS records for a name, read from the local hsd node
+ * (`read_name_records` → `getnameresource`). Node-only: the explorer doesn't
+ * expose resource records, so this returns `[]` whenever no synced node is
+ * reachable (the backend degrades gracefully and never errors). The name
+ * actions modal seeds its DNS editor from this once per open so the user can
+ * see, edit, and delete the name's existing records. Pinned to a specific
+ * wallet the same way as `useNameBids`.
+ */
+export function useNameRecords(
+  name: string | null | undefined,
+  walletProfileId: string | null,
+): UseQueryResult<Record<string, unknown>[]> {
+  const profileId = walletProfileId ?? null;
+  return useQuery<Record<string, unknown>[]>({
+    queryKey: ["read", "nameRecords", profileId, name ?? ""],
+    enabled: Boolean(name && name.trim().length > 0),
+    queryFn: async () => {
+      const raw = await invoke<Record<string, unknown>[] | null>("read_name_records", {
+        name: name!.trim(),
+        walletProfileId: profileId,
+      });
+      return Array.isArray(raw) ? raw : [];
+    },
+    staleTime: STALE_TIME,
+  });
+}
+
+/**
  * Batch form of `useNameActionCapabilities` — one invoke for a whole list of
  * names instead of one per name (F5 fix: AuctionsView used to spawn N+1
  * capability fetches, one per row). Pinned to a specific wallet the same way

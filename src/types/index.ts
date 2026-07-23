@@ -173,6 +173,12 @@ export interface Settings {
   hsd_prefix: string;
   /** Explicit path to the hsd binary. Empty = auto-discover (common dirs + PATH). */
   hsd_path: string;
+  /**
+   * "true" | "false" — start hsd automatically when the app launches. Default
+   * "true". Honored only at app-launch time (a runtime toggle affects the next
+   * launch, not the current process).
+   */
+  autostart_hsd: string;
   /** HNSFans explorer used for node-free reads (balance + names). */
   explorer_api_url: string;
   /** Integer string, default "20". */
@@ -493,4 +499,3 @@ export interface RecoveredBidCommitment {
   bidValueDoos: number;
   lockupValueDoos: number;
 }
-

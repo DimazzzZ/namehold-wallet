@@ -896,6 +896,55 @@ pub async fn read_name_bids(
     Ok(merge_name_bids(&info, &commitments, &name))
 }
 
+/// Extract the `records` array from a `getnameresource` payload. Handshake's
+/// `getnameresource` returns `{records:[...]}` for a name with a resource, or
+/// `null` / a shape without `records` when the name has none. Never panics —
+/// anything that isn't `resource.records: []` degrades to an empty vec so the
+/// caller can treat the result uniformly.
+pub(crate) fn records_from_resource(resource: &serde_json::Value) -> Vec<serde_json::Value> {
+    resource
+        .get("records")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Current DNS records for a name, read from the local hsd node
+/// (`getnameresource`). Node-only: the HNSFans explorer does not return
+/// resource records, and UPDATE requires a synced node anyway. Degrades to an
+/// empty array (never an error) when no profile is resolved, the node isn't
+/// ready, the RPC fails, or the resource is null — the frontend seeds its
+/// editor from whatever this returns, and an empty seed is the honest signal
+/// that we can't show current records.
+///
+/// `wallet_profile_id` pins the read to a specific wallet context so a fast
+/// profile switch never returns another wallet's view; the resolved id itself
+/// isn't used further (records are name-scoped, not per-wallet).
+#[tauri::command]
+pub async fn read_name_records(
+    state: State<'_, AppState>,
+    name: String,
+    wallet_profile_id: Option<String>,
+) -> Result<serde_json::Value, AppError> {
+    if resolve_profile(&state, wallet_profile_id)?.is_none() {
+        return Ok(serde_json::Value::Array(vec![]));
+    }
+    if is_node_ready_for_local_reads(&state).await {
+        // Read settings under a short lock, then drop the guard BEFORE the
+        // async RPC call — the same pattern the other node-first reads use so
+        // we never hold the DB mutex across an .await.
+        let settings = {
+            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+            queries::get_settings(&conn)?
+        };
+        let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+        if let Ok(res) = node.get_name_resource(&name).await {
+            return Ok(serde_json::Value::Array(records_from_resource(&res)));
+        }
+    }
+    Ok(serde_json::Value::Array(vec![]))
+}
+
 /// Transaction history from the local (node-synced) cache.
 /// `wallet_profile_id` pins the read to a specific wallet (defaults to active).
 #[tauri::command]
