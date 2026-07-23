@@ -152,6 +152,17 @@ export function truncate(str: string, len: number): string {
 }
 
 /**
+ * Middle-truncate a long opaque string (xpub, txid, profile id) for display:
+ * keeps the first `head` and last `tail` characters with an ellipsis between,
+ * e.g. "xpub6CUG…FDVmz". Strings short enough to show in full are returned
+ * unchanged, so the ellipsis never appears when it wouldn't save space.
+ */
+export function truncateMiddle(s: string, head = 8, tail = 6): string {
+  if (!s || s.length <= head + tail + 1) return s;
+  return s.slice(0, head) + "…" + s.slice(-tail);
+}
+
+/**
  * Normalize a user-typed name into a form suitable for hsd name lookups.
  *
  * - trims whitespace

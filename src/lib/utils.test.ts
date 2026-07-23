@@ -10,6 +10,7 @@ import {
   latestTimestamp,
   truncate,
   netSpendDoos,
+  truncateMiddle,
 } from "./utils";
 
 describe("dollarydoosToHns", () => {
@@ -280,5 +281,28 @@ describe("netSpendDoos", () => {
     expect(
       netSpendDoos({ sendTotalDoos: 1_000_000, recipientAddress: "hs1qexample" }),
     ).toBe(1_000_000);
+  });
+});
+
+describe("truncateMiddle", () => {
+  it("returns short strings unchanged (no ellipsis when it wouldn't save space)", () => {
+    expect(truncateMiddle("short")).toBe("short");
+    expect(truncateMiddle("", 8, 6)).toBe("");
+    // Exactly at the boundary — head+tail+1 chars long, no truncation.
+    expect(truncateMiddle("abcdefghijklmno", 8, 6)).toBe("abcdefghijklmno");
+  });
+
+  it("keeps `head` and `tail` chars around a middle ellipsis for long strings", () => {
+    const xpub =
+      "xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz";
+    const out = truncateMiddle(xpub);
+    expect(out.startsWith("xpub6CUG")).toBe(true);
+    expect(out.endsWith("Au3fDVmz".slice(-6))).toBe(true);
+    expect(out).toContain("…");
+    expect(out.length).toBeLessThan(xpub.length);
+  });
+
+  it("honors custom head/tail lengths", () => {
+    expect(truncateMiddle("abcdefghijklmnop", 3, 3)).toBe("abc…nop");
   });
 });

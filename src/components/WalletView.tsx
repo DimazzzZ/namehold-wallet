@@ -32,6 +32,10 @@ import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
 import { Dialog } from "./ui/Dialog";
 import { PageHeader } from "./ui/PageHeader";
+import { Alert } from "./ui/Alert";
+import { Card } from "./ui/Card";
+import { Disclosure } from "./ui/Disclosure";
+import { CopyField } from "./ui/CopyField";
 import {
   formatHns,
   netSpendDoos,
@@ -40,9 +44,9 @@ import {
   formatDate,
   latestTimestamp,
   isLikelyHnsAddress,
+  truncateMiddle,
 } from "../lib/utils";
 import { mapError } from "../lib/errors";
-import { writeText } from "../lib/clipboard";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
 import type { NameActionCapabilities, TxDraftSummary } from "../types";
@@ -96,8 +100,11 @@ export function WalletView() {
   const [sendAddress, setSendAddress] = useState("");
   const [sendAmount, setSendAmount] = useState("");
   const [draft, setDraft] = useState<TxDraftSummary | null>(null);
-  const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // Toggle the QR alongside the receive address. Off by default — the address
+  // text is the primary artifact; the QR is only useful when handing the
+  // address to another device by camera.
+  const [showQr, setShowQr] = useState(false);
   // A failed sign/broadcast must NOT look like success: we surface it as a
   // persistent in-dialog error (not just a transient toast) and keep the dialog
   // open so the user can see exactly what happened before deciding to retry.
@@ -127,14 +134,6 @@ export function WalletView() {
     setDraft(null);
     setSubmitting(false);
     setSendError(null);
-  };
-
-  const handleCopyAddress = async () => {
-    if (!address) return;
-    await writeText(address);
-    setCopied(true);
-    showToast("Address copied", "success");
-    setTimeout(() => setCopied(false), 2000);
   };
 
   // Sync runs all reconciliation in a background thread.
@@ -332,8 +331,11 @@ export function WalletView() {
         </div>
       )}
 
-      {/* Profile quick-switch + manage */}
-      <div className="flex items-center gap-2 text-sm">
+      {/* Account bar — profile switch/add/manage + the lock action, condensed
+          into one row. Connectivity/signer STATUS lives in the global
+          StatusStrip; here we keep only the Lock/Unlock action plus a compact
+          "Signer locked/unlocked" label and the passphrase helper hint. */}
+      <div className="flex flex-wrap items-center gap-2 text-sm bg-white border border-gray-200 rounded-lg px-3 py-2">
         <span className="text-gray-500">Active wallet:</span>
         {profiles.length > 1 ? (
           <select
@@ -372,6 +374,42 @@ export function WalletView() {
         >
           Manage wallets
         </Button>
+        {!isWatchOnly && (
+          <div className="ml-auto flex items-center gap-2">
+            <span
+              className="text-xs text-gray-500"
+              title={
+                unlocked
+                  ? "Your keys are in memory. They lock automatically after the session timeout."
+                  : undefined
+              }
+            >
+              Signer {unlocked ? "unlocked" : "locked"}
+              {!unlocked && (
+                <span className="hidden sm:inline">
+                  {" — "}
+                  {profile.hasPassphrase
+                    ? "Unlock with your passphrase (in a secure window)"
+                    : "no passphrase — just click Unlock"}
+                </span>
+              )}
+            </span>
+            {unlocked ? (
+              <Button size="sm" variant="secondary" onClick={handleLock}>
+                Lock
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={handleUnlock}
+                disabled={unlock.isPending}
+              >
+                {unlock.isPending ? "Unlocking…" : "Unlock"}
+              </Button>
+            )}
+          </div>
+        )}
       </div>
 
       <WalletManager
@@ -380,114 +418,135 @@ export function WalletView() {
         onClose={() => setWalletManagerOpen(false)}
       />
 
-      {/* Signer status / lock controls */}
-      {!isWatchOnly && (
-        <div className="bg-white border border-gray-200 rounded-lg p-4 flex items-center justify-between">
-          <div className="text-sm">
-            <div className="font-medium text-gray-900">
-              Signer {unlocked ? "unlocked" : "locked"}
-            </div>
-            <div className="text-gray-500">
-              {unlocked
-                ? "Your keys are in memory. They lock automatically after the session timeout."
-                : profile.hasPassphrase
-                  ? "Unlock with your passphrase (in a secure window) to sign transactions."
-                  : "This wallet has no passphrase — just click Unlock to enable signing."}
-            </div>
-          </div>
-          {unlocked ? (
-            <Button variant="secondary" onClick={handleLock}>Lock</Button>
-          ) : (
-            <Button variant="primary" onClick={handleUnlock} disabled={unlock.isPending}>
-              {unlock.isPending ? "Unlocking…" : "Unlock"}
+      {/* Receive & share — the receive address (primary), an opt-in QR, and the
+          account xpub tucked behind a disclosure. The xpub is public material
+          (reveals derived addresses; cannot spend), consulted rarely (Namebase
+          setup), so it stays collapsed by default. If a multisig wallet kind is
+          ever added, the xpub disclosure MUST gate on single-sig, since Namebase
+          only supports single-signature xpubs. */}
+      <Card
+        title="Receive & share"
+        actions={
+          address ? (
+            <Button size="sm" variant="ghost" onClick={() => setShowQr((v) => !v)}>
+              {showQr ? "Hide QR" : "Show QR"}
             </Button>
+          ) : undefined
+        }
+      >
+        <div className="space-y-4" data-testid="account-xpub-card">
+          {address ? (
+            <>
+              <CopyField
+                label={
+                  <span className="flex items-center gap-2">
+                    <span>Receive Address</span>
+                    <Badge variant={profile.network === "mainnet" ? "info" : "warning"}>
+                      {profile.network}
+                    </Badge>
+                    {profile.network !== "mainnet" && (
+                      <span className="text-xs text-amber-600">
+                        — {profile.network} addresses differ from mainnet
+                      </span>
+                    )}
+                  </span>
+                }
+                value={address}
+                copyLabel="Copy Address"
+                toastLabel="Address"
+              />
+              {showQr && (
+                <div className="flex justify-center">
+                  <QRCodeSVG value={address} size={128} level="M" />
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="text-gray-400">No address derived yet. Try syncing.</div>
+          )}
+
+          <Disclosure
+            summary={
+              <span className="flex items-center gap-2">
+                <span>Show account public key (xpub) for Namebase</span>
+                <span className="font-mono text-xs text-gray-400">
+                  {truncateMiddle(profile.accountXpub)}
+                </span>
+              </span>
+            }
+          >
+            <div className="text-sm text-gray-500 mb-1 flex items-center gap-2">
+              <span>Account public key (xpub)</span>
+              <Badge variant={profile.network === "mainnet" ? "info" : "warning"}>
+                {profile.network}
+              </Badge>
+            </div>
+            <CopyField
+              value={profile.accountXpub}
+              valueTestId="account-xpub-value"
+              copyTestId="copy-xpub"
+              copyLabel="Copy public key"
+              toastLabel="Account public key"
+            />
+            <Alert
+              tone="info"
+              title="For Namebase / xpub-import payees only"
+              className="mt-3"
+            >
+              Paste this into Namebase's "account public key (xpub)" field so
+              buyers pay your wallet directly. This is a single-signature wallet,
+              so the addresses derived from it are yours to spend. Anyone with
+              this key can see every address and balance you'll ever use, but
+              cannot move your funds.
+            </Alert>
+          </Disclosure>
+        </div>
+      </Card>
+
+      {/* Balance — Spendable is the hero (what coin selection can actually use
+          after a node sync); Confirmed/Unconfirmed and the name-bound totals
+          are secondary text-xs cells. Confirmed/Unconfirmed come from the node
+          when available, otherwise the explorer. */}
+      <Card title="Balance">
+        <div className="flex items-baseline gap-2">
+          <span className="text-3xl font-bold tabular-nums">
+            {formatHns(balances?.liquidDoos ?? 0)}
+          </span>
+          <span className="text-sm text-gray-500">HNS · spendable (from node sync)</span>
+        </div>
+        <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2 text-xs text-gray-500">
+          <div>
+            <div>Confirmed</div>
+            <div className="text-sm text-gray-800 tabular-nums font-mono">
+              {formatHns(readBalance?.confirmed ?? 0)}
+            </div>
+          </div>
+          <div>
+            <div>Unconfirmed</div>
+            <div className="text-sm text-gray-800 tabular-nums font-mono">
+              {formatHns(readBalance?.unconfirmed ?? 0)}
+            </div>
+          </div>
+          {(balances?.nameLockupDoos ?? 0) > 0 && (
+            <div data-testid="balance-locked-auctions">
+              <div title="In-flight bids — returned on reveal/redeem">
+                Locked in Auctions
+              </div>
+              <div className="text-sm text-gray-800 tabular-nums font-mono">
+                {formatHns(balances!.nameLockupDoos)}
+              </div>
+            </div>
+          )}
+          {(balances?.nameControlDoos ?? 0) > 0 && (
+            <div data-testid="balance-name-value">
+              <div title="Value bound to names you control">Name Value</div>
+              <div className="text-sm text-gray-800 tabular-nums font-mono">
+                {formatHns(balances!.nameControlDoos)}
+              </div>
+            </div>
           )}
         </div>
-      )}
-
-      {/* Receive Address */}
-      <div className="bg-white rounded-lg p-6 border-2 border-blue-200">
-        <div className="text-sm text-gray-500 mb-2 flex items-center gap-2">
-          <span>Receive Address</span>
-          <Badge variant={profile.network === "mainnet" ? "info" : "warning"}>
-            {profile.network}
-          </Badge>
-          {profile.network !== "mainnet" && (
-            <span className="text-xs text-amber-600">
-              — {profile.network} addresses differ from mainnet
-            </span>
-          )}
-        </div>
-        {address ? (
-          <div className="flex items-center gap-6">
-            <div className="flex-1">
-              <div className="font-mono text-lg font-bold break-all bg-gray-50 p-3 rounded">
-                {address}
-              </div>
-              <div className="mt-2">
-                <Button onClick={handleCopyAddress} variant="primary">
-                  {copied ? "Copied!" : "Copy Address"}
-                </Button>
-              </div>
-            </div>
-            <div className="shrink-0">
-              <QRCodeSVG value={address} size={150} level="M" />
-            </div>
-          </div>
-        ) : (
-          <div className="text-gray-400">No address derived yet. Try syncing.</div>
-        )}
-      </div>
-
-      {/* Balances — confirmed/unconfirmed come from the synced node when
-          available, otherwise from the HNSFans explorer; "Spendable (synced)"
-          is what coin selection can use after a node sync. */}
-      <div className="grid grid-cols-3 gap-4">
-        <div className="bg-white rounded p-4 border border-gray-200">
-          <div className="text-sm text-gray-500">Confirmed</div>
-          <div className="text-2xl font-bold">{formatHns(readBalance?.confirmed ?? 0)}</div>
-          <div className="text-xs text-gray-400">HNS</div>
-        </div>
-        <div className="bg-white rounded p-4 border border-gray-200">
-          <div className="text-sm text-gray-500">Unconfirmed</div>
-          <div className="text-2xl font-bold">{formatHns(readBalance?.unconfirmed ?? 0)}</div>
-          <div className="text-xs text-gray-400">HNS</div>
-        </div>
-        <div className="bg-white rounded p-4 border border-gray-200">
-          <div className="text-sm text-gray-500">Spendable (synced)</div>
-          <div className="text-2xl font-bold">{formatHns(balances?.liquidDoos ?? 0)}</div>
-          <div className="text-xs text-gray-400">HNS · from node sync</div>
-        </div>
-      </div>
-
-      {/* Name-bound balances — surfaced only when there's value tied up in names
-          or in-flight auction bids, so the user can see funds that aren't liquid. */}
-      {((balances?.nameLockupDoos ?? 0) > 0 || (balances?.nameControlDoos ?? 0) > 0) && (
-        <div className="grid grid-cols-2 gap-4">
-          <div
-            className="bg-white rounded p-4 border border-gray-200"
-            data-testid="balance-locked-auctions"
-          >
-            <div className="text-sm text-gray-500">Locked in Auctions</div>
-            <div className="text-2xl font-bold">
-              {formatHns(balances?.nameLockupDoos ?? 0)}
-            </div>
-            <div className="text-xs text-gray-400">
-              HNS · in-flight bids (returned on reveal/redeem)
-            </div>
-          </div>
-          <div
-            className="bg-white rounded p-4 border border-gray-200"
-            data-testid="balance-name-value"
-          >
-            <div className="text-sm text-gray-500">Name Value</div>
-            <div className="text-2xl font-bold">
-              {formatHns(balances?.nameControlDoos ?? 0)}
-            </div>
-            <div className="text-xs text-gray-400">HNS · bound to names you control</div>
-          </div>
-        </div>
-      )}
+      </Card>
 
       {/* Degraded notice (Task 12 review folded into Task 14): the batch
           capabilities query silently renders nothing while loading (the
@@ -628,50 +687,51 @@ export function WalletView() {
           );
         })()}
 
-      {/* Actions */}
+      {/* Actions — spend + go-to-Auctions merged into one card. The Send button
+          gates on canWrite (writeCap.reason surfaced next to it) and the
+          spendable balance; needs-node-sync warns when explorer shows funds
+          but nothing is synced yet. */}
       {!isWatchOnly && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-3">
-            <Button
-              variant="primary"
-              onClick={() => setSendOpen(true)}
-              disabled={!canWrite || spendable === 0}
-            >
-              Send HNS
-            </Button>
-            {!canWrite && (
-              <span className="text-sm text-amber-600">
-                {writeCap?.reason ??
-                  "Connect a node in Settings, Refresh to sync your coins, then unlock to send."}
-              </span>
+        <Card title="Actions">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                variant="primary"
+                onClick={() => setSendOpen(true)}
+                disabled={!canWrite || spendable === 0}
+              >
+                Send HNS
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => navigate("/auctions")}
+              >
+                Auctions
+              </Button>
+              {!canWrite && (
+                <span className="text-sm text-amber-600">
+                  {writeCap?.reason ??
+                    "Connect a node in Settings, Refresh to sync your coins, then unlock to send."}
+                </span>
+              )}
+            </div>
+            <div className="text-xs text-gray-500">
+              Get a TLD: acquire new Handshake domains through the Vickrey
+              auction system.
+            </div>
+            {needsNodeSync && (
+              <div
+                className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
+                data-testid="needs-node-sync"
+              >
+                Your balance is read from the explorer, but spending requires a
+                synced node. Connect a node in <strong>Settings</strong> and
+                click <strong>Refresh</strong> to load your spendable coins.
+              </div>
             )}
           </div>
-          {needsNodeSync && (
-            <div
-              className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
-              data-testid="needs-node-sync"
-            >
-              Your balance is read from the explorer, but spending requires a
-              synced node. Connect a node in <strong>Settings</strong> and click{" "}
-              <strong>Refresh</strong> to load your spendable coins.
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Quick link to the Auctions page */}
-      {!isWatchOnly && (
-        <div className="bg-white rounded p-4 border border-gray-200 flex items-center justify-between">
-          <div>
-            <div className="text-sm font-medium text-gray-900">Get a TLD</div>
-            <div className="text-xs text-gray-500">
-              Acquire new Handshake domains through the Vickrey auction system.
-            </div>
-          </div>
-          <Button size="sm" variant="primary" onClick={() => navigate("/auctions")}>
-            Auctions
-          </Button>
-        </div>
+        </Card>
       )}
 
       {/* Owned Names (from local name-state cache) */}
@@ -820,12 +880,16 @@ export function WalletView() {
         )}
       </div>
 
-      <div className="text-xs text-gray-400">
-        Profile: {profile.id.slice(0, 8)}… | Last synced height:{" "}
-        {profile.lastSyncedHeight ?? "—"} | Last successful sync:{" "}
-        {formatDate(latestTimestamp(profile.lastSyncedAt, profile.lastExplorerSyncAt))} | xpub:{" "}
-        {profile.accountXpub.slice(0, 16)}…
-      </div>
+      {/* Diagnostics — collapsed by default; debug-only info that shouldn't
+          compete for attention on the main screen. */}
+      <Disclosure summary="Details">
+        <div className="text-xs text-gray-400">
+          Profile: {profile.id.slice(0, 8)}… | Last synced height:{" "}
+          {profile.lastSyncedHeight ?? "—"} | Last successful sync:{" "}
+          {formatDate(latestTimestamp(profile.lastSyncedAt, profile.lastExplorerSyncAt))} | xpub:{" "}
+          {truncateMiddle(profile.accountXpub)}
+        </div>
+      </Disclosure>
 
       {manageName && (
         <NameActionsModal

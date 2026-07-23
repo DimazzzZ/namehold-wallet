@@ -15,6 +15,13 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn(),
   readText: vi.fn().mockResolvedValue(""),
 }));
+// The app copies via ../../lib/clipboard (which falls back to
+// navigator.clipboard under jsdom); mock it so we can assert the exact text.
+const clipboardWriteMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("../../lib/clipboard", () => ({
+  writeText: (...args: unknown[]) => clipboardWriteMock(...args),
+  readText: vi.fn().mockResolvedValue(""),
+}));
 
 import { WalletView } from "../WalletView";
 import type { SyncStatus } from "../../queries/sync";
@@ -149,6 +156,7 @@ function wrapper() {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  clipboardWriteMock.mockClear();
 });
 
 describe("WalletView (non-custodial)", () => {
@@ -810,5 +818,135 @@ describe("WalletView — Recent transactions shows the name (Task 2)", () => {
     await screen.findByText("Primary");
     const row = await screen.findByText(/send_hns/i, { selector: "td" });
     expect(row.textContent?.trim()).toBe("send_hns");
+  });
+});
+
+describe("WalletView — Account public key (xpub) card for Namebase", () => {
+  const REAL_XPUB =
+    "xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz";
+
+  it("renders the card showing the FULL account xpub (not truncated)", async () => {
+    invokeMock.mockImplementation(routeInvoke({ profile: { accountXpub: REAL_XPUB } }));
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    const card = await screen.findByTestId("account-xpub-card");
+    // Header label (multiple matches exist because the Alert body also
+    // mentions "account public key (xpub)" — pick the header specifically).
+    expect(within(card).getAllByText(/Account public key \(xpub\)/i).length).toBeGreaterThan(0);
+    expect(screen.getByTestId("account-xpub-value")).toHaveTextContent(REAL_XPUB);
+  });
+
+  it("Copy writes the exact xpub to the clipboard and flips the label to 'Copied!'", async () => {
+    invokeMock.mockImplementation(routeInvoke({ profile: { accountXpub: REAL_XPUB } }));
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    const copyBtn = screen.getByTestId("copy-xpub");
+    expect(copyBtn).toHaveTextContent(/Copy public key/i);
+
+    fireEvent.click(copyBtn);
+
+    await waitFor(() => {
+      expect(clipboardWriteMock).toHaveBeenCalledWith(REAL_XPUB);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("copy-xpub")).toHaveTextContent(/Copied!/i);
+    });
+  });
+
+  it("shows the Namebase / single-signature info Alert", async () => {
+    invokeMock.mockImplementation(routeInvoke({ profile: { accountXpub: REAL_XPUB } }));
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    const card = await screen.findByTestId("account-xpub-card");
+    expect(
+      within(card).getByText(/For Namebase \/ xpub-import payees only/i),
+    ).toBeInTheDocument();
+    expect(within(card).getByText(/single-signature wallet/i)).toBeInTheDocument();
+  });
+
+  it("renders for watch-only profiles too (they also carry an accountXpub)", async () => {
+    invokeMock.mockImplementation(
+      routeInvoke({
+        profile: { accountXpub: REAL_XPUB, watchOnly: true, kind: "watch_only_xpub" },
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    expect(screen.getByTestId("account-xpub-value")).toHaveTextContent(REAL_XPUB);
+  });
+});
+
+describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () => {
+  const REAL_XPUB =
+    "xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz";
+
+  it("xpub disclosure is closed by default but the full xpub stays in the DOM", async () => {
+    invokeMock.mockImplementation(routeInvoke({ profile: { accountXpub: REAL_XPUB } }));
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    const toggle = screen.getByRole("button", {
+      name: /Show account public key \(xpub\) for Namebase/i,
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // Full value is still in the DOM (mounted-but-hidden), so tests can assert
+    // the exact xpub string without opening the disclosure first.
+    expect(screen.getByTestId("account-xpub-value")).toHaveTextContent(REAL_XPUB);
+  });
+
+  it("clicking the disclosure toggle opens it (aria-expanded flips)", async () => {
+    invokeMock.mockImplementation(routeInvoke({ profile: { accountXpub: REAL_XPUB } }));
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    const toggle = screen.getByRole("button", {
+      name: /Show account public key \(xpub\) for Namebase/i,
+    });
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    // Copy button is reachable once open.
+    expect(screen.getByTestId("copy-xpub")).toBeInTheDocument();
+  });
+
+  it('the Details footer disclosure is collapsed by default and hides the profile diagnostic', async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    const details = screen.getByRole("button", { name: /^\s*›?\s*Details\s*$/ });
+    expect(details).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(details);
+    expect(details).toHaveAttribute("aria-expanded", "true");
+    // Details body still surfaces the "Last successful sync:" label.
+    expect(screen.getByText(/Last successful sync:/)).toBeInTheDocument();
+  });
+
+  it("Copy Address writes the receive address to the clipboard", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    fireEvent.click(screen.getByRole("button", { name: /Copy Address/i }));
+    await waitFor(() => {
+      expect(clipboardWriteMock).toHaveBeenCalledWith("rs1qexamplereceiveaddr");
+    });
+  });
+
+  it("the QR is hidden by default and toggled by the 'Show QR' button", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    const { container } = render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    // No SVG QR mounted initially.
+    expect(container.querySelector("svg[role='img']")?.getAttribute("aria-label")).not.toBe(
+      "rs1qexamplereceiveaddr",
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Show QR/i }));
+    // After clicking, the toggle label flips and an SVG is now rendered inside the receive card.
+    expect(screen.getByRole("button", { name: /Hide QR/i })).toBeInTheDocument();
   });
 });
