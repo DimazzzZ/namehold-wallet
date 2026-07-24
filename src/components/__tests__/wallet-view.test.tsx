@@ -55,6 +55,7 @@ type Overrides = {
   renewals?: unknown;
   drafts?: unknown[];
   names?: unknown[];
+  history?: unknown[];
 };
 
 function routeInvoke(o: Overrides = {}) {
@@ -94,6 +95,8 @@ function routeInvoke(o: Overrides = {}) {
         });
       case "list_tx_drafts":
         return Promise.resolve(o.drafts ?? []);
+      case "read_action_history":
+        return Promise.resolve(o.history ?? []);
       case "refresh_tx_confirmations":
         return Promise.resolve(null);
       case "read_renewals":
@@ -948,5 +951,74 @@ describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () =
     fireEvent.click(screen.getByRole("button", { name: /Show QR/i }));
     // After clicking, the toggle label flips and an SVG is now rendered inside the receive card.
     expect(screen.getByRole("button", { name: /Hide QR/i })).toBeInTheDocument();
+  });
+
+  it("Recent activity card renders classified rows from read_action_history and links to /activity", async () => {
+    // Unix seconds for 2026-07-24 12:00:00 UTC — locks the long-date
+    // assertion to a known "July 24, 2026" output regardless of the
+    // runner's timezone (formatDateLong uses UTC-normalized parsing).
+    const unix = Math.floor(Date.UTC(2026, 6, 24, 12) / 1000);
+    invokeMock.mockImplementation(
+      routeInvoke({
+        history: [
+          {
+            txid: "aa",
+            action: "receive",
+            name: null,
+            nameHash: null,
+            valueDoos: 100_000_000,
+            direction: "receive",
+            height: 100,
+            time: unix,
+            confirmed: true,
+            counterparty: null,
+          },
+          {
+            txid: "bb",
+            action: "bid",
+            name: "foo",
+            nameHash: "deadbeef",
+            // Self-homed BID: net-external flow is 0 (matches the drafts
+            // card's `netSpendDoos`).
+            valueDoos: 0,
+            direction: "send",
+            height: 200,
+            time: unix,
+            confirmed: true,
+            counterparty: null,
+          },
+        ],
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    // "Recent activity" header should appear, and the classified rows.
+    await waitFor(() => expect(screen.getByText("Recent activity")).toBeInTheDocument());
+    // A row with the decoded name shows up as `.foo` inside a table cell.
+    await waitFor(() =>
+      expect(
+        screen.getByText((_, el) => el?.tagName === "TD" && el.textContent === ".foo"),
+      ).toBeInTheDocument(),
+    );
+    // The See all → link routes to /activity.
+    const seeAll = screen.getByRole("button", { name: /See all/ });
+    expect(seeAll).toBeInTheDocument();
+    // Alignment with the drafts card: the BID row (with self-homed
+    // valueDoos=0) shows "0.000000" byte-identical to the drafts card, and
+    // is colored NEUTRAL (gray) — a self-homed name action is not a loss.
+    const zeroSpans = screen
+      .getAllByText("0.000000")
+      .filter((el) => el.tagName === "SPAN");
+    expect(zeroSpans.some((el) => el.className.includes("text-gray-700"))).toBe(true);
+    expect(zeroSpans.some((el) => el.className.includes("text-red-600"))).toBe(false);
+    // The receive row (positive inflow) is green with a leading "+".
+    const incomeSpan = screen
+      .getAllByText((_, el) => el?.tagName === "SPAN" && /^\+100\.000000$/.test(el.textContent ?? ""))
+      .find((el) => el.className.includes("text-green-600"));
+    expect(incomeSpan).toBeTruthy();
+    // Long-form date: the row's Date cell reads "July 24, 2026", not the
+    // locale-dependent "24/07/2026" or "7/24/2026" that `formatDate` would
+    // produce. formatDateLong is the shared helper.
+    expect(screen.getAllByText("July 24, 2026").length).toBeGreaterThan(0);
   });
 });

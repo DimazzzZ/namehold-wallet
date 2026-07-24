@@ -20,6 +20,7 @@ import {
   useReadBalance,
   useReadRenewals,
   useNamesActionCapabilities,
+  useActionHistory,
 } from "../queries/read";
 import { useStartFullSync, useSyncStatus, useCancelFullSync } from "../queries/sync";
 import { auctionPhase, formatCountdown } from "../lib/auction";
@@ -42,6 +43,8 @@ import {
   hnsToDollarydoos,
   dollarydoosToHns,
   formatDate,
+  formatDateLong,
+  amountTone,
   latestTimestamp,
   isLikelyHnsAddress,
   truncateMiddle,
@@ -70,6 +73,7 @@ export function WalletView() {
   const { data: readBalance } = useReadBalance();
   const { data: drafts = [] } = useTxDrafts();
   const { data: names = [] } = useReadNames();
+  const { data: history = [] } = useActionHistory();
   const [nameQuery, setNameQuery] = useState("");
   // Substring filter for the Owned Names list. Matches on BOTH the raw ACE
   // name (as stored on-chain) and its decoded displayName, so a unicode
@@ -865,7 +869,80 @@ export function WalletView() {
         )}
       </div>
 
-      {/* Recent drafts */}
+      {/* Recent activity — real on-chain history from the node (node-indexed). */}
+      <div className="bg-white rounded p-4 border border-gray-200">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm text-gray-500">Recent activity</div>
+          <button
+            className="text-xs text-blue-600 hover:underline"
+            onClick={() => navigate("/activity")}
+          >
+            See all →
+          </button>
+        </div>
+        {history.length > 0 ? (
+          <div className="max-h-72 overflow-auto">
+            <table className="w-full text-sm text-gray-700">
+              <thead>
+                <tr className="text-left text-gray-500 border-b">
+                  <th className="px-3 py-2 font-medium">Date</th>
+                  <th className="px-3 py-2 font-medium">Action</th>
+                  <th className="px-3 py-2 font-medium">Name</th>
+                  <th className="px-3 py-2 font-medium text-right">Amount</th>
+                  <th className="px-3 py-2 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.slice(0, 10).map((h) => {
+                  const tone = amountTone(h);
+                  const toneClass =
+                    tone === "income"
+                      ? "text-green-600"
+                      : tone === "spend"
+                      ? "text-red-600"
+                      : "text-gray-700";
+                  const sign = tone === "income" ? "+" : tone === "spend" ? "-" : "";
+                  return (
+                    <tr key={h.txid} className="border-t border-gray-100">
+                      <td className="px-3 py-2 text-gray-500 whitespace-nowrap">
+                        {h.time ? formatDateLong(new Date(h.time * 1000).toISOString()) : "Pending"}
+                      </td>
+                      <td className="px-3 py-2 capitalize">{h.action}</td>
+                      <td className="px-3 py-2">
+                        {h.name ? `.${displayName(h.name)}` : "—"}
+                      </td>
+                      <td
+                        className="px-3 py-2 font-mono text-right whitespace-nowrap"
+                        title={
+                          h.valueDoos === 0 && h.direction !== "receive"
+                            ? "Name's locked value is re-homed to your own coin — no HNS spent beyond the fee."
+                            : undefined
+                        }
+                      >
+                        <span className={toneClass}>
+                          {sign}
+                          {formatHns(Math.abs(h.valueDoos))}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <Badge variant={h.confirmed ? "success" : "warning"}>
+                          {h.confirmed ? "Confirmed" : "Pending"}
+                        </Badge>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="text-gray-400 text-sm py-4 text-center">
+            No activity yet. Requires a synced node with the address index.
+          </div>
+        )}
+      </div>
+
+      {/* Recent drafts — local send/name drafts and their broadcast status. */}
       <div className="bg-white rounded p-4 border border-gray-200">
         <div className="text-sm text-gray-500 mb-2">Recent transactions ({drafts.length})</div>
         {drafts.length > 0 ? (

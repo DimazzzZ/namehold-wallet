@@ -124,6 +124,54 @@ export function formatDate(iso: string | null | undefined): string {
 }
 
 /**
+ * Long-form date, e.g. `"July 24, 2026"` — no locale-dependent d/m/y
+ * ordering, no time component. Used on transaction/history rows where the
+ * date is the primary anchor (readability wins over compactness).
+ *
+ * Uses `normalizeTimestamp` for the same input-shape tolerance as
+ * `formatDate` (naive-UTC SQLite strings, date-only, ISO w/ tz). Returns
+ * `"—"` for null/empty and falls back to the raw input on unparseable
+ * values (never `"Invalid Date"`).
+ *
+ * Deliberately separate from `formatDate` so the 10+ existing call sites
+ * (sync footer, batches, TLD inventory, Namebase dashboard, tests …) keep
+ * their compact `toLocaleString()` output unchanged.
+ */
+export function formatDateLong(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const s = iso.trim();
+  if (!s) return "—";
+
+  const d = new Date(normalizeTimestamp(s));
+  if (Number.isNaN(d.getTime())) return s;
+  return d.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+/**
+ * Classify a history/activity row's amount for coloring and sign:
+ * - `"income"`  → money entered the wallet (green, leading `+`).
+ * - `"spend"`   → money genuinely left the wallet (red, leading `-`).
+ * - `"neutral"` → self-homed name actions with `valueDoos === 0`, internal
+ *   moves, or any zero-magnitude row (gray, no sign).
+ *
+ * The rule mirrors `netSpendDoos`: a DNS UPDATE / BID / REGISTER / RENEW /
+ * REVEAL / REDEEM re-homes the name's own locked value onto our new coin
+ * (`valueDoos === 0`) — nothing was lost, so it MUST NOT paint red.
+ */
+export function amountTone(row: {
+  direction: string;
+  valueDoos: number;
+}): "income" | "spend" | "neutral" {
+  if (row.direction === "receive" && row.valueDoos > 0) return "income";
+  if (row.direction === "send" && row.valueDoos < 0) return "spend";
+  return "neutral";
+}
+
+/**
  * The more recent of two nullable timestamps (same SQLite/ISO formats
  * `formatDate` understands), or whichever one is present when only one is,
  * or `null` when neither is. Used to show a single "Last successful sync"
