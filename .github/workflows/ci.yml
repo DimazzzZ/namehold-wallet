@@ -48,16 +48,21 @@ jobs:
 
       # Tauri v2 links webkit2gtk on Linux, so the crate must compile against the
       # system GUI libraries even just to run `cargo test`.
+      # Cached via `awalsh128/cache-apt-pkgs-action` — a warm cache restores the
+      # resolved .deb closure with dpkg (no mirror fetch), so a slow apt mirror
+      # can't stall CI. Bump `version` below to bust the cache after editing the
+      # package list.
       - name: Install Tauri system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            build-essential \
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9  # v1.6.3
+        with:
+          packages: >-
+            libwebkit2gtk-4.1-dev
+            libappindicator3-dev
+            librsvg2-dev
+            patchelf
+            build-essential
             libssl-dev
+          version: "1"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
