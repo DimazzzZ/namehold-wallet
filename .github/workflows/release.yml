@@ -127,7 +127,9 @@ jobs:
             patchelf
             build-essential
             libssl-dev
-          version: "1"
+          # v2: bust the poisoned v1 cache (stale-index 404 dropped deps). Keep
+          # in sync with ci.yml.
+          version: "2"
 
       - uses: pnpm/action-setup@v4
         with:

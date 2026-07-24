@@ -68,7 +68,10 @@ jobs:
             patchelf
             build-essential
             libssl-dev
-          version: "1"
+          # v2: v1 cached a half-installed set from a run where a stale-index
+          # 404 dropped the gstreamer deps, breaking the GTK/webkit link. Bump
+          # busts that poisoned cache; the apt refresh above prevents recurrence.
+          version: "2"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
