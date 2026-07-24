@@ -44,7 +44,8 @@ fn test_deserialize_hsd_name() {
 
 #[test]
 fn test_deserialize_hsd_address() {
-    let json = r#"{"address": "rs1qtest123", "name": "default", "account": 0, "branch": 0, "index": 4}"#;
+    let json =
+        r#"{"address": "rs1qtest123", "name": "default", "account": 0, "branch": 0, "index": 4}"#;
     let addr: HsdAddress = serde_json::from_str(json).unwrap();
     assert_eq!(addr.address, "rs1qtest123");
     assert_eq!(addr.name.as_deref(), Some("default"));
@@ -52,7 +53,8 @@ fn test_deserialize_hsd_address() {
 
 #[test]
 fn test_deserialize_hsd_wallet_info() {
-    let json = r#"{"wid": 0, "id": "primary", "network": "main", "accountDepth": 5, "watchOnly": false}"#;
+    let json =
+        r#"{"wid": 0, "id": "primary", "network": "main", "accountDepth": 5, "watchOnly": false}"#;
     let info: HsdWalletInfo = serde_json::from_str(json).unwrap();
     assert!(info.wid.is_some());
     assert_eq!(info.id.as_deref(), Some("primary"));

@@ -439,7 +439,12 @@ mod tests {
         let conn = mem_db();
         upsert_utxo(&conn, "p1", &coin("aa", 0, 1_000_000, None)).unwrap();
         upsert_utxo(&conn, "p1", &coin("bb", 1, 2_000_000, Some(cov(COV_BID)))).unwrap();
-        upsert_utxo(&conn, "p1", &coin("cc", 0, 3_000_000, Some(cov(COV_REGISTER)))).unwrap();
+        upsert_utxo(
+            &conn,
+            "p1",
+            &coin("cc", 0, 3_000_000, Some(cov(COV_REGISTER))),
+        )
+        .unwrap();
 
         let bal = compute_balances(&conn, "p1").unwrap();
         assert_eq!(bal.liquid, 1_000_000);
@@ -570,7 +575,15 @@ mod tests {
     fn cache_transaction_is_idempotent() {
         let conn = mem_db();
         cache_transaction(&conn, "p1", "tx1", Some(10), Some("2024-01-01"), "{}").unwrap();
-        cache_transaction(&conn, "p1", "tx1", Some(11), Some("2024-01-02"), "{\"a\":1}").unwrap();
+        cache_transaction(
+            &conn,
+            "p1",
+            "tx1",
+            Some(11),
+            Some("2024-01-02"),
+            "{\"a\":1}",
+        )
+        .unwrap();
         let (count, height): (i64, i64) = conn
             .query_row(
                 "SELECT COUNT(*), MAX(height) FROM wallet_transactions_cache

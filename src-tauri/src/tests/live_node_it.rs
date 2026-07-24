@@ -22,8 +22,7 @@ use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 use crate::commands::names::{
-    build_bid_draft, build_open_draft, build_register_draft, build_reveal_draft,
-    build_redeem_draft,
+    build_bid_draft, build_open_draft, build_redeem_draft, build_register_draft, build_reveal_draft,
 };
 use crate::commands::tx::{
     broadcast_tx_draft, build_send_hns_draft, refresh_tx_confirmations, sign_tx_draft,
@@ -44,7 +43,9 @@ const NET: Network = Network::Regtest;
 
 /// `Some((url, api_key))` when integration tests are enabled, else `None` (skip).
 fn it_env() -> Option<(String, String)> {
-    let url = std::env::var("HNS_IT_NODE_URL").ok().filter(|s| !s.trim().is_empty())?;
+    let url = std::env::var("HNS_IT_NODE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
     let key = std::env::var("HNS_IT_NODE_API_KEY").unwrap_or_default();
     Some((url, key))
 }
@@ -79,7 +80,14 @@ fn seeded_conn_regtest(url: &str, api_key: &str) -> rusqlite::Connection {
 
     let (addr, spk, pubkey) = leaf00();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE, "RegIT", "mnemonic_hot", "regtest", &account_xpub(), 0, false,
+        &conn,
+        PROFILE,
+        "RegIT",
+        "mnemonic_hot",
+        "regtest",
+        &account_xpub(),
+        0,
+        false,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE).unwrap();
@@ -103,7 +111,10 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+            hsd_child: std::sync::Mutex::new(None),
+            sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::commands::sync::SyncStatus::default(),
+            )),
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -111,8 +122,12 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
 
 fn unlock(app: &tauri::App<tauri::test::MockRuntime>) {
     let state = app.state::<AppState>();
-    *state.signer.lock().unwrap() =
-        Some(SignerSession::unlock(PROFILE.to_string(), NET, master(), 600_000));
+    *state.signer.lock().unwrap() = Some(SignerSession::unlock(
+        PROFILE.to_string(),
+        NET,
+        master(),
+        600_000,
+    ));
 }
 
 fn client(url: &str, key: &str) -> NodeRpcClient {
@@ -164,8 +179,12 @@ async fn execute(
     draft_id: String,
 ) {
     unlock(app);
-    sign_tx_draft(app.state(), draft_id.clone()).await.expect("sign");
-    let bc = broadcast_tx_draft(app.state(), draft_id.clone()).await.expect("broadcast");
+    sign_tx_draft(app.state(), draft_id.clone())
+        .await
+        .expect("sign");
+    let bc = broadcast_tx_draft(app.state(), draft_id.clone())
+        .await
+        .expect("broadcast");
     assert_eq!(bc.status, "broadcasted");
     cl.generate_to_address(1, addr).await.expect("mine 1");
 }
@@ -198,11 +217,16 @@ async fn live_send_builds_broadcasts_and_confirms() {
     execute(&app, &cl, &addr, draft.id.clone()).await;
 
     // The confirmation refresh advances broadcasted → confirmed with a height.
-    let r = refresh_tx_confirmations(app.state(), None).await.expect("refresh");
+    let r = refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh");
     assert_eq!(r["confirmed"], serde_json::json!(1), "{r}");
     let row = draft_status(&app, &draft.id);
     assert_eq!(row.status, "confirmed");
-    assert!(row.confirmation_height.is_some(), "confirmed draft records a height");
+    assert!(
+        row.confirmation_height.is_some(),
+        "confirmed draft records a height"
+    );
 }
 
 #[tokio::test]
@@ -225,7 +249,9 @@ async fn live_auction_open_bid_reveal_register() {
     let name = format!("cuait{tip}");
 
     // OPEN → advance to BIDDING.
-    let open = build_open_draft(app.state(), name.clone(), Some(1)).await.expect("build open");
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
     execute(&app, &cl, &addr, open.id).await;
     assert!(
         mine_until(&cl, &name, "BIDDING", &addr, 30).await,
@@ -247,7 +273,9 @@ async fn live_auction_open_bid_reveal_register() {
 
     // REVEAL → advance to CLOSED.
     sync_wallet_state(app.state(), None).await.expect("sync");
-    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1)).await.expect("build reveal");
+    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build reveal");
     execute(&app, &cl, &addr, reveal.id).await;
     assert!(
         mine_until(&cl, &name, "CLOSED", &addr, 40).await,
@@ -301,7 +329,9 @@ async fn live_auction_open_bid_reveal_redeem() {
     let name = format!("loser{tip}");
 
     // OPEN → advance to BIDDING.
-    let open = build_open_draft(app.state(), name.clone(), Some(1)).await.expect("build open");
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
     execute(&app, &cl, &addr, open.id).await;
     assert!(
         mine_until(&cl, &name, "BIDDING", &addr, 30).await,
@@ -323,7 +353,9 @@ async fn live_auction_open_bid_reveal_redeem() {
 
     // REVEAL → advance to CLOSED.
     sync_wallet_state(app.state(), None).await.expect("sync");
-    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1)).await.expect("build reveal");
+    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build reveal");
     execute(&app, &cl, &addr, reveal.id).await;
     assert!(
         mine_until(&cl, &name, "CLOSED", &addr, 40).await,
@@ -337,7 +369,9 @@ async fn live_auction_open_bid_reveal_redeem() {
 
     // REDEEM: there is an unspent reveal coin at the bid commitment address.
     // The wallet can reclaim it without needing the name's owner coin.
-    let redeem = build_redeem_draft(app.state(), name.clone(), Some(1)).await.expect("build redeem");
+    let redeem = build_redeem_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build redeem");
     execute(&app, &cl, &addr, redeem.id).await;
 
     // After redeem, the name stays CLOSED on-chain.
@@ -364,21 +398,36 @@ async fn live_auction_register_transfer_finalize() {
     let name = format!("transfer{tip}");
 
     // OPEN → advance to BIDDING.
-    let open = build_open_draft(app.state(), name.clone(), Some(1)).await.expect("build open");
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
     execute(&app, &cl, &addr, open.id).await;
-    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await, "name {name} did not reach BIDDING");
+    assert!(
+        mine_until(&cl, &name, "BIDDING", &addr, 30).await,
+        "name {name} did not reach BIDDING"
+    );
 
     // BID → advance to REVEAL.
     sync_wallet_state(app.state(), None).await.expect("sync");
-    let bid = build_bid_draft(app.state(), name.clone(), 1_000_000, 2_000_000, Some(1)).await.expect("build bid");
+    let bid = build_bid_draft(app.state(), name.clone(), 1_000_000, 2_000_000, Some(1))
+        .await
+        .expect("build bid");
     execute(&app, &cl, &addr, bid.id).await;
-    assert!(mine_until(&cl, &name, "REVEAL", &addr, 30).await, "name {name} did not reach REVEAL");
+    assert!(
+        mine_until(&cl, &name, "REVEAL", &addr, 30).await,
+        "name {name} did not reach REVEAL"
+    );
 
     // REVEAL → advance to CLOSED.
     sync_wallet_state(app.state(), None).await.expect("sync");
-    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1)).await.expect("build reveal");
+    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build reveal");
     execute(&app, &cl, &addr, reveal.id).await;
-    assert!(mine_until(&cl, &name, "CLOSED", &addr, 40).await, "name {name} did not reach CLOSED");
+    assert!(
+        mine_until(&cl, &name, "CLOSED", &addr, 40).await,
+        "name {name} did not reach CLOSED"
+    );
 
     // Track the name so sync picks up the owner coin.
     {
@@ -393,25 +442,30 @@ async fn live_auction_register_transfer_finalize() {
 
     // REGISTER the won name.
     let records = vec![serde_json::json!({"type":"TXT","txt":["cua-agent-verified"]})];
-    let reg = build_register_draft(app.state(), name.clone(), Some(records), Some(1)).await.expect("build register");
+    let reg = build_register_draft(app.state(), name.clone(), Some(records), Some(1))
+        .await
+        .expect("build register");
     execute(&app, &cl, &addr, reg.id).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
 
     // TRANSFER the registered name to a second address (leaf 0/1).
     // Derive address for branch=0 child_index=1.
-    let (_sk, pk2, addr2) = crate::noncustodial::hd::derive_address(NET, &seed(), 0, 0, 1).unwrap();
+    let (_sk, _pk2, addr2) =
+        crate::noncustodial::hd::derive_address(NET, &seed(), 0, 0, 1).unwrap();
     use crate::commands::names::build_transfer_draft;
-    let transfer = build_transfer_draft(app.state(), name.clone(), addr2.clone(), Some(1)).await.expect("build transfer");
+    let transfer = build_transfer_draft(app.state(), name.clone(), addr2.clone(), Some(1))
+        .await
+        .expect("build transfer");
     execute(&app, &cl, &addr, transfer.id).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
 
     // After TRANSFER, the name stays on-chain in some state still allowing finalize.
     use crate::commands::names::build_finalize_draft;
-    let finalize = build_finalize_draft(app.state(), name.clone(), Some(1)).await.expect("build finalize");
+    let finalize = build_finalize_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build finalize");
     execute(&app, &cl, &addr, finalize.id).await;
 
     // After finalize, the name is at the new address. Check state.
     assert_eq!(node_state(&cl, &name).await.as_deref(), Some("CLOSED"));
 }
-
-

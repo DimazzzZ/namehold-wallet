@@ -9,18 +9,36 @@ use tauri::State;
 pub(crate) struct CsvRow {
     #[serde(alias = "Name", alias = "name", alias = "TLD", alias = "tld")]
     pub(crate) tld: Option<String>,
-    #[serde(alias = "Staked", alias = "staked", alias = "is_staked", alias = "IsStaked", default)]
+    #[serde(
+        alias = "Staked",
+        alias = "staked",
+        alias = "is_staked",
+        alias = "IsStaked",
+        default
+    )]
     pub(crate) is_staked: Option<String>,
     #[serde(alias = "Category", alias = "category", default)]
     pub(crate) category: Option<String>,
     #[serde(alias = "Tag", alias = "tag", alias = "Tags", alias = "tags", default)]
     pub(crate) tags: Option<String>,
-    #[serde(alias = "Notes", alias = "notes", alias = "Note", alias = "note", default)]
+    #[serde(
+        alias = "Notes",
+        alias = "notes",
+        alias = "Note",
+        alias = "note",
+        default
+    )]
     pub(crate) notes: Option<String>,
     #[serde(alias = "has_sld", alias = "HasSld", alias = "has_sld", default)]
     #[allow(dead_code)]
     pub(crate) has_sld: Option<String>,
-    #[serde(alias = "Status", alias = "status", alias = "MigrationStatus", alias = "migration_status", default)]
+    #[serde(
+        alias = "Status",
+        alias = "status",
+        alias = "MigrationStatus",
+        alias = "migration_status",
+        default
+    )]
     pub(crate) status: Option<String>,
 }
 
@@ -32,10 +50,7 @@ pub(crate) fn parse_boolish(v: &str) -> bool {
 }
 
 pub(crate) fn normalize_tld(raw: &str) -> String {
-    raw.trim()
-        .trim_start_matches('.')
-        .trim()
-        .to_lowercase()
+    raw.trim().trim_start_matches('.').trim().to_lowercase()
 }
 
 pub(crate) fn infer_status(is_staked: bool, status_hint: Option<&str>) -> &'static str {
@@ -43,7 +58,7 @@ pub(crate) fn infer_status(is_staked: bool, status_hint: Option<&str>) -> &'stat
         return "do_not_touch_staked";
     }
     if let Some(hint) = status_hint {
-        let h = hint.to_lowercase().replace(' ', "_").replace('-', "_");
+        let h = hint.to_lowercase().replace([' ', '-'], "_");
         match h.as_str() {
             "namebase_transfer_requested" => "namebase_transfer_requested",
             "waiting_transfer_tx" => "waiting_transfer_tx",
@@ -99,15 +114,15 @@ pub async fn import_csv(
             continue;
         }
 
-        let is_staked = row
-            .is_staked
-            .as_deref()
-            .map(parse_boolish)
-            .unwrap_or(false);
+        let is_staked = row.is_staked.as_deref().map(parse_boolish).unwrap_or(false);
         let status = infer_status(is_staked, row.status.as_deref());
 
         let tags_json = row.tags.as_deref().map(|t| {
-            let items: Vec<&str> = t.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+            let items: Vec<&str> = t
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect();
             serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string())
         });
 
@@ -205,11 +220,17 @@ pub async fn export_csv(
             asset.category.clone().unwrap_or_default(),
             serde_json::to_string(&asset.tags).unwrap_or_else(|_| "[]".to_string()),
             asset.notes.clone().unwrap_or_default(),
-            asset.hns_received.map(|v| v.to_string()).unwrap_or_default(),
+            asset
+                .hns_received
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
             asset.transfer_tx_hash.clone().unwrap_or_default(),
             asset.finalize_tx_hash.clone().unwrap_or_default(),
             asset.name_state.clone().unwrap_or_default(),
-            asset.expires_at_height.map(|v| v.to_string()).unwrap_or_default(),
+            asset
+                .expires_at_height
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
             asset.last_synced_at.clone().unwrap_or_default(),
             asset.created_at.clone(),
             asset.updated_at.clone(),

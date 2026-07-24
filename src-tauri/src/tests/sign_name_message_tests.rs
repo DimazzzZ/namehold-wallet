@@ -69,11 +69,25 @@ fn seeded_conn() -> rusqlite::Connection {
 
     let (addr, spk, pubkey) = leaf00(MNEMONIC_A);
     db::queries::insert_wallet_profile(
-        &conn, PROFILE_A, "Wallet A", "mnemonic_hot", "mainnet", &account_xpub(MNEMONIC_A), 0, false,
+        &conn,
+        PROFILE_A,
+        "Wallet A",
+        "mnemonic_hot",
+        "mainnet",
+        &account_xpub(MNEMONIC_A),
+        0,
+        false,
     )
     .unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE_B, "Wallet B", "mnemonic_hot", "mainnet", &account_xpub(MNEMONIC_B), 0, false,
+        &conn,
+        PROFILE_B,
+        "Wallet B",
+        "mnemonic_hot",
+        "mainnet",
+        &account_xpub(MNEMONIC_B),
+        0,
+        false,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE_A).unwrap();
@@ -158,9 +172,11 @@ async fn signs_and_returns_signature_pubkey_address_for_the_owning_key() {
     let secp = secp256k1::Secp256k1::new();
     let pubkey = secp256k1::PublicKey::from_slice(&pubkey_bytes).unwrap();
     let sig = secp256k1::ecdsa::Signature::from_compact(&sig_bytes).unwrap();
-    let hash = crate::noncustodial::tx::blake2b256(&crate::noncustodial::message::message_preimage(MSG));
+    let hash =
+        crate::noncustodial::tx::blake2b256(&crate::noncustodial::message::message_preimage(MSG));
     let msg = secp256k1::Message::from_digest(hash);
-    secp.verify_ecdsa(&msg, &sig, &pubkey).expect("signature verifies");
+    secp.verify_ecdsa(&msg, &sig, &pubkey)
+        .expect("signature verifies");
 
     let (expected_addr, _, expected_pubkey_hex) = leaf00(MNEMONIC_A);
     assert_eq!(result["address"], serde_json::json!(expected_addr));

@@ -398,8 +398,8 @@ pub fn select_all_coins(
 /// input's prevout. So this is a plain hex decode with NO reversal — reversing
 /// would reference a non-existent outpoint and the node would reject the spend.
 fn outpoint_hash_from_txid(txid: &str) -> Result<[u8; 32], AppError> {
-    let bytes = hex::decode(txid)
-        .map_err(|e| AppError::InvalidInput(format!("bad txid hex: {e}")))?;
+    let bytes =
+        hex::decode(txid).map_err(|e| AppError::InvalidInput(format!("bad txid hex: {e}")))?;
     if bytes.len() != 32 {
         return Err(AppError::InvalidInput(format!(
             "txid must be 32 bytes, got {}",
@@ -438,6 +438,7 @@ pub struct BuiltTransaction {
 /// * `rate_per_byte` — fee rate in dollarydoos per byte.
 ///
 /// Returns the fully-signed transaction plus a summary.
+#[allow(clippy::too_many_arguments)]
 pub fn build_send(
     session: &mut SignerSession,
     network: Network,
@@ -496,12 +497,8 @@ pub fn build_send(
     // Re-derive each input's signing key and sign as P2WPKH (SIGHASH_ALL).
     let master = session.master()?;
     for (i, coin) in selection.coins.iter().enumerate() {
-        let path = crate::noncustodial::hd::bip44_path(
-            network,
-            account,
-            coin.branch,
-            coin.child_index,
-        );
+        let path =
+            crate::noncustodial::hd::bip44_path(network, account, coin.branch, coin.child_index);
         let child = master.derive_path(&path)?;
         let pubkey = child.compressed_pubkey();
         let hash160 = address::pubkey_to_hash160(&pubkey);
@@ -672,8 +669,26 @@ mod tests {
         insert_derived(&conn, 1, 9, "hs1qchange");
 
         // Spendable: liquid, unspent, covenant-free, address is ours.
-        insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
-        insert_utxo(&conn, &txid_b, 1, "hs1qchange", 700_000, 0, "liquid_hns", None);
+        insert_utxo(
+            &conn,
+            &txid_a,
+            0,
+            "hs1qrecv",
+            300_000,
+            0,
+            "liquid_hns",
+            None,
+        );
+        insert_utxo(
+            &conn,
+            &txid_b,
+            1,
+            "hs1qchange",
+            700_000,
+            0,
+            "liquid_hns",
+            None,
+        );
         // Excluded: already spent.
         insert_utxo(
             &conn,
@@ -686,9 +701,27 @@ mod tests {
             Some("somespender"),
         );
         // Excluded: carries a name covenant.
-        insert_utxo(&conn, &txid_d, 0, "hs1qrecv", 999_999, 7, "name_control", None);
+        insert_utxo(
+            &conn,
+            &txid_d,
+            0,
+            "hs1qrecv",
+            999_999,
+            7,
+            "name_control",
+            None,
+        );
         // Excluded: address not in derived_addresses (no join row).
-        insert_utxo(&conn, &txid_e, 0, "hs1qforeign", 999_999, 0, "liquid_hns", None);
+        insert_utxo(
+            &conn,
+            &txid_e,
+            0,
+            "hs1qforeign",
+            999_999,
+            0,
+            "liquid_hns",
+            None,
+        );
 
         let coins = load_spendable_coins(&conn, "p1", None).expect("load");
 
@@ -737,7 +770,16 @@ mod tests {
         let conn = mem_db();
         let txid_a = hex::encode([0xaa; 32]);
         insert_derived(&conn, 0, 5, "hs1qrecv");
-        insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+        insert_utxo(
+            &conn,
+            &txid_a,
+            0,
+            "hs1qrecv",
+            300_000,
+            0,
+            "liquid_hns",
+            None,
+        );
         insert_draft_row(&conn, "draft-a", None);
         reserve(&conn, &txid_a, 0, "draft-a");
 
@@ -747,7 +789,10 @@ mod tests {
 
         // A DIFFERENT draft's re-selection must also not see it.
         let coins = load_spendable_coins(&conn, "p1", Some("draft-b")).expect("load");
-        assert!(coins.is_empty(), "coin reserved by another draft stays excluded");
+        assert!(
+            coins.is_empty(),
+            "coin reserved by another draft stays excluded"
+        );
     }
 
     #[test]
@@ -755,7 +800,16 @@ mod tests {
         let conn = mem_db();
         let txid_a = hex::encode([0xaa; 32]);
         insert_derived(&conn, 0, 5, "hs1qrecv");
-        insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+        insert_utxo(
+            &conn,
+            &txid_a,
+            0,
+            "hs1qrecv",
+            300_000,
+            0,
+            "liquid_hns",
+            None,
+        );
         insert_draft_row(&conn, "draft-a", None);
         reserve(&conn, &txid_a, 0, "draft-a");
 
@@ -771,7 +825,16 @@ mod tests {
         let conn = mem_db();
         let txid_a = hex::encode([0xaa; 32]);
         insert_derived(&conn, 0, 5, "hs1qrecv");
-        insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+        insert_utxo(
+            &conn,
+            &txid_a,
+            0,
+            "hs1qrecv",
+            300_000,
+            0,
+            "liquid_hns",
+            None,
+        );
         // A draft created well past the TTL — its claim is stale.
         insert_draft_row(&conn, "draft-old", Some("2000-01-01T00:00:00Z"));
         reserve(&conn, &txid_a, 0, "draft-old");
@@ -789,7 +852,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(reserved.is_none(), "expired reservation should be cleared, not just ignored");
+        assert!(
+            reserved.is_none(),
+            "expired reservation should be cleared, not just ignored"
+        );
     }
 
     /// Finding 1 (Task 5 review): a reservation belonging to a draft that has
@@ -804,7 +870,16 @@ mod tests {
             let conn = mem_db();
             let txid_a = hex::encode([0xaa; 32]);
             insert_derived(&conn, 0, 5, "hs1qrecv");
-            insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+            insert_utxo(
+                &conn,
+                &txid_a,
+                0,
+                "hs1qrecv",
+                300_000,
+                0,
+                "liquid_hns",
+                None,
+            );
             // Well past RESERVATION_TTL_SECS.
             insert_draft_row(&conn, "draft-inflight", Some("2000-01-01T00:00:00Z"));
             conn.execute(
@@ -844,7 +919,16 @@ mod tests {
         let conn = mem_db();
         let txid_a = hex::encode([0xaa; 32]);
         insert_derived(&conn, 0, 5, "hs1qrecv");
-        insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+        insert_utxo(
+            &conn,
+            &txid_a,
+            0,
+            "hs1qrecv",
+            300_000,
+            0,
+            "liquid_hns",
+            None,
+        );
         // insert_draft_row leaves status at its table default, 'draft'.
         insert_draft_row(&conn, "draft-abandoned", Some("2000-01-01T00:00:00Z"));
         reserve(&conn, &txid_a, 0, "draft-abandoned");
@@ -866,7 +950,16 @@ mod tests {
         let conn = mem_db();
         let txid_a = hex::encode([0xaa; 32]);
         insert_derived(&conn, 0, 5, "hs1qrecv");
-        insert_utxo(&conn, &txid_a, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+        insert_utxo(
+            &conn,
+            &txid_a,
+            0,
+            "hs1qrecv",
+            300_000,
+            0,
+            "liquid_hns",
+            None,
+        );
         reserve(&conn, &txid_a, 0, "no-such-draft");
 
         let coins = load_spendable_coins(&conn, "p1", None).expect("load");
@@ -930,9 +1023,18 @@ mod tests {
         let addr = "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx";
         // Single input, comfortably above amount + fee => one change output.
         let coins = vec![coin(1, 2_000_000, 0, 0)];
-        let built =
-            build_send(&mut session, Network::Main, ACCOUNT, &coins, addr, 500_000, addr, rate, false)
-                .expect("build");
+        let built = build_send(
+            &mut session,
+            Network::Main,
+            ACCOUNT,
+            &coins,
+            addr,
+            500_000,
+            addr,
+            rate,
+            false,
+        )
+        .expect("build");
         // Exact conservation: inputs == outputs + fee.
         assert_eq!(built.input_total, built.output_total + built.fee);
         // With change present the tx is 1-in/2-out; fee == size * rate exactly.
@@ -974,7 +1076,10 @@ mod tests {
         // One recipient output, no change.
         assert_eq!(sel.fee, estimate_fee(2, 1, rate));
         // Recipient receives input_total - fee.
-        assert_eq!(sel.input_total - sel.fee, 3_000_000 - estimate_fee(2, 1, rate));
+        assert_eq!(
+            sel.input_total - sel.fee,
+            3_000_000 - estimate_fee(2, 1, rate)
+        );
     }
 
     #[test]

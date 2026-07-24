@@ -52,7 +52,14 @@ fn seeded_db(explorer_url: &str) -> TempDb {
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE, "RepConv", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        &conn,
+        PROFILE,
+        "RepConv",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKE",
+        0,
+        false,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE).unwrap();
@@ -117,7 +124,10 @@ async fn converges_across_multiple_windows_in_one_call() {
 
     // Every name-info lookup returns a valid (not-owned-relevant) body.
     let _name = server
-        .mock("GET", mockito::Matcher::Regex(r"^/api/names/[^/]+$".to_string()))
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"^/api/names/[^/]+$".to_string()),
+        )
         .with_body(r#"{"name":"n","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#)
         .expect_at_least(5)
         .create_async()
@@ -125,7 +135,10 @@ async fn converges_across_multiple_windows_in_one_call() {
     // Every name's history is empty => resolver returns None => "not owned"
     // => touch_asset_synced stamps last_synced_at.
     let _hist = server
-        .mock("GET", mockito::Matcher::Regex(r"^/api/names/[^/]+/history$".to_string()))
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"^/api/names/[^/]+/history$".to_string()),
+        )
         .with_body(r#"{"result":[]}"#)
         .expect_at_least(5)
         .create_async()
@@ -159,7 +172,10 @@ async fn all_transport_errors_abort_with_message() {
 
     // Every name-info lookup 500s → a transport error for every candidate.
     let _name = server
-        .mock("GET", mockito::Matcher::Regex(r"^/api/names/[^/]+$".to_string()))
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"^/api/names/[^/]+$".to_string()),
+        )
         .with_status(500)
         .expect_at_least(1)
         .create_async()
@@ -176,7 +192,11 @@ async fn all_transport_errors_abort_with_message() {
     repair_step_windowed(&status, &db_path, PROFILE, 150).await;
 
     // Nothing was stamped — every check errored.
-    assert_eq!(count_synced(&db), 0, "no candidate stamped when explorer is down");
+    assert_eq!(
+        count_synced(&db),
+        0,
+        "no candidate stamped when explorer is down"
+    );
 
     let s = status.lock().await;
     assert!(!s.errors.is_empty(), "an error message was recorded");
@@ -200,7 +220,10 @@ async fn all_format_errors_abort_with_degraded_message() {
     // Every name-info lookup answers 200 OK but with a shape the client
     // doesn't recognize (no `name` field) — the explorer's contract drifted.
     let _name = server
-        .mock("GET", mockito::Matcher::Regex(r"^/api/names/[^/]+$".to_string()))
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"^/api/names/[^/]+$".to_string()),
+        )
         .with_status(200)
         .with_body(r#"{"domain":"drifted","status":"ok"}"#)
         .expect_at_least(1)
@@ -217,12 +240,18 @@ async fn all_format_errors_abort_with_degraded_message() {
     repair_step_windowed(&status, &db_path, PROFILE, 150).await;
 
     // Nothing was stamped — every check errored (never a silent "0 owned").
-    assert_eq!(count_synced(&db), 0, "no candidate stamped when the explorer is degraded");
+    assert_eq!(
+        count_synced(&db),
+        0,
+        "no candidate stamped when the explorer is degraded"
+    );
 
     let s = status.lock().await;
     assert!(!s.errors.is_empty(), "an error message was recorded");
     assert!(
-        s.errors.iter().any(|e| e.contains("degraded") || e.contains("format")),
+        s.errors
+            .iter()
+            .any(|e| e.contains("degraded") || e.contains("format")),
         "error message names the format-degradation, got {:?}",
         s.errors
     );
@@ -243,12 +272,18 @@ async fn cancellation_before_run_bails_out_without_side_effects() {
 
     // If the loop wrongly proceeded it would hit these; expect(0) proves it did not.
     let _name = server
-        .mock("GET", mockito::Matcher::Regex(r"^/api/names/[^/]+$".to_string()))
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"^/api/names/[^/]+$".to_string()),
+        )
         .expect(0)
         .create_async()
         .await;
     let _hist = server
-        .mock("GET", mockito::Matcher::Regex(r"^/api/names/[^/]+/history$".to_string()))
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"^/api/names/[^/]+/history$".to_string()),
+        )
         .expect(0)
         .create_async()
         .await;
@@ -296,7 +331,10 @@ async fn tracked_only_names_converge_across_multiple_windows() {
 
     // Every name-info lookup returns a valid body (same shape as test 1).
     let name_mock = server
-        .mock("GET", mockito::Matcher::Regex(r"^/api/names/[^/]+$".to_string()))
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"^/api/names/[^/]+$".to_string()),
+        )
         .with_body(r#"{"name":"n","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#)
         .expect(N)
         .create_async()
@@ -305,7 +343,10 @@ async fn tracked_only_names_converge_across_multiple_windows() {
     // is called, but since these names have no `assets` row it's a no-op — the
     // point being exercised is that the loop still terminates regardless.
     let hist_mock = server
-        .mock("GET", mockito::Matcher::Regex(r"^/api/names/[^/]+/history$".to_string()))
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"^/api/names/[^/]+/history$".to_string()),
+        )
         .with_body(r#"{"result":[]}"#)
         .expect(N)
         .create_async()
@@ -335,8 +376,14 @@ async fn tracked_only_names_converge_across_multiple_windows() {
     // actually attempted exactly once each, which the exact mock call counts
     // above (`.expect(N)`) verify, plus honest convergence in `SyncStatus`.
     let s = status.lock().await;
-    assert_eq!(s.repair_candidates, N as u32, "stable denominator = total backlog");
-    assert_eq!(s.repair_remaining, 0, "remaining converged to 0 — all tracked-only names attempted");
+    assert_eq!(
+        s.repair_candidates, N as u32,
+        "stable denominator = total backlog"
+    );
+    assert_eq!(
+        s.repair_remaining, 0,
+        "remaining converged to 0 — all tracked-only names attempted"
+    );
     assert!(s.errors.is_empty(), "clean convergence, no errors");
     drop(s);
 

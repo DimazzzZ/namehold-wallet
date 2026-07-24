@@ -27,7 +27,14 @@ fn mem_db() -> rusqlite::Connection {
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE, "Test", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        &conn,
+        PROFILE,
+        "Test",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKE",
+        0,
+        false,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE).unwrap();
@@ -153,9 +160,17 @@ fn csv_row_stale_reassurance_is_overridden_when_chain_has_passed_it() {
 
     let row = resp.names.iter().find(|r| r.name == "stalecsv").unwrap();
     assert_eq!(row.source, "csv-import");
-    assert!(row.expiring_soon, "must be flagged once the chain has passed expiry");
-    let days = row.days_until_expire.expect("days must be recomputed, not left null");
-    assert!(days < 0.0, "expected negative (already-past) days, got {days}");
+    assert!(
+        row.expiring_soon,
+        "must be flagged once the chain has passed expiry"
+    );
+    let days = row
+        .days_until_expire
+        .expect("days must be recomputed, not left null");
+    assert!(
+        days < 0.0,
+        "expected negative (already-past) days, got {days}"
+    );
     assert_eq!(row.blocks_until_expire, Some(100_000 - 150_000));
 }
 
@@ -183,7 +198,11 @@ fn tracked_name_without_renewal_height_uses_csv_fallback() {
     seed_asset(&conn, "halfsynced", Some(400_000), Some(15.0));
     let resp = compute_renewals(&conn, PROFILE, Some(200_000)).unwrap();
 
-    let rows: Vec<_> = resp.names.iter().filter(|r| r.name == "halfsynced").collect();
+    let rows: Vec<_> = resp
+        .names
+        .iter()
+        .filter(|r| r.name == "halfsynced")
+        .collect();
     assert_eq!(rows.len(), 1, "one row per name, not duplicated");
     assert_eq!(rows[0].source, "csv-import");
     assert_eq!(rows[0].days_until_expire, Some(15.0));
@@ -307,7 +326,10 @@ fn response_serializes_camel_case_and_reports_threshold() {
     let conn = mem_db();
     seed_tracked(&conn, "shapename", Some(1_000), None);
     let resp = compute_renewals(&conn, PROFILE, Some(2_000)).unwrap();
-    assert_eq!(resp.expiring_soon_threshold_days, EXPIRING_SOON_THRESHOLD_DAYS);
+    assert_eq!(
+        resp.expiring_soon_threshold_days,
+        EXPIRING_SOON_THRESHOLD_DAYS
+    );
 
     let v = serde_json::to_value(&resp).unwrap();
     assert!(v.get("heightSource").is_some());

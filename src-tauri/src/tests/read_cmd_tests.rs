@@ -29,7 +29,10 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+            hsd_child: std::sync::Mutex::new(None),
+            sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::commands::sync::SyncStatus::default(),
+            )),
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -44,7 +47,14 @@ fn empty_db() -> rusqlite::Connection {
 
 fn add_profile(conn: &rusqlite::Connection, id: &str, network: &str) {
     db::queries::insert_wallet_profile(
-        conn, id, id, "mnemonic_hot", network, "xpubDUMMY", 0, false,
+        conn,
+        id,
+        id,
+        "mnemonic_hot",
+        network,
+        "xpubDUMMY",
+        0,
+        false,
     )
     .unwrap();
 }
@@ -238,19 +248,13 @@ async fn read_transactions_isolates_profiles() {
         .await
         .unwrap();
     assert_eq!(a_txs.as_array().unwrap().len(), 1);
-    assert_eq!(
-        a_txs[0].get("hash").and_then(|v| v.as_str()),
-        Some("txA1")
-    );
+    assert_eq!(a_txs[0].get("hash").and_then(|v| v.as_str()), Some("txA1"));
 
     let b_txs = read_transactions(app.state(), Some("B".into()))
         .await
         .unwrap();
     assert_eq!(b_txs.as_array().unwrap().len(), 1);
-    assert_eq!(
-        b_txs[0].get("hash").and_then(|v| v.as_str()),
-        Some("txB1")
-    );
+    assert_eq!(b_txs[0].get("hash").and_then(|v| v.as_str()), Some("txB1"));
 }
 
 // ---------------------------------------------------------------------------
@@ -411,7 +415,9 @@ async fn read_transactions_explicit_existing_profile_uses_that_profile() {
     add_cached_tx(&conn, "P2", "txP2", "OPEN", "alpha");
 
     let app = app_with(conn);
-    let val = read_transactions(app.state(), Some("P2".into())).await.unwrap();
+    let val = read_transactions(app.state(), Some("P2".into()))
+        .await
+        .unwrap();
     let arr = val.as_array().expect("array");
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["hash"], "txP2");
@@ -588,7 +594,9 @@ fn auction_position_names(val: &serde_json::Value) -> Vec<String> {
 #[tokio::test]
 async fn auction_positions_no_profile_returns_empty() {
     let app = app_with(empty_db());
-    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    let val = read_auction_position_names(app.state(), None)
+        .await
+        .unwrap();
     assert_eq!(val, serde_json::json!([]));
 }
 
@@ -604,7 +612,9 @@ async fn auction_positions_confirmed_open_draft_listed() {
     add_draft(&conn, "d1", "W1", "open", "namehold", "confirmed");
 
     let app = app_with(conn);
-    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    let val = read_auction_position_names(app.state(), None)
+        .await
+        .unwrap();
     assert_eq!(auction_position_names(&val), vec!["namehold".to_string()]);
 }
 
@@ -620,7 +630,9 @@ async fn auction_positions_broadcasted_bid_draft_listed() {
     add_draft(&conn, "d1", "W1", "bid", "example", "broadcasted");
 
     let app = app_with(conn);
-    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    let val = read_auction_position_names(app.state(), None)
+        .await
+        .unwrap();
     assert_eq!(auction_position_names(&val), vec!["example".to_string()]);
 }
 
@@ -636,7 +648,9 @@ async fn auction_positions_draft_status_open_not_listed() {
     add_draft(&conn, "d1", "W1", "open", "notyetqueued", "draft");
 
     let app = app_with(conn);
-    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    let val = read_auction_position_names(app.state(), None)
+        .await
+        .unwrap();
     assert_eq!(val, serde_json::json!([]));
 }
 
@@ -648,7 +662,9 @@ async fn auction_positions_dropped_status_open_not_listed() {
     add_draft(&conn, "d1", "W1", "open", "dropped-name", "dropped");
 
     let app = app_with(conn);
-    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    let val = read_auction_position_names(app.state(), None)
+        .await
+        .unwrap();
     assert_eq!(val, serde_json::json!([]));
 }
 
@@ -660,7 +676,9 @@ async fn auction_positions_failed_status_open_not_listed() {
     add_draft(&conn, "d1", "W1", "open", "failed-name", "failed");
 
     let app = app_with(conn);
-    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    let val = read_auction_position_names(app.state(), None)
+        .await
+        .unwrap();
     assert_eq!(val, serde_json::json!([]));
 }
 
@@ -677,7 +695,9 @@ async fn auction_positions_bid_commitment_without_draft_listed() {
     add_bid_commitment(&conn, "W1", "recovered", "blind1");
 
     let app = app_with(conn);
-    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    let val = read_auction_position_names(app.state(), None)
+        .await
+        .unwrap();
     assert_eq!(auction_position_names(&val), vec!["recovered".to_string()]);
 }
 
@@ -700,7 +720,9 @@ async fn auction_positions_owned_name_excluded_despite_old_bid_commitment() {
     );
 
     let app = app_with(conn);
-    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    let val = read_auction_position_names(app.state(), None)
+        .await
+        .unwrap();
     assert_eq!(val, serde_json::json!([]), "owned name must be excluded");
 }
 
@@ -743,7 +765,9 @@ async fn auction_positions_distinct_open_and_bid_same_name() {
     add_draft(&conn, "d2", "W1", "bid", "dupname", "broadcasted");
 
     let app = app_with(conn);
-    let val = read_auction_position_names(app.state(), None).await.unwrap();
+    let val = read_auction_position_names(app.state(), None)
+        .await
+        .unwrap();
     assert_eq!(auction_position_names(&val), vec!["dupname".to_string()]);
 }
 
@@ -789,7 +813,11 @@ fn hsd_bid(txid: Option<&str>) -> HsdBid {
 /// the bid tx had been broadcast). `merge_name_bids` is a pure function that
 /// receives an already profile-scoped slice — profile id is deliberately not
 /// a field here (that scoping happens one layer up, in `list_bid_commitments`).
-fn bid_commitment_row(name: &str, bid_txid: &str, bid_value_doos: i64) -> db::queries::BidCommitmentRow {
+fn bid_commitment_row(
+    name: &str,
+    bid_txid: &str,
+    bid_value_doos: i64,
+) -> db::queries::BidCommitmentRow {
     db::queries::BidCommitmentRow {
         name: name.to_string(),
         name_hash_hex: "aabb".to_string(),
@@ -812,10 +840,7 @@ fn bid_commitment_row(name: &str, bid_txid: &str, bid_value_doos: i64) -> db::qu
 
 #[test]
 fn merge_name_bids_matched_txid_is_mine_with_plaintext_value() {
-    let info = hsd_name_with_bids(
-        "foo",
-        vec![hsd_bid(Some("txA")), hsd_bid(Some("txB"))],
-    );
+    let info = hsd_name_with_bids("foo", vec![hsd_bid(Some("txA")), hsd_bid(Some("txB"))]);
     let commitments = vec![bid_commitment_row("foo", "txA", 1_500_000)];
 
     let val = merge_name_bids(&info, &commitments, "foo");
@@ -888,7 +913,9 @@ fn merge_name_bids_none_bids_on_info_yields_empty_array() {
 #[tokio::test]
 async fn read_name_bids_no_profile_returns_empty_response() {
     let app = app_with(empty_db());
-    let val = read_name_bids(app.state(), "foo".into(), None).await.unwrap();
+    let val = read_name_bids(app.state(), "foo".into(), None)
+        .await
+        .unwrap();
     assert_eq!(val, empty_name_bids_response("foo"));
 }
 
@@ -1006,7 +1033,11 @@ async fn read_name_bids_per_wallet_isolation() {
     let bids_a = val_a["bids"].as_array().expect("bids array");
     let by_txid_a = |t: &str| bids_a.iter().find(|b| b["txid"] == t).unwrap();
     assert_eq!(by_txid_a("txA")["mine"], true);
-    assert_eq!(by_txid_a("txB")["mine"], false, "B's commitment must not leak into A's view");
+    assert_eq!(
+        by_txid_a("txB")["mine"],
+        false,
+        "B's commitment must not leak into A's view"
+    );
     assert_eq!(val_a["myBidCount"], 1);
 
     let val_b = read_name_bids(app.state(), "foo".into(), Some("B".into()))
@@ -1014,7 +1045,11 @@ async fn read_name_bids_per_wallet_isolation() {
         .unwrap();
     let bids_b = val_b["bids"].as_array().expect("bids array");
     let by_txid_b = |t: &str| bids_b.iter().find(|b| b["txid"] == t).unwrap();
-    assert_eq!(by_txid_b("txA")["mine"], false, "A's commitment must not leak into B's view");
+    assert_eq!(
+        by_txid_b("txA")["mine"],
+        false,
+        "A's commitment must not leak into B's view"
+    );
     assert_eq!(by_txid_b("txB")["mine"], true);
     assert_eq!(val_b["myBidCount"], 1);
 }
@@ -1117,7 +1152,9 @@ fn records_from_resource_handles_null_missing_and_non_array() {
 #[tokio::test]
 async fn read_name_records_no_profile_returns_empty_array() {
     let app = app_with(empty_db());
-    let val = read_name_records(app.state(), "foo".into(), None).await.unwrap();
+    let val = read_name_records(app.state(), "foo".into(), None)
+        .await
+        .unwrap();
     assert_eq!(val, serde_json::json!([]));
 }
 

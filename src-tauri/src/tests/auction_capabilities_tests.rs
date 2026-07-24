@@ -5,8 +5,7 @@
 //! the pure derivation functions directly.
 
 use crate::commands::names::{
-    derive_auction_task_state, next_action_for_task, AuctionTaskState,
-    EXPIRING_SOON_THRESHOLD_DAYS,
+    derive_auction_task_state, next_action_for_task, AuctionTaskState, EXPIRING_SOON_THRESHOLD_DAYS,
 };
 
 // Helper: no owner coin (covenant_type = None). `has_bid_coin` (unspent
@@ -21,7 +20,17 @@ fn state_no_owner(
     has_bid_coin: bool,
     has_reveal: bool,
 ) -> AuctionTaskState {
-    derive_auction_task_state(phase, owns_name, has_bid, has_bid_coin, has_reveal, owns_name, None, None, false)
+    derive_auction_task_state(
+        phase,
+        owns_name,
+        has_bid,
+        has_bid_coin,
+        has_reveal,
+        owns_name,
+        None,
+        None,
+        false,
+    )
 }
 
 // Helper: owner coin is REGISTER type (≥ COV_REGISTER = 6, meaning already registered).
@@ -32,7 +41,17 @@ fn state_registered(
     has_bid_coin: bool,
     has_reveal: bool,
 ) -> AuctionTaskState {
-    derive_auction_task_state(phase, owns_name, has_bid, has_bid_coin, has_reveal, owns_name, Some(6), None, false)
+    derive_auction_task_state(
+        phase,
+        owns_name,
+        has_bid,
+        has_bid_coin,
+        has_reveal,
+        owns_name,
+        Some(6),
+        None,
+        false,
+    )
 }
 
 // Helper: owner coin is a pre-REGISTER type like REVEAL (4) — just won, not yet registered.
@@ -43,7 +62,17 @@ fn state_unregistered(
     has_bid_coin: bool,
     has_reveal: bool,
 ) -> AuctionTaskState {
-    derive_auction_task_state(phase, owns_name, has_bid, has_bid_coin, has_reveal, owns_name, Some(4), None, false)
+    derive_auction_task_state(
+        phase,
+        owns_name,
+        has_bid,
+        has_bid_coin,
+        has_reveal,
+        owns_name,
+        Some(4),
+        None,
+        false,
+    )
 }
 
 // Helper: registered owner coin + a known days-until-expire value.
@@ -82,7 +111,17 @@ fn available_with_pending_open_yields_waiting_for_bidding() {
     // A pending OPEN (our own unconfirmed draft/coin) reuses the existing
     // WaitingForBidding variant instead of AvailableToOpen, before the phase
     // itself has advanced to OPENING.
-    let state = derive_auction_task_state("AVAILABLE", false, false, false, false, false, None, None, true);
+    let state = derive_auction_task_state(
+        "AVAILABLE",
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+        None,
+        true,
+    );
     assert_eq!(state, AuctionTaskState::WaitingForBidding);
 }
 
@@ -96,7 +135,17 @@ fn empty_phase_with_pending_open_yields_waiting_for_bidding() {
 fn available_without_pending_open_still_yields_available_to_open() {
     // Regression: has_pending_open=false must not change the pre-existing
     // AVAILABLE behavior.
-    let state = derive_auction_task_state("AVAILABLE", false, false, false, false, false, None, None, false);
+    let state = derive_auction_task_state(
+        "AVAILABLE",
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+        None,
+        false,
+    );
     assert_eq!(state, AuctionTaskState::AvailableToOpen);
 }
 
@@ -228,21 +277,51 @@ fn explorer_owned_without_owner_coin_within_threshold_yields_expiring_soon() {
     // Owned per explorer evidence only (no local owner coin): the expiry alarm
     // must still fire — renewals are exactly the case where staying silent
     // loses the name.
-    let state = derive_auction_task_state("CLOSED", true, false, false, false, false, None, Some(5.0), false);
+    let state = derive_auction_task_state(
+        "CLOSED",
+        true,
+        false,
+        false,
+        false,
+        false,
+        None,
+        Some(5.0),
+        false,
+    );
     assert_eq!(state, AuctionTaskState::ExpiringSoon);
 }
 
 #[test]
 fn won_unregistered_within_threshold_still_needs_register_first() {
     // Registration takes precedence: an unregistered win can't be renewed.
-    let state = derive_auction_task_state("CLOSED", true, false, false, false, true, Some(4), Some(5.0), false);
+    let state = derive_auction_task_state(
+        "CLOSED",
+        true,
+        false,
+        false,
+        false,
+        true,
+        Some(4),
+        Some(5.0),
+        false,
+    );
     assert_eq!(state, AuctionTaskState::WonNeedsRegister);
 }
 
 #[test]
 fn unowned_closed_within_threshold_is_not_expiring_soon() {
     // Not our name — no renewal alarm.
-    let state = derive_auction_task_state("CLOSED", false, false, false, false, false, None, Some(5.0), false);
+    let state = derive_auction_task_state(
+        "CLOSED",
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+        Some(5.0),
+        false,
+    );
     assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);
 }
 

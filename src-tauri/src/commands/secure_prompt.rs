@@ -148,7 +148,10 @@ pub async fn prompt_secure(
 /// a `reveal` payload (the mnemonic) or answering on another window's behalf.
 /// App commands are not ACL-gated in Tauri v2, so this in-command check is the
 /// real enforcement boundary.
-pub(crate) fn assert_owning_window(window: &tauri::WebviewWindow, prompt_id: &str) -> Result<(), AppError> {
+pub(crate) fn assert_owning_window(
+    window: &tauri::WebviewWindow,
+    prompt_id: &str,
+) -> Result<(), AppError> {
     if window.label() != format!("secure-prompt-{prompt_id}") {
         return Err(AppError::Other("forbidden".into()));
     }

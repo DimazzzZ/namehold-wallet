@@ -17,9 +17,18 @@ use tauri::Manager;
 const BLOCKS_PER_DAY: i64 = 144;
 const RENEWAL_WINDOW: i64 = 105_120; // mainnet
 
-fn enable_notifications(conn: &rusqlite::Connection, reveal_lead_blocks: &str, renewal_lead_days: &str) {
+fn enable_notifications(
+    conn: &rusqlite::Connection,
+    reveal_lead_blocks: &str,
+    renewal_lead_days: &str,
+) {
     db::queries::set_setting(conn, "deadline_notify_enabled", "true").unwrap();
-    db::queries::set_setting(conn, "deadline_notify_reveal_lead_blocks", reveal_lead_blocks).unwrap();
+    db::queries::set_setting(
+        conn,
+        "deadline_notify_reveal_lead_blocks",
+        reveal_lead_blocks,
+    )
+    .unwrap();
     db::queries::set_setting(conn, "deadline_notify_renewal_lead_days", renewal_lead_days).unwrap();
 }
 
@@ -38,14 +47,29 @@ fn seed_pending_bid(
     reveal_end_height: i64,
 ) {
     db::queries::insert_bid_commitment(
-        conn, profile_id, name, "aabb", "rs1qaddr", 0, 0, 1000, 2000, &"11".repeat(32),
+        conn,
+        profile_id,
+        name,
+        "aabb",
+        "rs1qaddr",
+        0,
+        0,
+        1000,
+        2000,
+        &"11".repeat(32),
         &"22".repeat(32),
     )
     .unwrap();
-    db::queries::set_reveal_end_height(conn, profile_id, &"22".repeat(32), reveal_end_height).unwrap();
+    db::queries::set_reveal_end_height(conn, profile_id, &"22".repeat(32), reveal_end_height)
+        .unwrap();
 }
 
-fn seed_owned_name_near_renewal(conn: &rusqlite::Connection, profile_id: &str, name: &str, renewal_height: i64) {
+fn seed_owned_name_near_renewal(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+    renewal_height: i64,
+) {
     conn.execute(
         "INSERT INTO tracked_name_states
             (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout,
@@ -75,7 +99,10 @@ async fn disabled_by_default_notifies_nothing_even_with_imminent_deadlines() {
         .expect("scan should succeed even when disabled");
 
     assert!(!outcome.enabled);
-    assert!(outcome.notified.is_empty(), "must not notify while the feature is off by default");
+    assert!(
+        outcome.notified.is_empty(),
+        "must not notify while the feature is off by default"
+    );
 }
 
 #[tokio::test]
@@ -113,7 +140,9 @@ async fn notifies_for_imminent_reveal_window_and_dedups_next_scan() {
     let state: tauri::State<crate::AppState> = app.state();
     let conn = state.db.lock().unwrap();
     let settings = db::queries::get_settings(&conn).unwrap();
-    let raw = settings.get("deadline_notify_state").expect("dedup state must be persisted");
+    let raw = settings
+        .get("deadline_notify_state")
+        .expect("dedup state must be persisted");
     assert!(raw.contains(&format!("reveal:{profile_id}:closingsoon")));
 }
 
@@ -130,7 +159,9 @@ async fn does_not_notify_for_reveal_far_from_lead_time() {
     }
 
     let app = mock_app_with(state);
-    let outcome = scan_deadline_notifications(app.handle().clone(), app.state()).await.unwrap();
+    let outcome = scan_deadline_notifications(app.handle().clone(), app.state())
+        .await
+        .unwrap();
     assert!(outcome.notified.is_empty());
 }
 
@@ -147,7 +178,9 @@ async fn revealed_bid_is_excluded_even_if_the_window_would_be_imminent() {
     }
 
     let app = mock_app_with(state);
-    let outcome = scan_deadline_notifications(app.handle().clone(), app.state()).await.unwrap();
+    let outcome = scan_deadline_notifications(app.handle().clone(), app.state())
+        .await
+        .unwrap();
     assert!(
         outcome.notified.is_empty(),
         "a bid that already revealed has no more reveal deadline"
@@ -166,7 +199,16 @@ async fn bid_commitment_without_a_persisted_reveal_end_height_is_skipped() {
         enable_notifications(&conn, "144", "30");
         seed_current_height(&conn, &id, 1_000);
         db::queries::insert_bid_commitment(
-            &conn, &id, "legacybid", "aabb", "rs1qaddr", 0, 0, 1000, 2000, &"11".repeat(32),
+            &conn,
+            &id,
+            "legacybid",
+            "aabb",
+            "rs1qaddr",
+            0,
+            0,
+            1000,
+            2000,
+            &"11".repeat(32),
             &"33".repeat(32),
         )
         .unwrap();
@@ -174,7 +216,9 @@ async fn bid_commitment_without_a_persisted_reveal_end_height_is_skipped() {
     }
 
     let app = mock_app_with(state);
-    let outcome = scan_deadline_notifications(app.handle().clone(), app.state()).await.unwrap();
+    let outcome = scan_deadline_notifications(app.handle().clone(), app.state())
+        .await
+        .unwrap();
     assert!(outcome.notified.is_empty());
 }
 
@@ -197,7 +241,9 @@ async fn notifies_for_imminent_renewal_reusing_task3_compute_renewals() {
     }
 
     let app = mock_app_with(state);
-    let outcome = scan_deadline_notifications(app.handle().clone(), app.state()).await.unwrap();
+    let outcome = scan_deadline_notifications(app.handle().clone(), app.state())
+        .await
+        .unwrap();
     assert_eq!(outcome.notified.len(), 1);
     assert!(outcome.notified[0].key.starts_with("renewal:"));
     assert!(outcome.notified[0].key.contains("duesoon"));
@@ -218,7 +264,9 @@ async fn does_not_notify_for_renewal_far_from_lead_time() {
     }
 
     let app = mock_app_with(state);
-    let outcome = scan_deadline_notifications(app.handle().clone(), app.state()).await.unwrap();
+    let outcome = scan_deadline_notifications(app.handle().clone(), app.state())
+        .await
+        .unwrap();
     assert!(outcome.notified.is_empty());
 }
 
@@ -230,7 +278,9 @@ async fn scan_with_no_wallet_profiles_is_a_harmless_noop() {
         enable_notifications(&conn, "144", "30");
     }
     let app = mock_app_with(state);
-    let outcome = scan_deadline_notifications(app.handle().clone(), app.state()).await.unwrap();
+    let outcome = scan_deadline_notifications(app.handle().clone(), app.state())
+        .await
+        .unwrap();
     assert!(outcome.notified.is_empty());
     assert!(outcome.delivery_error.is_none());
 }
@@ -289,7 +339,9 @@ async fn reveal_window_closed_more_than_one_reveal_period_ago_is_excluded() {
     }
 
     let app = mock_app_with(state);
-    let outcome = scan_deadline_notifications(app.handle().clone(), app.state()).await.unwrap();
+    let outcome = scan_deadline_notifications(app.handle().clone(), app.state())
+        .await
+        .unwrap();
     assert!(
         outcome.notified.is_empty(),
         "a reveal window closed more than one reveal-period ago is dead, not merely deduped"
@@ -310,6 +362,12 @@ async fn reveal_window_closed_within_one_reveal_period_ago_still_notifies() {
     }
 
     let app = mock_app_with(state);
-    let outcome = scan_deadline_notifications(app.handle().clone(), app.state()).await.unwrap();
-    assert_eq!(outcome.notified.len(), 1, "a window closed exactly one reveal-period ago still gets its final alarm");
+    let outcome = scan_deadline_notifications(app.handle().clone(), app.state())
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.notified.len(),
+        1,
+        "a window closed exactly one reveal-period ago still gets its final alarm"
+    );
 }

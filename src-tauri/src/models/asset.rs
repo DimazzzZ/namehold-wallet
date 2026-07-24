@@ -107,9 +107,15 @@ mod tests {
     fn status_as_str_round_trips_all_variants() {
         let cases = [
             (MigrationStatus::NotStarted, "not_started"),
-            (MigrationStatus::NamebaseTransferRequested, "namebase_transfer_requested"),
+            (
+                MigrationStatus::NamebaseTransferRequested,
+                "namebase_transfer_requested",
+            ),
             (MigrationStatus::WaitingTransferTx, "waiting_transfer_tx"),
-            (MigrationStatus::TransferSeenOnChain, "transfer_seen_on_chain"),
+            (
+                MigrationStatus::TransferSeenOnChain,
+                "transfer_seen_on_chain",
+            ),
             (MigrationStatus::WaitingFinalize, "waiting_finalize"),
             (MigrationStatus::FinalizedOwned, "finalized_owned"),
             (MigrationStatus::FailedOrStuck, "failed_or_stuck"),
@@ -117,24 +123,42 @@ mod tests {
         ];
         for (variant, s) in &cases {
             assert_eq!(variant.as_str(), *s, "as_str for {s}");
-            assert!(matches!(MigrationStatus::from_str(s), _x if true), "from_str for {s}");
+            assert!(
+                matches!(MigrationStatus::from_str(s), _x if true),
+                "from_str for {s}"
+            );
         }
     }
 
     #[test]
     fn from_str_unknown_defaults_to_not_started() {
-        assert!(matches!(MigrationStatus::from_str(""), MigrationStatus::NotStarted));
-        assert!(matches!(MigrationStatus::from_str("unknown"), MigrationStatus::NotStarted));
-        assert!(matches!(MigrationStatus::from_str("garbage"), MigrationStatus::NotStarted));
+        assert!(matches!(
+            MigrationStatus::from_str(""),
+            MigrationStatus::NotStarted
+        ));
+        assert!(matches!(
+            MigrationStatus::from_str("unknown"),
+            MigrationStatus::NotStarted
+        ));
+        assert!(matches!(
+            MigrationStatus::from_str("garbage"),
+            MigrationStatus::NotStarted
+        ));
     }
 
     #[test]
     fn from_str_all_known_variants() {
         let cases = [
             ("not_started", MigrationStatus::NotStarted),
-            ("namebase_transfer_requested", MigrationStatus::NamebaseTransferRequested),
+            (
+                "namebase_transfer_requested",
+                MigrationStatus::NamebaseTransferRequested,
+            ),
             ("waiting_transfer_tx", MigrationStatus::WaitingTransferTx),
-            ("transfer_seen_on_chain", MigrationStatus::TransferSeenOnChain),
+            (
+                "transfer_seen_on_chain",
+                MigrationStatus::TransferSeenOnChain,
+            ),
             ("waiting_finalize", MigrationStatus::WaitingFinalize),
             ("finalized_owned", MigrationStatus::FinalizedOwned),
             ("failed_or_stuck", MigrationStatus::FailedOrStuck),
@@ -142,20 +166,37 @@ mod tests {
         ];
         for (s, expected) in &cases {
             let result = MigrationStatus::from_str(s);
-            assert!(matches!(result, _ if std::mem::discriminant(&result) == std::mem::discriminant(expected)));
+            assert!(
+                matches!(result, _ if std::mem::discriminant(&result) == std::mem::discriminant(expected))
+            );
         }
     }
 
     #[test]
     fn as_str_returns_correct_string_for_each_variant() {
         assert_eq!(MigrationStatus::NotStarted.as_str(), "not_started");
-        assert_eq!(MigrationStatus::NamebaseTransferRequested.as_str(), "namebase_transfer_requested");
-        assert_eq!(MigrationStatus::WaitingTransferTx.as_str(), "waiting_transfer_tx");
-        assert_eq!(MigrationStatus::TransferSeenOnChain.as_str(), "transfer_seen_on_chain");
-        assert_eq!(MigrationStatus::WaitingFinalize.as_str(), "waiting_finalize");
+        assert_eq!(
+            MigrationStatus::NamebaseTransferRequested.as_str(),
+            "namebase_transfer_requested"
+        );
+        assert_eq!(
+            MigrationStatus::WaitingTransferTx.as_str(),
+            "waiting_transfer_tx"
+        );
+        assert_eq!(
+            MigrationStatus::TransferSeenOnChain.as_str(),
+            "transfer_seen_on_chain"
+        );
+        assert_eq!(
+            MigrationStatus::WaitingFinalize.as_str(),
+            "waiting_finalize"
+        );
         assert_eq!(MigrationStatus::FinalizedOwned.as_str(), "finalized_owned");
         assert_eq!(MigrationStatus::FailedOrStuck.as_str(), "failed_or_stuck");
-        assert_eq!(MigrationStatus::DoNotTouchStaked.as_str(), "do_not_touch_staked");
+        assert_eq!(
+            MigrationStatus::DoNotTouchStaked.as_str(),
+            "do_not_touch_staked"
+        );
     }
 
     #[test]
@@ -180,7 +221,7 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-02T00:00:00Z".into(),
         };
-        
+
         let json = serde_json::to_value(&asset).unwrap();
         assert_eq!(json["tld"], "example");
         assert_eq!(json["status"], "not_started");
@@ -188,7 +229,7 @@ mod tests {
         assert_eq!(json["tags"], serde_json::json!(["tag1", "tag2"]));
         assert_eq!(json["hns_received"], serde_json::json!(1000));
         assert_eq!(json["days_until_expire"], serde_json::json!(30.5));
-        
+
         // Round-trip
         let back: Asset = serde_json::from_value(json).unwrap();
         assert_eq!(back.id, 42);
@@ -215,7 +256,7 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".into(),
             updated_at: "2024-01-01T00:00:00Z".into(),
         };
-        
+
         let json = serde_json::to_value(&asset).unwrap();
         assert_eq!(json["status"], "finalized_owned");
         assert_eq!(json["is_staked"], serde_json::json!(true));

@@ -71,7 +71,10 @@ mod tests {
         let b = hash_name("handshake").unwrap();
         assert_eq!(a, b);
         assert_eq!(a.len(), 32);
-        assert_ne!(hash_name("handshake").unwrap(), hash_name("namebase").unwrap());
+        assert_ne!(
+            hash_name("handshake").unwrap(),
+            hash_name("namebase").unwrap()
+        );
     }
 
     #[test]

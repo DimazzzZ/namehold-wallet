@@ -12,8 +12,7 @@ fn mock_app_with(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
 }
 
 fn setup_db() -> rusqlite::Connection {
-    let conn = crate::tests::command_helpers::create_test_db();
-    conn
+    crate::tests::command_helpers::create_test_db()
 }
 
 fn setup_state() -> AppState {
@@ -22,7 +21,10 @@ fn setup_state() -> AppState {
         db: std::sync::Mutex::new(conn),
         signer: std::sync::Mutex::new(None),
         secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-        hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+        hsd_child: std::sync::Mutex::new(None),
+        sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+            crate::commands::sync::SyncStatus::default(),
+        )),
     }
 }
 
@@ -42,14 +44,17 @@ fn temp_out_path(suffix: &str) -> String {
 }
 
 fn cleanup(suffix: &str) {
-    let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("namehold_csv_cmd_test_{suffix}")));
+    let _ = std::fs::remove_dir_all(
+        std::env::temp_dir().join(format!("namehold_csv_cmd_test_{suffix}")),
+    );
 }
 
 // --- import_csv tests ---
 
 #[tokio::test]
 async fn test_import_csv_basic() {
-    let csv_content = "Name,Staked,Category,Notes\nalpha,true,Premium,Top\nbeta,false,Finance,Low\n";
+    let csv_content =
+        "Name,Staked,Category,Notes\nalpha,true,Premium,Top\nbeta,false,Finance,Low\n";
     let path = write_temp_csv(csv_content, "imp_basic");
     let state = setup_state();
     let app = mock_app_with(state);
@@ -136,8 +141,12 @@ async fn test_import_csv_upsert_updates_existing() {
     let state = setup_state();
     let app = mock_app_with(state);
 
-    let _ = crate::commands::csv::import_csv(app.state(), path1).await.unwrap();
-    let res2 = crate::commands::csv::import_csv(app.state(), path2).await.unwrap();
+    let _ = crate::commands::csv::import_csv(app.state(), path1)
+        .await
+        .unwrap();
+    let res2 = crate::commands::csv::import_csv(app.state(), path2)
+        .await
+        .unwrap();
     cleanup("imp_upsert1");
     cleanup("imp_upsert2");
 
@@ -182,7 +191,8 @@ async fn test_import_csv_nonexistent_path_errors() {
     let state = setup_state();
     let app = mock_app_with(state);
 
-    let result = crate::commands::csv::import_csv(app.state(), "/nonexistent/path.csv".into()).await;
+    let result =
+        crate::commands::csv::import_csv(app.state(), "/nonexistent/path.csv".into()).await;
     assert!(result.is_err());
 }
 
@@ -194,14 +204,7 @@ async fn test_export_csv_empty_table() {
     let state = setup_state();
     let app = mock_app_with(state);
 
-    let result = crate::commands::csv::export_csv(
-        app.state(),
-        out.clone(),
-        None,
-        None,
-        None,
-    )
-    .await;
+    let result = crate::commands::csv::export_csv(app.state(), out.clone(), None, None, None).await;
 
     let count = result.unwrap();
     assert_eq!(count, 0);
@@ -215,24 +218,20 @@ async fn test_export_csv_empty_table() {
 
 #[tokio::test]
 async fn test_export_csv_with_assets() {
-    let csv_in = "Name,Staked,Category,Notes\nexport_a,true,Premium,Note A\nexport_b,false,,Note B\n";
+    let csv_in =
+        "Name,Staked,Category,Notes\nexport_a,true,Premium,Note A\nexport_b,false,,Note B\n";
     let in_path = write_temp_csv(csv_in, "exp_with");
     let out = temp_out_path("exp_with");
     let state = setup_state();
     let app = mock_app_with(state);
 
     // Import first
-    let _ = crate::commands::csv::import_csv(app.state(), in_path).await.unwrap();
+    let _ = crate::commands::csv::import_csv(app.state(), in_path)
+        .await
+        .unwrap();
 
     // Export all
-    let result = crate::commands::csv::export_csv(
-        app.state(),
-        out.clone(),
-        None,
-        None,
-        None,
-    )
-    .await;
+    let result = crate::commands::csv::export_csv(app.state(), out.clone(), None, None, None).await;
 
     let count = result.unwrap();
     assert_eq!(count, 2);
@@ -252,17 +251,13 @@ async fn test_export_csv_filter_by_staked() {
     let state = setup_state();
     let app = mock_app_with(state);
 
-    let _ = crate::commands::csv::import_csv(app.state(), in_path).await.unwrap();
+    let _ = crate::commands::csv::import_csv(app.state(), in_path)
+        .await
+        .unwrap();
 
     // Export only staked
-    let result = crate::commands::csv::export_csv(
-        app.state(),
-        out.clone(),
-        None,
-        Some(true),
-        None,
-    )
-    .await;
+    let result =
+        crate::commands::csv::export_csv(app.state(), out.clone(), None, Some(true), None).await;
 
     let count = result.unwrap();
     assert_eq!(count, 1);
@@ -281,7 +276,9 @@ async fn test_export_csv_filter_by_search() {
     let state = setup_state();
     let app = mock_app_with(state);
 
-    let _ = crate::commands::csv::import_csv(app.state(), in_path).await.unwrap();
+    let _ = crate::commands::csv::import_csv(app.state(), in_path)
+        .await
+        .unwrap();
 
     // Export only matching "search"
     let result = crate::commands::csv::export_csv(
@@ -311,7 +308,9 @@ async fn test_export_csv_filter_by_status() {
     let state = setup_state();
     let app = mock_app_with(state);
 
-    let _ = crate::commands::csv::import_csv(app.state(), in_path).await.unwrap();
+    let _ = crate::commands::csv::import_csv(app.state(), in_path)
+        .await
+        .unwrap();
 
     // Export only finalized_owned
     let result = crate::commands::csv::export_csv(

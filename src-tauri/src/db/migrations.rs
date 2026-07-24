@@ -6,9 +6,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("003", include_str!("../sql/003_provider_modes.sql")),
     ("004", include_str!("../sql/004_wallet_addresses.sql")),
     ("005", include_str!("../sql/005_fix_hnsfans_api_url.sql")),
-    ("006", include_str!("../sql/006_noncustodial_wallet_profiles.sql")),
-    ("007", include_str!("../sql/007_noncustodial_chain_cache.sql")),
-    ("008", include_str!("../sql/008_noncustodial_name_state.sql")),
+    (
+        "006",
+        include_str!("../sql/006_noncustodial_wallet_profiles.sql"),
+    ),
+    (
+        "007",
+        include_str!("../sql/007_noncustodial_chain_cache.sql"),
+    ),
+    (
+        "008",
+        include_str!("../sql/008_noncustodial_name_state.sql"),
+    ),
     ("009", include_str!("../sql/009_node_rpc_settings.sql")),
     ("010", include_str!("../sql/010_drop_legacy_settings.sql")),
     ("011", include_str!("../sql/011_hsd_data_dir.sql")),
@@ -79,7 +88,13 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         run(&conn).unwrap();
         // Spot-check that key tables exist
-        for table in &["assets", "batches", "settings", "wallet_profiles", "wallet_tx_drafts"] {
+        for table in &[
+            "assets",
+            "batches",
+            "settings",
+            "wallet_profiles",
+            "wallet_tx_drafts",
+        ] {
             let exists: bool = conn
                 .query_row(
                     "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",

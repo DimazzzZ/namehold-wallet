@@ -16,7 +16,6 @@ pub fn open(path: &Path) -> Result<Connection, rusqlite::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn open_creates_sqlite_file_with_wal() {

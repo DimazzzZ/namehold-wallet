@@ -21,6 +21,10 @@
 //!     its code paths (zero-fallback json!, cached json!, and the explorer path
 //!     which maps HsdBalance -> snake_case explicitly).
 
+// Module doc uses deep prose indentation for backend/frontend contract
+// citations; clippy misreads these as over-indented markdown list items.
+#![allow(clippy::doc_overindented_list_items)]
+
 use crate::hsd::types::HsdBalance;
 
 /// The hsd node RPC sends the locked fields in camelCase
@@ -28,8 +32,7 @@ use crate::hsd::types::HsdBalance;
 /// that shape — this is the node-parsing side of the contract.
 #[test]
 fn hsd_balance_deserializes_node_camelcase() {
-    let node_json =
-        r#"{"confirmed": 1000000, "unconfirmed": 500000, "lockedConfirmed": 200000, "lockedUnconfirmed": 100000}"#;
+    let node_json = r#"{"confirmed": 1000000, "unconfirmed": 500000, "lockedConfirmed": 200000, "lockedUnconfirmed": 100000}"#;
     let b: HsdBalance = serde_json::from_str(node_json).unwrap();
     assert_eq!(b.confirmed, 1_000_000);
     assert_eq!(b.unconfirmed, 500_000);
@@ -52,8 +55,14 @@ fn hsd_balance_serializes_camelcase_so_read_balance_must_map() {
     };
     let v = serde_json::to_value(&b).unwrap();
     // The raw struct is camelCase — NOT the frontend contract.
-    assert!(v.get("lockedConfirmed").is_some(), "HsdBalance serializes camelCase");
-    assert!(v.get("lockedUnconfirmed").is_some(), "HsdBalance serializes camelCase");
+    assert!(
+        v.get("lockedConfirmed").is_some(),
+        "HsdBalance serializes camelCase"
+    );
+    assert!(
+        v.get("lockedUnconfirmed").is_some(),
+        "HsdBalance serializes camelCase"
+    );
     assert!(
         v.get("locked_confirmed").is_none(),
         "raw HsdBalance is NOT snake_case; read_balance must map it before returning to the FE"
@@ -71,7 +80,7 @@ fn read_balance_explorer_path_returns_frontend_snake_case() {
     let balance = HsdBalance {
         confirmed: 1_000_000,
         unconfirmed: 500_000,
-        locked_confirmed: None,     // explorer path leaves locked unknown
+        locked_confirmed: None, // explorer path leaves locked unknown
         locked_unconfirmed: None,
     };
     let wire = serde_json::json!({
@@ -87,7 +96,12 @@ fn read_balance_explorer_path_returns_frontend_snake_case() {
     keys.sort_unstable();
     assert_eq!(
         keys,
-        ["confirmed", "locked_confirmed", "locked_unconfirmed", "unconfirmed"],
+        [
+            "confirmed",
+            "locked_confirmed",
+            "locked_unconfirmed",
+            "unconfirmed"
+        ],
         "read_balance wire shape must match the frontend snake_case contract"
     );
     assert_eq!(wire["confirmed"], 1_000_000);

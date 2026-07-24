@@ -56,24 +56,33 @@ fn test_asset_crud() {
     let all = crate::db::queries::list_assets(&conn, None, None, None, None, None).unwrap();
     assert_eq!(all.len(), 2);
 
-    let staked = crate::db::queries::list_assets(&conn, None, Some(true), None, None, None).unwrap();
+    let staked =
+        crate::db::queries::list_assets(&conn, None, Some(true), None, None, None).unwrap();
     assert_eq!(staked.len(), 1);
     assert_eq!(staked[0].tld, "staked_tld");
 
-    let unstaked = crate::db::queries::list_assets(&conn, None, Some(false), None, None, None).unwrap();
+    let unstaked =
+        crate::db::queries::list_assets(&conn, None, Some(false), None, None, None).unwrap();
     assert_eq!(unstaked.len(), 1);
     assert_eq!(unstaked[0].tld, "test");
 
-    let by_status = crate::db::queries::list_assets(&conn, Some("not_started"), None, None, None, None).unwrap();
+    let by_status =
+        crate::db::queries::list_assets(&conn, Some("not_started"), None, None, None, None)
+            .unwrap();
     assert_eq!(by_status.len(), 1);
 
-    let by_search = crate::db::queries::list_assets(&conn, None, None, Some("cat1"), None, None).unwrap();
+    let by_search =
+        crate::db::queries::list_assets(&conn, None, None, Some("cat1"), None, None).unwrap();
     assert_eq!(by_search.len(), 1);
 
-    let by_search_miss = crate::db::queries::list_assets(&conn, None, None, Some("nonexistent"), None, None).unwrap();
+    let by_search_miss =
+        crate::db::queries::list_assets(&conn, None, None, Some("nonexistent"), None, None)
+            .unwrap();
     assert_eq!(by_search_miss.len(), 0);
 
-    let sorted = crate::db::queries::list_assets(&conn, None, None, None, Some("tld"), Some("desc")).unwrap();
+    let sorted =
+        crate::db::queries::list_assets(&conn, None, None, None, Some("tld"), Some("desc"))
+            .unwrap();
     assert_eq!(sorted[0].tld, "test");
     assert_eq!(sorted[1].tld, "staked_tld");
 }
@@ -91,7 +100,18 @@ fn test_asset_update() {
     let assets = crate::db::queries::list_assets(&conn, None, None, None, None, None).unwrap();
     let id = assets[0].id;
 
-    crate::db::queries::update_asset(&conn, id, Some("namebase_transfer_requested"), None, None, Some("updated note"), None, None, None).unwrap();
+    crate::db::queries::update_asset(
+        &conn,
+        id,
+        Some("namebase_transfer_requested"),
+        None,
+        None,
+        Some("updated note"),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let asset = crate::db::queries::get_asset(&conn, id).unwrap();
     assert_eq!(asset.status.as_str(), "namebase_transfer_requested");
@@ -113,10 +133,19 @@ fn test_bulk_update_status() {
     let assets = crate::db::queries::list_assets(&conn, None, None, None, None, None).unwrap();
     let ids: Vec<i64> = assets.iter().map(|a| a.id).collect();
 
-    let updated = crate::db::queries::bulk_update_status(&conn, &ids, "namebase_transfer_requested").unwrap();
+    let updated =
+        crate::db::queries::bulk_update_status(&conn, &ids, "namebase_transfer_requested").unwrap();
     assert_eq!(updated, 5);
 
-    let assets = crate::db::queries::list_assets(&conn, Some("namebase_transfer_requested"), None, None, None, None).unwrap();
+    let assets = crate::db::queries::list_assets(
+        &conn,
+        Some("namebase_transfer_requested"),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(assets.len(), 5);
 }
 
@@ -157,7 +186,8 @@ fn test_batch_crud() {
     let assets = crate::db::queries::list_assets(&conn, None, None, None, None, None).unwrap();
     let ids: Vec<i64> = assets.iter().map(|a| a.id).collect();
 
-    let batch_id = crate::db::queries::create_batch(&conn, "Test Batch", Some("desc"), &ids).unwrap();
+    let batch_id =
+        crate::db::queries::create_batch(&conn, "Test Batch", Some("desc"), &ids).unwrap();
     assert!(batch_id > 0);
 
     let batches = crate::db::queries::list_batches(&conn).unwrap();
@@ -196,7 +226,15 @@ fn test_batch_crud() {
 fn test_wallet_snapshot() {
     let conn = setup_db();
 
-    let id = crate::db::queries::insert_wallet_snapshot(&conn, "primary", 1000000, Some("rs1qtest"), 5, None).unwrap();
+    let id = crate::db::queries::insert_wallet_snapshot(
+        &conn,
+        "primary",
+        1000000,
+        Some("rs1qtest"),
+        5,
+        None,
+    )
+    .unwrap();
     assert!(id > 0);
 
     let snap = crate::db::queries::get_latest_wallet_snapshot(&conn).unwrap();

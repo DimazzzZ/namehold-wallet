@@ -111,8 +111,7 @@ impl HnsFansClient {
             };
             succeeded += 1;
             confirmed += extract_amount(&body, &["confirmed", "balance", "confirmedBalance"]);
-            unconfirmed +=
-                extract_amount(&body, &["unconfirmed", "unconfirmedBalance", "pending"]);
+            unconfirmed += extract_amount(&body, &["unconfirmed", "unconfirmedBalance", "pending"]);
         }
 
         // If we had addresses to check but none succeeded, this is a provider
@@ -293,7 +292,11 @@ impl HnsFansClient {
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|t| t.get("hash").and_then(|h| h.as_str()).map(|s| s.to_string()))
+                    .filter_map(|t| {
+                        t.get("hash")
+                            .and_then(|h| h.as_str())
+                            .map(|s| s.to_string())
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -386,8 +389,7 @@ pub trait ExplorerProvider {
 
     /// The current owner outpoint `(txid, index)` of a name, or `None` if it
     /// has no recorded history.
-    async fn get_name_current_owner(&self, name: &str)
-        -> Result<Option<(String, u32)>, AppError>;
+    async fn get_name_current_owner(&self, name: &str) -> Result<Option<(String, u32)>, AppError>;
 
     /// The name-bearing outputs of a single tx.
     async fn get_tx_named_outputs(&self, hash: &str) -> Result<Vec<NamedOutput>, AppError>;
@@ -409,10 +411,7 @@ impl ExplorerProvider for HnsFansClient {
         HnsFansClient::get_name_info_optional(self, name).await
     }
 
-    async fn get_name_current_owner(
-        &self,
-        name: &str,
-    ) -> Result<Option<(String, u32)>, AppError> {
+    async fn get_name_current_owner(&self, name: &str) -> Result<Option<(String, u32)>, AppError> {
         HnsFansClient::get_name_current_owner(self, name).await
     }
 
@@ -669,8 +668,14 @@ pub(crate) fn normalize_name(entry: &serde_json::Value) -> Option<HsdName> {
 /// toward `myBidCount`/totals; it just can't be matched to a local commitment.
 fn normalize_bid(entry: &serde_json::Value) -> Option<HsdBid> {
     Some(HsdBid {
-        txid: entry.get("txid").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        index: entry.get("index").and_then(|v| v.as_u64()).map(|n| n as u32),
+        txid: entry
+            .get("txid")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        index: entry
+            .get("index")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32),
         lockup: entry.get("lockup").and_then(|v| v.as_u64()),
         value: entry.get("value").and_then(|v| v.as_u64()),
         revealed: entry.get("revealed").and_then(|v| v.as_bool()),
@@ -719,7 +724,10 @@ mod tests {
         assert_eq!(client.base_url, DEFAULT_EXPLORER_URL);
 
         let mut custom = std::collections::HashMap::new();
-        custom.insert("explorer_api_url".to_string(), "https://my.explorer:9999/".to_string());
+        custom.insert(
+            "explorer_api_url".to_string(),
+            "https://my.explorer:9999/".to_string(),
+        );
         let client = crate::providers::explorer_client_from_settings(&custom);
         assert_eq!(client.base_url, "https://my.explorer:9999");
     }

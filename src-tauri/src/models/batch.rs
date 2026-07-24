@@ -87,18 +87,39 @@ mod tests {
 
     #[test]
     fn batch_status_from_str_all_known() {
-        assert!(matches!(BatchStatus::from_str("planned"), BatchStatus::Planned));
-        assert!(matches!(BatchStatus::from_str("in_progress"), BatchStatus::InProgress));
-        assert!(matches!(BatchStatus::from_str("completed"), BatchStatus::Completed));
-        assert!(matches!(BatchStatus::from_str("paused"), BatchStatus::Paused));
-        assert!(matches!(BatchStatus::from_str("cancelled"), BatchStatus::Cancelled));
+        assert!(matches!(
+            BatchStatus::from_str("planned"),
+            BatchStatus::Planned
+        ));
+        assert!(matches!(
+            BatchStatus::from_str("in_progress"),
+            BatchStatus::InProgress
+        ));
+        assert!(matches!(
+            BatchStatus::from_str("completed"),
+            BatchStatus::Completed
+        ));
+        assert!(matches!(
+            BatchStatus::from_str("paused"),
+            BatchStatus::Paused
+        ));
+        assert!(matches!(
+            BatchStatus::from_str("cancelled"),
+            BatchStatus::Cancelled
+        ));
     }
 
     #[test]
     fn batch_status_from_str_unknown_defaults_to_planned() {
         assert!(matches!(BatchStatus::from_str(""), BatchStatus::Planned));
-        assert!(matches!(BatchStatus::from_str("unknown"), BatchStatus::Planned));
-        assert!(matches!(BatchStatus::from_str("garbage"), BatchStatus::Planned));
+        assert!(matches!(
+            BatchStatus::from_str("unknown"),
+            BatchStatus::Planned
+        ));
+        assert!(matches!(
+            BatchStatus::from_str("garbage"),
+            BatchStatus::Planned
+        ));
     }
 
     #[test]

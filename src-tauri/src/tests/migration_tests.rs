@@ -33,7 +33,11 @@ fn test_migration_is_idempotent() {
     assert!(r2.is_ok());
 
     let version: String = conn
-        .query_row("SELECT version FROM schema_version WHERE version = '001'", [], |row| row.get(0))
+        .query_row(
+            "SELECT version FROM schema_version WHERE version = '001'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(version, "001");
 }
@@ -62,14 +66,27 @@ fn test_default_settings_seeded() {
 
     // Non-custodial settings survive; the node RPC URL is seeded by 009.
     let node_url: String = conn
-        .query_row("SELECT value FROM settings WHERE key = 'node_rpc_url'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'node_rpc_url'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(node_url, "http://127.0.0.1:12037");
 
     // Legacy keys are removed by migration 010.
-    for key in ["hsd_wallet_api_url", "connection_mode", "write_mode", "chain_source"] {
+    for key in [
+        "hsd_wallet_api_url",
+        "connection_mode",
+        "write_mode",
+        "chain_source",
+    ] {
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM settings WHERE key = ?1", [key], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE key = ?1",
+                [key],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(n, 0, "legacy setting '{key}' should be deleted");
     }
@@ -77,9 +94,16 @@ fn test_default_settings_seeded() {
     // The hsd data directory is re-added by migration 011 (010 drops it, 011
     // brings it back), so the app can start hsd against a custom prefix.
     let hsd_prefix: String = conn
-        .query_row("SELECT value FROM settings WHERE key = 'hsd_prefix'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'hsd_prefix'",
+            [],
+            |row| row.get(0),
+        )
         .expect("hsd_prefix should exist after the full migration chain");
-    assert_eq!(hsd_prefix, "", "hsd_prefix defaults to empty (= hsd's own ~/.hsd)");
+    assert_eq!(
+        hsd_prefix, "",
+        "hsd_prefix defaults to empty (= hsd's own ~/.hsd)"
+    );
 }
 
 #[test]
@@ -115,8 +139,14 @@ fn test_tx_draft_confirmation_schema() {
     };
     assert!(insert("confirmed").is_ok(), "'confirmed' must be accepted");
     assert!(insert("dropped").is_ok(), "'dropped' must be accepted");
-    assert!(insert("broadcasted").is_ok(), "existing statuses still accepted");
-    assert!(insert("bogus").is_err(), "an unknown status must be rejected by the CHECK");
+    assert!(
+        insert("broadcasted").is_ok(),
+        "existing statuses still accepted"
+    );
+    assert!(
+        insert("bogus").is_err(),
+        "an unknown status must be rejected by the CHECK"
+    );
 }
 
 #[test]

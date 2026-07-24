@@ -113,7 +113,9 @@ pub(crate) fn parse_hsd_version(raw: &str) -> Option<(u32, u32, u32)> {
         return None;
     }
     let s = s.strip_prefix(['v', 'V']).unwrap_or(s);
-    let core = s.split(|c: char| c == '-' || c == '+' || c.is_whitespace()).next()?;
+    let core = s
+        .split(|c: char| c == '-' || c == '+' || c.is_whitespace())
+        .next()?;
     if core.is_empty() {
         return None;
     }
@@ -164,9 +166,8 @@ fn active_profile_network(state: &AppState) -> Network {
         return Network::Main;
     }
     match db::queries::get_wallet_profile(&conn, &id) {
-        Ok(Some(p)) => {
-            crate::noncustodial::derivation::network_from_profile(&p.network).unwrap_or(Network::Main)
-        }
+        Ok(Some(p)) => crate::noncustodial::derivation::network_from_profile(&p.network)
+            .unwrap_or(Network::Main),
         _ => Network::Main,
     }
 }
@@ -174,7 +175,10 @@ fn active_profile_network(state: &AppState) -> Network {
 /// Whether the hsd we started this session is still alive. Reaps a child that has
 /// exited (clearing the handle) so the status reflects reality.
 fn is_running(state: &AppState) -> Result<bool, AppError> {
-    let mut guard = state.hsd_child.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let mut guard = state
+        .hsd_child
+        .lock()
+        .map_err(|e| AppError::Lock(e.to_string()))?;
     let running = match guard.as_mut() {
         Some(child) => matches!(child.try_wait(), Ok(None)),
         None => false,
@@ -207,11 +211,15 @@ async fn probe_node(state: &AppState) -> Option<NodeProbe> {
         db::queries::get_settings(&db).ok()?
     };
     let client = NodeRpcClient::from_settings(&settings);
-    client.get_blockchain_info().await.ok().map(|info| NodeProbe {
-        height: info.blocks,
-        verification_progress: info.verification_progress,
-        headers: info.headers,
-    })
+    client
+        .get_blockchain_info()
+        .await
+        .ok()
+        .map(|info| NodeProbe {
+            height: info.blocks,
+            verification_progress: info.verification_progress,
+            headers: info.headers,
+        })
 }
 
 /// Node status for the Settings UI + status strip. `connected` (RPC answers) is
@@ -238,18 +246,21 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     // Determine the current read source: "local" when the node is connected and
     // synced, "explorer" otherwise. The frontend uses this to show which data
     // source is active.
-    let node_synced = probe.as_ref().map(|p| {
-        // When verification_progress is available, it is the most reliable signal.
-        // A node can report height == headers while still only ~8% verified if it
-        // is far behind the real chain tip. Always gate on progress when present.
-        if let Some(progress) = p.verification_progress {
-            progress >= 0.9999
-        } else if let Some(headers) = p.headers {
-            headers > 0 && p.height >= headers
-        } else {
-            true
-        }
-    }).unwrap_or(false);
+    let node_synced = probe
+        .as_ref()
+        .map(|p| {
+            // When verification_progress is available, it is the most reliable signal.
+            // A node can report height == headers while still only ~8% verified if it
+            // is far behind the real chain tip. Always gate on progress when present.
+            if let Some(progress) = p.verification_progress {
+                progress >= 0.9999
+            } else if let Some(headers) = p.headers {
+                headers > 0 && p.height >= headers
+            } else {
+                true
+            }
+        })
+        .unwrap_or(false);
     let read_source = if probe.is_some() && node_synced {
         "local"
     } else {
@@ -409,7 +420,10 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         .map_err(|e| AppError::Other(format!("failed to start hsd ({binary}): {e}")))?;
 
     {
-        let mut guard = state.hsd_child.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let mut guard = state
+            .hsd_child
+            .lock()
+            .map_err(|e| AppError::Lock(e.to_string()))?;
         *guard = Some(child);
     }
     {
@@ -426,7 +440,10 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     for _ in 0..30 {
         // Did the child die during startup?
         {
-            let mut guard = state.hsd_child.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+            let mut guard = state
+                .hsd_child
+                .lock()
+                .map_err(|e| AppError::Lock(e.to_string()))?;
             let exited = match guard.as_mut() {
                 Some(child) => matches!(child.try_wait(), Ok(Some(_))),
                 None => true,
@@ -485,7 +502,10 @@ pub(crate) fn read_log_tail(path: &std::path::Path) -> String {
 #[tauri::command]
 pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
     let child = {
-        let mut guard = state.hsd_child.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let mut guard = state
+            .hsd_child
+            .lock()
+            .map_err(|e| AppError::Lock(e.to_string()))?;
         guard.take()
     };
     if let Some(mut child) = child {
@@ -515,7 +535,10 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
 pub(crate) fn chain_paths_for_network(data_dir: &str, network: Network) -> Vec<std::path::PathBuf> {
     let base = std::path::Path::new(data_dir);
     match network {
-        Network::Main => ["blocks", "chain", "tree"].iter().map(|p| base.join(p)).collect(),
+        Network::Main => ["blocks", "chain", "tree"]
+            .iter()
+            .map(|p| base.join(p))
+            .collect(),
         Network::Testnet => vec![base.join("testnet")],
         Network::Regtest => vec![base.join("regtest")],
         Network::Simnet => vec![base.join("simnet")],
@@ -530,7 +553,10 @@ pub(crate) fn chain_paths_for_network(data_dir: &str, network: Network) -> Vec<s
 pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     // 1. Stop any node we manage so the chain files aren't locked.
     {
-        let mut guard = state.hsd_child.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let mut guard = state
+            .hsd_child
+            .lock()
+            .map_err(|e| AppError::Lock(e.to_string()))?;
         if let Some(mut child) = guard.take() {
             let _ = child.kill();
             let _ = child.wait();

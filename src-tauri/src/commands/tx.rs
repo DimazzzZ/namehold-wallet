@@ -50,17 +50,16 @@ fn active_profile(
 ) -> Result<crate::noncustodial::types::WalletProfileSummary, AppError> {
     let id = db::queries::get_active_profile_id(conn)?;
     if id.is_empty() {
-        return Err(AppError::InvalidInput("no active wallet profile".to_string()));
+        return Err(AppError::InvalidInput(
+            "no active wallet profile".to_string(),
+        ));
     }
     db::queries::get_wallet_profile(conn, &id)?
         .ok_or_else(|| AppError::NotFound(format!("wallet profile {id}")))
 }
 
 /// Derive the change address (branch 1, index 0) for a profile from its xpub.
-fn change_address(
-    network: Network,
-    account_xpub: &str,
-) -> Result<String, AppError> {
+fn change_address(network: Network, account_xpub: &str) -> Result<String, AppError> {
     let xpub = crate::noncustodial::hd::ExtendedPubKey::from_xpub(network, account_xpub)?;
     let derived = derivation::derive_one(network, &xpub, derivation::BRANCH_CHANGE, 0)?;
     Ok(derived.address)
@@ -296,7 +295,9 @@ pub async fn sync_tracked_names(
             None => db::queries::get_active_profile_id(&conn)?,
         };
         if id.is_empty() {
-            return Err(AppError::InvalidInput("no active wallet profile".to_string()));
+            return Err(AppError::InvalidInput(
+                "no active wallet profile".to_string(),
+            ));
         }
         (id, db::queries::get_settings(&conn)?)
     };
@@ -319,7 +320,9 @@ pub async fn build_send_hns_draft(
 ) -> Result<TxDraftSummary, AppError> {
     let is_max = max.unwrap_or(false);
     if !is_max && value_doos <= 0 {
-        return Err(AppError::InvalidInput("amount must be positive".to_string()));
+        return Err(AppError::InvalidInput(
+            "amount must be positive".to_string(),
+        ));
     }
     let rate = resolve_fee_rate(&state, fee_rate).await;
 
@@ -372,8 +375,11 @@ pub async fn build_send_hns_draft(
     };
 
     let id = random_id();
-    let reserved_inputs: Vec<(String, u32)> =
-        selection.coins.iter().map(|c| (c.txid.clone(), c.vout)).collect();
+    let reserved_inputs: Vec<(String, u32)> = selection
+        .coins
+        .iter()
+        .map(|c| (c.txid.clone(), c.vout))
+        .collect();
     db::queries::insert_tx_draft_reserving_coins(
         &conn,
         &id,
@@ -398,7 +404,9 @@ pub async fn estimate_tx_draft_fee(
     fee_rate: Option<u64>,
 ) -> Result<serde_json::Value, AppError> {
     if value_doos <= 0 {
-        return Err(AppError::InvalidInput("amount must be positive".to_string()));
+        return Err(AppError::InvalidInput(
+            "amount must be positive".to_string(),
+        ));
     }
     let rate = resolve_fee_rate(&state, fee_rate).await;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -436,8 +444,7 @@ pub async fn sign_tx_draft(
             // the general pool (still excluding other drafts' reservations)
             // for drafts holding no reservation rows — e.g. drafts created
             // before migration 015, or whose reservation TTL-expired.
-            let reserved =
-                send::load_reserved_coins(&conn, &draft.wallet_profile_id, &draft_id)?;
+            let reserved = send::load_reserved_coins(&conn, &draft.wallet_profile_id, &draft_id)?;
             if reserved.is_empty() {
                 send::load_spendable_coins(&conn, &draft.wallet_profile_id, Some(&draft_id))?
             } else {
@@ -452,7 +459,10 @@ pub async fn sign_tx_draft(
 
     // 2. Sign under the signer lock, dispatching by action.
     let (signed_hex, summary_json) = {
-        let mut slot = state.signer.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let mut slot = state
+            .signer
+            .lock()
+            .map_err(|e| AppError::Lock(e.to_string()))?;
         let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
         if !session.is_unlocked() {
             return Err(AppError::WalletLocked);
@@ -466,8 +476,9 @@ pub async fn sign_tx_draft(
 
         if draft.action == "send_hns" {
             let params: SendBuildParams = serde_json::from_str(&draft.signing_inputs_json)?;
-            let network = Network::from_str_opt(&params.network)
-                .ok_or_else(|| AppError::InvalidInput(format!("bad network '{}'", params.network)))?;
+            let network = Network::from_str_opt(&params.network).ok_or_else(|| {
+                AppError::InvalidInput(format!("bad network '{}'", params.network))
+            })?;
             let built = send::build_send(
                 session,
                 network,
@@ -547,12 +558,14 @@ pub async fn sign_name_message(
         let profile = db::queries::get_wallet_profile(&conn, &id)?
             .ok_or_else(|| AppError::NotFound(format!("wallet profile {id}")))?;
         let coin = db::queries::get_name_coin(&conn, &id, &name)?.ok_or_else(|| {
-            AppError::InvalidInput(format!(
-                "wallet does not own '{name}' (sync/own it first)"
-            ))
+            AppError::InvalidInput(format!("wallet does not own '{name}' (sync/own it first)"))
         })?;
         let settings = db::queries::get_settings(&conn)?;
-        (profile.account_index as u32, coin, session_ttl_ms(&settings))
+        (
+            profile.account_index as u32,
+            coin,
+            session_ttl_ms(&settings),
+        )
     };
 
     // 2. Signer: mirror `sign_tx_draft`'s unlock + per-profile gate — the
@@ -560,7 +573,10 @@ pub async fn sign_name_message(
     // under, so one wallet's unlocked signer can never sign on another's
     // behalf.
     let (signature, pubkey) = {
-        let mut slot = state.signer.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let mut slot = state
+            .signer
+            .lock()
+            .map_err(|e| AppError::Lock(e.to_string()))?;
         let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
         if !session.is_unlocked() {
             return Err(AppError::WalletLocked);
@@ -573,9 +589,11 @@ pub async fn sign_name_message(
         session.touch(ttl_ms);
 
         let network = session.network();
-        let path = crate::noncustodial::hd::bip44_path(network, account, coin.branch, coin.child_index);
+        let path =
+            crate::noncustodial::hd::bip44_path(network, account, coin.branch, coin.child_index);
         let child = session.master()?.derive_path(&path)?;
-        let signature = crate::noncustodial::message::sign_handshake_message(&child.secret, &message);
+        let signature =
+            crate::noncustodial::message::sign_handshake_message(&child.secret, &message);
         let pubkey = child.compressed_pubkey();
         (signature, pubkey)
     };
@@ -599,9 +617,9 @@ pub async fn broadcast_tx_draft(
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let draft = db::queries::get_tx_draft(&conn, &draft_id)?
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
-        let signed = draft.signed_tx_hex.ok_or_else(|| {
-            AppError::InvalidInput("draft is not signed yet".to_string())
-        })?;
+        let signed = draft
+            .signed_tx_hex
+            .ok_or_else(|| AppError::InvalidInput("draft is not signed yet".to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
         (signed, settings)
     };
@@ -613,7 +631,13 @@ pub async fn broadcast_tx_draft(
     match client.send_raw_transaction(&signed_hex).await {
         Ok(txid) => {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-            db::queries::update_tx_draft_status(&conn, &draft_id, "broadcasted", None, Some(&txid))?;
+            db::queries::update_tx_draft_status(
+                &conn,
+                &draft_id,
+                "broadcasted",
+                None,
+                Some(&txid),
+            )?;
             // Deliberately do NOT release this draft's coin reservation here.
             // The node accepting a tx to its mempool does not mean
             // `tracked_utxos.spent_by_txid` gets set for its inputs yet — that
@@ -729,7 +753,11 @@ const CONFIRMATION_FINALITY_DEPTH: i64 = 12;
 fn local_txid_from_summary(summary_json: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(summary_json)
         .ok()
-        .and_then(|v| v.get("txid").and_then(|t| t.as_str()).map(|s| s.to_string()))
+        .and_then(|v| {
+            v.get("txid")
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string())
+        })
 }
 
 /// Re-poll the node for the on-chain status of this profile's in-flight drafts.
@@ -825,7 +853,10 @@ pub async fn refresh_tx_confirmations(
             };
             match client.get_raw_transaction(&txid).await {
                 Ok(tx) => {
-                    let confs = tx.get("confirmations").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let confs = tx
+                        .get("confirmations")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
                     if confs >= 1 {
                         let height = tx
                             .get("height")
@@ -855,7 +886,10 @@ pub async fn refresh_tx_confirmations(
         };
         match client.get_raw_transaction(txid).await {
             Ok(tx) => {
-                let confs = tx.get("confirmations").and_then(|v| v.as_i64()).unwrap_or(0);
+                let confs = tx
+                    .get("confirmations")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 if confs >= 1 {
                     let height = tx
                         .get("height")
@@ -1003,16 +1037,23 @@ pub async fn get_write_capability(
     state: State<'_, AppState>,
 ) -> Result<crate::providers::WriteCapability, AppError> {
     let signer_unlocked = {
-        let slot = state.signer.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let slot = state
+            .signer
+            .lock()
+            .map_err(|e| AppError::Lock(e.to_string()))?;
         slot.as_ref().map(|s| s.is_unlocked()).unwrap_or(false)
     };
     let (source, allow_remote, settings, probe_addr) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
         let source = ChainSource::from_setting(
-            settings.get("chain_source").map(|s| s.as_str()).unwrap_or("local_node"),
+            settings
+                .get("chain_source")
+                .map(|s| s.as_str())
+                .unwrap_or("local_node"),
         );
-        let allow_remote = settings.get("allow_remote_broadcast").map(|s| s.as_str()) == Some("true");
+        let allow_remote =
+            settings.get("allow_remote_broadcast").map(|s| s.as_str()) == Some("true");
         // One address to probe the node's address index (if a profile exists).
         let probe_addr = active_profile(&conn)
             .ok()
@@ -1055,7 +1096,9 @@ pub async fn get_write_capability(
                     let pct = match info.verification_progress {
                         Some(p) => (p * 100.0).floor() as i64,
                         None => match info.headers {
-                            Some(h) if h > 0 => ((info.blocks as f64 / h as f64) * 100.0).floor() as i64,
+                            Some(h) if h > 0 => {
+                                ((info.blocks as f64 / h as f64) * 100.0).floor() as i64
+                            }
                             _ => 0,
                         },
                     };
@@ -1082,10 +1125,7 @@ pub async fn get_write_capability(
 /// reserved (I3) so a later draft can spend them. Refuses to delete a draft
 /// that already reached the chain (`broadcasted`/`confirmed`).
 #[tauri::command]
-pub async fn delete_tx_draft(
-    state: State<'_, AppState>,
-    draft_id: String,
-) -> Result<(), AppError> {
+pub async fn delete_tx_draft(state: State<'_, AppState>, draft_id: String) -> Result<(), AppError> {
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db::queries::delete_tx_draft(&conn, &draft_id)
 }

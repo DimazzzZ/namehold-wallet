@@ -22,7 +22,7 @@ use crate::noncustodial::hd::ExtendedPubKey;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::NodeRpcClient;
 use crate::noncustodial::send::{self, SpendableCoin};
-use crate::noncustodial::sync::{self, COV_REVEAL, COV_REGISTER};
+use crate::noncustodial::sync::{self, COV_REGISTER, COV_REVEAL};
 use crate::noncustodial::tx::sighash;
 use crate::noncustodial::types::TxDraftSummary;
 use crate::noncustodial::{address, bids, covenants, names, resource};
@@ -55,7 +55,9 @@ pub(crate) fn load_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     let profile = queries::get_wallet_profile(&conn, &id)?
         .ok_or_else(|| AppError::NotFound(format!("wallet profile {id}")))?;
     if profile.watch_only {
-        return Err(AppError::InvalidInput("active profile is watch-only".into()));
+        return Err(AppError::InvalidInput(
+            "active profile is watch-only".into(),
+        ));
     }
     let network = crate::noncustodial::derivation::network_from_profile(&profile.network)?;
     let account_xpub = ExtendedPubKey::from_xpub(network, &profile.account_xpub)?;
@@ -99,12 +101,19 @@ pub(crate) struct NameState {
     pub(crate) weak: bool,
 }
 
-pub(crate) async fn fetch_name_state(client: &NodeRpcClient, name: &str) -> Result<NameState, AppError> {
+pub(crate) async fn fetch_name_state(
+    client: &NodeRpcClient,
+    name: &str,
+) -> Result<NameState, AppError> {
     let v = client.get_name_info(name).await?;
     let info = v.get("info");
     let info = match info {
         Some(i) if !i.is_null() => i,
-        _ => return Err(AppError::InvalidInput(format!("name '{name}' has no on-chain state"))),
+        _ => {
+            return Err(AppError::InvalidInput(format!(
+                "name '{name}' has no on-chain state"
+            )))
+        }
     };
     let geti = |k: &str| info.get(k).and_then(|x| x.as_i64());
     Ok(NameState {
@@ -117,13 +126,16 @@ pub(crate) async fn fetch_name_state(client: &NodeRpcClient, name: &str) -> Resu
 }
 
 /// `getRenewalBlock`: internal-order 32-byte hash at `height - 2*renewalMaturity`.
-pub(crate) async fn renewal_block(client: &NodeRpcClient, network: Network) -> Result<[u8; 32], AppError> {
+pub(crate) async fn renewal_block(
+    client: &NodeRpcClient,
+    network: Network,
+) -> Result<[u8; 32], AppError> {
     let tip = client.get_blockchain_info().await?.blocks;
     let maturity = network.name_params().renewal_maturity as i64;
     let height = (tip - 2 * maturity).max(0);
     let hash_hex = client.get_block_hash(height).await?;
-    let bytes = hex::decode(&hash_hex)
-        .map_err(|e| AppError::Rpc(format!("bad block hash: {e}")))?;
+    let bytes =
+        hex::decode(&hash_hex).map_err(|e| AppError::Rpc(format!("bad block hash: {e}")))?;
     if bytes.len() != 32 {
         return Err(AppError::Rpc("block hash not 32 bytes".into()));
     }
@@ -189,8 +201,12 @@ fn persist_with_conn(
     // present, the name UTXO itself — two covenant drafts must not be able to
     // grab the same name coin (e.g. two REVEALs) any more than two plain
     // sends can grab the same liquid coin.
-    let reserved_inputs: Vec<(String, u32)> =
-        res.plan.inputs.iter().map(|i| (i.txid.clone(), i.vout)).collect();
+    let reserved_inputs: Vec<(String, u32)> = res
+        .plan
+        .inputs
+        .iter()
+        .map(|i| (i.txid.clone(), i.vout))
+        .collect();
     db::queries::insert_tx_draft_reserving_coins(
         conn,
         &id,
@@ -525,7 +541,7 @@ async fn evaluate_name_action_capabilities(
     //    spuriously false for names we actually own. Treat "reachable but not
     //    synced" exactly like unreachable: fall back to local Sync evidence.
     //    Reuses the same gate as `read_balance`/`read_names` — no duplicate logic.
-    let name_info = if crate::commands::read::is_node_ready_for_local_reads(&state).await {
+    let name_info = if crate::commands::read::is_node_ready_for_local_reads(state).await {
         client.get_name_info(&name).await.ok()
     } else {
         None
@@ -542,11 +558,11 @@ async fn evaluate_name_action_capabilities(
 
             let (action_ctx, tracked_owner_address, profile_addrs) = {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-                let action_ctx = find_name_action_context(&conn, &profile_id, &name)?;
+                let action_ctx = find_name_action_context(&conn, profile_id, &name)?;
                 let tracked_owner_address =
-                    queries::get_tracked_name_state(&conn, &profile_id, &name)?
+                    queries::get_tracked_name_state(&conn, profile_id, &name)?
                         .and_then(|t| t.owner_address);
-                let profile_addrs = queries::get_profile_addresses(&conn, &profile_id)?;
+                let profile_addrs = queries::get_profile_addresses(&conn, profile_id)?;
                 (action_ctx, tracked_owner_address, profile_addrs)
             };
             let stats = name_info.get("info").and_then(|i| i.get("stats"));
@@ -579,19 +595,19 @@ async fn evaluate_name_action_capabilities(
             // rather than blindly declaring "nothing allowed".
             let (tracked, action_ctx, profile_addrs, renewal_window, current_height) = {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-                let tracked = queries::get_tracked_name_state(&conn, &profile_id, &name)?;
-                let action_ctx = find_name_action_context(&conn, &profile_id, &name)?;
-                let addrs = queries::get_profile_addresses(&conn, &profile_id)?;
+                let tracked = queries::get_tracked_name_state(&conn, profile_id, &name)?;
+                let action_ctx = find_name_action_context(&conn, profile_id, &name)?;
+                let addrs = queries::get_profile_addresses(&conn, profile_id)?;
                 // Same expiry math as `read_renewals::compute_renewals`: network
                 // renewal window + the best persisted height estimate (no live
                 // node here by definition of this branch). Reused, not
                 // duplicated — both read the same helpers.
-                let network = queries::get_wallet_profile(&conn, &profile_id)?
+                let network = queries::get_wallet_profile(&conn, profile_id)?
                     .and_then(|p| Network::from_str_opt(&p.network))
                     .unwrap_or_default();
                 let renewal_window = network.name_params().renewal_window as i64;
                 let current_height =
-                    crate::commands::read::estimate_persisted_height(&conn, &profile_id)?;
+                    crate::commands::read::estimate_persisted_height(&conn, profile_id)?;
                 (tracked, action_ctx, addrs, renewal_window, current_height)
             };
             let tracked = match tracked {
@@ -645,6 +661,7 @@ async fn evaluate_name_action_capabilities(
 /// without a real local owner coin" on the node-unreachable, explorer-owned path
 /// (where `owns_name` is true but `has_owner_coin` is false). On the node path
 /// it is always `false`, leaving that branch's behavior unchanged.
+#[allow(clippy::too_many_arguments)]
 fn build_name_action_capabilities(
     name: String,
     phase: String,
@@ -681,7 +698,10 @@ fn build_name_action_capabilities(
         reason: if !is_bidding_compatible {
             Some(format!("bidding is not open (phase: '{phase}')"))
         } else if action_ctx.existing_bid_count > 0 {
-            Some("you already have a bid commitment for this name (one bid per wallet per name)".into())
+            Some(
+                "you already have a bid commitment for this name (one bid per wallet per name)"
+                    .into(),
+            )
         } else {
             None
         },
@@ -718,15 +738,23 @@ fn build_name_action_capabilities(
 
     // Register requires: CLOSED phase + wallet owns the name coin +
     // the covenant type is below REGISTER (i.e. not already registered).
-    let registration_needed = phase == "CLOSED" && action_ctx.has_owner_coin
-        && action_ctx.owner_covenant_type.map(|t| t < COV_REGISTER as i64).unwrap_or(true);
+    let registration_needed = phase == "CLOSED"
+        && action_ctx.has_owner_coin
+        && action_ctx
+            .owner_covenant_type
+            .map(|t| t < COV_REGISTER as i64)
+            .unwrap_or(true);
     let can_register = NameActionCapability {
         allowed: registration_needed,
         reason: if phase != "CLOSED" {
             Some(format!("auction not yet closed (phase: '{phase}')"))
         } else if !action_ctx.has_owner_coin {
             Some("wallet does not own the winning name coin".into())
-        } else if action_ctx.owner_covenant_type.map(|t| t >= COV_REGISTER as i64).unwrap_or(false) {
+        } else if action_ctx
+            .owner_covenant_type
+            .map(|t| t >= COV_REGISTER as i64)
+            .unwrap_or(false)
+        {
             Some("name is already registered".into())
         } else {
             None
@@ -794,16 +822,39 @@ fn build_name_action_capabilities(
     // reason — regardless of what the ownership-based logic above computed. This
     // is what keeps an explorer-owned-but-unsynced name from offering actions it
     // can't actually perform, without duplicating the check in each branch.
-    let (can_register, can_update, can_transfer, can_finalize, can_cancel_transfer, can_renew, can_revoke) =
-        if spend_locked {
-            let locked = || NameActionCapability {
-                allowed: false,
-                reason: Some(OWNER_COIN_NOT_SYNCED_REASON.to_string()),
-            };
-            (locked(), locked(), locked(), locked(), locked(), locked(), locked())
-        } else {
-            (can_register, can_update, can_transfer, can_finalize, can_cancel_transfer, can_renew, can_revoke)
+    let (
+        can_register,
+        can_update,
+        can_transfer,
+        can_finalize,
+        can_cancel_transfer,
+        can_renew,
+        can_revoke,
+    ) = if spend_locked {
+        let locked = || NameActionCapability {
+            allowed: false,
+            reason: Some(OWNER_COIN_NOT_SYNCED_REASON.to_string()),
         };
+        (
+            locked(),
+            locked(),
+            locked(),
+            locked(),
+            locked(),
+            locked(),
+            locked(),
+        )
+    } else {
+        (
+            can_register,
+            can_update,
+            can_transfer,
+            can_finalize,
+            can_cancel_transfer,
+            can_renew,
+            can_revoke,
+        )
+    };
 
     // 5. Derive task state. Days-until-expire comes from the node/explorer
     // stats when present (`daysUntilExpire`, falling back to
@@ -816,17 +867,30 @@ fn build_name_action_capabilities(
     // because the node isn't synced right now.
     let days_until_expire = days_until_expire_override.or_else(|| {
         stats.and_then(|s| {
-            s.get("daysUntilExpire").and_then(|v| v.as_f64()).or_else(|| {
-                s.get("blocksUntilExpire")
-                    .and_then(|v| v.as_i64())
-                    .map(|b| b as f64 / crate::noncustodial::network::BLOCKS_PER_DAY)
-            })
+            s.get("daysUntilExpire")
+                .and_then(|v| v.as_f64())
+                .or_else(|| {
+                    s.get("blocksUntilExpire")
+                        .and_then(|v| v.as_i64())
+                        .map(|b| b as f64 / crate::noncustodial::network::BLOCKS_PER_DAY)
+                })
         })
     });
-    let task_state = derive_auction_task_state(&phase, owns_name, action_ctx.has_bid_commitment, action_ctx.has_bid_coin, action_ctx.has_reveal_coin, action_ctx.has_owner_coin, action_ctx.owner_covenant_type, days_until_expire, action_ctx.has_pending_open);
+    let task_state = derive_auction_task_state(
+        &phase,
+        owns_name,
+        action_ctx.has_bid_commitment,
+        action_ctx.has_bid_coin,
+        action_ctx.has_reveal_coin,
+        action_ctx.has_owner_coin,
+        action_ctx.owner_covenant_type,
+        days_until_expire,
+        action_ctx.has_pending_open,
+    );
 
     // 6. Determine next action.
-    let (next_action_key, next_action_label, next_action_reason) = next_action_for_task(&task_state);
+    let (next_action_key, next_action_label, next_action_reason) =
+        next_action_for_task(&task_state);
 
     // 7. Extract countdown from stats.
     let (countdown_label, countdown_blocks, countdown_hours) = extract_countdown(raw_phase, stats);
@@ -1115,7 +1179,11 @@ pub async fn build_open_draft(
         ctx.network,
         ctx.account,
         None,
-        PrimaryOutput { value: 0, address: recv.address, covenant: covenants::open(&nh, &raw) },
+        PrimaryOutput {
+            value: 0,
+            address: recv.address,
+            covenant: covenants::open(&nh, &raw),
+        },
         &ctx.funding,
         &ctx.change_address,
         rate,
@@ -1182,7 +1250,9 @@ pub async fn build_bid_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     if bid_value <= 0 || lockup < bid_value {
-        return Err(AppError::InvalidInput("lockup must be >= bid value > 0".into()));
+        return Err(AppError::InvalidInput(
+            "lockup must be >= bid value > 0".into(),
+        ));
     }
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
@@ -1220,7 +1290,11 @@ pub async fn build_bid_draft(
         ctx.network,
         ctx.account,
         None,
-        PrimaryOutput { value: lockup as u64, address: bid_addr.address.clone(), covenant: cov },
+        PrimaryOutput {
+            value: lockup as u64,
+            address: bid_addr.address.clone(),
+            covenant: cov,
+        },
         &ctx.funding,
         &ctx.change_address,
         rate,
@@ -1308,7 +1382,12 @@ pub async fn build_bid_draft(
         + (params.tree_interval as i64 + 1)
         + params.bidding_period as i64
         + params.reveal_period as i64;
-    queries::set_reveal_end_height(&conn, &ctx.profile_id, &hex::encode(blind), reveal_end_height)?;
+    queries::set_reveal_end_height(
+        &conn,
+        &ctx.profile_id,
+        &hex::encode(blind),
+        reveal_end_height,
+    )?;
 
     let summary = persist_with_conn(&conn, &ctx.profile_id, "bid", &name, None, &res)?;
     // Task 1 fix: stamp the on-chain bid txid onto this commitment NOW, while
@@ -1574,7 +1653,14 @@ pub async fn build_transfer_draft(
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "transfer", &name, Some(&recipient), &res)
+    persist(
+        &state,
+        &ctx.profile_id,
+        "transfer",
+        &name,
+        Some(&recipient),
+        &res,
+    )
 }
 
 #[tauri::command]
@@ -1593,15 +1679,18 @@ pub async fn build_finalize_draft(
 
     // The finalize output goes to the TRANSFER target recorded on the owner
     // coin's covenant: items = [nameHash, height, version(u8), addrHash].
-    let cov_json = coin
-        .covenant_json
-        .as_deref()
-        .ok_or_else(|| AppError::InvalidInput("name is not in transfer; nothing to finalize".into()))?;
+    let cov_json = coin.covenant_json.as_deref().ok_or_else(|| {
+        AppError::InvalidInput("name is not in transfer; nothing to finalize".into())
+    })?;
     let cov: serde_json::Value = serde_json::from_str(cov_json)?;
-    let items = cov.get("items").and_then(|i| i.as_array())
+    let items = cov
+        .get("items")
+        .and_then(|i| i.as_array())
         .ok_or_else(|| AppError::InvalidInput("owner coin has no covenant items".into()))?;
     if items.len() < 4 {
-        return Err(AppError::InvalidInput("owner coin is not a TRANSFER".into()));
+        return Err(AppError::InvalidInput(
+            "owner coin is not a TRANSFER".into(),
+        ));
     }
     let ver_hex = items[2].as_str().unwrap_or("00");
     let hash_hex = items[3].as_str().unwrap_or("");
@@ -1609,7 +1698,9 @@ pub async fn build_finalize_draft(
     let target_hash = hex::decode(hash_hex)
         .map_err(|e| AppError::InvalidInput(format!("bad transfer target: {e}")))?;
     if version != 0 || target_hash.len() != 20 {
-        return Err(AppError::InvalidInput("finalize target must be p2wpkh".into()));
+        return Err(AppError::InvalidInput(
+            "finalize target must be p2wpkh".into(),
+        ));
     }
     let mut h160 = [0u8; 20];
     h160.copy_from_slice(&target_hash);
@@ -1623,13 +1714,28 @@ pub async fn build_finalize_draft(
         PrimaryOutput {
             value: coin.value,
             address: target_address.clone(),
-            covenant: covenants::finalize(&nh, ns.height, &raw, flags, ns.claimed, ns.renewals, &rblock),
+            covenant: covenants::finalize(
+                &nh,
+                ns.height,
+                &raw,
+                flags,
+                ns.claimed,
+                ns.renewals,
+                &rblock,
+            ),
         },
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "finalize", &name, Some(&target_address), &res)
+    persist(
+        &state,
+        &ctx.profile_id,
+        "finalize",
+        &name,
+        Some(&target_address),
+        &res,
+    )
 }
 
 #[tauri::command]

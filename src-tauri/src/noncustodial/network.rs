@@ -1,4 +1,3 @@
-
 //! Handshake network parameters.
 //!
 //! All constants verified against the canonical `hsd` source:
@@ -7,8 +6,9 @@
 //!   - lib/hd/mnemonic.js        (standard BIP39 PBKDF2-HMAC-SHA512, 2048 iters)
 
 /// Handshake network selector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Network {
+    #[default]
     Main,
     Testnet,
     Regtest,
@@ -70,12 +70,6 @@ impl Network {
             "simnet" => Some(Network::Simnet),
             _ => None,
         }
-    }
-}
-
-impl Default for Network {
-    fn default() -> Self {
-        Network::Main
     }
 }
 

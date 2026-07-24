@@ -230,7 +230,10 @@ fn rebuild_unsigned(plan: &DraftPlan, network: Network) -> Result<Transaction, A
         let items = out
             .covenant_items_hex
             .iter()
-            .map(|h| hex::decode(h).map_err(|e| AppError::InvalidInput(format!("bad covenant item: {e}"))))
+            .map(|h| {
+                hex::decode(h)
+                    .map_err(|e| AppError::InvalidInput(format!("bad covenant item: {e}")))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         tx.outputs.push(Output {
             value: out.value,
@@ -290,7 +293,11 @@ mod tests {
             Network::Main,
             0,
             None,
-            PrimaryOutput { value: 0, address: ADDR.into(), covenant: cov },
+            PrimaryOutput {
+                value: 0,
+                address: ADDR.into(),
+                covenant: cov,
+            },
             &funding,
             ADDR,
             1,
@@ -300,7 +307,7 @@ mod tests {
         assert_eq!(res.plan.inputs.len(), 1);
         assert!(res.fee > 0);
         // Conservation: inputs == outputs(0 + change) + fee.
-        assert_eq!(res.input_total, 0 + res.change + res.fee);
+        assert_eq!(res.input_total, res.change + res.fee);
         assert_eq!(res.plan.outputs[0].covenant_type, cov_type_open());
         assert!(!res.txid.is_empty());
     }
@@ -328,7 +335,11 @@ mod tests {
             Network::Main,
             0,
             Some(name),
-            PrimaryOutput { value: 2_000_000, address: ADDR.into(), covenant: cov },
+            PrimaryOutput {
+                value: 2_000_000,
+                address: ADDR.into(),
+                covenant: cov,
+            },
             &funding,
             ADDR,
             1,
@@ -350,7 +361,11 @@ mod tests {
             Network::Main,
             0,
             None,
-            PrimaryOutput { value: 0, address: ADDR.into(), covenant: covenants::open(&nh, b"abc") },
+            PrimaryOutput {
+                value: 0,
+                address: ADDR.into(),
+                covenant: covenants::open(&nh, b"abc"),
+            },
             &[coin(1, 1_000_000, 0)],
             ADDR,
             1,
@@ -389,7 +404,11 @@ mod tests {
             Network::Main,
             0,
             None,
-            PrimaryOutput { value: 100_000, address: ADDR.into(), covenant: Covenant::default() },
+            PrimaryOutput {
+                value: 100_000,
+                address: ADDR.into(),
+                covenant: Covenant::default(),
+            },
             &funding,
             ADDR,
             1,
@@ -416,10 +435,18 @@ mod tests {
         let addr = output_address_from_string(Network::Main, ADDR).unwrap();
         let small_cov = covenants::register(&nh, 100, &small_resource, &renewal_block);
         let large_cov = covenants::register(&nh, 100, &large_resource, &renewal_block);
-        let small_vbytes = Output { value: 0, address: addr.clone(), covenant: small_cov.clone() }
-            .encoded_len();
-        let large_vbytes =
-            Output { value: 0, address: addr, covenant: large_cov.clone() }.encoded_len();
+        let small_vbytes = Output {
+            value: 0,
+            address: addr.clone(),
+            covenant: small_cov.clone(),
+        }
+        .encoded_len();
+        let large_vbytes = Output {
+            value: 0,
+            address: addr,
+            covenant: large_cov.clone(),
+        }
+        .encoded_len();
         assert!(
             large_vbytes > small_vbytes + 250,
             "large resource must dominate the output size: small={small_vbytes} large={large_vbytes}"
@@ -430,7 +457,11 @@ mod tests {
             Network::Main,
             0,
             Some(name_spec(1_000_000)),
-            PrimaryOutput { value: 1_000_000, address: ADDR.into(), covenant: small_cov },
+            PrimaryOutput {
+                value: 1_000_000,
+                address: ADDR.into(),
+                covenant: small_cov,
+            },
             &funding,
             ADDR,
             1,
@@ -440,14 +471,23 @@ mod tests {
             Network::Main,
             0,
             Some(name_spec(1_000_000)),
-            PrimaryOutput { value: 1_000_000, address: ADDR.into(), covenant: large_cov },
+            PrimaryOutput {
+                value: 1_000_000,
+                address: ADDR.into(),
+                covenant: large_cov,
+            },
             &funding,
             ADDR,
             1,
         )
         .unwrap();
 
-        assert!(large.fee > small.fee, "large={} small={}", large.fee, small.fee);
+        assert!(
+            large.fee > small.fee,
+            "large={} small={}",
+            large.fee,
+            small.fee
+        );
         assert_eq!(
             large.fee - small.fee,
             (large_vbytes - small_vbytes) as u64,
@@ -477,7 +517,11 @@ mod tests {
             Network::Main,
             0,
             Some(name_spec(1_000_000)),
-            PrimaryOutput { value: 1_000_000, address: ADDR.into(), covenant: cov },
+            PrimaryOutput {
+                value: 1_000_000,
+                address: ADDR.into(),
+                covenant: cov,
+            },
             &funding,
             ADDR,
             crate::noncustodial::send::MIN_FEE_RATE_PER_BYTE,

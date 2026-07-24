@@ -3,7 +3,8 @@ use std::io::Write;
 
 fn setup_db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;").unwrap();
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+        .unwrap();
     let sql = include_str!("../sql/001_initial.sql");
     conn.execute_batch(sql).unwrap();
     conn
@@ -34,10 +35,22 @@ fn test_csv_import_basic() {
     let mut imported = 0;
     for result in rdr.deserialize() {
         let row: crate::commands::csv::CsvRow = result.unwrap();
-        let tld = row.tld.as_deref().unwrap_or("").trim_start_matches('.').trim().to_lowercase();
-        if tld.is_empty() { continue; }
+        let tld = row
+            .tld
+            .as_deref()
+            .unwrap_or("")
+            .trim_start_matches('.')
+            .trim()
+            .to_lowercase();
+        if tld.is_empty() {
+            continue;
+        }
 
-        let is_staked = row.is_staked.as_deref().map(crate::commands::csv::parse_boolish).unwrap_or(false);
+        let is_staked = row
+            .is_staked
+            .as_deref()
+            .map(crate::commands::csv::parse_boolish)
+            .unwrap_or(false);
         let status = crate::commands::csv::infer_status(is_staked, row.status.as_deref());
 
         conn.execute(
@@ -78,7 +91,13 @@ fn test_csv_import_duplicate_handling() {
 
     for result in rdr.deserialize() {
         let row: crate::commands::csv::CsvRow = result.unwrap();
-        let tld = row.tld.as_deref().unwrap_or("").trim_start_matches('.').trim().to_lowercase();
+        let tld = row
+            .tld
+            .as_deref()
+            .unwrap_or("")
+            .trim_start_matches('.')
+            .trim()
+            .to_lowercase();
         conn.execute(
             "INSERT INTO assets (tld, is_staked, status) VALUES (?1, ?2, ?3)
              ON CONFLICT(tld) DO UPDATE SET is_staked = excluded.is_staked, updated_at = datetime('now')",
@@ -95,7 +114,13 @@ fn test_csv_import_duplicate_handling() {
 
     for result in rdr2.deserialize() {
         let row: crate::commands::csv::CsvRow = result.unwrap();
-        let tld = row.tld.as_deref().unwrap_or("").trim_start_matches('.').trim().to_lowercase();
+        let tld = row
+            .tld
+            .as_deref()
+            .unwrap_or("")
+            .trim_start_matches('.')
+            .trim()
+            .to_lowercase();
         conn.execute(
             "INSERT INTO assets (tld, is_staked, status) VALUES (?1, ?2, ?3)
              ON CONFLICT(tld) DO UPDATE SET is_staked = excluded.is_staked, updated_at = datetime('now')",

@@ -123,7 +123,10 @@ pub struct ScanResult {
 /// mistaken for a lapsed earlier one still sitting in `active_episodes` (see
 /// `RevealDeadline::reveal_end_height` doc, review Finding 1).
 fn reveal_key(d: &RevealDeadline) -> String {
-    format!("reveal:{}:{}:{}", d.wallet_profile_id, d.name, d.reveal_end_height)
+    format!(
+        "reveal:{}:{}:{}",
+        d.wallet_profile_id, d.name, d.reveal_end_height
+    )
 }
 
 /// Cycle-scoped when the expiry height is known (see
@@ -208,7 +211,10 @@ pub fn scan_deadlines(
         active.insert(key);
     }
 
-    ScanResult { notifications, active_episodes: active }
+    ScanResult {
+        notifications,
+        active_episodes: active,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +278,8 @@ fn collect_deadlines(
         std::collections::HashMap::new();
 
     for profile in queries::list_wallet_profiles(conn)? {
-        let renewals = crate::commands::read::compute_renewals(conn, &profile.id, live_node_height)?;
+        let renewals =
+            crate::commands::read::compute_renewals(conn, &profile.id, live_node_height)?;
         let network = Network::from_str_opt(&profile.network).unwrap_or_default();
         profile_ctx.insert(profile.id.clone(), (renewals.current_height, network));
         for row in renewals.names {
@@ -325,7 +332,13 @@ fn send_os_notification<R: tauri::Runtime>(
     n: &PendingNotification,
 ) -> Option<String> {
     use tauri_plugin_notification::NotificationExt;
-    match app.notification().builder().title(&n.title).body(&n.body).show() {
+    match app
+        .notification()
+        .builder()
+        .title(&n.title)
+        .body(&n.body)
+        .show()
+    {
         Ok(()) => None,
         Err(e) => Some(e.to_string()),
     }
@@ -366,7 +379,11 @@ pub async fn scan_deadline_notifications<R: tauri::Runtime>(
         load_config(&queries::get_settings(&conn)?)
     };
     if !config.enabled {
-        return Ok(ScanOutcome { enabled: false, notified: Vec::new(), delivery_error: None });
+        return Ok(ScanOutcome {
+            enabled: false,
+            notified: Vec::new(),
+            delivery_error: None,
+        });
     }
 
     // Probe the node BEFORE taking the DB lock (guard is !Send across await,
@@ -411,7 +428,11 @@ mod tests {
     use super::*;
 
     fn cfg(enabled: bool) -> DeadlineNotifyConfig {
-        DeadlineNotifyConfig { enabled, reveal_lead_blocks: 144, renewal_lead_days: 30.0 }
+        DeadlineNotifyConfig {
+            enabled,
+            reveal_lead_blocks: 144,
+            renewal_lead_days: 30.0,
+        }
     }
 
     // A fixed sentinel `reveal_end_height` for tests that only care about
@@ -424,7 +445,12 @@ mod tests {
         reveal_at(profile, name, blocks_remaining, SENTINEL_REVEAL_END_HEIGHT)
     }
 
-    fn reveal_at(profile: &str, name: &str, blocks_remaining: i64, reveal_end_height: i64) -> RevealDeadline {
+    fn reveal_at(
+        profile: &str,
+        name: &str,
+        blocks_remaining: i64,
+        reveal_end_height: i64,
+    ) -> RevealDeadline {
         RevealDeadline {
             wallet_profile_id: profile.into(),
             name: name.into(),
@@ -442,7 +468,12 @@ mod tests {
         }
     }
 
-    fn renewal_at(profile: &str, name: &str, days_remaining: f64, expires_at_height: i64) -> RenewalDeadline {
+    fn renewal_at(
+        profile: &str,
+        name: &str,
+        days_remaining: f64,
+        expires_at_height: i64,
+    ) -> RenewalDeadline {
         RenewalDeadline {
             wallet_profile_id: profile.into(),
             name: name.into(),
@@ -455,19 +486,31 @@ mod tests {
 
     #[test]
     fn emits_reveal_notification_when_within_lead_blocks() {
-        let result = scan_deadlines(&[reveal("p1", "namea", 50)], &[], &cfg(true), &Default::default());
+        let result = scan_deadlines(
+            &[reveal("p1", "namea", 50)],
+            &[],
+            &cfg(true),
+            &Default::default(),
+        );
         assert_eq!(result.notifications.len(), 1);
         assert_eq!(
             result.notifications[0].key,
             format!("reveal:p1:namea:{SENTINEL_REVEAL_END_HEIGHT}")
         );
         assert!(result.notifications[0].body.contains("namea"));
-        assert!(result.active_episodes.contains(&result.notifications[0].key));
+        assert!(result
+            .active_episodes
+            .contains(&result.notifications[0].key));
     }
 
     #[test]
     fn emits_renewal_notification_when_within_lead_days() {
-        let result = scan_deadlines(&[], &[renewal("p1", "nameb", 5.0)], &cfg(true), &Default::default());
+        let result = scan_deadlines(
+            &[],
+            &[renewal("p1", "nameb", 5.0)],
+            &cfg(true),
+            &Default::default(),
+        );
         assert_eq!(result.notifications.len(), 1);
         assert_eq!(result.notifications[0].key, "renewal:p1:nameb");
         assert!(result.active_episodes.contains("renewal:p1:nameb"));
@@ -490,7 +533,12 @@ mod tests {
         // A window that already closed is still worth ONE alert (the user
         // may not have seen the app in days) — matches RenewalRow's
         // documented "incl. negative = lapsed" convention.
-        let result = scan_deadlines(&[reveal("p1", "namea", -20)], &[], &cfg(true), &Default::default());
+        let result = scan_deadlines(
+            &[reveal("p1", "namea", -20)],
+            &[],
+            &cfg(true),
+            &Default::default(),
+        );
         assert_eq!(result.notifications.len(), 1);
     }
 
@@ -498,13 +546,27 @@ mod tests {
 
     #[test]
     fn boundary_exactly_at_lead_time_is_imminent() {
-        let result = scan_deadlines(&[reveal("p1", "namea", 144)], &[], &cfg(true), &Default::default());
-        assert_eq!(result.notifications.len(), 1, "== lead_blocks must count as imminent");
+        let result = scan_deadlines(
+            &[reveal("p1", "namea", 144)],
+            &[],
+            &cfg(true),
+            &Default::default(),
+        );
+        assert_eq!(
+            result.notifications.len(),
+            1,
+            "== lead_blocks must count as imminent"
+        );
     }
 
     #[test]
     fn boundary_one_block_past_lead_time_is_not_imminent() {
-        let result = scan_deadlines(&[reveal("p1", "namea", 145)], &[], &cfg(true), &Default::default());
+        let result = scan_deadlines(
+            &[reveal("p1", "namea", 145)],
+            &[],
+            &cfg(true),
+            &Default::default(),
+        );
         assert!(result.notifications.is_empty());
     }
 
@@ -512,30 +574,62 @@ mod tests {
 
     #[test]
     fn does_not_renotify_same_episode_on_next_tick() {
-        let first = scan_deadlines(&[reveal("p1", "namea", 50)], &[], &cfg(true), &Default::default());
+        let first = scan_deadlines(
+            &[reveal("p1", "namea", 50)],
+            &[],
+            &cfg(true),
+            &Default::default(),
+        );
         assert_eq!(first.notifications.len(), 1);
 
         // Next tick, still imminent, same name — dedup state carried over.
-        let second = scan_deadlines(&[reveal("p1", "namea", 40)], &[], &cfg(true), &first.active_episodes);
-        assert!(second.notifications.is_empty(), "already-notified episode must not re-fire");
-        assert!(second.active_episodes.contains(&format!("reveal:p1:namea:{SENTINEL_REVEAL_END_HEIGHT}")));
+        let second = scan_deadlines(
+            &[reveal("p1", "namea", 40)],
+            &[],
+            &cfg(true),
+            &first.active_episodes,
+        );
+        assert!(
+            second.notifications.is_empty(),
+            "already-notified episode must not re-fire"
+        );
+        assert!(second
+            .active_episodes
+            .contains(&format!("reveal:p1:namea:{SENTINEL_REVEAL_END_HEIGHT}")));
     }
 
     #[test]
     fn renotifies_after_episode_resolves_and_recurs() {
         // Episode 1: notified.
-        let first = scan_deadlines(&[], &[renewal("p1", "namea", 10.0)], &cfg(true), &Default::default());
+        let first = scan_deadlines(
+            &[],
+            &[renewal("p1", "namea", 10.0)],
+            &cfg(true),
+            &Default::default(),
+        );
         assert_eq!(first.notifications.len(), 1);
 
         // Renewed: the deadline drops out of the input entirely.
         let resolved = scan_deadlines(&[], &[], &cfg(true), &first.active_episodes);
         assert!(resolved.notifications.is_empty());
-        assert!(resolved.active_episodes.is_empty(), "resolved episode must be dropped from state");
+        assert!(
+            resolved.active_episodes.is_empty(),
+            "resolved episode must be dropped from state"
+        );
 
         // A YEAR later it's imminent again — must notify again since it's
         // a genuinely new episode, not a repeat of the old one.
-        let second = scan_deadlines(&[], &[renewal("p1", "namea", 10.0)], &cfg(true), &resolved.active_episodes);
-        assert_eq!(second.notifications.len(), 1, "a new episode for the same name must notify");
+        let second = scan_deadlines(
+            &[],
+            &[renewal("p1", "namea", 10.0)],
+            &cfg(true),
+            &resolved.active_episodes,
+        );
+        assert_eq!(
+            second.notifications.len(),
+            1,
+            "a new episode for the same name must notify"
+        );
     }
 
     #[test]
@@ -588,7 +682,12 @@ mod tests {
 
         // A BRAND NEW auction on the SAME name — different reveal_end_height
         // — must notify even though a same-named key is already "active".
-        let result = scan_deadlines(&[reveal_at("p1", "namea", 10, 200)], &[], &cfg(true), &prior);
+        let result = scan_deadlines(
+            &[reveal_at("p1", "namea", 10, 200)],
+            &[],
+            &cfg(true),
+            &prior,
+        );
         assert_eq!(
             result.notifications.len(),
             1,
@@ -604,12 +703,19 @@ mod tests {
     #[test]
     fn same_name_different_reveal_end_heights_are_independent_episodes() {
         let result = scan_deadlines(
-            &[reveal_at("p1", "namea", 10, 100), reveal_at("p1", "namea", 10, 200)],
+            &[
+                reveal_at("p1", "namea", 10, 100),
+                reveal_at("p1", "namea", 10, 200),
+            ],
             &[],
             &cfg(true),
             &Default::default(),
         );
-        assert_eq!(result.notifications.len(), 2, "two concurrent auctions on the same name are independent episodes");
+        assert_eq!(
+            result.notifications.len(),
+            2,
+            "two concurrent auctions on the same name are independent episodes"
+        );
     }
 
     #[test]
@@ -621,13 +727,29 @@ mod tests {
         // auction on the same name once notifications are re-enabled.
         let mut frozen = BTreeSet::new();
         frozen.insert("reveal:p1:namea:100".to_string());
-        let still_disabled = scan_deadlines(&[reveal_at("p1", "namea", 10, 100)], &[], &cfg(false), &frozen);
-        assert_eq!(still_disabled.active_episodes, frozen, "disabled: state is frozen, not recomputed");
+        let still_disabled = scan_deadlines(
+            &[reveal_at("p1", "namea", 10, 100)],
+            &[],
+            &cfg(false),
+            &frozen,
+        );
+        assert_eq!(
+            still_disabled.active_episodes, frozen,
+            "disabled: state is frozen, not recomputed"
+        );
 
         // Re-enabled, and it's now a NEW auction (fresh reveal_end_height).
-        let re_enabled =
-            scan_deadlines(&[reveal_at("p1", "namea", 10, 200)], &[], &cfg(true), &still_disabled.active_episodes);
-        assert_eq!(re_enabled.notifications.len(), 1, "the new auction must notify despite the frozen old key");
+        let re_enabled = scan_deadlines(
+            &[reveal_at("p1", "namea", 10, 200)],
+            &[],
+            &cfg(true),
+            &still_disabled.active_episodes,
+        );
+        assert_eq!(
+            re_enabled.notifications.len(),
+            1,
+            "the new auction must notify despite the frozen old key"
+        );
     }
 
     // --- Finding 1b: stale reveal rows are dropped from the input -------
@@ -650,8 +772,16 @@ mod tests {
     fn renewal_disabled_state_freeze_does_not_swallow_a_new_renewal_episode() {
         let mut frozen = BTreeSet::new();
         frozen.insert("renewal:p1:namea:1000".to_string());
-        let still_disabled = scan_deadlines(&[], &[renewal_at("p1", "namea", 5.0, 1000)], &cfg(false), &frozen);
-        assert_eq!(still_disabled.active_episodes, frozen, "disabled: state is frozen, not recomputed");
+        let still_disabled = scan_deadlines(
+            &[],
+            &[renewal_at("p1", "namea", 5.0, 1000)],
+            &cfg(false),
+            &frozen,
+        );
+        assert_eq!(
+            still_disabled.active_episodes, frozen,
+            "disabled: state is frozen, not recomputed"
+        );
 
         // Re-enabled, and the name has since renewed — a NEW cycle, new
         // expires_at_height — must notify despite the frozen old key.
@@ -661,12 +791,21 @@ mod tests {
             &cfg(true),
             &still_disabled.active_episodes,
         );
-        assert_eq!(re_enabled.notifications.len(), 1, "the new renewal cycle must notify despite the frozen old key");
+        assert_eq!(
+            re_enabled.notifications.len(),
+            1,
+            "the new renewal cycle must notify despite the frozen old key"
+        );
     }
 
     #[test]
     fn renewal_without_known_expiry_height_falls_back_to_unscoped_key() {
-        let result = scan_deadlines(&[], &[renewal("p1", "namea", 5.0)], &cfg(true), &Default::default());
+        let result = scan_deadlines(
+            &[],
+            &[renewal("p1", "namea", 5.0)],
+            &cfg(true),
+            &Default::default(),
+        );
         assert_eq!(result.notifications[0].key, "renewal:p1:namea");
     }
 

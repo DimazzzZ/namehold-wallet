@@ -94,9 +94,24 @@ fn provision_addresses(
     gap: u32,
 ) -> Result<String, AppError> {
     let xpub = ExtendedPubKey::from_xpub(network, account_xpub)?;
-    let receive =
-        derivation::ensure_addresses(conn, profile_id, 0, network, &xpub, derivation::BRANCH_RECEIVE, gap)?;
-    derivation::ensure_addresses(conn, profile_id, 0, network, &xpub, derivation::BRANCH_CHANGE, gap)?;
+    let receive = derivation::ensure_addresses(
+        conn,
+        profile_id,
+        0,
+        network,
+        &xpub,
+        derivation::BRANCH_RECEIVE,
+        gap,
+    )?;
+    derivation::ensure_addresses(
+        conn,
+        profile_id,
+        0,
+        network,
+        &xpub,
+        derivation::BRANCH_CHANGE,
+        gap,
+    )?;
     Ok(receive
         .first()
         .map(|d| d.address.clone())
@@ -134,7 +149,9 @@ async fn ask_passphrase(app: &AppHandle, new: bool, message: &str) -> Result<Str
     )
     .await?;
     if !res.confirmed {
-        return Err(AppError::InvalidInput("passphrase entry cancelled".to_string()));
+        return Err(AppError::InvalidInput(
+            "passphrase entry cancelled".to_string(),
+        ));
     }
     Ok(res.value.unwrap_or_default())
 }
@@ -203,7 +220,14 @@ pub async fn secure_create_wallet(
         let state = app.state::<AppState>();
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         db::queries::insert_wallet_profile(
-            &conn, &id, &label, "mnemonic_hot", network_str, &account_xpub, 0, false,
+            &conn,
+            &id,
+            &label,
+            "mnemonic_hot",
+            network_str,
+            &account_xpub,
+            0,
+            false,
         )?;
         db::queries::insert_wallet_secret(&conn, &id, &vault_blob, kdf, &fp)?;
         let receive_addr = provision_addresses(&conn, &id, net, &account_xpub, gap)?;
@@ -269,7 +293,14 @@ pub async fn secure_import_wallet(
             let state = app.state::<AppState>();
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             db::queries::insert_wallet_profile(
-                &conn, &id, &label, "mnemonic_hot", network_str, &account_xpub, 0, false,
+                &conn,
+                &id,
+                &label,
+                "mnemonic_hot",
+                network_str,
+                &account_xpub,
+                0,
+                false,
             )?;
             db::queries::insert_wallet_secret(&conn, &id, &vault_blob, kdf, &fp)?;
             let receive_addr = provision_addresses(&conn, &id, net, &account_xpub, gap)?;
@@ -300,7 +331,14 @@ pub async fn secure_import_wallet(
             let state = app.state::<AppState>();
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             db::queries::insert_wallet_profile(
-                &conn, &id, &label, "watch_only_xpub", network_str, &xpub, 0, true,
+                &conn,
+                &id,
+                &label,
+                "watch_only_xpub",
+                network_str,
+                &xpub,
+                0,
+                true,
             )?;
             let receive_addr = provision_addresses(&conn, &id, net, &xpub, gap)?;
             db::queries::update_profile_receive(&conn, &id, &receive_addr, gap as i64)?;
@@ -337,7 +375,12 @@ pub async fn secure_reveal_backup_phrase(
     let passphrase = if kdf == "none" {
         NO_PASSPHRASE_KEY.to_string()
     } else {
-        ask_passphrase(&app, false, "Enter your wallet passphrase to reveal the phrase.").await?
+        ask_passphrase(
+            &app,
+            false,
+            "Enter your wallet passphrase to reveal the phrase.",
+        )
+        .await?
     };
     let mut plaintext = vault::decrypt(&blob, &passphrase)?;
     let mut phrase = String::from_utf8(plaintext.clone())
@@ -368,9 +411,8 @@ pub async fn unlock_local_signer(
         let secret = db::queries::get_wallet_secret_meta(&conn, &wallet_profile_id)?;
         (net, secret)
     };
-    let (blob, kdf) = secret.ok_or_else(|| {
-        AppError::InvalidInput("cannot unlock a watch-only profile".to_string())
-    })?;
+    let (blob, kdf) = secret
+        .ok_or_else(|| AppError::InvalidInput("cannot unlock a watch-only profile".to_string()))?;
 
     let passphrase = if kdf == "none" {
         NO_PASSPHRASE_KEY.to_string()
@@ -394,7 +436,10 @@ pub async fn unlock_local_signer(
     };
     {
         let state = app.state::<AppState>();
-        let mut slot = state.signer.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let mut slot = state
+            .signer
+            .lock()
+            .map_err(|e| AppError::Lock(e.to_string()))?;
         *slot = Some(session);
     }
     Ok(summary)
@@ -403,7 +448,10 @@ pub async fn unlock_local_signer(
 /// Lock the local signer, zeroizing in-memory key material.
 #[tauri::command]
 pub async fn lock_local_signer(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
-    let mut slot = state.signer.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let mut slot = state
+        .signer
+        .lock()
+        .map_err(|e| AppError::Lock(e.to_string()))?;
     *slot = None; // Drop zeroizes the key material.
     Ok(())
 }
@@ -413,7 +461,10 @@ pub async fn lock_local_signer(state: tauri::State<'_, AppState>) -> Result<(), 
 pub async fn get_signer_session(
     state: tauri::State<'_, AppState>,
 ) -> Result<SignerSessionSummary, AppError> {
-    let slot = state.signer.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let slot = state
+        .signer
+        .lock()
+        .map_err(|e| AppError::Lock(e.to_string()))?;
     match slot.as_ref() {
         Some(s) if s.is_unlocked() => Ok(SignerSessionSummary {
             wallet_profile_id: Some(s.wallet_profile_id().to_string()),
@@ -446,7 +497,10 @@ pub async fn set_active_wallet_profile(
     db::queries::set_active_profile(&conn, &wallet_profile_id)?;
     drop(conn);
 
-    let mut slot = state.signer.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let mut slot = state
+        .signer
+        .lock()
+        .map_err(|e| AppError::Lock(e.to_string()))?;
     if slot
         .as_ref()
         .map(|s| s.wallet_profile_id() != wallet_profile_id)
@@ -477,7 +531,10 @@ pub async fn delete_wallet_profile(
             db::queries::set_active_profile(&conn, "")?;
         }
     }
-    let mut slot = state.signer.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let mut slot = state
+        .signer
+        .lock()
+        .map_err(|e| AppError::Lock(e.to_string()))?;
     if slot
         .as_ref()
         .map(|s| s.wallet_profile_id() == wallet_profile_id)

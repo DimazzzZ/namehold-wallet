@@ -144,7 +144,11 @@ fn addresses_match_hsd() {
         let child = master.derive_path(&path).unwrap();
         let pubkey = child.compressed_pubkey();
         let addr = address::address_from_pubkey(NETWORK, &pubkey).unwrap();
-        assert_eq!(addr, a["address"].as_str().unwrap(), "address {branch}/{index}");
+        assert_eq!(
+            addr,
+            a["address"].as_str().unwrap(),
+            "address {branch}/{index}"
+        );
         assert_eq!(
             hex::encode(address::pubkey_to_hash160(&pubkey)),
             a["keyHash160"].as_str().unwrap()
@@ -210,7 +214,11 @@ fn build_send_single_input_matches_hsd() {
     let bs = &v["buildSend1"];
     let built = run_build_send(bs);
     assert_eq!(built.fee, bs["params"]["fee"].as_u64().unwrap(), "fee");
-    assert_eq!(built.change, bs["params"]["change"].as_u64().unwrap(), "change");
+    assert_eq!(
+        built.change,
+        bs["params"]["change"].as_u64().unwrap(),
+        "change"
+    );
     assert_eq!(built.num_inputs, 1);
     assert_eq!(built.txid, bs["txid"].as_str().unwrap(), "txid");
     assert_eq!(
@@ -226,7 +234,11 @@ fn build_send_two_inputs_matches_hsd() {
     let bs = &v["buildSend2"];
     let built = run_build_send(bs);
     assert_eq!(built.fee, bs["params"]["fee"].as_u64().unwrap(), "fee");
-    assert_eq!(built.change, bs["params"]["change"].as_u64().unwrap(), "change");
+    assert_eq!(
+        built.change,
+        bs["params"]["change"].as_u64().unwrap(),
+        "change"
+    );
     assert_eq!(built.num_inputs, 2, "must select both coins");
     assert_eq!(built.txid, bs["txid"].as_str().unwrap(), "txid");
     assert_eq!(

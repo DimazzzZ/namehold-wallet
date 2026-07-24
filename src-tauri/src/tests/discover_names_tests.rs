@@ -23,7 +23,10 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+            hsd_child: std::sync::Mutex::new(None),
+            sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::commands::sync::SyncStatus::default(),
+            )),
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -36,7 +39,14 @@ fn seeded_conn(explorer_url: &str) -> rusqlite::Connection {
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE, "Disc", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        &conn,
+        PROFILE,
+        "Disc",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKE",
+        0,
+        false,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE).unwrap();
@@ -107,7 +117,9 @@ async fn discovers_owned_name_and_excludes_transferred_away() {
     // 4. Name detail for the confirmed-owned name.
     let _name_mine = server
         .mock("GET", "/api/names/mine")
-        .with_body(r#"{"name":"mine","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#)
+        .with_body(
+            r#"{"name":"mine","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#,
+        )
         .create_async()
         .await;
 
@@ -123,16 +135,33 @@ async fn discovers_owned_name_and_excludes_transferred_away() {
 
     // Run discovery.
     let res = discover_owned_names(app.state()).await.expect("discover");
-    assert_eq!(res["discovered"].as_u64(), Some(1), "exactly one owned name");
-    let names: Vec<&str> = res["names"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
-    assert_eq!(names, vec!["mine"], "owns 'mine', excludes transferred-away 'gone'");
+    assert_eq!(
+        res["discovered"].as_u64(),
+        Some(1),
+        "exactly one owned name"
+    );
+    let names: Vec<&str> = res["names"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["mine"],
+        "owns 'mine', excludes transferred-away 'gone'"
+    );
 
     // read_names serves ONLY owned names — the inventory-only 'notmine' must NOT
     // appear, and the transferred-away 'gone' must NOT appear.
     let listed = read_names(app.state(), None).await.expect("read_names");
     let arr = listed.as_array().expect("array");
     let listed_names: Vec<&str> = arr.iter().filter_map(|v| v["name"].as_str()).collect();
-    assert_eq!(listed_names, vec!["mine"], "Owned Names excludes inventory + transferred-away");
+    assert_eq!(
+        listed_names,
+        vec!["mine"],
+        "Owned Names excludes inventory + transferred-away"
+    );
     assert_eq!(arr[0]["state"].as_str(), Some("CLOSED"));
     assert_eq!(arr[0]["renewal"].as_i64(), Some(200));
 }
@@ -304,7 +333,14 @@ mod discover_step_tests {
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         db::migrations::run(&conn).unwrap();
         db::queries::insert_wallet_profile(
-            &conn, PROFILE, "DiscStep", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+            &conn,
+            PROFILE,
+            "DiscStep",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
         )
         .unwrap();
         db::queries::set_active_profile(&conn, PROFILE).unwrap();
@@ -345,7 +381,9 @@ mod discover_step_tests {
         // owner tx output pays OUR address.
         let _name = server
             .mock("GET", "/api/names/mine")
-            .with_body(r#"{"name":"mine","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#)
+            .with_body(
+                r#"{"name":"mine","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#,
+            )
             .create_async()
             .await;
         let _hist = server
@@ -372,16 +410,24 @@ mod discover_step_tests {
         drop(s);
 
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        let (owner_address, owner_txid, owner_vout): (Option<String>, Option<String>, Option<i64>) = conn
-            .query_row(
+        let (owner_address, owner_txid, owner_vout): (Option<String>, Option<String>, Option<i64>) =
+            conn.query_row(
                 "SELECT owner_address, owner_txid, owner_vout FROM tracked_name_states
                  WHERE wallet_profile_id = ?1 AND name = 'mine'",
                 rusqlite::params![PROFILE],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .expect("tracked row exists for owned candidate");
-        assert_eq!(owner_address.as_deref(), Some(MINE), "owner_address is our address, resolved via history");
-        assert_eq!(owner_txid.as_deref(), Some("txB"), "owner_txid comes from the resolver, not the redundant call");
+        assert_eq!(
+            owner_address.as_deref(),
+            Some(MINE),
+            "owner_address is our address, resolved via history"
+        );
+        assert_eq!(
+            owner_txid.as_deref(),
+            Some("txB"),
+            "owner_txid comes from the resolver, not the redundant call"
+        );
         assert_eq!(owner_vout, Some(2));
     }
 
@@ -431,7 +477,10 @@ mod discover_step_tests {
         discover_step(&status, &db_path, PROFILE).await;
 
         let s = status.lock().await;
-        assert_eq!(s.discovered, 0, "foreign-owned candidate is not counted as discovered");
+        assert_eq!(
+            s.discovered, 0,
+            "foreign-owned candidate is not counted as discovered"
+        );
         drop(s);
 
         let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -443,7 +492,10 @@ mod discover_step_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 0, "no tracked row for a candidate not currently owned by us");
+        assert_eq!(
+            count, 0,
+            "no tracked row for a candidate not currently owned by us"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -481,13 +533,21 @@ mod discover_step_tests {
         // Phase 2: every name resolves to us (history → txB[0] pays MINE), so
         // each of the 25 candidates is discovered — proving no budget cap.
         let _name = server
-            .mock("GET", mockito::Matcher::Regex(r"^/api/names/[^/]+$".to_string()))
-            .with_body(r#"{"name":"n","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#)
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"^/api/names/[^/]+$".to_string()),
+            )
+            .with_body(
+                r#"{"name":"n","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#,
+            )
             .expect_at_least(21)
             .create_async()
             .await;
         let _hist = server
-            .mock("GET", mockito::Matcher::Regex(r"^/api/names/[^/]+/history$".to_string()))
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"^/api/names/[^/]+/history$".to_string()),
+            )
             .with_body(r#"{"result":[{"action":"Finalize","txid":"txB","index":0}]}"#)
             .create_async()
             .await;
@@ -506,7 +566,10 @@ mod discover_step_tests {
         discover_step(&status, &db_path, PROFILE).await;
 
         let s = status.lock().await;
-        assert_eq!(s.discovered, 25, "all 25 candidates processed in one call (no budget cap)");
+        assert_eq!(
+            s.discovered, 25,
+            "all 25 candidates processed in one call (no budget cap)"
+        );
         assert!(
             !s.progress_label.contains("budget"),
             "the old 'paused (budget)' label must be gone, got {:?}",
@@ -554,7 +617,9 @@ mod discover_step_tests {
         // "stale" has no fresh memo → it IS checked (empty history → not owned).
         let _stale_name = server
             .mock("GET", "/api/names/stale")
-            .with_body(r#"{"name":"stale","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#)
+            .with_body(
+                r#"{"name":"stale","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#,
+            )
             .expect_at_least(1)
             .create_async()
             .await;
@@ -631,7 +696,14 @@ async fn discovery_no_addresses_is_empty() {
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE, "Disc", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        &conn,
+        PROFILE,
+        "Disc",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKE",
+        0,
+        false,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE).unwrap();

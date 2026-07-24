@@ -97,7 +97,11 @@ fn test_node_start_error_no_log() {
 fn test_node_start_error_log_without_error() {
     let dir = std::env::temp_dir().join("namehold_test_node_start_ok");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("namehold-hsd.log"), "hsd v6.0.0\nstarting...\nlistening on port 12037").unwrap();
+    std::fs::write(
+        dir.join("namehold-hsd.log"),
+        "hsd v6.0.0\nstarting...\nlistening on port 12037",
+    )
+    .unwrap();
     let result = node::node_start_error(dir.to_str().unwrap());
     assert!(result.is_none());
     let _ = std::fs::remove_dir_all(&dir);
@@ -107,7 +111,11 @@ fn test_node_start_error_log_without_error() {
 fn test_node_start_error_log_with_generic_error() {
     let dir = std::env::temp_dir().join("namehold_test_node_start_err");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("namehold-hsd.log"), "Error: port 12037 already in use").unwrap();
+    std::fs::write(
+        dir.join("namehold-hsd.log"),
+        "Error: port 12037 already in use",
+    )
+    .unwrap();
     let result = node::node_start_error(dir.to_str().unwrap());
     assert!(result.is_some());
     let (msg, is_index_mismatch) = result.unwrap();
@@ -151,9 +159,15 @@ fn test_hsd_candidates_includes_home_paths() {
     if std::env::var("HOME").is_ok() {
         let candidates = node::hsd_candidates();
         let home = std::env::var("HOME").unwrap();
-        assert!(candidates.iter().any(|c| c.contains(&format!("{home}/.npm-global/bin/hsd"))));
-        assert!(candidates.iter().any(|c| c.contains(&format!("{home}/.npm/bin/hsd"))));
-        assert!(candidates.iter().any(|c| c.contains(&format!("{home}/.local/bin/hsd"))));
+        assert!(candidates
+            .iter()
+            .any(|c| c.contains(&format!("{home}/.npm-global/bin/hsd"))));
+        assert!(candidates
+            .iter()
+            .any(|c| c.contains(&format!("{home}/.npm/bin/hsd"))));
+        assert!(candidates
+            .iter()
+            .any(|c| c.contains(&format!("{home}/.local/bin/hsd"))));
     }
 }
 
@@ -203,7 +217,11 @@ fn test_hsd_candidates_does_not_contain_duplicates() {
     let mut sorted = candidates.clone();
     sorted.sort();
     sorted.dedup();
-    assert_eq!(candidates.len(), sorted.len(), "candidates should not contain duplicates");
+    assert_eq!(
+        candidates.len(),
+        sorted.len(),
+        "candidates should not contain duplicates"
+    );
 }
 
 // --- parse_hsd_version tests ---

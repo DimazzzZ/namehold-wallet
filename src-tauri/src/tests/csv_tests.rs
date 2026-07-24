@@ -48,7 +48,10 @@ fn test_normalize_tld_empty() {
 #[test]
 fn test_infer_status_staked() {
     assert_eq!(csv::infer_status(true, None), "do_not_touch_staked");
-    assert_eq!(csv::infer_status(true, Some("not_started")), "do_not_touch_staked");
+    assert_eq!(
+        csv::infer_status(true, Some("not_started")),
+        "do_not_touch_staked"
+    );
 }
 
 #[test]
@@ -58,22 +61,52 @@ fn test_infer_status_no_hint() {
 
 #[test]
 fn test_infer_status_known_hints() {
-    assert_eq!(csv::infer_status(false, Some("namebase_transfer_requested")), "namebase_transfer_requested");
-    assert_eq!(csv::infer_status(false, Some("waiting_transfer_tx")), "waiting_transfer_tx");
-    assert_eq!(csv::infer_status(false, Some("transfer_seen_on_chain")), "transfer_seen_on_chain");
-    assert_eq!(csv::infer_status(false, Some("waiting_finalize")), "waiting_finalize");
-    assert_eq!(csv::infer_status(false, Some("finalized_owned")), "finalized_owned");
-    assert_eq!(csv::infer_status(false, Some("failed_or_stuck")), "failed_or_stuck");
-    assert_eq!(csv::infer_status(false, Some("do_not_touch_staked")), "do_not_touch_staked");
+    assert_eq!(
+        csv::infer_status(false, Some("namebase_transfer_requested")),
+        "namebase_transfer_requested"
+    );
+    assert_eq!(
+        csv::infer_status(false, Some("waiting_transfer_tx")),
+        "waiting_transfer_tx"
+    );
+    assert_eq!(
+        csv::infer_status(false, Some("transfer_seen_on_chain")),
+        "transfer_seen_on_chain"
+    );
+    assert_eq!(
+        csv::infer_status(false, Some("waiting_finalize")),
+        "waiting_finalize"
+    );
+    assert_eq!(
+        csv::infer_status(false, Some("finalized_owned")),
+        "finalized_owned"
+    );
+    assert_eq!(
+        csv::infer_status(false, Some("failed_or_stuck")),
+        "failed_or_stuck"
+    );
+    assert_eq!(
+        csv::infer_status(false, Some("do_not_touch_staked")),
+        "do_not_touch_staked"
+    );
 }
 
 #[test]
 fn test_infer_status_unknown_hint() {
-    assert_eq!(csv::infer_status(false, Some("unknown_status")), "not_started");
+    assert_eq!(
+        csv::infer_status(false, Some("unknown_status")),
+        "not_started"
+    );
 }
 
 #[test]
 fn test_infer_status_normalizes_spaces_and_dashes() {
-    assert_eq!(csv::infer_status(false, Some("Namebase Transfer Requested")), "namebase_transfer_requested");
-    assert_eq!(csv::infer_status(false, Some("waiting-transfer-tx")), "waiting_transfer_tx");
+    assert_eq!(
+        csv::infer_status(false, Some("Namebase Transfer Requested")),
+        "namebase_transfer_requested"
+    );
+    assert_eq!(
+        csv::infer_status(false, Some("waiting-transfer-tx")),
+        "waiting_transfer_tx"
+    );
 }

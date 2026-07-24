@@ -65,8 +65,7 @@ fn seed_unspent_bid_coin(
 }
 
 fn addr_hash160(addr: &str) -> [u8; 20] {
-    let (_version, program) =
-        crate::noncustodial::address::decode(Network::Regtest, addr).unwrap();
+    let (_version, program) = crate::noncustodial::address::decode(Network::Regtest, addr).unwrap();
     let mut out = [0u8; 20];
     out.copy_from_slice(&program);
     out
@@ -261,7 +260,10 @@ async fn recover_tries_each_candidate_and_skips_non_matching() {
     )
     .await
     .expect("recovery should find the matching candidate");
-    assert_ne!(result.address, addr0, "must not settle on the garbage-blind candidate");
+    assert_ne!(
+        result.address, addr0,
+        "must not settle on the garbage-blind candidate"
+    );
     assert_eq!(result.lockup_value_doos, 3000);
 }
 
@@ -274,13 +276,31 @@ async fn export_returns_all_fields_for_every_commitment() {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
         db::queries::insert_bid_commitment(
-            &conn, &id, "namea", "aabb", "rs1qaddrA", 0, 0, 1000, 2000,
-            &"11".repeat(32), &"22".repeat(32),
+            &conn,
+            &id,
+            "namea",
+            "aabb",
+            "rs1qaddrA",
+            0,
+            0,
+            1000,
+            2000,
+            &"11".repeat(32),
+            &"22".repeat(32),
         )
         .unwrap();
         db::queries::insert_bid_commitment(
-            &conn, &id, "nameb", "ccdd", "rs1qaddrB", 0, 1, 5000, 6000,
-            &"33".repeat(32), &"44".repeat(32),
+            &conn,
+            &id,
+            "nameb",
+            "ccdd",
+            "rs1qaddrB",
+            0,
+            1,
+            5000,
+            6000,
+            &"33".repeat(32),
+            &"44".repeat(32),
         )
         .unwrap();
         db::queries::set_bid_txid(&conn, &id, &"22".repeat(32), "txidbid").unwrap();

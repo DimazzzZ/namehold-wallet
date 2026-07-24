@@ -55,7 +55,14 @@ fn seeded_db() -> TempDb {
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE, "ExpSync", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        &conn,
+        PROFILE,
+        "ExpSync",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKE",
+        0,
+        false,
     )
     .unwrap();
     drop(conn);

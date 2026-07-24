@@ -63,11 +63,25 @@ fn seeded_db() -> std::path::PathBuf {
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE_A, "A", "mnemonic_hot", "mainnet", "xpubFAKEA", 0, false,
+        &conn,
+        PROFILE_A,
+        "A",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKEA",
+        0,
+        false,
     )
     .unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE_B, "B", "mnemonic_hot", "mainnet", "xpubFAKEB", 0, false,
+        &conn,
+        PROFILE_B,
+        "B",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKEB",
+        0,
+        false,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE_A).unwrap();
@@ -118,13 +132,24 @@ async fn start_full_sync_refuses_second_start_while_running() {
     }
 
     let result = start_full_sync(app.state()).await.expect("command ok");
-    assert_eq!(result["started"], serde_json::json!(false), "must refuse to start a second run");
+    assert_eq!(
+        result["started"],
+        serde_json::json!(false),
+        "must refuse to start a second run"
+    );
     assert_eq!(result["alreadyRunning"], serde_json::json!(true));
 
     let state = app.state::<AppState>();
     let s = state.sync_status.lock().await;
-    assert_eq!(s.started_at.as_deref(), Some("SENTINEL"), "the in-flight run's status must be untouched");
-    assert_eq!(s.repaired, 7, "no reset to SyncStatus::default() must have happened");
+    assert_eq!(
+        s.started_at.as_deref(),
+        Some("SENTINEL"),
+        "the in-flight run's status must be untouched"
+    );
+    assert_eq!(
+        s.repaired, 7,
+        "no reset to SyncStatus::default() must have happened"
+    );
     assert!(s.running, "still reports running");
 }
 
@@ -142,10 +167,7 @@ async fn concurrent_start_full_sync_exactly_one_wins() {
     let conn = rusqlite::Connection::open(&path).unwrap();
     let app = app_with(conn);
 
-    let (r1, r2) = tokio::join!(
-        start_full_sync(app.state()),
-        start_full_sync(app.state()),
-    );
+    let (r1, r2) = tokio::join!(start_full_sync(app.state()), start_full_sync(app.state()),);
     let r1 = r1.expect("command ok");
     let r2 = r2.expect("command ok");
 
@@ -159,7 +181,10 @@ async fn concurrent_start_full_sync_exactly_one_wins() {
         .count();
 
     assert_eq!(started_count, 1, "exactly one of the two concurrent calls must actually start a run, got r1={r1:?} r2={r2:?}");
-    assert_eq!(already_running_count, 1, "the other must observe alreadyRunning, got r1={r1:?} r2={r2:?}");
+    assert_eq!(
+        already_running_count, 1,
+        "the other must observe alreadyRunning, got r1={r1:?} r2={r2:?}"
+    );
 
     // Let the winning background thread finish (fast: no addresses/assets
     // seeded, node RPC points at an unroutable address) so it doesn't
@@ -217,7 +242,11 @@ async fn panic_in_sync_thread_clears_running_and_records_error() {
     crate::commands::sync::TEST_PANIC_HOOK.store(true, std::sync::atomic::Ordering::SeqCst);
 
     let result = start_full_sync(app.state()).await.expect("command ok");
-    assert_eq!(result["started"], serde_json::json!(true), "first start must succeed");
+    assert_eq!(
+        result["started"],
+        serde_json::json!(true),
+        "first start must succeed"
+    );
 
     // Wait for the background thread to panic, unwind, and let the
     // RunningGuard clear `running`.
@@ -298,11 +327,25 @@ mod profile_scope_guard {
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         db::migrations::run(&conn).unwrap();
         db::queries::insert_wallet_profile(
-            &conn, PROFILE_A, "A", "mnemonic_hot", "mainnet", "xpubFAKEA", 0, false,
+            &conn,
+            PROFILE_A,
+            "A",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKEA",
+            0,
+            false,
         )
         .unwrap();
         db::queries::insert_wallet_profile(
-            &conn, PROFILE_B, "B", "mnemonic_hot", "mainnet", "xpubFAKEB", 0, false,
+            &conn,
+            PROFILE_B,
+            "B",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKEB",
+            0,
+            false,
         )
         .unwrap();
         db::queries::set_active_profile(&conn, PROFILE_A).unwrap();
@@ -392,6 +435,9 @@ mod profile_scope_guard {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(b_count, 0, "profile B must not have received any writes from A's run");
+        assert_eq!(
+            b_count, 0,
+            "profile B must not have received any writes from A's run"
+        );
     }
 }

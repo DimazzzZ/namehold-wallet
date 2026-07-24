@@ -23,6 +23,11 @@
 //! The output is base64(sig_64_bytes), matching what hsd's RPC
 //! `signmessagewithname` / `signmessage` returns.
 
+// Module doc quotes hsd source with deep prose indentation; clippy misreads the
+// continuation lines as over-indented markdown list items. Keep the citations
+// readable and silence the lint.
+#![allow(clippy::doc_overindented_list_items)]
+
 use crate::noncustodial::tx::blake2b256;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -99,12 +104,17 @@ mod tests {
         let signature_b64 = sign_handshake_message(&secret, text);
 
         let sig_bytes = BASE64.decode(&signature_b64).expect("valid base64");
-        assert_eq!(sig_bytes.len(), 64, "hsd compact signatures are 64 bytes, non-recoverable");
+        assert_eq!(
+            sig_bytes.len(),
+            64,
+            "hsd compact signatures are 64 bytes, non-recoverable"
+        );
 
         let sig = secp256k1::ecdsa::Signature::from_compact(&sig_bytes).expect("valid compact sig");
         let hash = blake2b256(&message_preimage(text));
         let msg = Message::from_digest(hash);
-        secp.verify_ecdsa(&msg, &sig, &pubkey).expect("signature verifies against derived pubkey");
+        secp.verify_ecdsa(&msg, &sig, &pubkey)
+            .expect("signature verifies against derived pubkey");
     }
 
     /// Different messages must not collide onto the same signature (sanity —

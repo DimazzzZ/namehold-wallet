@@ -8,9 +8,9 @@ mod models;
 mod namebase;
 mod noncustodial;
 mod providers;
-mod wallet_delete;
 #[cfg(test)]
 mod tests;
+mod wallet_delete;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,8 +18,8 @@ use std::sync::Mutex;
 use tauri::Manager;
 
 use crate::commands::secure_prompt::PendingPrompt;
-use crate::noncustodial::session::SignerSession;
 use crate::commands::sync::SyncStatus;
+use crate::noncustodial::session::SignerSession;
 use tokio::sync::Mutex as AsyncMutex;
 
 pub struct AppState {
@@ -105,7 +105,8 @@ pub fn run() {
                     interval.tick().await;
                     let state = handle.state::<AppState>();
                     if let Err(e) =
-                        commands::deadlines::scan_deadline_notifications(handle.clone(), state).await
+                        commands::deadlines::scan_deadline_notifications(handle.clone(), state)
+                            .await
                     {
                         eprintln!("deadline scan failed: {e}");
                     }
@@ -131,7 +132,9 @@ pub fn run() {
                                 settings.get("autostart_hsd").map(String::as_str) != Some("false")
                             }
                             Err(e) => {
-                                eprintln!("autostart: could not read settings ({e}); defaulting ON");
+                                eprintln!(
+                                    "autostart: could not read settings ({e}); defaulting ON"
+                                );
                                 true
                             }
                         },

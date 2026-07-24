@@ -178,7 +178,10 @@ struct RunningGuard {
 
 impl RunningGuard {
     fn new(status: Arc<Mutex<SyncStatus>>) -> Self {
-        Self { status, completed: false }
+        Self {
+            status,
+            completed: false,
+        }
     }
 
     /// Call on every normal exit path to suppress the Drop-time cleanup —
@@ -210,9 +213,7 @@ impl Drop for RunningGuard {
 /// Start a full sync in a background thread. The frontend polls
 /// [`get_sync_status`] to see progress even across page navigation.
 #[tauri::command]
-pub async fn start_full_sync(
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, AppError> {
+pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     let status = state.sync_status.clone();
 
     // Atomically check-and-set: refuse to start a second sync while one is
@@ -260,8 +261,9 @@ pub async fn start_full_sync(
                 // thread with no tokio runtime built at all).
                 let mut s = status.blocking_lock();
                 s.running = false;
-                s.errors
-                    .push(format!("failed to build tokio runtime for sync thread: {e}"));
+                s.errors.push(format!(
+                    "failed to build tokio runtime for sync thread: {e}"
+                ));
                 s.progress_label = "Sync failed to start".into();
                 guard.mark_completed();
                 return;
@@ -390,9 +392,7 @@ pub async fn start_full_sync(
 
 /// Poll the current sync status.
 #[tauri::command]
-pub async fn get_sync_status(
-    state: State<'_, AppState>,
-) -> Result<SyncStatus, AppError> {
+pub async fn get_sync_status(state: State<'_, AppState>) -> Result<SyncStatus, AppError> {
     let s = state.sync_status.lock().await;
     Ok(s.clone())
 }
@@ -511,7 +511,8 @@ async fn node_discover_step(db_path: &str, profile_id: &str) {
             Ok(s) => s,
             Err(_) => return,
         };
-        let hashes = queries::list_unspent_wallet_name_hashes(&conn, profile_id).unwrap_or_default();
+        let hashes =
+            queries::list_unspent_wallet_name_hashes(&conn, profile_id).unwrap_or_default();
         (settings, hashes)
     };
     if hashes.is_empty() {
@@ -661,8 +662,8 @@ pub(crate) async fn repair_step_windowed(
         let explorer = crate::providers::explorer_client_from_settings(&settings);
         let addrs = queries::get_profile_addresses(&conn, profile_id).unwrap_or_default();
         // Total backlog counted once: the stable "/ N" denominator for progress.
-        let total = queries::count_repair_candidates(&conn, profile_id, REPAIR_MIN_AGE_HOURS)
-            .unwrap_or(0);
+        let total =
+            queries::count_repair_candidates(&conn, profile_id, REPAIR_MIN_AGE_HOURS).unwrap_or(0);
         (explorer, addrs, total)
     };
     let addr_set: HashSet<String> = all_addresses.iter().cloned().collect();
@@ -725,8 +726,7 @@ pub(crate) async fn repair_step_windowed(
             {
                 let mut s = status.lock().await;
                 s.repair_remaining = remaining;
-                s.progress_label =
-                    format!("Checking {name} — {remaining} left (owned {repaired})");
+                s.progress_label = format!("Checking {name} — {remaining} left (owned {repaired})");
                 s.waiting = true;
             }
 
@@ -737,7 +737,10 @@ pub(crate) async fn repair_step_windowed(
             let info_opt = match explorer.get_name_info_optional(name).await {
                 Ok(v) => v,
                 Err(e) => {
-                    { let mut s = status.lock().await; s.waiting = false; }
+                    {
+                        let mut s = status.lock().await;
+                        s.waiting = false;
+                    }
                     consecutive_errors += 1;
                     if consecutive_errors >= SYNC_MAX_CONSECUTIVE_ERRORS {
                         record_error_and_clear_waiting(status, &e).await;
@@ -752,7 +755,10 @@ pub(crate) async fn repair_step_windowed(
             // call must be preceded by a sleep (DISCOVERY_THROTTLE contract).
             sleep(DISCOVERY_THROTTLE).await;
             let resolution = resolve_owner_via_history(&explorer, name, &addr_set).await;
-            { let mut s = status.lock().await; s.waiting = false; }
+            {
+                let mut s = status.lock().await;
+                s.waiting = false;
+            }
 
             let mut conn = match open_conn(db_path) {
                 Ok(c) => c,
@@ -762,13 +768,21 @@ pub(crate) async fn repair_step_windowed(
                 Ok(Some(res)) if res.owned_by_wallet => {
                     if let Some(info) = &info_opt {
                         if apply_repair_owned(
-                            &mut conn, profile_id, info, &res.owner_txid, res.owner_vout,
-                            &res.owner_address, name,
+                            &mut conn,
+                            profile_id,
+                            info,
+                            &res.owner_txid,
+                            res.owner_vout,
+                            &res.owner_address,
+                            name,
                         )
                         .is_ok()
                         {
                             repaired += 1;
-                            { let mut s = status.lock().await; s.repaired = repaired; }
+                            {
+                                let mut s = status.lock().await;
+                                s.repaired = repaired;
+                            }
                         }
                     } else {
                         // Owned per history but the name-info lookup returned
@@ -893,15 +907,27 @@ pub(crate) async fn stamp_explorer_sync_if_clean(
     }
 }
 
-pub(crate) async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profile_id: &str) {
+pub(crate) async fn discover_step(
+    status: &Arc<Mutex<SyncStatus>>,
+    db_path: &str,
+    profile_id: &str,
+) {
     let (explorer, addrs) = {
-        let conn = match open_conn(db_path) { Ok(c) => c, Err(_) => return };
-        let settings = match queries::get_settings(&conn) { Ok(s) => s, Err(_) => return };
+        let conn = match open_conn(db_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let settings = match queries::get_settings(&conn) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
         let explorer = crate::providers::explorer_client_from_settings(&settings);
         let addrs = queries::get_profile_addresses(&conn, profile_id).unwrap_or_default();
         (explorer, addrs)
     };
-    if addrs.is_empty() { return; }
+    if addrs.is_empty() {
+        return;
+    }
     let addr_set: HashSet<&str> = addrs.iter().map(|s| s.as_str()).collect();
 
     // Set total address count for progress display.
@@ -946,29 +972,42 @@ pub(crate) async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str
                 s.progress_label = "Sync cancelled".into();
                 return;
             }
-            { let mut s = status.lock().await; s.waiting = true; }
-            let (txids, total) =
-                match explorer.get_address_txids(addr, DISCOVERY_PAGE_SIZE, offset).await {
-                    Ok(v) => {
-                        consecutive_errors = 0;
-                        v
+            {
+                let mut s = status.lock().await;
+                s.waiting = true;
+            }
+            let (txids, total) = match explorer
+                .get_address_txids(addr, DISCOVERY_PAGE_SIZE, offset)
+                .await
+            {
+                Ok(v) => {
+                    consecutive_errors = 0;
+                    v
+                }
+                Err(e) => {
+                    {
+                        let mut s = status.lock().await;
+                        s.waiting = false;
                     }
-                    Err(e) => {
-                        { let mut s = status.lock().await; s.waiting = false; }
-                        consecutive_errors += 1;
-                        if consecutive_errors >= SYNC_MAX_CONSECUTIVE_ERRORS {
-                            record_error_and_clear_waiting(status, &e).await;
-                            return;
-                        }
-                        sleep(SYNC_ERROR_BACKOFF).await;
-                        // Rate-limited / transport error: skip the rest of this
-                        // address (as read.rs does) and move to the next one.
-                        break;
+                    consecutive_errors += 1;
+                    if consecutive_errors >= SYNC_MAX_CONSECUTIVE_ERRORS {
+                        record_error_and_clear_waiting(status, &e).await;
+                        return;
                     }
-                };
-            { let mut s = status.lock().await; s.waiting = false; }
+                    sleep(SYNC_ERROR_BACKOFF).await;
+                    // Rate-limited / transport error: skip the rest of this
+                    // address (as read.rs does) and move to the next one.
+                    break;
+                }
+            };
+            {
+                let mut s = status.lock().await;
+                s.waiting = false;
+            }
             for txid in &txids {
-                if !seen_tx.insert(txid.clone()) { continue; }
+                if !seen_tx.insert(txid.clone()) {
+                    continue;
+                }
                 if cancel_requested(status).await {
                     let mut s = status.lock().await;
                     s.waiting = false;
@@ -976,7 +1015,10 @@ pub(crate) async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str
                     return;
                 }
                 sleep(DISCOVERY_THROTTLE).await;
-                { let mut s = status.lock().await; s.waiting = true; }
+                {
+                    let mut s = status.lock().await;
+                    s.waiting = true;
+                }
                 match explorer.get_tx_named_outputs(txid).await {
                     Ok(outs) => {
                         consecutive_errors = 0;
@@ -987,7 +1029,10 @@ pub(crate) async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str
                         }
                     }
                     Err(e) => {
-                        { let mut s = status.lock().await; s.waiting = false; }
+                        {
+                            let mut s = status.lock().await;
+                            s.waiting = false;
+                        }
                         consecutive_errors += 1;
                         if consecutive_errors >= SYNC_MAX_CONSECUTIVE_ERRORS {
                             record_error_and_clear_waiting(status, &e).await;
@@ -1025,7 +1070,10 @@ pub(crate) async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str
 
     // Load already-known names so we don't re-discover what's tracked.
     let mut seen_names: HashSet<String> = {
-        let conn = match open_conn(db_path) { Ok(c) => c, Err(_) => return };
+        let conn = match open_conn(db_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
         let tracked = queries::list_tracked_name_names(&conn, profile_id).unwrap_or_default();
         tracked.into_iter().collect()
     };
@@ -1035,7 +1083,10 @@ pub(crate) async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str
     // sweep, so phase 2 skips re-fetching them. This is what makes a re-run
     // resume where the last one stopped instead of re-checking everything.
     let recently_synced: HashSet<String> = {
-        let conn = match open_conn(db_path) { Ok(c) => c, Err(_) => return };
+        let conn = match open_conn(db_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
         queries::list_recently_synced_tlds(&conn, DISCOVER_MEMO_HOURS)
             .unwrap_or_default()
             .into_iter()
@@ -1056,9 +1107,13 @@ pub(crate) async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str
             s.progress_label = "Sync cancelled".into();
             return;
         }
-        if !seen_names.insert(name.clone()) { continue; }
+        if !seen_names.insert(name.clone()) {
+            continue;
+        }
         // Memo: skip candidates checked recently (by this or a prior sync).
-        if recently_synced.contains(name) { continue; }
+        if recently_synced.contains(name) {
+            continue;
+        }
 
         {
             let mut s = status.lock().await;
@@ -1074,7 +1129,10 @@ pub(crate) async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str
                 v
             }
             Err(e) => {
-                { let mut s = status.lock().await; s.waiting = false; }
+                {
+                    let mut s = status.lock().await;
+                    s.waiting = false;
+                }
                 consecutive_errors += 1;
                 if consecutive_errors >= SYNC_MAX_CONSECUTIVE_ERRORS {
                     record_error_and_clear_waiting(status, &e).await;
@@ -1089,18 +1147,31 @@ pub(crate) async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str
         // resolver's first internal call are two separate explorer HTTP calls.
         sleep(DISCOVERY_THROTTLE).await;
         let resolution = resolve_owner_via_history(&explorer, name, &owned_addr_set).await;
-        { let mut s = status.lock().await; s.waiting = false; }
+        {
+            let mut s = status.lock().await;
+            s.waiting = false;
+        }
         match resolution {
             Ok(Some(res)) if res.owned_by_wallet => {
                 consecutive_errors = 0;
                 if let Some(info) = &info_opt {
-                    let conn = match open_conn(db_path) { Ok(c) => c, Err(_) => return };
+                    let conn = match open_conn(db_path) {
+                        Ok(c) => c,
+                        Err(_) => return,
+                    };
                     let _ = queries::upsert_owned_name(
-                        &conn, profile_id, info, &res.owner_txid, res.owner_vout,
+                        &conn,
+                        profile_id,
+                        info,
+                        &res.owner_txid,
+                        res.owner_vout,
                         &res.owner_address,
                     );
                     discovered += 1;
-                    { let mut s = status.lock().await; s.discovered = discovered; }
+                    {
+                        let mut s = status.lock().await;
+                        s.discovered = discovered;
+                    }
                 }
                 // Owned per history but name-info 404'd (no `info`): nothing to
                 // upsert; a later repair sweep will finalize it.
@@ -1111,7 +1182,10 @@ pub(crate) async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str
             // such names are few.
             Ok(_) => {
                 consecutive_errors = 0;
-                let conn = match open_conn(db_path) { Ok(c) => c, Err(_) => continue };
+                let conn = match open_conn(db_path) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
                 let _ = queries::touch_asset_synced(&conn, name);
             }
             // Explorer errored mid-resolve: count it as a transport error for
@@ -1161,7 +1235,10 @@ mod db_hardening_tests {
         let busy_timeout: i64 = conn
             .pragma_query_value(None, "busy_timeout", |row| row.get(0))
             .unwrap();
-        assert!(busy_timeout > 0, "busy_timeout must be set (got {busy_timeout})");
+        assert!(
+            busy_timeout > 0,
+            "busy_timeout must be set (got {busy_timeout})"
+        );
 
         let fk: i64 = conn
             .pragma_query_value(None, "foreign_keys", |row| row.get(0))
@@ -1179,7 +1256,14 @@ mod db_hardening_tests {
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         crate::db::migrations::run(&conn).unwrap();
         crate::db::queries::insert_wallet_profile(
-            &conn, "p1", "Test", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+            &conn,
+            "p1",
+            "Test",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
         )
         .unwrap();
         conn
@@ -1218,7 +1302,10 @@ mod db_hardening_tests {
         ];
 
         let result = apply_node_sync_batch(&mut conn, "p1", &coins, 999);
-        assert!(result.is_err(), "a malformed coin mid-batch must fail the whole batch");
+        assert!(
+            result.is_err(),
+            "a malformed coin mid-batch must fail the whole batch"
+        );
 
         let utxo_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM tracked_utxos", [], |r| r.get(0))
@@ -1245,7 +1332,10 @@ mod db_hardening_tests {
             .query_row("SELECT COUNT(*) FROM tracked_utxos", [], |r| r.get(0))
             .unwrap();
         assert_eq!(utxo_count, 1);
-        assert_eq!(crate::noncustodial::sync::get_sync_height(&conn, "p1").unwrap(), 42);
+        assert_eq!(
+            crate::noncustodial::sync::get_sync_height(&conn, "p1").unwrap(),
+            42
+        );
     }
 
     /// A batch that reconciles a previously-tracked UTXO as spent (because
@@ -1271,6 +1361,9 @@ mod db_hardening_tests {
             )
             .unwrap();
         assert!(spent_by.is_some(), "missing coin must be marked spent");
-        assert_eq!(crate::noncustodial::sync::get_sync_height(&conn, "p1").unwrap(), 2);
+        assert_eq!(
+            crate::noncustodial::sync::get_sync_height(&conn, "p1").unwrap(),
+            2
+        );
     }
 }

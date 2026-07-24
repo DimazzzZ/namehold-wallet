@@ -20,6 +20,7 @@ fn conn() -> Connection {
     c
 }
 
+#[allow(clippy::too_many_arguments)]
 fn seed_bid(
     c: &Connection,
     bid_txid: &str,
@@ -54,9 +55,39 @@ fn seed_bid(
 fn read_indexed_bids_filters_by_name_hash_and_orders_by_height() {
     let c = conn();
     // Two bids for the same name at different heights + one for another name.
-    seed_bid(&c, "tx1", 0, "hasha", Some("namehold"), 1_000_000, 200, None, None);
-    seed_bid(&c, "tx2", 0, "hasha", Some("namehold"), 2_500_000, 205, Some("rv2"), Some(500_000));
-    seed_bid(&c, "tx3", 0, "hashb", Some("other"), 999_999, 201, None, None);
+    seed_bid(
+        &c,
+        "tx1",
+        0,
+        "hasha",
+        Some("namehold"),
+        1_000_000,
+        200,
+        None,
+        None,
+    );
+    seed_bid(
+        &c,
+        "tx2",
+        0,
+        "hasha",
+        Some("namehold"),
+        2_500_000,
+        205,
+        Some("rv2"),
+        Some(500_000),
+    );
+    seed_bid(
+        &c,
+        "tx3",
+        0,
+        "hashb",
+        Some("other"),
+        999_999,
+        201,
+        None,
+        None,
+    );
 
     let out = read_indexed_bids(&c, "hasha").unwrap();
     assert_eq!(out.len(), 2);
@@ -108,9 +139,39 @@ fn apply_reveal(c: &Connection, name_hash: &str, reveal_txid: &str, reveal_value
 fn reveal_matches_earliest_unmatched_bid_for_same_name() {
     let c = conn();
     // Two BIDs for the same name at different heights, plus one for another name.
-    seed_bid(&c, "bidLate", 0, "hn", Some("multi"), 3_000_000, 210, None, None);
-    seed_bid(&c, "bidEarly", 0, "hn", Some("multi"), 2_000_000, 205, None, None);
-    seed_bid(&c, "bidOther", 0, "other", Some("other"), 1_000_000, 205, None, None);
+    seed_bid(
+        &c,
+        "bidLate",
+        0,
+        "hn",
+        Some("multi"),
+        3_000_000,
+        210,
+        None,
+        None,
+    );
+    seed_bid(
+        &c,
+        "bidEarly",
+        0,
+        "hn",
+        Some("multi"),
+        2_000_000,
+        205,
+        None,
+        None,
+    );
+    seed_bid(
+        &c,
+        "bidOther",
+        0,
+        "other",
+        Some("other"),
+        1_000_000,
+        205,
+        None,
+        None,
+    );
 
     // First REVEAL → earliest BID (height 205 wins over 210).
     apply_reveal(&c, "hn", "rvA", 1_800_000);

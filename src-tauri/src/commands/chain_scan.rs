@@ -56,15 +56,14 @@ pub async fn run_chain_scanner(db_path: String) {
         };
 
         // Only scan when the node is authoritative.
-        let tip = match crate::commands::read::node_tip_height_if_synced_from_settings(&settings)
-            .await
-        {
-            Some(h) => h,
-            None => {
-                sleep(NOT_READY_SLEEP).await;
-                continue;
-            }
-        };
+        let tip =
+            match crate::commands::read::node_tip_height_if_synced_from_settings(&settings).await {
+                Some(h) => h,
+                None => {
+                    sleep(NOT_READY_SLEEP).await;
+                    continue;
+                }
+            };
 
         let cursor = {
             let conn = match open_conn(&db_path) {
@@ -88,7 +87,7 @@ pub async fn run_chain_scanner(db_path: String) {
 
         let mut advanced_to = cursor;
         for height in (cursor + 1)..=end {
-            if let Err(_) = scan_block(&client, &db_path, height).await {
+            if scan_block(&client, &db_path, height).await.is_err() {
                 // Transient RPC/DB error — stop this batch, retry next loop.
                 break;
             }
@@ -126,10 +125,7 @@ async fn scan_block(
     let mut reveals: Vec<RevealRow> = Vec::new();
 
     for tx in txs {
-        let txid = tx
-            .get("hash")
-            .and_then(|h| h.as_str())
-            .unwrap_or_default();
+        let txid = tx.get("hash").and_then(|h| h.as_str()).unwrap_or_default();
         if txid.is_empty() {
             continue;
         }

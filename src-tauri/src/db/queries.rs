@@ -63,16 +63,30 @@ pub fn list_assets(
         }
     }
 
-    let valid_sort_cols = ["tld", "status", "is_staked", "category", "hns_received", "expires_at_height", "updated_at", "created_at"];
-    let col = sort_by.filter(|c| valid_sort_cols.contains(&c)).unwrap_or("tld");
-    let dir = if sort_dir == Some("desc") { "DESC" } else { "ASC" };
+    let valid_sort_cols = [
+        "tld",
+        "status",
+        "is_staked",
+        "category",
+        "hns_received",
+        "expires_at_height",
+        "updated_at",
+        "created_at",
+    ];
+    let col = sort_by
+        .filter(|c| valid_sort_cols.contains(c))
+        .unwrap_or("tld");
+    let dir = if sort_dir == Some("desc") {
+        "DESC"
+    } else {
+        "ASC"
+    };
     sql.push_str(&format!(" ORDER BY {} {}", col, dir));
 
     let mut stmt = conn.prepare(&sql)?;
-    let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
-    let rows = stmt.query_map(params_ref.as_slice(), |row| {
-        Ok(Asset::from_row(row))
-    })?;
+    let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(params_ref.as_slice(), |row| Ok(Asset::from_row(row)))?;
 
     let mut assets = Vec::new();
     for row in rows {
@@ -88,6 +102,7 @@ pub fn get_asset(conn: &rusqlite::Connection, id: i64) -> Result<Asset, AppError
     .map_err(AppError::from)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn update_asset(
     conn: &rusqlite::Connection,
     id: i64,
@@ -144,10 +159,15 @@ pub fn update_asset(
     }
 
     sets.push("updated_at = datetime('now')".to_string());
-    let sql = format!("UPDATE assets SET {} WHERE id = ?{}", sets.join(", "), param_idx);
+    let sql = format!(
+        "UPDATE assets SET {} WHERE id = ?{}",
+        sets.join(", "),
+        param_idx
+    );
     param_values.push(Box::new(id));
 
-    let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+    let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
     conn.execute(&sql, params_ref.as_slice())?;
 
     conn.execute(
@@ -233,9 +253,7 @@ pub fn list_batches(conn: &rusqlite::Connection) -> Result<Vec<Batch>, AppError>
          GROUP BY b.id
          ORDER BY b.created_at DESC",
     )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(Batch::from_row(row))
-    })?;
+    let rows = stmt.query_map([], |row| Ok(Batch::from_row(row)))?;
     let mut batches = Vec::new();
     for row in rows {
         batches.push(row??);
@@ -264,7 +282,7 @@ pub fn get_batch_with_assets(
          ORDER BY ba.sort_order",
     )?;
     let assets = stmt
-        .query_map(params![batch_id], |row| Asset::from_row(row))?
+        .query_map(params![batch_id], Asset::from_row)?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(BatchWithAssets {
@@ -339,10 +357,15 @@ pub fn update_batch(
     }
 
     sets.push("updated_at = datetime('now')".to_string());
-    let sql = format!("UPDATE batches SET {} WHERE id = ?{}", sets.join(", "), param_idx);
+    let sql = format!(
+        "UPDATE batches SET {} WHERE id = ?{}",
+        sets.join(", "),
+        param_idx
+    );
     param_values.push(Box::new(id));
 
-    let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+    let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
     conn.execute(&sql, params_ref.as_slice())?;
 
     conn.execute(
@@ -411,11 +434,10 @@ pub fn remove_from_batch(
 
 pub fn get_dashboard_stats(conn: &rusqlite::Connection) -> Result<serde_json::Value, AppError> {
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM assets", [], |r| r.get(0))?;
-    let staked: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM assets WHERE is_staked = 1",
-        [],
-        |r| r.get(0),
-    )?;
+    let staked: i64 =
+        conn.query_row("SELECT COUNT(*) FROM assets WHERE is_staked = 1", [], |r| {
+            r.get(0)
+        })?;
     let unstaked = total - staked;
 
     let mut status_counts = serde_json::Map::new();
@@ -616,11 +638,9 @@ pub fn get_assets_by_tlds(
 ) -> Result<Vec<Asset>, AppError> {
     let mut assets = Vec::new();
     for tld in tlds {
-        let result = conn.query_row(
-            "SELECT * FROM assets WHERE tld = ?1",
-            params![tld],
-            |row| Asset::from_row(row),
-        );
+        let result = conn.query_row("SELECT * FROM assets WHERE tld = ?1", params![tld], |row| {
+            Asset::from_row(row)
+        });
         match result {
             Ok(asset) => assets.push(asset),
             Err(_) => continue,
@@ -671,10 +691,9 @@ pub fn list_repair_candidates(
          ORDER BY (last_synced_at IS NOT NULL), last_synced_at ASC, name ASC
          LIMIT ?3",
     )?;
-    let rows = stmt.query_map(
-        params![profile_id, age_modifier, max as i64],
-        |row| row.get::<_, String>(0),
-    )?;
+    let rows = stmt.query_map(params![profile_id, age_modifier, max as i64], |row| {
+        row.get::<_, String>(0)
+    })?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
@@ -762,9 +781,8 @@ pub fn list_recently_synced_tlds(
     hours: i64,
 ) -> Result<Vec<String>, AppError> {
     let age_modifier = format!("-{} hours", hours);
-    let mut stmt = conn.prepare(
-        "SELECT tld FROM assets WHERE last_synced_at >= datetime('now', ?1)",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT tld FROM assets WHERE last_synced_at >= datetime('now', ?1)")?;
     let rows = stmt.query_map(params![age_modifier], |row| row.get::<_, String>(0))?;
     let mut out = Vec::new();
     for r in rows {
@@ -796,10 +814,7 @@ const PROFILE_COLS: &str = "id, label, kind, network, account_xpub, account_inde
         AS has_passphrase, \
      last_explorer_sync_at";
 
-fn row_to_profile(
-    row: &rusqlite::Row,
-    active_id: &str,
-) -> rusqlite::Result<WalletProfileSummary> {
+fn row_to_profile(row: &rusqlite::Row, active_id: &str) -> rusqlite::Result<WalletProfileSummary> {
     let id: String = row.get(0)?;
     let active = id == active_id;
     Ok(WalletProfileSummary {
@@ -1069,8 +1084,7 @@ fn row_to_draft(row: &rusqlite::Row) -> rusqlite::Result<TxDraftRow> {
 impl TxDraftRow {
     /// Project to the frontend-facing summary (parsing `summary_json`).
     pub fn to_summary(&self) -> TxDraftSummary {
-        let summary = serde_json::from_str(&self.summary_json)
-            .unwrap_or(serde_json::Value::Null);
+        let summary = serde_json::from_str(&self.summary_json).unwrap_or(serde_json::Value::Null);
         TxDraftSummary {
             id: self.id.clone(),
             wallet_profile_id: self.wallet_profile_id.clone(),
@@ -1147,7 +1161,14 @@ pub fn insert_tx_draft_reserving_coins(
         "INSERT INTO wallet_tx_drafts
             (id, wallet_profile_id, action, unsigned_tx_hex, signing_inputs_json, summary_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, profile_id, action, unsigned_tx_hex, signing_inputs_json, summary_json],
+        params![
+            id,
+            profile_id,
+            action,
+            unsigned_tx_hex,
+            signing_inputs_json,
+            summary_json
+        ],
     )?;
 
     for (txid, vout) in inputs {
@@ -1223,14 +1244,9 @@ pub fn delete_tx_draft(conn: &rusqlite::Connection, id: &str) -> Result<(), AppE
 }
 
 /// Fetch one draft, or `None`.
-pub fn get_tx_draft(
-    conn: &rusqlite::Connection,
-    id: &str,
-) -> Result<Option<TxDraftRow>, AppError> {
+pub fn get_tx_draft(conn: &rusqlite::Connection, id: &str) -> Result<Option<TxDraftRow>, AppError> {
     let sql = format!("SELECT {DRAFT_COLS} FROM wallet_tx_drafts WHERE id = ?1");
-    let row = conn
-        .query_row(&sql, params![id], row_to_draft)
-        .optional()?;
+    let row = conn.query_row(&sql, params![id], row_to_draft).optional()?;
     Ok(row)
 }
 
@@ -1320,10 +1336,7 @@ pub fn revert_tx_draft_to_broadcasted(
 /// moves: an old draft that re-enters tracking (e.g. a confirmed draft
 /// reorg-reverted back to `broadcasted`) would flunk a created_at-based grace
 /// instantly and be mislabeled `dropped` forever (Task 8 review).
-pub fn draft_age_secs(
-    conn: &rusqlite::Connection,
-    id: &str,
-) -> Result<i64, AppError> {
+pub fn draft_age_secs(conn: &rusqlite::Connection, id: &str) -> Result<i64, AppError> {
     let secs: i64 = conn.query_row(
         "SELECT CAST((julianday('now') - julianday(created_at)) * 86400 AS INTEGER)
          FROM wallet_tx_drafts WHERE id = ?1",
@@ -1346,10 +1359,7 @@ pub fn draft_age_secs(
 /// `update_tx_draft_confirmation`, `revert_tx_draft_to_broadcasted`) sets
 /// `updated_at = datetime('now')`, so "last update" always means "when it
 /// entered its current status".
-pub fn draft_updated_age_secs(
-    conn: &rusqlite::Connection,
-    id: &str,
-) -> Result<i64, AppError> {
+pub fn draft_updated_age_secs(conn: &rusqlite::Connection, id: &str) -> Result<i64, AppError> {
     let secs: i64 = conn.query_row(
         "SELECT CAST((julianday('now') - julianday(updated_at)) * 86400 AS INTEGER)
          FROM wallet_tx_drafts WHERE id = ?1",
@@ -1389,7 +1399,10 @@ pub fn list_drafts_awaiting_confirmation(
          ORDER BY created_at DESC"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![profile_id, tip_height, finality_depth], row_to_draft)?;
+    let rows = stmt.query_map(
+        params![profile_id, tip_height, finality_depth],
+        row_to_draft,
+    )?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
@@ -1548,9 +1561,8 @@ pub fn read_cached_names(
         let owner_vout: Option<i64> = row.get(5)?;
         let covenant_type: Option<i64> = row.get(6)?;
         let owner_address: Option<String> = row.get(7)?;
-        let owner = owner_txid.map(|hash| {
-            serde_json::json!({ "hash": hash, "index": owner_vout.unwrap_or(0) })
-        });
+        let owner = owner_txid
+            .map(|hash| serde_json::json!({ "hash": hash, "index": owner_vout.unwrap_or(0) }));
 
         // Derive registered from covenant type: >= COV_REGISTER (6) means registered.
         let registered = covenant_type.map(|ct| ct >= 6).unwrap_or(false);
@@ -1650,25 +1662,28 @@ pub fn read_owned_names_explorer(
         // When raw_json has `registered: null` but the name is CLOSED with an
         // owner_txid and a set renewal (far in the future from height), we can safely
         // derive `registered: true`. The name is clearly already owned and registered.
-        let (registered, expired) = raw_json.as_deref().and_then(|j| {
-            let v: serde_json::Value = serde_json::from_str(j).ok()?;
-            let raw_reg = v.get("registered").and_then(|x| x.as_bool());
-            let raw_exp = v.get("expired").and_then(|x| x.as_bool());
-            // If raw_json explicitly has registered, use it.
-            if raw_reg.is_some() {
-                return Some((raw_reg, raw_exp));
-            }
-            // raw_json has no `registered` field (node response) → derive from context.
-            // CLOSED state + renewal set = already registered.
-            let state = v.get("state").and_then(|x| x.as_str()).unwrap_or("");
-            let renewal = v.get("renewal").and_then(|x| x.as_u64());
-            let derived_reg = if state == "CLOSED" && renewal.unwrap_or(0) > 0 {
-                Some(true)
-            } else {
-                None
-            };
-            Some((derived_reg, raw_exp))
-        }).unwrap_or((None, None));
+        let (registered, expired) = raw_json
+            .as_deref()
+            .and_then(|j| {
+                let v: serde_json::Value = serde_json::from_str(j).ok()?;
+                let raw_reg = v.get("registered").and_then(|x| x.as_bool());
+                let raw_exp = v.get("expired").and_then(|x| x.as_bool());
+                // If raw_json explicitly has registered, use it.
+                if raw_reg.is_some() {
+                    return Some((raw_reg, raw_exp));
+                }
+                // raw_json has no `registered` field (node response) → derive from context.
+                // CLOSED state + renewal set = already registered.
+                let state = v.get("state").and_then(|x| x.as_str()).unwrap_or("");
+                let renewal = v.get("renewal").and_then(|x| x.as_u64());
+                let derived_reg = if state == "CLOSED" && renewal.unwrap_or(0) > 0 {
+                    Some(true)
+                } else {
+                    None
+                };
+                Some((derived_reg, raw_exp))
+            })
+            .unwrap_or((None, None));
 
         Ok(serde_json::json!({
             "name": name,
@@ -1694,8 +1709,8 @@ pub fn list_tracked_name_names(
     conn: &rusqlite::Connection,
     profile_id: &str,
 ) -> Result<Vec<String>, AppError> {
-    let mut stmt = conn
-        .prepare("SELECT name FROM tracked_name_states WHERE wallet_profile_id = ?1")?;
+    let mut stmt =
+        conn.prepare("SELECT name FROM tracked_name_states WHERE wallet_profile_id = ?1")?;
     let rows = stmt.query_map(params![profile_id], |row| row.get::<_, String>(0))?;
     let mut out = Vec::new();
     for r in rows {
@@ -1767,8 +1782,8 @@ pub fn read_cached_transactions(
 
     // Our receive/change addresses, and our utxo outpoints (for spend detection).
     let our_addrs: HashSet<String> = {
-        let mut stmt = conn
-            .prepare("SELECT address FROM derived_addresses WHERE wallet_profile_id = ?1")?;
+        let mut stmt =
+            conn.prepare("SELECT address FROM derived_addresses WHERE wallet_profile_id = ?1")?;
         let rows = stmt.query_map(params![profile_id], |r| r.get::<_, String>(0))?;
         let mut s = HashSet::new();
         for r in rows {
@@ -1777,8 +1792,8 @@ pub fn read_cached_transactions(
         s
     };
     let our_outpoints: HashSet<(String, i64)> = {
-        let mut stmt = conn
-            .prepare("SELECT txid, vout FROM tracked_utxos WHERE wallet_profile_id = ?1")?;
+        let mut stmt =
+            conn.prepare("SELECT txid, vout FROM tracked_utxos WHERE wallet_profile_id = ?1")?;
         let rows = stmt.query_map(params![profile_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
         })?;
@@ -1805,8 +1820,9 @@ pub fn read_cached_transactions(
     let mut out = Vec::new();
     for r in rows {
         let (txid, height, time, raw_json) = r?;
-        let parsed: Option<serde_json::Value> =
-            raw_json.as_deref().and_then(|s| serde_json::from_str(s).ok());
+        let parsed: Option<serde_json::Value> = raw_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
 
         let mut received: i64 = 0;
         let mut sent_outputs: i64 = 0;
@@ -2007,7 +2023,10 @@ pub fn find_unspent_covenant_utxo(
          ORDER BY u.txid, u.vout",
     )?;
     let candidates: Vec<NameCoin> = stmt
-        .query_map(params![profile_id, address, covenant_type], row_to_name_coin)?
+        .query_map(
+            params![profile_id, address, covenant_type],
+            row_to_name_coin,
+        )?
         .collect::<Result<_, _>>()?;
 
     let want = name_hash_hex.to_ascii_lowercase();
@@ -2075,7 +2094,9 @@ pub fn find_unspent_covenant_utxos_by_name_hash(
     let want = name_hash_hex.to_ascii_lowercase();
     Ok(candidates
         .into_iter()
-        .filter(|c| covenant_name_hash_hex(c.covenant_json.as_deref()).as_deref() == Some(want.as_str()))
+        .filter(|c| {
+            covenant_name_hash_hex(c.covenant_json.as_deref()).as_deref() == Some(want.as_str())
+        })
         .collect())
 }
 
@@ -2218,8 +2239,16 @@ pub fn insert_bid_commitment(
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
          ON CONFLICT(wallet_profile_id, name, blind_hex) DO NOTHING",
         params![
-            profile_id, name, name_hash_hex, address, branch, child_index,
-            bid_value, lockup, nonce_hex, blind_hex
+            profile_id,
+            name,
+            name_hash_hex,
+            address,
+            branch,
+            child_index,
+            bid_value,
+            lockup,
+            nonce_hex,
+            blind_hex
         ],
     )?;
     if changed == 0 {
@@ -2300,7 +2329,11 @@ pub fn list_pending_reveal_deadlines(
          WHERE reveal_txid IS NULL AND reveal_end_height IS NOT NULL",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
     })?;
     let mut out = Vec::new();
     for r in rows {
@@ -2320,7 +2353,9 @@ pub fn get_bid_commitment(
          WHERE wallet_profile_id = ?1 AND name = ?2
          ORDER BY created_at DESC LIMIT 1"
     );
-    Ok(conn.query_row(&sql, params![profile_id, name], row_to_bid).optional()?)
+    Ok(conn
+        .query_row(&sql, params![profile_id, name], row_to_bid)
+        .optional()?)
 }
 
 pub fn list_bid_commitments(
@@ -2435,8 +2470,17 @@ mod noncustodial_query_tests {
     }
 
     fn seed_profile(conn: &Connection, id: &str) {
-        insert_wallet_profile(conn, id, "Primary", "mnemonic_hot", "regtest", "xpubFAKE", 0, false)
-            .unwrap();
+        insert_wallet_profile(
+            conn,
+            id,
+            "Primary",
+            "mnemonic_hot",
+            "regtest",
+            "xpubFAKE",
+            0,
+            false,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2480,13 +2524,23 @@ mod noncustodial_query_tests {
         );
         // A profile with no secret row returns None (e.g. watch-only).
         insert_wallet_profile(
-            &conn, "p2", "Watch", "watch_only_xpub", "regtest", "xpubW", 0, true,
+            &conn,
+            "p2",
+            "Watch",
+            "watch_only_xpub",
+            "regtest",
+            "xpubW",
+            0,
+            true,
         )
         .unwrap();
         assert_eq!(get_wallet_secret_meta(&conn, "p2").unwrap(), None);
         // No-passphrase wallets are marked kdf='none'.
         insert_wallet_secret(&conn, "p2", &[1, 2, 3], "none", "fp2").unwrap();
-        assert_eq!(get_wallet_secret_meta(&conn, "p2").unwrap().unwrap().1, "none");
+        assert_eq!(
+            get_wallet_secret_meta(&conn, "p2").unwrap().unwrap().1,
+            "none"
+        );
     }
 
     #[test]
@@ -2510,8 +2564,13 @@ mod noncustodial_query_tests {
         // Summary parses into a JSON value for the frontend.
         assert!(d.to_summary().summary.is_object());
 
-        update_tx_draft_signed(&conn, "d1", "0011aabb", r#"{"action":"send_hns","txid":"tx1"}"#)
-            .unwrap();
+        update_tx_draft_signed(
+            &conn,
+            "d1",
+            "0011aabb",
+            r#"{"action":"send_hns","txid":"tx1"}"#,
+        )
+        .unwrap();
         let d = get_tx_draft(&conn, "d1").unwrap().unwrap();
         assert_eq!(d.status, "signed");
         assert_eq!(d.signed_tx_hex.as_deref(), Some("0011aabb"));
@@ -2542,7 +2601,10 @@ mod noncustodial_query_tests {
         .unwrap();
         let addrs = get_profile_addresses(&conn, "p1").unwrap();
         // Ordered by branch, child_index: receive (branch 0) first.
-        assert_eq!(addrs, vec!["rs1qrecv".to_string(), "rs1qchange".to_string()]);
+        assert_eq!(
+            addrs,
+            vec!["rs1qrecv".to_string(), "rs1qchange".to_string()]
+        );
     }
 
     fn insert_utxo(conn: &Connection, txid: &str, vout: i64, value: i64, class: &str, cov: i64) {
@@ -2718,9 +2780,12 @@ mod noncustodial_query_tests {
     #[test]
     fn get_inventory_tlds_returns_sorted() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld) VALUES ('zzz')", []).unwrap();
-        conn.execute("INSERT INTO assets (tld) VALUES ('aaa')", []).unwrap();
-        conn.execute("INSERT INTO assets (tld) VALUES ('mmm')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('zzz')", [])
+            .unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('aaa')", [])
+            .unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('mmm')", [])
+            .unwrap();
 
         let tlds = get_inventory_tlds(&conn).unwrap();
         assert_eq!(tlds, vec!["aaa", "mmm", "zzz"]);
@@ -2729,11 +2794,19 @@ mod noncustodial_query_tests {
     #[test]
     fn get_assets_by_tlds_returns_matches() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('alpha','finalized_owned')", []).unwrap();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('beta','not_started')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('alpha','finalized_owned')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('beta','not_started')",
+            [],
+        )
+        .unwrap();
 
-        let assets = get_assets_by_tlds(&conn, &["beta".into(), "missing".into(), "alpha".into()])
-            .unwrap();
+        let assets =
+            get_assets_by_tlds(&conn, &["beta".into(), "missing".into(), "alpha".into()]).unwrap();
         assert_eq!(assets.len(), 2);
         assert_eq!(assets[0].tld, "beta");
         assert_eq!(assets[1].tld, "alpha");
@@ -2745,7 +2818,8 @@ mod noncustodial_query_tests {
         seed_profile(&conn, "p1");
 
         // never synced (NULL) — highest priority
-        conn.execute("INSERT INTO assets (tld) VALUES ('never')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('never')", [])
+            .unwrap();
         // synced long ago — eligible
         conn.execute(
             "INSERT INTO assets (tld, last_synced_at) VALUES ('old', datetime('now','-3 days'))",
@@ -2768,7 +2842,8 @@ mod noncustodial_query_tests {
     fn list_repair_candidates_unions_tracked_names_and_respects_limit() {
         let conn = db();
         seed_profile(&conn, "p1");
-        conn.execute("INSERT INTO assets (tld) VALUES ('inv')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('inv')", [])
+            .unwrap();
         // A tracked name not in `assets` must appear as a candidate...
         conn.execute(
             "INSERT INTO tracked_name_states (wallet_profile_id, name, name_hash_hex, state)
@@ -2796,7 +2871,11 @@ mod noncustodial_query_tests {
     #[test]
     fn mark_asset_finalized_owned_advances_status_but_skips_staked() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('own','not_started')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('own','not_started')",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO assets (tld, status) VALUES ('stk','do_not_touch_staked')",
             [],
@@ -2819,7 +2898,9 @@ mod noncustodial_query_tests {
 
         // Staked row is untouched.
         let staked_status: String = conn
-            .query_row("SELECT status FROM assets WHERE tld='stk'", [], |r| r.get(0))
+            .query_row("SELECT status FROM assets WHERE tld='stk'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(staked_status, "do_not_touch_staked");
     }
@@ -2827,7 +2908,11 @@ mod noncustodial_query_tests {
     #[test]
     fn touch_asset_synced_stamps_timestamp_without_changing_status() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('x','not_started')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('x','not_started')",
+            [],
+        )
+        .unwrap();
         touch_asset_synced(&conn, "x").unwrap();
         let (status, synced): (String, Option<String>) = conn
             .query_row(
@@ -2859,7 +2944,11 @@ mod noncustodial_query_tests {
         )
         .unwrap();
         let got = list_recently_synced_tlds(&conn, 12).unwrap();
-        assert_eq!(got, vec!["fresh".to_string()], "only the within-12h row is memoized");
+        assert_eq!(
+            got,
+            vec!["fresh".to_string()],
+            "only the within-12h row is memoized"
+        );
     }
 
     #[test]
@@ -2887,7 +2976,11 @@ mod noncustodial_query_tests {
         let d = get_tx_draft(&conn, "d1").unwrap().unwrap();
         assert_eq!(d.status, "confirmed");
         assert_eq!(d.confirmation_height, Some(12345));
-        assert_eq!(d.txid.as_deref(), Some("txid1"), "existing txid preserved when None passed");
+        assert_eq!(
+            d.txid.as_deref(),
+            Some("txid1"),
+            "existing txid preserved when None passed"
+        );
 
         let age = draft_age_secs(&conn, "d1").unwrap();
         assert!(age >= 0);
@@ -2927,7 +3020,11 @@ mod noncustodial_query_tests {
         let d = get_tx_draft(&conn, "d1").unwrap().unwrap();
         assert_eq!(d.status, "broadcasted");
         assert_eq!(d.confirmation_height, None);
-        assert_eq!(d.txid.as_deref(), Some("txid1"), "txid must survive the revert");
+        assert_eq!(
+            d.txid.as_deref(),
+            Some("txid1"),
+            "txid must survive the revert"
+        );
         assert!(d.error_message.unwrap().contains("reorg"));
     }
 
@@ -2964,7 +3061,10 @@ mod noncustodial_query_tests {
         assert!(ids.contains(&"d_pending"));
         assert!(!ids.contains(&"d_draft"));
         assert!(!ids.contains(&"d_notx"));
-        assert!(!ids.contains(&"d_buried"), "deeply-buried confirmed draft must stop being polled");
+        assert!(
+            !ids.contains(&"d_buried"),
+            "deeply-buried confirmed draft must stop being polled"
+        );
     }
 
     #[test]
@@ -2975,8 +3075,13 @@ mod noncustodial_query_tests {
 
         // A `draft`-status bid for "alpha" counts as pending.
         insert_tx_draft(
-            &conn, "d1", "p1", "bid", "",
-            "{}", r#"{"action":"bid","name":"alpha"}"#,
+            &conn,
+            "d1",
+            "p1",
+            "bid",
+            "",
+            "{}",
+            r#"{"action":"bid","name":"alpha"}"#,
         )
         .unwrap();
         assert!(has_pending_bid_draft_for_name(&conn, "p1", "alpha").unwrap());
@@ -2999,8 +3104,13 @@ mod noncustodial_query_tests {
         // A non-bid action for the same name never counts, even in `draft`.
         update_tx_draft_status(&conn, "d1", "draft", None, None).unwrap();
         insert_tx_draft(
-            &conn, "d2", "p1", "reveal", "",
-            "{}", r#"{"action":"reveal","name":"gamma"}"#,
+            &conn,
+            "d2",
+            "p1",
+            "reveal",
+            "",
+            "{}",
+            r#"{"action":"reveal","name":"gamma"}"#,
         )
         .unwrap();
         assert!(!has_pending_bid_draft_for_name(&conn, "p1", "gamma").unwrap());
@@ -3017,8 +3127,13 @@ mod noncustodial_query_tests {
         assert!(!has_pending_draft_for_name(&conn, "p1", "open", "alpha").unwrap());
 
         insert_tx_draft(
-            &conn, "d1", "p1", "open", "",
-            "{}", r#"{"action":"open","name":"alpha"}"#,
+            &conn,
+            "d1",
+            "p1",
+            "open",
+            "",
+            "{}",
+            r#"{"action":"open","name":"alpha"}"#,
         )
         .unwrap();
         assert!(has_pending_draft_for_name(&conn, "p1", "open", "alpha").unwrap());
@@ -3295,17 +3410,7 @@ mod noncustodial_query_tests {
         let conn = db();
         seed_profile(&conn, "p1");
         insert_bid_commitment(
-            &conn,
-            "p1",
-            "myname",
-            "aabb",
-            "rs1qbid",
-            1,
-            0,
-            100000,
-            200000,
-            "nonce123",
-            "blind456",
+            &conn, "p1", "myname", "aabb", "rs1qbid", 1, 0, 100000, 200000, "nonce123", "blind456",
         )
         .unwrap();
 
@@ -3313,17 +3418,7 @@ mod noncustodial_query_tests {
         // silently no-op — a silent drop here is a direct path to an
         // unrevealable bid (see `insert_bid_commitment` doc comment).
         let result = insert_bid_commitment(
-            &conn,
-            "p1",
-            "myname",
-            "aabb",
-            "rs1qbid",
-            1,
-            0,
-            100000,
-            200000,
-            "nonce123",
-            "blind456",
+            &conn, "p1", "myname", "aabb", "rs1qbid", 1, 0, 100000, 200000, "nonce123", "blind456",
         );
         assert!(result.is_err(), "duplicate commitment insert must error");
 
@@ -3344,8 +3439,7 @@ mod noncustodial_query_tests {
         seed_profile(&conn, "p1");
         assert!(!bid_commitment_exists(&conn, "p1", "myname", "blind456").unwrap());
         insert_bid_commitment(
-            &conn, "p1", "myname", "aabb", "rs1qbid", 1, 0, 100000, 200000,
-            "nonce123", "blind456",
+            &conn, "p1", "myname", "aabb", "rs1qbid", 1, 0, 100000, 200000, "nonce123", "blind456",
         )
         .unwrap();
         assert!(bid_commitment_exists(&conn, "p1", "myname", "blind456").unwrap());

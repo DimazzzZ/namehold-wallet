@@ -1,4 +1,3 @@
-
 //! BIP32 / BIP39 / BIP44 hierarchical deterministic key derivation for
 //! Handshake.
 //!
@@ -11,6 +10,11 @@
 //!     standard scheme with secp256k1.
 //!
 //! Derivation path follows BIP44: m / 44' / coin' / account' / change / index.
+
+// Module doc uses deep prose indentation for hsd spec citations and formula
+// continuation lines; clippy misreads these as over-indented markdown list
+// items. Reformatting would harm readability, so silence the lint here.
+#![allow(clippy::doc_overindented_list_items)]
 
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
@@ -310,8 +314,7 @@ fn sha256d(data: &[u8]) -> [u8; 32] {
     out
 }
 
-const BASE58_ALPHABET: &[u8; 58] =
-    b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const BASE58_ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 /// Decode a base58 (Bitcoin alphabet) string into bytes.
 fn base58_decode(s: &str) -> Result<Vec<u8>, AppError> {
@@ -535,59 +538,59 @@ mod tests {
     }
 }
 
-    #[test]
-    fn bip44_path_has_correct_length() {
-        let path = bip44_path(Network::Main, 0, 0, 0);
-        assert_eq!(path.len(), 5);
-    }
+#[test]
+fn bip44_path_has_correct_length() {
+    let path = bip44_path(Network::Main, 0, 0, 0);
+    assert_eq!(path.len(), 5);
+}
 
-    #[test]
-    fn bip44_path_coin_type_matches_network() {
-        let main_path = bip44_path(Network::Main, 0, 0, 0);
-        let reg_path = bip44_path(Network::Regtest, 0, 0, 0);
-        // Main coin type is 5353, regtest is 5353 as well (same as mainnet for Handshake)
-        assert!(main_path[1] > HARDENED_OFFSET);// coin type for main/reg/test are positive
-        assert!(reg_path[1] > HARDENED_OFFSET);// coin type for regtest is also hardened
-    }
+#[test]
+fn bip44_path_coin_type_matches_network() {
+    let main_path = bip44_path(Network::Main, 0, 0, 0);
+    let reg_path = bip44_path(Network::Regtest, 0, 0, 0);
+    // Main coin type is 5353, regtest is 5353 as well (same as mainnet for Handshake)
+    assert!(main_path[1] > HARDENED_OFFSET); // coin type for main/reg/test are positive
+    assert!(reg_path[1] > HARDENED_OFFSET); // coin type for regtest is also hardened
+}
 
-    #[test]
-    fn bip44_path_account_branch_index_are_positional() {
-        let path = bip44_path(Network::Main, 1, 2, 3);
-        assert_eq!(path[0], HARDENED_OFFSET + 44);  // purpose
-        assert_eq!(path[2], HARDENED_OFFSET + 1);   // account
-        assert_eq!(path[3], 2);                      // change
-        assert_eq!(path[4], 3);                      // index
-    }
+#[test]
+fn bip44_path_account_branch_index_are_positional() {
+    let path = bip44_path(Network::Main, 1, 2, 3);
+    assert_eq!(path[0], HARDENED_OFFSET + 44); // purpose
+    assert_eq!(path[2], HARDENED_OFFSET + 1); // account
+    assert_eq!(path[3], 2); // change
+    assert_eq!(path[4], 3); // index
+}
 
-    #[test]
-    fn seed_from_mnemonic_produces_64_bytes() {
-        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-        let seed = seed_from_mnemonic(phrase, "").unwrap();
-        assert_eq!(seed.len(), 64);
-    }
+#[test]
+fn seed_from_mnemonic_produces_64_bytes() {
+    let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed = seed_from_mnemonic(phrase, "").unwrap();
+    assert_eq!(seed.len(), 64);
+}
 
-    #[test]
-    fn seed_from_mnemonic_with_passphrase_differs() {
-        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-        let seed_no_pass = seed_from_mnemonic(phrase, "").unwrap();
-        let seed_with_pass = seed_from_mnemonic(phrase, "secret").unwrap();
-        assert_ne!(seed_no_pass, seed_with_pass);
-    }
+#[test]
+fn seed_from_mnemonic_with_passphrase_differs() {
+    let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let seed_no_pass = seed_from_mnemonic(phrase, "").unwrap();
+    let seed_with_pass = seed_from_mnemonic(phrase, "secret").unwrap();
+    assert_ne!(seed_no_pass, seed_with_pass);
+}
 
-    #[test]
-    fn derive_address_returns_sk_pk_and_addr() {
-        let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
-        let (sk, pk, addr) = derive_address(Network::Regtest, &seed, 0, 0, 0).unwrap();
-        assert_eq!(pk.len(), 33);
-        assert!(!addr.is_empty());
-        assert!(addr.starts_with("rs1"));
-        let _ = sk; // secret key, not inspected
-    }
+#[test]
+fn derive_address_returns_sk_pk_and_addr() {
+    let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+    let (sk, pk, addr) = derive_address(Network::Regtest, &seed, 0, 0, 0).unwrap();
+    assert_eq!(pk.len(), 33);
+    assert!(!addr.is_empty());
+    assert!(addr.starts_with("rs1"));
+    let _ = sk; // secret key, not inspected
+}
 
-    #[test]
-    fn derive_address_different_indices_differ() {
-        let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
-        let (_, _, addr0) = derive_address(Network::Regtest, &seed, 0, 0, 0).unwrap();
-        let (_, _, addr1) = derive_address(Network::Regtest, &seed, 0, 0, 1).unwrap();
-        assert_ne!(addr0, addr1);
-    }
+#[test]
+fn derive_address_different_indices_differ() {
+    let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+    let (_, _, addr0) = derive_address(Network::Regtest, &seed, 0, 0, 0).unwrap();
+    let (_, _, addr1) = derive_address(Network::Regtest, &seed, 0, 0, 1).unwrap();
+    assert_ne!(addr0, addr1);
+}

@@ -10,8 +10,8 @@ pub mod node;
 pub mod read;
 pub mod secure_prompt;
 pub mod secure_wallet;
+pub mod settings;
 pub mod sync;
 pub mod tx;
-pub mod settings;
 #[cfg(desktop)]
 pub mod updates;

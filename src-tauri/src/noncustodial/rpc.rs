@@ -190,17 +190,16 @@ impl NodeRpcClient {
         // hsd returns the JSON-RPC envelope even for some 4xx (e.g. method
         // errors), so parse the body before treating status as fatal.
         let body: serde_json::Value = resp.json().await.map_err(|e| {
-            AppError::Rpc(format!("node returned non-JSON body (status {status}): {e}"))
+            AppError::Rpc(format!(
+                "node returned non-JSON body (status {status}): {e}"
+            ))
         })?;
 
         let envelope: RpcEnvelope<T> = serde_json::from_value(body.clone())
             .map_err(|e| AppError::Rpc(format!("malformed RPC envelope: {e}; body={body}")))?;
 
         if let Some(err) = envelope.error {
-            let code = err
-                .code
-                .map(|c| format!(" (code {c})"))
-                .unwrap_or_default();
+            let code = err.code.map(|c| format!(" (code {c})")).unwrap_or_default();
             return Err(AppError::Rpc(format!("{}{code}", err.message)));
         }
 
@@ -275,7 +274,9 @@ impl NodeRpcClient {
             .await?;
         let status = resp.status();
         let body: serde_json::Value = resp.json().await.map_err(|e| {
-            AppError::Rpc(format!("node returned non-JSON for coins (status {status}): {e}"))
+            AppError::Rpc(format!(
+                "node returned non-JSON for coins (status {status}): {e}"
+            ))
         })?;
         if !status.is_success() {
             // hsd surfaces failures as `{"error":{"message":…}}` (or `{"message":…}`),
@@ -344,7 +345,10 @@ impl NodeRpcClient {
     /// handle. The connection may drop as the node exits, so a transport error is
     /// treated as success.
     pub async fn stop(&self) -> Result<(), AppError> {
-        match self.call::<serde_json::Value>("stop", serde_json::json!([])).await {
+        match self
+            .call::<serde_json::Value>("stop", serde_json::json!([]))
+            .await
+        {
             Ok(_) | Err(AppError::Http(_)) => Ok(()),
             Err(e) => Err(e),
         }

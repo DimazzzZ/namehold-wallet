@@ -40,7 +40,14 @@ fn seeded_conn(explorer_url: &str) -> rusqlite::Connection {
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE, "Rep", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        &conn,
+        PROFILE,
+        "Rep",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKE",
+        0,
+        false,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE).unwrap();
@@ -63,7 +70,9 @@ async fn inventory_name_owned_by_wallet_gets_tracked_row_and_finalized_status() 
     // Name detail (get_name_info_optional).
     let _name = server
         .mock("GET", "/api/names/mine")
-        .with_body(r#"{"name":"mine","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#)
+        .with_body(
+            r#"{"name":"mine","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#,
+        )
         .create_async()
         .await;
     // History → current owner outpoint txA[2].
@@ -104,7 +113,11 @@ async fn inventory_name_owned_by_wallet_gets_tracked_row_and_finalized_status() 
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .expect("tracked row exists");
-    assert_eq!(owner_address.as_deref(), Some(MINE), "owner_address is our address");
+    assert_eq!(
+        owner_address.as_deref(),
+        Some(MINE),
+        "owner_address is our address"
+    );
     assert_eq!(state, "CLOSED");
 
     // The inventory row advanced to finalized_owned + got a sync timestamp.
@@ -125,7 +138,9 @@ async fn inventory_name_owned_by_foreign_address_touches_but_creates_no_tracked_
 
     let _name = server
         .mock("GET", "/api/names/foreign")
-        .with_body(r#"{"name":"foreign","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#)
+        .with_body(
+            r#"{"name":"foreign","hash":"deadbeef","state":"CLOSED","height":100,"renewal":200}"#,
+        )
         .create_async()
         .await;
     let _hist = server
@@ -151,7 +166,11 @@ async fn inventory_name_owned_by_foreign_address_touches_but_creates_no_tracked_
     let app = app_with(conn);
 
     let res = repair_owned_names(app.state()).await.expect("repair");
-    assert_eq!(res["repaired"].as_u64(), Some(0), "not owned → nothing repaired");
+    assert_eq!(
+        res["repaired"].as_u64(),
+        Some(0),
+        "not owned → nothing repaired"
+    );
 
     let state = app.state::<AppState>();
     let db = state.db.lock().unwrap();
@@ -175,5 +194,8 @@ async fn inventory_name_owned_by_foreign_address_touches_but_creates_no_tracked_
         )
         .unwrap();
     assert_eq!(status, "not_started", "status unchanged when not owned");
-    assert!(synced.is_some(), "last_synced_at stamped so repeated runs converge");
+    assert!(
+        synced.is_some(),
+        "last_synced_at stamped so repeated runs converge"
+    );
 }

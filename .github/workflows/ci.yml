@@ -41,7 +41,7 @@ jobs:
         run: pnpm exec vitest run
 
   rust:
-    name: Rust (cargo test · fmt/clippy advisory)
+    name: Rust (cargo test · fmt · clippy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,12 +86,13 @@ jobs:
       - name: Test
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
-      # Advisory: report style/lint without blocking CI (the crate currently carries
-      # intentional dead-code warnings). Promote to required after a cleanup pass.
-      - name: Format check (advisory)
-        continue-on-error: true
+      # Style + lint gates (required). The crate is formatted (`cargo fmt`) and
+      # clean under `-- -D warnings`; scoped `#[allow(clippy::...)]` attributes
+      # document the few structural lints (too_many_arguments on Tauri commands,
+      # doc_overindented_list_items on prose-heavy module docs). Any regression
+      # here fails CI.
+      - name: Format check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
-      - name: Clippy (advisory)
-        continue-on-error: true
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

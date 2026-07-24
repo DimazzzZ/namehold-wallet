@@ -15,12 +15,12 @@ pub mod hnsfans;
 pub mod signer;
 
 #[allow(unused_imports)]
+pub use hnsfans::ExplorerProvider;
+#[allow(unused_imports)]
 pub use signer::{
     LocalHotSigner, PlaceholderSigner, SignRequest, SignedTx, SignerBackend, SignerMode,
     WriteCapability,
 };
-#[allow(unused_imports)]
-pub use hnsfans::ExplorerProvider;
 
 /// The ONE place settings turn into an explorer client (Task 11 / S1).
 ///

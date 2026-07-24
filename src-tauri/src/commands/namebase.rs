@@ -19,7 +19,10 @@ pub(crate) fn namebase_client(state: &AppState) -> Result<NamebaseClient, AppErr
         let settings = db::queries::get_settings(&db)?;
         (
             settings.get("namebase_cookie").cloned().unwrap_or_default(),
-            settings.get("namebase_base_url").cloned().unwrap_or_default(),
+            settings
+                .get("namebase_base_url")
+                .cloned()
+                .unwrap_or_default(),
         )
     };
     if base.trim().is_empty() {
@@ -54,7 +57,11 @@ pub(crate) fn namebase_client_with_cookie(
 /// `before` — i.e. the server rotated it via `Set-Cookie` during this
 /// command's calls. A no-op write is skipped so an unchanged session doesn't
 /// churn the `settings` table on every dashboard poll.
-fn persist_cookie_if_changed(state: &AppState, before: &str, client: &NamebaseClient) -> Result<(), AppError> {
+fn persist_cookie_if_changed(
+    state: &AppState,
+    before: &str,
+    client: &NamebaseClient,
+) -> Result<(), AppError> {
     let after = client.current_cookie();
     if after != before {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -105,7 +112,9 @@ pub async fn disconnect_namebase(state: State<'_, AppState>) -> Result<(), AppEr
 }
 
 #[tauri::command]
-pub async fn get_namebase_status(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+pub async fn get_namebase_status(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
     let cookie = get_cookie(&state)?;
 
     if cookie.is_empty() {
@@ -119,14 +128,18 @@ pub async fn get_namebase_status(state: State<'_, AppState>) -> Result<serde_jso
             let account = client.get_account().await.ok();
             serde_json::json!({"connected": true, "has_cookie": true, "account": account})
         }
-        _ => serde_json::json!({"connected": false, "has_cookie": true, "error": "Session expired"}),
+        _ => {
+            serde_json::json!({"connected": false, "has_cookie": true, "error": "Session expired"})
+        }
     };
     persist_cookie_if_changed(&state, &before, &client)?;
     Ok(result)
 }
 
 #[tauri::command]
-pub async fn fetch_namebase_domains(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+pub async fn fetch_namebase_domains(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
     let client = namebase_client(&state)?;
     let before = client.current_cookie();
     let result = client.get_domains().await?;
@@ -135,7 +148,9 @@ pub async fn fetch_namebase_domains(state: State<'_, AppState>) -> Result<serde_
 }
 
 #[tauri::command]
-pub async fn fetch_namebase_staked(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+pub async fn fetch_namebase_staked(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
     let client = namebase_client(&state)?;
     let before = client.current_cookie();
     let result = client.get_staked_domains().await?;
@@ -144,7 +159,9 @@ pub async fn fetch_namebase_staked(state: State<'_, AppState>) -> Result<serde_j
 }
 
 #[tauri::command]
-pub async fn fetch_namebase_renewals(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+pub async fn fetch_namebase_renewals(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
     // Use the shared client builder so the `namebase_base_url` test seam applies
     // (and so this honors any future base-url override), unlike the other fetch_*
     // commands which hard-code the real host.
@@ -156,7 +173,9 @@ pub async fn fetch_namebase_renewals(state: State<'_, AppState>) -> Result<serde
 }
 
 #[tauri::command]
-pub async fn fetch_namebase_withdrawals(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+pub async fn fetch_namebase_withdrawals(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
     let client = namebase_client(&state)?;
     let before = client.current_cookie();
     let result = client.get_withdrawals().await?;
@@ -165,7 +184,9 @@ pub async fn fetch_namebase_withdrawals(state: State<'_, AppState>) -> Result<se
 }
 
 #[tauri::command]
-pub async fn import_from_namebase(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+pub async fn import_from_namebase(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
     let client = namebase_client(&state)?;
     let before = client.current_cookie();
 
@@ -198,12 +219,19 @@ pub async fn import_from_namebase(state: State<'_, AppState>) -> Result<serde_js
             for domain in arr {
                 let name = match domain["name"].as_str() {
                     Some(n) => n.to_lowercase().trim().to_string(),
-                    None => { skipped += 1; continue; }
+                    None => {
+                        skipped += 1;
+                        continue;
+                    }
                 };
 
                 seen_names.insert(name.clone());
                 let is_staked = staked_names.contains(&name);
-                let status = if is_staked { "do_not_touch_staked" } else { "not_started" };
+                let status = if is_staked {
+                    "do_not_touch_staked"
+                } else {
+                    "not_started"
+                };
 
                 match db.execute(
                     "INSERT INTO assets (tld, is_staked, status, category, notes)
@@ -244,7 +272,8 @@ pub async fn import_from_namebase(state: State<'_, AppState>) -> Result<serde_js
                 "skipped": skipped,
                 "errors": errors.len(),
                 "staked_count": staked_names.len(),
-            }).to_string()],
+            })
+            .to_string()],
         )?;
     }
 
@@ -305,9 +334,8 @@ fn active_profile_network(state: &AppState) -> crate::noncustodial::network::Net
         return Network::Main;
     }
     match db::queries::get_wallet_profile(&conn, &id) {
-        Ok(Some(p)) => {
-            crate::noncustodial::derivation::network_from_profile(&p.network).unwrap_or(Network::Main)
-        }
+        Ok(Some(p)) => crate::noncustodial::derivation::network_from_profile(&p.network)
+            .unwrap_or(Network::Main),
         _ => Network::Main,
     }
 }
@@ -353,7 +381,9 @@ pub async fn namebase_withdraw_hns(
 }
 
 #[tauri::command]
-pub async fn fetch_namebase_domain_withdrawals(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+pub async fn fetch_namebase_domain_withdrawals(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
     let client = namebase_client(&state)?;
     let before = client.current_cookie();
     let result = client.get_domain_withdrawals().await?;

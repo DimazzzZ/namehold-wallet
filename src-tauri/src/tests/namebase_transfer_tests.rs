@@ -4,15 +4,12 @@
 //! or wrong-network address BEFORE making the Namebase call. Validation happens
 //! first (no cookie needed), so these assert the rejection without any network.
 
-use rusqlite::params;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 use crate::commands::namebase::{
-    connect_namebase, disconnect_namebase, fetch_namebase_domains,
-    fetch_namebase_domain_withdrawals, fetch_namebase_renewals, fetch_namebase_staked,
-    fetch_namebase_withdrawals, get_namebase_status, import_from_namebase,
-    namebase_transfer_domain, namebase_withdraw_hns,
+    disconnect_namebase, fetch_namebase_renewals, get_namebase_status, namebase_transfer_domain,
+    namebase_withdraw_hns,
 };
 use crate::db;
 use crate::error::AppError;
@@ -26,7 +23,10 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+            hsd_child: std::sync::Mutex::new(None),
+            sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::commands::sync::SyncStatus::default(),
+            )),
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -38,7 +38,14 @@ fn seeded_conn() -> rusqlite::Connection {
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE, "NB", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        &conn,
+        PROFILE,
+        "NB",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKE",
+        0,
+        false,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE).unwrap();
@@ -48,9 +55,13 @@ fn seeded_conn() -> rusqlite::Connection {
 #[tokio::test]
 async fn rejects_malformed_destination_before_namebase_call() {
     let app = app_with(seeded_conn());
-    let err = namebase_transfer_domain(app.state::<AppState>(), "exampletld".into(), "not-an-address".into())
-        .await
-        .expect_err("malformed address must be rejected");
+    let err = namebase_transfer_domain(
+        app.state::<AppState>(),
+        "exampletld".into(),
+        "not-an-address".into(),
+    )
+    .await
+    .expect_err("malformed address must be rejected");
     match err {
         AppError::InvalidInput(m) => assert!(m.contains("HNS address"), "msg: {m}"),
         other => panic!("expected InvalidInput, got {other:?}"),
@@ -89,7 +100,10 @@ async fn accepts_valid_mainnet_address_past_validation() {
     match res {
         Ok(()) => {} // unlikely without a real cookie, but acceptable
         Err(AppError::InvalidInput(m)) => {
-            assert!(!m.contains("HNS address"), "valid address wrongly rejected: {m}");
+            assert!(
+                !m.contains("HNS address"),
+                "valid address wrongly rejected: {m}"
+            );
         }
         Err(_) => {} // Namebase/network/cookie error — past validation, as expected
     }
@@ -100,9 +114,13 @@ async fn accepts_valid_mainnet_address_past_validation() {
 #[tokio::test]
 async fn withdraw_rejects_malformed_destination() {
     let app = app_with(seeded_conn());
-    let err = namebase_withdraw_hns(app.state::<AppState>(), "not-an-address".into(), "1000000".into())
-        .await
-        .expect_err("malformed address must be rejected");
+    let err = namebase_withdraw_hns(
+        app.state::<AppState>(),
+        "not-an-address".into(),
+        "1000000".into(),
+    )
+    .await
+    .expect_err("malformed address must be rejected");
     match err {
         AppError::InvalidInput(m) => assert!(m.contains("HNS address"), "msg: {m}"),
         other => panic!("expected InvalidInput, got {other:?}"),
@@ -160,9 +178,13 @@ async fn transfer_domain_posts_to_namebase_with_the_address() {
     db::queries::set_setting(&conn, "namebase_base_url", &server.url()).unwrap();
     let app = app_with(conn);
 
-    namebase_transfer_domain(app.state::<AppState>(), "exampletld".into(), GOOD_ADDR.into())
-        .await
-        .expect("transfer should succeed against the mock");
+    namebase_transfer_domain(
+        app.state::<AppState>(),
+        "exampletld".into(),
+        GOOD_ADDR.into(),
+    )
+    .await
+    .expect("transfer should succeed against the mock");
     m.assert_async().await;
 }
 
@@ -227,7 +249,10 @@ async fn fetch_renewals_returns_the_expiring_calendar() {
     assert_eq!(expiring.len(), 2);
     assert_eq!(expiring[0]["domain"], serde_json::json!("soon"));
     assert_eq!(expiring[0]["expire_block"], serde_json::json!(339000));
-    assert!(expiring[0]["estimated_date"].as_str().unwrap().ends_with("Z"));
+    assert!(expiring[0]["estimated_date"]
+        .as_str()
+        .unwrap()
+        .ends_with("Z"));
 }
 
 #[tokio::test]
@@ -258,11 +283,16 @@ async fn disconnect_clears_cookie_and_logs_audit() {
     let app = app_with(conn);
 
     let state = app.state::<AppState>().clone();
-    disconnect_namebase(state.clone()).await.expect("disconnect should succeed");
+    disconnect_namebase(state.clone())
+        .await
+        .expect("disconnect should succeed");
 
     let db = state.db.lock().unwrap();
     let settings = db::queries::get_settings(&db).unwrap();
-    assert_eq!(settings.get("namebase_cookie").map(|s| s.as_str()), Some(""));
+    assert_eq!(
+        settings.get("namebase_cookie").map(|s| s.as_str()),
+        Some("")
+    );
 }
 
 // --- transfer_domain error from Namebase API ---------------------------------
@@ -283,13 +313,9 @@ async fn transfer_domain_propagates_namebase_error() {
     let app = app_with(conn);
 
     let state = app.state::<AppState>().clone();
-    let err = namebase_transfer_domain(
-        state,
-        "baddomain".into(),
-        GOOD_ADDR.into(),
-    )
-    .await
-    .expect_err("should fail with Namebase error");
+    let err = namebase_transfer_domain(state, "baddomain".into(), GOOD_ADDR.into())
+        .await
+        .expect_err("should fail with Namebase error");
     match err {
         AppError::Other(m) => assert!(m.contains("Domain not found"), "msg: {m}"),
         other => panic!("expected Other, got {other:?}"),
@@ -447,11 +473,16 @@ async fn namebase_client_with_base_url_uses_custom() {
     let client = crate::commands::namebase::namebase_client(&state).unwrap();
     // When namebase_base_url is set, it should construct with that URL.
     // Verify by making a request to the mock server.
-    let _m = server.mock("GET", "/api/account")
+    let _m = server
+        .mock("GET", "/api/account")
         .with_status(200)
         .with_body(r#"{"ok":true}"#)
         .create_async()
         .await;
     let result = client.check_session().await;
-    assert!(result.is_ok(), "should reach mock server: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "should reach mock server: {:?}",
+        result.err()
+    );
 }

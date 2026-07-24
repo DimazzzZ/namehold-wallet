@@ -31,6 +31,7 @@ pub async fn get_asset(state: State<'_, AppState>, id: i64) -> Result<Asset, App
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command params map 1:1 to a frontend call site — not worth splitting.
 pub async fn update_asset(
     state: State<'_, AppState>,
     id: i64,

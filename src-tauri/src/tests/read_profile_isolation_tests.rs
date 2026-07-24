@@ -17,15 +17,27 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+            hsd_child: std::sync::Mutex::new(None),
+            sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::commands::sync::SyncStatus::default(),
+            )),
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
 }
 
 fn add_profile(conn: &rusqlite::Connection, id: &str, network: &str) {
-    db::queries::insert_wallet_profile(conn, id, id, "mnemonic_hot", network, "xpubDUMMY", 0, false)
-        .unwrap();
+    db::queries::insert_wallet_profile(
+        conn,
+        id,
+        id,
+        "mnemonic_hot",
+        network,
+        "xpubDUMMY",
+        0,
+        false,
+    )
+    .unwrap();
 }
 
 /// A liquid coin worth `value` doos for a profile. No derived_addresses are
@@ -83,7 +95,11 @@ async fn read_balance_honors_the_requested_profile_over_the_active_one() {
 
     // No id → falls back to the active profile (A).
     let active = read_balance(app.state(), None).await.unwrap();
-    assert_eq!(active["confirmed"], serde_json::json!(100_000_000), "got: {active}");
+    assert_eq!(
+        active["confirmed"],
+        serde_json::json!(100_000_000),
+        "got: {active}"
+    );
 }
 
 #[tokio::test]

@@ -21,32 +21,58 @@ fn test_xpub() -> crate::noncustodial::hd::ExtendedPubKey {
 /// Create a test DB with ALL migrations (including wallet_profiles from 006+).
 fn create_full_test_db() -> rusqlite::Connection {
     let conn = crate::tests::command_helpers::create_test_db();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/004_wallet_addresses.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/005_fix_hnsfans_api_url.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/006_noncustodial_wallet_profiles.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/007_noncustodial_chain_cache.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/008_noncustodial_name_state.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/009_node_rpc_settings.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/010_drop_legacy_settings.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/011_hsd_data_dir.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/012_tx_draft_confirmations.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/013_owner_address.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/014_reveal_end_height.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/015_coin_reservation.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/016_last_explorer_sync_at.sql"))
-        .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/004_wallet_addresses.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/005_fix_hnsfans_api_url.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/006_noncustodial_wallet_profiles.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/007_noncustodial_chain_cache.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/008_noncustodial_name_state.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/009_node_rpc_settings.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/010_drop_legacy_settings.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/011_hsd_data_dir.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/012_tx_draft_confirmations.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/013_owner_address.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/014_reveal_end_height.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/015_coin_reservation.sql"
+    ))
+    .unwrap();
+    conn.execute_batch(include_str!(
+        "../../../src-tauri/src/sql/016_last_explorer_sync_at.sql"
+    ))
+    .unwrap();
     conn
 }
 
@@ -56,7 +82,10 @@ pub(crate) fn create_full_test_state() -> crate::AppState {
         db: std::sync::Mutex::new(conn),
         signer: std::sync::Mutex::new(None),
         secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-        hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+        hsd_child: std::sync::Mutex::new(None),
+        sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+            crate::commands::sync::SyncStatus::default(),
+        )),
     }
 }
 
@@ -277,10 +306,7 @@ async fn test_fetch_name_state_parses_valid_response() {
     let m = server
         .mock("POST", "/")
         .with_header("content-type", "application/json")
-        .with_body(format!(
-            r#"{{"result":{},"error":null,"id":1}}"#,
-            name_info
-        ))
+        .with_body(format!(r#"{{"result":{},"error":null,"id":1}}"#, name_info))
         .create_async()
         .await;
 
@@ -314,10 +340,7 @@ async fn test_fetch_name_state_weak_name() {
     let m = server
         .mock("POST", "/")
         .with_header("content-type", "application/json")
-        .with_body(format!(
-            r#"{{"result":{},"error":null,"id":1}}"#,
-            name_info
-        ))
+        .with_body(format!(r#"{{"result":{},"error":null,"id":1}}"#, name_info))
         .create_async()
         .await;
 
@@ -404,7 +427,8 @@ async fn test_renewal_block_makes_rpc_call() {
     );
     // renewal_block makes multiple RPC calls; we just verify it doesn't panic
     // and that the first call (getblockchaininfo) is made.
-    let _result = names::renewal_block(&client, crate::noncustodial::network::Network::Regtest).await;
+    let _result =
+        names::renewal_block(&client, crate::noncustodial::network::Network::Regtest).await;
     info_mock.assert_async().await;
 }
 
@@ -414,9 +438,15 @@ async fn test_renewal_block_makes_rpc_call() {
 fn test_bid_draft_rejects_zero_bid() {
     let state = crate::tests::command_helpers::create_test_state();
     let app = mock_app_with(state);
-    let result = tokio::runtime::Runtime::new().unwrap().block_on(
-        names::build_bid_draft(app.state(), "test".into(), 0, 100, None),
-    );
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(names::build_bid_draft(
+            app.state(),
+            "test".into(),
+            0,
+            100,
+            None,
+        ));
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
     assert!(msg.contains("lockup must be >= bid value > 0"));
@@ -426,9 +456,15 @@ fn test_bid_draft_rejects_zero_bid() {
 fn test_bid_draft_rejects_negative_bid() {
     let state = crate::tests::command_helpers::create_test_state();
     let app = mock_app_with(state);
-    let result = tokio::runtime::Runtime::new().unwrap().block_on(
-        names::build_bid_draft(app.state(), "test".into(), -5, 100, None),
-    );
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(names::build_bid_draft(
+            app.state(),
+            "test".into(),
+            -5,
+            100,
+            None,
+        ));
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
     assert!(msg.contains("lockup must be >= bid value > 0"));
@@ -438,9 +474,15 @@ fn test_bid_draft_rejects_negative_bid() {
 fn test_bid_draft_rejects_lockup_less_than_bid() {
     let state = crate::tests::command_helpers::create_test_state();
     let app = mock_app_with(state);
-    let result = tokio::runtime::Runtime::new().unwrap().block_on(
-        names::build_bid_draft(app.state(), "test".into(), 100, 50, None),
-    );
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(names::build_bid_draft(
+            app.state(),
+            "test".into(),
+            100,
+            50,
+            None,
+        ));
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
     assert!(msg.contains("lockup must be >= bid value > 0"));
@@ -452,9 +494,13 @@ fn test_bid_draft_rejects_lockup_less_than_bid() {
 fn test_open_draft_no_profile_errors() {
     let state = crate::tests::command_helpers::create_test_state();
     let app = mock_app_with(state);
-    let result = tokio::runtime::Runtime::new().unwrap().block_on(
-        names::build_open_draft(app.state(), "test-name".into(), None),
-    );
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(names::build_open_draft(
+            app.state(),
+            "test-name".into(),
+            None,
+        ));
     assert!(result.is_err());
 }
 
@@ -478,9 +524,13 @@ fn test_reveal_draft_no_bid_commitment_errors() {
     let app = mock_app_with(state);
     // load_ctx will fail because the xpub derivation needs a valid key,
     // but this tests the error propagation path
-    let result = tokio::runtime::Runtime::new().unwrap().block_on(
-        names::build_reveal_draft(app.state(), "test-name".into(), None),
-    );
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(names::build_reveal_draft(
+            app.state(),
+            "test-name".into(),
+            None,
+        ));
     assert!(result.is_err());
 }
 
@@ -528,7 +578,7 @@ pub(crate) fn insert_valid_profile(conn: &rusqlite::Connection, network: &str) -
     let path = [
         crate::noncustodial::hd::HARDENED_OFFSET + 44,
         crate::noncustodial::hd::HARDENED_OFFSET + net.coin_type(),
-        crate::noncustodial::hd::HARDENED_OFFSET + 0,
+        crate::noncustodial::hd::HARDENED_OFFSET,
     ];
     let node = master.derive_path(&path).unwrap();
     let xpub = ExtendedPubKey::from_priv(&node).to_base58check(net);
@@ -551,7 +601,8 @@ pub(crate) fn insert_valid_profile(conn: &rusqlite::Connection, network: &str) -
              address, script_pubkey_hex, public_key_hex)
          VALUES (?1, 0, 0, 0, ?2, ?3, ?4)",
         rusqlite::params![&id, &addr, &spk, hex::encode(pk)],
-    ).unwrap();
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO tracked_utxos
             (txid, vout, wallet_profile_id, address, script_pubkey_hex,
@@ -572,7 +623,11 @@ async fn test_build_open_draft_succeeds_with_valid_profile() {
     }
     let app = mock_app_with(state);
     let result = names::build_open_draft(app.state(), "testname".into(), None).await;
-    assert!(result.is_ok(), "build_open_draft should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "build_open_draft should succeed: {:?}",
+        result.err()
+    );
     let summary = result.unwrap();
     assert_eq!(summary.action, "open");
 }
@@ -586,7 +641,11 @@ async fn test_build_open_draft_with_explicit_fee_rate() {
     }
     let app = mock_app_with(state);
     let result = names::build_open_draft(app.state(), "myname".into(), Some(50)).await;
-    assert!(result.is_ok(), "build_open_draft with fee_rate should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "build_open_draft with fee_rate should succeed: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
@@ -612,7 +671,7 @@ async fn test_build_open_draft_persists_draft() {
         insert_valid_profile(&conn, "regtest")
     };
     let app = mock_app_with(state);
-    let summary = names::build_open_draft(app.state(), "persistme".into(), None)
+    let _summary = names::build_open_draft(app.state(), "persistme".into(), None)
         .await
         .expect("build_open_draft should succeed");
 
@@ -641,7 +700,9 @@ async fn test_build_transfer_draft_invalid_recipient_errors() {
     let app = mock_app_with(state);
     // No owner coin exists, so this will error at owner_coin_and_state,
     // but the error should be a NotFound, not a panic.
-    let result = names::build_transfer_draft(app.state(), "testname".into(), "invalid_addr".into(), None).await;
+    let result =
+        names::build_transfer_draft(app.state(), "testname".into(), "invalid_addr".into(), None)
+            .await;
     assert!(result.is_err());
 }
 
@@ -774,7 +835,10 @@ async fn test_bid_draft_with_valid_profile_errors_at_rpc() {
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
     // Should fail at RPC (no node running), not at validation
-    assert!(!msg.contains("lockup must be >= bid value"), "should pass validation: {msg}");
+    assert!(
+        !msg.contains("lockup must be >= bid value"),
+        "should pass validation: {msg}"
+    );
 }
 
 // --- build_register_draft with valid profile (needs RPC, so expect RPC error) ---
@@ -791,7 +855,10 @@ async fn test_register_draft_with_valid_profile_errors_at_rpc() {
     let result = names::build_register_draft(app.state(), "testname".into(), None, None).await;
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("does not hold") || msg.contains("sync"), "msg: {msg}");
+    assert!(
+        msg.contains("does not hold") || msg.contains("sync"),
+        "msg: {msg}"
+    );
 }
 
 // --- build_update_draft with valid profile (needs RPC, so expect RPC error) ---
@@ -807,7 +874,10 @@ async fn test_update_draft_with_valid_profile_errors_at_rpc() {
     let result = names::build_update_draft(app.state(), "testname".into(), vec![], None).await;
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("does not hold") || msg.contains("sync"), "msg: {msg}");
+    assert!(
+        msg.contains("does not hold") || msg.contains("sync"),
+        "msg: {msg}"
+    );
 }
 
 // --- build_transfer_draft with valid profile (needs RPC, so expect RPC error) ---
@@ -820,10 +890,14 @@ async fn test_transfer_draft_with_valid_profile_errors_at_rpc() {
         insert_valid_profile(&conn, "regtest");
     }
     let app = mock_app_with(state);
-    let result = names::build_transfer_draft(app.state(), "testname".into(), "hs1qtest".into(), None).await;
+    let result =
+        names::build_transfer_draft(app.state(), "testname".into(), "hs1qtest".into(), None).await;
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("does not hold") || msg.contains("sync"), "msg: {msg}");
+    assert!(
+        msg.contains("does not hold") || msg.contains("sync"),
+        "msg: {msg}"
+    );
 }
 
 // --- build_renew_draft with valid profile (needs RPC, so expect RPC error) ---
@@ -839,7 +913,10 @@ async fn test_renew_draft_with_valid_profile_errors_at_rpc() {
     let result = names::build_renew_draft(app.state(), "testname".into(), None).await;
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("does not hold") || msg.contains("sync"), "msg: {msg}");
+    assert!(
+        msg.contains("does not hold") || msg.contains("sync"),
+        "msg: {msg}"
+    );
 }
 
 // --- build_cancel_draft with valid profile (needs RPC, so expect RPC error) ---
@@ -855,7 +932,10 @@ async fn test_cancel_draft_with_valid_profile_errors_at_rpc() {
     let result = names::build_cancel_draft(app.state(), "testname".into(), None).await;
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("does not hold") || msg.contains("sync"), "msg: {msg}");
+    assert!(
+        msg.contains("does not hold") || msg.contains("sync"),
+        "msg: {msg}"
+    );
 }
 
 // --- build_revoke_draft with valid profile (needs RPC, so expect RPC error) ---
@@ -871,7 +951,10 @@ async fn test_revoke_draft_with_valid_profile_errors_at_rpc() {
     let result = names::build_revoke_draft(app.state(), "testname".into(), None).await;
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("does not hold") || msg.contains("sync"), "msg: {msg}");
+    assert!(
+        msg.contains("does not hold") || msg.contains("sync"),
+        "msg: {msg}"
+    );
 }
 
 // --- build_finalize_draft with valid profile (needs RPC, so expect RPC error) ---
@@ -887,7 +970,10 @@ async fn test_finalize_draft_with_valid_profile_errors_at_rpc() {
     let result = names::build_finalize_draft(app.state(), "testname".into(), None).await;
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("does not hold") || msg.contains("sync"), "msg: {msg}");
+    assert!(
+        msg.contains("does not hold") || msg.contains("sync"),
+        "msg: {msg}"
+    );
 }
 
 // ============================================================================
@@ -910,7 +996,8 @@ fn seed_name_owner_coin(
             (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, height)
          VALUES (?1, ?2, 'aabb', 'CLOSED', ?3, 0, 100)",
         rusqlite::params![profile_id, name, txid],
-    ).unwrap();
+    )
+    .unwrap();
     // Insert a derived address so the 3-way join in get_name_coin works.
     conn.execute(
         "INSERT OR IGNORE INTO derived_addresses
@@ -918,7 +1005,8 @@ fn seed_name_owner_coin(
              address, script_pubkey_hex, public_key_hex)
          VALUES (?1, 0, 0, 0, ?2, '00', '00')",
         rusqlite::params![profile_id, addr],
-    ).unwrap();
+    )
+    .unwrap();
     // Insert a tracked UTXO as the owner coin.
     conn.execute(
         "INSERT OR IGNORE INTO tracked_utxos
@@ -926,7 +1014,8 @@ fn seed_name_owner_coin(
              value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
          VALUES (?1, 0, ?2, ?3, '00', 10000, 0, ?4, 'liquid_hns', NULL)",
         rusqlite::params![txid, profile_id, addr, covenant_json.unwrap_or("null")],
-    ).unwrap();
+    )
+    .unwrap();
 }
 
 /// covenant_json exactly as `noncustodial::sync::covenant_json` writes it:
@@ -983,14 +1072,23 @@ fn seed_bid_commitment(conn: &rusqlite::Connection, profile_id: &str, name: &str
             (wallet_profile_id, name, name_hash_hex, address, branch, child_index,
              bid_value_doos, lockup_value_doos, nonce_hex, blind_hex)
          VALUES (?1, ?2, ?3, ?4, 0, 0, 1000, 2000, ?5, ?6)",
-        rusqlite::params![profile_id, name, nh, addr, "11".repeat(32), format!("blind-{name}")],
+        rusqlite::params![
+            profile_id,
+            name,
+            nh,
+            addr,
+            "11".repeat(32),
+            format!("blind-{name}")
+        ],
     )
     .unwrap();
 }
 
 /// Set up mockito RPC mocks for the RPC calls that `build_finalize_draft` and
 /// `build_reveal_draft` need: getnameinfo, getblockchaininfo, getblockhash.
-pub(crate) async fn mock_names_rpc(server: &mut mockito::Server) -> (mockito::Mock, mockito::Mock, mockito::Mock) {
+pub(crate) async fn mock_names_rpc(
+    server: &mut mockito::Server,
+) -> (mockito::Mock, mockito::Mock, mockito::Mock) {
     let name_info = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getnameinfo".into()))
@@ -1018,20 +1116,32 @@ pub(crate) async fn mock_names_rpc(server: &mut mockito::Server) -> (mockito::Mo
 #[tokio::test]
 async fn test_renewal_block_rejects_short_hash() {
     let mut server = mockito::Server::new_async().await;
-    let _bi = server.mock("POST", "/")
+    let _bi = server
+        .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
         .with_body(r#"{"result":{"blocks":100},"error":null,"id":1}"#)
-        .create_async().await;
-    let _bh = server.mock("POST", "/")
+        .create_async()
+        .await;
+    let _bh = server
+        .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockhash".into()))
         .with_body(r#"{"result":"00","error":null,"id":1}"#)
-        .create_async().await;
+        .create_async()
+        .await;
 
-    let client = crate::noncustodial::rpc::NodeRpcClient::new(&server.url(), "", crate::noncustodial::rpc::ChainSource::LocalNode);
-    let result = names::renewal_block(&client, crate::noncustodial::network::Network::Regtest).await;
+    let client = crate::noncustodial::rpc::NodeRpcClient::new(
+        &server.url(),
+        "",
+        crate::noncustodial::rpc::ChainSource::LocalNode,
+    );
+    let result =
+        names::renewal_block(&client, crate::noncustodial::network::Network::Regtest).await;
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("block hash") || msg.contains("hex"), "msg: {msg}");
+    assert!(
+        msg.contains("block hash") || msg.contains("hex"),
+        "msg: {msg}"
+    );
 }
 
 // --- fetch_name_state with RPC error ---
@@ -1078,18 +1188,18 @@ async fn capabilities_node_down_explorer_owned_is_owned_but_spend_locked() {
         id
     };
     let app = mock_app_with(state);
-    let caps = names::get_name_action_capabilities(
-        app.state(),
-        "ownedname".into(),
-        Some(profile_id),
-    )
-    .await
-    .expect("capabilities should resolve via local evidence");
+    let caps =
+        names::get_name_action_capabilities(app.state(), "ownedname".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve via local evidence");
 
     // Classified as owned even though no coin is synced locally.
     assert!(caps.owns_name, "explorer-owned name must be owns_name=true");
     assert!(!caps.has_owner_coin, "no node-synced owner coin exists");
-    assert_eq!(caps.task_state, names::AuctionTaskState::OwnedNoUrgentAction);
+    assert_eq!(
+        caps.task_state,
+        names::AuctionTaskState::OwnedNoUrgentAction
+    );
 
     // Every spend-capable action is forced disallowed with the sync reason.
     for cap in [
@@ -1101,9 +1211,15 @@ async fn capabilities_node_down_explorer_owned_is_owned_but_spend_locked() {
         &caps.can_finalize,
         &caps.can_cancel_transfer,
     ] {
-        assert!(!cap.allowed, "spend action must be disallowed when unsynced");
         assert!(
-            cap.reason.as_deref().unwrap_or("").contains("not synced locally"),
+            !cap.allowed,
+            "spend action must be disallowed when unsynced"
+        );
+        assert!(
+            cap.reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("not synced locally"),
             "reason should mention not synced locally, got {:?}",
             cap.reason
         );
@@ -1153,13 +1269,10 @@ async fn capabilities_node_down_near_expiry_yields_expiring_soon() {
         id
     };
     let app = mock_app_with(state);
-    let caps = names::get_name_action_capabilities(
-        app.state(),
-        "expiringname".into(),
-        Some(profile_id),
-    )
-    .await
-    .expect("capabilities should resolve via local evidence");
+    let caps =
+        names::get_name_action_capabilities(app.state(), "expiringname".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve via local evidence");
 
     assert!(caps.owns_name, "explorer-owned name must be owns_name=true");
     assert_eq!(
@@ -1179,13 +1292,10 @@ async fn capabilities_node_down_no_tracked_row_falls_back_conservative() {
         id
     };
     let app = mock_app_with(state);
-    let caps = names::get_name_action_capabilities(
-        app.state(),
-        "totallyunknown".into(),
-        Some(profile_id),
-    )
-    .await
-    .expect("capabilities should resolve");
+    let caps =
+        names::get_name_action_capabilities(app.state(), "totallyunknown".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve");
 
     // Genuinely unknown locally + node down → conservative fallback (unchanged).
     assert!(!caps.owns_name);
@@ -1262,10 +1372,16 @@ async fn batch_capabilities_returns_per_name_results_in_order() {
 
     assert_eq!(results.len(), 2, "one result per input name, in order");
     assert_eq!(results[0].name, "batchowned");
-    assert!(results[0].owns_name, "batchowned must be classified as owned");
+    assert!(
+        results[0].owns_name,
+        "batchowned must be classified as owned"
+    );
     assert_eq!(results[1].name, "batchunknown");
     assert!(!results[1].owns_name);
-    assert_eq!(results[1].task_state, names::AuctionTaskState::UnavailableOther);
+    assert_eq!(
+        results[1].task_state,
+        names::AuctionTaskState::UnavailableOther
+    );
 }
 
 #[tokio::test]
@@ -1321,7 +1437,11 @@ async fn batch_capabilities_respects_wallet_profile_isolation() {
         .filter(|c| c.owns_name)
         .map(|c| c.name.as_str())
         .collect();
-    assert_eq!(owned_by_a, vec!["nameforA"], "profile A must only see its own name as owned");
+    assert_eq!(
+        owned_by_a,
+        vec!["nameforA"],
+        "profile A must only see its own name as owned"
+    );
 
     let as_b = names::get_names_action_capabilities(app.state(), names, Some(profile_b))
         .await
@@ -1331,7 +1451,11 @@ async fn batch_capabilities_respects_wallet_profile_isolation() {
         .filter(|c| c.owns_name)
         .map(|c| c.name.as_str())
         .collect();
-    assert_eq!(owned_by_b, vec!["nameforB"], "profile B must only see its own name as owned");
+    assert_eq!(
+        owned_by_b,
+        vec!["nameforB"],
+        "profile B must only see its own name as owned"
+    );
 }
 
 #[tokio::test]
@@ -1348,8 +1472,12 @@ async fn batch_capabilities_rejects_batches_over_the_cap() {
         .map(|i| format!("name{i}"))
         .collect();
 
-    let result = names::get_names_action_capabilities(app.state(), too_many, Some(profile_id)).await;
-    assert!(result.is_err(), "a batch over the cap must be rejected, not silently truncated");
+    let result =
+        names::get_names_action_capabilities(app.state(), too_many, Some(profile_id)).await;
+    assert!(
+        result.is_err(),
+        "a batch over the cap must be rejected, not silently truncated"
+    );
 }
 
 #[tokio::test]
@@ -1364,7 +1492,11 @@ async fn batch_capabilities_no_profile_returns_conservative_per_name() {
     .await
     .expect("batch capabilities should resolve even with no active profile");
 
-    assert_eq!(results.len(), 3, "still one conservative result per input name");
+    assert_eq!(
+        results.len(),
+        3,
+        "still one conservative result per input name"
+    );
     for c in &results {
         assert!(!c.owns_name);
         assert_eq!(c.task_state, names::AuctionTaskState::UnavailableOther);
@@ -1462,16 +1594,34 @@ async fn capabilities_node_unsynced_falls_back_to_local_evidence() {
         id
     };
     let app = mock_app_with(state);
-    let caps = names::get_name_action_capabilities(app.state(), "ownedname".into(), Some(profile_id))
-        .await
-        .expect("capabilities should resolve via local evidence");
+    let caps =
+        names::get_name_action_capabilities(app.state(), "ownedname".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve via local evidence");
 
-    assert!(caps.owns_name, "explorer-owned name must be owns_name=true even on an unsynced node");
+    assert!(
+        caps.owns_name,
+        "explorer-owned name must be owns_name=true even on an unsynced node"
+    );
     assert!(!caps.has_owner_coin, "no node-synced owner coin exists");
-    for cap in [&caps.can_register, &caps.can_update, &caps.can_transfer, &caps.can_renew, &caps.can_revoke, &caps.can_finalize, &caps.can_cancel_transfer] {
-        assert!(!cap.allowed, "spend action must be disallowed when node is unsynced");
+    for cap in [
+        &caps.can_register,
+        &caps.can_update,
+        &caps.can_transfer,
+        &caps.can_renew,
+        &caps.can_revoke,
+        &caps.can_finalize,
+        &caps.can_cancel_transfer,
+    ] {
         assert!(
-            cap.reason.as_deref().unwrap_or("").contains("not synced locally"),
+            !cap.allowed,
+            "spend action must be disallowed when node is unsynced"
+        );
+        assert!(
+            cap.reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("not synced locally"),
             "reason should mention not synced locally, got {:?}",
             cap.reason
         );
@@ -1513,13 +1663,17 @@ async fn capabilities_node_synced_with_owner_coin_allows_spends() {
         id
     };
     let app = mock_app_with(state);
-    let caps = names::get_name_action_capabilities(app.state(), "testname".into(), Some(profile_id))
-        .await
-        .expect("capabilities should resolve via the node path");
+    let caps =
+        names::get_name_action_capabilities(app.state(), "testname".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve via the node path");
 
     assert!(caps.owns_name, "owner coin present → owns_name=true");
     assert!(caps.has_owner_coin, "owner coin is synced");
-    assert!(caps.can_update.allowed, "update must be allowed for an owned, synced name");
+    assert!(
+        caps.can_update.allowed,
+        "update must be allowed for an owned, synced name"
+    );
     assert!(caps.can_transfer.allowed, "transfer must be allowed");
     assert!(caps.can_renew.allowed, "renew must be allowed");
     // Not spend-locked: reasons must NOT be the "not synced" lock reason.
@@ -1559,16 +1713,31 @@ async fn capabilities_node_synced_without_owner_coin_owns_but_spend_locked() {
         id
     };
     let app = mock_app_with(state);
-    let caps = names::get_name_action_capabilities(app.state(), "testname".into(), Some(profile_id))
-        .await
-        .expect("capabilities should resolve via the node path");
+    let caps =
+        names::get_name_action_capabilities(app.state(), "testname".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve via the node path");
 
-    assert!(caps.owns_name, "explorer-owned name must be owns_name=true on the synced-node path");
+    assert!(
+        caps.owns_name,
+        "explorer-owned name must be owns_name=true on the synced-node path"
+    );
     assert!(!caps.has_owner_coin, "no node-synced owner coin exists");
-    for cap in [&caps.can_update, &caps.can_transfer, &caps.can_renew, &caps.can_revoke] {
-        assert!(!cap.allowed, "spend action must be locked without a synced owner coin");
+    for cap in [
+        &caps.can_update,
+        &caps.can_transfer,
+        &caps.can_renew,
+        &caps.can_revoke,
+    ] {
         assert!(
-            cap.reason.as_deref().unwrap_or("").contains("not synced locally"),
+            !cap.allowed,
+            "spend action must be locked without a synced owner coin"
+        );
+        assert!(
+            cap.reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("not synced locally"),
             "reason should mention not synced locally, got {:?}",
             cap.reason
         );
@@ -1629,15 +1798,25 @@ async fn capabilities_reveal_phase_with_unspent_bid_coin_allows_reveal() {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
         set_node_rpc_url(&conn, &server.url());
-        seed_bid_commitment_and_coin(&conn, &id, "revealtest", &"aa".repeat(32), crate::noncustodial::sync::COV_BID);
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "revealtest",
+            &"aa".repeat(32),
+            crate::noncustodial::sync::COV_BID,
+        );
         id
     };
     let app = mock_app_with(state);
-    let caps = names::get_name_action_capabilities(app.state(), "revealtest".into(), Some(profile_id))
-        .await
-        .expect("capabilities should resolve");
+    let caps =
+        names::get_name_action_capabilities(app.state(), "revealtest".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve");
 
-    assert!(!caps.has_reveal_coin, "no REVEAL coin should exist before revealing");
+    assert!(
+        !caps.has_reveal_coin,
+        "no REVEAL coin should exist before revealing"
+    );
     assert!(caps.has_bid_coin, "the unspent BID coin should be visible");
     assert!(
         caps.can_reveal.allowed,
@@ -1660,13 +1839,23 @@ async fn capabilities_reveal_phase_after_reveal_disallows_reveal_again() {
         let id = insert_valid_profile(&conn, "regtest");
         set_node_rpc_url(&conn, &server.url());
         // Only a COV_REVEAL coin — the BID coin was already spent by a reveal.
-        seed_bid_commitment_and_coin(&conn, &id, "alreadyrevealed", &"bb".repeat(32), crate::noncustodial::sync::COV_REVEAL);
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "alreadyrevealed",
+            &"bb".repeat(32),
+            crate::noncustodial::sync::COV_REVEAL,
+        );
         id
     };
     let app = mock_app_with(state);
-    let caps = names::get_name_action_capabilities(app.state(), "alreadyrevealed".into(), Some(profile_id))
-        .await
-        .expect("capabilities should resolve");
+    let caps = names::get_name_action_capabilities(
+        app.state(),
+        "alreadyrevealed".into(),
+        Some(profile_id),
+    )
+    .await
+    .expect("capabilities should resolve");
 
     assert!(caps.has_reveal_coin, "the REVEAL coin should be visible");
     assert!(!caps.has_bid_coin, "the BID coin was already spent");
@@ -1688,16 +1877,26 @@ async fn capabilities_closed_loser_with_reveal_coin_allows_redeem() {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
         set_node_rpc_url(&conn, &server.url());
-        seed_bid_commitment_and_coin(&conn, &id, "lostauction", &"cc".repeat(32), crate::noncustodial::sync::COV_REVEAL);
+        seed_bid_commitment_and_coin(
+            &conn,
+            &id,
+            "lostauction",
+            &"cc".repeat(32),
+            crate::noncustodial::sync::COV_REVEAL,
+        );
         id
     };
     let app = mock_app_with(state);
-    let caps = names::get_name_action_capabilities(app.state(), "lostauction".into(), Some(profile_id))
-        .await
-        .expect("capabilities should resolve");
+    let caps =
+        names::get_name_action_capabilities(app.state(), "lostauction".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve");
 
     assert!(caps.has_reveal_coin);
-    assert!(!caps.owns_name, "a losing bid must not be classified as owning the name");
+    assert!(
+        !caps.owns_name,
+        "a losing bid must not be classified as owning the name"
+    );
     assert!(
         caps.can_redeem.allowed,
         "redeem must be allowed for a losing reveal coin, got reason: {:?}",
@@ -1709,11 +1908,17 @@ async fn capabilities_closed_loser_with_reveal_coin_allows_redeem() {
 async fn test_fetch_name_state_rpc_error() {
     let mut server = mockito::Server::new_async().await;
     // Return an RPC error envelope
-    let _m = server.mock("POST", "/")
+    let _m = server
+        .mock("POST", "/")
         .with_body(r#"{"result":null,"error":{"message":"Name not found.","code":-1},"id":1}"#)
-        .create_async().await;
+        .create_async()
+        .await;
 
-    let client = crate::noncustodial::rpc::NodeRpcClient::new(&server.url(), "", crate::noncustodial::rpc::ChainSource::LocalNode);
+    let client = crate::noncustodial::rpc::NodeRpcClient::new(
+        &server.url(),
+        "",
+        crate::noncustodial::rpc::ChainSource::LocalNode,
+    );
     let result = names::fetch_name_state(&client, "nonexistent").await;
     assert!(result.is_err());
 }
@@ -1752,8 +1957,24 @@ async fn reveal_selects_bid_coin_by_name_hash_on_shared_address() {
         let addr = first_derived_address(&conn, &id);
         let cov_b = covenant_json_for("nameb", crate::noncustodial::sync::COV_BID, "BID");
         let cov_a = covenant_json_for("namea", crate::noncustodial::sync::COV_BID, "BID");
-        seed_covenant_coin(&conn, &id, &txid_b, &addr, crate::noncustodial::sync::COV_BID, 2000, Some(&cov_b));
-        seed_covenant_coin(&conn, &id, &txid_a, &addr, crate::noncustodial::sync::COV_BID, 2000, Some(&cov_a));
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &txid_b,
+            &addr,
+            crate::noncustodial::sync::COV_BID,
+            2000,
+            Some(&cov_b),
+        );
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &txid_a,
+            &addr,
+            crate::noncustodial::sync::COV_BID,
+            2000,
+            Some(&cov_a),
+        );
         seed_bid_commitment(&conn, &id, "namea", &addr);
     }
     let app = mock_app_with(state);
@@ -1787,8 +2008,24 @@ async fn redeem_selects_reveal_coin_by_name_hash_on_shared_address() {
         let addr = first_derived_address(&conn, &id);
         let cov_b = covenant_json_for("nameb", crate::noncustodial::sync::COV_REVEAL, "REVEAL");
         let cov_a = covenant_json_for("namea", crate::noncustodial::sync::COV_REVEAL, "REVEAL");
-        seed_covenant_coin(&conn, &id, &txid_b, &addr, crate::noncustodial::sync::COV_REVEAL, 1000, Some(&cov_b));
-        seed_covenant_coin(&conn, &id, &txid_a, &addr, crate::noncustodial::sync::COV_REVEAL, 1000, Some(&cov_a));
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &txid_b,
+            &addr,
+            crate::noncustodial::sync::COV_REVEAL,
+            1000,
+            Some(&cov_b),
+        );
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &txid_a,
+            &addr,
+            crate::noncustodial::sync::COV_REVEAL,
+            1000,
+            Some(&cov_a),
+        );
         seed_bid_commitment(&conn, &id, "namea", &addr);
     }
     let app = mock_app_with(state);
@@ -1819,14 +2056,28 @@ async fn reveal_errors_when_no_bid_coin_matches_name_hash() {
         set_node_rpc_url(&conn, &server.url());
         let addr = first_derived_address(&conn, &id);
         let cov_b = covenant_json_for("nameb", crate::noncustodial::sync::COV_BID, "BID");
-        seed_covenant_coin(&conn, &id, &"ee".repeat(32), &addr, crate::noncustodial::sync::COV_BID, 2000, Some(&cov_b));
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &"ee".repeat(32),
+            &addr,
+            crate::noncustodial::sync::COV_BID,
+            2000,
+            Some(&cov_b),
+        );
         seed_bid_commitment(&conn, &id, "namea", &addr);
     }
     let app = mock_app_with(state);
     let result = names::build_reveal_draft(app.state(), "namea".into(), None).await;
-    assert!(result.is_err(), "reveal must not spend another name's bid coin");
+    assert!(
+        result.is_err(),
+        "reveal must not spend another name's bid coin"
+    );
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("namea"), "error should name the name, got: {msg}");
+    assert!(
+        msg.contains("namea"),
+        "error should name the name, got: {msg}"
+    );
 }
 
 /// Two BID coins for the SAME name at one address (double bid): ambiguous —
@@ -1842,8 +2093,24 @@ async fn reveal_errors_on_ambiguous_bid_coins_for_same_name() {
         set_node_rpc_url(&conn, &server.url());
         let addr = first_derived_address(&conn, &id);
         let cov_a = covenant_json_for("namea", crate::noncustodial::sync::COV_BID, "BID");
-        seed_covenant_coin(&conn, &id, &"11".repeat(32), &addr, crate::noncustodial::sync::COV_BID, 2000, Some(&cov_a));
-        seed_covenant_coin(&conn, &id, &"22".repeat(32), &addr, crate::noncustodial::sync::COV_BID, 3000, Some(&cov_a));
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &"11".repeat(32),
+            &addr,
+            crate::noncustodial::sync::COV_BID,
+            2000,
+            Some(&cov_a),
+        );
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &"22".repeat(32),
+            &addr,
+            crate::noncustodial::sync::COV_BID,
+            3000,
+            Some(&cov_a),
+        );
         seed_bid_commitment(&conn, &id, "namea", &addr);
     }
     let app = mock_app_with(state);
@@ -1895,7 +2162,10 @@ async fn new_bid_rotates_to_fresh_receive_address() {
         "bid output must rotate off the used receive[0] address"
     );
     assert_eq!(branch, 0, "bid address stays on the receive branch");
-    assert_eq!(child_index, 1, "next unused receive index after used index 0");
+    assert_eq!(
+        child_index, 1,
+        "next unused receive index after used index 0"
+    );
     // Registered for the sync scan + the coin-lookup JOIN.
     let registered: i64 = conn
         .query_row(
@@ -1905,7 +2175,10 @@ async fn new_bid_rotates_to_fresh_receive_address() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(registered, 1, "rotated bid address must be in derived_addresses");
+    assert_eq!(
+        registered, 1,
+        "rotated bid address must be in derived_addresses"
+    );
 }
 
 /// `build_bid_draft` persists an estimate of the reveal-window close height
@@ -1982,7 +2255,15 @@ async fn reveal_works_for_bid_on_rotated_address() {
         )
         .unwrap();
         let cov_a = covenant_json_for("namea", crate::noncustodial::sync::COV_BID, "BID");
-        seed_covenant_coin(&conn, &id, &txid, &addr1, crate::noncustodial::sync::COV_BID, 2000, Some(&cov_a));
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &txid,
+            &addr1,
+            crate::noncustodial::sync::COV_BID,
+            2000,
+            Some(&cov_a),
+        );
         let nh = hex::encode(crate::noncustodial::names::hash_name("namea").unwrap());
         conn.execute(
             "INSERT INTO bid_commitments
@@ -1998,7 +2279,10 @@ async fn reveal_works_for_bid_on_rotated_address() {
         .await
         .expect("reveal for a rotated-address bid should build");
     let inputs = draft_signing_inputs(&app, &draft.id);
-    assert!(inputs.contains(&txid), "must spend the rotated bid coin; inputs: {inputs}");
+    assert!(
+        inputs.contains(&txid),
+        "must spend the rotated bid coin; inputs: {inputs}"
+    );
     assert!(
         inputs.contains("\"child_index\":1"),
         "name input must carry the rotated derivation index; inputs: {inputs}"
@@ -2034,15 +2318,10 @@ async fn covenant_and_plain_send_drafts_respect_reservations_mutually() {
 
     // A plain send now has nothing left to fund itself with — the same
     // liquid coin table backs both draft kinds.
-    let err = crate::commands::tx::build_send_hns_draft(
-        app.state(),
-        to.clone(),
-        500_000,
-        Some(1),
-        None,
-    )
-    .await
-    .expect_err("plain send must not see the coin reserved by the open draft");
+    let err =
+        crate::commands::tx::build_send_hns_draft(app.state(), to.clone(), 500_000, Some(1), None)
+            .await
+            .expect_err("plain send must not see the coin reserved by the open draft");
     assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
 
     // Deleting the covenant draft frees the coin for the plain send.
@@ -2139,7 +2418,10 @@ async fn build_bid_draft_rejects_second_bid_when_a_draft_is_already_pending() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(draft_count, 1, "rejected retry must not persist a second draft");
+    assert_eq!(
+        draft_count, 1,
+        "rejected retry must not persist a second draft"
+    );
     let commitment_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM bid_commitments WHERE wallet_profile_id = ?1 AND name = 'duplicatename'",
@@ -2147,7 +2429,10 @@ async fn build_bid_draft_rejects_second_bid_when_a_draft_is_already_pending() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(commitment_count, 1, "rejected retry must not persist a second commitment");
+    assert_eq!(
+        commitment_count, 1,
+        "rejected retry must not persist a second commitment"
+    );
 }
 
 /// Even without any local draft/commitment history, an unspent COV_BID coin
@@ -2295,7 +2580,15 @@ async fn build_reveal_draft_persists_reveal_txid_on_its_commitment() {
         set_node_rpc_url(&conn, &server.url());
         let addr = first_derived_address(&conn, &id);
         let cov_a = covenant_json_for("namea", crate::noncustodial::sync::COV_BID, "BID");
-        seed_covenant_coin(&conn, &id, &"aa".repeat(32), &addr, crate::noncustodial::sync::COV_BID, 2000, Some(&cov_a));
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &"aa".repeat(32),
+            &addr,
+            crate::noncustodial::sync::COV_BID,
+            2000,
+            Some(&cov_a),
+        );
         seed_bid_commitment(&conn, &id, "namea", &addr);
         id
     };
@@ -2339,16 +2632,37 @@ fn insert_bid_commitment_duplicate_errors_instead_of_silently_dropping() {
     let conn = create_full_test_db();
     let profile_id = insert_valid_profile(&conn, "regtest");
     db::queries::insert_bid_commitment(
-        &conn, &profile_id, "samevaluename", "aabb", "rs1qbid", 0, 1,
-        1000, 2000, "nonce1", "blind1",
+        &conn,
+        &profile_id,
+        "samevaluename",
+        "aabb",
+        "rs1qbid",
+        0,
+        1,
+        1000,
+        2000,
+        "nonce1",
+        "blind1",
     )
     .unwrap();
 
     let result = db::queries::insert_bid_commitment(
-        &conn, &profile_id, "samevaluename", "aabb", "rs1qbid", 0, 1,
-        1000, 2000, "nonce1", "blind1",
+        &conn,
+        &profile_id,
+        "samevaluename",
+        "aabb",
+        "rs1qbid",
+        0,
+        1,
+        1000,
+        2000,
+        "nonce1",
+        "blind1",
     );
-    assert!(result.is_err(), "duplicate (name, blind) commitment must error, not silently drop");
+    assert!(
+        result.is_err(),
+        "duplicate (name, blind) commitment must error, not silently drop"
+    );
 
     let count: i64 = conn
         .query_row(
@@ -2357,7 +2671,10 @@ fn insert_bid_commitment_duplicate_errors_instead_of_silently_dropping() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(count, 1, "the original commitment must survive the rejected duplicate");
+    assert_eq!(
+        count, 1,
+        "the original commitment must survive the rejected duplicate"
+    );
 }
 
 // ============================================================================
@@ -2407,7 +2724,10 @@ async fn build_open_draft_rejects_second_open_when_a_draft_is_already_pending() 
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(draft_count, 1, "rejected retry must not persist a second draft");
+    assert_eq!(
+        draft_count, 1,
+        "rejected retry must not persist a second draft"
+    );
 }
 
 /// Even without any local draft history, an unspent COV_OPEN coin for the
@@ -2503,13 +2823,21 @@ async fn capabilities_reflect_pending_open_disables_can_open_and_waits_for_biddi
         id
     };
     let app = mock_app_with(state);
-    let caps = names::get_name_action_capabilities(app.state(), "testname".into(), Some(profile_id))
-        .await
-        .expect("capabilities should resolve via the node path");
+    let caps =
+        names::get_name_action_capabilities(app.state(), "testname".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve via the node path");
 
-    assert!(!caps.can_open.allowed, "can_open must be disallowed while an open is pending");
     assert!(
-        caps.can_open.reason.as_deref().unwrap_or("").contains("already opening"),
+        !caps.can_open.allowed,
+        "can_open must be disallowed while an open is pending"
+    );
+    assert!(
+        caps.can_open
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("already opening"),
         "reason should mention the pending open, got: {:?}",
         caps.can_open.reason
     );

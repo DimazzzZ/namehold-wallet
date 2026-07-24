@@ -17,7 +17,10 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+            hsd_child: std::sync::Mutex::new(None),
+            sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::commands::sync::SyncStatus::default(),
+            )),
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -30,7 +33,8 @@ fn seeded_conn(tlds: &[&str], base_url: &str) -> rusqlite::Connection {
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     for t in tlds {
-        conn.execute("INSERT INTO assets (tld) VALUES (?1)", params![t]).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES (?1)", params![t])
+            .unwrap();
     }
     db::queries::set_setting(&conn, "namebase_cookie", "testcookie").unwrap();
     db::queries::set_setting(&conn, "namebase_base_url", base_url).unwrap();
@@ -51,9 +55,14 @@ async fn compare_buckets_inventory_against_namebase() {
     let conn = seeded_conn(&["a", "b", "c"], &server.url());
     let app = app_with(conn);
 
-    let r = compare_inventory_with_provider(app.state()).await.expect("compare ok");
+    let r = compare_inventory_with_provider(app.state())
+        .await
+        .expect("compare ok");
     assert_eq!(r.provider_label, "Namebase");
-    assert_eq!(r.matched_transferable, vec!["a".to_string(), "b".to_string()]); // still at Namebase
+    assert_eq!(
+        r.matched_transferable,
+        vec!["a".to_string(), "b".to_string()]
+    ); // still at Namebase
     assert_eq!(r.missing_at_provider, vec!["c".to_string()]); // left Namebase / not there
     assert_eq!(r.extra_at_provider, vec!["d".to_string()]); // on Namebase, not in inventory
     m.assert_async().await;

@@ -15,7 +15,10 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+            hsd_child: std::sync::Mutex::new(None),
+            sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::commands::sync::SyncStatus::default(),
+            )),
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -197,7 +200,10 @@ fn pick_hsd_path_finds_the_first_existing_candidate() {
     );
 
     // Nothing exists and no override → None (caller falls back to which/PATH).
-    assert_eq!(pick_hsd_path(None, &["/no/such/path/hsd".to_string()]), None);
+    assert_eq!(
+        pick_hsd_path(None, &["/no/such/path/hsd".to_string()]),
+        None
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -216,10 +222,17 @@ fn node_start_error_flags_the_index_mismatch_with_guidance() {
     )
     .unwrap();
 
-    let (msg, mismatch) = node_start_error(&dir.to_string_lossy()).expect("should surface an error");
-    assert!(mismatch, "index mismatch must be flagged so the UI offers a re-sync");
+    let (msg, mismatch) =
+        node_start_error(&dir.to_string_lossy()).expect("should surface an error");
+    assert!(
+        mismatch,
+        "index mismatch must be flagged so the UI offers a re-sync"
+    );
     assert!(msg.contains("Re-sync"), "actionable guidance: {msg}");
-    assert!(msg.contains("Cannot retroactively enable"), "includes the log tail: {msg}");
+    assert!(
+        msg.contains("Cannot retroactively enable"),
+        "includes the log tail: {msg}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -230,7 +243,11 @@ fn node_start_error_is_none_without_a_failing_log() {
     // No log at all → None.
     assert!(node_start_error(&dir.to_string_lossy()).is_none());
     // A log with no error markers → None (don't cry wolf on a clean start).
-    std::fs::write(dir.join("namehold-hsd.log"), "[info] (chain) Chain is loading.\n").unwrap();
+    std::fs::write(
+        dir.join("namehold-hsd.log"),
+        "[info] (chain) Chain is loading.\n",
+    )
+    .unwrap();
     assert!(node_start_error(&dir.to_string_lossy()).is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -276,7 +293,10 @@ async fn start_hsd_refuses_hsd_below_minimum_version() {
     let msg = err.to_string();
     assert!(msg.contains("7.9.9"), "names the found version: {msg}");
     assert!(msg.contains("8.0.0"), "names the minimum version: {msg}");
-    assert!(msg.to_lowercase().contains("upgrade"), "gives actionable guidance: {msg}");
+    assert!(
+        msg.to_lowercase().contains("upgrade"),
+        "gives actionable guidance: {msg}"
+    );
 
     // The gate must trip before `cmd.spawn()` — no child left behind.
     assert!(app.state::<AppState>().hsd_child.lock().unwrap().is_none());
@@ -291,6 +311,12 @@ fn chain_paths_are_network_scoped() {
     assert!(main.iter().any(|p| p.ends_with("blocks")));
     assert!(main.iter().any(|p| p.ends_with("chain")));
     assert!(main.iter().any(|p| p.ends_with("tree")));
-    assert_eq!(chain_paths_for_network("/data", Network::Regtest), vec![std::path::PathBuf::from("/data/regtest")]);
-    assert_eq!(chain_paths_for_network("/data", Network::Testnet), vec![std::path::PathBuf::from("/data/testnet")]);
+    assert_eq!(
+        chain_paths_for_network("/data", Network::Regtest),
+        vec![std::path::PathBuf::from("/data/regtest")]
+    );
+    assert_eq!(
+        chain_paths_for_network("/data", Network::Testnet),
+        vec![std::path::PathBuf::from("/data/testnet")]
+    );
 }

@@ -91,7 +91,9 @@ fn set_cookie_is_expired(attrs: &str) -> bool {
             .strip_prefix("Expires=")
             .or_else(|| attr.strip_prefix("expires="))
         {
-            if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(v.trim(), "%a, %d %b %Y %H:%M:%S GMT") {
+            if let Ok(dt) =
+                chrono::NaiveDateTime::parse_from_str(v.trim(), "%a, %d %b %Y %H:%M:%S GMT")
+            {
                 if dt <= chrono::Utc::now().naive_utc() {
                     return true;
                 }
@@ -122,7 +124,10 @@ fn apply_set_cookie(jar: &mut Vec<CookiePair>, raw: &str) {
     }
     match jar.iter_mut().find(|p| p.name == name) {
         Some(existing) => existing.value = Some(value),
-        None => jar.push(CookiePair { name, value: Some(value) }),
+        None => jar.push(CookiePair {
+            name,
+            value: Some(value),
+        }),
     }
 }
 
@@ -182,7 +187,9 @@ impl NamebaseClient {
         // Recover from a poisoned mutex instead of panicking: a panic elsewhere
         // while holding the lock shouldn't take the whole cookie jar down with
         // it, and the jar's contents are still perfectly valid to read/write.
-        self.cookie.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.cookie
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Merge every `Set-Cookie` header on a response into the jar.
@@ -209,7 +216,11 @@ impl NamebaseClient {
         Ok(resp)
     }
 
-    async fn send_post(&self, path: &str, body: &serde_json::Value) -> Result<reqwest::Response, AppError> {
+    async fn send_post(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, AppError> {
         let url = format!("{}{}", self.base_url, path);
         let cookie = self.current_cookie();
         let resp = self
@@ -227,7 +238,9 @@ impl NamebaseClient {
 
     /// Read the body of a successful-status response and report whether it
     /// looks like a session-expired HTML page rather than JSON.
-    async fn read_body_and_check_expired(resp: reqwest::Response) -> Result<(bool, String), AppError> {
+    async fn read_body_and_check_expired(
+        resp: reqwest::Response,
+    ) -> Result<(bool, String), AppError> {
         let content_type = resp
             .headers()
             .get(CONTENT_TYPE)
@@ -241,10 +254,15 @@ impl NamebaseClient {
     /// Turn a GET response into JSON, or a typed session-expired error when the
     /// response looks like Namebase's HTML login page (see
     /// `looks_like_session_expired`) instead of a raw JSON-parse error.
-    async fn json_or_session_expired(resp: reqwest::Response) -> Result<serde_json::Value, AppError> {
+    async fn json_or_session_expired(
+        resp: reqwest::Response,
+    ) -> Result<serde_json::Value, AppError> {
         let status = resp.status();
         if !status.is_success() {
-            return Err(AppError::Other(format!("Namebase returned status {}", status)));
+            return Err(AppError::Other(format!(
+                "Namebase returned status {}",
+                status
+            )));
         }
         let (expired, body) = Self::read_body_and_check_expired(resp).await?;
         if expired {
@@ -304,7 +322,10 @@ impl NamebaseClient {
             let body: serde_json::Value = resp.json().await.unwrap_or_default();
             let fallback = format!("status {}", status);
             let msg = body["error"].as_str().unwrap_or(&fallback);
-            return Err(AppError::Other(format!("Transfer failed for {}: {}", name, msg)));
+            return Err(AppError::Other(format!(
+                "Transfer failed for {}: {}",
+                name, msg
+            )));
         }
         Ok(())
     }

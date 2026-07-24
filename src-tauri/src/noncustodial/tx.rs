@@ -368,28 +368,26 @@ impl Transaction {
             ZERO_HASH
         };
 
-        let outputs = if base != sighash::SINGLE
-            && base != sighash::SINGLEREVERSE
-            && base != sighash::NONE
-        {
-            self.hash_outputs()
-        } else if base == sighash::SINGLE {
-            if index < self.outputs.len() {
-                blake2b256(&self.outputs[index].encode())
+        let outputs =
+            if base != sighash::SINGLE && base != sighash::SINGLEREVERSE && base != sighash::NONE {
+                self.hash_outputs()
+            } else if base == sighash::SINGLE {
+                if index < self.outputs.len() {
+                    blake2b256(&self.outputs[index].encode())
+                } else {
+                    ZERO_HASH
+                }
+            } else if base == sighash::SINGLEREVERSE {
+                if index < self.outputs.len() {
+                    let i = self.outputs.len() - 1 - index;
+                    blake2b256(&self.outputs[i].encode())
+                } else {
+                    ZERO_HASH
+                }
             } else {
+                // NONE
                 ZERO_HASH
-            }
-        } else if base == sighash::SINGLEREVERSE {
-            if index < self.outputs.len() {
-                let i = self.outputs.len() - 1 - index;
-                blake2b256(&self.outputs[i].encode())
-            } else {
-                ZERO_HASH
-            }
-        } else {
-            // NONE
-            ZERO_HASH
-        };
+            };
 
         // Per-input fields: zeroed under NOINPUT (empty Input has
         // hash=ZERO_HASH, index=0, sequence=0).
@@ -510,10 +508,7 @@ impl Transaction {
 
 /// Convert a validated Handshake bech32 address into an `OutputAddress`
 /// (witness version + program), verifying the HRP matches `network`.
-pub fn output_address_from_string(
-    network: Network,
-    addr: &str,
-) -> Result<OutputAddress, AppError> {
+pub fn output_address_from_string(network: Network, addr: &str) -> Result<OutputAddress, AppError> {
     let (version, program) = address::decode(network, addr)?;
     Ok(OutputAddress {
         version,
@@ -609,10 +604,16 @@ mod tests {
         // via hashOutputs).
         let mk = |covenant: Covenant| {
             let mut tx = Transaction::new();
-            tx.inputs.push(Input::new(Outpoint { hash: [0x22; 32], index: 0 }));
+            tx.inputs.push(Input::new(Outpoint {
+                hash: [0x22; 32],
+                index: 0,
+            }));
             tx.outputs.push(Output {
                 value: 1000,
-                address: OutputAddress { version: 0, hash: vec![0xbb; 20] },
+                address: OutputAddress {
+                    version: 0,
+                    hash: vec![0xbb; 20],
+                },
                 covenant,
             });
             tx.signature_hash(0, &p2wpkh_script_code(&[0x11; 20]), 1000, sighash::ALL)
@@ -666,15 +667,24 @@ mod tests {
     fn out(value: u64, hash_byte: u8, covenant: Covenant) -> Output {
         Output {
             value,
-            address: OutputAddress { version: 0, hash: vec![hash_byte; 20] },
+            address: OutputAddress {
+                version: 0,
+                hash: vec![hash_byte; 20],
+            },
             covenant,
         }
     }
 
     fn two_in_two_out() -> Transaction {
         let mut tx = Transaction::new();
-        tx.inputs.push(Input::new(Outpoint { hash: [0x11; 32], index: 0 }));
-        tx.inputs.push(Input::new(Outpoint { hash: [0x22; 32], index: 1 }));
+        tx.inputs.push(Input::new(Outpoint {
+            hash: [0x11; 32],
+            index: 0,
+        }));
+        tx.inputs.push(Input::new(Outpoint {
+            hash: [0x22; 32],
+            index: 1,
+        }));
         tx.outputs.push(out(500_000, 0xaa, Covenant::default()));
         tx.outputs.push(out(499_000, 0xbb, Covenant::default()));
         tx
@@ -690,10 +700,16 @@ mod tests {
         let txid_before = tx.txid();
         let unsigned_len = tx.serialize().len();
 
-        tx.sign_p2wpkh_input(0, &sk, &h160, 1_000_000, sighash::ALL).unwrap();
-        tx.sign_p2wpkh_input(1, &sk, &h160, 50_000, sighash::ALL).unwrap();
+        tx.sign_p2wpkh_input(0, &sk, &h160, 1_000_000, sighash::ALL)
+            .unwrap();
+        tx.sign_p2wpkh_input(1, &sk, &h160, 50_000, sighash::ALL)
+            .unwrap();
 
-        assert_eq!(tx.txid(), txid_before, "txid must not depend on the witness");
+        assert_eq!(
+            tx.txid(),
+            txid_before,
+            "txid must not depend on the witness"
+        );
         assert!(
             tx.serialize().len() > unsigned_len,
             "signed serialization must include witness bytes"
@@ -710,7 +726,9 @@ mod tests {
         let (_sk, h160) = test_key();
         let tx = two_in_two_out();
         let code = p2wpkh_script_code(&h160);
-        let sh0 = tx.signature_hash(0, &code, 1_000_000, sighash::ALL).unwrap();
+        let sh0 = tx
+            .signature_hash(0, &code, 1_000_000, sighash::ALL)
+            .unwrap();
         let sh1 = tx.signature_hash(1, &code, 50_000, sighash::ALL).unwrap();
         // Different prevout/sequence per index => different sighash.
         assert_ne!(sh0, sh1);
@@ -726,22 +744,39 @@ mod tests {
         let (_sk, h160) = test_key();
         let code = p2wpkh_script_code(&h160);
         let base = two_in_two_out();
-        let sh = base.signature_hash(0, &code, 1_000_000, sighash::ALL).unwrap();
+        let sh = base
+            .signature_hash(0, &code, 1_000_000, sighash::ALL)
+            .unwrap();
 
         // Tamper: recipient value.
         let mut t1 = base.clone();
         t1.outputs[0].value += 1;
-        assert_ne!(sh, t1.signature_hash(0, &code, 1_000_000, sighash::ALL).unwrap());
+        assert_ne!(
+            sh,
+            t1.signature_hash(0, &code, 1_000_000, sighash::ALL)
+                .unwrap()
+        );
 
         // Tamper: recipient address (redirect funds).
         let mut t2 = base.clone();
         t2.outputs[0].address.hash = vec![0xcc; 20];
-        assert_ne!(sh, t2.signature_hash(0, &code, 1_000_000, sighash::ALL).unwrap());
+        assert_ne!(
+            sh,
+            t2.signature_hash(0, &code, 1_000_000, sighash::ALL)
+                .unwrap()
+        );
 
         // Tamper: change output's covenant.
         let mut t3 = base.clone();
-        t3.outputs[1].covenant = Covenant { covenant_type: 7, items: vec![vec![1u8; 32]] };
-        assert_ne!(sh, t3.signature_hash(0, &code, 1_000_000, sighash::ALL).unwrap());
+        t3.outputs[1].covenant = Covenant {
+            covenant_type: 7,
+            items: vec![vec![1u8; 32]],
+        };
+        assert_ne!(
+            sh,
+            t3.signature_hash(0, &code, 1_000_000, sighash::ALL)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -751,8 +786,10 @@ mod tests {
         let (sk, h160) = test_key();
         let mut tx = two_in_two_out();
         tx.locktime = 42;
-        tx.sign_p2wpkh_input(0, &sk, &h160, 1_000_000, sighash::ALL).unwrap();
-        tx.sign_p2wpkh_input(1, &sk, &h160, 50_000, sighash::ALL).unwrap();
+        tx.sign_p2wpkh_input(0, &sk, &h160, 1_000_000, sighash::ALL)
+            .unwrap();
+        tx.sign_p2wpkh_input(1, &sk, &h160, 50_000, sighash::ALL)
+            .unwrap();
         let bytes = tx.serialize();
 
         let mut r = Reader::new(&bytes);
@@ -783,11 +820,19 @@ mod tests {
             outputs.push(Output {
                 value,
                 address: OutputAddress { version, hash },
-                covenant: Covenant { covenant_type: ctype, items },
+                covenant: Covenant {
+                    covenant_type: ctype,
+                    items,
+                },
             });
         }
         let locktime = r.read_u32();
-        let mut rebuilt = Transaction { version, inputs: Vec::new(), outputs, locktime };
+        let mut rebuilt = Transaction {
+            version,
+            inputs: Vec::new(),
+            outputs,
+            locktime,
+        };
         for (i, (prevout, sequence)) in inputs.into_iter().enumerate() {
             let mut inp = Input::new(prevout);
             inp.sequence = sequence;
@@ -801,7 +846,11 @@ mod tests {
             let _ = i;
         }
         assert!(r.at_end(), "parser must consume the entire buffer");
-        assert_eq!(rebuilt.serialize(), bytes, "round-trip must be byte-identical");
+        assert_eq!(
+            rebuilt.serialize(),
+            bytes,
+            "round-trip must be byte-identical"
+        );
         assert_eq!(rebuilt.txid(), tx.txid());
     }
 
@@ -840,7 +889,8 @@ mod tests {
                 0xff => self.read_u64(),
                 0xfe => self.read_u32() as u64,
                 0xfd => {
-                    let v = u16::from_le_bytes(self.buf[self.pos..self.pos + 2].try_into().unwrap());
+                    let v =
+                        u16::from_le_bytes(self.buf[self.pos..self.pos + 2].try_into().unwrap());
                     self.pos += 2;
                     v as u64
                 }

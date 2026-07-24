@@ -13,14 +13,12 @@ use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 use crate::commands::tx::{
-    broadcast_tx_draft, build_send_hns_draft, delete_tx_draft, estimate_tx_draft_fee,
-    get_wallet_balances, get_write_capability, list_tx_drafts, refresh_tx_confirmations,
-    release_tx_draft_reservation, sign_tx_draft, sync_wallet_state,
+    broadcast_tx_draft, build_send_hns_draft, delete_tx_draft, get_write_capability,
+    refresh_tx_confirmations, release_tx_draft_reservation, sign_tx_draft, sync_wallet_state,
 };
 use crate::db;
 use crate::error::AppError;
 use crate::noncustodial::address;
-use crate::noncustodial::derivation;
 use crate::noncustodial::hd::{self, ExtendedPrivKey, ExtendedPubKey};
 use crate::noncustodial::network::Network;
 use crate::noncustodial::session::SignerSession;
@@ -58,7 +56,8 @@ fn leaf00() -> (String, String, String) {
 
 fn derivation_derive(s: &[u8]) -> (secp256k1::SecretKey, [u8; 33], String) {
     // derive_address(network, seed, account, branch, index) -> (sk, pubkey, addr)
-    let (sk, pk, addr) = crate::noncustodial::hd::derive_address(Network::Main, s, 0, 0, 0).unwrap();
+    let (sk, pk, addr) =
+        crate::noncustodial::hd::derive_address(Network::Main, s, 0, 0, 0).unwrap();
     (sk, pk, addr)
 }
 
@@ -140,7 +139,10 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+            hsd_child: std::sync::Mutex::new(None),
+            sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::commands::sync::SyncStatus::default(),
+            )),
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -148,8 +150,12 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
 
 fn unlock(app: &tauri::App<tauri::test::MockRuntime>, profile_id: &str) {
     let state = app.state::<AppState>();
-    *state.signer.lock().unwrap() =
-        Some(SignerSession::unlock(profile_id.to_string(), Network::Main, master(), 600_000));
+    *state.signer.lock().unwrap() = Some(SignerSession::unlock(
+        profile_id.to_string(),
+        Network::Main,
+        master(),
+        600_000,
+    ));
 }
 
 fn recv_addr() -> String {
@@ -157,10 +163,7 @@ fn recv_addr() -> String {
 }
 
 /// Fetch the persisted draft row for assertions about signed hex / status.
-fn draft_row(
-    app: &tauri::App<tauri::test::MockRuntime>,
-    id: &str,
-) -> db::queries::TxDraftRow {
+fn draft_row(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> db::queries::TxDraftRow {
     let state = app.state::<AppState>();
     let c = state.db.lock().unwrap();
     db::queries::get_tx_draft(&c, id).unwrap().unwrap()
@@ -206,11 +209,16 @@ async fn full_lifecycle_build_sign_broadcast_succeeds() {
 
     // 2. Sign — requires unlock; materializes the signed hex + a real txid.
     unlock(&app, PROFILE);
-    sign_tx_draft(app.state(), draft_id.clone()).await.expect("sign");
+    sign_tx_draft(app.state(), draft_id.clone())
+        .await
+        .expect("sign");
     {
         let row = draft_row(&app, &draft_id);
         assert!(row.signed_tx_hex.is_some(), "draft must be signed");
-        assert!(summary_of(&row).txid.is_some(), "signed summary carries a txid");
+        assert!(
+            summary_of(&row).txid.is_some(),
+            "signed summary carries a txid"
+        );
     }
 
     // 3. Broadcast — sends to the mock node; status + node txid recorded.
@@ -257,7 +265,10 @@ async fn broadcast_failure_marks_draft_failed_and_errors() {
     // Critically: the draft is marked failed, never "broadcasted".
     let stored = draft_row(&app, &draft.id);
     assert_eq!(stored.status, "failed");
-    assert!(stored.signed_tx_hex.is_some(), "signed hex retained for inspection");
+    assert!(
+        stored.signed_tx_hex.is_some(),
+        "signed hex retained for inspection"
+    );
 }
 
 // --- confirmation tracking (broadcasted -> confirmed / dropped) ------------
@@ -288,7 +299,7 @@ async fn mock_node(
     let tx = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getrawtransaction".into()))
-        .with_body(getrawtx_body.to_string())
+        .with_body(getrawtx_body)
         .create_async()
         .await;
     (info, tx)
@@ -349,7 +360,10 @@ async fn refresh_marks_a_long_unfound_draft_dropped() {
 
     let row = draft_row(&app, "drf2");
     assert_eq!(row.status, "dropped");
-    assert!(row.error_message.is_some(), "dropped draft carries an explanation");
+    assert!(
+        row.error_message.is_some(),
+        "dropped draft carries an explanation"
+    );
 }
 
 #[tokio::test]
@@ -419,10 +433,23 @@ async fn refresh_reverts_a_reorged_confirmed_draft_to_broadcasted() {
     assert_eq!(res["checked"], serde_json::json!(1));
 
     let row = draft_row(&app, "drf5");
-    assert_eq!(row.status, "broadcasted", "un-mined confirmed draft must revert to broadcasted");
-    assert_eq!(row.confirmation_height, None, "height must be cleared on revert");
-    assert_eq!(row.txid.as_deref(), Some(DRAFT_TXID), "txid must survive the revert");
-    assert!(row.error_message.is_some(), "the revert should be explained");
+    assert_eq!(
+        row.status, "broadcasted",
+        "un-mined confirmed draft must revert to broadcasted"
+    );
+    assert_eq!(
+        row.confirmation_height, None,
+        "height must be cleared on revert"
+    );
+    assert_eq!(
+        row.txid.as_deref(),
+        Some(DRAFT_TXID),
+        "txid must survive the revert"
+    );
+    assert!(
+        row.error_message.is_some(),
+        "the revert should be explained"
+    );
 }
 
 #[tokio::test]
@@ -507,10 +534,17 @@ async fn refresh_does_not_repoll_a_deeply_buried_confirmed_draft() {
 
     let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
     assert_eq!(res["nodeReachable"], serde_json::json!(true));
-    assert_eq!(res["checked"], serde_json::json!(0), "deeply-buried draft must not even be listed");
+    assert_eq!(
+        res["checked"],
+        serde_json::json!(0),
+        "deeply-buried draft must not even be listed"
+    );
 
     let row = draft_row(&app, "drf6");
-    assert_eq!(row.status, "confirmed", "deeply-buried draft must stay confirmed, untouched");
+    assert_eq!(
+        row.status, "confirmed",
+        "deeply-buried draft must stay confirmed, untouched"
+    );
     assert_eq!(row.confirmation_height, Some(100));
 }
 
@@ -759,7 +793,9 @@ async fn remote_node_source_can_broadcast() {
         .await
         .expect("build");
     unlock(&app, PROFILE);
-    sign_tx_draft(app.state(), draft.id.clone()).await.expect("sign");
+    sign_tx_draft(app.state(), draft.id.clone())
+        .await
+        .expect("sign");
 
     let result = broadcast_tx_draft(app.state(), draft.id.clone())
         .await
@@ -789,7 +825,9 @@ async fn explorer_source_refuses_broadcast_before_any_rpc() {
         .await
         .expect("build");
     unlock(&app, PROFILE);
-    sign_tx_draft(app.state(), draft.id.clone()).await.expect("sign");
+    sign_tx_draft(app.state(), draft.id.clone())
+        .await
+        .expect("sign");
 
     let err = broadcast_tx_draft(app.state(), draft.id.clone())
         .await
@@ -850,7 +888,9 @@ async fn sync_wallet_state_fetches_coins_and_reports_reachable() {
 
 /// hsd `getblockchaininfo` body with the given (lowercase) verificationprogress.
 fn bi_body(progress: f64) -> String {
-    format!(r#"{{"result":{{"chain":"main","blocks":100,"verificationprogress":{progress}}},"error":null,"id":1}}"#)
+    format!(
+        r#"{{"result":{{"chain":"main","blocks":100,"verificationprogress":{progress}}},"error":null,"id":1}}"#
+    )
 }
 
 #[tokio::test]
@@ -870,7 +910,10 @@ async fn write_capability_blocks_while_node_syncing() {
     let cap = get_write_capability(app.state()).await.expect("cap");
     assert!(!cap.can_write, "syncing node must block writes");
     assert!(
-        cap.reason.unwrap_or_default().to_lowercase().contains("syncing"),
+        cap.reason
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("syncing"),
         "reason should mention syncing",
     );
 }
@@ -899,7 +942,10 @@ async fn write_capability_blocks_when_not_address_indexed() {
     let cap = get_write_capability(app.state()).await.expect("cap");
     assert!(!cap.can_write, "un-indexed node must block writes");
     assert!(
-        cap.reason.unwrap_or_default().to_lowercase().contains("address-index"),
+        cap.reason
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("address-index"),
         "reason should mention address indexing",
     );
 }
@@ -924,8 +970,15 @@ async fn write_capability_allows_when_synced_indexed_and_unlocked() {
     unlock(&app, PROFILE);
 
     let cap = get_write_capability(app.state()).await.expect("cap");
-    assert!(cap.can_write, "synced + indexed + unlocked must allow writes");
-    assert!(cap.reason.is_none(), "no blocking reason expected, got {:?}", cap.reason);
+    assert!(
+        cap.can_write,
+        "synced + indexed + unlocked must allow writes"
+    );
+    assert!(
+        cap.reason.is_none(),
+        "no blocking reason expected, got {:?}",
+        cap.reason
+    );
 }
 
 #[tokio::test]
@@ -976,7 +1029,10 @@ async fn second_build_cannot_claim_the_only_coin_already_reserved_by_the_first()
     let draft1 = build_send_hns_draft(app.state(), to.clone(), 500_000, Some(1), None)
         .await
         .expect("first build reserves the only coin");
-    assert_eq!(reserved_txids_for(&app, &draft1.id), vec![COIN_TXID.to_string()]);
+    assert_eq!(
+        reserved_txids_for(&app, &draft1.id),
+        vec![COIN_TXID.to_string()]
+    );
 
     // The coin is reserved by draft1 — a second build has nothing left to
     // select from and must fail, NOT silently reuse draft1's coin.
@@ -1032,14 +1088,19 @@ async fn deleting_a_draft_frees_its_coin_for_a_later_draft() {
     let state = app.state::<AppState>();
     {
         let conn = state.db.lock().unwrap();
-        assert!(db::queries::get_tx_draft(&conn, &draft1.id).unwrap().is_none());
+        assert!(db::queries::get_tx_draft(&conn, &draft1.id)
+            .unwrap()
+            .is_none());
     }
 
     // draft3 can now claim the freed coin.
     let draft3 = build_send_hns_draft(app.state(), to, 500_000, Some(1), None)
         .await
         .expect("draft3 reuses the coin draft1 released");
-    assert_eq!(reserved_txids_for(&app, &draft3.id), vec![COIN_TXID.to_string()]);
+    assert_eq!(
+        reserved_txids_for(&app, &draft3.id),
+        vec![COIN_TXID.to_string()]
+    );
 }
 
 #[tokio::test]
@@ -1061,7 +1122,9 @@ async fn deleting_a_broadcasted_draft_is_refused() {
         .unwrap();
     unlock(&app, PROFILE);
     sign_tx_draft(app.state(), draft.id.clone()).await.unwrap();
-    broadcast_tx_draft(app.state(), draft.id.clone()).await.unwrap();
+    broadcast_tx_draft(app.state(), draft.id.clone())
+        .await
+        .unwrap();
 
     let err = delete_tx_draft(app.state(), draft.id.clone())
         .await
@@ -1106,7 +1169,10 @@ async fn resign_uses_the_reserved_coin_even_if_a_larger_coin_arrived_later() {
     let draft1 = build_send_hns_draft(app.state(), to, 500_000, Some(1), None)
         .await
         .expect("draft1 build");
-    assert_eq!(reserved_txids_for(&app, &draft1.id), vec![COIN_TXID.to_string()]);
+    assert_eq!(
+        reserved_txids_for(&app, &draft1.id),
+        vec![COIN_TXID.to_string()]
+    );
 
     // A bigger coin appears after the build (e.g. via sync).
     {
@@ -1116,7 +1182,9 @@ async fn resign_uses_the_reserved_coin_even_if_a_larger_coin_arrived_later() {
     }
 
     unlock(&app, PROFILE);
-    sign_tx_draft(app.state(), draft1.id.clone()).await.expect("sign");
+    sign_tx_draft(app.state(), draft1.id.clone())
+        .await
+        .expect("sign");
 
     // Handshake txids are NOT byte-reversed, so a spent prevout appears in the
     // signed hex as the txid hex verbatim.
@@ -1158,7 +1226,10 @@ async fn broadcast_rejection_frees_the_coin_for_a_new_draft() {
     let draft2 = build_send_hns_draft(app.state(), to, 500_000, Some(1), None)
         .await
         .expect("a rejected broadcast's coin must be reclaimed right away");
-    assert_eq!(reserved_txids_for(&app, &draft2.id), vec![COIN_TXID.to_string()]);
+    assert_eq!(
+        reserved_txids_for(&app, &draft2.id),
+        vec![COIN_TXID.to_string()]
+    );
 }
 
 #[tokio::test]
@@ -1200,11 +1271,17 @@ async fn broadcast_transport_error_keeps_reservation_and_is_not_marked_failed() 
         row.status, "broadcast_pending",
         "a transport-ambiguous broadcast must not be recorded as failed"
     );
-    assert!(row.error_message.is_some(), "the ambiguous outcome should still be explained");
+    assert!(
+        row.error_message.is_some(),
+        "the ambiguous outcome should still be explained"
+    );
 
     // Critically: the coin reservation survives — a new build must NOT be
     // able to claim it while the first draft's fate is unknown.
-    assert_eq!(reserved_txids_for(&app, &draft.id), vec![COIN_TXID.to_string()]);
+    assert_eq!(
+        reserved_txids_for(&app, &draft.id),
+        vec![COIN_TXID.to_string()]
+    );
     let err2 = build_send_hns_draft(app.state(), to, 500_000, Some(1), None)
         .await
         .expect_err("a transport-ambiguous broadcast must keep its reservation");
@@ -1236,7 +1313,10 @@ async fn ttl_expired_reservation_is_selectable_again() {
     let draft2 = build_send_hns_draft(app.state(), to, 500_000, Some(1), None)
         .await
         .expect("stale reservation must be reclaimed after TTL");
-    assert_eq!(reserved_txids_for(&app, &draft2.id), vec![COIN_TXID.to_string()]);
+    assert_eq!(
+        reserved_txids_for(&app, &draft2.id),
+        vec![COIN_TXID.to_string()]
+    );
     // draft1's stale claim was cleared, not merely bypassed.
     assert!(reserved_txids_for(&app, &draft1.id).is_empty());
 }
@@ -1268,7 +1348,10 @@ async fn explicit_release_frees_the_coin_without_deleting_the_draft() {
     let draft2 = build_send_hns_draft(app.state(), to, 500_000, Some(1), None)
         .await
         .expect("draft2 reuses the explicitly-released coin");
-    assert_eq!(reserved_txids_for(&app, &draft2.id), vec![COIN_TXID.to_string()]);
+    assert_eq!(
+        reserved_txids_for(&app, &draft2.id),
+        vec![COIN_TXID.to_string()]
+    );
 }
 
 // --- get_write_capability: synced = chain tip reached (blocks >= headers) ----
@@ -1298,7 +1381,10 @@ async fn write_capability_blocks_at_tip_with_low_progress() {
     unlock(&app, PROFILE);
 
     let cap = get_write_capability(app.state()).await.expect("cap");
-    assert!(!cap.can_write, "low progress must block writes even at apparent tip");
+    assert!(
+        !cap.can_write,
+        "low progress must block writes even at apparent tip"
+    );
     assert!(
         cap.reason.as_deref().unwrap_or("").contains("syncing"),
         "reason should mention syncing; got {:?}",
@@ -1324,7 +1410,10 @@ async fn write_capability_blocks_when_behind_tip() {
     let cap = get_write_capability(app.state()).await.expect("cap");
     assert!(!cap.can_write, "behind tip must block writes");
     assert!(
-        cap.reason.unwrap_or_default().to_lowercase().contains("syncing"),
+        cap.reason
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("syncing"),
         "reason should mention syncing",
     );
 }

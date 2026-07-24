@@ -33,7 +33,8 @@ fn err(msg: impl Into<String>) -> AppError {
 }
 
 fn field<'a>(rec: &'a serde_json::Value, key: &str) -> Result<&'a serde_json::Value, AppError> {
-    rec.get(key).ok_or_else(|| err(format!("record missing '{key}'")))
+    rec.get(key)
+        .ok_or_else(|| err(format!("record missing '{key}'")))
 }
 
 fn write_name(out: &mut Vec<u8>, name: &str) -> Result<(), AppError> {
@@ -86,17 +87,23 @@ fn write_ipv6(out: &mut Vec<u8>, s: &str) -> Result<(), AppError> {
 pub fn encode(records: &[serde_json::Value]) -> Result<Vec<u8>, AppError> {
     let mut out = vec![VERSION];
     for rec in records {
-        let kind = field(rec, "type")?.as_str().ok_or_else(|| err("record type must be a string"))?;
+        let kind = field(rec, "type")?
+            .as_str()
+            .ok_or_else(|| err("record type must be a string"))?;
         match kind {
             "TXT" => {
                 out.push(TYPE_TXT);
-                let txt = field(rec, "txt")?.as_array().ok_or_else(|| err("TXT.txt must be an array"))?;
+                let txt = field(rec, "txt")?
+                    .as_array()
+                    .ok_or_else(|| err("TXT.txt must be an array"))?;
                 if txt.len() > 255 {
                     return Err(err("too many TXT strings"));
                 }
                 out.push(txt.len() as u8);
                 for s in txt {
-                    let s = s.as_str().ok_or_else(|| err("TXT entry must be a string"))?;
+                    let s = s
+                        .as_str()
+                        .ok_or_else(|| err("TXT entry must be a string"))?;
                     if s.len() > 255 {
                         return Err(err("TXT string too long"));
                     }
@@ -106,29 +113,67 @@ pub fn encode(records: &[serde_json::Value]) -> Result<Vec<u8>, AppError> {
             }
             "NS" => {
                 out.push(TYPE_NS);
-                write_name(&mut out, field(rec, "ns")?.as_str().ok_or_else(|| err("NS.ns must be a string"))?)?;
+                write_name(
+                    &mut out,
+                    field(rec, "ns")?
+                        .as_str()
+                        .ok_or_else(|| err("NS.ns must be a string"))?,
+                )?;
             }
             "GLUE4" | "GLUE6" => {
-                out.push(if kind == "GLUE4" { TYPE_GLUE4 } else { TYPE_GLUE6 });
-                write_name(&mut out, field(rec, "ns")?.as_str().ok_or_else(|| err("ns must be a string"))?)?;
-                let addr = field(rec, "address")?.as_str().ok_or_else(|| err("address must be a string"))?;
-                if kind == "GLUE4" { write_ipv4(&mut out, addr)?; } else { write_ipv6(&mut out, addr)?; }
+                out.push(if kind == "GLUE4" {
+                    TYPE_GLUE4
+                } else {
+                    TYPE_GLUE6
+                });
+                write_name(
+                    &mut out,
+                    field(rec, "ns")?
+                        .as_str()
+                        .ok_or_else(|| err("ns must be a string"))?,
+                )?;
+                let addr = field(rec, "address")?
+                    .as_str()
+                    .ok_or_else(|| err("address must be a string"))?;
+                if kind == "GLUE4" {
+                    write_ipv4(&mut out, addr)?;
+                } else {
+                    write_ipv6(&mut out, addr)?;
+                }
             }
             "SYNTH4" => {
                 out.push(TYPE_SYNTH4);
-                write_ipv4(&mut out, field(rec, "address")?.as_str().ok_or_else(|| err("address must be a string"))?)?;
+                write_ipv4(
+                    &mut out,
+                    field(rec, "address")?
+                        .as_str()
+                        .ok_or_else(|| err("address must be a string"))?,
+                )?;
             }
             "SYNTH6" => {
                 out.push(TYPE_SYNTH6);
-                write_ipv6(&mut out, field(rec, "address")?.as_str().ok_or_else(|| err("address must be a string"))?)?;
+                write_ipv6(
+                    &mut out,
+                    field(rec, "address")?
+                        .as_str()
+                        .ok_or_else(|| err("address must be a string"))?,
+                )?;
             }
             "DS" => {
                 out.push(TYPE_DS);
-                let key_tag = field(rec, "keyTag")?.as_u64().ok_or_else(|| err("DS.keyTag"))? as u16;
-                let algorithm = field(rec, "algorithm")?.as_u64().ok_or_else(|| err("DS.algorithm"))? as u8;
-                let digest_type = field(rec, "digestType")?.as_u64().ok_or_else(|| err("DS.digestType"))? as u8;
+                let key_tag = field(rec, "keyTag")?
+                    .as_u64()
+                    .ok_or_else(|| err("DS.keyTag"))? as u16;
+                let algorithm = field(rec, "algorithm")?
+                    .as_u64()
+                    .ok_or_else(|| err("DS.algorithm"))? as u8;
+                let digest_type = field(rec, "digestType")?
+                    .as_u64()
+                    .ok_or_else(|| err("DS.digestType"))? as u8;
                 let digest = hex::decode(
-                    field(rec, "digest")?.as_str().ok_or_else(|| err("DS.digest must be hex"))?,
+                    field(rec, "digest")?
+                        .as_str()
+                        .ok_or_else(|| err("DS.digest must be hex"))?,
                 )
                 .map_err(|_| err("DS.digest invalid hex"))?;
                 if digest.len() > 255 {
@@ -181,7 +226,11 @@ pub fn decode(buf: &[u8]) -> Result<Vec<serde_json::Value>, AppError> {
             }
             TYPE_GLUE4 | TYPE_GLUE6 => {
                 let ns = read_name(buf, &mut pos)?;
-                let (label, n) = if kind == TYPE_GLUE4 { ("GLUE4", 4) } else { ("GLUE6", 16) };
+                let (label, n) = if kind == TYPE_GLUE4 {
+                    ("GLUE4", 4)
+                } else {
+                    ("GLUE6", 16)
+                };
                 if pos + n > buf.len() {
                     return Err(err("truncated glue IP"));
                 }
@@ -190,7 +239,11 @@ pub fn decode(buf: &[u8]) -> Result<Vec<serde_json::Value>, AppError> {
                 records.push(serde_json::json!({ "type": label, "ns": ns, "address": addr }));
             }
             TYPE_SYNTH4 | TYPE_SYNTH6 => {
-                let (label, n) = if kind == TYPE_SYNTH4 { ("SYNTH4", 4) } else { ("SYNTH6", 16) };
+                let (label, n) = if kind == TYPE_SYNTH4 {
+                    ("SYNTH4", 4)
+                } else {
+                    ("SYNTH6", 16)
+                };
                 if pos + n > buf.len() {
                     return Err(err("truncated synth IP"));
                 }
@@ -325,7 +378,9 @@ mod tests {
 
     #[test]
     fn encode_rejects_ds_missing_keytag() {
-        let recs = vec![serde_json::json!({ "type": "DS", "algorithm": 8, "digestType": 2, "digest": "deadbeef" })];
+        let recs = vec![
+            serde_json::json!({ "type": "DS", "algorithm": 8, "digestType": 2, "digest": "deadbeef" }),
+        ];
         let err = encode(&recs).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("missing 'keyTag'"), "msg: {msg}");
@@ -333,7 +388,9 @@ mod tests {
 
     #[test]
     fn encode_rejects_ds_invalid_hex() {
-        let recs = vec![serde_json::json!({ "type": "DS", "keyTag": 1, "algorithm": 8, "digestType": 2, "digest": "not-hex" })];
+        let recs = vec![
+            serde_json::json!({ "type": "DS", "keyTag": 1, "algorithm": 8, "digestType": 2, "digest": "not-hex" }),
+        ];
         let err = encode(&recs).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("invalid hex"), "msg: {msg}");
@@ -358,7 +415,8 @@ mod tests {
     #[test]
     fn encode_rejects_label_too_long() {
         let long_label = "a".repeat(64);
-        let recs = vec![serde_json::json!({ "type": "NS", "ns": format!("{long_label}.example.") })];
+        let recs =
+            vec![serde_json::json!({ "type": "NS", "ns": format!("{long_label}.example.") })];
         let err = encode(&recs).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("label too long"), "msg: {msg}");
@@ -402,7 +460,9 @@ mod tests {
 
     #[test]
     fn glue6_round_trips() {
-        let recs = vec![serde_json::json!({ "type": "GLUE6", "ns": "ns1.example.", "address": "2001:db8::1" })];
+        let recs = vec![
+            serde_json::json!({ "type": "GLUE6", "ns": "ns1.example.", "address": "2001:db8::1" }),
+        ];
         let raw = encode(&recs).unwrap();
         let back = decode(&raw).unwrap();
         assert_eq!(back.len(), 1);
@@ -448,7 +508,9 @@ mod tests {
     #[test]
     fn ds_with_max_digest_length() {
         let digest = "ab".repeat(255); // 255 bytes
-        let recs = vec![serde_json::json!({ "type": "DS", "keyTag": 65535, "algorithm": 255, "digestType": 255, "digest": digest })];
+        let recs = vec![
+            serde_json::json!({ "type": "DS", "keyTag": 65535, "algorithm": 255, "digestType": 255, "digest": digest }),
+        ];
         let raw = encode(&recs).unwrap();
         let back = decode(&raw).unwrap();
         assert_eq!(back[0]["keyTag"], 65535);

@@ -175,7 +175,10 @@ mod tests {
 
         let r = reveal(&nh, 150, &nonce);
         assert_eq!(r.covenant_type, COV_REVEAL);
-        assert_eq!(r.items, vec![nh.to_vec(), 150u32.to_le_bytes().to_vec(), nonce.to_vec()]);
+        assert_eq!(
+            r.items,
+            vec![nh.to_vec(), 150u32.to_le_bytes().to_vec(), nonce.to_vec()]
+        );
     }
 
     #[test]

@@ -224,7 +224,10 @@ mod tests {
 
         for (network, expected) in [
             (Network::Main, "hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8"),
-            (Network::Regtest, "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2"),
+            (
+                Network::Regtest,
+                "rs1qkc9l7ykllufaxa6yfq47krr5xlcunyqv3svqj2",
+            ),
         ] {
             // Private path (m/44'/coin'/0'/0/0) — what the signer uses.
             let (_sk, _pk, addr_priv) = derive_address(network, &seed, 0, 0, 0).unwrap();
@@ -363,7 +366,10 @@ mod tests {
         // Fresh wallet: nothing used → index 0, and it gets persisted.
         let a0 = next_unused_receive_address(&conn, "p1", 0, Network::Main, &xpub).unwrap();
         assert_eq!((a0.branch, a0.child_index), (BRANCH_RECEIVE, 0));
-        assert_eq!(max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(), Some(0));
+        assert_eq!(
+            max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(),
+            Some(0)
+        );
 
         // Derived-but-unused lookahead must NOT advance the allocator.
         ensure_addresses(&conn, "p1", 0, Network::Main, &xpub, BRANCH_RECEIVE, 5).unwrap();
@@ -411,8 +417,8 @@ mod tests {
     fn ensure_addresses_fills_window() {
         let conn = mem_db();
         let xpub = test_xpub();
-        let list = ensure_addresses(&conn, "p1", 0, Network::Main, &xpub, BRANCH_RECEIVE, 10)
-            .unwrap();
+        let list =
+            ensure_addresses(&conn, "p1", 0, Network::Main, &xpub, BRANCH_RECEIVE, 10).unwrap();
         assert_eq!(list.len(), 10);
         assert_eq!(
             max_derived_index(&conn, "p1", 0, BRANCH_RECEIVE).unwrap(),
@@ -420,8 +426,8 @@ mod tests {
         );
 
         // Calling again with the same count re-derives but inserts nothing new.
-        let again = ensure_addresses(&conn, "p1", 0, Network::Main, &xpub, BRANCH_RECEIVE, 10)
-            .unwrap();
+        let again =
+            ensure_addresses(&conn, "p1", 0, Network::Main, &xpub, BRANCH_RECEIVE, 10).unwrap();
         assert_eq!(again, list);
         let count: i64 = conn
             .query_row(

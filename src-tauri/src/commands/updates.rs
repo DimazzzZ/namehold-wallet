@@ -15,6 +15,10 @@
 //!
 //! This module is `#[cfg(desktop)]` because the updater plugin is desktop-only.
 
+// Module doc contains prose paragraphs whose second lines clippy misreads as
+// unindented markdown list continuations. Silence the lint.
+#![allow(clippy::doc_lazy_continuation)]
+
 #[cfg(desktop)]
 pub mod app_updates {
     use serde::Serialize;
@@ -50,9 +54,13 @@ pub mod app_updates {
     #[serde(tag = "event", content = "data")]
     pub enum DownloadEvent {
         #[serde(rename_all = "camelCase")]
-        Started { content_length: Option<u64> },
+        Started {
+            content_length: Option<u64>,
+        },
         #[serde(rename_all = "camelCase")]
-        Progress { chunk_length: usize },
+        Progress {
+            chunk_length: usize,
+        },
         Finished,
     }
 

@@ -29,7 +29,10 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+            hsd_child: std::sync::Mutex::new(None),
+            sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::commands::sync::SyncStatus::default(),
+            )),
         })
         .build(mock_context(noop_assets()))
         .expect("mock app")
@@ -41,7 +44,14 @@ fn seeded_conn(base_url: &str) -> rusqlite::Connection {
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE, "NB", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        &conn,
+        PROFILE,
+        "NB",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKE",
+        0,
+        false,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE).unwrap();
@@ -56,7 +66,14 @@ fn conn_without_cookie() -> rusqlite::Connection {
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE, "NB", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        &conn,
+        PROFILE,
+        "NB",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKE",
+        0,
+        false,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE).unwrap();
@@ -105,7 +122,10 @@ async fn status_cookie_present_session_expired_returns_not_connected_with_error(
         .expect("status should succeed");
     assert_eq!(v["connected"], serde_json::json!(false));
     assert_eq!(v["has_cookie"], serde_json::json!(true));
-    assert!(v["error"].as_str().unwrap().contains("expired"), "got: {v:?}");
+    assert!(
+        v["error"].as_str().unwrap().contains("expired"),
+        "got: {v:?}"
+    );
 }
 
 #[tokio::test]
@@ -346,19 +366,35 @@ async fn import_imports_domains_and_staked_domains_into_assets() {
     let state = app.state::<AppState>();
     let db = state.db.lock().unwrap();
 
-    let staked1 = db::queries::get_assets_by_tlds(&db, &["staked1".to_string()]).unwrap().into_iter().next().unwrap();
+    let staked1 = db::queries::get_assets_by_tlds(&db, &["staked1".to_string()])
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
     assert!(staked1.is_staked, "staked1 should be staked");
     assert_eq!(staked1.status.as_str(), "do_not_touch_staked");
 
-    let alpha = db::queries::get_assets_by_tlds(&db, &["alpha".to_string()]).unwrap().into_iter().next().unwrap();
+    let alpha = db::queries::get_assets_by_tlds(&db, &["alpha".to_string()])
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
     assert!(!alpha.is_staked, "alpha should not be staked");
     assert_eq!(alpha.status.as_str(), "not_started");
 
-    let beta = db::queries::get_assets_by_tlds(&db, &["beta".to_string()]).unwrap().into_iter().next().unwrap();
+    let beta = db::queries::get_assets_by_tlds(&db, &["beta".to_string()])
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
     assert!(!beta.is_staked, "beta should not be staked");
     assert_eq!(beta.status.as_str(), "not_started");
 
-    let gamma = db::queries::get_assets_by_tlds(&db, &["gamma".to_string()]).unwrap().into_iter().next().unwrap();
+    let gamma = db::queries::get_assets_by_tlds(&db, &["gamma".to_string()])
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
     assert!(!gamma.is_staked, "gamma should not be staked");
     assert_eq!(gamma.status.as_str(), "not_started");
 
@@ -509,7 +545,10 @@ async fn connect_namebase_success_stores_cookie_and_returns_account() {
     let state = app.state::<AppState>();
     let db = state.db.lock().unwrap();
     let settings = db::queries::get_settings(&db).unwrap();
-    assert_eq!(settings.get("namebase_cookie").map(|s| s.as_str()), Some("session-cookie-abc"));
+    assert_eq!(
+        settings.get("namebase_cookie").map(|s| s.as_str()),
+        Some("session-cookie-abc")
+    );
 
     let count: i64 = db
         .query_row(
@@ -591,13 +630,9 @@ async fn transfer_domain_sets_asset_status_to_transfer_requested() {
     .unwrap();
     let app = app_with(conn);
 
-    namebase_transfer_domain(
-        app.state::<AppState>(),
-        "exampletld".into(),
-        good_addr(),
-    )
-    .await
-    .expect("transfer should succeed");
+    namebase_transfer_domain(app.state::<AppState>(), "exampletld".into(), good_addr())
+        .await
+        .expect("transfer should succeed");
 
     let state = app.state::<AppState>();
     let db = state.db.lock().unwrap();
@@ -606,10 +641,7 @@ async fn transfer_domain_sets_asset_status_to_transfer_requested() {
         .into_iter()
         .next()
         .expect("asset should exist");
-    assert_eq!(
-        asset.status.as_str(),
-        "namebase_transfer_requested"
-    );
+    assert_eq!(asset.status.as_str(), "namebase_transfer_requested");
     assert!(!asset.updated_at.is_empty());
 }
 
@@ -670,7 +702,11 @@ async fn namebase_client_trims_whitespace_from_base_url() {
 
     let client = crate::commands::namebase::namebase_client(&state).unwrap();
     let result = client.check_session().await;
-    assert!(result.is_ok(), "should reach mock server despite whitespace: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "should reach mock server despite whitespace: {:?}",
+        result.err()
+    );
 }
 
 // =========================================================================
@@ -683,16 +719,15 @@ async fn transfer_domain_falls_back_to_mainnet_when_no_profile() {
     db::queries::set_setting(&conn, "namebase_base_url", "http://localhost:1").unwrap();
     let app = app_with(conn);
 
-    let res = namebase_transfer_domain(
-        app.state::<AppState>(),
-        "exampletld".into(),
-        good_addr(),
-    )
-    .await;
+    let res =
+        namebase_transfer_domain(app.state::<AppState>(), "exampletld".into(), good_addr()).await;
     match res {
         Ok(()) => {}
         Err(AppError::InvalidInput(m)) => {
-            assert!(!m.contains("HNS address"), "valid address wrongly rejected: {m}");
+            assert!(
+                !m.contains("HNS address"),
+                "valid address wrongly rejected: {m}"
+            );
         }
         Err(_) => {}
     }
@@ -704,17 +739,18 @@ async fn withdraw_hns_falls_back_to_mainnet_when_no_profile() {
     db::queries::set_setting(&conn, "namebase_base_url", "http://localhost:1").unwrap();
     let app = app_with(conn);
 
-    let res = namebase_withdraw_hns(
-        app.state::<AppState>(),
-        good_addr(),
-        "1.0".into(),
-    )
-    .await;
+    let res = namebase_withdraw_hns(app.state::<AppState>(), good_addr(), "1.0".into()).await;
     match res {
         Ok(()) => {}
         Err(AppError::InvalidInput(m)) => {
-            assert!(!m.contains("HNS address"), "valid address wrongly rejected: {m}");
-            assert!(!m.contains("positive"), "valid amount wrongly rejected: {m}");
+            assert!(
+                !m.contains("HNS address"),
+                "valid address wrongly rejected: {m}"
+            );
+            assert!(
+                !m.contains("positive"),
+                "valid amount wrongly rejected: {m}"
+            );
         }
         Err(_) => {}
     }
@@ -739,10 +775,14 @@ async fn namebase_client_with_cookie_uses_base_url_from_settings() {
     let app = app_with(conn);
     let state = app.state::<AppState>();
 
-    let client = crate::commands::namebase::namebase_client_with_cookie(&state, "my-cookie")
-        .unwrap();
+    let client =
+        crate::commands::namebase::namebase_client_with_cookie(&state, "my-cookie").unwrap();
     let result = client.check_session().await;
-    assert!(result.is_ok(), "should reach mock server: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "should reach mock server: {:?}",
+        result.err()
+    );
 }
 
 // =========================================================================
@@ -772,13 +812,15 @@ async fn fetch_domains_persists_rotated_cookie_to_settings() {
         .expect("fetch_domains should succeed");
 
     let state = app.state::<AppState>();
-    let db = state.db.lock().unwrap();
-    let settings = db::queries::get_settings(&db).unwrap();
-    assert_eq!(
-        settings.get("namebase_cookie").map(|s| s.as_str()),
-        Some("nb-sunset=ROTATED"),
-        "rotated cookie should be persisted"
-    );
+    {
+        let db = state.db.lock().unwrap();
+        let settings = db::queries::get_settings(&db).unwrap();
+        assert_eq!(
+            settings.get("namebase_cookie").map(|s| s.as_str()),
+            Some("nb-sunset=ROTATED"),
+            "rotated cookie should be persisted"
+        );
+    }
     m.assert_async().await;
 }
 
@@ -803,12 +845,14 @@ async fn fetch_domains_does_not_touch_settings_when_cookie_unchanged() {
         .expect("fetch_domains should succeed");
 
     let state = app.state::<AppState>();
-    let db = state.db.lock().unwrap();
-    let settings = db::queries::get_settings(&db).unwrap();
-    assert_eq!(
-        settings.get("namebase_cookie").map(|s| s.as_str()),
-        Some("nb-sunset=STABLE"),
-    );
+    {
+        let db = state.db.lock().unwrap();
+        let settings = db::queries::get_settings(&db).unwrap();
+        assert_eq!(
+            settings.get("namebase_cookie").map(|s| s.as_str()),
+            Some("nb-sunset=STABLE"),
+        );
+    }
     m.assert_async().await;
 }
 
@@ -818,8 +862,8 @@ async fn namebase_client_with_cookie_falls_back_to_default_host() {
     let app = app_with(conn);
     let state = app.state::<AppState>();
 
-    let client = crate::commands::namebase::namebase_client_with_cookie(&state, "some-cookie")
-        .unwrap();
+    let client =
+        crate::commands::namebase::namebase_client_with_cookie(&state, "some-cookie").unwrap();
     let result = client.check_session().await;
     let _ = result;
 }

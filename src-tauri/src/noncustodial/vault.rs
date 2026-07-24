@@ -54,7 +54,9 @@ fn derive_key(passphrase: &[u8], salt: &[u8]) -> Result<[u8; KEY_LEN], AppError>
 /// the self-describing vault blob.
 pub fn encrypt(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, AppError> {
     if passphrase.is_empty() {
-        return Err(AppError::InvalidInput("passphrase must not be empty".into()));
+        return Err(AppError::InvalidInput(
+            "passphrase must not be empty".into(),
+        ));
     }
 
     let mut salt = [0u8; 16];
@@ -109,9 +111,9 @@ pub fn decrypt(blob: &[u8], passphrase: &str) -> Result<Vec<u8>, AppError> {
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|_| AppError::Crypto("decryption failed (wrong passphrase or corrupt data)".into()));
+    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+        AppError::Crypto("decryption failed (wrong passphrase or corrupt data)".into())
+    });
     key_bytes.zeroize();
     plaintext
 }
@@ -126,9 +128,7 @@ mod tests {
         let blob = encrypt(secret, "correct horse battery staple").expect("encrypt");
         // Blob must be self-describing and not contain the plaintext.
         assert_eq!(&blob[0..4], MAGIC);
-        assert!(!blob
-            .windows(secret.len())
-            .any(|w| w == secret));
+        assert!(!blob.windows(secret.len()).any(|w| w == secret));
         let out = decrypt(&blob, "correct horse battery staple").expect("decrypt");
         assert_eq!(out, secret);
     }

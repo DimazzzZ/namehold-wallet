@@ -48,10 +48,7 @@ async fn test_health_succeeds_on_probe_endpoint() {
     let mut server = Server::new_async().await;
     let mock = server
         .mock("GET", "/api/txs")
-        .match_query(mockito::Matcher::UrlEncoded(
-            "limit".into(),
-            "1".into(),
-        ))
+        .match_query(mockito::Matcher::UrlEncoded("limit".into(), "1".into()))
         .with_status(200)
         .with_body(r#"{"limit":1,"offset":0,"total":0,"result":[]}"#)
         .create_async()
@@ -199,7 +196,10 @@ async fn test_get_name_info_optional_returns_none_on_404() {
         .get_name_info_optional("neveropened")
         .await
         .expect("404 should not be an error");
-    assert!(result.is_none(), "404 should yield None for AVAILABLE synthesis");
+    assert!(
+        result.is_none(),
+        "404 should yield None for AVAILABLE synthesis"
+    );
     mock.assert_async().await;
 }
 
@@ -220,7 +220,10 @@ async fn test_get_name_info_optional_returns_none_on_empty_body() {
         .get_name_info_optional("emptyname")
         .await
         .expect("empty body should not be an error");
-    assert!(result.is_none(), "empty body should yield None for AVAILABLE synthesis");
+    assert!(
+        result.is_none(),
+        "empty body should yield None for AVAILABLE synthesis"
+    );
     mock.assert_async().await;
 }
 
@@ -238,7 +241,10 @@ async fn test_get_name_info_optional_propagates_5xx_errors() {
 
     let client = HnsFansClient::new(&server.url());
     let result = client.get_name_info_optional("servererror").await;
-    assert!(result.is_err(), "5xx should be an error, not None/AVAILABLE");
+    assert!(
+        result.is_err(),
+        "5xx should be an error, not None/AVAILABLE"
+    );
     mock.assert_async().await;
 }
 
