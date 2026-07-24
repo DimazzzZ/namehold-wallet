@@ -48,6 +48,21 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // Auto-updater (desktop only). The plugin verifies Ed25519
+            // signatures against `plugins.updater.pubkey` before installing;
+            // `PendingUpdate` holds a checked update between the check and
+            // install commands. `process` enables `relaunch()` post-install.
+            #[cfg(desktop)]
+            {
+                use std::sync::Mutex as StdMutex;
+                app.handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())?;
+                app.handle().plugin(tauri_plugin_process::init())?;
+                app.manage(commands::updates::app_updates::PendingUpdate(
+                    StdMutex::new(None),
+                ));
+            }
+
             // Store everything under ~/.namehold (pairs with the node's ~/.hsd),
             // rather than the OS app-data dir derived from the bundle identifier.
             // The identifier stays reverse-DNS for packaging/signing but no longer
@@ -241,6 +256,12 @@ pub fn run() {
             commands::bids::recover_bid_commitment,
             commands::bids::export_bid_commitments,
             commands::deadlines::scan_deadline_notifications,
+            #[cfg(desktop)]
+            commands::updates::app_updates::check_for_update,
+            #[cfg(desktop)]
+            commands::updates::app_updates::install_update,
+            #[cfg(desktop)]
+            commands::updates::app_updates::current_version,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

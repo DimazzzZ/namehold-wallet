@@ -13,6 +13,7 @@ import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
 import { useUiStore } from "../stores/ui";
+import { UpdatesSettings } from "./UpdatesSettings";
 
 /**
  * Validate the explorer base URL field (Task 11 / S1). Empty is allowed —
@@ -284,6 +285,13 @@ export function Settings() {
           Checked on app start and every ~10 minutes.
         </div>
         <NotificationSettings form={form} updateField={updateField} />
+      </div>
+
+      {/* Updates: shows the running version and drives the check-for-updates
+          flow (shared state with the global update banner). */}
+      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-700">Updates</h3>
+        <UpdatesSettings />
       </div>
 
       {/* Advanced (collapsed by default — rarely changed). */}

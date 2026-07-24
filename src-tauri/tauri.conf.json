@@ -1,6 +1,6 @@
 {
   "productName": "Namehold",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "org.zhavoronkov.nameholdwallet",
   "build": {
     "frontendDist": "../dist",
@@ -24,9 +24,21 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/icon.png",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMzQUUwMkY4NzU3RDE2MDkKUldRSkZuMTErQUt1TStWUjF5VExIS1hRUGM4d0taMDJZRmFzb250TlA4WHVhY1U0cTNkWDJZZGkK",
+      "endpoints": [
+        "https://github.com/DimazzzZ/namehold-wallet/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

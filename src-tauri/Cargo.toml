@@ -1,6 +1,6 @@
 [package]
 name = "namehold-wallet"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [lib]
@@ -17,6 +17,10 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-fs = "2"
 # Only new dependency for I1 (OS notifications + deadline scanner).
 tauri-plugin-notification = "2"
+# Auto-updater (desktop only) — checks GitHub Releases for latest.json.
+tauri-plugin-updater = "2"
+# Process plugin — enables `app.restart()` from the frontend after an update.
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }

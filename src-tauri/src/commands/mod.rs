@@ -13,3 +13,5 @@ pub mod secure_wallet;
 pub mod sync;
 pub mod tx;
 pub mod settings;
+#[cfg(desktop)]
+pub mod updates;

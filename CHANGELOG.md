@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0]
 
 ### Added
 - **Node-only reads + chain scanner** — owned names, balances, and per-name bid
@@ -22,6 +22,10 @@
   (only revealed values count).
 - **Active Auctions view** — names with an open auction position merged into a
   live-phase list; pending-OPEN surfacing; double-open guard.
+- **Auto-update** — the app checks GitHub Releases ~30s after launch (and on
+  demand from Settings → Updates), then downloads and installs signed updates
+  in place. Update bundles are Ed25519-signed at release time and verified
+  against the embedded public key before install. See `docs/RELEASING.md`.
 
 ### Changed
 - **WalletView density polish** — CopyField, Disclosure, and truncateMiddle

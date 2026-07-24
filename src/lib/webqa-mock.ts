@@ -28,6 +28,12 @@ const handlers: Record<string, Handler> = {
 
   update_setting: () => null,
 
+  // ── Updates ───────────────────────────────────────────────────────────
+  // Browser QA has no real updater; report a fixed version and "up to date".
+  current_version: () => "0.2.0",
+  check_for_update: () => null,
+  install_update: () => null,
+
   // ── Wallet profiles ───────────────────────────────────────────────────
   list_wallet_profiles: () => [
     {

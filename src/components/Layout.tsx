@@ -3,6 +3,7 @@ import { useSettingsStore } from "../stores/settings";
 import { useActiveProfile, useWriteCapability } from "../queries/wallet";
 import { Toast } from "./ui/Toast";
 import { StatusStrip } from "./ui/StatusStrip";
+import { UpdateBanner } from "./UpdateBanner";
 import { PRIMARY_ROUTES } from "../lib/navigation";
 import { cn } from "../lib/utils";
 import { isTauri } from "../lib/runtime";
@@ -60,10 +61,11 @@ export function Layout() {
           <div className="text-[10px] text-gray-400">
             {profile ? profile.label : "No wallet"}
           </div>
-          <div className="text-[10px] text-gray-400 mt-0.5">v0.1.0</div>
+          <div className="text-[10px] text-gray-400 mt-0.5">v0.2.0</div>
         </div>
       </aside>
       <main className="flex-1 flex flex-col overflow-hidden">
+        <UpdateBanner />
         {!isTauri && (
           <div
             className="px-6 py-1.5 text-xs text-blue-900 bg-blue-100 border-b border-blue-200"

@@ -10,6 +10,9 @@
     "dialog:allow-save",
     "clipboard-manager:default",
     "clipboard-manager:allow-write-text",
-    "notification:default"
+    "notification:default",
+    "updater:default",
+    "process:default",
+    "process:allow-restart"
   ]
 }

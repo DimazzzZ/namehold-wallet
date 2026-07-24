@@ -165,10 +165,15 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # --- Code signing (optional; unset = unsigned bundles) ---
-          # macOS:   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
-          #          APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
-          # Updater: TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          # --- Updater signing (required for auto-update) ---
+          # Ed25519 keypair generated with `pnpm tauri signer generate`. The
+          # public key lives in tauri.conf.json → plugins.updater.pubkey; the
+          # private key is stored ONLY as a GitHub Actions secret.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # --- macOS code signing (optional; unset = unsigned bundles) ---
+          # APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+          # APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
           args: ${{ matrix.args }}
@@ -178,6 +183,24 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
+      - name: Verify updater manifest was produced
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          # tauri-action uploads `latest.json` (the updater manifest) to the
+          # release when createUpdaterArtifacts + signing key are set. Fail the
+          # publish if it's missing, so we never un-draft a release that would
+          # leave existing installs unable to update.
+          assets="$(gh release view "v$VERSION" --json assets --jq '.assets[].name')"
+          echo "Release assets:"; echo "$assets"
+          if ! printf '%s\n' "$assets" | grep -qx 'latest.json'; then
+            echo "::error::latest.json missing from release v$VERSION — updater signing likely not configured (set TAURI_SIGNING_PRIVATE_KEY)."
+            exit 1
+          fi
+
       - name: Un-draft the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
