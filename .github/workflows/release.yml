@@ -108,6 +108,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Refresh apt package index (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        # Refresh the apt index first (see ci.yml): avoids a cache-miss 404 when
+        # the runner's pre-seeded index points at a superseded .deb version.
+        run: sudo apt-get update
       - name: Install Tauri system dependencies (Linux)
         if: matrix.platform == 'ubuntu-22.04'
         # Cached via `awalsh128/cache-apt-pkgs-action` (same as ci.yml) so a slow

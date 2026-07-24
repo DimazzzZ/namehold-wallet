@@ -52,6 +52,12 @@ jobs:
       # resolved .deb closure with dpkg (no mirror fetch), so a slow apt mirror
       # can't stall CI. Bump `version` below to bust the cache after editing the
       # package list.
+      # Refresh the apt index first: the runner image ships a pre-seeded index
+      # that the action treats as "fresh" and won't refresh, so on a cache MISS
+      # it can try to fetch a superseded .deb version and 404. An explicit update
+      # keeps the index in sync with the mirror pool; it's a no-op cost on a hit.
+      - name: Refresh apt package index
+        run: sudo apt-get update
       - name: Install Tauri system dependencies
         uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9  # v1.6.3
         with:
