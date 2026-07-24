@@ -329,6 +329,7 @@ export type AppRouteKey =
   | "migration"
   | "wallet"
   | "auctions"
+  | "activity"
   | "settings";
 
 export type PortfolioSectionKey = "inventory" | "batches" | "renewals" | "dns";

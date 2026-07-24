@@ -3,6 +3,7 @@ import { invoke } from "../lib/invoke";
 import { normalizeTransaction } from "../lib/providerMode";
 import { useActiveProfile } from "./wallet";
 import { useNodeLive } from "./node";
+import type { ActionRow } from "../lib/zod";
 import type {
   HsdBalance,
   HsdName,
@@ -63,6 +64,34 @@ export function useReadNames(): UseQueryResult<HsdName[]> {
       });
       return Array.isArray(raw) ? raw : [];
     },
+    staleTime: STALE_TIME,
+  });
+}
+
+/**
+ * Full wallet action history — every tx touching any derived address of the
+ * active wallet, classified into Send / Receive / OPEN / BID / REVEAL /
+ * REDEEM / REGISTER / UPDATE / RENEW / TRANSFER / FINALIZE / REVOKE.
+ *
+ * Requires a synced hsd node with `--index-tx` and `--index-address`. When the
+ * node lacks the address index the backend rejects with an error message
+ * containing "address index not enabled" — the caller can surface a
+ * dedicated banner (see `ActivityView`).
+ */
+export function useActionHistory(): UseQueryResult<ActionRow[]> {
+  const profileId = useActiveProfile().data?.id ?? null;
+  return useQuery<ActionRow[]>({
+    queryKey: ["read", "action_history", profileId],
+    enabled: profileId != null,
+    queryFn: async () => {
+      const raw = await invoke<ActionRow[] | null>("read_action_history", {
+        walletProfileId: profileId,
+      });
+      return Array.isArray(raw) ? raw : [];
+    },
+    // Don't hammer the node on every mount — the History view has an explicit
+    // Refresh button and query-key invalidation from Send/broadcast covers the
+    // "I just did a thing" case.
     staleTime: STALE_TIME,
   });
 }

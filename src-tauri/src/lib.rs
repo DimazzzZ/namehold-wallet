@@ -219,6 +219,7 @@ pub fn run() {
             commands::read::read_name_records,
             commands::read::read_transactions,
             commands::read::read_renewals,
+            commands::history::read_action_history,
             commands::read::repair_owned_names,
             commands::sync::start_full_sync,
             commands::sync::get_sync_status,

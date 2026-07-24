@@ -360,6 +360,78 @@ impl NodeRpcClient {
             .await
     }
 
+    /// All transactions touching an address, via the node REST route
+    /// `GET /tx/address/:addr`. Requires the node's transaction AND address
+    /// indexes (`--index-tx` and `--index-address`) — hsd docs: "Allows
+    /// lookup of all transactions involving a certain address."
+    ///
+    /// Each returned tx is the fully-decoded shape hsd emits for
+    /// `GET /tx/:hash`: top-level `hash`, `height`, `time`, `mtime`,
+    /// `confirmations`, `inputs[]` (with a resolved `coin { value, address,
+    /// covenant, height }` for non-coinbase spends), and `outputs[]` (with
+    /// `value`, `address`, `covenant { type, action, items }`). Unconfirmed
+    /// txs surface as `height: -1`, `block: null`, `confirmations: 0`.
+    ///
+    /// Returns an empty vec when the address has no history. On non-2xx we
+    /// try to parse hsd's `{error:{message}}` envelope and surface a specific
+    /// "address index not enabled" error the frontend can gate on — mirrors
+    /// the shape used by `get_coins_by_address`.
+    pub async fn get_txs_by_address(
+        &self,
+        address: &str,
+    ) -> Result<Vec<serde_json::Value>, AppError> {
+        let url = format!("{}/tx/address/{}", self.node_url, address);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth("x", Some(&self.api_key))
+            .send()
+            .await?;
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.map_err(|e| {
+            AppError::Rpc(format!(
+                "node returned non-JSON for tx-by-address (status {status}): {e}"
+            ))
+        })?;
+        if !status.is_success() {
+            let msg = body
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .or_else(|| body.get("message").and_then(|m| m.as_str()))
+                .unwrap_or("tx-by-address lookup failed");
+            // hsd surfaces the index-disabled case with a message like
+            // "Address indexing not enabled." — normalize it so the UI can
+            // detect it uniformly across hsd versions.
+            let lc = msg.to_ascii_lowercase();
+            if lc.contains("address index")
+                || lc.contains("indexing")
+                || lc.contains("--index-address")
+            {
+                return Err(AppError::Rpc(format!(
+                    "address index not enabled on this hsd node: {msg} (status {status})"
+                )));
+            }
+            return Err(AppError::Rpc(format!("{msg} (status {status})")));
+        }
+        match body {
+            serde_json::Value::Array(arr) => Ok(arr),
+            // Some proxies wrap the array in `{ result: [...] }` — accept it.
+            serde_json::Value::Object(mut obj) => {
+                if let Some(serde_json::Value::Array(arr)) = obj.remove("result") {
+                    Ok(arr)
+                } else {
+                    Err(AppError::Rpc(
+                        "tx-by-address returned non-array body".to_string(),
+                    ))
+                }
+            }
+            _ => Err(AppError::Rpc(
+                "tx-by-address returned non-array body".to_string(),
+            )),
+        }
+    }
+
     /// `getrawtransaction` with verbose=1 — full decoded tx by hash.
     pub async fn get_raw_transaction(&self, txid: &str) -> Result<serde_json::Value, AppError> {
         self.call("getrawtransaction", serde_json::json!([txid, 1]))
@@ -699,5 +771,63 @@ mod tests {
         let err = env.error.unwrap();
         assert_eq!(err.message, "Name not found.");
         assert_eq!(err.code, Some(-1));
+    }
+
+    #[tokio::test]
+    async fn txs_by_address_returns_decoded_array() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/tx/address/hs1qexample")
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"[
+                  {"hash":"aa","height":10,"time":1000,"confirmations":3,
+                   "inputs":[{"prevout":{"hash":"pp","index":0},
+                              "coin":{"value":500000000,"address":"hs1qmine",
+                                      "covenant":{"type":0,"items":[]}}}],
+                   "outputs":[{"value":100000000,"address":"hs1qdest",
+                               "covenant":{"type":0,"action":"NONE","items":[]}}]}
+                ]"#,
+            )
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let txs = client.get_txs_by_address("hs1qexample").await.unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0]["hash"], "aa");
+        assert_eq!(txs[0]["inputs"][0]["coin"]["address"], "hs1qmine");
+    }
+
+    #[tokio::test]
+    async fn txs_by_address_empty_is_ok() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/tx/address/hs1qnone")
+            .with_body("[]")
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let txs = client.get_txs_by_address("hs1qnone").await.unwrap();
+        assert!(txs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn txs_by_address_flags_index_disabled() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/tx/address/hs1qx")
+            .with_status(400)
+            .with_body(r#"{"error":{"message":"Address indexing not enabled."}}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client.get_txs_by_address("hs1qx").await.unwrap_err();
+        match err {
+            AppError::Rpc(msg) => assert!(
+                msg.contains("address index not enabled"),
+                "unexpected: {msg}"
+            ),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
     }
 }
