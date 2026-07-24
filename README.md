@@ -58,6 +58,13 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 - A migration-inventory workspace: **CSV import/export**, tags/filters, **batches**,
   **renewals** tracking, and per-name **migration-status** tracking.
 
+### Auto-update (since v0.2.0)
+- Namehold checks for updates automatically ~30 seconds after launch. When a
+  new version is available, a banner appears at the top of the window offering
+  a one-click install; you can also check manually in **Settings > Updates**.
+  Update bundles are **Ed25519-signed** at release and verified against the
+  embedded public key before install; unsigned or tampered bundles are rejected.
+
 ## How it works
 
 - **Reads are node-free.** Balances and names come from the explorer and are cached

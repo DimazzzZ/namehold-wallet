@@ -27,6 +27,7 @@ non-custodially, with your keys encrypted on your own machine.
 14. [Data location and macOS quarantine](#14-data-location-and-macos-quarantine)
 15. [Security](#15-security)
 16. [Troubleshooting](#16-troubleshooting)
+17. [Auto-update](#17-auto-update)
 
 ---
 
@@ -501,6 +502,47 @@ the draft is still there.
 
 Check that your CSV has a `Name` column, names don't have leading/trailing
 spaces, and duplicate rows are OK (they're updated, not errors).
+
+---
+
+## 17. Auto-update
+
+Starting with **v0.2.0**, Namehold checks for its own updates automatically.
+You don't need to visit a website or run a package manager; new signed
+builds are delivered and installed in place.
+
+### How it works
+
+- ~30 seconds after launch, the app silently queries GitHub Releases for a
+  newer version. If nothing new is available, no UI appears.
+- If an update is available, a **banner** appears at the top of the window:
+  "Namehold v{version} is available", with **Install now** and **Later** buttons.
+- You can also check on demand: **Settings > Updates > Check for updates**.
+  The card there also shows your current running version.
+- Clicking **Install now** downloads the update with a progress indicator
+  ("Downloading... N%"), then reports "Update installed. Restart to finish."
+- Click **Restart now** to finish the install. On Windows the app exits
+  automatically during install (OS limitation); on macOS and Linux you
+  trigger the relaunch yourself.
+
+### Dismissing an update
+
+Click **Later** on the banner to hide it for that specific version. The
+update remains available under **Settings > Updates** if you change your
+mind, and the banner will reappear when the next version ships.
+
+### Security
+
+Every update bundle is **Ed25519-signed** at release time. Namehold verifies
+the signature against a public key embedded in the app binary before
+installing anything; unsigned or tampered bundles are rejected. The private
+signing key never touches your machine.
+
+### Checking your current version
+
+Open **Settings > Updates**. Your running version is shown at the top of
+the card (e.g. "Current version: v0.2.0"). This is currently the only
+in-app surface that displays the app version.
 
 ---
 
