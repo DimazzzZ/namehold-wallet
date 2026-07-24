@@ -38,6 +38,11 @@ Thumbs.db
 *.log
 npm-debug.log*
 pnpm-debug.log*
+# CI runner log dumps are often saved as .txt so *.log alone doesn't catch
+# them. `job-logs.txt` was accidentally committed once (later purged from
+# history) — keep any future dump out of the tree.
+job-logs*.txt
+*-ci-logs.txt
 
 # Testing
 coverage/
