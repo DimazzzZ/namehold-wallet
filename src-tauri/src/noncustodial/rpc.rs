@@ -131,10 +131,65 @@ fn read_hsd_conf_api_key(prefix: &str) -> Option<String> {
     None
 }
 
+/// Reject configurations that would send `api_key` over plaintext HTTP to a
+/// non-loopback host. An empty api-key is always allowed (nothing to leak).
+/// `https://` is always allowed. Loopback `http://` (127.0.0.1/::1/localhost)
+/// is allowed for the common local-node case. Remote `http://` with a key
+/// present is refused.
+pub fn guard_transport(node_url: &str, api_key: &str) -> Result<(), AppError> {
+    if api_key.is_empty() {
+        return Ok(());
+    }
+    let parsed = url::Url::parse(node_url.trim())
+        .map_err(|e| AppError::InvalidInput(format!("node RPC URL is not a valid URL: {e}")))?;
+    let scheme = parsed.scheme();
+    if scheme == "https" {
+        return Ok(());
+    }
+    if scheme != "http" {
+        return Err(AppError::InvalidInput(format!(
+            "node RPC URL scheme '{scheme}' is not supported"
+        )));
+    }
+    // http scheme: only loopback is allowed when an api-key is set.
+    let is_loopback = match parsed.host() {
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(a)) => a.is_loopback(),
+        Some(url::Host::Ipv6(a)) => a.is_loopback(),
+        None => false,
+    };
+    if is_loopback {
+        Ok(())
+    } else {
+        Err(AppError::InvalidInput(
+            "node RPC api-key must not be sent over plaintext HTTP to a remote host — use https:// or a loopback URL".to_string(),
+        ))
+    }
+}
+
 impl NodeRpcClient {
     /// Construct a client against an explicit node URL / key / source.
     pub fn new(node_url: &str, api_key: &str, source: ChainSource) -> Self {
-        Self {
+        Self::try_new(node_url, api_key, source).unwrap_or_else(|_| Self {
+            // Fallback for callers that ignore the guard: keep the invalid URL
+            // but blank the api-key so it can never be sent in the clear. The
+            // subsequent RPC call will fail loudly at request time.
+            http: Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("failed to build HTTP client"),
+            node_url: node_url.trim_end_matches('/').to_string(),
+            api_key: String::new(),
+            source,
+        })
+    }
+
+    /// Fallible constructor: rejects configurations that would send the api-key
+    /// over plaintext HTTP to a non-loopback host. Loopback `http://` and any
+    /// `https://` remain accepted.
+    pub fn try_new(node_url: &str, api_key: &str, source: ChainSource) -> Result<Self, AppError> {
+        guard_transport(node_url, api_key)?;
+        Ok(Self {
             http: Client::builder()
                 .timeout(Duration::from_secs(30))
                 .build()
@@ -142,7 +197,7 @@ impl NodeRpcClient {
             node_url: node_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             source,
-        }
+        })
     }
 
     /// Construct from the Phase 1 non-custodial settings map.
@@ -508,14 +563,51 @@ mod tests {
         let mut settings = HashMap::new();
         settings.insert(
             "node_rpc_url".to_string(),
-            "http://10.0.0.5:13037/".to_string(),
+            "https://10.0.0.5:13037/".to_string(),
         );
         settings.insert("node_rpc_api_key".to_string(), "secret".to_string());
         settings.insert("chain_source".to_string(), "remote_node".to_string());
         let client = NodeRpcClient::from_settings(&settings);
-        assert_eq!(client.node_url, "http://10.0.0.5:13037");
+        assert_eq!(client.node_url, "https://10.0.0.5:13037");
         assert_eq!(client.api_key, "secret");
         assert_eq!(client.source, ChainSource::RemoteNode);
+    }
+
+    #[test]
+    fn guard_transport_blocks_remote_http_with_key() {
+        // Remote http + api-key is refused (would leak the key in cleartext).
+        assert!(guard_transport("http://10.0.0.5:13037", "secret").is_err());
+        // https to a remote host is fine.
+        assert!(guard_transport("https://10.0.0.5:13037", "secret").is_ok());
+        // Loopback http is fine (the common local-node case).
+        assert!(guard_transport("http://127.0.0.1:12037", "secret").is_ok());
+        assert!(guard_transport("http://localhost:12037", "secret").is_ok());
+        // No api-key: nothing to leak, anything goes.
+        assert!(guard_transport("http://10.0.0.5:13037", "").is_ok());
+    }
+
+    #[test]
+    fn new_blanks_key_for_remote_http_to_avoid_cleartext_leak() {
+        // `new` (infallible) must never keep an api-key it would send over
+        // plaintext http to a remote host — it blanks it as a safe fallback.
+        let client = NodeRpcClient::new("http://10.0.0.5:13037", "secret", ChainSource::RemoteNode);
+        assert_eq!(client.api_key, "", "remote-http api-key must be dropped");
+        // https keeps the key.
+        let ok = NodeRpcClient::new("https://10.0.0.5:13037", "secret", ChainSource::RemoteNode);
+        assert_eq!(ok.api_key, "secret");
+    }
+
+    #[test]
+    fn guard_transport_allows_ipv6_loopback_http() {
+        // [::1] is loopback — an api-key over http to it stays on the machine.
+        assert!(guard_transport("http://[::1]:12037", "secret").is_ok());
+    }
+
+    #[test]
+    fn guard_transport_rejects_scheme_other_than_http_or_https() {
+        // A non-http(s) scheme with a key present is refused outright.
+        assert!(guard_transport("ftp://10.0.0.5:13037", "secret").is_err());
+        assert!(guard_transport("ws://127.0.0.1:12037", "secret").is_err());
     }
 
     #[tokio::test]

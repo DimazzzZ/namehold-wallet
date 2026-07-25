@@ -14,7 +14,8 @@ use tauri::Manager;
 
 use crate::commands::tx::{
     broadcast_tx_draft, build_send_hns_draft, delete_tx_draft, get_write_capability,
-    refresh_tx_confirmations, release_tx_draft_reservation, sign_tx_draft, sync_wallet_state,
+    refresh_tx_confirmations, release_tx_draft_reservation, sign_tx_draft_confirmed,
+    sign_tx_draft_inner, sync_wallet_state,
 };
 use crate::db;
 use crate::error::AppError;
@@ -209,7 +210,7 @@ async fn full_lifecycle_build_sign_broadcast_succeeds() {
 
     // 2. Sign — requires unlock; materializes the signed hex + a real txid.
     unlock(&app, PROFILE);
-    sign_tx_draft(app.state(), draft_id.clone())
+    sign_tx_draft_inner(&app.state(), &draft_id)
         .await
         .expect("sign");
     {
@@ -255,7 +256,7 @@ async fn broadcast_failure_marks_draft_failed_and_errors() {
         .await
         .unwrap();
     unlock(&app, PROFILE);
-    sign_tx_draft(app.state(), draft.id.clone()).await.unwrap();
+    sign_tx_draft_inner(&app.state(), &draft.id).await.unwrap();
 
     let err = broadcast_tx_draft(app.state(), draft.id.clone())
         .await
@@ -749,7 +750,7 @@ async fn sign_rejects_profile_mismatch() {
         .unwrap();
     // Unlock a session bound to a DIFFERENT profile id.
     unlock(&app, "some-other-profile");
-    let err = sign_tx_draft(app.state(), draft.id)
+    let err = sign_tx_draft_inner(&app.state(), &draft.id)
         .await
         .expect_err("signer for a different profile must not sign");
     match err {
@@ -766,7 +767,7 @@ async fn sign_rejects_when_locked() {
         .await
         .unwrap();
     // No unlock at all.
-    let err = sign_tx_draft(app.state(), draft.id)
+    let err = sign_tx_draft_inner(&app.state(), &draft.id)
         .await
         .expect_err("locked signer must not sign");
     assert!(matches!(err, AppError::WalletLocked), "got {err:?}");
@@ -793,7 +794,7 @@ async fn remote_node_source_can_broadcast() {
         .await
         .expect("build");
     unlock(&app, PROFILE);
-    sign_tx_draft(app.state(), draft.id.clone())
+    sign_tx_draft_inner(&app.state(), &draft.id)
         .await
         .expect("sign");
 
@@ -825,7 +826,7 @@ async fn explorer_source_refuses_broadcast_before_any_rpc() {
         .await
         .expect("build");
     unlock(&app, PROFILE);
-    sign_tx_draft(app.state(), draft.id.clone())
+    sign_tx_draft_inner(&app.state(), &draft.id)
         .await
         .expect("sign");
 
@@ -916,6 +917,53 @@ async fn write_capability_blocks_while_node_syncing() {
             .contains("syncing"),
         "reason should mention syncing",
     );
+}
+
+// --- Secure confirmation path (F3) -----------------------------------------
+
+#[tokio::test]
+async fn sign_rejects_when_user_cancels_confirmation() {
+    let mut server = mockito::Server::new_async().await;
+    // The node must NOT be called when the user cancels; this mock asserts 0
+    // hits below.
+    let m = server.mock("POST", "/").expect(0).create_async().await;
+
+    let conn = seeded_conn(&server.url(), 1_000_000);
+    let app = app_with(conn);
+    unlock(&app, PROFILE);
+
+    // Build a draft.
+    let draft_id = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build")
+        .id;
+
+    // Pre-queue a "user cancelled" response for the secure prompt.
+    use crate::commands::secure_prompt::{push_test_answer, SecurePromptResult};
+    push_test_answer(SecurePromptResult {
+        value: None,
+        confirmed: false,
+    });
+
+    // Call sign_tx_draft (the command, not _inner) — it should reject with
+    // UserRejected and NOT sign the draft.
+    let err = sign_tx_draft_confirmed(&app.state(), app.handle(), &draft_id)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, crate::error::AppError::UserRejected),
+        "expected UserRejected, got {err:?}"
+    );
+
+    // The draft must still be unsigned.
+    let row = draft_row(&app, &draft_id);
+    assert!(
+        row.signed_tx_hex.is_none(),
+        "draft must remain unsigned after cancellation"
+    );
+
+    // The node was never called.
+    m.assert_async().await;
 }
 
 #[tokio::test]
@@ -1121,7 +1169,7 @@ async fn deleting_a_broadcasted_draft_is_refused() {
         .await
         .unwrap();
     unlock(&app, PROFILE);
-    sign_tx_draft(app.state(), draft.id.clone()).await.unwrap();
+    sign_tx_draft_inner(&app.state(), &draft.id).await.unwrap();
     broadcast_tx_draft(app.state(), draft.id.clone())
         .await
         .unwrap();
@@ -1149,7 +1197,7 @@ async fn resigning_a_draft_still_works_using_its_own_reserved_coin() {
     unlock(&app, PROFILE);
     // Re-signing draft1 must succeed even though its input is reserved —
     // by ITSELF.
-    sign_tx_draft(app.state(), draft1.id.clone())
+    sign_tx_draft_inner(&app.state(), &draft1.id)
         .await
         .expect("re-sign of a draft must succeed using its own reserved coin(s)");
     let row = draft_row(&app, &draft1.id);
@@ -1182,7 +1230,7 @@ async fn resign_uses_the_reserved_coin_even_if_a_larger_coin_arrived_later() {
     }
 
     unlock(&app, PROFILE);
-    sign_tx_draft(app.state(), draft1.id.clone())
+    sign_tx_draft_inner(&app.state(), &draft1.id)
         .await
         .expect("sign");
 
@@ -1217,7 +1265,7 @@ async fn broadcast_rejection_frees_the_coin_for_a_new_draft() {
         .await
         .unwrap();
     unlock(&app, PROFILE);
-    sign_tx_draft(app.state(), draft1.id.clone()).await.unwrap();
+    sign_tx_draft_inner(&app.state(), &draft1.id).await.unwrap();
     broadcast_tx_draft(app.state(), draft1.id.clone())
         .await
         .expect_err("node rejects the broadcast");
@@ -1247,7 +1295,7 @@ async fn broadcast_transport_error_keeps_reservation_and_is_not_marked_failed() 
         .await
         .unwrap();
     unlock(&app, PROFILE);
-    sign_tx_draft(app.state(), draft.id.clone()).await.unwrap();
+    sign_tx_draft_inner(&app.state(), &draft.id).await.unwrap();
 
     // Repoint at an unreachable address just before broadcasting.
     {

@@ -1,5 +1,41 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+- Encrypt the Namebase session cookie at rest under an OS-keyring-held DEK
+  (AES-256-GCM). The cookie is stored as a hex-encoded blob in the new
+  `namebase_cookie_v1` setting; the plaintext `namebase_cookie` setting is
+  blanked on migration and on disconnect (defense in depth). Existing users'
+  plaintext cookies are migrated transparently on first read.
+- Add `SECURITY.md` at the repo root documenting the full threat model, per
+  attack-surface mitigations, residual risks (honest disclosure), the
+  lower-risk manual-transfer alternative, and a reference table mapping each
+  concern to the enforcing code + tests.
+- Redact sensitive settings (`namebase_cookie`, `node_rpc_api_key`,
+  `hsd_api_key`) from `get_settings`; the renderer now sees only
+  `__has_<key>` presence markers, never the raw value.
+- Enforce a host allowlist on the Namebase API base URL, require HTTPS for
+  the real Namebase host (no cleartext), and treat the `namebase_base_url`
+  setting as a debug-only test seam — it is ignored in release builds.
+- Deny renderer writes to security-critical settings (`namebase_base_url`,
+  `namebase_cookie`) via `update_setting`.
+- Require explicit user confirmation in the Rust-owned secure window before
+  signing any draft (`sign_tx_draft`). The confirmation window shows the
+  action, recipient, amount, fee, txid, and any warnings so a compromised
+  main webview cannot swap details silently.
+- Redact sensitive values in `audit_log`; `get_audit_log` also re-redacts
+  legacy plaintext rows on read (defense in depth).
+- Refuse to send an RPC api-key over plaintext HTTP to a non-loopback host;
+  `NodeRpcClient::new` blanks the key defensively when misused.
+- Ship a restrictive Content Security Policy for the Tauri webviews.
+
+### Fixed
+- README and USER_MANUAL privacy claim: the app is local-first, not
+  local-only. The docs now spell out that the HNSFans explorer sees wallet
+  addresses and tracked names by default and how to run a local hsd node
+  for fully local lookups.
+
 ## [0.2.0]
 
 ### Added

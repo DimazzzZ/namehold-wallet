@@ -81,11 +81,20 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 
 ## Security
 
+For a detailed threat model, attack surfaces, and mitigations, see [SECURITY.md](./SECURITY.md).
+
 - **Non-custodial** — your keys live on your device, encrypted; nothing is custodied.
 - **Secrets never reach the web layer** — entry/display happen in the secure window,
   and signing happens in Rust.
-- **Local-only** — all data stays on your machine. No cloud, no telemetry.
+- **Local-first** — keys and secrets stay on your device (encrypted at rest). By
+  default, balance and name lookups query the public HNSFans explorer, which sees
+  your wallet addresses and tracked names. Run your own hsd node (Settings) to keep
+  all lookups fully local. No cloud, no telemetry.
 - **Auto-lock** — the unlocked signer times out after a configurable idle period.
+- **Namebase migration** — optional in-app helper for transferring domains from
+  Namebase. The session cookie is encrypted at rest and never exposed to the web
+  layer. See [SECURITY.md](./SECURITY.md) for the full threat model and a
+  lower-risk alternative.
 
 ## Prerequisites
 

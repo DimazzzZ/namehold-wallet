@@ -8,6 +8,7 @@ mod models;
 mod namebase;
 mod noncustodial;
 mod providers;
+mod security;
 #[cfg(test)]
 mod tests;
 mod wallet_delete;

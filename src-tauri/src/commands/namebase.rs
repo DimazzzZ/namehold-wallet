@@ -1,29 +1,96 @@
 use crate::db;
 use crate::error::AppError;
 use crate::namebase::client::NamebaseClient;
+use crate::noncustodial::cookie_vault;
 use crate::AppState;
 use tauri::State;
 
-fn get_cookie(state: &AppState) -> Result<String, AppError> {
+/// Read the Namebase session cookie, preferring the encrypted v1 blob.
+/// If `namebase_cookie_v1` is empty but the legacy `namebase_cookie` has a
+/// value, migrate it: encrypt → store in v1 → blank the legacy row.
+fn read_cookie(state: &AppState) -> Result<String, AppError> {
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let settings = db::queries::get_settings(&db)?;
-    Ok(settings.get("namebase_cookie").cloned().unwrap_or_default())
+
+    let v1_hex = settings
+        .get("namebase_cookie_v1")
+        .cloned()
+        .unwrap_or_default();
+    if !v1_hex.is_empty() {
+        // Decrypt the v1 blob.
+        let plaintext = cookie_vault::decrypt_cookie(&v1_hex)?;
+        return Ok(String::from_utf8_lossy(&plaintext).into_owned());
+    }
+
+    // Fallback: check the legacy plaintext key.
+    let legacy = settings.get("namebase_cookie").cloned().unwrap_or_default();
+    if legacy.is_empty() {
+        return Ok(String::new());
+    }
+
+    // Migrate: encrypt the legacy value and blank the plaintext row.
+    match cookie_vault::encrypt_cookie(legacy.as_bytes()) {
+        Ok(blob_hex) => {
+            db::queries::set_setting(&db, "namebase_cookie_v1", &blob_hex)?;
+            db::queries::set_setting(&db, "namebase_cookie", "")?;
+            db.execute(
+                "INSERT INTO audit_log (action, detail) VALUES ('namebase_cookie_migrated', '{}')",
+                [],
+            )?;
+        }
+        Err(_e) => {
+            // Keyring unavailable — return the legacy plaintext (don't break
+            // existing sessions). The cookie stays in the legacy plaintext key
+            // until a keyring becomes available on a later read.
+            return Ok(legacy);
+        }
+    }
+
+    Ok(legacy)
+}
+
+/// Encrypt and persist the cookie under the v1 key. Also blanks the legacy key.
+fn write_cookie(state: &AppState, cookie: &str) -> Result<(), AppError> {
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    if cookie.is_empty() {
+        // Disconnect: blank both keys.
+        db::queries::set_setting(&db, "namebase_cookie_v1", "")?;
+        db::queries::set_setting(&db, "namebase_cookie", "")?;
+        return Ok(());
+    }
+    let blob_hex = cookie_vault::encrypt_cookie(cookie.as_bytes())?;
+    db::queries::set_setting(&db, "namebase_cookie_v1", &blob_hex)?;
+    // Blank legacy key (defense in depth).
+    db::queries::set_setting(&db, "namebase_cookie", "")?;
+    Ok(())
+}
+
+/// Read the `namebase_base_url` test seam, but ONLY in debug builds / tests.
+/// In release builds this always returns empty so the client uses the real
+/// Namebase host — a poisoned setting can never redirect the session cookie.
+fn test_base_url_override(_settings: &crate::models::settings::SettingsMap) -> String {
+    #[cfg(any(debug_assertions, test))]
+    {
+        _settings
+            .get("namebase_base_url")
+            .cloned()
+            .unwrap_or_default()
+    }
+    #[cfg(not(any(debug_assertions, test)))]
+    {
+        String::new()
+    }
 }
 
 /// Build a Namebase client, honoring an optional `namebase_base_url` setting so
 /// tests can point the irreversible transfer/withdraw calls at a mock server.
 /// Production leaves the setting unset → the real Namebase host.
 pub(crate) fn namebase_client(state: &AppState) -> Result<NamebaseClient, AppError> {
-    let (cookie, base) = {
+    let cookie = read_cookie(state)?;
+    let base = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&db)?;
-        (
-            settings.get("namebase_cookie").cloned().unwrap_or_default(),
-            settings
-                .get("namebase_base_url")
-                .cloned()
-                .unwrap_or_default(),
-        )
+        test_base_url_override(&settings)
     };
     if base.trim().is_empty() {
         NamebaseClient::new(&cookie)
@@ -41,10 +108,8 @@ pub(crate) fn namebase_client_with_cookie(
 ) -> Result<NamebaseClient, AppError> {
     let base = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::get_settings(&db)?
-            .get("namebase_base_url")
-            .cloned()
-            .unwrap_or_default()
+        let settings = db::queries::get_settings(&db)?;
+        test_base_url_override(&settings)
     };
     if base.trim().is_empty() {
         NamebaseClient::new(cookie)
@@ -64,8 +129,7 @@ fn persist_cookie_if_changed(
 ) -> Result<(), AppError> {
     let after = client.current_cookie();
     if after != before {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::set_setting(&db, "namebase_cookie", &after)?;
+        write_cookie(state, &after)?;
     }
     Ok(())
 }
@@ -88,22 +152,20 @@ pub async fn connect_namebase(
     // if Namebase rotated the cookie on this very first request, we want the
     // rotated value on disk, not the one the user pasted.
     let final_cookie = client.current_cookie();
-    {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::set_setting(&db, "namebase_cookie", &final_cookie)?;
-        db.execute(
-            "INSERT INTO audit_log (action, detail) VALUES ('namebase_connect', ?1)",
-            [serde_json::json!({"status": "connected"}).to_string()],
-        )?;
-    }
+    write_cookie(&state, &final_cookie)?;
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    db.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('namebase_connect', ?1)",
+        [serde_json::json!({"status": "connected"}).to_string()],
+    )?;
 
     Ok(account)
 }
 
 #[tauri::command]
 pub async fn disconnect_namebase(state: State<'_, AppState>) -> Result<(), AppError> {
+    write_cookie(&state, "")?;
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    db::queries::set_setting(&db, "namebase_cookie", "")?;
     db.execute(
         "INSERT INTO audit_log (action, detail) VALUES ('namebase_disconnect', ?1)",
         [serde_json::json!({"status": "disconnected"}).to_string()],
@@ -115,7 +177,7 @@ pub async fn disconnect_namebase(state: State<'_, AppState>) -> Result<(), AppEr
 pub async fn get_namebase_status(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
-    let cookie = get_cookie(&state)?;
+    let cookie = read_cookie(&state)?;
 
     if cookie.is_empty() {
         return Ok(serde_json::json!({"connected": false, "has_cookie": false}));
@@ -389,4 +451,33 @@ pub async fn fetch_namebase_domain_withdrawals(
     let result = client.get_domain_withdrawals().await?;
     persist_cookie_if_changed(&state, &before, &client)?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_base_url_override;
+    use crate::models::settings::SettingsMap;
+
+    #[test]
+    fn test_base_url_override_returns_setting_value_in_test_build() {
+        // Under `cfg(test)` (and debug builds) the seam echoes the setting so
+        // integration tests can point the client at a mock server.
+        let mut settings = SettingsMap::new();
+        settings.insert(
+            "namebase_base_url".to_string(),
+            "http://127.0.0.1:8080".to_string(),
+        );
+        assert_eq!(test_base_url_override(&settings), "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn test_base_url_override_returns_empty_when_setting_absent() {
+        let settings = SettingsMap::new();
+        assert_eq!(test_base_url_override(&settings), "");
+    }
+
+    // Note: the release-only branch (`#[cfg(not(any(debug_assertions,
+    // test)))]`) always returns "" regardless of settings. It is compiled out
+    // under a test binary, so it cannot be exercised here directly — the
+    // build-config guards enforce that invariant at compile time.
 }

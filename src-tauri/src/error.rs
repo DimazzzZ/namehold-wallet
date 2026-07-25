@@ -25,6 +25,12 @@ pub enum AppError {
     NotFound(String),
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+    /// The user declined a secure-window confirmation (e.g. cancelled the
+    /// per-transaction spend confirmation). Kept distinct from `Other` so the
+    /// frontend can treat a deliberate cancel as a benign, non-error outcome
+    /// rather than a failure to surface loudly.
+    #[error("Confirmation declined")]
+    UserRejected,
     /// A Namebase response had a successful HTTP status but its body looks like
     /// the HTML login page rather than API JSON — Namebase's way of soft-expiring
     /// a session without a 401. Kept distinct from `Other` so the client layer

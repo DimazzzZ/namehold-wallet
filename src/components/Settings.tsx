@@ -109,10 +109,20 @@ export function Settings() {
     // Normalize the trailing slash the same way the backend does
     // (`HnsFansClient::new` trims it) so the value shown here always matches
     // what's actually used — a stray slash would build `//api/...` URLs.
-    const normalized = {
+    const normalized: Record<string, string> = {
       ...form,
       explorer_api_url: (form.explorer_api_url ?? "").trim().replace(/\/+$/, ""),
     };
+    // Secret fields (currently `node_rpc_api_key`) are write-only: the backend
+    // never returns their value, so the form always starts empty even when one
+    // is stored. Saving that empty value would clobber the stored secret.
+    // Skip the field on save when it's still empty AND the backend reported a
+    // stored value via the `__has_<key>` marker.
+    const hasStoredApiKey =
+      (settings as unknown as Record<string, string>)["__has_node_rpc_api_key"] === "true";
+    if (hasStoredApiKey && (normalized.node_rpc_api_key ?? "") === "") {
+      delete normalized.node_rpc_api_key;
+    }
     setSaving(true);
     try {
       await saveAll(normalized);
@@ -193,7 +203,11 @@ export function Settings() {
             type="password"
             value={form.node_rpc_api_key ?? ""}
             onChange={(e) => updateField("node_rpc_api_key", e.target.value)}
-            placeholder="(optional)"
+            placeholder={
+              (settings as unknown as Record<string, string>)["__has_node_rpc_api_key"] === "true"
+                ? "•••••• (stored — leave blank to keep)"
+                : "(optional)"
+            }
           />
           <div className="text-xs text-gray-500">
             Needed only to send or do name actions. Run hsd with{" "}

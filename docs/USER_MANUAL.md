@@ -445,8 +445,11 @@ Then open the app normally.
 - **Secrets never reach the web layer.** Passphrase entry and recovery-phrase
   display happen in a small Rust-owned secure window, and signing happens in
   Rust. Your JavaScript UI never sees them.
-- **Local-only.** No cloud, no telemetry. The only outbound HTTP is to the
-  HNSFans explorer (reads) and, if configured, your own hsd node.
+- **Local-first.** No cloud, no telemetry. Keys and secrets stay on your
+  device. By default, balance/name lookups go to the public HNSFans explorer,
+  which therefore sees your wallet addresses and the names you track; running
+  your own hsd node keeps those lookups fully local. The only other outbound
+  HTTP is to your configured node.
 - **Localhost-first.** Namehold connects to hsd on `127.0.0.1` by default;
   non-localhost URLs are allowed but warned about.
 - **Auto-lock.** The unlocked signer times out after a configurable idle

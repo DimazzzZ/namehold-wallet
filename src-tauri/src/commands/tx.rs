@@ -12,8 +12,9 @@
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Runtime, State};
 
+use crate::commands::secure_prompt::{prompt_secure, SecurePromptRequest};
 use crate::db;
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
@@ -72,6 +73,57 @@ fn session_ttl_ms(settings: &std::collections::HashMap<String, String>) -> u128 
         .filter(|n| *n > 0)
         .unwrap_or(900);
     (secs as u128) * 1000
+}
+
+/// Format doos as an HNS decimal string (6 dp) for human display.
+fn doos_to_hns_string(doos: i64) -> String {
+    let whole = doos / 1_000_000;
+    let frac = (doos % 1_000_000).abs();
+    format!("{whole}.{frac:06} HNS")
+}
+
+/// Build the read-only detail rows shown in the secure confirmation window for
+/// a draft. Rows are `{ "label": ..., "value": ... }`; the window renders them
+/// verbatim so the user confirms the real on-chain intent, not whatever the
+/// (possibly compromised) main webview claims.
+fn confirm_details_for_draft(draft: &db::queries::TxDraftRow) -> serde_json::Value {
+    let summary: TxSummary = serde_json::from_str(&draft.summary_json).unwrap_or(TxSummary {
+        action: draft.action.clone(),
+        send_total_doos: 0,
+        fee_doos: 0,
+        change_doos: 0,
+        input_total_doos: 0,
+        num_inputs: 0,
+        recipient_address: None,
+        txid: None,
+        warnings: Vec::new(),
+    });
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let action_label = match draft.action.as_str() {
+        "send_hns" => "Send HNS".to_string(),
+        other => format!("Name action: {other}"),
+    };
+    rows.push(serde_json::json!({ "label": "Action", "value": action_label }));
+    if draft.action == "send_hns" {
+        if let Some(to) = &summary.recipient_address {
+            rows.push(serde_json::json!({ "label": "To", "value": to }));
+        }
+        rows.push(serde_json::json!({
+            "label": "Amount",
+            "value": doos_to_hns_string(summary.send_total_doos),
+        }));
+    }
+    rows.push(serde_json::json!({
+        "label": "Fee",
+        "value": doos_to_hns_string(summary.fee_doos),
+    }));
+    if let Some(txid) = &summary.txid {
+        rows.push(serde_json::json!({ "label": "Txid", "value": txid }));
+    }
+    for w in &summary.warnings {
+        rows.push(serde_json::json!({ "label": "Warning", "value": w }));
+    }
+    serde_json::json!({ "rows": rows })
 }
 
 /// Resolve the fee rate (doos/byte): explicit override, else ask the node's
@@ -427,12 +479,60 @@ pub async fn estimate_tx_draft_fee(
 #[tauri::command]
 pub async fn sign_tx_draft(
     state: State<'_, AppState>,
+    app: AppHandle,
     draft_id: String,
+) -> Result<TxDraftSummary, AppError> {
+    sign_tx_draft_confirmed(&state, &app, &draft_id).await
+}
+
+/// Confirmation-gated signing, generic over the Tauri runtime so tests using
+/// the mock runtime can drive it. Requires an explicit per-transaction
+/// confirmation in the Rust-owned secure window BEFORE any signing. A
+/// compromised/injected main webview can invoke this while the session is
+/// unlocked, but it cannot forge the confirmation (a separate window it does
+/// not control) and the window shows the real tx details so the user can
+/// catch a swapped draft.
+pub(crate) async fn sign_tx_draft_confirmed<R: Runtime>(
+    state: &State<'_, AppState>,
+    app: &AppHandle<R>,
+    draft_id: &str,
+) -> Result<TxDraftSummary, AppError> {
+    let draft = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::get_tx_draft(&conn, draft_id)?
+            .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?
+    };
+    let details = confirm_details_for_draft(&draft);
+    let confirm = prompt_secure(
+        app,
+        SecurePromptRequest {
+            mode: "confirm".to_string(),
+            title: "Confirm transaction".to_string(),
+            message: "Review these details. This will sign and broadcast a transaction."
+                .to_string(),
+            details: Some(details),
+            ..Default::default()
+        },
+    )
+    .await?;
+    if !confirm.confirmed {
+        return Err(AppError::UserRejected);
+    }
+    sign_tx_draft_inner(state, draft_id).await
+}
+
+/// The signing core, WITHOUT the secure-window confirmation. Not a Tauri
+/// command — callers must have already obtained user confirmation (the
+/// `sign_tx_draft` command does this). Kept separate so tests can drive signing
+/// deterministically without opening a secure window.
+pub(crate) async fn sign_tx_draft_inner(
+    state: &State<'_, AppState>,
+    draft_id: &str,
 ) -> Result<TxDraftSummary, AppError> {
     // 1. Load the draft + session ttl (send_hns also needs spendable coins).
     let (draft, coins, ttl_ms) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let draft = db::queries::get_tx_draft(&conn, &draft_id)?
+        let draft = db::queries::get_tx_draft(&conn, draft_id)?
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
         let coins = if draft.action == "send_hns" {
             // Prefer the exact coin set this draft reserved at build time (I3):
@@ -444,9 +544,9 @@ pub async fn sign_tx_draft(
             // the general pool (still excluding other drafts' reservations)
             // for drafts holding no reservation rows — e.g. drafts created
             // before migration 015, or whose reservation TTL-expired.
-            let reserved = send::load_reserved_coins(&conn, &draft.wallet_profile_id, &draft_id)?;
+            let reserved = send::load_reserved_coins(&conn, &draft.wallet_profile_id, draft_id)?;
             if reserved.is_empty() {
-                send::load_spendable_coins(&conn, &draft.wallet_profile_id, Some(&draft_id))?
+                send::load_spendable_coins(&conn, &draft.wallet_profile_id, Some(draft_id))?
             } else {
                 reserved
             }
@@ -523,8 +623,8 @@ pub async fn sign_tx_draft(
     // 3. Persist the signed tx + summary.
     {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::update_tx_draft_signed(&conn, &draft_id, &signed_hex, &summary_json)?;
-        db::queries::get_tx_draft(&conn, &draft_id)?
+        db::queries::update_tx_draft_signed(&conn, draft_id, &signed_hex, &summary_json)?;
+        db::queries::get_tx_draft(&conn, draft_id)?
             .map(|d| d.to_summary())
             .ok_or_else(|| AppError::Other("draft vanished after sign".to_string()))
     }
@@ -1163,4 +1263,119 @@ pub async fn list_tx_drafts(
         return Ok(Vec::new());
     }
     db::queries::list_tx_drafts(&conn, &id)
+}
+
+#[cfg(test)]
+mod confirm_tests {
+    use super::*;
+
+    /// Build a `TxDraftRow` with the given action + summary; other fields are
+    /// placeholder values the confirmation payload never reads.
+    fn draft(action: &str, summary_json: &str) -> db::queries::TxDraftRow {
+        db::queries::TxDraftRow {
+            id: "d1".to_string(),
+            wallet_profile_id: "p1".to_string(),
+            action: action.to_string(),
+            unsigned_tx_hex: String::new(),
+            signed_tx_hex: None,
+            signing_inputs_json: "{}".to_string(),
+            summary_json: summary_json.to_string(),
+            status: "draft".to_string(),
+            error_message: None,
+            txid: None,
+            confirmation_height: None,
+            created_at: "now".to_string(),
+        }
+    }
+
+    fn summary_json(s: &TxSummary) -> String {
+        serde_json::to_string(s).unwrap()
+    }
+
+    fn base_summary(action: &str) -> TxSummary {
+        TxSummary {
+            action: action.to_string(),
+            send_total_doos: 0,
+            fee_doos: 0,
+            change_doos: 0,
+            input_total_doos: 0,
+            num_inputs: 0,
+            recipient_address: None,
+            txid: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Find the value string for a given label in the rows array.
+    fn value_for<'a>(details: &'a serde_json::Value, label: &str) -> Option<&'a str> {
+        details["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["label"] == label)
+            .and_then(|r| r["value"].as_str())
+    }
+
+    #[test]
+    fn doos_to_hns_string_formats_whole_and_fractional_amounts() {
+        assert_eq!(doos_to_hns_string(0), "0.000000 HNS");
+        assert_eq!(doos_to_hns_string(1_000_000), "1.000000 HNS");
+        assert_eq!(doos_to_hns_string(1_500_000), "1.500000 HNS");
+        assert_eq!(doos_to_hns_string(2_000_123), "2.000123 HNS");
+        // Negative shouldn't occur, but must not panic and keeps a sane form.
+        assert_eq!(doos_to_hns_string(-1_500_000), "-1.500000 HNS");
+    }
+
+    #[test]
+    fn confirm_details_for_send_hns_shows_to_amount_fee_txid() {
+        let mut s = base_summary("send_hns");
+        s.send_total_doos = 2_500_000;
+        s.fee_doos = 10_000;
+        s.recipient_address = Some("hs1qexampleaddr".to_string());
+        s.txid = Some("abc123".to_string());
+        let details = confirm_details_for_draft(&draft("send_hns", &summary_json(&s)));
+
+        assert_eq!(value_for(&details, "Action"), Some("Send HNS"));
+        assert_eq!(value_for(&details, "To"), Some("hs1qexampleaddr"));
+        assert_eq!(value_for(&details, "Amount"), Some("2.500000 HNS"));
+        assert_eq!(value_for(&details, "Fee"), Some("0.010000 HNS"));
+        assert_eq!(value_for(&details, "Txid"), Some("abc123"));
+    }
+
+    #[test]
+    fn confirm_details_for_covenant_action_labels_action_and_omits_recipient() {
+        let mut s = base_summary("register");
+        s.fee_doos = 5_000;
+        let details = confirm_details_for_draft(&draft("register", &summary_json(&s)));
+
+        assert_eq!(value_for(&details, "Action"), Some("Name action: register"));
+        // Covenant actions don't show a "To" or "Amount" row.
+        assert_eq!(value_for(&details, "To"), None);
+        assert_eq!(value_for(&details, "Amount"), None);
+        assert_eq!(value_for(&details, "Fee"), Some("0.005000 HNS"));
+    }
+
+    #[test]
+    fn confirm_details_survives_malformed_summary_json() {
+        // Forces the `unwrap_or` fallback: still yields an Action + Fee row
+        // (fee 0) built from the draft's own `action`, no panic.
+        let details = confirm_details_for_draft(&draft("send_hns", "this is not json"));
+        assert_eq!(value_for(&details, "Action"), Some("Send HNS"));
+        assert_eq!(value_for(&details, "Fee"), Some("0.000000 HNS"));
+    }
+
+    #[test]
+    fn confirm_details_includes_warnings_as_rows() {
+        let mut s = base_summary("send_hns");
+        s.warnings = vec!["dust output".to_string(), "high fee".to_string()];
+        let details = confirm_details_for_draft(&draft("send_hns", &summary_json(&s)));
+        let warnings: Vec<&str> = details["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["label"] == "Warning")
+            .map(|r| r["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(warnings, vec!["dust output", "high fee"]);
+    }
 }

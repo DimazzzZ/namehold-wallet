@@ -23,7 +23,7 @@ use std::sync::Mutex;
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, Runtime, State, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::oneshot;
 
 use crate::error::AppError;
@@ -31,14 +31,19 @@ use crate::AppState;
 
 /// A request shown by the secure window. `payload` carries display-only secret
 /// material (e.g. a mnemonic to reveal); it is sent window-ward only.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Default, Serialize)]
 pub struct SecurePromptRequest {
-    /// One of: `passphrase`, `passphrase_new`, `reveal`, `import`.
+    /// One of: `passphrase`, `passphrase_new`, `reveal`, `import`, `confirm`.
     pub mode: String,
     pub title: String,
     pub message: String,
     /// For `reveal`: the mnemonic to display. `None` otherwise.
     pub payload: Option<String>,
+    /// Structured details rendered by the window for read-only display.
+    /// Used by `confirm` mode to show tx summary rows (label + value pairs).
+    /// `None` for other modes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 /// The user's answer to a secure prompt.
@@ -66,15 +71,40 @@ pub(crate) fn random_id() -> String {
     hex::encode(bytes)
 }
 
+// Test-only queue of canned answers for `prompt_secure`. When non-empty, a
+// call to `prompt_secure` pops the next answer instead of opening a real
+// webview window (which the `mock_builder` runtime can't create). This lets
+// integration tests drive the confirmation flow deterministically.
+#[cfg(test)]
+thread_local! {
+    static TEST_ANSWERS: std::cell::RefCell<std::collections::VecDeque<SecurePromptResult>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+/// Enqueue a canned answer that the next `prompt_secure` call will return.
+#[cfg(test)]
+pub(crate) fn push_test_answer(result: SecurePromptResult) {
+    TEST_ANSWERS.with(|q| q.borrow_mut().push_back(result));
+}
+
 /// Open a secure window for `request` and block until the user answers (or
 /// closes the window, which resolves to a non-confirmed result).
 ///
 /// This MUST NOT be called while holding the `AppState::db` lock, since it
 /// awaits user interaction.
-pub async fn prompt_secure(
-    app: &AppHandle,
+pub async fn prompt_secure<R: Runtime>(
+    app: &AppHandle<R>,
     request: SecurePromptRequest,
 ) -> Result<SecurePromptResult, AppError> {
+    // Test seam: if a canned answer is queued, return it without opening a
+    // window. Compiled only into test builds.
+    #[cfg(test)]
+    {
+        if let Some(answer) = TEST_ANSWERS.with(|q| q.borrow_mut().pop_front()) {
+            let _ = (app, &request);
+            return Ok(answer);
+        }
+    }
     let id = random_id();
     let (tx, rx) = oneshot::channel();
 

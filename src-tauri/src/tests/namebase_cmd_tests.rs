@@ -23,6 +23,15 @@ use crate::AppState;
 const PROFILE: &str = "nbp1";
 const COOKIE: &str = "test-cookie-123";
 
+/// Install a fixed test DEK so integration tests can exercise the full
+/// encrypt/decrypt flow without hitting the OS keyring. Must be called once
+/// before any test that uses `encrypt_cookie` or `decrypt_cookie`. Installed
+/// from `seeded_conn` / `conn_without_cookie` so EVERY test in this module is
+/// isolated from the real OS keyring regardless of run order.
+fn install_test_dek() {
+    crate::noncustodial::cookie_vault::set_test_dek(Some((0..32u8).collect()));
+}
+
 fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> {
     mock_builder()
         .manage(AppState {
@@ -40,6 +49,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
 
 /// In-memory DB with an active MAINNET profile and `namebase_cookie` + `namebase_base_url` set.
 fn seeded_conn(base_url: &str) -> rusqlite::Connection {
+    install_test_dek();
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
@@ -62,6 +72,7 @@ fn seeded_conn(base_url: &str) -> rusqlite::Connection {
 
 /// DB with a MAINNET profile but no cookie / base URL set.
 fn conn_without_cookie() -> rusqlite::Connection {
+    install_test_dek();
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
@@ -545,9 +556,18 @@ async fn connect_namebase_success_stores_cookie_and_returns_account() {
     let state = app.state::<AppState>();
     let db = state.db.lock().unwrap();
     let settings = db::queries::get_settings(&db).unwrap();
+    // The cookie is now encrypted in namebase_cookie_v1; the legacy plaintext
+    // key is blanked.
     assert_eq!(
         settings.get("namebase_cookie").map(|s| s.as_str()),
-        Some("session-cookie-abc")
+        Some("")
+    );
+    assert!(
+        settings
+            .get("namebase_cookie_v1")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
+        "namebase_cookie_v1 should be non-empty (encrypted blob)"
     );
 
     let count: i64 = db
@@ -815,10 +835,23 @@ async fn fetch_domains_persists_rotated_cookie_to_settings() {
     {
         let db = state.db.lock().unwrap();
         let settings = db::queries::get_settings(&db).unwrap();
+        // The rotated cookie is persisted encrypted in namebase_cookie_v1;
+        // the legacy plaintext key is blanked.
         assert_eq!(
             settings.get("namebase_cookie").map(|s| s.as_str()),
-            Some("nb-sunset=ROTATED"),
-            "rotated cookie should be persisted"
+            Some(""),
+            "legacy plaintext key should be blanked"
+        );
+        let v1 = settings
+            .get("namebase_cookie_v1")
+            .cloned()
+            .unwrap_or_default();
+        assert!(!v1.is_empty(), "encrypted v1 blob should be present");
+        let decrypted = crate::noncustodial::cookie_vault::decrypt_cookie(&v1).expect("decrypt");
+        assert_eq!(
+            String::from_utf8_lossy(&decrypted),
+            "nb-sunset=ROTATED",
+            "rotated cookie should be persisted (encrypted)"
         );
     }
     m.assert_async().await;
@@ -848,10 +881,24 @@ async fn fetch_domains_does_not_touch_settings_when_cookie_unchanged() {
     {
         let db = state.db.lock().unwrap();
         let settings = db::queries::get_settings(&db).unwrap();
+        // Reading the legacy plaintext cookie migrates it into the encrypted v1
+        // key (blanking the plaintext). Because the client cookie did not
+        // rotate during the request, no *further* write happens. The end state
+        // is: plaintext blank, v1 holds the (unchanged) STABLE cookie.
         assert_eq!(
             settings.get("namebase_cookie").map(|s| s.as_str()),
-            Some("nb-sunset=STABLE"),
+            Some(""),
         );
+        let v1 = settings
+            .get("namebase_cookie_v1")
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !v1.is_empty(),
+            "migrated encrypted v1 blob should be present"
+        );
+        let decrypted = crate::noncustodial::cookie_vault::decrypt_cookie(&v1).expect("decrypt");
+        assert_eq!(String::from_utf8_lossy(&decrypted), "nb-sunset=STABLE");
     }
     m.assert_async().await;
 }

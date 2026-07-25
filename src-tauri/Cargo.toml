@@ -53,6 +53,21 @@ hex = "0.4"
 zeroize = { version = "1", features = ["derive"] }
 # base64 encoding for hsd-compatible signed-message output (signmessagewithname parity).
 base64 = "0.22"
+url = "2.5.8"
+
+# OS keyring for the Namebase-cookie data-encryption key. v3 ships no backend
+# by default — pick the native store per OS. Linux uses the Secret Service
+# (org.freedesktop.secrets, e.g. gnome-keyring / KWallet) with the pure-Rust
+# crypto backend so there is no OpenSSL build dependency; it still needs the
+# `libsecret` runtime lib.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]
 mockito = "1"
