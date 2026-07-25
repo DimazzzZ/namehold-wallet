@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient, type UseQueryResult } from "@tan
 import { invoke } from "../lib/invoke";
 import { normalizeTransaction } from "../lib/providerMode";
 import { useActiveProfile } from "./wallet";
+import { useNodeLive } from "./node";
 import type {
   HsdBalance,
   HsdName,
@@ -21,15 +22,19 @@ import type {
 const STALE_TIME = 15_000;
 
 /**
- * Per-wallet balance. The cache is keyed by the active profile id so wallet B
- * never momentarily shows wallet A's number, and it does NOT auto-refetch —
- * each wallet shows its last-known balance (persisted server-side in the chain
- * cache, so it survives a restart) and only updates when the user hits Refresh
- * (which invalidates the `["read"]` prefix).
+ * Per-wallet balance, keyed by the active profile id so wallet B never
+ * momentarily shows wallet A's number.
+ *
+ * Freshness: refetches on mount and — while the node is live — polls every 20s
+ * so the displayed balance tracks the local chain cache (kept current by the
+ * background sync). When the node is not live, polling is disabled and the
+ * last-known value (persisted in the chain cache, survives restart) is shown
+ * until the next sync/Refresh.
  */
 export function useReadBalance(): UseQueryResult<HsdBalance | null> {
   const { data: profile } = useActiveProfile();
   const profileId = profile?.id ?? null;
+  const nodeLive = useNodeLive();
   return useQuery<HsdBalance | null>({
     queryKey: ["read", "balance", profileId],
     enabled: profileId != null,
@@ -41,11 +46,8 @@ export function useReadBalance(): UseQueryResult<HsdBalance | null> {
       });
       return raw ?? null;
     },
-    staleTime: Infinity,
-    gcTime: Infinity,
-    refetchOnMount: false,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
+    staleTime: STALE_TIME,
+    refetchInterval: nodeLive ? 20_000 : false,
   });
 }
 
@@ -196,8 +198,10 @@ export function useNameBids(
 export function useNameRecords(
   name: string | null | undefined,
   walletProfileId: string | null,
+  opts?: { forceFresh?: boolean },
 ): UseQueryResult<Record<string, unknown>[]> {
   const profileId = walletProfileId ?? null;
+  const forceFresh = opts?.forceFresh ?? false;
   return useQuery<Record<string, unknown>[]>({
     queryKey: ["read", "nameRecords", profileId, name ?? ""],
     enabled: Boolean(name && name.trim().length > 0),
@@ -208,7 +212,13 @@ export function useNameRecords(
       });
       return Array.isArray(raw) ? raw : [];
     },
-    staleTime: STALE_TIME,
+    // The DNS editor MUST seed from a guaranteed-fresh read: the resource is
+    // rewritten wholesale by UPDATE, so seeding from a cached pre-UPDATE
+    // snapshot lets the user overwrite their on-chain records from a stale
+    // base. `forceFresh` disables the 15s cache and forces a refetch on every
+    // mount (i.e. every modal open). Other callers keep the 15s cache.
+    staleTime: forceFresh ? 0 : STALE_TIME,
+    refetchOnMount: forceFresh ? "always" : true,
   });
 }
 
