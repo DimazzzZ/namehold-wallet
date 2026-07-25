@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Security
+- Encrypt the Namebase session cookie at rest under an OS-keyring-held DEK
+  (AES-256-GCM). The cookie is stored as a hex-encoded blob in the new
+  `namebase_cookie_v1` setting; the plaintext `namebase_cookie` setting is
+  blanked on migration and on disconnect (defense in depth). Existing users'
+  plaintext cookies are migrated transparently on first read.
+- Add `SECURITY.md` at the repo root documenting the full threat model, per
+  attack-surface mitigations, residual risks (honest disclosure), the
+  lower-risk manual-transfer alternative, and a reference table mapping each
+  concern to the enforcing code + tests.
 - Redact sensitive settings (`namebase_cookie`, `node_rpc_api_key`,
   `hsd_api_key`) from `get_settings`; the renderer now sees only
   `__has_<key>` presence markers, never the raw value.
