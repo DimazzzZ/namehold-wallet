@@ -36,6 +36,17 @@ export function useNodeStatus() {
   });
 }
 
+/**
+ * `true` when the local node is connected AND fully synced — i.e. it is the
+ * authoritative read source right now. Derived from `node_status.read_source`
+ * ("local" only when the backend's sync gate passes). Freshness policies gate
+ * their `refetchInterval`/auto-sync on this: when it's `false`, the node can't
+ * give a fresher answer than the cache/explorer, so we don't poll or sync.
+ */
+export function useNodeLive(): boolean {
+  return useNodeStatus().data?.read_source === "local";
+}
+
 // Start/stop affect node connectivity, which also gates sending — invalidate the
 // node status AND the wallet queries (writeCapability/signer/balances) so every
 // status surface updates together.

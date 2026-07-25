@@ -129,10 +129,39 @@ export function NameActionsModal({
   // Used to seed the editor once per open so the user sees/edits/deletes the
   // name's existing records (UPDATE replaces the resource wholesale, so the
   // editor must start from the full current set).
-  const { data: currentRecords, isLoading: recordsLoading } = useNameRecords(
-    open && isOwned ? name : null,
-    profile?.id ?? null,
-  );
+  //
+  // `forceFresh` disables the 15s react-query cache and refetches on every
+  // open: seeding from a cached pre-UPDATE snapshot would let the user
+  // overwrite their on-chain records from a stale base (the reported bug).
+  const {
+    data: currentRecords,
+    isFetching: recordsFetching,
+    isError: recordsError,
+    dataUpdatedAt: recordsUpdatedAt,
+    refetch: refetchRecords,
+  } = useNameRecords(open && isOwned ? name : null, profile?.id ?? null, {
+    forceFresh: true,
+  });
+
+  // Timestamp of when THIS modal-open began. A records read only counts as
+  // "fresh enough to seed / to allow UPDATE" if it landed at or after this
+  // moment — i.e. it reflects the current open, not a value cached from a
+  // prior session.
+  const openedAtRef = useRef<number>(0);
+  useEffect(() => {
+    if (open) openedAtRef.current = Date.now();
+  }, [open]);
+
+  // The records read is guaranteed-fresh when: not currently fetching, we
+  // have data, no error, and the data landed at/after this open. Until then
+  // the editor must not seed and UPDATE must stay disabled.
+  const recordsFresh =
+    open &&
+    isOwned &&
+    !recordsFetching &&
+    !recordsError &&
+    currentRecords !== undefined &&
+    recordsUpdatedAt >= openedAtRef.current;
 
   // Seed the editor from the loaded records EXACTLY ONCE per (name, open). A
   // refetch (Update invalidates the `["read"]` prefix) must NOT clobber the
@@ -142,19 +171,23 @@ export function NameActionsModal({
   useEffect(() => {
     if (!open || !isOwned) return;
     if (seededForName.current === name) return;
-    if (recordsLoading || currentRecords === undefined) return;
-    // Only overwrite the row editor when the name actually HAS records to
-    // prefill. When it has none (a freshly-won name, or no synced node),
-    // leave `rows` at its default blank TXT row — seeding a blank here would
-    // race with, and clobber, a value the user just typed while the query was
-    // still in flight.
+    // Seed ONLY from a guaranteed-fresh read. Never seed from a stale cache
+    // or an in-flight/undefined value — that's the stale-editor bug.
+    if (!recordsFresh) return;
+    // Seed the editor from the fresh on-chain set. Only OVERWRITE the rows
+    // when the name actually has records to prefill: an empty fresh read means
+    // "no records" — the editor's default blank row already represents that,
+    // and overwriting here would clobber anything the user typed while the
+    // read was in flight (e.g. a REGISTER-from-scratch in the guided flow).
+    // The stale-editor bug is already prevented upstream: `recordsFresh`
+    // gates this effect, so a stale non-empty read can never seed.
     const seeded = recordsToRows(currentRecords ?? []);
     if (seeded.length) {
       setRows(seeded);
-      setRecordsJson(JSON.stringify(currentRecords, null, 2));
     }
+    setRecordsJson(JSON.stringify(currentRecords ?? [], null, 2));
     seededForName.current = name;
-  }, [open, isOwned, name, recordsLoading, currentRecords]);
+  }, [open, isOwned, name, recordsFresh, currentRecords]);
   useEffect(() => {
     if (!open) seededForName.current = null;
   }, [open]);
@@ -532,19 +565,46 @@ export function NameActionsModal({
                   </button>
                 </div>
 
-                {/* Loading / empty-hint for current records */}
-                {recordsLoading && (
+                {/* Freshness gate. The editor seeds and UPDATE is enabled ONLY
+                    from a guaranteed-fresh read of the current on-chain
+                    records — otherwise the user could overwrite their resource
+                    from a stale base (the stale-editor bug). */}
+                {recordsFetching && (
                   <div className="text-xs text-gray-500" data-testid="dns-records-loading">
-                    Loading current records...
+                    Loading current on-chain records…
                   </div>
                 )}
-                {!recordsLoading && currentRecords?.length === 0 && (
+                {!recordsFetching && !recordsFresh && (
+                  <div
+                    className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2 flex items-center justify-between gap-2"
+                    data-testid="dns-records-stale-banner"
+                  >
+                    <span>
+                      Can&apos;t read this name&apos;s current on-chain records. The
+                      Update button is disabled to avoid overwriting your records from an
+                      incomplete view — make sure your node is running and fully synced,
+                      then retry.
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 text-blue-600 hover:underline"
+                      onClick={() => refetchRecords()}
+                      data-testid="dns-records-retry"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+                {recordsFresh && currentRecords?.length === 0 && (
                   <div className="text-xs text-gray-400" data-testid="dns-records-hint">
-                    No records shown — connect &amp; sync a node to view/edit existing records.
+                    This name has no records yet. Add records below and Update to publish them.
                   </div>
                 )}
 
-                {advanced ? (
+                {/* Only render the editor once the fresh read has seeded it —
+                    prevents the user from typing into a not-yet-seeded editor
+                    whose rows would be clobbered by the incoming seed. */}
+                {!recordsFresh ? null : advanced ? (
                   <textarea
                     className="w-full border border-gray-300 rounded px-2 py-1 font-mono text-xs h-20"
                     value={recordsJson}
@@ -565,16 +625,24 @@ export function NameActionsModal({
                 <div className="flex gap-2">
                   <Button
                     size="sm" variant="secondary"
-                    disabled={actionDisabled("REGISTER", caps?.canRegister)}
-                    title={actionReason(caps?.canRegister) ?? ""}
+                    disabled={actionDisabled("REGISTER", caps?.canRegister) || !recordsFresh}
+                    title={
+                      !recordsFresh
+                        ? "Waiting for a fresh read of the current on-chain records"
+                        : actionReason(caps?.canRegister) ?? ""
+                    }
                     onClick={() => submitRecords("REGISTER")}
                   >
                     {busy === "REGISTER" ? "…" : "Register"}
                   </Button>
                   <Button
                     size="sm"
-                    disabled={actionDisabled("UPDATE", caps?.canUpdate)}
-                    title={actionReason(caps?.canUpdate) ?? ""}
+                    disabled={actionDisabled("UPDATE", caps?.canUpdate) || !recordsFresh}
+                    title={
+                      !recordsFresh
+                        ? "Waiting for a fresh read of the current on-chain records"
+                        : actionReason(caps?.canUpdate) ?? ""
+                    }
                     onClick={() => submitRecords("UPDATE")}
                   >
                     {busy === "UPDATE" ? "…" : "Update"}

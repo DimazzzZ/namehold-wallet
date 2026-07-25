@@ -206,7 +206,7 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
     });
   });
 
-  it("shows the node-required hint when records are empty", async () => {
+  it("shows the empty-records hint when the fresh read returns no records", async () => {
     invokeMock.mockImplementation(route({
       read_name_records: () => Promise.resolve([]),
     }));
@@ -214,6 +214,34 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
 
     const hint = await screen.findByTestId("dns-records-hint");
     expect(hint).toBeInTheDocument();
-    expect(hint.textContent).toContain("connect");
+    expect(hint.textContent).toContain("no records yet");
+  });
+
+  it("shows the stale banner and disables UPDATE when the fresh read errors", async () => {
+    invokeMock.mockImplementation(route({
+      read_name_records: () => Promise.reject(new Error("node not synced")),
+    }));
+    render(<NameActionsModal name="myname" open onClose={vi.fn()} />, { wrapper: wrapper() });
+
+    // The "can't read current records" banner appears...
+    const banner = await screen.findByTestId("dns-records-stale-banner");
+    expect(banner.textContent).toContain("Can't read");
+    // ...and the UPDATE button is disabled (never render the editor either).
+    const updateBtn = await screen.findByRole("button", { name: /^Update$/ });
+    expect(updateBtn).toBeDisabled();
+    // A Retry affordance is present.
+    expect(screen.getByTestId("dns-records-retry")).toBeInTheDocument();
+    // The row editor must NOT render from a non-fresh read.
+    expect(screen.queryByTestId("dns-rows-advanced")).not.toBeInTheDocument();
+  });
+
+  it("enables UPDATE only once a fresh read has seeded the editor", async () => {
+    invokeMock.mockImplementation(route()); // read resolves with currentRecords
+    render(<NameActionsModal name="myname" open onClose={vi.fn()} />, { wrapper: wrapper() });
+
+    // Editor renders (gated on fresh) and UPDATE becomes enabled.
+    await screen.findByTestId("dns-rows-advanced");
+    const updateBtn = await screen.findByRole("button", { name: /^Update$/ });
+    expect(updateBtn).not.toBeDisabled();
   });
 });
