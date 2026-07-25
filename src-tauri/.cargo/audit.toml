@@ -1,0 +1,53 @@
+# cargo-audit configuration (read from `<cwd>/.cargo/audit.toml`).
+#
+# CI runs `cargo audit --deny warnings` with `working-directory: src-tauri`
+# (see .github/workflows/ci.yml). Advisories listed in `ignore` are removed
+# BEFORE the deny check, so this file is what lets the audit job pass on
+# Tauri v2's transitive graph.
+#
+# Every ignored advisory is either not-applicable to this app's threat model
+# or frozen inside Tauri v2 (unfixable without upstream). Rationale for each
+# is documented in SECURITY.md under "Suppressed advisories (cargo audit)".
+# A NEW advisory that is NOT listed here will still fail this job — that is
+# the point.
+
+[advisories]
+ignore = [
+  # quick-xml DoS (2 vulns) — patched only in >=0.41.0 (semver-major).
+  # Pinned to 0.39.x by plist (^0.39.2) and wayland-scanner (^0.39) inside
+  # Tauri v2's tree. Not exposed to untrusted XML at runtime: plist parses
+  # the app's own macOS Info.plist at bundle time; wayland-scanner parses
+  # local Wayland protocol XML at build time.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+
+  # glib 0.18.5 — unsound VariantStrIter iterator impls. Pulled in by
+  # Tauri v2's wry/tao GTK3 Linux backend.
+  "RUSTSEC-2024-0429",
+
+  # proc-macro-error 1.0.4 — unmaintained. Compile-time only; via
+  # glib-macros and gtk3-macros in the same GTK3 tree.
+  "RUSTSEC-2024-0370",
+
+  # gtk-rs GTK3 bindings (10 crates, all 0.18.2) — unmaintained. Tauri v2
+  # Linux windowing depends on the GTK3 stack; a fix requires Tauri
+  # migrating to GTK4/webkitgtk-6.
+  "RUSTSEC-2024-0411", # gdkwayland-sys
+  "RUSTSEC-2024-0412", # gdk
+  "RUSTSEC-2024-0413", # atk
+  "RUSTSEC-2024-0414", # gdkx11-sys
+  "RUSTSEC-2024-0415", # gtk
+  "RUSTSEC-2024-0416", # atk-sys
+  "RUSTSEC-2024-0417", # gdkx11
+  "RUSTSEC-2024-0418", # gdk-sys
+  "RUSTSEC-2024-0419", # gtk3-macros
+  "RUSTSEC-2024-0420", # gtk-sys
+
+  # unic-* 0.9.0 (5 crates) — unmaintained. Pulled in transitively via
+  # urlpattern <- tauri-utils.
+  "RUSTSEC-2025-0075", # unic-char-range
+  "RUSTSEC-2025-0080", # unic-common
+  "RUSTSEC-2025-0081", # unic-char-property
+  "RUSTSEC-2025-0098", # unic-ucd-version
+  "RUSTSEC-2025-0100", # unic-ucd-ident
+]
