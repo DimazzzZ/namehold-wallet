@@ -8,6 +8,7 @@
 pub mod actions;
 pub mod address;
 pub mod bids;
+pub mod cookie_vault;
 pub mod covenants;
 pub mod derivation;
 pub mod hd;

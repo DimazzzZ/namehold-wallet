@@ -6,13 +6,19 @@
 
 /// Setting keys whose values are secrets and MUST NOT be exposed to the
 /// renderer (React webview) or logged in plaintext in the audit log.
-pub const SENSITIVE_SETTING_KEYS: &[&str] = &["namebase_cookie", "node_rpc_api_key", "hsd_api_key"];
+pub const SENSITIVE_SETTING_KEYS: &[&str] = &[
+    "namebase_cookie",
+    "namebase_cookie_v1",
+    "node_rpc_api_key",
+    "hsd_api_key",
+];
 
 /// Setting keys that the renderer is NOT allowed to write via `update_setting`.
 /// These are either security-critical host overrides (whose mutation could
 /// redirect authenticated requests) or secrets that should only be written by
 /// dedicated backend flows (e.g. `connect_namebase`).
-pub const RENDERER_WRITE_DENYLIST: &[&str] = &["namebase_base_url", "namebase_cookie"];
+pub const RENDERER_WRITE_DENYLIST: &[&str] =
+    &["namebase_base_url", "namebase_cookie", "namebase_cookie_v1"];
 
 /// Returns `true` if `key` is a sensitive setting that must be redacted.
 pub fn is_sensitive_key(key: &str) -> bool {
@@ -31,6 +37,7 @@ mod tests {
     #[test]
     fn sensitive_keys_cover_known_secrets() {
         assert!(is_sensitive_key("namebase_cookie"));
+        assert!(is_sensitive_key("namebase_cookie_v1"));
         assert!(is_sensitive_key("node_rpc_api_key"));
         assert!(is_sensitive_key("hsd_api_key"));
         assert!(!is_sensitive_key("advanced_mode"));
@@ -41,6 +48,7 @@ mod tests {
     fn write_denylist_blocks_host_override() {
         assert!(is_renderer_write_denied("namebase_base_url"));
         assert!(is_renderer_write_denied("namebase_cookie"));
+        assert!(is_renderer_write_denied("namebase_cookie_v1"));
         assert!(!is_renderer_write_denied("node_rpc_url"));
         assert!(!is_renderer_write_denied("explorer_api_url"));
     }

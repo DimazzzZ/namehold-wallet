@@ -28,6 +28,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("016", include_str!("../sql/016_last_explorer_sync_at.sql")),
     ("017", include_str!("../sql/017_backfill_bid_txids.sql")),
     ("018", include_str!("../sql/018_name_bid_index.sql")),
+    (
+        "019",
+        include_str!("../sql/019_namebase_cookie_at_rest.sql"),
+    ),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -65,11 +69,11 @@ mod tests {
     fn run_applies_all_migrations() {
         let conn = Connection::open_in_memory().unwrap();
         run(&conn).unwrap();
-        // All 18 migrations should be present
+        // All migrations should be present
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 18, "expected 18 migrations, got {count}");
+        assert_eq!(count, 19, "expected 19 migrations, got {count}");
     }
 
     #[test]
@@ -80,7 +84,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 18);
+        assert_eq!(count, 19);
     }
 
     #[test]

@@ -65,6 +65,7 @@ jobs:
             libwebkit2gtk-4.1-dev
             libappindicator3-dev
             librsvg2-dev
+            libsecret-1-dev
             patchelf
             build-essential
             libssl-dev

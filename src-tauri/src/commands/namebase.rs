@@ -1,13 +1,68 @@
 use crate::db;
 use crate::error::AppError;
 use crate::namebase::client::NamebaseClient;
+use crate::noncustodial::cookie_vault;
 use crate::AppState;
 use tauri::State;
 
-fn get_cookie(state: &AppState) -> Result<String, AppError> {
+/// Read the Namebase session cookie, preferring the encrypted v1 blob.
+/// If `namebase_cookie_v1` is empty but the legacy `namebase_cookie` has a
+/// value, migrate it: encrypt → store in v1 → blank the legacy row.
+fn read_cookie(state: &AppState) -> Result<String, AppError> {
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let settings = db::queries::get_settings(&db)?;
-    Ok(settings.get("namebase_cookie").cloned().unwrap_or_default())
+
+    let v1_hex = settings
+        .get("namebase_cookie_v1")
+        .cloned()
+        .unwrap_or_default();
+    if !v1_hex.is_empty() {
+        // Decrypt the v1 blob.
+        let plaintext = cookie_vault::decrypt_cookie(&v1_hex)?;
+        return Ok(String::from_utf8_lossy(&plaintext).into_owned());
+    }
+
+    // Fallback: check the legacy plaintext key.
+    let legacy = settings.get("namebase_cookie").cloned().unwrap_or_default();
+    if legacy.is_empty() {
+        return Ok(String::new());
+    }
+
+    // Migrate: encrypt the legacy value and blank the plaintext row.
+    match cookie_vault::encrypt_cookie(legacy.as_bytes()) {
+        Ok(blob_hex) => {
+            db::queries::set_setting(&db, "namebase_cookie_v1", &blob_hex)?;
+            db::queries::set_setting(&db, "namebase_cookie", "")?;
+            db.execute(
+                "INSERT INTO audit_log (action, detail) VALUES ('namebase_cookie_migrated', '{}')",
+                [],
+            )?;
+        }
+        Err(_e) => {
+            // Keyring unavailable — return the legacy plaintext (don't break
+            // existing sessions). The cookie stays in the legacy plaintext key
+            // until a keyring becomes available on a later read.
+            return Ok(legacy);
+        }
+    }
+
+    Ok(legacy)
+}
+
+/// Encrypt and persist the cookie under the v1 key. Also blanks the legacy key.
+fn write_cookie(state: &AppState, cookie: &str) -> Result<(), AppError> {
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    if cookie.is_empty() {
+        // Disconnect: blank both keys.
+        db::queries::set_setting(&db, "namebase_cookie_v1", "")?;
+        db::queries::set_setting(&db, "namebase_cookie", "")?;
+        return Ok(());
+    }
+    let blob_hex = cookie_vault::encrypt_cookie(cookie.as_bytes())?;
+    db::queries::set_setting(&db, "namebase_cookie_v1", &blob_hex)?;
+    // Blank legacy key (defense in depth).
+    db::queries::set_setting(&db, "namebase_cookie", "")?;
+    Ok(())
 }
 
 /// Read the `namebase_base_url` test seam, but ONLY in debug builds / tests.
@@ -31,13 +86,11 @@ fn test_base_url_override(_settings: &crate::models::settings::SettingsMap) -> S
 /// tests can point the irreversible transfer/withdraw calls at a mock server.
 /// Production leaves the setting unset → the real Namebase host.
 pub(crate) fn namebase_client(state: &AppState) -> Result<NamebaseClient, AppError> {
-    let (cookie, base) = {
+    let cookie = read_cookie(state)?;
+    let base = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&db)?;
-        (
-            settings.get("namebase_cookie").cloned().unwrap_or_default(),
-            test_base_url_override(&settings),
-        )
+        test_base_url_override(&settings)
     };
     if base.trim().is_empty() {
         NamebaseClient::new(&cookie)
@@ -76,8 +129,7 @@ fn persist_cookie_if_changed(
 ) -> Result<(), AppError> {
     let after = client.current_cookie();
     if after != before {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::set_setting(&db, "namebase_cookie", &after)?;
+        write_cookie(state, &after)?;
     }
     Ok(())
 }
@@ -100,22 +152,20 @@ pub async fn connect_namebase(
     // if Namebase rotated the cookie on this very first request, we want the
     // rotated value on disk, not the one the user pasted.
     let final_cookie = client.current_cookie();
-    {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::set_setting(&db, "namebase_cookie", &final_cookie)?;
-        db.execute(
-            "INSERT INTO audit_log (action, detail) VALUES ('namebase_connect', ?1)",
-            [serde_json::json!({"status": "connected"}).to_string()],
-        )?;
-    }
+    write_cookie(&state, &final_cookie)?;
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    db.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('namebase_connect', ?1)",
+        [serde_json::json!({"status": "connected"}).to_string()],
+    )?;
 
     Ok(account)
 }
 
 #[tauri::command]
 pub async fn disconnect_namebase(state: State<'_, AppState>) -> Result<(), AppError> {
+    write_cookie(&state, "")?;
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    db::queries::set_setting(&db, "namebase_cookie", "")?;
     db.execute(
         "INSERT INTO audit_log (action, detail) VALUES ('namebase_disconnect', ?1)",
         [serde_json::json!({"status": "disconnected"}).to_string()],
@@ -127,7 +177,7 @@ pub async fn disconnect_namebase(state: State<'_, AppState>) -> Result<(), AppEr
 pub async fn get_namebase_status(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
-    let cookie = get_cookie(&state)?;
+    let cookie = read_cookie(&state)?;
 
     if cookie.is_empty() {
         return Ok(serde_json::json!({"connected": false, "has_cookie": false}));
