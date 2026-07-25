@@ -139,6 +139,23 @@ wallet functionality.
 
 ---
 
+## Dependency auditing
+
+CI runs an advisory-only audit job (`cargo audit` + `pnpm audit --prod`) on
+every PR to surface newly-disclosed CVEs in the dependency graph.
+
+### Suppressed advisories
+
+A suppressed advisory is one we have reviewed and determined does not apply to
+this app. Suppressions live in `package.json` under
+`pnpm.auditConfig.ignoreGhsas` and MUST be justified here.
+
+| Advisory | Package | Rationale |
+|----------|---------|-----------|
+| [GHSA-qwww-vcr4-c8h2](https://github.com/advisories/GHSA-qwww-vcr4-c8h2) | `react-router` | CSRF bypass that the advisory states "only affects your application if you are using the unstable RSC APIs". Namehold is a Tauri single-page app with client-side routing only — it does not use React Server Components, so the vulnerable code path is never reached. Revisit when upgrading to `react-router@>=8.3.0`. |
+
+---
+
 ## Disclosure policy
 
 - Vulnerabilities are not disclosed publicly until a fix is available

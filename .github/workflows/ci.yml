@@ -127,6 +127,10 @@ jobs:
       # `pnpm audit` exits non-zero when advisories are found. `--audit-level
       # moderate` ignores low-severity noise. `--prod` limits the scan to the
       # runtime graph (dev-only deps like vitest/jsdom aren't shipped).
+      # Advisories reviewed as not-applicable are suppressed via
+      # `pnpm.auditConfig.ignoreGhsas` in package.json and justified in
+      # SECURITY.md ("Suppressed advisories"). A NEW advisory will still fail
+      # this step (surfaced as a non-blocking warning via `continue-on-error`).
       - name: pnpm audit
         run: pnpm audit --audit-level moderate --prod
 
