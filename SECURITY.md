@@ -147,8 +147,8 @@ every PR to surface newly-disclosed CVEs in the dependency graph.
 ### Suppressed advisories
 
 A suppressed advisory is one we have reviewed and determined does not apply to
-this app. Suppressions live in `package.json` under
-`pnpm.auditConfig.ignoreGhsas` and MUST be justified here.
+this app. Suppressions live in `pnpm-workspace.yaml` under
+`auditConfig.ignoreGhsas` and MUST be justified here.
 
 | Advisory | Package | Rationale |
 |----------|---------|-----------|

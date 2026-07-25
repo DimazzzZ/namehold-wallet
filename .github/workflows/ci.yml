@@ -22,7 +22,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 11.17.0
 
       - uses: actions/setup-node@v4
         with:
@@ -114,7 +114,7 @@ jobs:
       # --- pnpm audit (frontend) ---
       - uses: pnpm/action-setup@v4
         with:
-          version: 11
+          version: 11.17.0
 
       - uses: actions/setup-node@v4
         with:
@@ -128,7 +128,7 @@ jobs:
       # moderate` ignores low-severity noise. `--prod` limits the scan to the
       # runtime graph (dev-only deps like vitest/jsdom aren't shipped).
       # Advisories reviewed as not-applicable are suppressed via
-      # `pnpm.auditConfig.ignoreGhsas` in package.json and justified in
+      # `pnpm.auditConfig.ignoreGhsas` in pnpm-workspace.yaml and justified in
       # SECURITY.md ("Suppressed advisories"). A NEW advisory will still fail
       # this step (surfaced as a non-blocking warning via `continue-on-error`).
       - name: pnpm audit
