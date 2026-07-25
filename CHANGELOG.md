@@ -30,6 +30,25 @@
   `NodeRpcClient::new` blanks the key defensively when misused.
 - Ship a restrictive Content Security Policy for the Tauri webviews.
 
+### CI / tooling
+- Add a CI dependency-audit gate that runs `cargo audit --deny warnings` and
+  `pnpm audit --audit-level moderate --prod` on every PR, surfacing
+  newly-disclosed advisories in the dependency graph.
+- Suppress reviewed, not-applicable/unavoidable advisories with justification:
+  frontend via `auditConfig.ignoreGhsas` in `pnpm-workspace.yaml`, backend via
+  `[advisories] ignore` in `src-tauri/.cargo/audit.toml`. Each entry is
+  documented in `SECURITY.md`; a new advisory not on the list still fails CI.
+- Bump `anyhow` to `1.0.104` to clear RUSTSEC-2026-0190 (unsound
+  `Error::downcast_mut`) rather than suppress it.
+- Pin pnpm to `11.17.0` across CI (`pnpm/action-setup`) and add a
+  `packageManager` field so local (Corepack) and CI use the same version.
+  Audit config moved out of the (now-ignored) `package.json` `pnpm` field into
+  `pnpm-workspace.yaml`, its home under pnpm 11.
+- Add a `lint:secure-imports` check ensuring nothing under `src/secure/**`
+  imports from the rest of `src/`, keeping the secure-window bundle isolated.
+- Harden `.gitignore` with explicit secret patterns (`*.pem`, `*.key`,
+  `id_rsa`, `secrets.*`, `credentials.*`).
+
 ### Fixed
 - README and USER_MANUAL privacy claim: the app is local-first, not
   local-only. The docs now spell out that the HNSFans explorer sees wallet

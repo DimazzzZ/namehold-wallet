@@ -99,7 +99,8 @@ For a detailed threat model, attack surfaces, and mitigations, see [SECURITY.md]
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) 22+
-- [pnpm](https://pnpm.io/) 11+
+- [pnpm](https://pnpm.io/) 11+ (CI pins `11.17.0` via the `packageManager`
+  field; run `corepack enable` to match it locally)
 - [Rust](https://www.rust-lang.org/tools/install) (stable, edition 2021)
 - [hsd](https://github.com/handshake-org/hsd) — **only needed for sending / name
   actions** (reads work without it). Run it with `--index-address`.
@@ -185,8 +186,9 @@ pnpm tauri build
 ```
 
 Output in `src-tauri/target/release/bundle/` — macOS `.app`/`.dmg`, Windows `.msi`,
-Linux `.AppImage`/`.deb`. CI (PR tests) and the cross-platform release pipeline live
-in [`.github/workflows`](.github/workflows).
+Linux `.AppImage`/`.deb`. CI (PR tests), a dependency-audit gate (`cargo audit` +
+`pnpm audit`), and the cross-platform release pipeline live in
+[`.github/workflows`](.github/workflows).
 
 ## macOS
 
