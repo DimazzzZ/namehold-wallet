@@ -326,6 +326,31 @@ mod tests {
         assert_eq!(back[3]["digest"], "deadbeef");
     }
 
+    #[test]
+    fn ns_resource_two_servers_round_trip() {
+        // Regression guard for the Namebase-reported case: a name whose
+        // resource must contain EXACTLY the two nameservers Namebase wants
+        // (ns1/ns2.namebase.io) and no other NS. Verifies both the JSON
+        // round-trip and that the wire form carries exactly two NS markers.
+        let recs = vec![
+            serde_json::json!({ "type": "NS", "ns": "ns1.namebase.io." }),
+            serde_json::json!({ "type": "NS", "ns": "ns2.namebase.io." }),
+        ];
+        let raw = encode(&recs).unwrap();
+        assert_eq!(decode(&raw).unwrap(), recs);
+        // Decoding back yields exactly two NS records and nothing else — the
+        // regression the Namebase "exactly two NS" check is sensitive to.
+        let decoded = decode(&raw).unwrap();
+        assert_eq!(
+            decoded.iter().filter(|r| r["type"] == "NS").count(),
+            2,
+            "resource must decode to exactly two NS records"
+        );
+        assert_eq!(decoded.len(), 2, "no stray records beyond the two NS");
+        assert_eq!(decoded[0]["ns"], "ns1.namebase.io.");
+        assert_eq!(decoded[1]["ns"], "ns2.namebase.io.");
+    }
+
     // --- encode error paths ---
 
     #[test]

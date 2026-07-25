@@ -1,5 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { invoke } from "../lib/invoke";
+import { useNodeLive } from "./node";
 import { StagedError } from "../lib/errors";
 import type {
   WalletProfileSummary,
@@ -49,22 +51,26 @@ export function useWriteCapability() {
 
 /**
  * Per-wallet spendable balance (from the node-synced chain cache). Keyed by the
- * active profile id (no cross-wallet bleed) and never auto-refetched: each wallet
- * shows its own last-known value — persisted server-side, so it survives a
- * restart — and only changes on Refresh (which invalidates the `["wallet"]` prefix).
+ * active profile id so wallet B never momentarily shows wallet A's number.
+ *
+ * Freshness: reads the local chain cache, which the background sync keeps
+ * up to date. To always reflect the freshest node state, this refetches on
+ * mount and — while the node is live — polls every 20s (the read is a cheap
+ * SQLite cache lookup, so it just re-displays whatever the latest sync wrote).
+ * When the node is not live there's nothing fresher to fetch, so polling is
+ * disabled and the last-known value (persisted server-side, survives restart)
+ * is shown until the next sync/Refresh.
  */
 export function useWalletBalances() {
   const profileId = useActiveProfile().data?.id ?? null;
+  const nodeLive = useNodeLive();
   return useQuery({
     queryKey: ["wallet", "balances", profileId],
     enabled: profileId != null,
     queryFn: () =>
       invoke<WalletBalances>("get_wallet_balances", { walletProfileId: profileId }),
-    staleTime: Infinity,
-    gcTime: Infinity,
-    refetchOnMount: false,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
+    staleTime: 15_000,
+    refetchInterval: nodeLive ? 20_000 : false,
     retry: false,
   });
 }
@@ -88,6 +94,58 @@ export function useTxDrafts() {
     refetchInterval: 15_000,
     retry: false,
   });
+}
+
+/** Record actions whose on-chain resource changes when they confirm. */
+function isRecordWritingAction(action: string): boolean {
+  const a = action.toLowerCase();
+  return a === "update" || a === "register";
+}
+
+/**
+ * Watch the polled drafts list for UPDATE/REGISTER drafts that just
+ * transitioned from `broadcasted` to `confirmed`, and on that edge invalidate
+ * `["read","nameRecords"]` so any open editor re-reads the fresh
+ * post-confirmation resource (fixes the stale-editor-after-confirm bug).
+ *
+ * Mount ONCE near the app root (see `AppRoutes`). Diffs across renders via a
+ * ref of the previous per-draft status, so it fires exactly on the
+ * broadcasted→confirmed edge — NOT on the first poll after an app start
+ * (where `was === undefined`), which would otherwise re-invalidate on every
+ * reload.
+ */
+export function useDraftConfirmationWatcher() {
+  const qc = useQueryClient();
+  const { data: drafts } = useTxDrafts();
+  const prevStatusById = useRef<Map<string, string>>(new Map());
+
+  useEffect(() => {
+    if (!drafts) return;
+    const prev = prevStatusById.current;
+    const next = new Map<string, string>();
+    let anyRecordDraftConfirmed = false;
+    for (const d of drafts) {
+      next.set(d.id, d.status);
+      const was = prev.get(d.id);
+      // Only the TRUE broadcasted→confirmed edge counts. A first-poll
+      // `was === undefined` must NOT fire, or we'd re-invalidate on every app
+      // start for every historical confirmed draft.
+      if (
+        d.status === "confirmed" &&
+        was === "broadcasted" &&
+        isRecordWritingAction(d.action)
+      ) {
+        anyRecordDraftConfirmed = true;
+      }
+    }
+    prevStatusById.current = next;
+
+    // A record-writing draft confirmed → the on-chain resource changed.
+    // Re-read records for any open editor.
+    if (anyRecordDraftConfirmed) {
+      qc.invalidateQueries({ queryKey: ["read", "nameRecords"] });
+    }
+  }, [drafts, qc]);
 }
 
 function useWalletMutation<TArgs>(

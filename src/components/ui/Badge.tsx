@@ -5,6 +5,7 @@ interface BadgeProps {
   variant?: "default" | "success" | "warning" | "error" | "info";
   className?: string;
   title?: string;
+  "data-testid"?: string;
 }
 
 const variants = {
@@ -15,10 +16,17 @@ const variants = {
   info: "bg-blue-100 text-blue-800",
 };
 
-export function Badge({ children, variant = "default", className, title }: BadgeProps) {
+export function Badge({
+  children,
+  variant = "default",
+  className,
+  title,
+  "data-testid": dataTestId,
+}: BadgeProps) {
   return (
     <span
       title={title}
+      data-testid={dataTestId}
       className={cn(
         "inline-block px-2 py-0.5 rounded text-xs font-medium",
         variants[variant],

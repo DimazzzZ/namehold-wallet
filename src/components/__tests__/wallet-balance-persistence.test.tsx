@@ -5,8 +5,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
 
-// Issue 6: each wallet must show its OWN balance (no cross-wallet bleed), keep it
-// across navigation, and update ONLY on Refresh — never auto-refetch.
+// Issue 6: each wallet must show its OWN balance (no cross-wallet bleed) and keep
+// it across navigation. Freshness (T14): the balance is NO LONGER sticky — it
+// refetches on mount, picks up cache invalidations (mutations / completed sync),
+// and, while the node is live, polls on an interval. When the node is not live
+// it does not poll (nothing fresher than the cache to fetch).
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
@@ -64,6 +67,10 @@ function makeBackend(initial: { A: number; B: number }) {
           mkProfile("A", "Wallet A", state.active === "A"),
           mkProfile("B", "Wallet B", state.active === "B"),
         ]);
+      case "node_status":
+        // Default: node NOT live → balance refetches on mount + on invalidate,
+        // but does not poll. Tests that want polling override this command.
+        return Promise.resolve({ connected: false, read_source: "explorer" });
       case "set_active_wallet_profile":
         state.active = String(args?.walletProfileId);
         return Promise.resolve(mkProfile(state.active, `Wallet ${state.active}`, true));
@@ -135,28 +142,55 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
       ).length;
     const initialCalls = callsForA();
 
-    // The backend value changes. useWalletBalances is configured with
-    // staleTime/gcTime: Infinity and refetchOnMount/WindowFocus/Reconnect:
-    // false (src/queries/wallet.ts), so nothing schedules a refetch on its
-    // own — there is no async event to wait out here, so we assert this
-    // synchronously rather than racing a fixed sleep against a timer that
-    // (by that same config) can never fire.
+    // Node is not live in this test (node_status → explorer), so within the 15s
+    // staleTime window nothing schedules a refetch on its own — no interval
+    // fires. The displayed value stays put until an explicit invalidation.
     backend.state.liquid.A = 150 * HNS;
     expect(screen.getByText("100.000000")).toBeInTheDocument();
-    expect(callsForA()).toBe(initialCalls); // no auto-refetch
+    expect(callsForA()).toBe(initialCalls); // no auto-refetch while idle+offline
 
     // An explicit cache invalidation — what every real wallet mutation and a
     // completed background sync do via `qc.invalidateQueries({ queryKey:
-    // ["wallet"] })` (see useWalletMutation / useSyncStatus) — is what's
-    // actually supposed to pick up the new value. Driving it directly here
-    // (rather than through the async Sync button + backend poll machinery)
-    // keeps the test deterministic while still exercising the real
-    // persistence contract under test.
+    // ["wallet"] })` (see useWalletMutation / useSyncStatus) — picks up the new
+    // value. Driving it directly keeps the test deterministic.
     await act(async () => {
       await qc.invalidateQueries({ queryKey: ["wallet"] });
     });
     expect(await screen.findByText("150.000000")).toBeInTheDocument();
     await waitFor(() => expect(callsForA()).toBeGreaterThan(initialCalls));
+  });
+
+  it("auto-polls the balance while the node is live", async () => {
+    vi.useFakeTimers();
+    try {
+      const backend = makeBackend({ A: 100 * HNS, B: 200 * HNS });
+      // Override node_status to report a live (synced) local node so the
+      // balance query arms its 20s poll.
+      const liveImpl = (cmd: string, args?: Record<string, unknown>) =>
+        cmd === "node_status"
+          ? Promise.resolve({ connected: true, read_source: "local" })
+          : backend.impl(cmd, args);
+      invokeMock.mockImplementation(liveImpl);
+      render(<WalletView />, { wrapper: wrapper().Wrapper });
+
+      const callsForA = () =>
+        invokeMock.mock.calls.filter(
+          (c) =>
+            c[0] === "get_wallet_balances" &&
+            (c[1] as { walletProfileId?: string })?.walletProfileId === "A",
+        ).length;
+
+      await vi.waitFor(() => expect(callsForA()).toBeGreaterThan(0));
+      const afterMount = callsForA();
+
+      // Advance past the 20s balance poll interval → at least one more fetch.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(21_000);
+      });
+      expect(callsForA()).toBeGreaterThan(afterMount);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("Confirmed (read_balance) is pinned per wallet — no swap on fast switch", async () => {
