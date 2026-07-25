@@ -61,7 +61,7 @@ export function Layout() {
           <div className="text-[10px] text-gray-400">
             {profile ? profile.label : "No wallet"}
           </div>
-          <div className="text-[10px] text-gray-400 mt-0.5">v0.2.0</div>
+          <div className="text-[10px] text-gray-400 mt-0.5">v0.2.1</div>
         </div>
       </aside>
       <main className="flex-1 flex flex-col overflow-hidden">

@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-25
+
+### Changed
+- **Always prefer freshest node data** — a background auto-sync now refreshes
+  cached data every 60s while the local node is live and synced (kicked on the
+  explorer→local edge and on mount if already live), reusing the idempotent
+  `start_full_sync` and skipping while a run is in flight. Balance queries are
+  no longer sticky: dropped `staleTime: Infinity`/`gcTime: Infinity`/
+  `refetchOnMount: false` in favour of a 15s `staleTime` plus a node-gated 20s
+  `refetchInterval` (per-profile query keys preserved, no cross-wallet bleed).
+  The DNS editor in the Name Actions modal now seeds and enables UPDATE only
+  from a guaranteed-fresh on-chain read (`recordsFresh` gate), so a stale base
+  can never overwrite the resource.
+
 ### Security
 - Encrypt the Namebase session cookie at rest under an OS-keyring-held DEK
   (AES-256-GCM). The cookie is stored as a hex-encoded blob in the new
