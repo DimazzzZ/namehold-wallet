@@ -12,10 +12,11 @@ import { writeText, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { scheduleClipboardClear, CLIPBOARD_CLEAR_MS } from "./clipboard-clear";
 
 interface PromptRequest {
-  mode: "passphrase" | "passphrase_new" | "reveal" | "import";
+  mode: "passphrase" | "passphrase_new" | "reveal" | "import" | "confirm";
   title: string;
   message: string;
   payload?: string | null;
+  details?: { rows?: { label: string; value: string }[] } | null;
 }
 
 interface PromptResult {
@@ -45,6 +46,12 @@ const STYLE = `
   .row.end { margin-top: auto; justify-content: flex-end; }
   .hint { font-size: 11px; color: #888; }
   label.chk { font-size: 13px; display: flex; gap: 8px; align-items: center; }
+  .details { border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
+  .details .drow { display: flex; gap: 10px; padding: 8px 12px; font-size: 13px;
+    border-top: 1px solid #eee; }
+  .details .drow:first-child { border-top: none; }
+  .details .dlabel { color: #777; min-width: 80px; flex: 0 0 auto; }
+  .details .dvalue { color: #111; word-break: break-all; font-family: ui-monospace, monospace; }
   button { padding: 9px 16px; font-size: 14px; border-radius: 8px; border: 1px solid #bbb;
     background: #fff; cursor: pointer; }
   button.primary { background: #111; color: #fff; border-color: #111; }
@@ -151,6 +158,22 @@ function render(req: PromptRequest) {
     chk.onchange = () => (ok.disabled = !chk.checked);
     ok.onclick = () => submit({ value: null, confirmed: true });
     wrap.append(el("div", { className: "row end" }, [ok]));
+  } else if (req.mode === "confirm") {
+    const box = el("div", { className: "details" });
+    for (const r of req.details?.rows ?? []) {
+      box.append(
+        el("div", { className: "drow" }, [
+          el("span", { className: "dlabel", textContent: r.label }),
+          el("span", { className: "dvalue", textContent: r.value }),
+        ]),
+      );
+    }
+    wrap.append(box);
+    const ok = el("button", { className: "primary", textContent: "Confirm & Sign" });
+    const cancel = el("button", { textContent: "Cancel" });
+    ok.onclick = () => submit({ value: null, confirmed: true });
+    cancel.onclick = () => submit({ value: null, confirmed: false });
+    wrap.append(el("div", { className: "row end" }, [cancel, ok]));
   } else {
     wrap.append(el("p", { className: "err", textContent: `Unknown prompt mode: ${req.mode}` }));
   }

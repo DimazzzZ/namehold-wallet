@@ -25,7 +25,7 @@ use crate::commands::names::{
     build_bid_draft, build_open_draft, build_redeem_draft, build_register_draft, build_reveal_draft,
 };
 use crate::commands::tx::{
-    broadcast_tx_draft, build_send_hns_draft, refresh_tx_confirmations, sign_tx_draft,
+    broadcast_tx_draft, build_send_hns_draft, refresh_tx_confirmations, sign_tx_draft_inner,
     sync_wallet_state,
 };
 use crate::db;
@@ -179,7 +179,7 @@ async fn execute(
     draft_id: String,
 ) {
     unlock(app);
-    sign_tx_draft(app.state(), draft_id.clone())
+    sign_tx_draft_inner(&app.state(), &draft_id)
         .await
         .expect("sign");
     let bc = broadcast_tx_draft(app.state(), draft_id.clone())

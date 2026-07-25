@@ -18,7 +18,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://e.hnsfans.com https://sunset.namebase.io http://127.0.0.1:* http://localhost:*; frame-src 'none'; object-src 'none'; base-uri 'self'"
     }
   },
   "bundle": {

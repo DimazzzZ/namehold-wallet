@@ -10,6 +10,23 @@ fn get_cookie(state: &AppState) -> Result<String, AppError> {
     Ok(settings.get("namebase_cookie").cloned().unwrap_or_default())
 }
 
+/// Read the `namebase_base_url` test seam, but ONLY in debug builds / tests.
+/// In release builds this always returns empty so the client uses the real
+/// Namebase host — a poisoned setting can never redirect the session cookie.
+fn test_base_url_override(_settings: &crate::models::settings::SettingsMap) -> String {
+    #[cfg(any(debug_assertions, test))]
+    {
+        _settings
+            .get("namebase_base_url")
+            .cloned()
+            .unwrap_or_default()
+    }
+    #[cfg(not(any(debug_assertions, test)))]
+    {
+        String::new()
+    }
+}
+
 /// Build a Namebase client, honoring an optional `namebase_base_url` setting so
 /// tests can point the irreversible transfer/withdraw calls at a mock server.
 /// Production leaves the setting unset → the real Namebase host.
@@ -19,10 +36,7 @@ pub(crate) fn namebase_client(state: &AppState) -> Result<NamebaseClient, AppErr
         let settings = db::queries::get_settings(&db)?;
         (
             settings.get("namebase_cookie").cloned().unwrap_or_default(),
-            settings
-                .get("namebase_base_url")
-                .cloned()
-                .unwrap_or_default(),
+            test_base_url_override(&settings),
         )
     };
     if base.trim().is_empty() {
@@ -41,10 +55,8 @@ pub(crate) fn namebase_client_with_cookie(
 ) -> Result<NamebaseClient, AppError> {
     let base = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::get_settings(&db)?
-            .get("namebase_base_url")
-            .cloned()
-            .unwrap_or_default()
+        let settings = db::queries::get_settings(&db)?;
+        test_base_url_override(&settings)
     };
     if base.trim().is_empty() {
         NamebaseClient::new(cookie)

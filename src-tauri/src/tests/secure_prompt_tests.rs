@@ -51,6 +51,7 @@ fn test_secure_prompt_request_serializes() {
         title: "Unlock Wallet".into(),
         message: "Enter your passphrase".into(),
         payload: None,
+        ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["mode"], "passphrase");
@@ -66,6 +67,7 @@ fn test_secure_prompt_request_with_payload() {
         title: "Reveal Mnemonic".into(),
         message: "Your recovery phrase".into(),
         payload: Some("abandon abandon abandon...".into()),
+        ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["mode"], "reveal");
@@ -79,6 +81,7 @@ fn test_secure_prompt_request_import_mode() {
         title: "Import Wallet".into(),
         message: "Enter your mnemonic".into(),
         payload: None,
+        ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["mode"], "import");
@@ -91,6 +94,7 @@ fn test_secure_prompt_request_passphrase_new_mode() {
         title: "Set Passphrase".into(),
         message: "Choose a passphrase".into(),
         payload: None,
+        ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["mode"], "passphrase_new");
@@ -242,6 +246,7 @@ fn test_secure_prompt_request_all_modes() {
             title: format!("Title for {mode}"),
             message: format!("Message for {mode}"),
             payload: None,
+            ..Default::default()
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["mode"], *mode);
@@ -258,6 +263,7 @@ fn test_secure_prompt_request_clone() {
         title: "Reveal".into(),
         message: "Your phrase".into(),
         payload: Some("secret phrase".into()),
+        ..Default::default()
     };
     let cloned = req.clone();
     let json_orig = serde_json::to_value(&req).unwrap();

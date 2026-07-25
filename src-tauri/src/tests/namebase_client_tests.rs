@@ -20,20 +20,22 @@ fn test_new_uses_production_host() {
 
 #[test]
 fn test_with_base_url_trims_trailing_slash() {
-    let _client = NamebaseClient::with_base_url("c", "https://example.com/")
+    // Host must be the allowlisted Namebase host or loopback (test build);
+    // loopback exercises the trailing-slash trim without tripping the guard.
+    let _client = NamebaseClient::with_base_url("c", "http://127.0.0.1:8080/")
         .expect("with_base_url should succeed");
     // Construction succeeds — the trim is verified indirectly via mockito tests.
 }
 
 #[test]
 fn test_with_base_url_does_not_trim_single_slash() {
-    let _client = NamebaseClient::with_base_url("c", "https://example.com")
+    let _client = NamebaseClient::with_base_url("c", "http://127.0.0.1:8080")
         .expect("with_base_url should succeed");
 }
 
 #[test]
 fn test_with_base_url_empty_cookie() {
-    let _client = NamebaseClient::with_base_url("", "https://example.com")
+    let _client = NamebaseClient::with_base_url("", "http://127.0.0.1:8080")
         .expect("empty cookie should be accepted");
 }
 
@@ -544,7 +546,7 @@ async fn test_set_cookie_expires_in_past_deletes_cookie() {
 /// above — must round-trip byte-for-byte when nothing touches them.
 #[tokio::test]
 async fn test_current_cookie_round_trips_bare_token() {
-    let client = NamebaseClient::with_base_url("test-cookie-123", "https://example.com").unwrap();
+    let client = NamebaseClient::with_base_url("test-cookie-123", "http://127.0.0.1:8080").unwrap();
     assert_eq!(client.current_cookie(), "test-cookie-123");
 }
 

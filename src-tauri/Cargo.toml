@@ -53,6 +53,7 @@ hex = "0.4"
 zeroize = { version = "1", features = ["derive"] }
 # base64 encoding for hsd-compatible signed-message output (signmessagewithname parity).
 base64 = "0.22"
+url = "2.5.8"
 
 [dev-dependencies]
 mockito = "1"

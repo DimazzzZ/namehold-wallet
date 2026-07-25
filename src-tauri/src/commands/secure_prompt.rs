@@ -31,14 +31,19 @@ use crate::AppState;
 
 /// A request shown by the secure window. `payload` carries display-only secret
 /// material (e.g. a mnemonic to reveal); it is sent window-ward only.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Default, Serialize)]
 pub struct SecurePromptRequest {
-    /// One of: `passphrase`, `passphrase_new`, `reveal`, `import`.
+    /// One of: `passphrase`, `passphrase_new`, `reveal`, `import`, `confirm`.
     pub mode: String,
     pub title: String,
     pub message: String,
     /// For `reveal`: the mnemonic to display. `None` otherwise.
     pub payload: Option<String>,
+    /// Structured details rendered by the window for read-only display.
+    /// Used by `confirm` mode to show tx summary rows (label + value pairs).
+    /// `None` for other modes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 /// The user's answer to a secure prompt.

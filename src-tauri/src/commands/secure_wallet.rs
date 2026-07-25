@@ -145,6 +145,7 @@ async fn ask_passphrase(app: &AppHandle, new: bool, message: &str) -> Result<Str
             title: "Wallet passphrase".to_string(),
             message: message.to_string(),
             payload: None,
+            ..Default::default()
         },
     )
     .await?;
@@ -168,6 +169,7 @@ async fn reveal_mnemonic(app: &AppHandle, phrase: &str) -> Result<bool, AppError
                       Anyone with this phrase can spend your funds."
                 .to_string(),
             payload: Some(phrase.to_string()),
+            ..Default::default()
         },
     )
     .await?;
@@ -267,6 +269,7 @@ pub async fn secure_import_wallet(
                     title: "Import recovery phrase".to_string(),
                     message: "Enter your 12 or 24 word recovery phrase.".to_string(),
                     payload: None,
+                    ..Default::default()
                 },
             )
             .await?;
@@ -318,6 +321,7 @@ pub async fn secure_import_wallet(
                     title: "Import account xpub".to_string(),
                     message: "Enter the account-level extended public key (xpub).".to_string(),
                     payload: None,
+                    ..Default::default()
                 },
             )
             .await?;

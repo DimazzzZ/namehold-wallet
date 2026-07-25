@@ -158,7 +158,14 @@ impl NamebaseClient {
 
     /// Construct against an explicit base URL. Used to point the client at a mock
     /// server in tests; production always uses `new` (the real Namebase host).
+    ///
+    /// Security: rejects any base URL whose host is not the real Namebase host
+    /// (`sunset.namebase.io`) unless it is a loopback address AND the build is
+    /// a debug build / test binary. Without this guard, a poisoned
+    /// `namebase_base_url` setting could redirect the authenticated session
+    /// cookie to an arbitrary server.
     pub fn with_base_url(raw_cookie: &str, base_url: &str) -> Result<Self, AppError> {
+        validate_base_url(base_url)?;
         let http = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -169,7 +176,44 @@ impl NamebaseClient {
             cookie: Mutex::new(parse_cookie_pairs(&normalize_cookie(raw_cookie))),
         })
     }
+}
 
+/// Reject Namebase base URLs that aren't the real Sunset host. Loopback is
+/// allowed only in debug builds / tests so a mock server can be pointed at
+/// during local development, never in a shipped release.
+fn validate_base_url(base_url: &str) -> Result<(), AppError> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let parsed = url::Url::parse(trimmed).map_err(|e| {
+        AppError::InvalidInput(format!("namebase base URL is not a valid URL: {e}"))
+    })?;
+    let host = parsed.host_str().unwrap_or("");
+    if host.eq_ignore_ascii_case("sunset.namebase.io") {
+        return Ok(());
+    }
+    #[cfg(any(debug_assertions, test))]
+    {
+        let is_loopback = host == "localhost"
+            || host == "127.0.0.1"
+            || host == "::1"
+            || host == "[::1]"
+            || parsed
+                .host()
+                .map(|h| match h {
+                    url::Host::Ipv4(a) => a.is_loopback(),
+                    url::Host::Ipv6(a) => a.is_loopback(),
+                    _ => false,
+                })
+                .unwrap_or(false);
+        if is_loopback {
+            return Ok(());
+        }
+    }
+    Err(AppError::InvalidInput(format!(
+        "namebase base URL host '{host}' is not allowed"
+    )))
+}
+
+impl NamebaseClient {
     /// Expose the base URL for diagnostic purposes.
     pub fn base_url(&self) -> &str {
         &self.base_url
@@ -350,5 +394,37 @@ impl NamebaseClient {
     pub async fn get_domain_withdrawals(&self) -> Result<serde_json::Value, AppError> {
         let resp = self.send_get("/api/domains/withdrawals").await?;
         Self::json_or_session_expired(resp).await
+    }
+}
+
+#[cfg(test)]
+mod base_url_guard_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_real_namebase_host() {
+        assert!(validate_base_url("https://sunset.namebase.io").is_ok());
+        assert!(validate_base_url("https://sunset.namebase.io/").is_ok());
+    }
+
+    #[test]
+    fn accepts_loopback_in_test_build() {
+        // Test binaries always compile with the loopback branch enabled.
+        assert!(validate_base_url("http://127.0.0.1:8080").is_ok());
+        assert!(validate_base_url("http://localhost:8080").is_ok());
+        assert!(validate_base_url("http://[::1]:8080").is_ok());
+    }
+
+    #[test]
+    fn rejects_arbitrary_host() {
+        // Any non-Namebase, non-loopback host must be refused so a poisoned
+        // `namebase_base_url` setting can't redirect the session cookie.
+        assert!(validate_base_url("https://attacker.example").is_err());
+        assert!(validate_base_url("https://sunset.namebase.io.attacker.example").is_err());
+    }
+
+    #[test]
+    fn rejects_garbage_url() {
+        assert!(validate_base_url("not a url").is_err());
     }
 }
