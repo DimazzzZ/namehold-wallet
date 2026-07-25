@@ -40,6 +40,9 @@ jobs:
       - name: Unit tests
         run: pnpm exec vitest run
 
+      - name: Lint secure window imports
+        run: pnpm lint:secure-imports
+
   rust:
     name: Rust (cargo test · fmt · clippy)
     runs-on: ubuntu-latest
