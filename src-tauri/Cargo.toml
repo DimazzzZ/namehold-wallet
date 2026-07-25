@@ -74,3 +74,16 @@ mockito = "1"
 # Enables tauri::test (mock_builder/mock_context) so integration tests can drive
 # the real #[tauri::command] functions with managed AppState.
 tauri = { version = "2", features = ["test"] }
+
+# Release build hardening. Stripping symbols reduces the binary size and makes
+# reverse-engineering slightly harder; `panic = "abort"` avoids unwind tables
+# (also shrinks the binary); `lto = "thin"` gives cross-crate inlining without
+# the long compile times of `lto = "fat"`. Codegen units of 1 maximises
+# optimisation opportunities at the cost of longer release builds — acceptable
+# for a wallet where releases are infrequent. Debug info is dropped entirely.
+[profile.release]
+strip = "symbols"
+panic = "abort"
+lto = "thin"
+codegen-units = 1
+debug = false

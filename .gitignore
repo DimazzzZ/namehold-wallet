@@ -19,6 +19,20 @@ src-tauri/gen/
 .env.local
 .env.*.local
 
+# Secrets & credentials (defence-in-depth — no existing files match these,
+# but common patterns are excluded so an accidentally-dropped key file
+# doesn't get committed).
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+secrets.*
+credentials.*
+
 # IDE
 .vscode/
 .idea/

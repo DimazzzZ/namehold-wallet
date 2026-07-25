@@ -97,3 +97,48 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+  audit:
+    name: Dependency audit (cargo audit · pnpm audit)
+    runs-on: ubuntu-latest
+    # Advisory-only — a new CVE in the transitive graph should surface here
+    # without blocking unrelated PRs. Promote to required once the security
+    # backlog is drained.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- pnpm audit (frontend) ---
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm audit` exits non-zero when advisories are found. `--audit-level
+      # moderate` ignores low-severity noise. `--prod` limits the scan to the
+      # runtime graph (dev-only deps like vitest/jsdom aren't shipped).
+      - name: pnpm audit
+        run: pnpm audit --audit-level moderate --prod
+
+      # --- cargo audit (backend) ---
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # Scans Cargo.lock against the RustSec advisory database. `--deny warnings`
+      # fails on any advisory (informational or vulnerability).
+      - name: cargo audit
+        run: cargo audit --deny warnings
+        working-directory: src-tauri

@@ -31,6 +31,16 @@ use crate::AppState;
 
 /// A request shown by the secure window. `payload` carries display-only secret
 /// material (e.g. a mnemonic to reveal); it is sent window-ward only.
+///
+/// Known limitation (documented, accepted): when `payload` carries a mnemonic
+/// for a `reveal` prompt, the value is serialised through `serde_json` and the
+/// Tauri IPC bridge. Both leave transient copies in heap buffers that are
+/// outside the `Zeroize` discipline the rest of the wallet enforces. Because
+/// of that, the reveal window is deliberately short-lived: `reveal_mnemonic`
+/// zeroises the local `phrase` immediately after dispatching the prompt, and
+/// the window is closed by the backend once the user acknowledges. Any
+/// tightening here would require a shared-memory or zero-copy IPC channel,
+/// which Tauri does not expose today.
 #[derive(Clone, Default, Serialize)]
 pub struct SecurePromptRequest {
     /// One of: `passphrase`, `passphrase_new`, `reveal`, `import`, `confirm`.
@@ -38,6 +48,7 @@ pub struct SecurePromptRequest {
     pub title: String,
     pub message: String,
     /// For `reveal`: the mnemonic to display. `None` otherwise.
+    /// See the struct-level doc-comment for the IPC-transience caveat.
     pub payload: Option<String>,
     /// Structured details rendered by the window for read-only display.
     /// Used by `confirm` mode to show tx summary rows (label + value pairs).
