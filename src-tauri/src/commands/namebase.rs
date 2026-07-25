@@ -402,3 +402,32 @@ pub async fn fetch_namebase_domain_withdrawals(
     persist_cookie_if_changed(&state, &before, &client)?;
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::test_base_url_override;
+    use crate::models::settings::SettingsMap;
+
+    #[test]
+    fn test_base_url_override_returns_setting_value_in_test_build() {
+        // Under `cfg(test)` (and debug builds) the seam echoes the setting so
+        // integration tests can point the client at a mock server.
+        let mut settings = SettingsMap::new();
+        settings.insert(
+            "namebase_base_url".to_string(),
+            "http://127.0.0.1:8080".to_string(),
+        );
+        assert_eq!(test_base_url_override(&settings), "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn test_base_url_override_returns_empty_when_setting_absent() {
+        let settings = SettingsMap::new();
+        assert_eq!(test_base_url_override(&settings), "");
+    }
+
+    // Note: the release-only branch (`#[cfg(not(any(debug_assertions,
+    // test)))]`) always returns "" regardless of settings. It is compiled out
+    // under a test binary, so it cannot be exercised here directly — the
+    // build-config guards enforce that invariant at compile time.
+}

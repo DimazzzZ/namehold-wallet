@@ -597,6 +597,19 @@ mod tests {
         assert_eq!(ok.api_key, "secret");
     }
 
+    #[test]
+    fn guard_transport_allows_ipv6_loopback_http() {
+        // [::1] is loopback — an api-key over http to it stays on the machine.
+        assert!(guard_transport("http://[::1]:12037", "secret").is_ok());
+    }
+
+    #[test]
+    fn guard_transport_rejects_scheme_other_than_http_or_https() {
+        // A non-http(s) scheme with a key present is refused outright.
+        assert!(guard_transport("ftp://10.0.0.5:13037", "secret").is_err());
+        assert!(guard_transport("ws://127.0.0.1:12037", "secret").is_err());
+    }
+
     #[tokio::test]
     async fn explorer_source_refuses_broadcast() {
         let client = NodeRpcClient::new("http://127.0.0.1:12037", "", ChainSource::Explorer);

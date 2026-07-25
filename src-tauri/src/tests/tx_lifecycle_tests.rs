@@ -14,7 +14,8 @@ use tauri::Manager;
 
 use crate::commands::tx::{
     broadcast_tx_draft, build_send_hns_draft, delete_tx_draft, get_write_capability,
-    refresh_tx_confirmations, release_tx_draft_reservation, sign_tx_draft_inner, sync_wallet_state,
+    refresh_tx_confirmations, release_tx_draft_reservation, sign_tx_draft_confirmed,
+    sign_tx_draft_inner, sync_wallet_state,
 };
 use crate::db;
 use crate::error::AppError;
@@ -916,6 +917,53 @@ async fn write_capability_blocks_while_node_syncing() {
             .contains("syncing"),
         "reason should mention syncing",
     );
+}
+
+// --- Secure confirmation path (F3) -----------------------------------------
+
+#[tokio::test]
+async fn sign_rejects_when_user_cancels_confirmation() {
+    let mut server = mockito::Server::new_async().await;
+    // The node must NOT be called when the user cancels; this mock asserts 0
+    // hits below.
+    let m = server.mock("POST", "/").expect(0).create_async().await;
+
+    let conn = seeded_conn(&server.url(), 1_000_000);
+    let app = app_with(conn);
+    unlock(&app, PROFILE);
+
+    // Build a draft.
+    let draft_id = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build")
+        .id;
+
+    // Pre-queue a "user cancelled" response for the secure prompt.
+    use crate::commands::secure_prompt::{push_test_answer, SecurePromptResult};
+    push_test_answer(SecurePromptResult {
+        value: None,
+        confirmed: false,
+    });
+
+    // Call sign_tx_draft (the command, not _inner) — it should reject with
+    // UserRejected and NOT sign the draft.
+    let err = sign_tx_draft_confirmed(&app.state(), app.handle(), &draft_id)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, crate::error::AppError::UserRejected),
+        "expected UserRejected, got {err:?}"
+    );
+
+    // The draft must still be unsigned.
+    let row = draft_row(&app, &draft_id);
+    assert!(
+        row.signed_tx_hex.is_none(),
+        "draft must remain unsigned after cancellation"
+    );
+
+    // The node was never called.
+    m.assert_async().await;
 }
 
 #[tokio::test]

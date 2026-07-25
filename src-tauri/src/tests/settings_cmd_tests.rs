@@ -1,199 +1,245 @@
-use crate::db;
-use crate::commands;
-use crate::AppState;
-use crate::tests::command_helpers::create_test_state;
+//! Command-level tests for the settings/audit secrecy guarantees (security
+//! audit issue #7). These drive the REAL `#[tauri::command]` functions
+//! (`get_settings`, `update_setting`, `get_audit_log`) through a managed
+//! `AppState` over a fully-migrated in-memory DB, so the redaction / denylist
+//! logic is exercised as shipped — not via a hand-copied replica that could
+//! drift from the command body.
+
+use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
-// ── DB-query–layer tests (unchanged from existing) ──────────────────────
+use crate::commands::settings::{get_audit_log, get_settings, update_setting};
+use crate::db;
+use crate::error::AppError;
+use crate::AppState;
 
-#[test]
-fn test_get_settings_returns_defaults() {
-    let conn = crate::tests::command_helpers::create_test_db();
-    let settings = db::queries::get_settings(&conn).unwrap();
-
-    assert_eq!(settings["hsd_wallet_api_url"], "http://127.0.0.1:12039");
-    assert_eq!(settings["hsd_node_api_url"], "http://127.0.0.1:12037");
-    assert_eq!(settings["hsd_wallet_id"], "primary");
-    assert_eq!(settings["hsd_network"], "mainnet");
-    assert_eq!(settings["write_mode"], "false");
+fn migrated_conn() -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    conn
 }
 
-#[test]
-fn test_set_setting_new_key() {
-    let conn = crate::tests::command_helpers::create_test_db();
-    db::queries::set_setting(&conn, "custom_key", "custom_value").unwrap();
-
-    let settings = db::queries::get_settings(&conn).unwrap();
-    assert_eq!(settings["custom_key"], "custom_value");
-}
-
-#[test]
-fn test_set_setting_update_existing() {
-    let conn = crate::tests::command_helpers::create_test_db();
-    db::queries::set_setting(&conn, "hsd_network", "testnet").unwrap();
-
-    let settings = db::queries::get_settings(&conn).unwrap();
-    assert_eq!(settings["hsd_network"], "testnet");
-}
-
-#[test]
-fn test_set_setting_empty_value() {
-    let conn = crate::tests::command_helpers::create_test_db();
-    db::queries::set_setting(&conn, "hsd_api_key", "").unwrap();
-
-    let settings = db::queries::get_settings(&conn).unwrap();
-    assert_eq!(settings["hsd_api_key"], "");
-}
-
-#[test]
-fn test_wallet_snapshot_operations() {
-    let conn = crate::tests::command_helpers::create_test_db();
-
-    // Insert snapshots
-    let id1 = db::queries::insert_wallet_snapshot(&conn, "primary", 1000000, Some("rs1q1"), 5, None).unwrap();
-    let id2 = db::queries::insert_wallet_snapshot(&conn, "primary", 2000000, Some("rs1q1"), 10, None).unwrap();
-    assert!(id2 > id1);
-
-    // Get latest
-    let latest = db::queries::get_latest_wallet_snapshot(&conn).unwrap().unwrap();
-    assert_eq!(latest["balance"], 2000000);
-    assert_eq!(latest["name_count"], 10);
-
-    // Get list
-    let snapshots = db::queries::get_wallet_snapshots(&conn, 5).unwrap();
-    assert_eq!(snapshots.len(), 2);
-}
-
-#[test]
-fn test_audit_log_operations() {
-    let conn = crate::tests::command_helpers::create_test_db();
-
-    conn.execute("INSERT INTO audit_log (action, detail) VALUES ('import_csv', '{\"count\":5}')", []).unwrap();
-    conn.execute("INSERT INTO audit_log (action, detail) VALUES ('sync', '{\"matched\":3}')", []).unwrap();
-    conn.execute("INSERT INTO audit_log (action, detail) VALUES ('import_csv', '{\"count\":10}')", []).unwrap();
-
-    let entries = db::queries::get_recent_audit_log(&conn, 10).unwrap();
-    assert_eq!(entries.len(), 3);
-
-    let entries = db::queries::get_recent_audit_log(&conn, 2).unwrap();
-    assert_eq!(entries.len(), 2);
-}
-
-// ── Command-layer tests (cover src-tauri/src/commands/settings.rs) ──────
-
-fn mock_app_with(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
-    tauri::test::mock_builder()
-        .manage(state)
-        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> {
+    mock_builder()
+        .manage(AppState {
+            db: std::sync::Mutex::new(conn),
+            signer: std::sync::Mutex::new(None),
+            secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
+            hsd_child: std::sync::Mutex::new(None),
+            sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::commands::sync::SyncStatus::default(),
+            )),
+        })
+        .build(mock_context(noop_assets()))
         .expect("mock app")
 }
 
-#[tokio::test]
-async fn test_cmd_get_settings() {
-    let state = create_test_state();
-    let app = mock_app_with(state);
+/// Read the raw stored value for a setting straight from the DB (bypasses
+/// redaction) so tests can prove the secret is actually persisted.
+fn raw_setting(app: &tauri::App<tauri::test::MockRuntime>, key: &str) -> Option<String> {
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    db::queries::get_settings(&conn).unwrap().get(key).cloned()
+}
 
-    let settings = commands::settings::get_settings(app.state::<AppState>()).await.unwrap();
-    assert_eq!(settings["hsd_wallet_api_url"], "http://127.0.0.1:12039");
-    assert_eq!(settings["hsd_network"], "mainnet");
+// --- get_settings redaction -----------------------------------------------
+
+#[tokio::test]
+async fn get_settings_redacts_namebase_cookie_and_marks_presence() {
+    let conn = migrated_conn();
+    db::queries::set_setting(&conn, "namebase_cookie", "super-secret-session").unwrap();
+    let app = app_with(conn);
+
+    let out = get_settings(app.state()).await.unwrap();
+    assert!(
+        out.get("namebase_cookie").is_none(),
+        "raw cookie must not leak"
+    );
+    assert_eq!(out["__has_namebase_cookie"], "true");
+    // The secret is still stored server-side.
+    assert_eq!(
+        raw_setting(&app, "namebase_cookie").as_deref(),
+        Some("super-secret-session")
+    );
 }
 
 #[tokio::test]
-async fn test_cmd_update_setting() {
-    let state = create_test_state();
-    let app = mock_app_with(state);
+async fn get_settings_redacts_node_rpc_api_key_and_marks_presence() {
+    let conn = migrated_conn();
+    db::queries::set_setting(&conn, "node_rpc_api_key", "hunter2").unwrap();
+    let app = app_with(conn);
 
-    commands::settings::update_setting(
-        app.state::<AppState>(),
-        "hsd_network".to_string(),
-        "testnet".to_string(),
+    let out = get_settings(app.state()).await.unwrap();
+    assert!(out.get("node_rpc_api_key").is_none());
+    assert_eq!(out["__has_node_rpc_api_key"], "true");
+}
+
+#[tokio::test]
+async fn get_settings_passes_through_non_sensitive_keys() {
+    let conn = migrated_conn();
+    db::queries::set_setting(&conn, "advanced_mode", "true").unwrap();
+    let app = app_with(conn);
+
+    let out = get_settings(app.state()).await.unwrap();
+    assert_eq!(out["advanced_mode"], "true");
+}
+
+#[tokio::test]
+async fn get_settings_omits_presence_markers_when_unset() {
+    let conn = migrated_conn();
+    let app = app_with(conn);
+
+    let out = get_settings(app.state()).await.unwrap();
+    // The migrations insert default rows for node_rpc_api_key and hsd_api_key
+    // (with empty values), so the markers ARE present. Only namebase_cookie
+    // is never seeded, so its marker should be absent.
+    assert!(out.get("__has_namebase_cookie").is_none());
+    assert_eq!(out["__has_node_rpc_api_key"], "true");
+    // hsd_api_key is deleted by migration 010, so no marker.
+    assert!(out.get("__has_hsd_api_key").is_none());
+}
+
+// --- update_setting denylist ----------------------------------------------
+
+#[tokio::test]
+async fn update_setting_rejects_write_to_namebase_base_url() {
+    let conn = migrated_conn();
+    let app = app_with(conn);
+
+    let err = update_setting(
+        app.state(),
+        "namebase_base_url".to_string(),
+        "https://attacker.example".to_string(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(_)));
+    // Nothing was written.
+    assert_eq!(raw_setting(&app, "namebase_base_url"), None);
+}
+
+#[tokio::test]
+async fn update_setting_rejects_write_to_namebase_cookie() {
+    let conn = migrated_conn();
+    let app = app_with(conn);
+
+    let err = update_setting(
+        app.state(),
+        "namebase_cookie".to_string(),
+        "forged".to_string(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(_)));
+    assert_eq!(raw_setting(&app, "namebase_cookie"), None);
+}
+
+#[tokio::test]
+async fn update_setting_allows_non_denylisted_keys() {
+    let conn = migrated_conn();
+    let app = app_with(conn);
+
+    update_setting(app.state(), "advanced_mode".to_string(), "true".to_string())
+        .await
+        .unwrap();
+    assert_eq!(raw_setting(&app, "advanced_mode").as_deref(), Some("true"));
+}
+
+// --- update_setting audit redaction ----------------------------------------
+
+#[tokio::test]
+async fn update_setting_writes_star_star_star_for_sensitive_key() {
+    let conn = migrated_conn();
+    let app = app_with(conn);
+
+    // node_rpc_api_key is sensitive but NOT write-denied, so the write path
+    // (and its audit entry) is reachable from the renderer.
+    update_setting(
+        app.state(),
+        "node_rpc_api_key".to_string(),
+        "leaky-secret".to_string(),
     )
     .await
     .unwrap();
 
-    let settings = commands::settings::get_settings(app.state::<AppState>()).await.unwrap();
-    assert_eq!(settings["hsd_network"], "testnet");
+    let log = get_audit_log(app.state(), Some(10)).await.unwrap();
+    let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
+    assert!(detail.contains("\"***\""), "audit must redact: {detail}");
+    assert!(
+        !detail.contains("leaky-secret"),
+        "raw secret leaked: {detail}"
+    );
 }
 
 #[tokio::test]
-async fn test_cmd_update_setting_custom_key() {
-    let state = create_test_state();
-    let app = mock_app_with(state);
+async fn update_setting_writes_raw_value_for_non_sensitive_key() {
+    let conn = migrated_conn();
+    let app = app_with(conn);
 
-    commands::settings::update_setting(
-        app.state::<AppState>(),
-        "theme".to_string(),
-        "dark".to_string(),
+    update_setting(app.state(), "advanced_mode".to_string(), "true".to_string())
+        .await
+        .unwrap();
+
+    let log = get_audit_log(app.state(), Some(10)).await.unwrap();
+    let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
+    assert!(detail.contains("advanced_mode"));
+    assert!(detail.contains("true"));
+}
+
+// --- get_audit_log defense-in-depth ----------------------------------------
+
+#[tokio::test]
+async fn get_audit_log_redacts_legacy_plaintext_secret() {
+    let conn = migrated_conn();
+    // Simulate a row written BEFORE redaction existed: raw secret in detail.
+    conn.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('setting_change', ?1)",
+        [serde_json::json!({"key": "namebase_cookie", "value": "OLD-PLAINTEXT"}).to_string()],
     )
-    .await
     .unwrap();
+    let app = app_with(conn);
 
-    let settings = commands::settings::get_settings(app.state::<AppState>()).await.unwrap();
-    assert_eq!(settings["theme"], "dark");
+    let log = get_audit_log(app.state(), Some(10)).await.unwrap();
+    let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("\"***\""),
+        "legacy secret must be re-redacted: {detail}"
+    );
+    assert!(
+        !detail.contains("OLD-PLAINTEXT"),
+        "legacy secret leaked: {detail}"
+    );
 }
 
 #[tokio::test]
-async fn test_cmd_get_audit_log() {
-    let state = create_test_state();
-    // Seed audit log entries
-    {
-        let db = state.db.lock().unwrap();
-        db.execute("INSERT INTO audit_log (action, detail) VALUES ('test_cmd', '{\"msg\":\"hello\"}')", []).unwrap();
-    }
+async fn get_audit_log_leaves_non_sensitive_details_untouched() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('setting_change', ?1)",
+        [serde_json::json!({"key": "advanced_mode", "value": "true"}).to_string()],
+    )
+    .unwrap();
+    let app = app_with(conn);
 
-    let app = mock_app_with(state);
-
-    let entries = commands::settings::get_audit_log(app.state::<AppState>(), None).await.unwrap();
-    let arr = entries.as_array().unwrap();
-    assert_eq!(arr.len(), 1);
-    assert_eq!(arr[0]["action"], "test_cmd");
+    let log = get_audit_log(app.state(), Some(10)).await.unwrap();
+    let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
+    assert!(detail.contains("advanced_mode"));
+    assert!(detail.contains("true"));
 }
 
 #[tokio::test]
-async fn test_cmd_get_audit_log_with_limit() {
-    let state = create_test_state();
-    {
-        let db = state.db.lock().unwrap();
-        db.execute("INSERT INTO audit_log (action, detail) VALUES ('a', '{}')", []).unwrap();
-        db.execute("INSERT INTO audit_log (action, detail) VALUES ('b', '{}')", []).unwrap();
-    }
+async fn get_audit_log_survives_malformed_detail_json() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('setting_change', ?1)",
+        ["this is not json"],
+    )
+    .unwrap();
+    let app = app_with(conn);
 
-    let app = mock_app_with(state);
-
-    let entries = commands::settings::get_audit_log(app.state::<AppState>(), Some(1)).await.unwrap();
-    let arr = entries.as_array().unwrap();
-    assert_eq!(arr.len(), 1);
-}
-
-#[tokio::test]
-async fn test_cmd_get_wallet_snapshots() {
-    let state = create_test_state();
-    {
-        let db = state.db.lock().unwrap();
-        db::queries::insert_wallet_snapshot(&db, "wallet1", 1000000, None, 5, None).unwrap();
-        db::queries::insert_wallet_snapshot(&db, "wallet1", 2000000, None, 8, None).unwrap();
-    }
-
-    let app = mock_app_with(state);
-
-    let snapshots = commands::settings::get_wallet_snapshots(app.state::<AppState>(), None).await.unwrap();
-    let arr = snapshots.as_array().unwrap();
-    assert_eq!(arr.len(), 2);
-}
-
-#[tokio::test]
-async fn test_cmd_get_wallet_snapshots_with_limit() {
-    let state = create_test_state();
-    {
-        let db = state.db.lock().unwrap();
-        db::queries::insert_wallet_snapshot(&db, "w", 1, None, 1, None).unwrap();
-        db::queries::insert_wallet_snapshot(&db, "w", 2, None, 2, None).unwrap();
-        db::queries::insert_wallet_snapshot(&db, "w", 3, None, 3, None).unwrap();
-    }
-
-    let app = mock_app_with(state);
-
-    let snapshots = commands::settings::get_wallet_snapshots(app.state::<AppState>(), Some(2)).await.unwrap();
-    let arr = snapshots.as_array().unwrap();
-    assert_eq!(arr.len(), 2);
+    // Must not panic; the non-JSON detail passes through verbatim.
+    let log = get_audit_log(app.state(), Some(10)).await.unwrap();
+    let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
+    assert_eq!(detail, "this is not json");
 }

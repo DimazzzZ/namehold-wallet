@@ -32,6 +32,7 @@ mod read_profile_isolation_tests;
 mod renewals_tests;
 mod repair_convergence_tests;
 mod repair_owned_names_tests;
+mod settings_cmd_tests;
 mod settings_tests;
 mod sign_name_message_tests;
 mod sync_race_tests;

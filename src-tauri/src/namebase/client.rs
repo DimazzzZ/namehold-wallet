@@ -183,11 +183,23 @@ impl NamebaseClient {
 /// during local development, never in a shipped release.
 fn validate_base_url(base_url: &str) -> Result<(), AppError> {
     let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err(AppError::InvalidInput(
+            "namebase base URL is empty".to_string(),
+        ));
+    }
     let parsed = url::Url::parse(trimmed).map_err(|e| {
         AppError::InvalidInput(format!("namebase base URL is not a valid URL: {e}"))
     })?;
     let host = parsed.host_str().unwrap_or("");
     if host.eq_ignore_ascii_case("sunset.namebase.io") {
+        // Cookie must never go to the real host over cleartext HTTP.
+        if parsed.scheme() != "https" {
+            return Err(AppError::InvalidInput(format!(
+                "namebase base URL to '{host}' must use https, got '{scheme}'",
+                scheme = parsed.scheme()
+            )));
+        }
         return Ok(());
     }
     #[cfg(any(debug_assertions, test))]
@@ -426,5 +438,31 @@ mod base_url_guard_tests {
     #[test]
     fn rejects_garbage_url() {
         assert!(validate_base_url("not a url").is_err());
+    }
+
+    #[test]
+    fn rejects_http_to_namebase_host() {
+        // Scheme-downgrade: cleartext HTTP to the real host would leak the
+        // session cookie. Must be refused even though the host is allowlisted.
+        assert!(validate_base_url("http://sunset.namebase.io").is_err());
+    }
+
+    #[test]
+    fn accepts_uppercase_namebase_host() {
+        // Host match is case-insensitive.
+        assert!(validate_base_url("https://SUNSET.NAMEBASE.IO").is_ok());
+    }
+
+    #[test]
+    fn accepts_port_on_namebase_host() {
+        // A port on the real host is still the real host — allowed (Namebase
+        // could serve on a non-default port on their own domain).
+        assert!(validate_base_url("https://sunset.namebase.io:8443").is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_string() {
+        assert!(validate_base_url("").is_err());
+        assert!(validate_base_url("   ").is_err());
     }
 }
