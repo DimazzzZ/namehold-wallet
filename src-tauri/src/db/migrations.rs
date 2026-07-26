@@ -32,6 +32,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "019",
         include_str!("../sql/019_namebase_cookie_at_rest.sql"),
     ),
+    (
+        "020",
+        include_str!("../sql/020_namebase_history.sql"),
+    ),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -73,7 +77,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 19, "expected 19 migrations, got {count}");
+        assert_eq!(count, 20, "expected 20 migrations, got {count}");
     }
 
     #[test]
@@ -84,7 +88,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 19);
+        assert_eq!(count, 20);
     }
 
     #[test]

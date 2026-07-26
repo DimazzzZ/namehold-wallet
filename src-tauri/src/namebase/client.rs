@@ -407,6 +407,44 @@ impl NamebaseClient {
         let resp = self.send_get("/api/domains/withdrawals").await?;
         Self::json_or_session_expired(resp).await
     }
+
+    /// Get the account-history CSV export. Returns the raw CSV text (not JSON).
+    /// The export is a one-shot historical artifact: Namebase stopped recording
+    /// activity on 2026-06-12. The response is CSV-formatted with a preamble
+    /// comment block, then the header `id,created_at,type,data`.
+    ///
+    /// This endpoint is heavier than Namebase's other JSON list endpoints and
+    /// is rate-limited more strictly. A 429 response is mapped to the typed
+    /// [`AppError::NamebaseRateLimited`] with the `Retry-After` header parsed
+    /// out (defaulting to 60 s when absent or unparseable) so the UI can render
+    /// "try again in Ns" instead of a raw status string.
+    pub async fn get_account_history(&self) -> Result<String, AppError> {
+        let resp = self.send_get("/api/account/history/export").await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            // `Retry-After` may be either delta-seconds or an HTTP-date. We only
+            // parse the delta-seconds form (by far the most common) and fall
+            // back to 60 s when absent, unparseable, or a date.
+            let retry_after_secs = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(60);
+            return Err(AppError::NamebaseRateLimited { retry_after_secs });
+        }
+        if !status.is_success() {
+            return Err(AppError::Other(format!(
+                "Namebase returned status {}",
+                status
+            )));
+        }
+        let (expired, body) = Self::read_body_and_check_expired(resp).await?;
+        if expired {
+            return Err(AppError::NamebaseSessionExpired);
+        }
+        Ok(body)
+    }
 }
 
 #[cfg(test)]

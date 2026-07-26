@@ -249,3 +249,117 @@ export function useWithdrawHns() {
     },
   });
 }
+
+/** A row of imported Namebase account-history event. */
+export interface NamebaseHistoryRow {
+  id: number;
+  createdAt: string;
+  type: string;
+  family: string;
+  verb: string;
+  name: string | null;
+  feeDoos: number | null;
+  bidDoos: number | null;
+  stakeDoos: number | null;
+  usdCents: number | null;
+  hnsDoos: number | null;
+  auctionId: string | null;
+  bidId: string | null;
+  saleId: string | null;
+  dataJson: string;
+  importedAt: string;
+}
+
+/** Result of an import operation (file or live). */
+export interface NamebaseHistoryImportResult {
+  inserted: number;
+  updated: number;
+  total: number;
+}
+
+/** Summary aggregates for the import card. */
+export interface NamebaseHistorySummary {
+  eventCount: number;
+  nameCount: number;
+  totalFeeDoos: number;
+  totalUsdCents: number;
+  earliest: string | null;
+  latest: string | null;
+}
+
+/** List imported Namebase history with optional filters. */
+export function useNamebaseHistory(filters?: {
+  name?: string;
+  family?: string;
+  search?: string;
+}) {
+  return useQuery<NamebaseHistoryRow[]>({
+    queryKey: ["namebase-history", filters],
+    queryFn: async () => {
+      const result = await invoke<NamebaseHistoryRow[]>("get_namebase_history", {
+        name: filters?.name,
+        family: filters?.family,
+        search: filters?.search,
+      });
+      return result ?? [];
+    },
+    retry: false,
+  });
+}
+
+/** Get summary aggregates for the import card. */
+export function useNamebaseHistorySummary() {
+  return useQuery<NamebaseHistorySummary>({
+    queryKey: ["namebase-history-summary"],
+    queryFn: async () => {
+      const result = await invoke<NamebaseHistorySummary>("get_namebase_history_summary");
+      return result ?? {
+        eventCount: 0,
+        nameCount: 0,
+        totalFeeDoos: 0,
+        totalUsdCents: 0,
+        earliest: null,
+        latest: null,
+      };
+    },
+    retry: false,
+  });
+}
+
+/** Import account history from a local CSV file. */
+export function useImportNamebaseHistoryFile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (path: string) =>
+      invoke<NamebaseHistoryImportResult>("import_namebase_history_from_file", { path }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["namebase-history"] });
+      qc.invalidateQueries({ queryKey: ["namebase-history-summary"] });
+    },
+  });
+}
+
+/** Import account history from the live Namebase API. */
+export function useImportNamebaseHistoryLive() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      invoke<NamebaseHistoryImportResult>("import_namebase_history_live"),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["namebase-history"] });
+      qc.invalidateQueries({ queryKey: ["namebase-history-summary"] });
+    },
+  });
+}
+
+/** Clear all imported Namebase history. */
+export function useClearNamebaseHistory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => invoke<number>("clear_namebase_history"),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["namebase-history"] });
+      qc.invalidateQueries({ queryKey: ["namebase-history-summary"] });
+    },
+  });
+}

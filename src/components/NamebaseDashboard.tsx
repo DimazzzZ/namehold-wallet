@@ -15,6 +15,7 @@ import { Input } from "./ui/Input";
 import { Badge } from "./ui/Badge";
 import { Dialog } from "./ui/Dialog";
 import { EmptyState } from "./ui/EmptyState";
+import { NamebaseHistoryImport } from "./NamebaseHistoryImport";
 import { mapError } from "../lib/errors";
 import { formatDate, formatCount, formatHnsAmount, truncate } from "../lib/utils";
 import { displayName } from "../lib/idn";
@@ -746,6 +747,9 @@ export function NamebaseDashboard() {
       {isConnected && (
         <RecentActivity />
       )}
+
+      {/* Imported Namebase account history — always visible (file upload works offline) */}
+      <NamebaseHistoryImport />
     </div>
   );
 }

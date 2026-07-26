@@ -72,3 +72,7 @@ src-tauri/target/release/bundle/
 tsconfig.tsbuildinfo
 www.namebase.io.har
 CLAUDE.md
+
+# Namebase account-history exports (sensitive, user data)
+namebase-history-*.csv
+account_history*.csv
