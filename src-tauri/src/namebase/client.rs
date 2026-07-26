@@ -265,7 +265,7 @@ impl NamebaseClient {
             .http
             .get(&url)
             .header("Cookie", cookie)
-            .header("User-Agent", "Namehold/0.2.0")
+            .header("User-Agent", "Namehold/0.2.1")
             .send()
             .await?;
         self.capture_set_cookie(resp.headers());
@@ -284,7 +284,7 @@ impl NamebaseClient {
             .post(&url)
             .header("Cookie", cookie)
             .header("Content-Type", "application/json")
-            .header("User-Agent", "Namehold/0.2.0")
+            .header("User-Agent", "Namehold/0.2.1")
             .json(body)
             .send()
             .await?;

@@ -30,7 +30,7 @@ const handlers: Record<string, Handler> = {
 
   // ── Updates ───────────────────────────────────────────────────────────
   // Browser QA has no real updater; report a fixed version and "up to date".
-  current_version: () => "0.2.0",
+  current_version: () => "0.2.1",
   check_for_update: () => null,
   install_update: () => null,
 

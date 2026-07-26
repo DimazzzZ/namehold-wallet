@@ -178,13 +178,13 @@ pub mod app_updates {
             // Guard the wire shape the TS `UpdateMetadata` type depends on.
             let meta = UpdateMetadata {
                 version: "0.3.0".into(),
-                current_version: "0.2.0".into(),
+                current_version: "0.2.1".into(),
                 notes: Some("fixes".into()),
                 date: None,
             };
             let v = serde_json::to_value(&meta).unwrap();
             assert_eq!(v["version"], "0.3.0");
-            assert_eq!(v["currentVersion"], "0.2.0");
+            assert_eq!(v["currentVersion"], "0.2.1");
             assert_eq!(v["notes"], "fixes");
             assert!(v["date"].is_null());
         }
