@@ -30,6 +30,8 @@ fn state_no_owner(
         None,
         None,
         false,
+        None,
+        None,
     )
 }
 
@@ -51,6 +53,8 @@ fn state_registered(
         Some(6),
         None,
         false,
+        None,
+        None,
     )
 }
 
@@ -72,12 +76,26 @@ fn state_unregistered(
         Some(4),
         None,
         false,
+        None,
+        None,
     )
 }
 
 // Helper: registered owner coin + a known days-until-expire value.
 fn state_registered_days(phase: &str, days: Option<f64>) -> AuctionTaskState {
-    derive_auction_task_state(phase, true, false, false, false, true, Some(6), days, false)
+    derive_auction_task_state(
+        phase,
+        true,
+        false,
+        false,
+        false,
+        true,
+        Some(6),
+        days,
+        false,
+        None,
+        None,
+    )
 }
 
 // ============================================================================
@@ -121,13 +139,17 @@ fn available_with_pending_open_yields_waiting_for_bidding() {
         None,
         None,
         true,
+        None,
+        None,
     );
     assert_eq!(state, AuctionTaskState::WaitingForBidding);
 }
 
 #[test]
 fn empty_phase_with_pending_open_yields_waiting_for_bidding() {
-    let state = derive_auction_task_state("", false, false, false, false, false, None, None, true);
+    let state = derive_auction_task_state(
+        "", false, false, false, false, false, None, None, true, None, None,
+    );
     assert_eq!(state, AuctionTaskState::WaitingForBidding);
 }
 
@@ -145,6 +167,8 @@ fn available_without_pending_open_still_yields_available_to_open() {
         None,
         None,
         false,
+        None,
+        None,
     );
     assert_eq!(state, AuctionTaskState::AvailableToOpen);
 }
@@ -182,6 +206,110 @@ fn reveal_with_bid_but_bid_coin_not_synced_yields_ready_to_reveal() {
 fn reveal_without_bid_yields_unavailable() {
     let state = state_no_owner("REVEAL", false, false, false, false);
     assert_eq!(state, AuctionTaskState::UnavailableOther);
+}
+
+// ============================================================================
+// Reveal sub-lifecycle derivation (PR2): reveal_txid + draft-status join,
+// with a chain-truth fallback. Grilled state machine:
+//   draft broadcasted/broadcast_pending -> RevealBroadcastPending
+//   draft confirmed                     -> RevealDoneWaitingForClose
+//   draft dropped/failed                -> ReadyToReveal (re-offer)
+//   no draft + reveal_txid + !bid_coin  -> RevealDoneWaitingForClose (chain)
+//   otherwise                           -> ReadyToReveal
+// ============================================================================
+
+// Helper: REVEAL phase with a bid commitment, parameterized on the reveal
+// evidence (bid coin still unspent, reveal txid, and its draft status).
+fn reveal_state(
+    has_bid_coin: bool,
+    reveal_txid: Option<&str>,
+    reveal_draft_status: Option<&str>,
+) -> AuctionTaskState {
+    derive_auction_task_state(
+        "REVEAL",
+        false,
+        true, // has_bid_commitment
+        has_bid_coin,
+        false, // has_reveal_coin
+        false,
+        None,
+        None,
+        false,
+        reveal_txid,
+        reveal_draft_status,
+    )
+}
+
+#[test]
+fn reveal_broadcasted_draft_yields_pending() {
+    let state = reveal_state(true, Some("revealtxid"), Some("broadcasted"));
+    assert_eq!(state, AuctionTaskState::RevealBroadcastPending);
+}
+
+#[test]
+fn reveal_broadcast_pending_draft_yields_pending() {
+    let state = reveal_state(true, Some("revealtxid"), Some("broadcast_pending"));
+    assert_eq!(state, AuctionTaskState::RevealBroadcastPending);
+}
+
+#[test]
+fn reveal_confirmed_draft_yields_done_waiting_for_close() {
+    // Bid coin is spent by the confirmed reveal.
+    let state = reveal_state(false, Some("revealtxid"), Some("confirmed"));
+    assert_eq!(state, AuctionTaskState::RevealDoneWaitingForClose);
+}
+
+#[test]
+fn reveal_dropped_draft_falls_back_to_ready_to_reveal() {
+    // A dropped reveal never landed: bid coin is still unspent, so re-offer.
+    let state = reveal_state(true, Some("revealtxid"), Some("dropped"));
+    assert_eq!(state, AuctionTaskState::ReadyToReveal);
+}
+
+#[test]
+fn reveal_failed_draft_falls_back_to_ready_to_reveal() {
+    let state = reveal_state(true, Some("revealtxid"), Some("failed"));
+    assert_eq!(state, AuctionTaskState::ReadyToReveal);
+}
+
+#[test]
+fn reveal_txid_no_draft_bid_coin_spent_yields_done() {
+    // Restored / cross-device wallet: no local draft, but reveal_txid was
+    // stamped by chain scan and the bid coin is spent — chain ground truth.
+    let state = reveal_state(false, Some("revealtxid"), None);
+    assert_eq!(state, AuctionTaskState::RevealDoneWaitingForClose);
+}
+
+#[test]
+fn reveal_txid_no_draft_bid_coin_still_unspent_yields_ready() {
+    // reveal_txid present but the bid coin is somehow still unspent and no
+    // draft — don't claim "done"; keep prompting the reveal.
+    let state = reveal_state(true, Some("revealtxid"), None);
+    assert_eq!(state, AuctionTaskState::ReadyToReveal);
+}
+
+#[test]
+fn reveal_no_txid_with_bid_coin_yields_ready() {
+    let state = reveal_state(true, None, None);
+    assert_eq!(state, AuctionTaskState::ReadyToReveal);
+}
+
+#[test]
+fn reveal_pending_serializes_camel_case() {
+    let json = serde_json::to_string(&AuctionTaskState::RevealBroadcastPending).unwrap();
+    assert_eq!(json, "\"revealBroadcastPending\"");
+    let json2 = serde_json::to_string(&AuctionTaskState::RevealDoneWaitingForClose).unwrap();
+    assert_eq!(json2, "\"revealDoneWaitingForClose\"");
+}
+
+#[test]
+fn reveal_pending_next_action_has_no_action_key() {
+    let (key, label, _reason) = next_action_for_task(&AuctionTaskState::RevealBroadcastPending);
+    assert!(key.is_none());
+    assert_eq!(label.as_deref(), Some("Reveal pending confirmation"));
+    let (key2, label2, _r2) = next_action_for_task(&AuctionTaskState::RevealDoneWaitingForClose);
+    assert!(key2.is_none());
+    assert_eq!(label2.as_deref(), Some("Revealed — waiting for close"));
 }
 
 #[test]
@@ -287,6 +415,8 @@ fn explorer_owned_without_owner_coin_within_threshold_yields_expiring_soon() {
         None,
         Some(5.0),
         false,
+        None,
+        None,
     );
     assert_eq!(state, AuctionTaskState::ExpiringSoon);
 }
@@ -304,6 +434,8 @@ fn won_unregistered_within_threshold_still_needs_register_first() {
         Some(4),
         Some(5.0),
         false,
+        None,
+        None,
     );
     assert_eq!(state, AuctionTaskState::WonNeedsRegister);
 }
@@ -321,6 +453,8 @@ fn unowned_closed_within_threshold_is_not_expiring_soon() {
         None,
         Some(5.0),
         false,
+        None,
+        None,
     );
     assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);
 }
