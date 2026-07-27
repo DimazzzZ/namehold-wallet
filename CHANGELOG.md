@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added
+- **Reveal in-flight UI** — after broadcasting a reveal, the modal stays open
+  and shows a pending-confirmation card (txid + copy + explorer link) instead of
+  closing. The auctions row advances through `revealBroadcastPending` →
+  `revealDoneWaitingForClose` → won/lost without a manual refresh (30s polling +
+  draft-confirmation watcher with a proactive toast). A confirm-before-broadcast
+  panel shows the bid amount and cycles substate labels (Unlocking → Signing →
+  Broadcasting). Covers restored/cross-device wallets via a chain-truth fallback.
+- **Block-driven stateful mock engine** — `pnpm dev` (browser) now runs a
+  virtual blockchain simulator with mutable `chainHeight` and per-name auction
+  records. Names advance deterministically through AVAILABLE → OPENING → BIDDING
+  → REVEAL → CLOSED as blocks are mined via `__webqa_mine(n)`. The seeded
+  scenario pre-loads a name in REVEAL phase ready to reveal.
+- **External link opener** — `tauri-plugin-opener` enables "View on explorer"
+  buttons that open the system browser (Shakeshift tx page). Falls back to
+  `window.open` in the browser dev mode.
+
 ## [0.2.1] - 2026-07-25
 
 ### Changed

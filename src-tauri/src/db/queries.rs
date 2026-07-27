@@ -1502,6 +1502,25 @@ pub fn has_pending_bid_draft_for_name(
     has_pending_draft_for_name(conn, profile_id, "bid", name)
 }
 
+/// Look up the status of a tx draft by its broadcast txid. Returns `None` if
+/// no draft with that txid exists for the given profile.
+pub fn get_draft_status_by_txid(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    txid: &str,
+) -> Result<Option<String>, AppError> {
+    let status: Option<String> = conn
+        .query_row(
+            "SELECT status FROM wallet_tx_drafts
+             WHERE wallet_profile_id = ?1 AND txid = ?2
+             ORDER BY created_at DESC LIMIT 1",
+            params![profile_id, txid],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(status)
+}
+
 // --- Cache-backed read model (non-custodial) ------------------------------
 
 /// Balance for a profile from the local UTXO cache, shaped like the frontend

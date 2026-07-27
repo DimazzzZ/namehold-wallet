@@ -48,6 +48,10 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
+        // Opens external URLs (explorer tx links, etc.) in the system
+        // browser. Without this the Tauri webview silently blocks
+        // `window.open` / anchor clicks to external hosts.
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Auto-updater (desktop only). The plugin verifies Ed25519
             // signatures against `plugins.updater.pubkey` before installing;

@@ -257,6 +257,16 @@ pub enum AuctionTaskState {
     ReadyToBid,
     #[serde(rename = "readyToReveal")]
     ReadyToReveal,
+    /// The wallet has broadcast its reveal, but the tx has not yet confirmed.
+    /// No user action is needed — it's a "your reveal is in flight" state that
+    /// keeps the auctions row from re-inviting another Reveal click.
+    #[serde(rename = "revealBroadcastPending")]
+    RevealBroadcastPending,
+    /// The wallet's reveal has confirmed on-chain, but the auction is still in
+    /// its REVEAL window (other bidders may still reveal). Nothing to do but
+    /// wait for the phase to close into won/lost.
+    #[serde(rename = "revealDoneWaitingForClose")]
+    RevealDoneWaitingForClose,
     #[serde(rename = "wonNeedsRegister")]
     WonNeedsRegister,
     #[serde(rename = "lostNeedsRedeem")]
@@ -291,6 +301,13 @@ pub struct NameActionCapabilities {
     pub has_bid_coin: bool,
     pub has_reveal_coin: bool,
     pub has_owner_coin: bool,
+    /// The txid of the wallet's reveal broadcast (if any). Surfaced so the
+    /// frontend can render an explorer link + copy button on the pending/done
+    /// card without re-deriving from raw data.
+    pub reveal_txid: Option<String>,
+    /// The wallet's true bid value (doos) from the local commitment row.
+    /// Surfaced so the confirm-before-broadcast panel can show the amount.
+    pub bid_value_doos: Option<i64>,
     pub can_open: NameActionCapability,
     pub can_bid: NameActionCapability,
     pub can_reveal: NameActionCapability,
@@ -336,6 +353,14 @@ pub(crate) struct NameActionContext {
     /// already opened the name is a phase change (AVAILABLE -> OPENING),
     /// which `can_open`'s phase check already handles separately.
     pub has_pending_open: bool,
+    /// The `reveal_txid` stamped on the bid commitment row (if any).
+    pub reveal_txid: Option<String>,
+    /// Status of the local tx_draft matching `reveal_txid` (if one exists).
+    /// `None` means either no reveal_txid or no local draft for it (cross-
+    /// device / chain-scan stamped).
+    pub reveal_draft_status: Option<String>,
+    /// The wallet's true bid value (doos) from the commitment row.
+    pub bid_value_doos: Option<i64>,
 }
 
 /// Gather wallet evidence from the DB for a name.
@@ -424,6 +449,20 @@ pub(crate) fn find_name_action_context(
         queries::has_pending_draft_for_name(conn, profile_id, "open", name).unwrap_or(false);
     let has_pending_open = has_pending_open_coin || has_pending_open_draft;
 
+    // Reveal-in-flight evidence: the commitment row's `reveal_txid` (stamped
+    // either by our own broadcast in `build_reveal_draft`, or by `chain_scan`
+    // observing a matching on-chain reveal). When we have a local draft for it,
+    // its status distinguishes broadcasted (pending) from confirmed from
+    // dropped/failed; when there's no draft (restored/cross-device wallet), the
+    // caller falls back to the bid-coin-spent chain fact.
+    let reveal_txid = bid.as_ref().and_then(|b| b.reveal_txid.clone());
+    let reveal_draft_status = reveal_txid.as_ref().and_then(|txid| {
+        queries::get_draft_status_by_txid(conn, profile_id, txid)
+            .ok()
+            .flatten()
+    });
+    let bid_value_doos = bid.as_ref().map(|b| b.bid_value_doos);
+
     Ok(NameActionContext {
         has_bid_commitment: bid.is_some(),
         has_bid_coin: bid_coin.is_some(),
@@ -434,6 +473,9 @@ pub(crate) fn find_name_action_context(
         transfer_has_items: transfer,
         existing_bid_count,
         has_pending_open,
+        reveal_txid,
+        reveal_draft_status,
+        bid_value_doos,
     })
 }
 
@@ -886,6 +928,8 @@ fn build_name_action_capabilities(
         action_ctx.owner_covenant_type,
         days_until_expire,
         action_ctx.has_pending_open,
+        action_ctx.reveal_txid.as_deref(),
+        action_ctx.reveal_draft_status.as_deref(),
     );
 
     // 6. Determine next action.
@@ -904,6 +948,8 @@ fn build_name_action_capabilities(
         has_bid_coin: action_ctx.has_bid_coin,
         has_reveal_coin: action_ctx.has_reveal_coin,
         has_owner_coin: action_ctx.has_owner_coin,
+        reveal_txid: action_ctx.reveal_txid.clone(),
+        bid_value_doos: action_ctx.bid_value_doos,
         can_open,
         can_bid,
         can_reveal,
@@ -939,6 +985,8 @@ fn conservative_capabilities(name: &str, reason: &str) -> NameActionCapabilities
         has_bid_coin: false,
         has_reveal_coin: false,
         has_owner_coin: false,
+        reveal_txid: None,
+        bid_value_doos: None,
         can_open: disallowed.clone(),
         can_bid: disallowed.clone(),
         can_reveal: disallowed.clone(),
@@ -995,6 +1043,8 @@ pub fn derive_auction_task_state(
     owner_covenant_type: Option<i64>,
     days_until_expire: Option<f64>,
     has_pending_open: bool,
+    reveal_txid: Option<&str>,
+    reveal_draft_status: Option<&str>,
 ) -> AuctionTaskState {
     let expiring_soon = days_until_expire
         .map(|d| d <= EXPIRING_SOON_THRESHOLD_DAYS)
@@ -1016,16 +1066,31 @@ pub fn derive_auction_task_state(
             }
         }
         "REVEAL" => {
-            if has_bid_commitment && has_bid_coin {
-                AuctionTaskState::ReadyToReveal
-            } else if has_bid_commitment {
-                // Has a bid but the bid coin isn't synced locally yet (sync
-                // may be pending) — still prompt the user to reveal rather
-                // than staying silent; `can_reveal.allowed` (which DOES
-                // require `has_bid_coin`) is the actual button gate.
-                AuctionTaskState::ReadyToReveal
-            } else {
-                AuctionTaskState::UnavailableOther
+            if !has_bid_commitment {
+                return AuctionTaskState::UnavailableOther;
+            }
+            // Reveal state machine (grilled design): prefer a local draft's
+            // status, then fall back to on-chain facts.
+            //  1. Local draft exists: broadcasted/broadcast_pending → pending;
+            //     confirmed → done; dropped/failed → back to ReadyToReveal so
+            //     the user can re-broadcast (the bid coin is still unspent).
+            //  2. No draft but reveal_txid set AND the bid coin is spent
+            //     (!has_bid_coin) → done (chain ground truth; covers restored /
+            //     cross-device wallets that revealed elsewhere).
+            //  3. Otherwise → ReadyToReveal (still prompt; `can_reveal.allowed`,
+            //     which requires has_bid_coin, is the real button gate).
+            match reveal_draft_status {
+                Some("broadcasted") | Some("broadcast_pending") => {
+                    AuctionTaskState::RevealBroadcastPending
+                }
+                Some("confirmed") => AuctionTaskState::RevealDoneWaitingForClose,
+                _ => {
+                    if reveal_txid.is_some() && !has_bid_coin {
+                        AuctionTaskState::RevealDoneWaitingForClose
+                    } else {
+                        AuctionTaskState::ReadyToReveal
+                    }
+                }
             }
         }
         "CLOSED" => {
@@ -1093,6 +1158,14 @@ pub(crate) fn next_action_for_task(
         }
         AuctionTaskState::ReadyToReveal => {
             (Some("REVEAL".into()), Some("Reveal Bid".into()), Some("Reveal your bid now, or your lockup can't be reclaimed.".into()))
+        }
+        AuctionTaskState::RevealBroadcastPending => {
+            // Passive: no inline action (the row renders a "View" button and
+            // the modal shows the pending-confirmation card).
+            (None, Some("Reveal pending confirmation".into()), Some("Your reveal is broadcast and waiting to confirm (usually ~10 minutes).".into()))
+        }
+        AuctionTaskState::RevealDoneWaitingForClose => {
+            (None, Some("Revealed — waiting for close".into()), Some("Your reveal is confirmed. The auction stays open for reveals until the window closes.".into()))
         }
         AuctionTaskState::WonNeedsRegister => {
             (Some("REGISTER".into()), Some("Register Name".into()), Some("You won the auction! Register the name to finalize ownership.".into()))

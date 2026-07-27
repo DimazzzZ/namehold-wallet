@@ -234,6 +234,10 @@ export function taskStateLabel(state: AuctionTaskState): string {
       return "Ready to Bid";
     case "readyToReveal":
       return "Ready to Reveal";
+    case "revealBroadcastPending":
+      return "Reveal pending confirmation";
+    case "revealDoneWaitingForClose":
+      return "Revealed — waiting for close";
     case "wonNeedsRegister":
       return "Won — Register Now";
     case "lostNeedsRedeem":
@@ -264,6 +268,12 @@ export function taskStateBadgeVariant(
       return "warning";
     case "readyToReveal":
       return "warning";
+    case "revealBroadcastPending":
+      // Reassuring blue: something is in-flight, no action needed.
+      return "info";
+    case "revealDoneWaitingForClose":
+      // Neutral: your reveal is done, the auction phase itself hasn't closed.
+      return "default";
     case "wonNeedsRegister":
       return "success";
     case "lostNeedsRedeem":
@@ -288,6 +298,10 @@ export function taskStateUrgency(state: AuctionTaskState): string | null {
   switch (state) {
     case "readyToReveal":
       return "Reveal your bid before the window closes or your lockup can't be reclaimed.";
+    case "revealBroadcastPending":
+      return "Your reveal is broadcast and waiting to confirm (usually ~10 minutes).";
+    case "revealDoneWaitingForClose":
+      return "Your reveal is confirmed. The auction stays open for reveals until the window closes.";
     case "wonNeedsRegister":
       return "You won the auction! Register to finalize ownership and set DNS.";
     case "lostNeedsRedeem":
@@ -349,14 +363,21 @@ export function taskStateUrgencyRank(state: AuctionTaskState): number {
   switch (state) {
     case "readyToReveal":
       return 0;
-    case "wonNeedsRegister":
+    case "revealBroadcastPending":
+      // In-flight reveal ranks just below the still-actionable readyToReveal,
+      // so the row stays visible but doesn't hide the more-urgent won/lost tasks.
       return 1;
-    case "lostNeedsRedeem":
+    case "wonNeedsRegister":
       return 2;
-    case "expiringSoon":
+    case "lostNeedsRedeem":
       return 3;
-    default:
+    case "revealDoneWaitingForClose":
+      // Reassuring "waiting" — lowest of the active-position set.
       return 4;
+    case "expiringSoon":
+      return 5;
+    default:
+      return 6;
   }
 }
 

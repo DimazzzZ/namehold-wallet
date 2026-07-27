@@ -30,6 +30,11 @@ const ACTIVE_POSITION_TASK_STATES = new Set<AuctionTaskState>([
   "waitingForBidding",
   "readyToBid",
   "readyToReveal",
+  // Keep the row visible while the reveal is in flight and after it confirms
+  // (until the auction closes), so a successful reveal never makes the row
+  // silently vanish — the exact "where did it go?" confusion in another form.
+  "revealBroadcastPending",
+  "revealDoneWaitingForClose",
   "wonNeedsRegister",
   "lostNeedsRedeem",
 ]);
@@ -189,7 +194,13 @@ export function AuctionsView() {
             variant="ghost"
             onClick={() => handleOpenManagement(n.name)}
           >
-            {isPendingPhaseOpen || nextLabel === "Wait for Bidding" || nextLabel === "Owned"
+            {isPendingPhaseOpen ||
+            nextLabel === "Wait for Bidding" ||
+            nextLabel === "Owned" ||
+            // Reveal in-flight / done-waiting are passive: the row just opens
+            // the modal to show the pending/done card, no inline action.
+            summary?.taskState === "revealBroadcastPending" ||
+            summary?.taskState === "revealDoneWaitingForClose"
               ? "View"
               : nextLabel}
           </Button>

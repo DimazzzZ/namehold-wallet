@@ -100,6 +100,18 @@ export function NameActionsModal({
   const [recordsJson, setRecordsJson] = useState("[]");
   const [showAllActions, setShowAllActions] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  // Reveal confirm-panel + pending-card state (this PR).
+  const [revealConfirming, setRevealConfirming] = useState(false);
+  const [optimisticRevealTxid, setOptimisticRevealTxid] = useState<string | null>(null);
+  // Fine-grained substate label during the reveal build→sign→broadcast.
+  const revealSubstate: string | null =
+    exec.unlock.isPending
+      ? "Unlocking…"
+      : exec.sign.isPending
+        ? "Signing…"
+        : exec.broadcast.isPending
+          ? "Broadcasting…"
+          : null;
 
   const unlocked = signer?.unlocked ?? false;
   const canWrite = writeCap?.canWrite ?? false;
@@ -192,6 +204,15 @@ export function NameActionsModal({
     if (!open) seededForName.current = null;
   }, [open]);
 
+  // Reset the reveal confirm-panel + optimistic-txid state whenever the modal
+  // closes or the name changes, so reopening starts clean (a stale optimistic
+  // txid must never leak across names). The derived taskState (which survives
+  // reload) is what re-shows the pending card on reopen — not this local state.
+  useEffect(() => {
+    setRevealConfirming(false);
+    setOptimisticRevealTxid(null);
+  }, [open, name]);
+
   // Owned names with no urgent auction task (already registered, nothing to
   // finalize) auto-expand the management section, so the user isn't forced to
   // click "Manage actions" to see their Transfer/Renew/Finalize/Revoke
@@ -269,6 +290,36 @@ export function NameActionsModal({
       // exec.run() tags its rejection with which leg of unlock→sign→broadcast
       // threw (see useExecuteDraft) — thread that through to the toast.
       showToast(mapError(unwrapStaged(e), stageOf(e)), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Reveal confirm-and-broadcast: builds the reveal draft, runs the
+  // unlock→sign→broadcast pipeline, then stays in the modal (shows the
+  // pending card) rather than closing. On success, sets the optimistic txid
+  // so the card renders immediately (before the next caps poll).
+  const handleRevealConfirm = async () => {
+    if (!profile) return;
+    setBusy("REVEAL");
+    let draft: { id: string };
+    try {
+      draft = await build.reveal.mutateAsync({ name });
+    } catch (e) {
+      showToast(mapError(e, "build"), "error");
+      setBusy(null);
+      return;
+    }
+    try {
+      const result = await exec.run(draft.id, profile.id, unlocked);
+      // Success: stay in the modal, show the pending card.
+      setOptimisticRevealTxid(result.txid);
+      setRevealConfirming(false);
+      qc.invalidateQueries({ queryKey: ["wallet"] });
+      qc.invalidateQueries({ queryKey: ["read"] });
+    } catch (e) {
+      showToast(mapError(unwrapStaged(e), stageOf(e)), "error");
+      // On failure, stay in the confirm panel so the user can retry.
     } finally {
       setBusy(null);
     }
@@ -445,7 +496,6 @@ export function NameActionsModal({
                 actionDisabled={actionDisabled}
                 actionReason={actionReason}
                 onOpen={() => run("OPEN", () => build.open.mutateAsync({ name }))}
-                onReveal={() => run("REVEAL", () => build.reveal.mutateAsync({ name }))}
                 onRedeem={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}
                 onRegister={() => submitRecords("REGISTER")}
                 bidHns={bidHns}
@@ -460,6 +510,12 @@ export function NameActionsModal({
                 recoverHns={recoverHns}
                 onRecoverHnsChange={setRecoverHns}
                 onRecoverBid={handleRecoverBid}
+                revealConfirming={revealConfirming}
+                onRevealConfirmStart={() => setRevealConfirming(true)}
+                onRevealConfirmCancel={() => setRevealConfirming(false)}
+                onRevealConfirm={handleRevealConfirm}
+                revealSubstate={revealSubstate}
+                optimisticRevealTxid={optimisticRevealTxid}
                 rows={rows}
                 onRowChange={setRow}
                 onAddRow={addRow}
