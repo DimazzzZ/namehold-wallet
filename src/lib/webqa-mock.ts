@@ -12,6 +12,336 @@
 
 type Handler = (args?: Record<string, unknown>) => unknown;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Block-driven auction lifecycle engine
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The mock used to be static: every read returned canned data and a build/
+// broadcast changed nothing, so lifecycle flows (open → bid → reveal → close)
+// could not be exercised in the browser at all.
+//
+// This engine gives the mock a single mutable `chainHeight` plus a per-name
+// auction record. Reads derive the on-chain phase from `chainHeight` vs each
+// name's phase-window heights, and writes (build_*_draft + broadcast) mutate
+// the record. A dev-only "mine blocks" control (`__webqa_mine`, also exposed
+// as the `webqa_mine_blocks` invoke command) advances `chainHeight` so a QA
+// session can walk a name through its whole lifecycle deterministically.
+//
+// SCOPE / LIMITS (intentional):
+//  - State lives in module memory only — a full page reload resets it. There
+//    is no localStorage persistence (explicitly out of scope).
+//  - One bidder (this wallet). We don't simulate rival bidders beyond a single
+//    canned "other" bid so win/lose can be demoed.
+//  - Block times are compressed: phase windows are short so "mine a few blocks"
+//    crosses a phase boundary. These are NOT real Handshake durations.
+
+/** Compressed phase-window lengths (blocks) — short so QA can mine across them. */
+const OPEN_BLOCKS = 3;
+const BID_BLOCKS = 5;
+const REVEAL_BLOCKS = 5;
+/** Heuristic hsd-ish minutes per block, only for the *hoursUntil* display. */
+const MINUTES_PER_BLOCK = 10;
+
+type MockPhase =
+  | "AVAILABLE"
+  | "OPENING"
+  | "BIDDING"
+  | "REVEAL"
+  | "CLOSED";
+
+type RevealDraftStatus =
+  | "none"
+  | "broadcasted"
+  | "confirmed"
+  | "dropped";
+
+interface MockAuction {
+  name: string;
+  /** Height at which OPEN was broadcast; phase windows are relative to it. */
+  openHeight: number | null;
+  /** This wallet has a bid commitment (placed a bid). */
+  hasBid: boolean;
+  /** This wallet's true bid value (doos). */
+  bidValueDoos: number;
+  /** This wallet's lockup (doos) — the public blind, ≥ bid. */
+  lockupDoos: number;
+  /** Reveal lifecycle for THIS wallet's bid. */
+  revealStatus: RevealDraftStatus;
+  /** Reveal txid once broadcast (stamped on the commitment row analogue). */
+  revealTxid: string | null;
+  /** Height the reveal confirmed at (for "confirmed in block N"). */
+  revealConfirmedHeight: number | null;
+  /** A canned rival bid so CLOSED can resolve to won/lost. */
+  rivalBidDoos: number;
+}
+
+interface MockChain {
+  height: number;
+  auctions: Map<string, MockAuction>;
+}
+
+const chain: MockChain = {
+  height: 100_000,
+  auctions: new Map(),
+};
+
+function ensureAuction(name: string): MockAuction {
+  let a = chain.auctions.get(name);
+  if (!a) {
+    a = {
+      name,
+      openHeight: null,
+      hasBid: false,
+      bidValueDoos: 0,
+      lockupDoos: 0,
+      revealStatus: "none",
+      revealTxid: null,
+      revealConfirmedHeight: null,
+      rivalBidDoos: 3_000_000, // 3 HNS rival — beatable, so wins are demoable
+    };
+    chain.auctions.set(name, a);
+  }
+  return a;
+}
+
+/** Derive the current on-chain phase for a name from `chain.height`. */
+function phaseOf(a: MockAuction): MockPhase {
+  if (a.openHeight == null) return "AVAILABLE";
+  const elapsed = chain.height - a.openHeight;
+  if (elapsed < OPEN_BLOCKS) return "OPENING";
+  if (elapsed < OPEN_BLOCKS + BID_BLOCKS) return "BIDDING";
+  if (elapsed < OPEN_BLOCKS + BID_BLOCKS + REVEAL_BLOCKS) return "REVEAL";
+  return "CLOSED";
+}
+
+/** True once the reveal tx is considered confirmed at the current height. */
+function revealIsConfirmed(a: MockAuction): boolean {
+  return (
+    a.revealStatus === "confirmed" &&
+    a.revealConfirmedHeight != null &&
+    chain.height >= a.revealConfirmedHeight
+  );
+}
+
+/** Blocks remaining until the next phase boundary + a rough hours estimate. */
+function countdownFor(a: MockAuction): {
+  label: string | null;
+  blocks: number | null;
+  hours: number | null;
+} {
+  if (a.openHeight == null) return { label: null, blocks: null, hours: null };
+  const elapsed = chain.height - a.openHeight;
+  const phase = phaseOf(a);
+  let label: string | null = null;
+  let boundary: number | null = null;
+  if (phase === "OPENING") {
+    label = "Bidding starts in";
+    boundary = OPEN_BLOCKS;
+  } else if (phase === "BIDDING") {
+    label = "Reveal starts in";
+    boundary = OPEN_BLOCKS + BID_BLOCKS;
+  } else if (phase === "REVEAL") {
+    label = "Auction closes in";
+    boundary = OPEN_BLOCKS + BID_BLOCKS + REVEAL_BLOCKS;
+  } else {
+    return { label: null, blocks: null, hours: null };
+  }
+  const blocks = Math.max(0, boundary - elapsed);
+  const hours = Math.round((blocks * MINUTES_PER_BLOCK) / 60);
+  return { label, blocks, hours };
+}
+
+function draftId(a: MockAuction): string {
+  return `draft-reveal-${a.name}`;
+}
+
+/** Advance the mock chain by `n` blocks and settle any pending reveals. */
+function mineBlocks(n: number): number {
+  const count = Math.max(1, Math.floor(n || 1));
+  chain.height += count;
+  // A broadcast reveal confirms on the next mined block.
+  for (const a of chain.auctions.values()) {
+    if (a.revealStatus === "broadcasted") {
+      a.revealStatus = "confirmed";
+      a.revealConfirmedHeight = chain.height;
+    }
+  }
+  return chain.height;
+}
+
+// Expose a dev control on the window so QA (and Playwright) can advance blocks
+// without a real chain. Guarded so it's a no-op outside a browser.
+declare global {
+  // eslint-disable-next-line no-var
+  var __webqa_mine: ((n?: number) => number) | undefined;
+}
+if (typeof globalThis !== "undefined") {
+  globalThis.__webqa_mine = (n?: number) => mineBlocks(n ?? 1);
+}
+
+// ── Capability builder (mirrors the Rust task-state derivation) ─────────────
+
+function cap(allowed: boolean, reason: string | null = null) {
+  return { allowed, reason };
+}
+
+function taskStateOf(a: MockAuction): {
+  taskState: string;
+  nextActionKey: string | null;
+  nextActionLabel: string | null;
+} {
+  const phase = phaseOf(a);
+  switch (phase) {
+    case "AVAILABLE":
+      return {
+        taskState: "availableToOpen",
+        nextActionKey: "OPEN",
+        nextActionLabel: "Open Auction",
+      };
+    case "OPENING":
+      return {
+        taskState: "waitingForBidding",
+        nextActionKey: null,
+        nextActionLabel: "Wait for Bidding",
+      };
+    case "BIDDING":
+      return a.hasBid
+        ? {
+            taskState: "waitingForBidding",
+            nextActionKey: null,
+            nextActionLabel: "Wait for Bidding",
+          }
+        : {
+            taskState: "readyToBid",
+            nextActionKey: "BID",
+            nextActionLabel: "Bid",
+          };
+    case "REVEAL": {
+      if (!a.hasBid) {
+        return {
+          taskState: "unavailableOther",
+          nextActionKey: null,
+          nextActionLabel: null,
+        };
+      }
+      // Reveal state machine: broadcasted → pending, confirmed → done,
+      // dropped/none → still ready to reveal.
+      if (a.revealStatus === "broadcasted") {
+        return {
+          taskState: "revealBroadcastPending",
+          nextActionKey: null,
+          nextActionLabel: "View",
+        };
+      }
+      if (revealIsConfirmed(a)) {
+        return {
+          taskState: "revealDoneWaitingForClose",
+          nextActionKey: null,
+          nextActionLabel: "View",
+        };
+      }
+      return {
+        taskState: "readyToReveal",
+        nextActionKey: "REVEAL",
+        nextActionLabel: "Reveal Bid",
+      };
+    }
+    case "CLOSED": {
+      if (!a.hasBid) {
+        return {
+          taskState: "unavailableOther",
+          nextActionKey: null,
+          nextActionLabel: null,
+        };
+      }
+      const won = revealIsConfirmed(a) && a.bidValueDoos > a.rivalBidDoos;
+      return won
+        ? {
+            taskState: "wonNeedsRegister",
+            nextActionKey: "REGISTER",
+            nextActionLabel: "Register",
+          }
+        : {
+            taskState: "lostNeedsRedeem",
+            nextActionKey: "REDEEM",
+            nextActionLabel: "Redeem",
+          };
+    }
+  }
+}
+
+function buildCapabilities(name: string): Record<string, unknown> {
+  const a = ensureAuction(name);
+  const phase = phaseOf(a);
+  const { taskState, nextActionKey, nextActionLabel } = taskStateOf(a);
+  const cd = countdownFor(a);
+  const hasBidCoin = a.hasBid && !revealIsConfirmed(a);
+  const hasRevealCoin = revealIsConfirmed(a);
+  const closed = phase === "CLOSED";
+  const won = closed && revealIsConfirmed(a) && a.bidValueDoos > a.rivalBidDoos;
+  return {
+    name,
+    phase,
+    taskState,
+    ownsName: won,
+    hasBidCommitment: a.hasBid,
+    hasBidCoin,
+    hasRevealCoin,
+    hasOwnerCoin: won,
+    // `revealTxid` is the ONLY new field surfaced for the reveal card.
+    revealTxid: a.revealTxid,
+    // The user's own bid value (doos), so the confirm panel can show it.
+    bidValueDoos: a.hasBid ? a.bidValueDoos : null,
+    canOpen: cap(phase === "AVAILABLE"),
+    canBid: cap(phase === "BIDDING" && !a.hasBid),
+    canReveal: cap(
+      phase === "REVEAL" &&
+        a.hasBid &&
+        hasBidCoin &&
+        a.revealStatus !== "broadcasted",
+    ),
+    canRedeem: cap(closed && !won && a.hasBid),
+    canRegister: cap(won),
+    canUpdate: cap(won),
+    canTransfer: cap(won),
+    canFinalize: cap(false),
+    canCancelTransfer: cap(false),
+    canRenew: cap(won),
+    canRevoke: cap(won),
+    nextActionKey,
+    nextActionLabel,
+    nextActionReason: null,
+    countdownLabel: cd.label,
+    countdownBlocks: cd.blocks,
+    countdownHours: cd.hours,
+  };
+}
+
+/** Names this wallet has an active auction position in. */
+function auctionPositionNames(): string[] {
+  const out: string[] = [];
+  for (const a of chain.auctions.values()) {
+    const phase = phaseOf(a);
+    if (a.openHeight != null && (a.hasBid || phase !== "CLOSED")) {
+      out.push(a.name);
+    }
+  }
+  return out;
+}
+
+// Seed one name that is already in the REVEAL phase with a bid placed, so the
+// reported "Ready to Reveal → click Reveal → ???" flow is demoable on load
+// without first walking open+bid.
+(function seedRevealScenario() {
+  const a = ensureAuction("namehold");
+  // Place its open far enough back that we're mid-REVEAL right now.
+  a.openHeight = chain.height - (OPEN_BLOCKS + BID_BLOCKS + 1);
+  a.hasBid = true;
+  a.bidValueDoos = 5_000_000; // 5 HNS — beats the 3 HNS rival → will win
+  a.lockupDoos = 8_000_000; // 8 HNS lockup
+  a.revealStatus = "none";
+})();
+
 const handlers: Record<string, Handler> = {
   // ── Settings ──────────────────────────────────────────────────────────
   get_settings: () => ({
@@ -83,44 +413,58 @@ const handlers: Record<string, Handler> = {
     locked_confirmed: 800_000_000,
   }),
 
+  // ── Dev control: advance the mock chain ───────────────────────────────
+  // Exposed so browser QA / Playwright can mine blocks and walk a name
+  // through its lifecycle deterministically.
+  webqa_mine_blocks: (args) => mineBlocks((args?.count as number) ?? 1),
+
   // ── Names ─────────────────────────────────────────────────────────────
-  read_names: () => [
-    {
-      name: "example",
-      state: "CLOSED",
-      height: 50000,
-      renewal: 100000,
-      owner: { hash: "abcd1234", index: 0 },
-      value: 100_000_000,
-      highest: 100_000_000,
-      stats: {
-        renewalPeriodStart: 80000,
-        renewalPeriodEnd: 110000,
-        blocksUntilExpire: 10000,
-        daysUntilExpire: 69,
+  read_names: () => {
+    // A static owned name so the wallet/portfolio views aren't empty…
+    const staticNames = [
+      {
+        name: "example",
+        state: "CLOSED",
+        height: 50000,
+        renewal: 100000,
+        owner: { hash: "abcd1234", index: 0 },
+        value: 100_000_000,
+        highest: 100_000_000,
+        stats: {
+          renewalPeriodStart: 80000,
+          renewalPeriodEnd: 110000,
+          blocksUntilExpire: 10000,
+          daysUntilExpire: 69,
+        },
+        registered: true,
+        expired: false,
       },
-      registered: true,
-      expired: false,
-    },
-    {
-      name: "wallet",
-      state: "BIDDING",
-      height: 99000,
-      renewal: null,
-      owner: null,
-      value: null,
-      highest: null,
-      stats: {
-        bidPeriodStart: 99000,
-        bidPeriodEnd: 100000,
-        blocksUntilBidding: 0,
-        blocksUntilReveal: 1000,
-        hoursUntilReveal: 168,
-      },
-      registered: false,
-      expired: false,
-    },
-  ],
+    ];
+    // …plus every name tracked by the lifecycle engine, rendered at its
+    // current derived phase.
+    const engineNames = [...chain.auctions.values()].map((a) => {
+      const phase = phaseOf(a);
+      const cd = countdownFor(a);
+      return {
+        name: a.name,
+        state: phase,
+        height: a.openHeight,
+        renewal: null,
+        owner: null,
+        value: phase === "CLOSED" ? a.bidValueDoos : null,
+        highest: phase === "CLOSED" ? a.bidValueDoos : null,
+        stats: {
+          blocksUntilClose: phase === "REVEAL" ? cd.blocks : null,
+          hoursUntilClose: phase === "REVEAL" ? cd.hours : null,
+          blocksUntilReveal: phase === "BIDDING" ? cd.blocks : null,
+          hoursUntilReveal: phase === "BIDDING" ? cd.hours : null,
+        },
+        registered: false,
+        expired: false,
+      };
+    });
+    return [...staticNames, ...engineNames];
+  },
 
   read_renewals: () => ({
     walletProfileId: "webqa-profile",
@@ -163,17 +507,81 @@ const handlers: Record<string, Handler> = {
 
   read_name_info: (_args) => {
     const name = (_args?.name as string) ?? "unknown";
+    const a = ensureAuction(name);
+    const phase = phaseOf(a);
+    const cd = countdownFor(a);
     return {
       name,
-      state: "AVAILABLE",
-      height: null,
+      state: phase,
+      height: a.openHeight,
       renewal: null,
       owner: null,
-      value: null,
-      highest: null,
-      stats: null,
+      value: phase === "CLOSED" ? a.bidValueDoos : null,
+      highest: phase === "CLOSED" ? a.bidValueDoos : null,
+      stats: {
+        blocksUntilClose: phase === "REVEAL" ? cd.blocks : null,
+        hoursUntilClose: phase === "REVEAL" ? cd.hours : null,
+        blocksUntilReveal: phase === "BIDDING" ? cd.blocks : null,
+        hoursUntilReveal: phase === "BIDDING" ? cd.hours : null,
+      },
       registered: false,
       expired: false,
+    };
+  },
+
+  // ── Auction capabilities / positions (lifecycle-engine driven) ────────
+  get_name_action_capabilities: (args) =>
+    buildCapabilities((args?.name as string) ?? "unknown"),
+
+  get_names_action_capabilities: (args) => {
+    const names = (args?.names as string[]) ?? [];
+    return names.map((n) => buildCapabilities(n));
+  },
+
+  read_auction_position_names: () => auctionPositionNames(),
+
+  read_name_bids: (args) => {
+    const name = (args?.name as string) ?? "unknown";
+    const a = ensureAuction(name);
+    const phase = phaseOf(a);
+    const revealed = revealIsConfirmed(a);
+    const showValues = phase === "REVEAL" || phase === "CLOSED";
+    const bids = [] as unknown[];
+    if (a.hasBid) {
+      bids.push({
+        txid: "bid00000mine",
+        index: 0,
+        lockup: a.lockupDoos,
+        value: revealed ? a.bidValueDoos : null,
+        revealed,
+        win: phase === "CLOSED" ? a.bidValueDoos > a.rivalBidDoos : null,
+        reveal: null,
+        time: Date.now(),
+        mine: true,
+        myValue: a.bidValueDoos,
+      });
+    }
+    if (a.openHeight != null) {
+      bids.push({
+        txid: "bid0000rival",
+        index: 0,
+        lockup: a.rivalBidDoos + 1_000_000,
+        value: showValues ? a.rivalBidDoos : null,
+        revealed: showValues,
+        win: phase === "CLOSED" ? a.rivalBidDoos >= a.bidValueDoos : null,
+        reveal: null,
+        time: Date.now(),
+        mine: false,
+        myValue: null,
+      });
+    }
+    return {
+      name,
+      state: phase,
+      highest: showValues ? Math.max(a.bidValueDoos, a.rivalBidDoos) : null,
+      value: showValues ? a.bidValueDoos : null,
+      bids,
+      myBidCount: a.hasBid ? 1 : 0,
     };
   },
 
@@ -207,12 +615,24 @@ const handlers: Record<string, Handler> = {
 
   // ── Node ──────────────────────────────────────────────────────────────
   node_status: () => ({
-    running: false,
-    network: "mainnet",
-    height: 100000,
-    tip: "000000000000...(mock)",
-    peers: 0,
+    binary: "hsd",
+    binary_found: false,
     version: "webqa-mock",
+    data_dir: "",
+    network: "mainnet",
+    process_alive: false,
+    // Report as connected+synced so `useNodeLive()` returns true and the new
+    // capabilities/positions polling actually fires under the mock.
+    connected: true,
+    height: chain.height,
+    verification_progress: 1,
+    headers: chain.height,
+    last_error: null,
+    index_mismatch: false,
+    read_source: "local",
+    running: true,
+    tip: "000000000000...(mock)",
+    peers: 8,
     error: null,
   }),
 
@@ -230,7 +650,41 @@ const handlers: Record<string, Handler> = {
   resync_hsd_chain: () => null,
 
   // ── Drafts ────────────────────────────────────────────────────────────
-  list_tx_drafts: () => [],
+  list_tx_drafts: () => {
+    const drafts: unknown[] = [];
+    for (const a of chain.auctions.values()) {
+      if (a.revealStatus !== "none" && a.revealTxid) {
+        drafts.push({
+          id: draftId(a),
+          walletProfileId: "webqa-profile",
+          action: "reveal",
+          status:
+            a.revealStatus === "broadcasted"
+              ? "broadcasted"
+              : a.revealStatus === "confirmed"
+                ? "confirmed"
+                : "dropped",
+          summary: {
+            action: "reveal",
+            sendTotalDoos: a.bidValueDoos,
+            feeDoos: 100_000,
+            changeDoos: a.lockupDoos - a.bidValueDoos,
+            inputTotalDoos: a.lockupDoos,
+            numInputs: 1,
+            recipientAddress: null,
+            txid: a.revealTxid,
+            warnings: [],
+            name: a.name,
+          },
+          errorMessage: null,
+          txid: a.revealTxid,
+          confirmationHeight: a.revealConfirmedHeight,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
+    return drafts;
+  },
 
   // ── Bid commitment recovery / backup ────────────────────────────────────
   recover_bid_commitment: () => {
@@ -272,70 +726,127 @@ const handlers: Record<string, Handler> = {
     createdAt: new Date().toISOString(),
   }),
 
-  broadcast_tx_draft: (args) => ({
-    draftId: (args?.draftId as string) ?? "draft-mock-001",
-    txid: "cafebabe0001",
-    status: "broadcasted",
-  }),
+  broadcast_tx_draft: (args) => {
+    const id = (args?.draftId as string) ?? "draft-mock-001";
+    // Any reveal draft flips its auction to "broadcasted"; the next mined
+    // block will settle it via `mineBlocks()`.
+    if (id.startsWith("draft-reveal-")) {
+      const name = id.slice("draft-reveal-".length);
+      const a = ensureAuction(name);
+      const txid =
+        "revealtxid" +
+        Math.floor(Math.random() * 1e12)
+          .toString(16)
+          .padStart(12, "0");
+      a.revealStatus = "broadcasted";
+      a.revealTxid = txid;
+      return { draftId: id, txid, status: "broadcasted" };
+    }
+    return {
+      draftId: id,
+      txid: "cafebabe0001",
+      status: "broadcasted",
+    };
+  },
 
   refresh_tx_confirmations: () => null,
 
-  // ── Name action drafts ────────────────────────────────────────────────
-  build_open_draft: () => ({
-    id: "draft-open-001",
+  // The signer session helpers behave as already-unlocked, so `useExecuteDraft`
+  // skips its unlock leg and jumps straight to sign → broadcast in the mock.
+  unlock_local_signer: () => ({
     walletProfileId: "webqa-profile",
-    action: "open",
-    status: "draft",
-    summary: {
+    unlocked: true,
+    unlockedUntilEpochMs: Date.now() + 3_600_000,
+  }),
+
+  // ── Name action drafts (lifecycle-engine driven) ──────────────────────
+  build_open_draft: (args) => {
+    const name = (args?.name as string) ?? "unknown";
+    const a = ensureAuction(name);
+    // Broadcasting OPEN pins the phase-window origin at the current height.
+    a.openHeight = chain.height;
+    return {
+      id: `draft-open-${name}`,
+      walletProfileId: "webqa-profile",
       action: "open",
-      sendTotalDoos: 0,
-      feeDoos: 100_000,
-      changeDoos: 0,
-      inputTotalDoos: 100_000,
-      numInputs: 1,
-      recipientAddress: null,
+      status: "draft",
+      summary: {
+        action: "open",
+        sendTotalDoos: 0,
+        feeDoos: 100_000,
+        changeDoos: 0,
+        inputTotalDoos: 100_000,
+        numInputs: 1,
+        recipientAddress: null,
+        txid: null,
+        warnings: [],
+        name,
+      },
+      errorMessage: null,
       txid: null,
-      warnings: [],
-    },
-    errorMessage: null,
-    txid: null,
-    confirmationHeight: null,
-    createdAt: new Date().toISOString(),
-  }),
+      confirmationHeight: null,
+      createdAt: new Date().toISOString(),
+    };
+  },
 
-  build_bid_draft: () => ({
-    id: "draft-bid-001",
-    walletProfileId: "webqa-profile",
-    action: "bid",
-    status: "draft",
-    summary: {
+  build_bid_draft: (args) => {
+    const name = (args?.name as string) ?? "unknown";
+    const a = ensureAuction(name);
+    const bidValueDoos = (args?.bidValueDoos as number) ?? 5_000_000;
+    const lockupDoos = (args?.lockupDoos as number) ?? bidValueDoos * 2;
+    a.hasBid = true;
+    a.bidValueDoos = bidValueDoos;
+    a.lockupDoos = lockupDoos;
+    return {
+      id: `draft-bid-${name}`,
+      walletProfileId: "webqa-profile",
       action: "bid",
-      sendTotalDoos: 200_000_000,
-      feeDoos: 100_000,
-      changeDoos: 0,
-      inputTotalDoos: 200_100_000,
-      numInputs: 1,
-      recipientAddress: null,
+      status: "draft",
+      summary: {
+        action: "bid",
+        sendTotalDoos: lockupDoos,
+        feeDoos: 100_000,
+        changeDoos: 0,
+        inputTotalDoos: lockupDoos + 100_000,
+        numInputs: 1,
+        recipientAddress: null,
+        txid: null,
+        warnings: [],
+        name,
+      },
+      errorMessage: null,
       txid: null,
-      warnings: [],
-    },
-    errorMessage: null,
-    txid: null,
-    confirmationHeight: null,
-    createdAt: new Date().toISOString(),
-  }),
+      confirmationHeight: null,
+      createdAt: new Date().toISOString(),
+    };
+  },
 
-  build_reveal_draft: () => ({
-    id: "draft-reveal-001",
-    walletProfileId: "webqa-profile",
-    action: "reveal",
-    status: "draft",
-    summary: null,
-    errorMessage: null,
-    txid: null,
-    confirmationHeight: null,
-    createdAt: new Date().toISOString(),
-  }),
+  build_reveal_draft: (args) => {
+    const name = (args?.name as string) ?? "unknown";
+    const a = ensureAuction(name);
+    return {
+      id: draftId(a),
+      walletProfileId: "webqa-profile",
+      action: "reveal",
+      status: "draft",
+      summary: {
+        action: "reveal",
+        sendTotalDoos: a.bidValueDoos,
+        feeDoos: 100_000,
+        changeDoos: a.lockupDoos - a.bidValueDoos,
+        inputTotalDoos: a.lockupDoos,
+        numInputs: 1,
+        recipientAddress: null,
+        txid: null,
+        warnings: [],
+        name,
+      },
+      errorMessage: null,
+      txid: null,
+      confirmationHeight: null,
+      createdAt: new Date().toISOString(),
+    };
+  },
 
   build_redeem_draft: () => ({
     id: "draft-redeem-001",
@@ -501,4 +1012,15 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
     `[browser QA] No mock handler for invoke("${cmd}") — returning null.`,
   );
   return null as unknown as T;
+}
+
+/** Test-only: reset the engine to a known-empty state. Do NOT call from app code. */
+export function __resetChainForTests(seedHeight = 100_000): void {
+  chain.height = seedHeight;
+  chain.auctions.clear();
+}
+
+/** Test-only: mine `n` blocks (same as the dev control / webqa_mine_blocks). */
+export function __mineForTests(n = 1): number {
+  return mineBlocks(n);
 }
