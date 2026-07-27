@@ -92,7 +92,7 @@ export function StatusStrip({ className }: { className?: string }) {
         detail:
           readSource === "local"
             ? "Reading from local node cache (node synced)"
-            : "Reading from HNSFans explorer (node not synced)",
+            : "Reading from external explorer (node not synced)",
         route: "/settings",
       });
     }

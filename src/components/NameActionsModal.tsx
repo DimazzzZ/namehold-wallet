@@ -26,6 +26,7 @@ import { useUiStore } from "../stores/ui";
 import { mapError, stageOf, unwrapStaged } from "../lib/errors";
 import { formatHns } from "../lib/utils";
 import { displayName } from "../lib/idn";
+import { explorerNameUrl, openExternal } from "../lib/openExternal";
 import {
   auctionPhase,
   nextTransition,
@@ -404,8 +405,18 @@ export function NameActionsModal({
           </>
         )
       }
-    >
+      >
       <div className="space-y-4 text-sm">
+        {/* Explorer link */}
+        <button
+          type="button"
+          className="text-xs text-blue-500 hover:text-blue-700 hover:underline inline-flex items-center gap-1"
+          onClick={() => openExternal(explorerNameUrl(name))}
+          data-testid="name-explorer-link"
+        >
+          View on explorer ↗
+        </button>
+
         {/* Loading state */}
         {isLoading && (
           <div className="text-center py-4">

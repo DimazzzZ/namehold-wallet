@@ -47,6 +47,11 @@ import {
   truncateMiddle,
 } from "../lib/utils";
 import { mapError } from "../lib/errors";
+import {
+  explorerAddressUrl,
+  explorerTxUrl,
+  openExternal,
+} from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
 import type { NameActionCapabilities, TxDraftSummary } from "../types";
@@ -454,6 +459,12 @@ export function WalletView() {
                 value={address}
                 copyLabel="Copy Address"
                 toastLabel="Address"
+                externalUrl={
+                  profile.network === "mainnet"
+                    ? explorerAddressUrl(address)
+                    : undefined
+                }
+                externalTestId="receive-address-explorer-link"
               />
               {showQr && (
                 <div className="flex justify-center">
@@ -868,7 +879,23 @@ export function WalletView() {
                       </Badge>
                     </td>
                     <td className="py-2 text-xs font-mono truncate max-w-[120px]">
-                      {d.txid ? `${d.txid.slice(0, 10)}…` : "—"}
+                      {d.txid ? (
+                        profile.network === "mainnet" ? (
+                          <button
+                            type="button"
+                            className="text-blue-500 hover:text-blue-700 hover:underline"
+                            onClick={() => openExternal(explorerTxUrl(d.txid!))}
+                            title="View on explorer"
+                            data-testid="recent-tx-explorer-link"
+                          >
+                            {`${d.txid.slice(0, 10)}…`}
+                          </button>
+                        ) : (
+                          `${d.txid.slice(0, 10)}…`
+                        )
+                      ) : (
+                        "—"
+                      )}
                     </td>
                   </tr>
                 ))}
