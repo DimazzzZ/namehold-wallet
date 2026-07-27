@@ -81,6 +81,7 @@ export function useReadNames(): UseQueryResult<HsdName[]> {
 export function useAuctionPositions(
   walletProfileId: string | null,
 ): UseQueryResult<string[]> {
+  const nodeLive = useNodeLive();
   return useQuery<string[]>({
     queryKey: ["read", "auctionPositions", walletProfileId],
     enabled: walletProfileId != null,
@@ -91,6 +92,10 @@ export function useAuctionPositions(
       return Array.isArray(raw) ? raw : [];
     },
     staleTime: STALE_TIME,
+    // Poll while the node is live so an auction advancing through its phases
+    // (reveal broadcast → confirmed → CLOSED → won/lost) surfaces without a
+    // manual refresh — directly answering "when will I know if I won".
+    refetchInterval: nodeLive ? 30_000 : false,
   });
 }
 
@@ -235,6 +240,7 @@ export function useNamesActionCapabilities(
   walletProfileId?: string | null,
 ): UseQueryResult<NameActionCapabilities[]> {
   const profileId = walletProfileId ?? null;
+  const nodeLive = useNodeLive();
   // A stable, order-independent key so an unrelated re-render (e.g. the same
   // names in a new array instance) doesn't retrigger a refetch.
   const namesKey = [...names].sort().join(",");
@@ -249,6 +255,9 @@ export function useNamesActionCapabilities(
       return Array.isArray(raw) ? raw : [];
     },
     staleTime: STALE_TIME,
+    // Poll capabilities while the node is live so the auctions row advances
+    // through pending → confirmed → closed → won/lost without a manual refresh.
+    refetchInterval: nodeLive ? 30_000 : false,
   });
 }
 

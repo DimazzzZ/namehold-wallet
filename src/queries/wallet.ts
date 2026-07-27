@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { invoke } from "../lib/invoke";
 import { useNodeLive } from "./node";
 import { StagedError } from "../lib/errors";
+import { useUiStore } from "../stores/ui";
 import type {
   WalletProfileSummary,
   SignerSessionSummary,
@@ -102,6 +103,12 @@ function isRecordWritingAction(action: string): boolean {
   return a === "update" || a === "register";
 }
 
+/** Display name for a name-covenant draft (`.foo`), for confirmation toasts. */
+function draftDisplayName(d: TxDraftSummary): string {
+  const name = d.summary?.name;
+  return name ? `.${name}` : "your name";
+}
+
 /**
  * Watch the polled drafts list for UPDATE/REGISTER drafts that just
  * transitioned from `broadcasted` to `confirmed`, and on that edge invalidate
@@ -117,6 +124,7 @@ function isRecordWritingAction(action: string): boolean {
 export function useDraftConfirmationWatcher() {
   const qc = useQueryClient();
   const { data: drafts } = useTxDrafts();
+  const showToast = useUiStore((s) => s.showToast);
   const prevStatusById = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
@@ -124,6 +132,10 @@ export function useDraftConfirmationWatcher() {
     const prev = prevStatusById.current;
     const next = new Map<string, string>();
     let anyRecordDraftConfirmed = false;
+    // Reveal is watched separately (grilled: reveal-only for this ticket) so
+    // we can fire a proactive toast + advance the auctions row, since the user
+    // may have closed the modal and walked away after broadcasting.
+    const confirmedReveals: TxDraftSummary[] = [];
     for (const d of drafts) {
       next.set(d.id, d.status);
       const was = prev.get(d.id);
@@ -137,6 +149,13 @@ export function useDraftConfirmationWatcher() {
       ) {
         anyRecordDraftConfirmed = true;
       }
+      if (
+        d.status === "confirmed" &&
+        was === "broadcasted" &&
+        d.action.toLowerCase() === "reveal"
+      ) {
+        confirmedReveals.push(d);
+      }
     }
     prevStatusById.current = next;
 
@@ -145,7 +164,23 @@ export function useDraftConfirmationWatcher() {
     if (anyRecordDraftConfirmed) {
       qc.invalidateQueries({ queryKey: ["read", "nameRecords"] });
     }
-  }, [drafts, qc]);
+
+    // A reveal confirmed → toast + advance the auctions row/modal.
+    if (confirmedReveals.length > 0) {
+      for (const d of confirmedReveals) {
+        const where =
+          d.confirmationHeight != null
+            ? ` in block ${d.confirmationHeight}`
+            : "";
+        showToast(
+          `Reveal for ${draftDisplayName(d)} confirmed${where}.`,
+          "success",
+        );
+      }
+      qc.invalidateQueries({ queryKey: ["read", "namesCapabilities"] });
+      qc.invalidateQueries({ queryKey: ["read", "auctionPositions"] });
+    }
+  }, [drafts, qc, showToast]);
 }
 
 function useWalletMutation<TArgs>(

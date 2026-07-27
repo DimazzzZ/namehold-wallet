@@ -384,6 +384,8 @@ export type AuctionTaskState =
   | "waitingForBidding"
   | "readyToBid"
   | "readyToReveal"
+  | "revealBroadcastPending"
+  | "revealDoneWaitingForClose"
   | "wonNeedsRegister"
   | "lostNeedsRedeem"
   | "transferPendingFinalize"
@@ -409,6 +411,13 @@ export interface NameActionCapabilities {
   hasBidCoin: boolean;
   hasRevealCoin: boolean;
   hasOwnerCoin: boolean;
+  /** The txid of the wallet's reveal broadcast, if any. Feeds the reveal
+   * card's explorer link + copy button. Null until a reveal is broadcast
+   * (or observed on-chain by chain scan). */
+  revealTxid: string | null;
+  /** The wallet's true bid value (doos) from the local commitment row, so the
+   * confirm-before-broadcast panel can show the amount. Null when unknown. */
+  bidValueDoos: number | null;
   canOpen: NameActionCapability;
   canBid: NameActionCapability;
   canReveal: NameActionCapability;
