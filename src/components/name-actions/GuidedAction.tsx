@@ -1,8 +1,11 @@
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
+import { CopyField } from "../ui/CopyField";
 import { BidForm } from "./BidForm";
 import { DnsRecordsEditor } from "./DnsRecordsEditor";
 import { formatCountdown } from "../../lib/auction";
+import { formatHns } from "../../lib/utils";
+import { openExternal, explorerTxUrl } from "../../lib/openExternal";
 import type {
   AuctionPhaseGuide,
   AuctionTaskSummary,
@@ -30,7 +33,6 @@ export interface GuidedActionProps {
   actionReason: (cap?: NameActionCapability) => string | null;
   // Simple actions.
   onOpen: () => void;
-  onReveal: () => void;
   onRedeem: () => void;
   onRegister: () => void;
   // Bid form (shared BidForm component; state owned by the orchestrator).
@@ -47,6 +49,19 @@ export interface GuidedActionProps {
   recoverHns: string;
   onRecoverHnsChange: (value: string) => void;
   onRecoverBid: () => void;
+  // Reveal confirm-panel + pending-card wiring (this PR).
+  /** True while the user has clicked Reveal but not yet confirmed — shows the
+   *  confirm panel (with the bid amount) instead of the Reveal button. */
+  revealConfirming: boolean;
+  onRevealConfirmStart: () => void;
+  onRevealConfirmCancel: () => void;
+  onRevealConfirm: () => void;
+  /** Fine-grained reveal substate label — "Unlocking…", "Signing…",
+   *  "Broadcasting…", or null when idle. Feeds the button label. */
+  revealSubstate: string | null;
+  /** Fresh reveal txid captured optimistically at broadcast, so the pending
+   *  card shows even before the capabilities poll catches up. */
+  optimisticRevealTxid: string | null;
   // DNS rows for the guided REGISTER form (state owned by the orchestrator).
   rows: DnsRow[];
   onRowChange: (index: number, patch: Partial<DnsRow>) => void;
@@ -64,7 +79,6 @@ export function GuidedAction({
   actionDisabled,
   actionReason,
   onOpen,
-  onReveal,
   onRedeem,
   onRegister,
   bidHns,
@@ -79,6 +93,12 @@ export function GuidedAction({
   recoverHns,
   onRecoverHnsChange,
   onRecoverBid,
+  revealConfirming,
+  onRevealConfirmStart,
+  onRevealConfirmCancel,
+  onRevealConfirm,
+  revealSubstate,
+  optimisticRevealTxid,
   rows,
   onRowChange,
   onAddRow,
@@ -146,68 +166,189 @@ export function GuidedAction({
       );
 
     case "REVEAL":
-      return (
-        <div className="space-y-2">
-          <div className="text-sm text-gray-700">{guide.description}</div>
-          {actionReason(caps?.canReveal) && (
-            <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-              {actionReason(caps?.canReveal)}
-            </div>
-          )}
-          {caps && !caps.hasBidCommitment && (
+      // Reveal has three UI states before the auction closes:
+      //   1. In-flight / done   — a pending-confirmation or done card (no button)
+      //   2. Confirm panel      — user clicked Reveal, hasn't confirmed yet
+      //   3. Default            — the Reveal button (+ Recover-bid widget)
+      // The card path is chosen from BOTH the derived taskState (surviving
+      // reload / cross-device) AND our local optimistic revealTxid (so a
+      // fresh broadcast shows the card immediately, before the caps poll).
+      {
+        const showCard =
+          !!optimisticRevealTxid ||
+          caps?.taskState === "revealBroadcastPending" ||
+          caps?.taskState === "revealDoneWaitingForClose";
+        if (showCard) {
+          const isConfirmed = caps?.taskState === "revealDoneWaitingForClose";
+          const txid = optimisticRevealTxid ?? caps?.revealTxid ?? null;
+          return (
             <div
-              className="rounded border border-gray-200 bg-gray-50 p-2 space-y-2"
-              data-testid="recover-bid"
+              className="space-y-2 rounded border p-3"
+              data-testid="reveal-status-card"
             >
-              <div className="text-xs text-gray-600">
-                Lost your bid commitment? If you remember the exact amount you
-                bid, you can recover it from the on-chain bid coin.
+              <div
+                className={
+                  isConfirmed
+                    ? "text-sm font-medium text-gray-800"
+                    : "text-sm font-medium text-blue-800"
+                }
+              >
+                {isConfirmed
+                  ? "Your reveal is confirmed."
+                  : "Your reveal is broadcast and waiting to confirm."}
               </div>
-              <div className="flex items-end gap-2">
-                <div className="flex-1">
-                  <Input
-                    label="Your bid amount (HNS)"
-                    value={recoverHns}
-                    onChange={(e) => onRecoverHnsChange(e.target.value)}
-                    placeholder="10.0"
-                    type="number"
-                    step="0.000001"
+              <div className="text-xs text-gray-600">
+                {isConfirmed
+                  ? "The auction stays open for other reveals until the window closes."
+                  : "Confirmation usually takes about ten minutes. It's safe to close this modal — you'll get a toast when it lands."}
+              </div>
+              {txid && (
+                <div className="text-xs">
+                  <CopyField
+                    label={
+                      <span className="text-gray-600">Reveal txid</span>
+                    }
+                    value={txid}
+                    display={`${txid.slice(0, 10)}…${txid.slice(-6)}`}
+                    toastLabel="Reveal txid"
+                    valueTestId="reveal-txid"
                   />
+                  <button
+                    type="button"
+                    className="mt-1 inline-block text-blue-600 hover:underline cursor-pointer text-xs"
+                    onClick={() => openExternal(explorerTxUrl(txid))}
+                    data-testid="reveal-explorer-link"
+                  >
+                    View on explorer ↗
+                  </button>
                 </div>
+              )}
+              {/* Two-clocks copy: reveal confirmation vs auction close. */}
+              {countdown && !isConfirmed && (
+                <div className="text-xs text-gray-500">
+                  Auction closes in {formatCountdown(countdown)} (separate from
+                  this reveal's confirmation).
+                </div>
+              )}
+              {countdown && isConfirmed && (
+                <div className="text-xs text-gray-500">
+                  Auction closes in {formatCountdown(countdown)}.
+                </div>
+              )}
+            </div>
+          );
+        }
+
+        if (revealConfirming) {
+          const bidText =
+            caps?.bidValueDoos != null ? formatHns(caps.bidValueDoos) : null;
+          const substate = revealSubstate;
+          return (
+            <div
+              className="space-y-2 rounded border border-blue-200 bg-blue-50 p-3"
+              data-testid="reveal-confirm-panel"
+            >
+              <div className="text-sm font-medium text-blue-900">
+                Confirm reveal
+              </div>
+              <div className="text-xs text-blue-900">
+                You're about to reveal
+                {bidText ? (
+                  <>
+                    {" "}
+                    a bid of <b>{bidText}</b>
+                  </>
+                ) : (
+                  " your bid"
+                )}{" "}
+                for <b>{caps?.name ?? "this name"}</b>. Once broadcast this
+                cannot be undone.
+              </div>
+              <div className="flex gap-2">
                 <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={!recoverHns || busy === "RECOVER"}
-                  onClick={onRecoverBid}
+                  variant="primary"
+                  disabled={!!substate}
+                  onClick={onRevealConfirm}
+                  data-testid="reveal-confirm-broadcast"
                 >
-                  {busy === "RECOVER" ? "Recovering…" : "Recover bid"}
+                  {substate ?? "Confirm & reveal"}
+                </Button>
+                <Button
+                  variant="secondary"
+                  disabled={!!substate}
+                  onClick={onRevealConfirmCancel}
+                >
+                  Cancel
                 </Button>
               </div>
             </div>
-          )}
-          <div className="flex gap-2">
-            <Button
-              variant="primary"
-              disabled={actionDisabled("REVEAL", caps?.canReveal)}
-              onClick={onReveal}
-            >
-              {busy === "REVEAL" ? "Revealing…" : guide.action}
-            </Button>
-            <Button
-              variant="secondary"
-              disabled={actionDisabled("REDEEM", caps?.canRedeem)}
-              onClick={onRedeem}
-            >
-              {busy === "REDEEM" ? "…" : "Redeem (lost bid)"}
-            </Button>
-          </div>
-          {summary?.urgency && (
-            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 mt-2">
-              {summary.urgency}
+          );
+        }
+
+        return (
+          <div className="space-y-2">
+            <div className="text-sm text-gray-700">{guide.description}</div>
+            {actionReason(caps?.canReveal) && (
+              <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                {actionReason(caps?.canReveal)}
+              </div>
+            )}
+            {caps && !caps.hasBidCommitment && (
+              <div
+                className="rounded border border-gray-200 bg-gray-50 p-2 space-y-2"
+                data-testid="recover-bid"
+              >
+                <div className="text-xs text-gray-600">
+                  Lost your bid commitment? If you remember the exact amount
+                  you bid, you can recover it from the on-chain bid coin.
+                </div>
+                <div className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <Input
+                      label="Your bid amount (HNS)"
+                      value={recoverHns}
+                      onChange={(e) => onRecoverHnsChange(e.target.value)}
+                      placeholder="10.0"
+                      type="number"
+                      step="0.000001"
+                    />
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={!recoverHns || busy === "RECOVER"}
+                    onClick={onRecoverBid}
+                  >
+                    {busy === "RECOVER" ? "Recovering…" : "Recover bid"}
+                  </Button>
+                </div>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <Button
+                variant="primary"
+                disabled={actionDisabled("REVEAL", caps?.canReveal)}
+                onClick={onRevealConfirmStart}
+                data-testid="reveal-primary"
+              >
+                {guide.action}
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={actionDisabled("REDEEM", caps?.canRedeem)}
+                onClick={onRedeem}
+              >
+                {busy === "REDEEM" ? "…" : "Redeem (lost bid)"}
+              </Button>
             </div>
-          )}
-        </div>
-      );
+            {summary?.urgency && (
+              <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 mt-2">
+                {summary.urgency}
+              </div>
+            )}
+          </div>
+        );
+      }
 
     case "CLOSED":
       // Task-driven guidance: the appropriate copy depends on capability state.
