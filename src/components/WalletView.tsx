@@ -47,6 +47,13 @@ import {
   truncateMiddle,
 } from "../lib/utils";
 import { mapError } from "../lib/errors";
+import {
+  explorerAddressUrl,
+  explorerBlockUrl,
+  explorerNameUrl,
+  explorerTxUrl,
+  openExternal,
+} from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
 import type { NameActionCapabilities, TxDraftSummary } from "../types";
@@ -454,6 +461,12 @@ export function WalletView() {
                 value={address}
                 copyLabel="Copy Address"
                 toastLabel="Address"
+                externalUrl={
+                  profile.network === "mainnet"
+                    ? explorerAddressUrl(address)
+                    : undefined
+                }
+                externalTestId="receive-address-explorer-link"
               />
               {showQr && (
                 <div className="flex justify-center">
@@ -764,7 +777,21 @@ export function WalletView() {
                 <tbody>
                   {filteredNames.map((n) => (
                     <tr key={n.name} className="border-t border-gray-100">
-                      <td className="py-1 font-mono">.{displayName(n.name)}</td>
+                      <td className="py-1 font-mono">
+                        {profile.network === "mainnet" ? (
+                          <button
+                            type="button"
+                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                            onClick={() => openExternal(explorerNameUrl(n.name))}
+                            title="View on explorer"
+                            data-testid="owned-name-explorer-link"
+                          >
+                            .{displayName(n.name)}
+                          </button>
+                        ) : (
+                          `.${displayName(n.name)}`
+                        )}
+                      </td>
                       <td className="py-1">
                         {n.state ? (
                           <Badge variant={auctionPhase(n.state).variant}>
@@ -774,8 +801,44 @@ export function WalletView() {
                           "—"
                         )}
                       </td>
-                      <td className="py-1 text-xs text-gray-500">{n.height ? `#${n.height}` : "—"}</td>
-                      <td className="py-1 text-xs text-gray-500">{n.renewal ? `#${n.renewal}` : "—"}</td>
+                      <td className="py-1 text-xs text-gray-500">
+                        {n.height ? (
+                          profile.network === "mainnet" ? (
+                            <button
+                              type="button"
+                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                              onClick={() => openExternal(explorerBlockUrl(n.height!))}
+                              title="View on explorer"
+                              data-testid="owned-name-height-explorer-link"
+                            >
+                              #{n.height}
+                            </button>
+                          ) : (
+                            `#${n.height}`
+                          )
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="py-1 text-xs text-gray-500">
+                        {n.renewal ? (
+                          profile.network === "mainnet" ? (
+                            <button
+                              type="button"
+                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                              onClick={() => openExternal(explorerBlockUrl(n.renewal!))}
+                              title="View on explorer"
+                              data-testid="owned-name-renewal-explorer-link"
+                            >
+                              #{n.renewal}
+                            </button>
+                          ) : (
+                            `#${n.renewal}`
+                          )
+                        ) : (
+                          "—"
+                        )}
+                      </td>
                       <td className="py-1 text-right">
                         {!isWatchOnly && (
                           <Button size="sm" variant="ghost" onClick={() => setManageName(n.name)}>
@@ -823,8 +886,24 @@ export function WalletView() {
                   <tr key={d.id} className="border-t border-gray-100">
                     <td className="py-2 pr-4 text-xs text-gray-500">{formatDate(d.createdAt)}</td>
                     <td className="py-2 pr-4">
-                      {d.action}
-                      {d.summary?.name ? ` · .${displayName(d.summary.name)}` : ""}
+                      {d.action}{d.summary?.name ? (
+                        profile.network === "mainnet" ? (
+                          <>
+                            {" · "}
+                            <button
+                              type="button"
+                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer font-mono"
+                              onClick={() => openExternal(explorerNameUrl(d.summary!.name!))}
+                              title="View on explorer"
+                              data-testid="recent-tx-name-explorer-link"
+                            >
+                              .{displayName(d.summary.name)}
+                            </button>
+                          </>
+                        ) : (
+                          ` · .${displayName(d.summary.name)}`
+                        )
+                      ) : ""}
                     </td>
                     <td
                       className="py-2 pr-4 font-mono"
@@ -856,9 +935,22 @@ export function WalletView() {
                         }
                         title={d.errorMessage ?? undefined}
                       >
-                        {d.status === "confirmed"
-                          ? d.confirmationHeight
-                            ? `Confirmed · #${d.confirmationHeight}`
+                      {d.status === "confirmed"
+                         ? d.confirmationHeight
+                            ? (profile.network === "mainnet" ? (
+                              <>
+                                Confirmed ·{" "}
+                                <button
+                                  type="button"
+                                  className="underline cursor-pointer"
+                                  onClick={() => openExternal(explorerBlockUrl(d.confirmationHeight!))}
+                                  title="View block on explorer"
+                                  data-testid="recent-tx-block-explorer-link"
+                                >
+                                  #{d.confirmationHeight}
+                                </button>
+                              </>
+                            ) : `Confirmed · #${d.confirmationHeight}`)
                             : "Confirmed"
                           : d.status === "broadcasted"
                           ? "Pending"
@@ -868,7 +960,23 @@ export function WalletView() {
                       </Badge>
                     </td>
                     <td className="py-2 text-xs font-mono truncate max-w-[120px]">
-                      {d.txid ? `${d.txid.slice(0, 10)}…` : "—"}
+                      {d.txid ? (
+                        profile.network === "mainnet" ? (
+                         <button
+                           type="button"
+                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                            onClick={() => openExternal(explorerTxUrl(d.txid!))}
+                            title="View on explorer"
+                            data-testid="recent-tx-explorer-link"
+                          >
+                            {`${d.txid.slice(0, 10)}…`}
+                          </button>
+                        ) : (
+                          `${d.txid.slice(0, 10)}…`
+                        )
+                      ) : (
+                        "—"
+                      )}
                     </td>
                   </tr>
                 ))}

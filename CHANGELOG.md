@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+- Explorer links throughout the app now open on Shakeshift
+  (https://shakeshift.com): names (auctions, owned-names, recent-tx,
+  inventory, renewals), block heights (confirmation, start, renewal), txids,
+  and receive-address. External-explorer UI labels are brand-neutral. The
+  read API backend is unchanged (still e.hnsfans.com by default).
+
 ### Added
 - **Reveal in-flight UI** — after broadcasting a reveal, the modal stays open
   and shows a pending-confirmation card (txid + copy + explorer link) instead of

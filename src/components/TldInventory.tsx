@@ -20,6 +20,7 @@ import { Input } from "./ui/Input";
 import type { Asset, MigrationStatus } from "../types";
 import { formatHns, formatDate, formatCount } from "../lib/utils";
 import { displayName } from "../lib/idn";
+import { explorerNameUrl, openExternal } from "../lib/openExternal";
 import { mapError } from "../lib/errors";
 import { open, save } from "../lib/dialog";
 import { invoke } from "../lib/invoke";
@@ -144,9 +145,21 @@ export function TldInventory() {
       header: "TLD",
       size: 160,
       cell: (info) => (
-        <span className="font-mono font-semibold text-sm">
-          .{displayName(info.getValue<string>())}
-        </span>
+        activeProfile?.network === "mainnet" ? (
+          <button
+            type="button"
+            className="font-mono font-semibold text-sm text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+            onClick={() => openExternal(explorerNameUrl(info.getValue<string>()))}
+            title="View on explorer"
+            data-testid="inventory-name-explorer-link"
+          >
+            .{displayName(info.getValue<string>())}
+          </button>
+        ) : (
+          <span className="font-mono font-semibold text-sm">
+            .{displayName(info.getValue<string>())}
+          </span>
+        )
       ),
     },
     {

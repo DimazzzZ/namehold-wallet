@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { writeText } from "../../lib/clipboard";
+import { openExternal } from "../../lib/openExternal";
 import { useUiStore } from "../../stores/ui";
 import { Button } from "./Button";
 
@@ -18,6 +19,15 @@ interface CopyFieldProps {
   valueTestId?: string;
   copyTestId?: string;
   testId?: string;
+  /**
+   * When set, render a small "↗" button next to Copy that opens this URL in
+   * the system browser (via {@link openExternal}). Used for "view on explorer"
+   * affordances on addresses, txids, etc.
+   */
+  externalUrl?: string;
+  /** Accessible label for the external-link button. Defaults to "View on explorer". */
+  externalLabel?: string;
+  externalTestId?: string;
 }
 
 /**
@@ -34,6 +44,9 @@ export function CopyField({
   valueTestId,
   copyTestId,
   testId,
+  externalUrl,
+  externalLabel = "View on explorer",
+  externalTestId,
 }: CopyFieldProps) {
   const [copied, setCopied] = useState(false);
   const showToast = useUiStore((s) => s.showToast);
@@ -56,6 +69,19 @@ export function CopyField({
         >
           {display ?? value}
         </code>
+        {externalUrl && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => openExternal(externalUrl)}
+            title={externalLabel}
+            aria-label={externalLabel}
+            data-testid={externalTestId}
+            className="shrink-0"
+          >
+            ↗
+          </Button>
+        )}
         <Button
           variant="secondary"
           size="sm"

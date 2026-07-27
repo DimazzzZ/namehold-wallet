@@ -242,8 +242,8 @@ export function NamebaseDashboard() {
         <>
           {/* Account Balance (custodial — held by Namebase, not the on-chain wallet) */}
           <div className="text-xs text-gray-400 mb-1">
-            Custodial balance held by Namebase — separate from your on-chain wallet
-            (the HNSFans/explorer balance).
+          Custodial balance held by Namebase — separate from your on-chain wallet
+            (the external explorer balance).
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-white rounded p-4 border border-gray-200">
