@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+- Explorer links (name modal header, receive-address, recent-tx table) now
+  open on Shakeshift (https://shakeshift.com). External-explorer UI labels
+  and rate-limit error messages are now brand-neutral. The read API backend
+  is unchanged (still e.hnsfans.com by default).
+
 ### Added
 - **Reveal in-flight UI** — after broadcasting a reveal, the modal stays open
   and shows a pending-confirmation card (txid + copy + explorer link) instead of
