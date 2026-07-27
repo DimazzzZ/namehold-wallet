@@ -410,7 +410,7 @@ export function NameActionsModal({
         {/* Explorer link */}
         <button
           type="button"
-          className="text-xs text-blue-500 hover:text-blue-700 hover:underline inline-flex items-center gap-1"
+          className="text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer inline-flex items-center gap-1"
           onClick={() => openExternal(explorerNameUrl(name))}
           data-testid="name-explorer-link"
         >

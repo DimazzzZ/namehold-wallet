@@ -1,9 +1,11 @@
 import { useCallback, useState } from "react";
 import { useReadRenewals } from "../queries/read";
+import { useActiveProfile } from "../queries/wallet";
 import { useExportCsv } from "../queries/assets";
 import type { RenewalRow } from "../types";
 import { formatCount } from "../lib/utils";
 import { displayName } from "../lib/idn";
+import { explorerNameUrl, openExternal } from "../lib/openExternal";
 import { Button } from "./ui/Button";
 import { NameActionsModal } from "./NameActionsModal";
 import { useUiStore } from "../stores/ui";
@@ -18,6 +20,8 @@ import { save } from "../lib/dialog";
  */
 export function Renewals() {
   const { data, isLoading } = useReadRenewals();
+  const { data: activeProfile } = useActiveProfile();
+  const isMainnet = activeProfile?.network === "mainnet";
   const exportCsv = useExportCsv();
   const showToast = useUiStore((s) => s.showToast);
   const [manageName, setManageName] = useState<string | null>(null);
@@ -103,7 +107,21 @@ export function Renewals() {
             <tbody>
               {rows.map((row) => (
                 <tr key={row.name} className="border-t border-gray-100">
-                  <td className="px-3 py-2 font-mono">.{displayName(row.name)}</td>
+                  <td className="px-3 py-2 font-mono">
+                    {isMainnet ? (
+                      <button
+                        type="button"
+                        className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                        onClick={() => openExternal(explorerNameUrl(row.name))}
+                        title="View on explorer"
+                        data-testid="renewals-name-explorer-link"
+                      >
+                        .{displayName(row.name)}
+                      </button>
+                    ) : (
+                      `.${displayName(row.name)}`
+                    )}
+                  </td>
                   <td className="px-3 py-2">{row.state || "—"}</td>
                   <td className={`px-3 py-2 font-mono font-semibold ${getColor(row)}`}>
                     {row.daysUntilExpire != null

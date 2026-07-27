@@ -14,6 +14,7 @@ import { Badge } from "./ui/Badge";
 import { PageHeader } from "./ui/PageHeader";
 import { normalizeNameInput } from "../lib/utils";
 import { displayName } from "../lib/idn";
+import { explorerNameUrl, openExternal } from "../lib/openExternal";
 import type { HsdName, NameActionCapabilities, AuctionTaskState } from "../types";
 
 /**
@@ -53,7 +54,9 @@ export function AuctionsView() {
   // Resolve the active wallet once here (not inside the inline TaskRow, which
   // remounts every render and would trigger a profile-refetch storm) so every
   // capability fetch is pinned to this wallet.
-  const activeProfileId = useActiveProfile().data?.id ?? null;
+  const activeProfile = useActiveProfile().data ?? null;
+  const activeProfileId = activeProfile?.id ?? null;
+  const isMainnet = activeProfile?.network === "mainnet";
   const { data: positionNames = [] } = useAuctionPositions(activeProfileId);
 
   const canWrite = writeCap?.canWrite ?? false;
@@ -181,7 +184,21 @@ export function AuctionsView() {
 
     return (
       <tr key={n.name} className="border-t border-gray-100">
-        <td className="py-1 font-mono">.{displayName(n.name)}</td>
+        <td className="py-1 font-mono">
+          {isMainnet ? (
+            <button
+              type="button"
+              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+              onClick={() => openExternal(explorerNameUrl(n.name))}
+              title="View on explorer"
+              data-testid="auction-name-explorer-link"
+            >
+              .{displayName(n.name)}
+            </button>
+          ) : (
+            `.${displayName(n.name)}`
+          )}
+        </td>
         <td className="py-1">
           <Badge variant={displayVariant}>{displayLabel}</Badge>
         </td>
