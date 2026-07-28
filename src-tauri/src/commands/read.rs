@@ -992,15 +992,8 @@ pub async fn read_name_records(
             // node ever returns a resource without it — belt-and-braces so
             // the frontend contract holds regardless of node version quirks.
             if let serde_json::Value::Object(mut map) = res {
-                if !map
-                    .get("records")
-                    .map(|v| v.is_array())
-                    .unwrap_or(false)
-                {
-                    map.insert(
-                        "records".to_string(),
-                        serde_json::Value::Array(vec![]),
-                    );
+                if !map.get("records").map(|v| v.is_array()).unwrap_or(false) {
+                    map.insert("records".to_string(), serde_json::Value::Array(vec![]));
                 }
                 return Ok(serde_json::Value::Object(map));
             }
@@ -1137,9 +1130,7 @@ pub async fn read_tx_info(
     let tx = match node.get_tx_by_hash(&txid).await {
         Ok(t) if !t.is_null() => t,
         Ok(_) => return Ok(serde_json::Value::Null), // 404 / miss
-        Err(AppError::Rpc(msg))
-            if msg.to_ascii_lowercase().contains("tx index not enabled") =>
-        {
+        Err(AppError::Rpc(msg)) if msg.to_ascii_lowercase().contains("tx index not enabled") => {
             // Distinct signal: the node responds but lacks --index-tx. The
             // modal renders a "tx index required" hint rather than the
             // misleading "requires synced node" message.
@@ -1157,7 +1148,10 @@ pub async fn read_tx_info(
         .and_then(|v| v.as_str())
         .unwrap_or(&txid)
         .to_string();
-    let confirmations = tx.get("confirmations").and_then(|v| v.as_i64()).unwrap_or(0);
+    let confirmations = tx
+        .get("confirmations")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     let height = tx.get("height").and_then(|v| v.as_i64()).unwrap_or(-1);
     let block = tx
         .get("block")
@@ -1216,11 +1210,7 @@ pub(crate) fn compute_tx_fee_and_total(tx: &serde_json::Value) -> (Option<i64>, 
         .unwrap_or(0);
 
     // Try hsd's top-level `fee` first (integer doos when present).
-    if let Some(f) = tx
-        .get("fee")
-        .and_then(|v| v.as_i64())
-        .filter(|d| *d >= 0)
-    {
+    if let Some(f) = tx.get("fee").and_then(|v| v.as_i64()).filter(|d| *d >= 0) {
         return (Some(f), total_out);
     }
 
@@ -1241,7 +1231,11 @@ pub(crate) fn compute_tx_fee_and_total(tx: &serde_json::Value) -> (Option<i64>, 
                 total_in = total_in.checked_add(v)?;
             }
             let diff = total_in.checked_sub(total_out)?;
-            if diff >= 0 { Some(diff) } else { None }
+            if diff >= 0 {
+                Some(diff)
+            } else {
+                None
+            }
         });
 
     (fee, total_out)
@@ -1290,10 +1284,7 @@ mod tx_fee_tests {
             ],
             "outputs": [ { "value": 2_000_000_000i64 } ],
         });
-        assert_eq!(
-            compute_tx_fee_and_total(&tx),
-            (None, 2_000_000_000)
-        );
+        assert_eq!(compute_tx_fee_and_total(&tx), (None, 2_000_000_000));
     }
 
     #[test]

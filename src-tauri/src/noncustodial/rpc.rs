@@ -942,8 +942,7 @@ mod tests {
         let tx = client.get_tx_by_hash("nofee").await.unwrap();
         assert!(!tx.is_null());
         // Fee should be computed as (1000+2000) - (1500+1300) = 200
-        let (fee, total_out) =
-            crate::commands::read::compute_tx_fee_and_total(&tx);
+        let (fee, total_out) = crate::commands::read::compute_tx_fee_and_total(&tx);
         assert_eq!(fee, Some(200));
         assert_eq!(total_out, 2800);
     }
@@ -968,18 +967,15 @@ mod tests {
         let _m = server
             .mock("GET", "/tx/someid")
             .with_status(400)
-            .with_body(
-                r#"{"error":{"message":"Transaction indexing (--index-tx) not enabled."}}"#,
-            )
+            .with_body(r#"{"error":{"message":"Transaction indexing (--index-tx) not enabled."}}"#)
             .create_async()
             .await;
         let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
         let err = client.get_tx_by_hash("someid").await.unwrap_err();
         match err {
-            AppError::Rpc(msg) => assert!(
-                msg.contains("tx index not enabled"),
-                "unexpected: {msg}"
-            ),
+            AppError::Rpc(msg) => {
+                assert!(msg.contains("tx index not enabled"), "unexpected: {msg}")
+            }
             other => panic!("expected Rpc, got {other:?}"),
         }
     }
