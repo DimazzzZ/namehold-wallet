@@ -209,7 +209,7 @@ describe("ActivityView", () => {
     );
   });
 
-  it("renders dates in long form (e.g. 'July 24, 2026')", async () => {
+  it("renders dates in long form with time (e.g. 'July 24, 2026 - 12:00:00')", async () => {
     // Unix seconds for 2026-07-24 12:00:00 UTC.
     const unix = Math.floor(Date.UTC(2026, 6, 24, 12) / 1000);
     invokeMock.mockImplementation(
@@ -217,7 +217,7 @@ describe("ActivityView", () => {
     );
     render(<ActivityView />, { wrapper: wrapper() });
     await waitFor(() =>
-      expect(screen.getByText("July 24, 2026")).toBeInTheDocument(),
+      expect(screen.getByText("July 24, 2026 - 12:00:00")).toBeInTheDocument(),
     );
     // And the compact "24/07/2026, 12:00:00" locale-string form is absent.
     expect(screen.queryByText(/^\d{1,2}\/\d{1,2}\/\d{4}/)).not.toBeInTheDocument();

@@ -1150,19 +1150,22 @@ fn records_from_resource_handles_null_missing_and_non_array() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn read_name_records_no_profile_returns_empty_array() {
+async fn read_name_records_no_profile_returns_empty_resource_object() {
+    // No resolved profile → the command soft-degrades to the uniform empty
+    // resource shape (`{records:[]}`), NOT a bare array. The frontend always
+    // reads `resource.records`, so the object shape must hold on every path.
     let app = app_with(empty_db());
     let val = read_name_records(app.state(), "foo".into(), None)
         .await
         .unwrap();
-    assert_eq!(val, serde_json::json!([]));
+    assert_eq!(val, serde_json::json!({ "records": [] }));
 }
 
 #[tokio::test]
-async fn read_name_records_node_not_ready_returns_empty_array() {
+async fn read_name_records_node_not_ready_returns_empty_resource_object() {
     // With a resolved profile but no reachable/synced node, the command must
-    // soft-degrade to `[]` rather than error — the frontend then shows its
-    // "connect & sync a node to view/edit records" hint.
+    // soft-degrade to the empty resource object rather than error — the
+    // frontend then shows its "connect & sync a node to view records" hint.
     let conn = empty_db();
     add_profile(&conn, "W1", "regtest");
     db::queries::set_active_profile(&conn, "W1").unwrap();
@@ -1170,5 +1173,5 @@ async fn read_name_records_node_not_ready_returns_empty_array() {
     let val = read_name_records(app.state(), "foo".into(), Some("W1".into()))
         .await
         .unwrap();
-    assert_eq!(val, serde_json::json!([]));
+    assert_eq!(val, serde_json::json!({ "records": [] }));
 }

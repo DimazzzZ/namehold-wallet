@@ -217,6 +217,8 @@ pub fn run() {
             commands::read::read_name_info,
             commands::read::read_name_bids,
             commands::read::read_name_records,
+            commands::read::read_block_info,
+            commands::read::read_tx_info,
             commands::read::read_transactions,
             commands::read::read_renewals,
             commands::history::read_action_history,

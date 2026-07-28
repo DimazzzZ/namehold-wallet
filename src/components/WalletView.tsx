@@ -26,7 +26,10 @@ import { useStartFullSync, useSyncStatus, useCancelFullSync } from "../queries/s
 import { auctionPhase, formatCountdown } from "../lib/auction";
 import { displayName } from "../lib/idn";
 import { NameActionsModal } from "./NameActionsModal";
-import { ACTION_META, FALLBACK_META } from "./ActivityView";
+import { NameInfoModal } from "./NameInfoModal";
+import { BlockInfoModal } from "./BlockInfoModal";
+import { TxInfoModal } from "./TxInfoModal";
+import { ActivityRow } from "./ActivityView";
 import { WalletManager } from "./WalletManager";
 import { AddWalletForm } from "./AddWalletForm";
 import { Button } from "./ui/Button";
@@ -40,23 +43,17 @@ import { Disclosure } from "./ui/Disclosure";
 import { CopyField } from "./ui/CopyField";
 import {
   formatHns,
-  netSpendDoos,
   hnsToDollarydoos,
   dollarydoosToHns,
   formatDate,
-  formatDateLong,
-  amountTone,
   latestTimestamp,
   isLikelyHnsAddress,
   truncateMiddle,
 } from "../lib/utils";
+import { mergeActivity } from "../lib/activity";
 import { mapError } from "../lib/errors";
 import {
   explorerAddressUrl,
-  explorerBlockUrl,
-  explorerNameUrl,
-  explorerTxUrl,
-  openExternal,
 } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
@@ -123,6 +120,9 @@ export function WalletView() {
   const [sendError, setSendError] = useState<string | null>(null);
   const navigate = useNavigate();
   const [manageName, setManageName] = useState<string | null>(null);
+  const [infoName, setInfoName] = useState<string | null>(null);
+  const [infoBlock, setInfoBlock] = useState<number | null>(null);
+  const [infoTx, setInfoTx] = useState<string | null>(null);
   // Wallets manager modal (add / switch / delete). `addMode` opens it straight
   // to the add-wallet form.
   const [walletManagerOpen, setWalletManagerOpen] = useState(false);
@@ -783,19 +783,15 @@ export function WalletView() {
                   {filteredNames.map((n) => (
                     <tr key={n.name} className="border-t border-gray-100 hover:bg-gray-50">
                       <td className="py-1 pr-4 text-xs font-mono">
-                        {profile.network === "mainnet" ? (
-                          <button
-                            type="button"
-                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                            onClick={() => openExternal(explorerNameUrl(n.name))}
-                            title="View on explorer"
-                            data-testid="owned-name-explorer-link"
-                          >
-                            .{displayName(n.name)}
-                          </button>
-                        ) : (
-                          `.${displayName(n.name)}`
-                        )}
+                        <button
+                          type="button"
+                          className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                          onClick={() => setInfoName(n.name)}
+                          title="View name info"
+                          data-testid="owned-name-info-link"
+                        >
+                          .{displayName(n.name)}
+                        </button>
                       </td>
                       <td className="py-1 pr-4">
                         {n.state ? (
@@ -808,38 +804,30 @@ export function WalletView() {
                       </td>
                       <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
                         {n.height ? (
-                          profile.network === "mainnet" ? (
-                            <button
-                              type="button"
-                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                              onClick={() => openExternal(explorerBlockUrl(n.height!))}
-                              title="View on explorer"
-                              data-testid="owned-name-height-explorer-link"
-                            >
-                              #{n.height}
-                            </button>
-                          ) : (
-                            `#${n.height}`
-                          )
+                          <button
+                            type="button"
+                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                            onClick={() => setInfoBlock(n.height!)}
+                            title="View block info"
+                            data-testid="owned-name-height-info-link"
+                          >
+                            #{n.height}
+                          </button>
                         ) : (
                           "—"
                         )}
                       </td>
                       <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
                         {n.renewal ? (
-                          profile.network === "mainnet" ? (
-                            <button
-                              type="button"
-                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                              onClick={() => openExternal(explorerBlockUrl(n.renewal!))}
-                              title="View on explorer"
-                              data-testid="owned-name-renewal-explorer-link"
-                            >
-                              #{n.renewal}
-                            </button>
-                          ) : (
-                            `#${n.renewal}`
-                          )
+                          <button
+                            type="button"
+                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                            onClick={() => setInfoBlock(n.renewal!)}
+                            title="View block info"
+                            data-testid="owned-name-renewal-info-link"
+                          >
+                            #{n.renewal}
+                          </button>
                         ) : (
                           "—"
                         )}
@@ -871,6 +859,7 @@ export function WalletView() {
       </div>
 
       {/* Recent activity — real on-chain history from the node (node-indexed). */}
+      {/* Merged activity: on-chain history + local drafts, deduped by txid. */}
       <div className="bg-white rounded p-4 border border-gray-200">
         <div className="flex items-center justify-between mb-2">
           <div className="text-sm text-gray-500">Recent activity</div>
@@ -881,7 +870,7 @@ export function WalletView() {
             See all →
           </button>
         </div>
-        {history.length > 0 ? (
+        {mergeActivity(history, drafts).length > 0 ? (
           <div className="max-h-72 overflow-auto">
             <table className="w-full text-sm">
               <thead>
@@ -890,214 +879,31 @@ export function WalletView() {
                   <th className="py-1 pr-4">Action</th>
                   <th className="py-1 pr-4">Name</th>
                   <th className="py-1 pr-4 text-right">Amount</th>
-                  <th className="py-1">Status</th>
+                  <th className="py-1 pr-4 text-right">Fee</th>
+                  <th className="py-1 pr-4">Status</th>
+                  <th className="py-1 pr-4">Block</th>
+                  <th className="py-1">Txid</th>
                 </tr>
               </thead>
               <tbody>
-                {history.slice(0, 10).map((h) => {
-                  const tone = amountTone(h);
-                  const toneClass =
-                    tone === "income"
-                      ? "text-green-600"
-                      : tone === "spend"
-                      ? "text-red-600"
-                      : "text-gray-700";
-                  const sign = tone === "income" ? "+" : tone === "spend" ? "-" : "";
-                  return (
-                    <tr key={h.txid} className="border-t border-gray-100 hover:bg-gray-50">
-                      <td className="py-1 pr-4 text-gray-500 whitespace-nowrap">
-                        {h.time ? formatDateLong(new Date(h.time * 1000).toISOString()) : "Pending"}
-                      </td>
-                      <td className="py-1 pr-4">
-                        <Badge variant={(ACTION_META[h.action] ?? FALLBACK_META).variant}>
-                          {(ACTION_META[h.action] ?? FALLBACK_META).label}
-                        </Badge>
-                      </td>
-                      <td className="py-1 pr-4 text-xs font-mono">
-                        {h.name ? (
-                          profile.network === "mainnet" ? (
-                            <button
-                              type="button"
-                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                              onClick={() => openExternal(explorerNameUrl(h.name!))}
-                              title="View on explorer"
-                              data-testid="recent-activity-name-explorer-link"
-                            >
-                              .{displayName(h.name)}
-                            </button>
-                          ) : (
-                            `.${displayName(h.name)}`
-                          )
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td
-                        className="py-1 pr-4 text-xs font-mono text-right whitespace-nowrap"
-                        title={
-                          h.valueDoos === 0 && h.direction !== "receive"
-                            ? "Name's locked value is re-homed to your own coin — no HNS spent beyond the fee."
-                            : undefined
-                        }
-                      >
-                        <span className={toneClass}>
-                          {sign}
-                          {formatHns(Math.abs(h.valueDoos))}
-                        </span>
-                      </td>
-                      <td className="py-1">
-                        <Badge variant={h.confirmed ? "success" : "warning"}>
-                          {h.confirmed ? "Confirmed" : "Pending"}
-                        </Badge>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {mergeActivity(history, drafts)
+                  .slice(0, 10)
+                  .map((row) => (
+                    <ActivityRow
+                      key={row.key}
+                      row={row}
+                      onNameClick={setInfoName}
+                      onBlockClick={setInfoBlock}
+                      onTxClick={setInfoTx}
+                    />
+                  ))}
               </tbody>
             </table>
           </div>
         ) : (
           <div className="text-gray-400 text-sm py-4 text-center">
-            No activity yet. Requires a synced node with the address index.
+            No activity yet.
           </div>
-        )}
-      </div>
-
-      {/* Recent drafts — local send/name drafts and their broadcast status. */}
-      <div className="bg-white rounded p-4 border border-gray-200">
-        <div className="text-sm text-gray-500 mb-2">Recent transactions ({drafts.length})</div>
-        {drafts.length > 0 ? (
-          <div className="max-h-72 overflow-auto">
-            <table className="w-full text-sm">
-              <thead>
-              <tr className="text-left text-gray-500 border-b">
-                 <th className="py-1 pr-4">Date</th>
-                 <th className="py-1 pr-4">Action</th>
-                  <th className="py-1 pr-4">Name</th>
-                 <th className="py-1 pr-4">Amount</th>
-                 <th className="py-1 pr-4">Fee</th>
-                 <th className="py-1 pr-4">Status</th>
-                  <th className="py-1 pr-4">Block</th>
-                 <th className="py-1">Txid</th>
-                </tr>
-              </thead>
-              <tbody>
-                {drafts.map((d) => (
-                  <tr key={d.id} className="border-t border-gray-100 hover:bg-gray-50">
-                    <td className="py-1 pr-4 text-xs text-gray-500">{formatDate(d.createdAt)}</td>
-                    <td className="py-1 pr-4">
-                      <Badge variant={(ACTION_META[d.action] ?? FALLBACK_META).variant}>
-                        {(ACTION_META[d.action] ?? FALLBACK_META).label}
-                      </Badge>
-                    </td>
-                    <td className="py-1 pr-4 text-xs font-mono">
-                      {d.summary?.name ? (
-                        profile.network === "mainnet" ? (
-                          <button
-                            type="button"
-                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                            onClick={() => openExternal(explorerNameUrl(d.summary!.name!))}
-                            title="View on explorer"
-                            data-testid="recent-tx-name-explorer-link"
-                          >
-                            .{displayName(d.summary.name)}
-                          </button>
-                        ) : (
-                          <span>.{displayName(d.summary.name)}</span>
-                        )
-                      ) : (
-                        <span className="text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td
-                      className="py-1 pr-4 text-right text-xs font-mono whitespace-nowrap"
-                      title={
-                        d.summary &&
-                        d.summary.recipientAddress == null &&
-                        d.summary.sendTotalDoos > 0
-                          ? `Name value ${formatHns(
-                              d.summary.sendTotalDoos,
-                            )} HNS is carried to your own new coin — not spent; only the fee applies.`
-                          : undefined
-                      }
-                    >
-                      {d.summary ? (
-                        <span className={netSpendDoos(d.summary) > 0 ? "text-red-600" : "text-gray-700"}>
-                          {netSpendDoos(d.summary) > 0 ? "-" : ""}
-                          {formatHns(netSpendDoos(d.summary))}
-                        </span>
-                      ) : "—"}
-                    </td>
-                    <td className="py-1 pr-4 font-mono text-xs text-gray-500">
-                      {d.summary ? formatHns(d.summary.feeDoos) : "—"}
-                    </td>
-                    <td className="py-1 pr-4">
-                      <Badge
-                        variant={
-                          d.status === "confirmed"
-                            ? "success"
-                            : d.status === "broadcasted"
-                            ? "warning"
-                            : d.status === "failed" || d.status === "dropped"
-                            ? "error"
-                            : "default"
-                        }
-                        title={d.errorMessage ?? undefined}
-                      >
-                      {d.status === "confirmed"
-                          ? "Confirmed"
-                          : d.status === "broadcasted"
-                          ? "Pending"
-                          : d.status === "dropped"
-                          ? "Not confirmed"
-                          : d.status}
-                    </Badge>
-                    </td>
-                    <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
-                      {d.confirmationHeight != null ? (
-                        profile.network === "mainnet" ? (
-                          <button
-                            type="button"
-                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                            onClick={() => openExternal(explorerBlockUrl(d.confirmationHeight!))}
-                            title="View block on explorer"
-                            data-testid="recent-tx-block-explorer-link"
-                          >
-                            #{d.confirmationHeight}
-                          </button>
-                        ) : (
-                          <span>#{d.confirmationHeight}</span>
-                        )
-                      ) : (
-                        <span className="text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td className="py-1 text-xs font-mono">
-                      {d.txid ? (
-                        profile.network === "mainnet" ? (
-                         <button
-                           type="button"
-                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                            onClick={() => openExternal(explorerTxUrl(d.txid!))}
-                            title="View on explorer"
-                            data-testid="recent-tx-explorer-link"
-                          >
-                            {`${d.txid.slice(0, 10)}…`}
-                          </button>
-                        ) : (
-                          `${d.txid.slice(0, 10)}…`
-                        )
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-gray-400 text-sm py-4 text-center">No transactions yet.</div>
         )}
       </div>
 
@@ -1117,6 +923,32 @@ export function WalletView() {
           name={manageName}
           open={!!manageName}
           onClose={() => setManageName(null)}
+        />
+      )}
+
+      {infoName && (
+        <NameInfoModal
+          name={infoName}
+          open={!!infoName}
+          onClose={() => setInfoName(null)}
+        />
+      )}
+
+      {infoBlock != null && (
+        <BlockInfoModal
+          height={infoBlock}
+          open={infoBlock != null}
+          onClose={() => setInfoBlock(null)}
+          isMainnet={profile.network === "mainnet"}
+        />
+      )}
+
+      {infoTx != null && (
+        <TxInfoModal
+          txid={infoTx}
+          open={infoTx != null}
+          onClose={() => setInfoTx(null)}
+          isMainnet={profile.network === "mainnet"}
         />
       )}
 

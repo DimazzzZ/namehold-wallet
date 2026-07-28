@@ -124,9 +124,10 @@ export function formatDate(iso: string | null | undefined): string {
 }
 
 /**
- * Long-form date, e.g. `"July 24, 2026"` — no locale-dependent d/m/y
- * ordering, no time component. Used on transaction/history rows where the
- * date is the primary anchor (readability wins over compactness).
+ * Long-form date + time, e.g. `"July 24, 2026 - 12:54:25"` — no
+ * locale-dependent d/m/y ordering. The unified timestamp format for all
+ * transaction/history rows and the tx/block info modals, so the same
+ * moment reads identically everywhere (readability wins over compactness).
  *
  * Uses `normalizeTimestamp` for the same input-shape tolerance as
  * `formatDate` (naive-UTC SQLite strings, date-only, ISO w/ tz). Returns
@@ -144,11 +145,24 @@ export function formatDateLong(iso: string | null | undefined): string {
 
   const d = new Date(normalizeTimestamp(s));
   if (Number.isNaN(d.getTime())) return s;
-  return d.toLocaleDateString("en-US", {
+  const datePart = d.toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
     day: "numeric",
+    timeZone: "UTC",
   });
+  // Date-only inputs (e.g. "2026-07-24") normalize to midnight UTC — showing
+  // "- 00:00:00" for them would be noise, so omit the time in that case.
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(s);
+  if (dateOnly) return datePart;
+  const timePart = d.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: "UTC",
+  });
+  return `${datePart} - ${timePart}`;
 }
 
 /**

@@ -1,19 +1,16 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useActionHistory } from "../queries/read";
-import { useActiveProfile } from "../queries/wallet";
+import { useActiveProfile, useTxDrafts } from "../queries/wallet";
 import { PageHeader } from "./ui/PageHeader";
 import { Badge } from "./ui/Badge";
 import { formatHns, formatDateLong, amountTone } from "../lib/utils";
 import { displayName } from "../lib/idn";
-import {
-  explorerBlockUrl,
-  explorerNameUrl,
-  explorerTxUrl,
-  openExternal,
-} from "../lib/openExternal";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ActionRow } from "../lib/zod";
+import { NameInfoModal } from "./NameInfoModal";
+import { BlockInfoModal } from "./BlockInfoModal";
+import { TxInfoModal } from "./TxInfoModal";
+import { mergeActivity, type MergedRow } from "../lib/activity";
 
 // Action label + badge variant mapping.
 export const ACTION_META: Record<string, { label: string; variant: "default" | "success" | "warning" | "error" | "info" }> = {
@@ -43,11 +40,18 @@ export const FALLBACK_META = { label: "Other", variant: "default" as const };
 const PAGE_SIZE = 50;
 
 export function ActivityView() {
+  const [infoName, setInfoName] = useState<string | null>(null);
+  const [infoBlock, setInfoBlock] = useState<number | null>(null);
+  const [infoTx, setInfoTx] = useState<string | null>(null);
   const { data: rows = [], isLoading, isError, error } = useActionHistory();
+  const { data: drafts = [] } = useTxDrafts();
   const { data: profile } = useActiveProfile();
   const isMainnet = profile?.network === "mainnet";
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // Merge on-chain history with local drafts, deduped by txid.
+  const merged = mergeActivity(rows, drafts);
 
   // Filters from URL params.
   const filterAction = searchParams.get("action") ?? "all";
@@ -69,7 +73,7 @@ export function ActivityView() {
   };
 
   // Apply filters.
-  const filtered = rows.filter((r) => {
+  const filtered = merged.filter((r) => {
     if (filterAction !== "all" && r.action !== filterAction) return false;
     if (filterStatus === "confirmed" && !r.confirmed) return false;
     if (filterStatus === "pending" && r.confirmed) return false;
@@ -174,7 +178,7 @@ export function ActivityView() {
         <div className="text-gray-500 py-8 text-center">Loading activity...</div>
       ) : filtered.length === 0 ? (
         <div className="text-gray-400 text-sm py-8 text-center bg-white rounded border border-gray-200">
-          {rows.length === 0
+          {merged.length === 0
             ? "No activity yet on this wallet."
             : "No transactions match the current filters."}
         </div>
@@ -188,15 +192,22 @@ export function ActivityView() {
                   <th className="py-1 pr-4">Action</th>
                   <th className="py-1 pr-4">Name</th>
                   <th className="py-1 pr-4 text-right">Amount</th>
+                  <th className="py-1 pr-4 text-right">Fee</th>
                   <th className="py-1 pr-4">Status</th>
                   <th className="py-1 pr-4">Block</th>
                   <th className="py-1">Txid</th>
                 </tr>
               </thead>
               <tbody>
-                {pageRows.map((row) => (
-                  <ActivityRow key={row.txid} row={row} isMainnet={isMainnet} />
-                ))}
+              {pageRows.map((row) => (
+                <ActivityRow
+                  key={row.key}
+                  row={row}
+                  onNameClick={setInfoName}
+                  onBlockClick={setInfoBlock}
+                  onTxClick={setInfoTx}
+                />
+              ))}
               </tbody>
             </table>
           </div>
@@ -212,20 +223,77 @@ export function ActivityView() {
           )}
         </>
       )}
+
+      {infoName && (
+        <NameInfoModal
+          name={infoName}
+          open={!!infoName}
+          onClose={() => setInfoName(null)}
+        />
+      )}
+
+      {infoBlock != null && (
+        <BlockInfoModal
+          height={infoBlock}
+          open={infoBlock != null}
+          onClose={() => setInfoBlock(null)}
+          isMainnet={isMainnet}
+        />
+      )}
+
+      {infoTx != null && (
+        <TxInfoModal
+          txid={infoTx}
+          open={infoTx != null}
+          onClose={() => setInfoTx(null)}
+          isMainnet={isMainnet}
+        />
+      )}
     </div>
   );
 }
 
-function ActivityRow({
+/**
+ * Map a MergedRow status to a badge variant and display label.
+ */
+function statusBadge(status: string): {
+  variant: "default" | "success" | "warning" | "error" | "info";
+  label: string;
+} {
+  if (status === "onchain") {
+    // Handled by the caller (confirmed/pending badge).
+    return { variant: "default", label: "Onchain" };
+  }
+  if (status === "confirmed") {
+    return { variant: "success", label: "Confirmed" };
+  }
+  if (status === "broadcasted" || status === "broadcast_pending") {
+    return { variant: "warning", label: "Pending" };
+  }
+  if (status === "dropped") {
+    return { variant: "error", label: "Not confirmed" };
+  }
+  if (status === "failed") {
+    return { variant: "error", label: "Failed" };
+  }
+  // draft, signed, etc.
+  return { variant: "default", label: status };
+}
+
+export function ActivityRow({
   row,
-  isMainnet,
+  onNameClick,
+  onBlockClick,
+  onTxClick,
 }: {
-  row: ActionRow;
-  isMainnet: boolean;
+  row: MergedRow;
+  onNameClick: (name: string) => void;
+  onBlockClick: (height: number) => void;
+  onTxClick: (txid: string) => void;
 }) {
   const meta = ACTION_META[row.action] ?? FALLBACK_META;
-  const timeStr = row.time
-    ? formatDateLong(new Date(row.time * 1000).toISOString())
+  const timeStr = row.sortTs > 0
+    ? formatDateLong(new Date(row.sortTs * 1000).toISOString())
     : "Pending";
   const tone = amountTone(row);
   const toneClass =
@@ -236,30 +304,42 @@ function ActivityRow({
       : "text-gray-700";
   const sign = tone === "income" ? "+" : tone === "spend" ? "-" : "";
 
+  const badge = statusBadge(row.status);
+  // For onchain-only rows, use the confirmed/pending badge; for drafts,
+  // use the status badge.
+  const badgeVariant =
+    row.status === "onchain"
+      ? row.confirmed
+        ? "success"
+        : "warning"
+      : badge.variant;
+  const badgeLabel =
+    row.status === "onchain"
+      ? row.confirmed
+        ? "Confirmed"
+        : "Pending"
+      : badge.label;
+
   const linkClass =
     "text-blue-500 hover:text-blue-700 hover:underline cursor-pointer";
 
   return (
     <tr className="border-t border-gray-100 hover:bg-gray-50">
-      <td className="py-1 pr-4 text-gray-500 whitespace-nowrap">{timeStr}</td>
+      <td className="py-1 pr-4 text-xs text-gray-500 whitespace-nowrap">{timeStr}</td>
       <td className="py-1 pr-4">
         <Badge variant={meta.variant}>{meta.label}</Badge>
       </td>
       <td className="py-1 pr-4 text-xs font-mono">
         {row.name ? (
-          isMainnet ? (
-            <button
-              type="button"
-              className={linkClass}
-              onClick={() => openExternal(explorerNameUrl(row.name!))}
-              title="View on explorer"
-              data-testid="activity-name-explorer-link"
-            >
-              .{displayName(row.name)}
-            </button>
-          ) : (
-            <span>.{displayName(row.name)}</span>
-          )
+          <button
+            type="button"
+            className={linkClass}
+            onClick={() => onNameClick(row.name!)}
+            title="View name info"
+            data-testid="activity-name-info-link"
+          >
+            .{displayName(row.name)}
+          </button>
         ) : (
           <span className="text-gray-400">—</span>
         )}
@@ -267,7 +347,9 @@ function ActivityRow({
       <td
         className="py-1 pr-4 text-right text-xs font-mono whitespace-nowrap"
         title={
-          row.valueDoos === 0 && row.direction !== "receive"
+          row.nameValueDoos != null
+            ? `Name value ${formatHns(row.nameValueDoos)} HNS is carried to your own new coin — not spent; only the fee applies.`
+            : row.valueDoos === 0 && row.direction !== "receive"
             ? "Name's locked value is re-homed to your own coin — no HNS spent beyond the fee."
             : undefined
         }
@@ -277,47 +359,43 @@ function ActivityRow({
           {formatHns(Math.abs(row.valueDoos))}
         </span>
       </td>
+      <td className="py-1 pr-4 text-right text-xs font-mono text-gray-500">
+        {row.feeDoos == null ? "—" : formatHns(row.feeDoos)}
+      </td>
       <td className="py-1 pr-4">
         <Badge
-          variant={row.confirmed ? "success" : "warning"}
+          variant={badgeVariant}
           title={row.height != null ? `Height #${row.height}` : "Mempool"}
         >
-          {row.confirmed ? "Confirmed" : "Pending"}
+          {badgeLabel}
         </Badge>
       </td>
       <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
         {row.height == null ? (
           <span className="text-gray-400">—</span>
-        ) : isMainnet ? (
+        ) : (
           <button
             type="button"
             className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-            onClick={() => openExternal(explorerBlockUrl(row.height!))}
-            title="View block on explorer"
-            data-testid="activity-block-explorer-link"
+            onClick={() => onBlockClick(row.height!)}
+            title="View block info"
+            data-testid="activity-block-info-link"
           >
             #{row.height}
           </button>
-        ) : (
-          <span>#{row.height}</span>
         )}
       </td>
-      <td className="py-1 text-xs font-mono text-gray-500" title={row.txid}>
-        {isMainnet ? (
-          <button
-            type="button"
-            className="inline-block max-w-[140px] truncate align-bottom text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-            onClick={() => openExternal(explorerTxUrl(row.txid))}
-            title="View on explorer"
-            data-testid="activity-tx-explorer-link"
-          >
-            {row.txid.slice(0, 10)}...
-          </button>
-        ) : (
-          <span className="inline-block max-w-[140px] truncate align-bottom">
-            {row.txid.slice(0, 10)}...
-          </span>
-        )}
+      <td className="py-1 text-xs font-mono text-gray-500" title={row.txid ?? undefined}>
+        <button
+          type="button"
+          className="inline-block max-w-[140px] truncate align-bottom text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+          onClick={() => row.txid && onTxClick(row.txid)}
+          title="View transaction info"
+          data-testid="activity-tx-info-link"
+          disabled={!row.txid}
+        >
+          {row.txid ? `${row.txid.slice(0, 10)}…` : "—"}
+        </button>
       </td>
     </tr>
   );

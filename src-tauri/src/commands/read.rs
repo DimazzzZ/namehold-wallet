@@ -939,12 +939,17 @@ pub(crate) fn records_from_resource(resource: &serde_json::Value) -> Vec<serde_j
         .unwrap_or_default()
 }
 
-/// Current DNS records for a name, read from the local hsd node
+/// Current DNS *resource* for a name, read from the local hsd node
 /// (`getnameresource`). Node-only: the HNSFans explorer does not return
-/// resource records, and UPDATE requires a synced node anyway. Degrades to an
-/// empty array (never an error) when no profile is resolved, the node isn't
-/// ready, the RPC fails, or the resource is null — the frontend seeds its
-/// editor from whatever this returns, and an empty seed is the honest signal
+/// resource records, and UPDATE requires a synced node anyway.
+///
+/// Returns the FULL resource object (`{ records: [...], ttl?, serial?, ... }`)
+/// so callers that only care about DNS rows (the editor) AND callers that want
+/// resource-level metadata (the name-info modal — TTL, serial, and unusual
+/// record types) share one command. Degrades to an object with an empty
+/// `records` array (never an error) when no profile is resolved, the node
+/// isn't ready, the RPC fails, or the resource is `null` — the frontend seeds
+/// its editor from `resource.records` and an empty seed is the honest signal
 /// that we can't show current records.
 ///
 /// `wallet_profile_id` pins the read to a specific wallet context so a fast
@@ -956,8 +961,16 @@ pub async fn read_name_records(
     name: String,
     wallet_profile_id: Option<String>,
 ) -> Result<serde_json::Value, AppError> {
+    // Uniform empty-resource shape returned on every degrade path so consumers
+    // can always do `resource.records` without a null check.
+    let empty_resource = || {
+        serde_json::json!({
+            "records": [],
+        })
+    };
+
     if resolve_profile(&state, wallet_profile_id)?.is_none() {
-        return Ok(serde_json::Value::Array(vec![]));
+        return Ok(empty_resource());
     }
     if is_node_ready_for_local_reads(&state).await {
         // Read settings under a short lock, then drop the guard BEFORE the
@@ -969,10 +982,338 @@ pub async fn read_name_records(
         };
         let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
         if let Ok(res) = node.get_name_resource(&name).await {
-            return Ok(serde_json::Value::Array(records_from_resource(&res)));
+            // hsd's `getnameresource` returns `null` (not an object) when a
+            // name has no resource. Normalize to the uniform empty shape so
+            // frontends can always index `.records` safely.
+            if res.is_null() {
+                return Ok(empty_resource());
+            }
+            // Guarantee `records` is always present as an array, even if the
+            // node ever returns a resource without it — belt-and-braces so
+            // the frontend contract holds regardless of node version quirks.
+            if let serde_json::Value::Object(mut map) = res {
+                if !map
+                    .get("records")
+                    .map(|v| v.is_array())
+                    .unwrap_or(false)
+                {
+                    map.insert(
+                        "records".to_string(),
+                        serde_json::Value::Array(vec![]),
+                    );
+                }
+                return Ok(serde_json::Value::Object(map));
+            }
+            // Non-object, non-null (shouldn't happen with real hsd) —
+            // degrade rather than surface a surprise shape.
+            return Ok(empty_resource());
         }
     }
-    Ok(serde_json::Value::Array(vec![]))
+    Ok(empty_resource())
+}
+
+/// Compact block details for the in-app Block Info modal, read from the local
+/// hsd node (`getblockhash` → `getblock`). Node-only: the explorer path does
+/// not expose block internals, so this soft-degrades to `null` whenever no
+/// synced node is reachable (the frontend renders a "requires synced node"
+/// state rather than surfacing an error). Mirrors the graceful-degrade
+/// contract of [`read_name_records`].
+///
+/// Returns `{ height, hash, time, txCount, minerReward, difficulty }` where
+/// `minerReward` is the sum of the coinbase (first tx) output values in doos.
+#[tauri::command]
+pub async fn read_block_info(
+    state: State<'_, AppState>,
+    height: i64,
+) -> Result<serde_json::Value, AppError> {
+    // Node-only: without a synced local node there's nothing to read. Soft-
+    // degrade to null so the modal can show a "requires synced node" hint.
+    if height < 0 || !is_node_ready_for_local_reads(&state).await {
+        return Ok(serde_json::Value::Null);
+    }
+
+    // Read settings under a short lock, then drop the guard BEFORE the async
+    // RPC calls — never hold the DB mutex across an .await.
+    let settings = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        queries::get_settings(&conn)?
+    };
+    let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+
+    // getblockhash(height) → getblock(hash, verbose, verboseTx). Any RPC
+    // failure (node fell over mid-read, height beyond tip) soft-degrades.
+    let hash = match node.get_block_hash(height).await {
+        Ok(h) => h,
+        Err(_) => return Ok(serde_json::Value::Null),
+    };
+    let block = match node.get_block(&hash).await {
+        Ok(b) => b,
+        Err(_) => return Ok(serde_json::Value::Null),
+    };
+
+    // hsd verbose block: { hash, height, time, difficulty, tx: [ { outputs:
+    // [ { value } ] }, ... ] }. The coinbase is tx[0]; its outputs sum to the
+    // miner reward (subsidy + fees). Guard every access — a missing/short
+    // array yields a 0 reward rather than a panic.
+    let txs = block.get("tx").and_then(|v| v.as_array());
+    let tx_count = txs.map(|a| a.len()).unwrap_or(0);
+    let miner_reward: i64 = txs
+        .and_then(|a| a.first())
+        .and_then(|coinbase| coinbase.get("outputs"))
+        .and_then(|o| o.as_array())
+        .map(|outs| {
+            outs.iter()
+                .filter_map(|out| out.get("value").and_then(|v| v.as_i64()))
+                .sum()
+        })
+        .unwrap_or(0);
+
+    let block_height = block
+        .get("height")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(height);
+    let time = block.get("time").and_then(|v| v.as_i64()).unwrap_or(0);
+    let difficulty = block
+        .get("difficulty")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    Ok(serde_json::json!({
+        "height": block_height,
+        "hash": hash,
+        "time": time,
+        "txCount": tx_count,
+        "minerReward": miner_reward,
+        "difficulty": difficulty,
+    }))
+}
+
+/// Compact transaction details for the in-app Transaction Info modal, read
+/// from the local hsd node via the REST `GET /tx/:hash` route. Node-only.
+///
+/// **Why REST, not `getrawtransaction`:** the JSON-RPC verbose path can't
+/// resolve prevouts for a confirmed tx whose inputs are already spent (those
+/// UTXOs left the coin set), so it omits `fee` and `inputs[].coin`. The REST
+/// route resolves them through the tx-index, giving a reliable fee even for
+/// old txs. Mirrors [`read_block_info`].
+///
+/// Returns `{ txid, confirmations, height, block, time, fee, inputsCount,
+/// outputsCount, totalOut }`. **hsd emits all tx amounts as integer
+/// dollarydoos** (matches `NodeCoin.value: i64` at `rpc.rs:561` and the
+/// canonical extractors at `db/queries.rs:1854` and `commands/history.rs:123`
+/// — no HNS-float conversion anywhere in the hsd RPC path).
+///
+/// Tri-state return:
+/// - the full tx object (normal case);
+/// - `{ "error": "tx_index_disabled" }` when the node lacks `--index-tx`
+///   (the modal renders a distinct "enable --index-tx" hint);
+/// - `Null` for any other soft-degrade (no synced node, unknown tx, generic
+///   RPC failure) → the modal shows "requires synced node".
+///
+/// `fee` is nullable within the tx object: we use hsd's top-level `fee` when
+/// present, else compute `Σ inputs[].coin.value − Σ outputs[].value`. It's
+/// `null` only for genuine coinbase txs (no real inputs) — rendered as `—`,
+/// an honest "unknown" rather than a misleading `0`.
+#[tauri::command]
+pub async fn read_tx_info(
+    state: State<'_, AppState>,
+    txid: String,
+) -> Result<serde_json::Value, AppError> {
+    let txid = txid.trim().to_string();
+    if txid.is_empty() || !is_node_ready_for_local_reads(&state).await {
+        return Ok(serde_json::Value::Null);
+    }
+
+    // Read settings under a short lock, then drop the guard BEFORE the async
+    // RPC call — never hold the DB mutex across an .await.
+    let settings = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        queries::get_settings(&conn)?
+    };
+    let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+
+    // REST GET /tx/:hash — resolves spent prevouts via the tx-index, so
+    // `fee` and `inputs[].coin` are populated even for old confirmed txs.
+    let tx = match node.get_tx_by_hash(&txid).await {
+        Ok(t) if !t.is_null() => t,
+        Ok(_) => return Ok(serde_json::Value::Null), // 404 / miss
+        Err(AppError::Rpc(msg))
+            if msg.to_ascii_lowercase().contains("tx index not enabled") =>
+        {
+            // Distinct signal: the node responds but lacks --index-tx. The
+            // modal renders a "tx index required" hint rather than the
+            // misleading "requires synced node" message.
+            return Ok(serde_json::json!({ "error": "tx_index_disabled" }));
+        }
+        Err(_) => return Ok(serde_json::Value::Null), // generic degrade
+    };
+
+    // REST tx shape: { hash, confirmations, height, block, time,
+    //                  fee (integer doos), inputs: [ { coin: { value } } ],
+    //                  outputs: [ { value (doos) } ] }
+    // Guard every access; all amount extraction uses .as_i64().
+    let hash = tx
+        .get("hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&txid)
+        .to_string();
+    let confirmations = tx.get("confirmations").and_then(|v| v.as_i64()).unwrap_or(0);
+    let height = tx.get("height").and_then(|v| v.as_i64()).unwrap_or(-1);
+    let block = tx
+        .get("block")
+        .and_then(|v| v.as_str())
+        .map(|s| serde_json::Value::String(s.to_string()))
+        .unwrap_or(serde_json::Value::Null);
+    let time = tx.get("time").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    let inputs_count = tx
+        .get("inputs")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let outputs_count = tx
+        .get("outputs")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    // Pure fee + total_out extraction (unit-tested — see tests below).
+    let (fee, total_out) = compute_tx_fee_and_total(&tx);
+
+    Ok(serde_json::json!({
+        "txid": hash,
+        "confirmations": confirmations,
+        "height": height,
+        "block": block,
+        "time": time,
+        "fee": fee,
+        "inputsCount": inputs_count,
+        "outputsCount": outputs_count,
+        "totalOut": total_out,
+    }))
+}
+
+/// Extract the fee and total output value from an hsd `getrawtransaction`
+/// verbose response. Pure — no state, no lock, no RPC — so it's the seam we
+/// unit-test the fee logic through.
+///
+/// Returns `(fee, total_out)` where both are in doos and `fee` is `None` when
+/// hsd's top-level `fee` is absent AND we can't recover it from the input
+/// coins (e.g. coinbase txs, or when hsd's `inputs[].coin.value` isn't fully
+/// resolved). `None` intentionally propagates to the JSON as `null`, which
+/// the frontend renders as `—` — an honest "unknown" beats a misleading `0`.
+pub(crate) fn compute_tx_fee_and_total(tx: &serde_json::Value) -> (Option<i64>, i64) {
+    // Sum outputs — integer doos, extracted the same way as
+    // db/queries.rs:1854 and commands/history.rs:123.
+    let total_out: i64 = tx
+        .get("outputs")
+        .and_then(|v| v.as_array())
+        .map(|outs| {
+            outs.iter()
+                .filter_map(|out| out.get("value").and_then(|v| v.as_i64()))
+                .sum()
+        })
+        .unwrap_or(0);
+
+    // Try hsd's top-level `fee` first (integer doos when present).
+    if let Some(f) = tx
+        .get("fee")
+        .and_then(|v| v.as_i64())
+        .filter(|d| *d >= 0)
+    {
+        return (Some(f), total_out);
+    }
+
+    // Otherwise compute from resolved input coins:
+    //   fee = Σ inputs[].coin.value − Σ outputs[].value
+    // Bail (return None) if any input lacks a resolved `coin.value` — that
+    // covers coinbase txs and any partial hsd response.
+    let fee = tx
+        .get("inputs")
+        .and_then(|v| v.as_array())
+        .and_then(|inputs| {
+            let mut total_in: i64 = 0;
+            for i in inputs {
+                let v = i
+                    .get("coin")
+                    .and_then(|c| c.get("value"))
+                    .and_then(|v| v.as_i64())?;
+                total_in = total_in.checked_add(v)?;
+            }
+            let diff = total_in.checked_sub(total_out)?;
+            if diff >= 0 { Some(diff) } else { None }
+        });
+
+    (fee, total_out)
+}
+
+#[cfg(test)]
+mod tx_fee_tests {
+    use super::compute_tx_fee_and_total;
+    use serde_json::json;
+
+    #[test]
+    fn uses_hsd_top_level_fee_when_present() {
+        let tx = json!({
+            "fee": 1200,
+            "inputs": [
+                { "coin": { "value": 500 } },
+                { "coin": { "value": 500 } },
+            ],
+            "outputs": [ { "value": 300 }, { "value": 500 } ],
+        });
+        // Even though inputs/outputs are present, the explicit fee wins.
+        assert_eq!(compute_tx_fee_and_total(&tx), (Some(1200), 800));
+    }
+
+    #[test]
+    fn computes_fee_from_input_coins_when_hsd_fee_missing() {
+        // Common case: hsd omits `fee` on `getrawtransaction` verbose but
+        // gives us all input coins. fee = (500 + 400) − (600 + 200) = 100.
+        let tx = json!({
+            "inputs": [
+                { "coin": { "value": 500 } },
+                { "coin": { "value": 400 } },
+            ],
+            "outputs": [ { "value": 600 }, { "value": 200 } ],
+        });
+        assert_eq!(compute_tx_fee_and_total(&tx), (Some(100), 800));
+    }
+
+    #[test]
+    fn returns_none_fee_when_any_input_coin_unresolved() {
+        // Coinbase-shape: input has no `coin` field. Fee is genuinely
+        // unknowable at this layer → None (renders as `—`).
+        let tx = json!({
+            "inputs": [
+                { "prevout": { "hash": "00", "index": 4294967295u32 } },
+            ],
+            "outputs": [ { "value": 2_000_000_000i64 } ],
+        });
+        assert_eq!(
+            compute_tx_fee_and_total(&tx),
+            (None, 2_000_000_000)
+        );
+    }
+
+    #[test]
+    fn returns_zero_total_out_when_outputs_missing() {
+        // Defensive: a malformed response with no outputs shouldn't panic.
+        let tx = json!({});
+        assert_eq!(compute_tx_fee_and_total(&tx), (None, 0));
+    }
+
+    #[test]
+    fn negative_hsd_fee_falls_through_to_computation() {
+        // Defensive: a negative top-level fee (shouldn't happen but guard it)
+        // is ignored, and we recompute from coins.
+        let tx = json!({
+            "fee": -5,
+            "inputs": [ { "coin": { "value": 1000 } } ],
+            "outputs": [ { "value": 900 } ],
+        });
+        assert_eq!(compute_tx_fee_and_total(&tx), (Some(100), 900));
+    }
 }
 
 /// Transaction history from the local (node-synced) cache.

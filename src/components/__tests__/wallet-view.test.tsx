@@ -978,8 +978,8 @@ describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () =
 
   it("Recent activity card renders classified rows from read_action_history and links to /activity", async () => {
     // Unix seconds for 2026-07-24 12:00:00 UTC — locks the long-date
-    // assertion to a known "July 24, 2026" output regardless of the
-    // runner's timezone (formatDateLong uses UTC-normalized parsing).
+    // assertion to a known "July 24, 2026 - 12:00:00" output regardless of
+    // the runner's timezone (formatDateLong uses UTC-normalized parsing).
     const unix = Math.floor(Date.UTC(2026, 6, 24, 12) / 1000);
     invokeMock.mockImplementation(
       routeInvoke({
@@ -1039,10 +1039,11 @@ describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () =
       .getAllByText((_, el) => el?.tagName === "SPAN" && /^\+100\.000000$/.test(el.textContent ?? ""))
       .find((el) => el.className.includes("text-green-600"));
     expect(incomeSpan).toBeTruthy();
-    // Long-form date: the row's Date cell reads "July 24, 2026", not the
-    // locale-dependent "24/07/2026" or "7/24/2026" that `formatDate` would
-    // produce. formatDateLong is the shared helper.
-    expect(screen.getAllByText("July 24, 2026").length).toBeGreaterThan(0);
+    // Long-form date with time: the row's Date cell reads
+    // "July 24, 2026 - 12:00:00", not the locale-dependent "24/07/2026" or
+    // "7/24/2026" that `formatDate` would produce. formatDateLong is the
+    // shared helper.
+    expect(screen.getAllByText("July 24, 2026 - 12:00:00").length).toBeGreaterThan(0);
   });
 });
 
@@ -1104,8 +1105,8 @@ describe("WalletView — canonical table design", () => {
 
     const { assertCanonicalTable } = await import("../../test/canonicalTable");
     const tables = Array.from(document.querySelectorAll("table"));
-    // Owned Names + Recent activity + Recent transactions = 3 tables.
-    expect(tables.length).toBe(3);
+    // Owned Names + Merged Recent activity (on-chain + drafts) = 2 tables.
+    expect(tables.length).toBe(2);
     tables.forEach((t, i) => {
       assertCanonicalTable(t as HTMLTableElement, { name: `WalletView#${i}` });
     });

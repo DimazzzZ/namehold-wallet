@@ -194,11 +194,11 @@ export function NameActionsModal({
     // read was in flight (e.g. a REGISTER-from-scratch in the guided flow).
     // The stale-editor bug is already prevented upstream: `recordsFresh`
     // gates this effect, so a stale non-empty read can never seed.
-    const seeded = recordsToRows(currentRecords ?? []);
+    const seeded = recordsToRows(currentRecords?.records ?? []);
     if (seeded.length) {
       setRows(seeded);
     }
-    setRecordsJson(JSON.stringify(currentRecords ?? [], null, 2));
+    setRecordsJson(JSON.stringify(currentRecords?.records ?? [], null, 2));
     seededForName.current = name;
   }, [open, isOwned, name, recordsFresh, currentRecords]);
   useEffect(() => {
@@ -662,7 +662,7 @@ export function NameActionsModal({
                     </button>
                   </div>
                 )}
-                {recordsFresh && currentRecords?.length === 0 && (
+                {recordsFresh && currentRecords?.records?.length === 0 && (
                   <div className="text-xs text-gray-400" data-testid="dns-records-hint">
                     This name has no records yet. Add records below and Update to publish them.
                   </div>

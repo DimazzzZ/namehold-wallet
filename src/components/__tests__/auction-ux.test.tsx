@@ -145,9 +145,9 @@ describe("WalletView — auction UX", () => {
     invokeMock.mockImplementation(
       routeWallet({
         drafts: [
-          draft({ id: "a", status: "confirmed", confirmationHeight: 437 }),
-          draft({ id: "b", status: "broadcasted" }),
-          draft({ id: "c", status: "dropped", errorMessage: "never confirmed" }),
+          draft({ id: "a", txid: "aaa0000000000001", status: "confirmed", confirmationHeight: 437 }),
+          draft({ id: "b", txid: "bbb0000000000002", status: "broadcasted" }),
+          draft({ id: "c", txid: "ccc0000000000003", status: "dropped", errorMessage: "never confirmed" }),
         ],
       }),
     );
