@@ -21,7 +21,10 @@ const profile = {
   id: "p1",
   label: "Primary",
   kind: "mnemonic_hot",
-  network: "regtest",
+  // Mainnet so name/txid/height render as clickable Shakeshift explorer
+  // links (buttons). Tests here exercise rendering/filtering, not network
+  // gating; the plain-text (non-mainnet) branch is covered manually.
+  network: "mainnet",
   accountXpub: "xpubFAKE",
   accountIndex: 0,
   receiveDepth: 20,

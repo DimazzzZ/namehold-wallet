@@ -882,14 +882,14 @@ export function WalletView() {
         </div>
         {history.length > 0 ? (
           <div className="max-h-72 overflow-auto">
-            <table className="w-full text-sm text-gray-700">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-500 border-b">
-                  <th className="px-3 py-2 font-medium">Date</th>
-                  <th className="px-3 py-2 font-medium">Action</th>
-                  <th className="px-3 py-2 font-medium">Name</th>
-                  <th className="px-3 py-2 font-medium text-right">Amount</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
+                  <th className="py-1">Date</th>
+                  <th className="py-1">Action</th>
+                  <th className="py-1">Name</th>
+                  <th className="py-1 text-right">Amount</th>
+                  <th className="py-1">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -904,15 +904,31 @@ export function WalletView() {
                   const sign = tone === "income" ? "+" : tone === "spend" ? "-" : "";
                   return (
                     <tr key={h.txid} className="border-t border-gray-100">
-                      <td className="px-3 py-2 text-gray-500 whitespace-nowrap">
+                      <td className="py-1 text-gray-500 whitespace-nowrap">
                         {h.time ? formatDateLong(new Date(h.time * 1000).toISOString()) : "Pending"}
                       </td>
-                      <td className="px-3 py-2 capitalize">{h.action}</td>
-                      <td className="px-3 py-2">
-                        {h.name ? `.${displayName(h.name)}` : "—"}
+                      <td className="py-1 capitalize">{h.action}</td>
+                      <td className="py-1 font-mono">
+                        {h.name ? (
+                          profile.network === "mainnet" ? (
+                            <button
+                              type="button"
+                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                              onClick={() => openExternal(explorerNameUrl(h.name!))}
+                              title="View on explorer"
+                              data-testid="recent-activity-name-explorer-link"
+                            >
+                              .{displayName(h.name)}
+                            </button>
+                          ) : (
+                            `.${displayName(h.name)}`
+                          )
+                        ) : (
+                          "—"
+                        )}
                       </td>
                       <td
-                        className="px-3 py-2 font-mono text-right whitespace-nowrap"
+                        className="py-1 font-mono text-right whitespace-nowrap"
                         title={
                           h.valueDoos === 0 && h.direction !== "receive"
                             ? "Name's locked value is re-homed to your own coin — no HNS spent beyond the fee."
@@ -924,7 +940,7 @@ export function WalletView() {
                           {formatHns(Math.abs(h.valueDoos))}
                         </span>
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="py-1">
                         <Badge variant={h.confirmed ? "success" : "warning"}>
                           {h.confirmed ? "Confirmed" : "Pending"}
                         </Badge>

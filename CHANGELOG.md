@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Changed
+- Activity view (full table + Wallet "Recent activity" card) now shares the
+  same typography and density as the Owned Names table (compact `py-1` rows,
+  plain gray headers, `font-mono` names and heights). Names, txids, and
+  block heights in Activity are clickable Shakeshift explorer links on
+  mainnet. The in-app "manage name" modal that used to open from the
+  Activity name click has been removed — use the Manage buttons on the
+  Wallet Owned Names or the Auctions rows instead.
 - Explorer links throughout the app now open on Shakeshift
   (https://shakeshift.com): names (auctions, owned-names, recent-tx,
   inventory, renewals), block heights (confirmation, start, renewal), txids,

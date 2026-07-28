@@ -1,11 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useActionHistory } from "../queries/read";
+import { useActiveProfile } from "../queries/wallet";
 import { PageHeader } from "./ui/PageHeader";
 import { Badge } from "./ui/Badge";
-import { NameActionsModal } from "./NameActionsModal";
 import { formatHns, formatDateLong, amountTone } from "../lib/utils";
 import { displayName } from "../lib/idn";
+import {
+  explorerBlockUrl,
+  explorerNameUrl,
+  explorerTxUrl,
+  openExternal,
+} from "../lib/openExternal";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ActionRow } from "../lib/zod";
 
@@ -38,9 +44,10 @@ const PAGE_SIZE = 50;
 
 export function ActivityView() {
   const { data: rows = [], isLoading, isError, error } = useActionHistory();
+  const { data: profile } = useActiveProfile();
+  const isMainnet = profile?.network === "mainnet";
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [manageName, setManageName] = useState<string | null>(null);
 
   // Filters from URL params.
   const filterAction = searchParams.get("action") ?? "all";
@@ -173,25 +180,21 @@ export function ActivityView() {
         </div>
       ) : (
         <>
-          <div className="bg-white rounded border border-gray-200 overflow-auto">
-            <table className="w-full text-sm text-gray-700">
+          <div className="bg-white rounded border border-gray-200 overflow-auto p-3">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-500 border-b">
-                  <th className="px-3 py-2 font-medium">Date</th>
-                  <th className="px-3 py-2 font-medium">Action</th>
-                  <th className="px-3 py-2 font-medium">Name</th>
-                  <th className="px-3 py-2 font-medium text-right">Amount</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 font-medium">Txid</th>
+                  <th className="py-1">Date</th>
+                  <th className="py-1">Action</th>
+                  <th className="py-1">Name</th>
+                  <th className="py-1 text-right">Amount</th>
+                  <th className="py-1">Status</th>
+                  <th className="py-1">Txid</th>
                 </tr>
               </thead>
               <tbody>
                 {pageRows.map((row) => (
-                  <ActivityRow
-                    key={row.txid}
-                    row={row}
-                    onNameClick={setManageName}
-                  />
+                  <ActivityRow key={row.txid} row={row} isMainnet={isMainnet} />
                 ))}
               </tbody>
             </table>
@@ -208,24 +211,16 @@ export function ActivityView() {
           )}
         </>
       )}
-
-      {manageName && (
-        <NameActionsModal
-          name={manageName}
-          open={!!manageName}
-          onClose={() => setManageName(null)}
-        />
-      )}
     </div>
   );
 }
 
 function ActivityRow({
   row,
-  onNameClick,
+  isMainnet,
 }: {
   row: ActionRow;
-  onNameClick: (name: string) => void;
+  isMainnet: boolean;
 }) {
   const meta = ACTION_META[row.action] ?? FALLBACK_META;
   const timeStr = row.time
@@ -240,26 +235,36 @@ function ActivityRow({
       : "text-gray-700";
   const sign = tone === "income" ? "+" : tone === "spend" ? "-" : "";
 
+  const linkClass =
+    "text-blue-500 hover:text-blue-700 hover:underline cursor-pointer";
+
   return (
     <tr className="border-t border-gray-100 hover:bg-gray-50">
-      <td className="px-3 py-2 text-gray-500 whitespace-nowrap">{timeStr}</td>
-      <td className="px-3 py-2">
+      <td className="py-1 text-gray-500 whitespace-nowrap">{timeStr}</td>
+      <td className="py-1">
         <Badge variant={meta.variant}>{meta.label}</Badge>
       </td>
-      <td className="px-3 py-2">
+      <td className="py-1 font-mono">
         {row.name ? (
-          <button
-            className="text-blue-600 hover:underline"
-            onClick={() => onNameClick(row.name!)}
-          >
-            .{displayName(row.name)}
-          </button>
+          isMainnet ? (
+            <button
+              type="button"
+              className={linkClass}
+              onClick={() => openExternal(explorerNameUrl(row.name!))}
+              title="View on explorer"
+              data-testid="activity-name-explorer-link"
+            >
+              .{displayName(row.name)}
+            </button>
+          ) : (
+            <span>.{displayName(row.name)}</span>
+          )
         ) : (
           <span className="text-gray-400">—</span>
         )}
       </td>
       <td
-        className="px-3 py-2 text-right font-mono whitespace-nowrap"
+        className="py-1 text-right font-mono whitespace-nowrap"
         title={
           row.valueDoos === 0 && row.direction !== "receive"
             ? "Name's locked value is re-homed to your own coin — no HNS spent beyond the fee."
@@ -271,13 +276,49 @@ function ActivityRow({
           {formatHns(Math.abs(row.valueDoos))}
         </span>
       </td>
-      <td className="px-3 py-2">
-        <Badge variant={row.confirmed ? "success" : "warning"} title={row.height != null ? `Height #${row.height}` : "Mempool"}>
-          {row.confirmed ? "Confirmed" : "Pending"}
-        </Badge>
+      <td className="py-1">
+        <span className="inline-flex items-center gap-1.5">
+          <Badge
+            variant={row.confirmed ? "success" : "warning"}
+            title={row.height != null ? `Height #${row.height}` : "Mempool"}
+          >
+            {row.confirmed ? "Confirmed" : "Pending"}
+          </Badge>
+          {row.height != null &&
+            (isMainnet ? (
+              <button
+                type="button"
+                className={`text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer font-mono`}
+                onClick={() => openExternal(explorerBlockUrl(row.height!))}
+                title="View block on explorer"
+                data-testid="activity-block-explorer-link"
+              >
+                #{row.height}
+              </button>
+            ) : (
+              <span className="text-xs text-gray-500 font-mono">
+                #{row.height}
+              </span>
+            ))}
+        </span>
       </td>
-      <td className="px-3 py-2 font-mono text-gray-500 truncate max-w-[140px]" title={row.txid}>
-        {row.txid.slice(0, 10)}...
+      <td
+        className="py-1 text-xs font-mono text-gray-500 truncate max-w-[140px]"
+        title={row.txid}
+      >
+        {isMainnet ? (
+          <button
+            type="button"
+            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+            onClick={() => openExternal(explorerTxUrl(row.txid))}
+            title="View on explorer"
+            data-testid="activity-tx-explorer-link"
+          >
+            {row.txid.slice(0, 10)}...
+          </button>
+        ) : (
+          `${row.txid.slice(0, 10)}...`
+        )}
       </td>
     </tr>
   );
