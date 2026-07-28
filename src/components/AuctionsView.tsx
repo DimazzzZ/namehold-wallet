@@ -9,12 +9,12 @@ import {
   type AuctionTaskSummary,
 } from "../lib/auction";
 import { NameActionsModal } from "./NameActionsModal";
+import { NameInfoModal } from "./NameInfoModal";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
 import { PageHeader } from "./ui/PageHeader";
 import { normalizeNameInput } from "../lib/utils";
 import { displayName } from "../lib/idn";
-import { explorerNameUrl, openExternal } from "../lib/openExternal";
 import type { HsdName, NameActionCapabilities, AuctionTaskState } from "../types";
 
 /**
@@ -56,13 +56,13 @@ export function AuctionsView() {
   // capability fetch is pinned to this wallet.
   const activeProfile = useActiveProfile().data ?? null;
   const activeProfileId = activeProfile?.id ?? null;
-  const isMainnet = activeProfile?.network === "mainnet";
   const { data: positionNames = [] } = useAuctionPositions(activeProfileId);
 
   const canWrite = writeCap?.canWrite ?? false;
 
   const [lookupName, setLookupName] = useState("");
   const [manageName, setManageName] = useState<string | null>(null);
+  const [infoName, setInfoName] = useState<string | null>(null);
 
   // Names that are mid-auction or have actionable post-auction tasks.
   // We fetch capabilities for each name to determine the task state.
@@ -185,19 +185,15 @@ export function AuctionsView() {
     return (
       <tr key={n.name} className="border-t border-gray-100 hover:bg-gray-50">
         <td className="py-1 pr-4 text-xs font-mono">
-          {isMainnet ? (
-            <button
-              type="button"
-              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-              onClick={() => openExternal(explorerNameUrl(n.name))}
-              title="View on explorer"
-              data-testid="auction-name-explorer-link"
-            >
-              .{displayName(n.name)}
-            </button>
-          ) : (
-            `.${displayName(n.name)}`
-          )}
+          <button
+            type="button"
+            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+            onClick={() => setInfoName(n.name)}
+            title="View name info"
+            data-testid="auction-name-info-link"
+          >
+            .{displayName(n.name)}
+          </button>
         </td>
         <td className="py-1 pr-4">
           <Badge variant={displayVariant}>{displayLabel}</Badge>
@@ -309,6 +305,14 @@ export function AuctionsView() {
           onClose={() => {
             setManageName(null);
           }}
+        />
+      )}
+
+      {infoName && (
+        <NameInfoModal
+          name={infoName}
+          open={!!infoName}
+          onClose={() => setInfoName(null)}
         />
       )}
     </div>

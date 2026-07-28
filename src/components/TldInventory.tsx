@@ -20,7 +20,7 @@ import { Input } from "./ui/Input";
 import type { Asset, MigrationStatus } from "../types";
 import { formatHns, formatDate, formatCount } from "../lib/utils";
 import { displayName } from "../lib/idn";
-import { explorerNameUrl, openExternal } from "../lib/openExternal";
+import { NameInfoModal } from "./NameInfoModal";
 import { mapError } from "../lib/errors";
 import { open, save } from "../lib/dialog";
 import { invoke } from "../lib/invoke";
@@ -53,6 +53,7 @@ export function TldInventory() {
   const [transferAddress, setTransferAddress] = useState("");
   const [transferConfirmName, setTransferConfirmName] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
+  const [infoName, setInfoName] = useState<string | null>(null);
 
   const { selectedAssetIds, clearSelection, showToast } =
     useUiStore();
@@ -145,21 +146,15 @@ export function TldInventory() {
       header: "TLD",
       size: 160,
       cell: (info) => (
-        activeProfile?.network === "mainnet" ? (
-          <button
-            type="button"
-            className="font-mono text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-            onClick={() => openExternal(explorerNameUrl(info.getValue<string>()))}
-            title="View on explorer"
-            data-testid="inventory-name-explorer-link"
-          >
-            .{displayName(info.getValue<string>())}
-          </button>
-        ) : (
-          <span className="font-mono text-xs">
-            .{displayName(info.getValue<string>())}
-          </span>
-        )
+        <button
+          type="button"
+          className="font-mono text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+          onClick={() => setInfoName(info.getValue<string>())}
+          title="View name info"
+          data-testid="inventory-name-info-link"
+        >
+          .{displayName(info.getValue<string>())}
+        </button>
       ),
     },
     {
@@ -251,9 +246,10 @@ export function TldInventory() {
   ];
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold">TLD Inventory</h2>
+    <>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-bold">TLD Inventory</h2>
         <div className="flex gap-2">
           <Button onClick={handleImport} variant="primary" size="sm">
             Import CSV
@@ -565,6 +561,15 @@ export function TldInventory() {
           })()}
         </div>
       </Dialog>
-    </div>
+      </div>
+
+      {infoName && (
+        <NameInfoModal
+          name={infoName}
+          open={!!infoName}
+          onClose={() => setInfoName(null)}
+        />
+      )}
+    </>
   );
 }
