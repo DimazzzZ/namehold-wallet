@@ -303,3 +303,35 @@ describe("ActivityView", () => {
     expect(rows5.length).toBe(5);
   });
 });
+
+describe("ActivityView — canonical table design", () => {
+  it("the Activity table follows the unified table contract", async () => {
+    invokeMock.mockImplementation(
+      routes([
+        row({ txid: "aa", action: "receive", valueDoos: 100_000_000, direction: "receive" }),
+        row({
+          txid: "bb",
+          action: "bid",
+          name: "foo",
+          nameHash: "deadbeef",
+          valueDoos: 0,
+          direction: "send",
+          height: 200,
+        }),
+      ]),
+    );
+    render(<ActivityView />, { wrapper: wrapper() });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".foo"),
+      ).toBeInTheDocument(),
+    );
+
+    const { assertCanonicalTable } = await import("../../test/canonicalTable");
+    // ActivityView renders a single table.
+    const tables = document.querySelectorAll("table");
+    expect(tables.length).toBe(1);
+    assertCanonicalTable(tables[0] as HTMLTableElement, { name: "Activity" });
+  });
+});

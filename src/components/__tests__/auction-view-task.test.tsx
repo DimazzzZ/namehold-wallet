@@ -319,3 +319,16 @@ describe("AuctionsView — task-driven row rendering", () => {
     expect((batchCall?.[1] as { names?: string[] })?.names).toEqual(["wonneedsregister"]);
   });
 });
+
+describe("AuctionsView — canonical table design", () => {
+  it("the auctions table follows the unified table contract", async () => {
+    invokeMock.mockImplementation(routeInvoke());
+    render(<AuctionsView />, { wrapper: wrapper() });
+    await screen.findByText(/Won — Register Now/i);
+
+    const { assertCanonicalTable } = await import("../../test/canonicalTable");
+    const table = document.querySelector("table");
+    expect(table).toBeTruthy();
+    assertCanonicalTable(table as HTMLTableElement, { name: "Auctions" });
+  });
+});

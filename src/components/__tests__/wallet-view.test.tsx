@@ -1045,3 +1045,184 @@ describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () =
     expect(screen.getAllByText("July 24, 2026").length).toBeGreaterThan(0);
   });
 });
+
+describe("WalletView — canonical table design", () => {
+  it("the Owned Names, Recent activity, and Recent transactions tables all follow the unified contract", async () => {
+    // A minimal fixture that guarantees every table renders at least one
+    // row: one owned name (Owned Names + Recent activity via history) and
+    // one draft (Recent transactions).
+    const drafts = [
+      {
+        id: "d1",
+        walletProfileId: baseProfile.id,
+        action: "send_hns",
+        status: "confirmed",
+        summary: {
+          action: "send_hns",
+          sendTotalDoos: 1_000_000,
+          feeDoos: 1410,
+          changeDoos: 0,
+          inputTotalDoos: 1_001_410,
+          numInputs: 1,
+          recipientAddress: "rs1qexample",
+          txid: null,
+          warnings: [],
+          name: null,
+        },
+        errorMessage: null,
+        txid: "abc123txid",
+        confirmationHeight: 500,
+        createdAt: "2026-07-22",
+      },
+    ];
+    const history = [
+      {
+        txid: "aa",
+        action: "receive",
+        name: null,
+        nameHash: null,
+        valueDoos: 100_000_000,
+        direction: "receive",
+        height: 100,
+        time: 1_700_000_000,
+        confirmed: true,
+        counterparty: null,
+      },
+    ];
+    invokeMock.mockImplementation(
+      routeInvoke({ unlocked: true, canWrite: true, drafts, history }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    // Wait for all three tables to be populated. `.example` = Owned Names
+    // (from routeInvoke's default `read_names`), the draft txid slice =
+    // Recent transactions, "Receive" badge (SPAN, not filter option) =
+    // Recent activity.
+    await screen.findAllByText(".example");
+    await screen.findByText("abc123txid…");
+
+    const { assertCanonicalTable } = await import("../../test/canonicalTable");
+    const tables = Array.from(document.querySelectorAll("table"));
+    // Owned Names + Recent activity + Recent transactions = 3 tables.
+    expect(tables.length).toBe(3);
+    tables.forEach((t, i) => {
+      assertCanonicalTable(t as HTMLTableElement, { name: `WalletView#${i}` });
+    });
+  });
+});
+
+describe("WalletView — Recent transactions amount tone", () => {
+  it("outgoing sends render red (-1.000000), self-homed updates render neutral (0.000000)", async () => {
+    const drafts = [
+      {
+        id: "d-update",
+        walletProfileId: baseProfile.id,
+        action: "update",
+        status: "broadcasted",
+        summary: {
+          action: "update",
+          sendTotalDoos: 222_000_000, // name value, self-homed
+          feeDoos: 2620,
+          changeDoos: 0,
+          inputTotalDoos: 222_100_000,
+          numInputs: 2,
+          recipientAddress: null, // null = self-homed
+          txid: null,
+          warnings: [],
+          name: "ecology",
+        },
+        errorMessage: null,
+        txid: null,
+        createdAt: "2026-07-22",
+      },
+      {
+        id: "d-send",
+        walletProfileId: baseProfile.id,
+        action: "send_hns",
+        status: "confirmed",
+        summary: {
+          action: "send_hns",
+          sendTotalDoos: 1_000_000, // real spend
+          feeDoos: 1410,
+          changeDoos: 0,
+          inputTotalDoos: 1_001_410,
+          numInputs: 1,
+          recipientAddress: "rs1qexample", // non-null = external recipient
+          txid: null,
+          warnings: [],
+          name: null,
+        },
+        errorMessage: null,
+        txid: "abc123txid",
+        confirmationHeight: 500,
+        createdAt: "2026-07-22",
+      },
+    ];
+    invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true, drafts }));
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+
+    // Self-homed UPDATE: amount cell shows "0.000000" in neutral gray tone.
+    const updateRow = (await screen.findByText(".ecology")).closest("tr")!;
+    const zeroCell = within(updateRow).getByText("0.000000");
+    expect(zeroCell.className).toContain("text-gray-700");
+    expect(zeroCell.className).not.toContain("text-red-600");
+
+    // Outgoing SEND: amount cell shows "-1.000000" in red tone (spend).
+    const sendRow = screen.getByText("-1.000000").closest("tr")!;
+    const sendAmountCell = within(sendRow).getByText("-1.000000");
+    expect(sendAmountCell.className).toContain("text-red-600");
+    expect(sendAmountCell.className).not.toContain("text-gray-700");
+  });
+});
+
+describe("WalletView — Recent transactions Badge labels", () => {
+  it("known actions render title-cased badges; unknown actions fall back to 'Other'", async () => {
+    const drafts = [
+      {
+        id: "d-open",
+        walletProfileId: baseProfile.id,
+        action: "open",
+        status: "broadcasted",
+        summary: { action: "open", sendTotalDoos: 0, feeDoos: 1000, changeDoos: 0, inputTotalDoos: 1000, numInputs: 1, recipientAddress: null, txid: null, warnings: [], name: "hello" },
+        errorMessage: null,
+        txid: null,
+        createdAt: "2026-07-22",
+      },
+      {
+        id: "d-bid",
+        walletProfileId: baseProfile.id,
+        action: "bid",
+        status: "broadcasted",
+        summary: { action: "bid", sendTotalDoos: 5_000_000, feeDoos: 2000, changeDoos: 0, inputTotalDoos: 5_002_000, numInputs: 1, recipientAddress: null, txid: null, warnings: [], name: "hello" },
+        errorMessage: null,
+        txid: null,
+        createdAt: "2026-07-22",
+      },
+      {
+        id: "d-unknown",
+        walletProfileId: baseProfile.id,
+        action: "some_future_action",
+        status: "broadcasted",
+        summary: { action: "some_future_action", sendTotalDoos: 0, feeDoos: 500, changeDoos: 0, inputTotalDoos: 500, numInputs: 1, recipientAddress: null, txid: null, warnings: [] },
+        errorMessage: null,
+        txid: null,
+        createdAt: "2026-07-22",
+      },
+    ];
+    invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true, drafts }));
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+
+    // Known action badges: "Open" and "Bid" (title-cased).
+    const openBadge = await screen.findByText("Open");
+    expect(openBadge.tagName).toBe("SPAN");
+    const bidBadge = screen.getByText("Bid");
+    expect(bidBadge.tagName).toBe("SPAN");
+
+    // Unknown action falls back to "Other" badge.
+    const otherBadge = screen.getByText("Other");
+    expect(otherBadge.tagName).toBe("SPAN");
+  });
+});

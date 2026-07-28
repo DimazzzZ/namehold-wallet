@@ -146,3 +146,21 @@ describe("NamebaseDashboard — Expiring soon panel", () => {
     });
   });
 });
+
+describe("NamebaseDashboard — canonical table design", () => {
+  it("all visible tables follow the unified table contract", async () => {
+    invokeMock.mockImplementation(route());
+    render(<NamebaseDashboard />, { wrapper: wrapper() });
+    // Wait for the expiring panel + domains to render.
+    await screen.findByTestId("namebase-expiring");
+
+    const { assertCanonicalTable } = await import("../../test/canonicalTable");
+    const tables = Array.from(document.querySelectorAll("table"));
+    // At minimum: Expiring-soon + Transfer (Your Domains). Staked may be
+    // hidden (empty fixture). Assert all rendered tables.
+    expect(tables.length).toBeGreaterThanOrEqual(2);
+    tables.forEach((t, i) => {
+      assertCanonicalTable(t as HTMLTableElement, { name: `NamebaseDashboard#${i}` });
+    });
+  });
+});

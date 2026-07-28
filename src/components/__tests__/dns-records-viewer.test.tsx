@@ -67,3 +67,38 @@ describe("DnsRecords viewer — DS keyTag (Task 2)", () => {
     expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
   });
 });
+
+describe("DnsRecords viewer — canonical table design", () => {
+  it("the records table follows the unified table contract", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "list_assets") {
+        return Promise.resolve([{ tld: "namehold", status: "finalized_owned" }]);
+      }
+      if (cmd === "get_resource") {
+        return Promise.resolve({
+          name: "namehold",
+          state: "CLOSED",
+          height: 100,
+          data: {
+            records: [
+              { type: "NS", ns: "ns1.example." },
+              { type: "DS", keyTag: 12345, algorithm: 8, digestType: 2, digest: "ABCDEF01" },
+            ],
+          },
+        });
+      }
+      return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
+    });
+
+    render(<DnsRecords />, { wrapper: wrapper() });
+    await screen.findByText(".namehold");
+    fireEvent.change(screen.getByLabelText("Select Name"), { target: { value: "namehold" } });
+    fireEvent.click(screen.getByText("Fetch Records"));
+    await screen.findByText("12345 8 2 ABCDEF01");
+
+    const { assertCanonicalTable } = await import("../../test/canonicalTable");
+    const table = document.querySelector("table");
+    expect(table).toBeTruthy();
+    assertCanonicalTable(table as HTMLTableElement, { name: "DnsRecords" });
+  });
+});
