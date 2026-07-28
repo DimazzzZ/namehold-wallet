@@ -971,12 +971,14 @@ export function WalletView() {
             <table className="w-full text-sm">
               <thead>
               <tr className="text-left text-gray-500 border-b">
-                  <th className="py-1 pr-4">Date</th>
-                  <th className="py-1 pr-4">Action</th>
-                  <th className="py-1 pr-4">Amount</th>
-                  <th className="py-1 pr-4">Fee</th>
-                  <th className="py-1 pr-4">Status</th>
-                  <th className="py-1">Txid</th>
+                 <th className="py-1 pr-4">Date</th>
+                 <th className="py-1 pr-4">Action</th>
+                  <th className="py-1 pr-4">Name</th>
+                 <th className="py-1 pr-4">Amount</th>
+                 <th className="py-1 pr-4">Fee</th>
+                 <th className="py-1 pr-4">Status</th>
+                  <th className="py-1 pr-4">Block</th>
+                 <th className="py-1">Txid</th>
                 </tr>
               </thead>
               <tbody>
@@ -984,27 +986,31 @@ export function WalletView() {
                   <tr key={d.id} className="border-t border-gray-100 hover:bg-gray-50">
                     <td className="py-1 pr-4 text-xs text-gray-500">{formatDate(d.createdAt)}</td>
                     <td className="py-1 pr-4">
-                      {d.action}{d.summary?.name ? (
+                      <Badge variant={(ACTION_META[d.action] ?? FALLBACK_META).variant}>
+                        {(ACTION_META[d.action] ?? FALLBACK_META).label}
+                      </Badge>
+                    </td>
+                    <td className="py-1 pr-4 text-xs font-mono">
+                      {d.summary?.name ? (
                         profile.network === "mainnet" ? (
-                          <>
-                            {" · "}
-                            <button
-                              type="button"
-                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer font-mono"
-                              onClick={() => openExternal(explorerNameUrl(d.summary!.name!))}
-                              title="View on explorer"
-                              data-testid="recent-tx-name-explorer-link"
-                            >
-                              .{displayName(d.summary.name)}
-                            </button>
-                          </>
+                          <button
+                            type="button"
+                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                            onClick={() => openExternal(explorerNameUrl(d.summary!.name!))}
+                            title="View on explorer"
+                            data-testid="recent-tx-name-explorer-link"
+                          >
+                            .{displayName(d.summary.name)}
+                          </button>
                         ) : (
-                          ` · .${displayName(d.summary.name)}`
+                          <span>.{displayName(d.summary.name)}</span>
                         )
-                      ) : ""}
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
                     </td>
                     <td
-                      className="py-1 pr-4 text-xs font-mono"
+                      className="py-1 pr-4 text-right text-xs font-mono whitespace-nowrap"
                       title={
                         d.summary &&
                         d.summary.recipientAddress == null &&
@@ -1015,7 +1021,12 @@ export function WalletView() {
                           : undefined
                       }
                     >
-                      {d.summary ? formatHns(netSpendDoos(d.summary)) : "—"}
+                      {d.summary ? (
+                        <span className={netSpendDoos(d.summary) > 0 ? "text-red-600" : "text-gray-700"}>
+                          {netSpendDoos(d.summary) > 0 ? "-" : ""}
+                          {formatHns(netSpendDoos(d.summary))}
+                        </span>
+                      ) : "—"}
                     </td>
                     <td className="py-1 pr-4 font-mono text-xs text-gray-500">
                       {d.summary ? formatHns(d.summary.feeDoos) : "—"}
@@ -1034,28 +1045,32 @@ export function WalletView() {
                         title={d.errorMessage ?? undefined}
                       >
                       {d.status === "confirmed"
-                         ? d.confirmationHeight
-                            ? (profile.network === "mainnet" ? (
-                              <>
-                                Confirmed ·{" "}
-                                <button
-                                  type="button"
-                                  className="underline cursor-pointer"
-                                  onClick={() => openExternal(explorerBlockUrl(d.confirmationHeight!))}
-                                  title="View block on explorer"
-                                  data-testid="recent-tx-block-explorer-link"
-                                >
-                                  #{d.confirmationHeight}
-                                </button>
-                              </>
-                            ) : `Confirmed · #${d.confirmationHeight}`)
-                            : "Confirmed"
+                          ? "Confirmed"
                           : d.status === "broadcasted"
                           ? "Pending"
                           : d.status === "dropped"
                           ? "Not confirmed"
                           : d.status}
                     </Badge>
+                    </td>
+                    <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
+                      {d.confirmationHeight != null ? (
+                        profile.network === "mainnet" ? (
+                          <button
+                            type="button"
+                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                            onClick={() => openExternal(explorerBlockUrl(d.confirmationHeight!))}
+                            title="View block on explorer"
+                            data-testid="recent-tx-block-explorer-link"
+                          >
+                            #{d.confirmationHeight}
+                          </button>
+                        ) : (
+                          <span>#{d.confirmationHeight}</span>
+                        )
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
                     </td>
                     <td className="py-1 text-xs font-mono">
                       {d.txid ? (

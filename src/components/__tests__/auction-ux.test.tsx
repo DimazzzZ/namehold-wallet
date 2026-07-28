@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -154,7 +154,11 @@ describe("WalletView — auction UX", () => {
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
 
-    expect(await screen.findByText(/Confirmed · #437/)).toBeInTheDocument();
+    // The confirmed draft renders its status badge ("Confirmed") and its block
+    // height ("#437", now in its own Block column) in the same row.
+    const blockCell = await screen.findByText("#437");
+    const confirmedRow = blockCell.closest("tr")!;
+    expect(within(confirmedRow).getByText("Confirmed")).toBeInTheDocument();
     expect(screen.getByText("Pending")).toBeInTheDocument();
     expect(screen.getByText("Not confirmed")).toBeInTheDocument();
   });

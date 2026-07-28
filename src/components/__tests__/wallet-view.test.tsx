@@ -319,7 +319,11 @@ describe("WalletView (non-custodial)", () => {
 
     await screen.findByText("Primary");
     // The UPDATE row must NOT present the 222 HNS name value as a cost...
-    const updateRow = (await screen.findByText(/update · \.ecology/)).closest("tr")!;
+    // With the unified table design, the action ("Update" badge) and the name
+    // (.ecology, in its own Name column) live in separate <td>s. Find the row
+    // by the name — that's unique in this fixture.
+    const updateRow = (await screen.findByText(".ecology")).closest("tr")!;
+    expect(within(updateRow).getByText("Update")).toBeInTheDocument();
     expect(screen.queryByText("222.000000")).not.toBeInTheDocument();
     // ...it shows net 0 in Amount, with an explanatory tooltip about the
     // carried value.
@@ -329,9 +333,11 @@ describe("WalletView (non-custodial)", () => {
         /Name value 222\.000000 HNS is carried to your own new coin/i,
       ),
     ).toBeInTheDocument();
-    // A real send still shows its outgoing amount.
-    const sendRow = screen.getByText("send_hns").closest("tr")!;
-    expect(within(sendRow).getByText("1.000000")).toBeInTheDocument();
+    // A real send still shows its outgoing amount. `send_hns` isn't in
+    // ACTION_META so it renders as the FALLBACK_META "Other" badge; find the
+    // send row by its unique amount instead.
+    const sendRow = screen.getByText("-1.000000").closest("tr")!;
+    expect(within(sendRow).getByText("-1.000000")).toBeInTheDocument();
   });
 
   const multiNames = [
@@ -781,9 +787,18 @@ describe("WalletView — Recent transactions shows the name (Task 2)", () => {
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");
-    const row = await screen.findByText(/open/i, { selector: "td" });
-    expect(row.textContent).toMatch(/open/i);
-    expect(row.textContent).toContain(".example");
+    // Action and Name are now separate columns. The "Open" badge is in the
+    // Action cell; the name ".example" is in the Name cell. Verify both exist
+    // in the same row.
+    // ".example" appears in both the Owned Names table and the Recent
+    // transactions table. Find the row that also contains the "Open" badge
+    // (only the drafts table uses ACTION_META badges).
+    const nameCells = await screen.findAllByText(".example");
+    const row = nameCells
+      .map((el) => el.closest("tr"))
+      .find((tr) => tr && within(tr).queryByText("Open"))!;
+    expect(row).toBeTruthy();
+    expect(within(row!).getByText("Open")).toBeInTheDocument();
   });
 
   it("shows no name fragment when the draft summary has no name (e.g. a plain send)", async () => {
@@ -819,8 +834,16 @@ describe("WalletView — Recent transactions shows the name (Task 2)", () => {
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");
-    const row = await screen.findByText(/send_hns/i, { selector: "td" });
-    expect(row.textContent?.trim()).toBe("send_hns");
+    // With the unified design, `send_hns` (not in ACTION_META) falls back to
+    // the "Other" badge. Find the row by its unique txid fragment. The Name
+    // cell should be an em-dash (—) since summary.name is absent — the row
+    // must contain NO ".<something>" name fragment anywhere.
+    const txidBtn = await screen.findByText("def456txid".slice(0, 10) + "…");
+    const row = txidBtn.closest("tr")!;
+    // No ".foo" style name link anywhere in the row.
+    expect(row.textContent).not.toMatch(/\.[a-z]/i);
+    // The Name cell renders the em-dash placeholder.
+    expect(within(row).getByText("—")).toBeInTheDocument();
   });
 });
 
