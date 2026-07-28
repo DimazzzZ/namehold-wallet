@@ -106,7 +106,7 @@ describe("ActivityView", () => {
     render(<ActivityView />, { wrapper: wrapper() });
 
     // Wait for actual table rows (the ".foo" cell), not just filter-dropdown
-    // labels that share the "BID"/"Receive" text.
+    // labels that share the "Bid"/"Receive" text.
     await waitFor(() =>
       expect(
         screen.getByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".foo"),
@@ -114,7 +114,7 @@ describe("ActivityView", () => {
     );
     // Row badges: only the row renders these inside a <span> Badge; the
     // filter dropdown uses <option>.
-    const badges = screen.getAllByText("BID");
+    const badges = screen.getAllByText("Bid");
     expect(badges.some((el) => el.tagName === "SPAN")).toBe(true);
     const rec = screen.getAllByText("Receive");
     expect(rec.some((el) => el.tagName === "SPAN")).toBe(true);
@@ -158,7 +158,7 @@ describe("ActivityView", () => {
       const nodes = screen.queryAllByText("Receive");
       expect(nodes.some((el) => el.tagName === "SPAN")).toBe(false);
     });
-    const bidBadges = screen.getAllByText("BID");
+    const bidBadges = screen.getAllByText("Bid");
     expect(bidBadges.some((el) => el.tagName === "SPAN")).toBe(true);
   });
 

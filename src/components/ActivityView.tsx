@@ -16,26 +16,26 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { ActionRow } from "../lib/zod";
 
 // Action label + badge variant mapping.
-const ACTION_META: Record<string, { label: string; variant: "default" | "success" | "warning" | "error" | "info" }> = {
+export const ACTION_META: Record<string, { label: string; variant: "default" | "success" | "warning" | "error" | "info" }> = {
   send: { label: "Send", variant: "warning" },
   receive: { label: "Receive", variant: "success" },
-  open: { label: "OPEN", variant: "info" },
-  bid: { label: "BID", variant: "info" },
-  reveal: { label: "REVEAL", variant: "info" },
-  redeem: { label: "REDEEM", variant: "success" },
-  register: { label: "REGISTER", variant: "success" },
-  update: { label: "UPDATE", variant: "default" },
-  renew: { label: "RENEW", variant: "default" },
-  transfer: { label: "TRANSFER", variant: "warning" },
-  finalize: { label: "FINALIZE", variant: "success" },
-  revoke: { label: "REVOKE", variant: "error" },
-  claim: { label: "CLAIM", variant: "success" },
+  open: { label: "Open", variant: "info" },
+  bid: { label: "Bid", variant: "info" },
+  reveal: { label: "Reveal", variant: "info" },
+  redeem: { label: "Redeem", variant: "success" },
+  register: { label: "Register", variant: "success" },
+  update: { label: "Update", variant: "default" },
+  renew: { label: "Renew", variant: "default" },
+  transfer: { label: "Transfer", variant: "warning" },
+  finalize: { label: "Finalize", variant: "success" },
+  revoke: { label: "Revoke", variant: "error" },
+  claim: { label: "Claim", variant: "success" },
   other: { label: "Other", variant: "default" },
 };
 
 const ALL_ACTIONS = Object.keys(ACTION_META);
 
-const FALLBACK_META = { label: "Other", variant: "default" as const };
+export const FALLBACK_META = { label: "Other", variant: "default" as const };
 
 // Client-side page size for the full Activity table. The backend returns the
 // whole classified history in one call today, so pagination is purely a
@@ -184,11 +184,12 @@ export function ActivityView() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-500 border-b">
-                  <th className="py-1">Date</th>
-                  <th className="py-1">Action</th>
-                  <th className="py-1">Name</th>
-                  <th className="py-1 text-right">Amount</th>
-                  <th className="py-1">Status</th>
+                  <th className="py-1 pr-4">Date</th>
+                  <th className="py-1 pr-4">Action</th>
+                  <th className="py-1 pr-4">Name</th>
+                  <th className="py-1 pr-4 text-right">Amount</th>
+                  <th className="py-1 pr-4">Status</th>
+                  <th className="py-1 pr-4">Block</th>
                   <th className="py-1">Txid</th>
                 </tr>
               </thead>
@@ -240,11 +241,11 @@ function ActivityRow({
 
   return (
     <tr className="border-t border-gray-100 hover:bg-gray-50">
-      <td className="py-1 text-gray-500 whitespace-nowrap">{timeStr}</td>
-      <td className="py-1">
+      <td className="py-1 pr-4 text-gray-500 whitespace-nowrap">{timeStr}</td>
+      <td className="py-1 pr-4">
         <Badge variant={meta.variant}>{meta.label}</Badge>
       </td>
-      <td className="py-1 font-mono">
+      <td className="py-1 pr-4 font-mono">
         {row.name ? (
           isMainnet ? (
             <button
@@ -264,7 +265,7 @@ function ActivityRow({
         )}
       </td>
       <td
-        className="py-1 text-right font-mono whitespace-nowrap"
+        className="py-1 pr-4 text-right font-mono whitespace-nowrap"
         title={
           row.valueDoos === 0 && row.direction !== "receive"
             ? "Name's locked value is re-homed to your own coin — no HNS spent beyond the fee."
@@ -276,40 +277,36 @@ function ActivityRow({
           {formatHns(Math.abs(row.valueDoos))}
         </span>
       </td>
-      <td className="py-1">
-        <span className="inline-flex items-center gap-1.5">
-          <Badge
-            variant={row.confirmed ? "success" : "warning"}
-            title={row.height != null ? `Height #${row.height}` : "Mempool"}
-          >
-            {row.confirmed ? "Confirmed" : "Pending"}
-          </Badge>
-          {row.height != null &&
-            (isMainnet ? (
-              <button
-                type="button"
-                className={`text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer font-mono`}
-                onClick={() => openExternal(explorerBlockUrl(row.height!))}
-                title="View block on explorer"
-                data-testid="activity-block-explorer-link"
-              >
-                #{row.height}
-              </button>
-            ) : (
-              <span className="text-xs text-gray-500 font-mono">
-                #{row.height}
-              </span>
-            ))}
-        </span>
+      <td className="py-1 pr-4">
+        <Badge
+          variant={row.confirmed ? "success" : "warning"}
+          title={row.height != null ? `Height #${row.height}` : "Mempool"}
+        >
+          {row.confirmed ? "Confirmed" : "Pending"}
+        </Badge>
       </td>
-      <td
-        className="py-1 text-xs font-mono text-gray-500 truncate max-w-[140px]"
-        title={row.txid}
-      >
-        {isMainnet ? (
+      <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
+        {row.height == null ? (
+          <span className="text-gray-400">—</span>
+        ) : isMainnet ? (
           <button
             type="button"
             className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+            onClick={() => openExternal(explorerBlockUrl(row.height!))}
+            title="View block on explorer"
+            data-testid="activity-block-explorer-link"
+          >
+            #{row.height}
+          </button>
+        ) : (
+          <span>#{row.height}</span>
+        )}
+      </td>
+      <td className="py-1 text-xs font-mono text-gray-500" title={row.txid}>
+        {isMainnet ? (
+          <button
+            type="button"
+            className="inline-block max-w-[140px] truncate align-bottom text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
             onClick={() => openExternal(explorerTxUrl(row.txid))}
             title="View on explorer"
             data-testid="activity-tx-explorer-link"
@@ -317,7 +314,9 @@ function ActivityRow({
             {row.txid.slice(0, 10)}...
           </button>
         ) : (
-          `${row.txid.slice(0, 10)}...`
+          <span className="inline-block max-w-[140px] truncate align-bottom">
+            {row.txid.slice(0, 10)}...
+          </span>
         )}
       </td>
     </tr>

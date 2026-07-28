@@ -26,6 +26,7 @@ import { useStartFullSync, useSyncStatus, useCancelFullSync } from "../queries/s
 import { auctionPhase, formatCountdown } from "../lib/auction";
 import { displayName } from "../lib/idn";
 import { NameActionsModal } from "./NameActionsModal";
+import { ACTION_META, FALLBACK_META } from "./ActivityView";
 import { WalletManager } from "./WalletManager";
 import { AddWalletForm } from "./AddWalletForm";
 import { Button } from "./ui/Button";
@@ -885,10 +886,10 @@ export function WalletView() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-500 border-b">
-                  <th className="py-1">Date</th>
-                  <th className="py-1">Action</th>
-                  <th className="py-1">Name</th>
-                  <th className="py-1 text-right">Amount</th>
+                  <th className="py-1 pr-4">Date</th>
+                  <th className="py-1 pr-4">Action</th>
+                  <th className="py-1 pr-4">Name</th>
+                  <th className="py-1 pr-4 text-right">Amount</th>
                   <th className="py-1">Status</th>
                 </tr>
               </thead>
@@ -903,12 +904,16 @@ export function WalletView() {
                       : "text-gray-700";
                   const sign = tone === "income" ? "+" : tone === "spend" ? "-" : "";
                   return (
-                    <tr key={h.txid} className="border-t border-gray-100">
-                      <td className="py-1 text-gray-500 whitespace-nowrap">
+                    <tr key={h.txid} className="border-t border-gray-100 hover:bg-gray-50">
+                      <td className="py-1 pr-4 text-gray-500 whitespace-nowrap">
                         {h.time ? formatDateLong(new Date(h.time * 1000).toISOString()) : "Pending"}
                       </td>
-                      <td className="py-1 capitalize">{h.action}</td>
-                      <td className="py-1 font-mono">
+                      <td className="py-1 pr-4">
+                        <Badge variant={(ACTION_META[h.action] ?? FALLBACK_META).variant}>
+                          {(ACTION_META[h.action] ?? FALLBACK_META).label}
+                        </Badge>
+                      </td>
+                      <td className="py-1 pr-4 font-mono">
                         {h.name ? (
                           profile.network === "mainnet" ? (
                             <button
@@ -928,7 +933,7 @@ export function WalletView() {
                         )}
                       </td>
                       <td
-                        className="py-1 font-mono text-right whitespace-nowrap"
+                        className="py-1 pr-4 font-mono text-right whitespace-nowrap"
                         title={
                           h.valueDoos === 0 && h.direction !== "receive"
                             ? "Name's locked value is re-homed to your own coin — no HNS spent beyond the fee."
