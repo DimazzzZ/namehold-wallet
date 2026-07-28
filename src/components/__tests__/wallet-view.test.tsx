@@ -55,6 +55,7 @@ type Overrides = {
   renewals?: unknown;
   drafts?: unknown[];
   names?: unknown[];
+  history?: unknown[];
 };
 
 function routeInvoke(o: Overrides = {}) {
@@ -94,6 +95,8 @@ function routeInvoke(o: Overrides = {}) {
         });
       case "list_tx_drafts":
         return Promise.resolve(o.drafts ?? []);
+      case "read_action_history":
+        return Promise.resolve(o.history ?? []);
       case "refresh_tx_confirmations":
         return Promise.resolve(null);
       case "read_renewals":
@@ -316,7 +319,11 @@ describe("WalletView (non-custodial)", () => {
 
     await screen.findByText("Primary");
     // The UPDATE row must NOT present the 222 HNS name value as a cost...
-    const updateRow = (await screen.findByText(/update · \.ecology/)).closest("tr")!;
+    // With the unified table design, the action ("Update" badge) and the name
+    // (.ecology, in its own Name column) live in separate <td>s. Find the row
+    // by the name — that's unique in this fixture.
+    const updateRow = (await screen.findByText(".ecology")).closest("tr")!;
+    expect(within(updateRow).getByText("Update")).toBeInTheDocument();
     expect(screen.queryByText("222.000000")).not.toBeInTheDocument();
     // ...it shows net 0 in Amount, with an explanatory tooltip about the
     // carried value.
@@ -326,9 +333,11 @@ describe("WalletView (non-custodial)", () => {
         /Name value 222\.000000 HNS is carried to your own new coin/i,
       ),
     ).toBeInTheDocument();
-    // A real send still shows its outgoing amount.
-    const sendRow = screen.getByText("send_hns").closest("tr")!;
-    expect(within(sendRow).getByText("1.000000")).toBeInTheDocument();
+    // A real send still shows its outgoing amount. `send_hns` isn't in
+    // ACTION_META so it renders as the FALLBACK_META "Other" badge; find the
+    // send row by its unique amount instead.
+    const sendRow = screen.getByText("-1.000000").closest("tr")!;
+    expect(within(sendRow).getByText("-1.000000")).toBeInTheDocument();
   });
 
   const multiNames = [
@@ -778,9 +787,18 @@ describe("WalletView — Recent transactions shows the name (Task 2)", () => {
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");
-    const row = await screen.findByText(/open/i, { selector: "td" });
-    expect(row.textContent).toMatch(/open/i);
-    expect(row.textContent).toContain(".example");
+    // Action and Name are now separate columns. The "Open" badge is in the
+    // Action cell; the name ".example" is in the Name cell. Verify both exist
+    // in the same row.
+    // ".example" appears in both the Owned Names table and the Recent
+    // transactions table. Find the row that also contains the "Open" badge
+    // (only the drafts table uses ACTION_META badges).
+    const nameCells = await screen.findAllByText(".example");
+    const row = nameCells
+      .map((el) => el.closest("tr"))
+      .find((tr) => tr && within(tr).queryByText("Open"))!;
+    expect(row).toBeTruthy();
+    expect(within(row!).getByText("Open")).toBeInTheDocument();
   });
 
   it("shows no name fragment when the draft summary has no name (e.g. a plain send)", async () => {
@@ -816,8 +834,16 @@ describe("WalletView — Recent transactions shows the name (Task 2)", () => {
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");
-    const row = await screen.findByText(/send_hns/i, { selector: "td" });
-    expect(row.textContent?.trim()).toBe("send_hns");
+    // With the unified design, `send_hns` (not in ACTION_META) falls back to
+    // the "Other" badge. Find the row by its unique txid fragment. The Name
+    // cell should be an em-dash (—) since summary.name is absent — the row
+    // must contain NO ".<something>" name fragment anywhere.
+    const txidBtn = await screen.findByText("def456txid".slice(0, 10) + "…");
+    const row = txidBtn.closest("tr")!;
+    // No ".foo" style name link anywhere in the row.
+    expect(row.textContent).not.toMatch(/\.[a-z]/i);
+    // The Name cell renders the em-dash placeholder.
+    expect(within(row).getByText("—")).toBeInTheDocument();
   });
 });
 
@@ -948,5 +974,256 @@ describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () =
     fireEvent.click(screen.getByRole("button", { name: /Show QR/i }));
     // After clicking, the toggle label flips and an SVG is now rendered inside the receive card.
     expect(screen.getByRole("button", { name: /Hide QR/i })).toBeInTheDocument();
+  });
+
+  it("Recent activity card renders classified rows from read_action_history and links to /activity", async () => {
+    // Unix seconds for 2026-07-24 12:00:00 UTC — locks the long-date
+    // assertion to a known "July 24, 2026 - 12:00:00" output regardless of
+    // the runner's timezone (formatDateLong uses UTC-normalized parsing).
+    const unix = Math.floor(Date.UTC(2026, 6, 24, 12) / 1000);
+    invokeMock.mockImplementation(
+      routeInvoke({
+        history: [
+          {
+            txid: "aa",
+            action: "receive",
+            name: null,
+            nameHash: null,
+            valueDoos: 100_000_000,
+            direction: "receive",
+            height: 100,
+            time: unix,
+            confirmed: true,
+            counterparty: null,
+          },
+          {
+            txid: "bb",
+            action: "bid",
+            name: "foo",
+            nameHash: "deadbeef",
+            // Self-homed BID: net-external flow is 0 (matches the drafts
+            // card's `netSpendDoos`).
+            valueDoos: 0,
+            direction: "send",
+            height: 200,
+            time: unix,
+            confirmed: true,
+            counterparty: null,
+          },
+        ],
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    // "Recent activity" header should appear, and the classified rows.
+    await waitFor(() => expect(screen.getByText("Recent activity")).toBeInTheDocument());
+    // A row with the decoded name shows up as `.foo` inside a table cell.
+    await waitFor(() =>
+      expect(
+        screen.getByText((_, el) => el?.tagName === "TD" && el.textContent === ".foo"),
+      ).toBeInTheDocument(),
+    );
+    // The See all → link routes to /activity.
+    const seeAll = screen.getByRole("button", { name: /See all/ });
+    expect(seeAll).toBeInTheDocument();
+    // Alignment with the drafts card: the BID row (with self-homed
+    // valueDoos=0) shows "0.000000" byte-identical to the drafts card, and
+    // is colored NEUTRAL (gray) — a self-homed name action is not a loss.
+    const zeroSpans = screen
+      .getAllByText("0.000000")
+      .filter((el) => el.tagName === "SPAN");
+    expect(zeroSpans.some((el) => el.className.includes("text-gray-700"))).toBe(true);
+    expect(zeroSpans.some((el) => el.className.includes("text-red-600"))).toBe(false);
+    // The receive row (positive inflow) is green with a leading "+".
+    const incomeSpan = screen
+      .getAllByText((_, el) => el?.tagName === "SPAN" && /^\+100\.000000$/.test(el.textContent ?? ""))
+      .find((el) => el.className.includes("text-green-600"));
+    expect(incomeSpan).toBeTruthy();
+    // Long-form date with time: the row's Date cell reads
+    // "July 24, 2026 - 12:00:00", not the locale-dependent "24/07/2026" or
+    // "7/24/2026" that `formatDate` would produce. formatDateLong is the
+    // shared helper.
+    expect(screen.getAllByText("July 24, 2026 - 12:00:00").length).toBeGreaterThan(0);
+  });
+});
+
+describe("WalletView — canonical table design", () => {
+  it("the Owned Names, Recent activity, and Recent transactions tables all follow the unified contract", async () => {
+    // A minimal fixture that guarantees every table renders at least one
+    // row: one owned name (Owned Names + Recent activity via history) and
+    // one draft (Recent transactions).
+    const drafts = [
+      {
+        id: "d1",
+        walletProfileId: baseProfile.id,
+        action: "send_hns",
+        status: "confirmed",
+        summary: {
+          action: "send_hns",
+          sendTotalDoos: 1_000_000,
+          feeDoos: 1410,
+          changeDoos: 0,
+          inputTotalDoos: 1_001_410,
+          numInputs: 1,
+          recipientAddress: "rs1qexample",
+          txid: null,
+          warnings: [],
+          name: null,
+        },
+        errorMessage: null,
+        txid: "abc123txid",
+        confirmationHeight: 500,
+        createdAt: "2026-07-22",
+      },
+    ];
+    const history = [
+      {
+        txid: "aa",
+        action: "receive",
+        name: null,
+        nameHash: null,
+        valueDoos: 100_000_000,
+        direction: "receive",
+        height: 100,
+        time: 1_700_000_000,
+        confirmed: true,
+        counterparty: null,
+      },
+    ];
+    invokeMock.mockImplementation(
+      routeInvoke({ unlocked: true, canWrite: true, drafts, history }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    // Wait for all three tables to be populated. `.example` = Owned Names
+    // (from routeInvoke's default `read_names`), the draft txid slice =
+    // Recent transactions, "Receive" badge (SPAN, not filter option) =
+    // Recent activity.
+    await screen.findAllByText(".example");
+    await screen.findByText("abc123txid…");
+
+    const { assertCanonicalTable } = await import("../../test/canonicalTable");
+    const tables = Array.from(document.querySelectorAll("table"));
+    // Owned Names + Merged Recent activity (on-chain + drafts) = 2 tables.
+    expect(tables.length).toBe(2);
+    tables.forEach((t, i) => {
+      assertCanonicalTable(t as HTMLTableElement, { name: `WalletView#${i}` });
+    });
+  });
+});
+
+describe("WalletView — Recent transactions amount tone", () => {
+  it("outgoing sends render red (-1.000000), self-homed updates render neutral (0.000000)", async () => {
+    const drafts = [
+      {
+        id: "d-update",
+        walletProfileId: baseProfile.id,
+        action: "update",
+        status: "broadcasted",
+        summary: {
+          action: "update",
+          sendTotalDoos: 222_000_000, // name value, self-homed
+          feeDoos: 2620,
+          changeDoos: 0,
+          inputTotalDoos: 222_100_000,
+          numInputs: 2,
+          recipientAddress: null, // null = self-homed
+          txid: null,
+          warnings: [],
+          name: "ecology",
+        },
+        errorMessage: null,
+        txid: null,
+        createdAt: "2026-07-22",
+      },
+      {
+        id: "d-send",
+        walletProfileId: baseProfile.id,
+        action: "send_hns",
+        status: "confirmed",
+        summary: {
+          action: "send_hns",
+          sendTotalDoos: 1_000_000, // real spend
+          feeDoos: 1410,
+          changeDoos: 0,
+          inputTotalDoos: 1_001_410,
+          numInputs: 1,
+          recipientAddress: "rs1qexample", // non-null = external recipient
+          txid: null,
+          warnings: [],
+          name: null,
+        },
+        errorMessage: null,
+        txid: "abc123txid",
+        confirmationHeight: 500,
+        createdAt: "2026-07-22",
+      },
+    ];
+    invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true, drafts }));
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+
+    // Self-homed UPDATE: amount cell shows "0.000000" in neutral gray tone.
+    const updateRow = (await screen.findByText(".ecology")).closest("tr")!;
+    const zeroCell = within(updateRow).getByText("0.000000");
+    expect(zeroCell.className).toContain("text-gray-700");
+    expect(zeroCell.className).not.toContain("text-red-600");
+
+    // Outgoing SEND: amount cell shows "-1.000000" in red tone (spend).
+    const sendRow = screen.getByText("-1.000000").closest("tr")!;
+    const sendAmountCell = within(sendRow).getByText("-1.000000");
+    expect(sendAmountCell.className).toContain("text-red-600");
+    expect(sendAmountCell.className).not.toContain("text-gray-700");
+  });
+});
+
+describe("WalletView — Recent transactions Badge labels", () => {
+  it("known actions render title-cased badges; unknown actions fall back to 'Other'", async () => {
+    const drafts = [
+      {
+        id: "d-open",
+        walletProfileId: baseProfile.id,
+        action: "open",
+        status: "broadcasted",
+        summary: { action: "open", sendTotalDoos: 0, feeDoos: 1000, changeDoos: 0, inputTotalDoos: 1000, numInputs: 1, recipientAddress: null, txid: null, warnings: [], name: "hello" },
+        errorMessage: null,
+        txid: null,
+        createdAt: "2026-07-22",
+      },
+      {
+        id: "d-bid",
+        walletProfileId: baseProfile.id,
+        action: "bid",
+        status: "broadcasted",
+        summary: { action: "bid", sendTotalDoos: 5_000_000, feeDoos: 2000, changeDoos: 0, inputTotalDoos: 5_002_000, numInputs: 1, recipientAddress: null, txid: null, warnings: [], name: "hello" },
+        errorMessage: null,
+        txid: null,
+        createdAt: "2026-07-22",
+      },
+      {
+        id: "d-unknown",
+        walletProfileId: baseProfile.id,
+        action: "some_future_action",
+        status: "broadcasted",
+        summary: { action: "some_future_action", sendTotalDoos: 0, feeDoos: 500, changeDoos: 0, inputTotalDoos: 500, numInputs: 1, recipientAddress: null, txid: null, warnings: [] },
+        errorMessage: null,
+        txid: null,
+        createdAt: "2026-07-22",
+      },
+    ];
+    invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true, drafts }));
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+
+    // Known action badges: "Open" and "Bid" (title-cased).
+    const openBadge = await screen.findByText("Open");
+    expect(openBadge.tagName).toBe("SPAN");
+    const bidBadge = screen.getByText("Bid");
+    expect(bidBadge.tagName).toBe("SPAN");
+
+    // Unknown action falls back to "Other" badge.
+    const otherBadge = screen.getByText("Other");
+    expect(otherBadge.tagName).toBe("SPAN");
   });
 });

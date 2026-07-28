@@ -233,3 +233,16 @@ describe("Renewals — live chain data", () => {
     expect(await screen.findByText(/no renewal data/i)).toBeInTheDocument();
   });
 });
+
+describe("Renewals — canonical table design", () => {
+  it("the renewals table follows the unified table contract", async () => {
+    invokeMock.mockImplementation(route());
+    render(<Renewals />, { wrapper: wrapper() });
+    await screen.findByText("7d");
+
+    const { assertCanonicalTable } = await import("../../test/canonicalTable");
+    const table = document.querySelector("table");
+    expect(table).toBeTruthy();
+    assertCanonicalTable(table as HTMLTableElement, { name: "Renewals" });
+  });
+});

@@ -183,8 +183,8 @@ export function AuctionsView() {
         : null;
 
     return (
-      <tr key={n.name} className="border-t border-gray-100">
-        <td className="py-1 font-mono">
+      <tr key={n.name} className="border-t border-gray-100 hover:bg-gray-50">
+        <td className="py-1 pr-4 text-xs font-mono">
           {isMainnet ? (
             <button
               type="button"
@@ -199,10 +199,10 @@ export function AuctionsView() {
             `.${displayName(n.name)}`
           )}
         </td>
-        <td className="py-1">
+        <td className="py-1 pr-4">
           <Badge variant={displayVariant}>{displayLabel}</Badge>
         </td>
-        <td className="py-1 text-xs text-gray-500" title={summary?.countdownLabel ?? undefined}>
+        <td className="py-1 pr-4 text-xs text-gray-500" title={summary?.countdownLabel ?? undefined}>
           {countdownText ?? "—"}
         </td>
         <td className="py-1 text-right">
@@ -281,9 +281,9 @@ export function AuctionsView() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-500 border-b">
-                  <th className="py-1">Name</th>
-                  <th className="py-1">Task</th>
-                  <th className="py-1">Countdown</th>
+                  <th className="py-1 pr-4">Name</th>
+                  <th className="py-1 pr-4">Task</th>
+                  <th className="py-1 pr-4">Countdown</th>
                   <th className="py-1"></th>
                 </tr>
               </thead>

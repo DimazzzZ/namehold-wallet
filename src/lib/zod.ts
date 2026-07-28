@@ -54,3 +54,18 @@ export const HsdBalanceSchema = z.object({
   locked_unconfirmed: z.number().nullable(),
   locked_confirmed: z.number().nullable(),
 });
+
+export const ActionRowSchema = z.object({
+  txid: z.string(),
+  action: z.string(),
+  name: z.string().nullable(),
+  nameHash: z.string().nullable(),
+  valueDoos: z.number(),
+  direction: z.string(),
+  height: z.number().nullable(),
+  time: z.number().nullable(),
+  confirmed: z.boolean(),
+  counterparty: z.string().nullable(),
+});
+
+export type ActionRow = z.infer<typeof ActionRowSchema>;

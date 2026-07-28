@@ -4,6 +4,7 @@ pub mod bids;
 pub mod chain_scan;
 pub mod csv;
 pub mod deadlines;
+pub mod history;
 pub mod namebase;
 pub mod names;
 pub mod node;

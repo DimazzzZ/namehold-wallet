@@ -111,6 +111,88 @@ export interface WalletConnection {
   error?: string;
 }
 
+/**
+ * Full DNS resource object from `getnameresource` (returned by
+ * `read_name_records`). Contains the records array plus resource-level
+ * metadata (TTL, serial). The backend guarantees `records` is always present
+ * as an array (never null/missing), even on degrade paths.
+ */
+export interface NameResource {
+  records: Record<string, unknown>[];
+  /** Resource-level TTL (seconds), if set by the name owner. */
+  ttl?: number | null;
+  /** Resource serial number. */
+  serial?: number | null;
+  /** Any additional fields hsd may include in future versions. */
+  [key: string]: unknown;
+}
+
+/**
+ * Compact block details from `read_block_info` (node-only). The backend
+ * soft-degrades to `null` when no synced node is reachable, so the frontend
+ * must handle a nullable query result.
+ */
+export interface BlockInfo {
+  height: number;
+  /** Block hash (display-order hex). */
+  hash: string;
+  /** Unix timestamp (seconds since epoch). */
+  time: number;
+  /** Number of transactions in the block. */
+  txCount: number;
+  /** Miner reward in doos (coinbase output sum = subsidy + fees). */
+  minerReward: number;
+  /** Block difficulty. */
+  difficulty: number;
+}
+
+/**
+ * Compact transaction details from `read_tx_info` (node-only). The backend
+ * soft-degrades to `null` when no synced node is reachable or the tx is
+ * unknown, so the frontend must handle a nullable query result. All amounts
+ * are in doos (backend converts hsd's HNS floats to doos so the frontend
+ * amount contract stays uniform).
+ */
+export interface TxInfo {
+  txid: string;
+  confirmations: number;
+  /** Block height, or -1 when unconfirmed. */
+  height: number;
+  /** Confirming block hash, or null when unconfirmed. */
+  block: string | null;
+  /** Unix timestamp (seconds); 0 when unconfirmed. */
+  time: number;
+  /**
+   * Fee in doos, or `null` when the node couldn't determine it (coinbase
+   * transactions, or an hsd response with unresolved input coins). The modal
+   * renders `null` as `—`; a real `0` fee wouldn't happen on a normal HNS
+   * tx, so a displayed `0` was always the misleading case.
+   */
+  fee: number | null;
+  inputsCount: number;
+  outputsCount: number;
+  /** Sum of output values in doos. */
+  totalOut: number;
+}
+
+/**
+ * Discriminated-error result `read_tx_info` returns when the node can respond
+ * but is missing a capability required to fill the response shape. Currently
+ * only `tx_index_disabled` (the node lacks `--index-tx`). Kept as a distinct
+ * shape so the modal can show a targeted hint instead of the generic
+ * "requires synced node" message.
+ */
+export interface TxInfoError {
+  error: "tx_index_disabled";
+}
+
+/** Narrows a `read_tx_info` result to the error shape. */
+export function isTxInfoError(
+  v: TxInfo | TxInfoError | null | undefined,
+): v is TxInfoError {
+  return v != null && typeof v === "object" && "error" in v;
+}
+
 export interface DashboardStats {
   total: number;
   staked: number;
@@ -329,6 +411,7 @@ export type AppRouteKey =
   | "migration"
   | "wallet"
   | "auctions"
+  | "activity"
   | "settings";
 
 export type PortfolioSectionKey = "inventory" | "batches" | "renewals" | "dns";

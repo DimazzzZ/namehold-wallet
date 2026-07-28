@@ -62,6 +62,10 @@ const currentRecords = [
   { type: "DS", keyTag: 12345, algorithm: 8, digestType: 2, digest: "ABCDEF01" },
 ];
 
+const currentResource = {
+  records: currentRecords,
+};
+
 function route(overrides: Record<string, (...args: unknown[]) => Promise<unknown>> = {}) {
   return (cmd: string, ...rest: unknown[]) => {
     if (overrides[cmd]) return overrides[cmd]!(...rest);
@@ -87,7 +91,7 @@ function route(overrides: Record<string, (...args: unknown[]) => Promise<unknown
       case "get_name_action_capabilities":
         return Promise.resolve(ownedCaps);
       case "read_name_records":
-        return Promise.resolve(currentRecords);
+        return Promise.resolve(currentResource);
       case "read_name_bids":
         return Promise.resolve({ name: "myname", state: null, highest: null, value: null, bids: [], myBidCount: 0 });
       case "build_update_draft":
@@ -208,7 +212,7 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
 
   it("shows the empty-records hint when the fresh read returns no records", async () => {
     invokeMock.mockImplementation(route({
-      read_name_records: () => Promise.resolve([]),
+      read_name_records: () => Promise.resolve({ records: [] }),
     }));
     render(<NameActionsModal name="myname" open onClose={vi.fn()} />, { wrapper: wrapper() });
 

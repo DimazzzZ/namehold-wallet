@@ -116,7 +116,7 @@ export function DataTable<T extends { id: number }>({
                 {hg.headers.map((h) => (
                   <th
                     key={h.id}
-                    className="px-3 py-2 text-left font-medium text-gray-600 cursor-pointer select-none whitespace-nowrap"
+                    className="px-3 py-1.5 text-left text-gray-500 cursor-pointer select-none whitespace-nowrap"
                     style={{ width: h.getSize() }}
                     onClick={h.column.getToggleSortingHandler()}
                   >
@@ -150,7 +150,7 @@ export function DataTable<T extends { id: number }>({
                   onClick={() => onRowClick?.(row.original)}
                 >
                   {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-3 py-2 whitespace-nowrap">
+                    <td key={cell.id} className="px-3 py-1.5 whitespace-nowrap">
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </td>
                   ))}

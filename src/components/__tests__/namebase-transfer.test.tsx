@@ -278,3 +278,74 @@ describe("Namebase Withdraw HNS", () => {
     expect(screen.getByRole("button", { name: /^Withdraw$/i })).toBeDisabled();
   });
 });
+
+describe("NamebaseDashboard — canonical table design (transfer + withdrawal history)", () => {
+  it("Domains, Staked Domains, Transfers history and HNS Withdrawals tables all follow the unified contract", async () => {
+    // A richer fixture that populates EVERY NB table:
+    //   - fetch_namebase_domains         → Domains + Transfer table body
+    //   - fetch_namebase_staked          → Staked Domains table body
+    //   - fetch_namebase_domain_withdrawals → Transfers history table body
+    //   - fetch_namebase_withdrawals     → HNS Withdrawals table body
+    //   - fetch_namebase_renewals        → Expiring soon panel
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "fetch_namebase_domain_withdrawals":
+          return Promise.resolve({
+            withdrawals: [
+              {
+                id: "dw1",
+                domain: "exampletld",
+                destination_address: THIRD_PARTY,
+                status: "pending",
+                status_note: null,
+                created_at: "2026-01-01T00:00:00Z",
+                updated_at: "2026-01-02T00:00:00Z",
+              },
+            ],
+          });
+        case "fetch_namebase_withdrawals":
+          return Promise.resolve({
+            withdrawals: [
+              {
+                id: "w1",
+                currency: "HNS",
+                amount: "1000000",
+                destination_address: WALLET,
+                status: "completed",
+                status_note: null,
+                created_at: "2026-01-01T00:00:00Z",
+              },
+            ],
+          });
+        case "fetch_namebase_renewals":
+          return Promise.resolve({
+            expiring: [
+              {
+                domain: "exampletld",
+                expire_block: 340000,
+                estimated_date: "2026-09-01T00:00:00.000Z",
+              },
+            ],
+          });
+        default:
+          return routeInvoke(cmd);
+      }
+    });
+
+    render(<NamebaseDashboard />, { wrapper: wrapper() });
+    // Wait for a stable signal from each populated table:
+    await screen.findByText(/exampletld/);
+    await screen.findByText(/brewery/);
+
+    const { assertCanonicalTable } = await import("../../test/canonicalTable");
+    const tables = Array.from(document.querySelectorAll("table"));
+    // Expect all NamebaseDashboard tables to have populated bodies. Every
+    // rendered table must satisfy the canonical contract.
+    expect(tables.length).toBeGreaterThanOrEqual(3);
+    tables.forEach((t, i) => {
+      assertCanonicalTable(t as HTMLTableElement, {
+        name: `NamebaseDashboard-history#${i}`,
+      });
+    });
+  });
+});

@@ -96,18 +96,18 @@ export function Renewals() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-gray-500 border-b">
-                <th className="px-3 py-2">TLD</th>
-                <th className="px-3 py-2">Name State</th>
-                <th className="px-3 py-2">Days Until Expire</th>
-                <th className="px-3 py-2">Expires At Height</th>
-                <th className="px-3 py-2">Source</th>
-                <th className="px-3 py-2"></th>
+                <th className="py-1 pr-4">TLD</th>
+                <th className="py-1 pr-4">Name State</th>
+                <th className="py-1 pr-4">Days Until Expire</th>
+                <th className="py-1 pr-4">Expires At Height</th>
+                <th className="py-1 pr-4">Source</th>
+                <th className="py-1"></th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.name} className="border-t border-gray-100">
-                  <td className="px-3 py-2 font-mono">
+                <tr key={row.name} className="border-t border-gray-100 hover:bg-gray-50">
+                  <td className="py-1 pr-4 text-xs font-mono">
                     {isMainnet ? (
                       <button
                         type="button"
@@ -122,18 +122,18 @@ export function Renewals() {
                       `.${displayName(row.name)}`
                     )}
                   </td>
-                  <td className="px-3 py-2">{row.state || "—"}</td>
-                  <td className={`px-3 py-2 font-mono font-semibold ${getColor(row)}`}>
+                  <td className="py-1 pr-4">{row.state || "—"}</td>
+                  <td className={`py-1 pr-4 text-xs font-mono ${getColor(row)}`}>
                     {row.daysUntilExpire != null
                       ? row.daysUntilExpire < 0
                         ? "Expired"
                         : `${Math.floor(row.daysUntilExpire)}d`
                       : "—"}
                   </td>
-                  <td className="px-3 py-2 font-mono text-gray-400">
+                  <td className="py-1 pr-4 text-xs font-mono text-gray-500">
                     {row.expiresAtHeight != null ? `#${row.expiresAtHeight}` : "—"}
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="py-1 pr-4">
                     {row.source === "chain" ? (
                       <span
                         className="inline-block px-2 py-0.5 rounded text-xs bg-green-100 text-green-800"
@@ -151,7 +151,7 @@ export function Renewals() {
                       </span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-right">
+                  <td className="py-1 text-right">
                     <Button
                       size="sm"
                       variant={row.expiringSoon ? "primary" : "secondary"}

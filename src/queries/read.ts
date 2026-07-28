@@ -3,13 +3,18 @@ import { invoke } from "../lib/invoke";
 import { normalizeTransaction } from "../lib/providerMode";
 import { useActiveProfile } from "./wallet";
 import { useNodeLive } from "./node";
+import type { ActionRow } from "../lib/zod";
 import type {
+  BlockInfo,
   HsdBalance,
   HsdName,
   NameActionCapabilities,
   NameBids,
+  NameResource,
   RecoveredBidCommitment,
   RenewalsResponse,
+  TxInfo,
+  TxInfoError,
   WalletTransactionRow,
 } from "../types";
 
@@ -63,6 +68,34 @@ export function useReadNames(): UseQueryResult<HsdName[]> {
       });
       return Array.isArray(raw) ? raw : [];
     },
+    staleTime: STALE_TIME,
+  });
+}
+
+/**
+ * Full wallet action history — every tx touching any derived address of the
+ * active wallet, classified into Send / Receive / OPEN / BID / REVEAL /
+ * REDEEM / REGISTER / UPDATE / RENEW / TRANSFER / FINALIZE / REVOKE.
+ *
+ * Requires a synced hsd node with `--index-tx` and `--index-address`. When the
+ * node lacks the address index the backend rejects with an error message
+ * containing "address index not enabled" — the caller can surface a
+ * dedicated banner (see `ActivityView`).
+ */
+export function useActionHistory(): UseQueryResult<ActionRow[]> {
+  const profileId = useActiveProfile().data?.id ?? null;
+  return useQuery<ActionRow[]>({
+    queryKey: ["read", "action_history", profileId],
+    enabled: profileId != null,
+    queryFn: async () => {
+      const raw = await invoke<ActionRow[] | null>("read_action_history", {
+        walletProfileId: profileId,
+      });
+      return Array.isArray(raw) ? raw : [];
+    },
+    // Don't hammer the node on every mount — the History view has an explicit
+    // Refresh button and query-key invalidation from Send/broadcast covers the
+    // "I just did a thing" case.
     staleTime: STALE_TIME,
   });
 }
@@ -192,30 +225,35 @@ export function useNameBids(
 }
 
 /**
- * Current DNS records for a name, read from the local hsd node
- * (`read_name_records` → `getnameresource`). Node-only: the explorer doesn't
- * expose resource records, so this returns `[]` whenever no synced node is
- * reachable (the backend degrades gracefully and never errors). The name
- * actions modal seeds its DNS editor from this once per open so the user can
- * see, edit, and delete the name's existing records. Pinned to a specific
- * wallet the same way as `useNameBids`.
- */
+* Current DNS records for a name, read from the local hsd node
+* (`read_name_records` → `getnameresource`). Node-only: the explorer doesn't
+* expose resource records, so this returns `[]` whenever no synced node is
+* reachable (the backend degrades gracefully and never errors). The name
+* actions modal seeds its DNS editor from this once per open so the user can
+* see, edit, and delete the name's existing records. Pinned to a specific
+* wallet the same way as `useNameBids`.
+*/
 export function useNameRecords(
   name: string | null | undefined,
   walletProfileId: string | null,
   opts?: { forceFresh?: boolean },
-): UseQueryResult<Record<string, unknown>[]> {
+): UseQueryResult<NameResource> {
   const profileId = walletProfileId ?? null;
   const forceFresh = opts?.forceFresh ?? false;
-  return useQuery<Record<string, unknown>[]>({
+  return useQuery<NameResource>({
     queryKey: ["read", "nameRecords", profileId, name ?? ""],
     enabled: Boolean(name && name.trim().length > 0),
     queryFn: async () => {
-      const raw = await invoke<Record<string, unknown>[] | null>("read_name_records", {
+      const raw = await invoke<NameResource | null>("read_name_records", {
         name: name!.trim(),
         walletProfileId: profileId,
       });
-      return Array.isArray(raw) ? raw : [];
+      // The backend guarantees `{records:[]}` on every degrade path, but
+      // belt-and-braces in case of null/unexpected shapes.
+      if (!raw || typeof raw !== "object" || !Array.isArray(raw.records)) {
+        return { records: [] };
+      }
+      return raw;
     },
     // The DNS editor MUST seed from a guaranteed-fresh read: the resource is
     // rewritten wholesale by UPDATE, so seeding from a cached pre-UPDATE
@@ -224,6 +262,54 @@ export function useNameRecords(
     // mount (i.e. every modal open). Other callers keep the 15s cache.
     staleTime: forceFresh ? 0 : STALE_TIME,
     refetchOnMount: forceFresh ? "always" : true,
+  });
+}
+
+/**
+ * Compact block details for the in-app Block Info modal. Node-only: the
+ * backend `read_block_info` command soft-degrades to `null` when no synced
+ * node is reachable, so this hook is nullable. A mined block is immutable, so
+ * results never go stale (`staleTime: Infinity`).
+ */
+export function useReadBlockInfo(
+  height: number | null,
+): UseQueryResult<BlockInfo | null> {
+  return useQuery<BlockInfo | null>({
+    queryKey: ["read", "block", height ?? 0],
+    enabled: height != null && height > 0,
+    queryFn: async () => {
+      const raw = await invoke<BlockInfo | null>("read_block_info", {
+        height: height!,
+      });
+      return raw ?? null;
+    },
+    staleTime: Infinity,
+  });
+}
+
+/**
+ * Compact transaction details for the in-app Transaction Info modal. Node-only:
+ * the backend `read_tx_info` command returns tri-state:
+ *   • a full `TxInfo` object (normal case);
+ *   • `{ error: "tx_index_disabled" }` when the node lacks `--index-tx`
+ *     (modal shows a distinct hint — narrow with `isTxInfoError`);
+ *   • `null` for any other soft-degrade (no synced node, unknown tx, etc.).
+ * Pending txs gain confirmations over time, so a short stale time keeps
+ * the data fresh on re-open.
+ */
+export function useReadTxInfo(
+  txid: string | null,
+): UseQueryResult<TxInfo | TxInfoError | null> {
+  return useQuery<TxInfo | TxInfoError | null>({
+    queryKey: ["read", "tx", txid ?? ""],
+    enabled: Boolean(txid && txid.trim().length > 0),
+    queryFn: async () => {
+      const raw = await invoke<TxInfo | TxInfoError | null>("read_tx_info", {
+        txid: txid!.trim(),
+      });
+      return raw ?? null;
+    },
+    staleTime: 15_000,
   });
 }
 
