@@ -137,23 +137,23 @@ export function Batches() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-500 border-b">
-                  <th className="px-3 py-2">TLD</th>
-                  <th className="px-3 py-2">Status</th>
-                  <th className="px-3 py-2">Category</th>
-                  <th className="px-3 py-2">Notes</th>
-                  <th className="px-3 py-2"></th>
+                  <th className="py-1 pr-4">TLD</th>
+                  <th className="py-1 pr-4">Status</th>
+                  <th className="py-1 pr-4">Category</th>
+                  <th className="py-1 pr-4">Notes</th>
+                  <th className="py-1"></th>
                 </tr>
               </thead>
               <tbody>
                 {batchDetail.assets.map((asset) => (
-                  <tr key={asset.id} className="border-t border-gray-100">
-                    <td className="px-3 py-2 font-mono">.{displayName(asset.tld)}</td>
-                    <td className="px-3 py-2">
+                  <tr key={asset.id} className="border-t border-gray-100 hover:bg-gray-50">
+                    <td className="py-1 pr-4 text-xs font-mono">.{displayName(asset.tld)}</td>
+                    <td className="py-1 pr-4">
                       <StatusBadge status={asset.status as MigrationStatus} />
                     </td>
-                    <td className="px-3 py-2 text-gray-500">{asset.category || "—"}</td>
-                    <td className="px-3 py-2 text-gray-500 truncate max-w-[200px]">{asset.notes || "—"}</td>
-                    <td className="px-3 py-2">
+                    <td className="py-1 pr-4 text-gray-500">{asset.category || "—"}</td>
+                    <td className="py-1 pr-4 text-gray-500 truncate max-w-[200px]">{asset.notes || "—"}</td>
+                    <td className="py-1">
                       <Button
                         size="sm"
                         variant="danger"

@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Changed
+- All data tables across the app now share one consistent design: compact
+  `py-1` row density, horizontal column spacing (`pr-4`), plain gray-500
+  headers (no bold), `text-xs font-mono` for value cells (names, amounts,
+  heights, txids, addresses), uniform `border-t border-gray-100` row borders,
+  and a `hover:bg-gray-50` highlight on every row. This unifies the Owned
+  Names, Activity, Recent-transactions, Auctions, Renewals, Batches, DNS
+  records, TLD inventory, and all Namebase-dashboard tables (domains,
+  renewals, transfer, transfer history, withdrawals), plus the shared
+  virtualized table used by the inventory view.
 - Activity view (full table + Wallet "Recent activity" card) now shares the
   same typography and density as the Owned Names table (compact `py-1` rows,
   plain gray headers, `font-mono` names and heights). Action labels are

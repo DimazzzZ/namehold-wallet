@@ -38,16 +38,16 @@ function RecordTable({ records }: { records: ResourceRecord[] }) {
   return (
     <table className="w-full text-sm">
       <thead>
-        <tr className="text-left text-gray-500 border-b">
-          <th className="px-3 py-2">Type</th>
-          <th className="px-3 py-2">Value</th>
+      <tr className="text-left text-gray-500 border-b">
+          <th className="py-1 pr-4">Type</th>
+          <th className="py-1">Value</th>
         </tr>
       </thead>
       <tbody>
         {records.map((rec, i) => (
-          <tr key={i} className="border-t border-gray-100">
-            <td className="px-3 py-2 font-mono font-semibold">{rec.type}</td>
-            <td className="px-3 py-2 font-mono text-xs break-all">
+          <tr key={i} className="border-t border-gray-100 hover:bg-gray-50">
+            <td className="py-1 pr-4 text-xs font-mono">{rec.type}</td>
+            <td className="py-1 font-mono text-xs break-all">
               {rec.type === "NS" && rec.ns}
               {rec.type === "GLUE4" && `${rec.ns} → ${rec.address}`}
               {rec.type === "GLUE6" && `${rec.ns} → ${rec.address}`}

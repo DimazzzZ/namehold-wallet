@@ -148,7 +148,7 @@ export function TldInventory() {
         activeProfile?.network === "mainnet" ? (
           <button
             type="button"
-            className="font-mono font-semibold text-sm text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+            className="font-mono text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
             onClick={() => openExternal(explorerNameUrl(info.getValue<string>()))}
             title="View on explorer"
             data-testid="inventory-name-explorer-link"
@@ -156,7 +156,7 @@ export function TldInventory() {
             .{displayName(info.getValue<string>())}
           </button>
         ) : (
-          <span className="font-mono font-semibold text-sm">
+          <span className="font-mono text-xs">
             .{displayName(info.getValue<string>())}
           </span>
         )

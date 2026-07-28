@@ -245,7 +245,7 @@ function ActivityRow({
       <td className="py-1 pr-4">
         <Badge variant={meta.variant}>{meta.label}</Badge>
       </td>
-      <td className="py-1 pr-4 font-mono">
+      <td className="py-1 pr-4 text-xs font-mono">
         {row.name ? (
           isMainnet ? (
             <button
@@ -265,7 +265,7 @@ function ActivityRow({
         )}
       </td>
       <td
-        className="py-1 pr-4 text-right font-mono whitespace-nowrap"
+        className="py-1 pr-4 text-right text-xs font-mono whitespace-nowrap"
         title={
           row.valueDoos === 0 && row.direction !== "receive"
             ? "Name's locked value is re-homed to your own coin — no HNS spent beyond the fee."

@@ -772,17 +772,17 @@ export function WalletView() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-gray-500 border-b">
-                    <th className="py-1">Name</th>
-                    <th className="py-1">State</th>
-                    <th className="py-1">Height</th>
-                    <th className="py-1">Renewal</th>
+                    <th className="py-1 pr-4">Name</th>
+                    <th className="py-1 pr-4">State</th>
+                    <th className="py-1 pr-4">Height</th>
+                    <th className="py-1 pr-4">Renewal</th>
                     <th className="py-1"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredNames.map((n) => (
-                    <tr key={n.name} className="border-t border-gray-100">
-                      <td className="py-1 font-mono">
+                    <tr key={n.name} className="border-t border-gray-100 hover:bg-gray-50">
+                      <td className="py-1 pr-4 text-xs font-mono">
                         {profile.network === "mainnet" ? (
                           <button
                             type="button"
@@ -797,7 +797,7 @@ export function WalletView() {
                           `.${displayName(n.name)}`
                         )}
                       </td>
-                      <td className="py-1">
+                      <td className="py-1 pr-4">
                         {n.state ? (
                           <Badge variant={auctionPhase(n.state).variant}>
                             {auctionPhase(n.state).label}
@@ -806,7 +806,7 @@ export function WalletView() {
                           "—"
                         )}
                       </td>
-                      <td className="py-1 text-xs text-gray-500">
+                      <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
                         {n.height ? (
                           profile.network === "mainnet" ? (
                             <button
@@ -825,7 +825,7 @@ export function WalletView() {
                           "—"
                         )}
                       </td>
-                      <td className="py-1 text-xs text-gray-500">
+                      <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
                         {n.renewal ? (
                           profile.network === "mainnet" ? (
                             <button
@@ -913,7 +913,7 @@ export function WalletView() {
                           {(ACTION_META[h.action] ?? FALLBACK_META).label}
                         </Badge>
                       </td>
-                      <td className="py-1 pr-4 font-mono">
+                      <td className="py-1 pr-4 text-xs font-mono">
                         {h.name ? (
                           profile.network === "mainnet" ? (
                             <button
@@ -933,7 +933,7 @@ export function WalletView() {
                         )}
                       </td>
                       <td
-                        className="py-1 pr-4 font-mono text-right whitespace-nowrap"
+                        className="py-1 pr-4 text-xs font-mono text-right whitespace-nowrap"
                         title={
                           h.valueDoos === 0 && h.direction !== "receive"
                             ? "Name's locked value is re-homed to your own coin — no HNS spent beyond the fee."
@@ -970,20 +970,20 @@ export function WalletView() {
           <div className="max-h-72 overflow-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-gray-500 border-b">
-                  <th className="py-2 pr-4">Date</th>
-                  <th className="py-2 pr-4">Action</th>
-                  <th className="py-2 pr-4">Amount</th>
-                  <th className="py-2 pr-4">Fee</th>
-                  <th className="py-2 pr-4">Status</th>
-                  <th className="py-2">Txid</th>
+              <tr className="text-left text-gray-500 border-b">
+                  <th className="py-1 pr-4">Date</th>
+                  <th className="py-1 pr-4">Action</th>
+                  <th className="py-1 pr-4">Amount</th>
+                  <th className="py-1 pr-4">Fee</th>
+                  <th className="py-1 pr-4">Status</th>
+                  <th className="py-1">Txid</th>
                 </tr>
               </thead>
               <tbody>
                 {drafts.map((d) => (
-                  <tr key={d.id} className="border-t border-gray-100">
-                    <td className="py-2 pr-4 text-xs text-gray-500">{formatDate(d.createdAt)}</td>
-                    <td className="py-2 pr-4">
+                  <tr key={d.id} className="border-t border-gray-100 hover:bg-gray-50">
+                    <td className="py-1 pr-4 text-xs text-gray-500">{formatDate(d.createdAt)}</td>
+                    <td className="py-1 pr-4">
                       {d.action}{d.summary?.name ? (
                         profile.network === "mainnet" ? (
                           <>
@@ -1004,7 +1004,7 @@ export function WalletView() {
                       ) : ""}
                     </td>
                     <td
-                      className="py-2 pr-4 font-mono"
+                      className="py-1 pr-4 text-xs font-mono"
                       title={
                         d.summary &&
                         d.summary.recipientAddress == null &&
@@ -1017,10 +1017,10 @@ export function WalletView() {
                     >
                       {d.summary ? formatHns(netSpendDoos(d.summary)) : "—"}
                     </td>
-                    <td className="py-2 pr-4 font-mono text-xs text-gray-500">
+                    <td className="py-1 pr-4 font-mono text-xs text-gray-500">
                       {d.summary ? formatHns(d.summary.feeDoos) : "—"}
                     </td>
-                    <td className="py-2 pr-4">
+                    <td className="py-1 pr-4">
                       <Badge
                         variant={
                           d.status === "confirmed"
@@ -1055,9 +1055,9 @@ export function WalletView() {
                           : d.status === "dropped"
                           ? "Not confirmed"
                           : d.status}
-                      </Badge>
+                    </Badge>
                     </td>
-                    <td className="py-2 text-xs font-mono truncate max-w-[120px]">
+                    <td className="py-1 text-xs font-mono">
                       {d.txid ? (
                         profile.network === "mainnet" ? (
                          <button

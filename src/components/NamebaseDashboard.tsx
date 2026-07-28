@@ -299,33 +299,33 @@ export function NamebaseDashboard() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-gray-500 border-b">
-                      <th className="px-2 py-1">Name</th>
-                      <th className="px-2 py-1">Status</th>
-                      <th className="px-2 py-1">Withdrawable</th>
-                      <th className="px-2 py-1">Auto-Renew</th>
-                      <th className="px-2 py-1">Owned Since</th>
+                      <th className="py-1 pr-4">Name</th>
+                      <th className="py-1 pr-4">Status</th>
+                      <th className="py-1 pr-4">Withdrawable</th>
+                      <th className="py-1 pr-4">Auto-Renew</th>
+                      <th className="py-1">Owned Since</th>
                     </tr>
                   </thead>
                   <tbody>
                     {stakedDomains.map((d) => {
                       const withdrawable = (d as any).withdrawable === true;
                       return (
-                        <tr key={d.name} className="border-t border-gray-100">
-                          <td className="px-2 py-1 font-mono">.{displayName(d.name)}</td>
-                          <td className="px-2 py-1">
+                        <tr key={d.name} className="border-t border-gray-100 hover:bg-gray-50">
+                          <td className="py-1 pr-4 text-xs font-mono">.{displayName(d.name)}</td>
+                          <td className="py-1 pr-4">
                             <Badge variant={d.status === "locked_for_subdomains" ? "info" : "default"}>
                               {d.status.replace(/_/g, " ")}
                             </Badge>
                           </td>
-                          <td className="px-2 py-1">
+                          <td className="py-1 pr-4">
                             {withdrawable ? (
                               <Badge variant="success">Yes</Badge>
                             ) : (
                               <Badge variant="error">No (locked)</Badge>
                             )}
                           </td>
-                          <td className="px-2 py-1">{d.auto_renew_active ? "Yes" : "No"}</td>
-                          <td className="px-2 py-1 text-xs text-gray-400">{d.owned_since?.slice(0, 10)}</td>
+                          <td className="py-1 pr-4">{d.auto_renew_active ? "Yes" : "No"}</td>
+                          <td className="py-1 text-xs text-gray-500">{d.owned_since?.slice(0, 10)}</td>
                         </tr>
                       );
                     })}
@@ -351,10 +351,10 @@ export function NamebaseDashboard() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-gray-500 border-b">
-                      <th className="px-2 py-1">Name</th>
-                      <th className="px-2 py-1">Expires</th>
-                      <th className="px-2 py-1">Block</th>
-                      <th className="px-2 py-1">Auto-renew</th>
+                      <th className="py-1 pr-4">Name</th>
+                      <th className="py-1 pr-4">Expires</th>
+                      <th className="py-1 pr-4">Block</th>
+                      <th className="py-1">Auto-renew</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -362,9 +362,9 @@ export function NamebaseDashboard() {
                       const days = daysUntil(r.estimated_date);
                       const autoRenew = autoRenewByDomain.get(r.domain);
                       return (
-                        <tr key={r.domain} className="border-t border-gray-100">
-                          <td className="px-2 py-1 font-mono">.{displayName(r.domain)}</td>
-                          <td className={`px-2 py-1 ${expiryColor(days)}`}>
+                        <tr key={r.domain} className="border-t border-gray-100 hover:bg-gray-50">
+                          <td className="py-1 pr-4 text-xs font-mono">.{displayName(r.domain)}</td>
+                          <td className={`py-1 pr-4 ${expiryColor(days)}`}>
                             {formatDate(r.estimated_date)}
                             {days != null && (
                               <span className="text-xs text-gray-400">
@@ -373,8 +373,8 @@ export function NamebaseDashboard() {
                               </span>
                             )}
                           </td>
-                          <td className="px-2 py-1 text-xs text-gray-500">#{r.expire_block}</td>
-                          <td className="px-2 py-1">
+                          <td className="py-1 pr-4 text-xs text-gray-500 font-mono">#{r.expire_block}</td>
+                          <td className="py-1">
                             {autoRenew === false ? (
                               <Badge variant="error">Off</Badge>
                             ) : autoRenew ? (
@@ -414,43 +414,43 @@ export function NamebaseDashboard() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-gray-500 border-b">
-                      <th className="px-2 py-1 w-8">
+                      <th className="py-1 pr-4 w-8">
                         <input
                           type="checkbox"
                           checked={selectedDomains.size === domains.length && domains.length > 0}
                           onChange={toggleAll}
                         />
                       </th>
-                      <th className="px-2 py-1">Name</th>
-                      <th className="px-2 py-1">Status</th>
-                      <th className="px-2 py-1">Auto-Renew</th>
-                      <th className="px-2 py-1">Owned Since</th>
-                      <th className="px-2 py-1 w-20">Action</th>
+                      <th className="py-1 pr-4">Name</th>
+                      <th className="py-1 pr-4">Status</th>
+                      <th className="py-1 pr-4">Auto-Renew</th>
+                      <th className="py-1 pr-4">Owned Since</th>
+                      <th className="py-1 w-20">Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {domains.map((d) => {
                       const isStaked = stakedDomains.some((s) => s.name === d.name);
                       return (
-                        <tr key={d.name} className="border-t border-gray-100">
-                          <td className="px-2 py-1">
+                        <tr key={d.name} className="border-t border-gray-100 hover:bg-gray-50">
+                          <td className="py-1 pr-4">
                             <input
                               type="checkbox"
                               checked={selectedDomains.has(d.name)}
                               onChange={() => toggleDomain(d.name)}
                             />
                           </td>
-                          <td className="px-2 py-1 font-mono">.{displayName(d.name)}</td>
-                          <td className="px-2 py-1">
+                          <td className="py-1 pr-4 text-xs font-mono">.{displayName(d.name)}</td>
+                          <td className="py-1 pr-4">
                             {isStaked ? (
                               <Badge variant="warning">Staked</Badge>
                             ) : (
                               <Badge>{d.status}</Badge>
                             )}
                           </td>
-                          <td className="px-2 py-1">{d.auto_renew_active ? "Yes" : "No"}</td>
-                          <td className="px-2 py-1 text-xs text-gray-400">{d.owned_since?.slice(0, 10)}</td>
-                          <td className="px-2 py-1">
+                          <td className="py-1 pr-4">{d.auto_renew_active ? "Yes" : "No"}</td>
+                          <td className="py-1 pr-4 text-xs text-gray-500">{d.owned_since?.slice(0, 10)}</td>
+                          <td className="py-1">
                             {transferByDomain.has(d.name) ? (
                               (() => {
                                 // Show Namebase's own live status for the transfer.
@@ -781,31 +781,31 @@ function RecentActivity() {
             ) : (
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-left text-gray-500 border-b border-gray-100">
-                    <th className="py-1 font-medium">Domain</th>
-                    <th className="py-1 font-medium">Destination</th>
-                    <th className="py-1 font-medium">Status</th>
-                    <th className="py-1 font-medium">Updated</th>
+                  <tr className="text-left text-gray-500 border-b">
+                    <th className="py-1 pr-4">Domain</th>
+                    <th className="py-1 pr-4">Destination</th>
+                    <th className="py-1 pr-4">Status</th>
+                    <th className="py-1">Updated</th>
                   </tr>
                 </thead>
                 <tbody>
                   {domainTransfers.map((t) => {
                     const { label, tone } = namebaseStatus(t.status);
                     return (
-                      <tr key={t.id ?? t.domain} className="border-b border-gray-50">
-                        <td className="py-2 font-mono">.{displayName(t.domain)}</td>
-                        <td className="py-2 font-mono text-xs text-gray-500">
+                      <tr key={t.id ?? t.domain} className="border-t border-gray-100 hover:bg-gray-50">
+                        <td className="py-1 pr-4 text-xs font-mono">.{displayName(t.domain)}</td>
+                        <td className="py-1 pr-4 font-mono text-xs text-gray-500">
                           {truncate(t.destination_address, 16)}
                           {!!myAddress && t.destination_address === myAddress && (
                             <span className="ml-1 text-gray-400">(your wallet)</span>
                           )}
                         </td>
-                        <td className="py-2">
+                        <td className="py-1 pr-4">
                           <Badge variant={tone} title={t.status_note ?? undefined}>
                             {label}
                           </Badge>
                         </td>
-                        <td className="py-2 text-xs text-gray-400">
+                        <td className="py-1 text-xs text-gray-500">
                           {t.updated_at || t.created_at
                             ? formatDate(t.updated_at || t.created_at)
                             : "—"}
@@ -829,31 +829,31 @@ function RecentActivity() {
             ) : (
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-left text-gray-500 border-b border-gray-100">
-                    <th className="py-1 font-medium">Amount</th>
-                    <th className="py-1 font-medium">Destination</th>
-                    <th className="py-1 font-medium">Status</th>
-                    <th className="py-1 font-medium">Date</th>
+                  <tr className="text-left text-gray-500 border-b">
+                    <th className="py-1 pr-4">Amount</th>
+                    <th className="py-1 pr-4">Destination</th>
+                    <th className="py-1 pr-4">Status</th>
+                    <th className="py-1">Date</th>
                   </tr>
                 </thead>
                 <tbody>
                   {hnsWithdrawals.map((w) => {
                     const { label, tone } = namebaseStatus(w.status);
                     return (
-                      <tr key={w.id} className="border-b border-gray-50">
-                        <td className="py-2 font-mono">{formatHnsAmount(Number(w.amount) || 0)} HNS</td>
-                        <td className="py-2 font-mono text-xs text-gray-500">
+                      <tr key={w.id} className="border-t border-gray-100 hover:bg-gray-50">
+                        <td className="py-1 pr-4 text-xs font-mono">{formatHnsAmount(Number(w.amount) || 0)} HNS</td>
+                        <td className="py-1 pr-4 font-mono text-xs text-gray-500">
                           {truncate(w.destination_address, 16)}
                           {!!myAddress && w.destination_address === myAddress && (
                             <span className="ml-1 text-gray-400">(your wallet)</span>
                           )}
                         </td>
-                        <td className="py-2">
+                        <td className="py-1 pr-4">
                           <Badge variant={tone} title={w.status_note ?? undefined}>
                             {label}
                           </Badge>
                         </td>
-                        <td className="py-2 text-xs text-gray-400">
+                        <td className="py-1 text-xs text-gray-500">
                           {w.created_at ? formatDate(w.created_at) : "—"}
                         </td>
                       </tr>
