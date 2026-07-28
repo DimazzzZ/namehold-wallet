@@ -1,13 +1,12 @@
 import { useCallback, useState } from "react";
 import { useReadRenewals } from "../queries/read";
-import { useActiveProfile } from "../queries/wallet";
 import { useExportCsv } from "../queries/assets";
 import type { RenewalRow } from "../types";
 import { formatCount } from "../lib/utils";
 import { displayName } from "../lib/idn";
-import { explorerNameUrl, openExternal } from "../lib/openExternal";
 import { Button } from "./ui/Button";
 import { NameActionsModal } from "./NameActionsModal";
+import { NameInfoModal } from "./NameInfoModal";
 import { useUiStore } from "../stores/ui";
 import { save } from "../lib/dialog";
 
@@ -20,11 +19,10 @@ import { save } from "../lib/dialog";
  */
 export function Renewals() {
   const { data, isLoading } = useReadRenewals();
-  const { data: activeProfile } = useActiveProfile();
-  const isMainnet = activeProfile?.network === "mainnet";
   const exportCsv = useExportCsv();
   const showToast = useUiStore((s) => s.showToast);
   const [manageName, setManageName] = useState<string | null>(null);
+  const [infoName, setInfoName] = useState<string | null>(null);
 
   const rows = data?.names ?? [];
   const threshold = data?.expiringSoonThresholdDays ?? 30;
@@ -108,19 +106,15 @@ export function Renewals() {
               {rows.map((row) => (
                 <tr key={row.name} className="border-t border-gray-100 hover:bg-gray-50">
                   <td className="py-1 pr-4 text-xs font-mono">
-                    {isMainnet ? (
-                      <button
-                        type="button"
-                        className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                        onClick={() => openExternal(explorerNameUrl(row.name))}
-                        title="View on explorer"
-                        data-testid="renewals-name-explorer-link"
-                      >
-                        .{displayName(row.name)}
-                      </button>
-                    ) : (
-                      `.${displayName(row.name)}`
-                    )}
+                    <button
+                      type="button"
+                      className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                      onClick={() => setInfoName(row.name)}
+                      title="View name info"
+                      data-testid="renewals-name-info-link"
+                    >
+                      .{displayName(row.name)}
+                    </button>
                   </td>
                   <td className="py-1 pr-4">{row.state || "—"}</td>
                   <td className={`py-1 pr-4 text-xs font-mono ${getColor(row)}`}>
@@ -173,6 +167,14 @@ export function Renewals() {
           name={manageName}
           open={!!manageName}
           onClose={() => setManageName(null)}
+        />
+      )}
+
+      {infoName && (
+        <NameInfoModal
+          name={infoName}
+          open={!!infoName}
+          onClose={() => setInfoName(null)}
         />
       )}
     </div>

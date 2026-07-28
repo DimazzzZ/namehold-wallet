@@ -1,11 +1,12 @@
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { CopyField } from "../ui/CopyField";
+import { TxInfoModal } from "../TxInfoModal";
 import { BidForm } from "./BidForm";
 import { DnsRecordsEditor } from "./DnsRecordsEditor";
 import { formatCountdown } from "../../lib/auction";
 import { formatHns } from "../../lib/utils";
-import { openExternal, explorerTxUrl } from "../../lib/openExternal";
+import { useState, type ReactNode } from "react";
 import type {
   AuctionPhaseGuide,
   AuctionTaskSummary,
@@ -67,6 +68,7 @@ export interface GuidedActionProps {
   onRowChange: (index: number, patch: Partial<DnsRow>) => void;
   onAddRow: () => void;
   onRemoveRow: (index: number) => void;
+  isMainnet: boolean;
 }
 
 export function GuidedAction({
@@ -103,10 +105,13 @@ export function GuidedAction({
   onRowChange,
   onAddRow,
   onRemoveRow,
+  isMainnet,
 }: GuidedActionProps) {
+  const [infoTx, setInfoTx] = useState<string | null>(null);
   if (!guide) return null;
 
-  switch (badge.phase) {
+  const content = ((): ReactNode => {
+    switch (badge.phase) {
     case "AVAILABLE":
       return (
         <div className="space-y-2">
@@ -216,10 +221,10 @@ export function GuidedAction({
                   <button
                     type="button"
                     className="mt-1 inline-block text-blue-600 hover:underline cursor-pointer text-xs"
-                    onClick={() => openExternal(explorerTxUrl(txid))}
-                    data-testid="reveal-explorer-link"
+                    onClick={() => setInfoTx(txid)}
+                    data-testid="reveal-tx-info-link"
                   >
-                    View on explorer ↗
+                    View transaction info
                   </button>
                 </div>
               )}
@@ -436,4 +441,19 @@ export function GuidedAction({
     default:
       return null;
   }
+  })();
+
+  return (
+    <>
+      {content}
+      {infoTx && (
+        <TxInfoModal
+          txid={infoTx}
+          open={!!infoTx}
+          onClose={() => setInfoTx(null)}
+          isMainnet={isMainnet}
+        />
+      )}
+    </>
+  );
 }

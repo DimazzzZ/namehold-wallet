@@ -531,6 +531,7 @@ export function NameActionsModal({
                 onRowChange={setRow}
                 onAddRow={addRow}
                 onRemoveRow={removeRow}
+                isMainnet={profile?.network === "mainnet"}
               />
             </div>
           ) : badge.phase === "CLOSED" ? (
