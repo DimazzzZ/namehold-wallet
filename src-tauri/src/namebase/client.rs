@@ -231,6 +231,19 @@ impl NamebaseClient {
         &self.base_url
     }
 
+    /// Browser-like User-Agent used for every request.
+    ///
+    /// Namebase sits behind a CDN/WAF that applies stricter rate-limits (and,
+    /// on the heavy `/api/account/history/export` endpoint, outright 429s) to
+    /// requests whose fingerprint doesn't look like a real browser. Sending a
+    /// bare `Namehold/x.y.z` UA with no `Accept`/`Referer`/`Sec-Fetch-*`
+    /// headers reliably tripped this, even though the same cookie + URL from
+    /// the Namebase web UI worked fine. Matching a real browser's request
+    /// shape (headers below) eliminates the false rate-limit.
+    const BROWSER_UA: &'static str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+                                      AppleWebKit/537.36 (KHTML, like Gecko) \
+                                      Chrome/131.0.0.0 Safari/537.36";
+
     /// The current `Cookie:`-header value, including any replacements/deletions
     /// picked up from `Set-Cookie` response headers since construction. Used by
     /// the command layer to detect and persist a server-side cookie rotation.
@@ -261,11 +274,18 @@ impl NamebaseClient {
     async fn send_get(&self, path: &str) -> Result<reqwest::Response, AppError> {
         let url = format!("{}{}", self.base_url, path);
         let cookie = self.current_cookie();
+        let referer = format!("{}/", self.base_url);
         let resp = self
             .http
             .get(&url)
             .header("Cookie", cookie)
-            .header("User-Agent", "Namehold/0.2.1")
+            .header("User-Agent", Self::BROWSER_UA)
+            .header("Accept", "text/csv, application/json, */*")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Referer", referer)
+            .header("Sec-Fetch-Dest", "document")
+            .header("Sec-Fetch-Mode", "navigate")
+            .header("Sec-Fetch-Site", "same-origin")
             .send()
             .await?;
         self.capture_set_cookie(resp.headers());
@@ -279,12 +299,20 @@ impl NamebaseClient {
     ) -> Result<reqwest::Response, AppError> {
         let url = format!("{}{}", self.base_url, path);
         let cookie = self.current_cookie();
+        let referer = format!("{}/", self.base_url);
         let resp = self
             .http
             .post(&url)
             .header("Cookie", cookie)
             .header("Content-Type", "application/json")
-            .header("User-Agent", "Namehold/0.2.1")
+            .header("User-Agent", Self::BROWSER_UA)
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Referer", referer)
+            .header("Origin", &self.base_url)
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Site", "same-origin")
             .json(body)
             .send()
             .await?;
@@ -406,6 +434,48 @@ impl NamebaseClient {
     pub async fn get_domain_withdrawals(&self) -> Result<serde_json::Value, AppError> {
         let resp = self.send_get("/api/domains/withdrawals").await?;
         Self::json_or_session_expired(resp).await
+    }
+
+    /// Get the account-history CSV export. Returns the raw CSV text (not JSON).
+    /// The export is a one-shot historical artifact: Namebase stopped recording
+    /// activity on 2026-06-12. The response is CSV-formatted with a preamble
+    /// comment block, then the header `id,created_at,type,data`.
+    ///
+    /// This endpoint is heavier than Namebase's other JSON list endpoints and
+    /// is rate-limited more strictly. A 429 response is mapped to the typed
+    /// [`AppError::NamebaseRateLimited`] with the `Retry-After` header parsed
+    /// out (defaulting to 60 s when absent or unparseable) so the UI can render
+    /// "try again in Ns" instead of a raw status string.
+    pub async fn get_account_history(&self) -> Result<String, AppError> {
+        let resp = self.send_get("/api/account/history/export").await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            // `Retry-After` may be either delta-seconds or an HTTP-date. We only
+            // parse the delta-seconds form (by far the most common) and fall
+            // back to 60 s when absent, unparseable, or a date.
+            let retry_after_secs = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(60);
+            return Err(AppError::NamebaseRateLimited { retry_after_secs });
+        }
+        if !status.is_success() {
+            return Err(AppError::Other(format!(
+                "Namebase returned status {}",
+                status
+            )));
+        }
+        let body = resp.text().await?;
+        // The CSV export legitimately returns Content-Type: text/csv, so we
+        // cannot reuse the JSON-endpoint heuristic (which flags any non-JSON
+        // content-type as expired). Instead, detect expiry by checking if the
+        // response is actually an HTML login page.
+        if body.trim_start().starts_with('<') {
+            return Err(AppError::NamebaseSessionExpired);
+        }
+        Ok(body)
     }
 }
 

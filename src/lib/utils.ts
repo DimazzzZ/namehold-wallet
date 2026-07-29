@@ -113,32 +113,21 @@ function normalizeTimestamp(s: string): string {
   return `${s.replace(" ", "T")}Z`;
 }
 
-export function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const s = iso.trim();
-  if (!s) return "—";
-
-  const d = new Date(normalizeTimestamp(s));
-  if (Number.isNaN(d.getTime())) return s; // unparseable → show the raw value, never "Invalid Date"
-  return d.toLocaleString();
-}
-
 /**
- * Long-form date + time, e.g. `"July 24, 2026 - 12:54:25"` — no
+ * Deterministic date + time format, e.g. `"July 24, 2026 - 12:54:25"` — no
  * locale-dependent d/m/y ordering. The unified timestamp format for all
- * transaction/history rows and the tx/block info modals, so the same
- * moment reads identically everywhere (readability wins over compactness).
+ * transaction/history rows, the tx/block info modals, and the Namebase
+ * dashboard, so the same moment reads identically everywhere (readability
+ * wins over compactness).
  *
- * Uses `normalizeTimestamp` for the same input-shape tolerance as
- * `formatDate` (naive-UTC SQLite strings, date-only, ISO w/ tz). Returns
- * `"—"` for null/empty and falls back to the raw input on unparseable
- * values (never `"Invalid Date"`).
+ * Uses `normalizeTimestamp` for input-shape tolerance (naive-UTC SQLite
+ * strings, date-only, ISO w/ tz). Returns `"—"` for null/empty and falls
+ * back to the raw input on unparseable values (never `"Invalid Date"`).
  *
- * Deliberately separate from `formatDate` so the 10+ existing call sites
- * (sync footer, batches, TLD inventory, Namebase dashboard, tests …) keep
- * their compact `toLocaleString()` output unchanged.
+ * For date-only inputs (e.g. "2026-07-24"), returns just the date part
+ * (e.g. "July 24, 2026") without the time suffix.
  */
-export function formatDateLong(iso: string | null | undefined): string {
+export function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   const s = iso.trim();
   if (!s) return "—";

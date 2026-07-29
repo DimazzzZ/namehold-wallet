@@ -6,6 +6,7 @@ pub mod csv;
 pub mod deadlines;
 pub mod history;
 pub mod namebase;
+pub mod namebase_history;
 pub mod names;
 pub mod node;
 pub mod read;

@@ -37,6 +37,14 @@ pub enum AppError {
     /// can raise this instead of an ugly JSON-parse error.
     #[error("Namebase session expired — reconnect with a fresh cookie")]
     NamebaseSessionExpired,
+    /// The Namebase API returned 429 Too Many Requests. `retry_after_secs` is
+    /// parsed from the `Retry-After` response header when present, otherwise a
+    /// sensible default. Kept distinct from `Other` so the frontend can render
+    /// an actionable "try again in Ns" message rather than a raw status string.
+    /// This mainly affects the heavy `/api/account/history/export` endpoint,
+    /// which Namebase rate-limits more strictly than the lightweight list APIs.
+    #[error("Namebase rate limit exceeded (retry after {retry_after_secs}s)")]
+    NamebaseRateLimited { retry_after_secs: u64 },
     /// An explorer answered with a successful HTTP status, but its response
     /// body doesn't match the shape the client expects (e.g. a renamed/removed
     /// field). Kept distinct from `Other`/transport errors so callers can tell

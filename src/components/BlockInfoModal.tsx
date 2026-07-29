@@ -1,7 +1,7 @@
 import { useReadBlockInfo } from "../queries/read";
 import { useNodeLive } from "../queries/node";
 import { Dialog } from "./ui/Dialog";
-import { formatHns, formatDateLong } from "../lib/utils";
+import { formatHns, formatDate } from "../lib/utils";
 import { explorerBlockUrl, openExternal } from "../lib/openExternal";
 
 interface BlockInfoModalProps {
@@ -77,7 +77,7 @@ export function BlockInfoModal({ height, open, onClose, isMainnet }: BlockInfoMo
               <span className="text-gray-600">Timestamp</span>
               <span data-testid="block-time">
                 {block.time > 0
-                  ? formatDateLong(new Date(block.time * 1000).toISOString())
+                  ? formatDate(new Date(block.time * 1000).toISOString())
                   : "—"}
               </span>
             </div>

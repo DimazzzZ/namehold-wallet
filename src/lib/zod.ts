@@ -69,3 +69,24 @@ export const ActionRowSchema = z.object({
 });
 
 export type ActionRow = z.infer<typeof ActionRowSchema>;
+
+export const NamebaseHistoryRowSchema = z.object({
+  id: z.number(),
+  createdAt: z.string(),
+  type: z.string(),
+  family: z.string(),
+  verb: z.string(),
+  name: z.string().nullable(),
+  feeDoos: z.number().nullable(),
+  bidDoos: z.number().nullable(),
+  stakeDoos: z.number().nullable(),
+  usdCents: z.number().nullable(),
+  hnsDoos: z.number().nullable(),
+  auctionId: z.string().nullable(),
+  bidId: z.string().nullable(),
+  saleId: z.string().nullable(),
+  dataJson: z.string(),
+  importedAt: z.string(),
+});
+
+export type NamebaseHistoryRow = z.infer<typeof NamebaseHistoryRowSchema>;

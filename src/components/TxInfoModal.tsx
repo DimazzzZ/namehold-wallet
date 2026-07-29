@@ -2,7 +2,7 @@ import { useReadTxInfo } from "../queries/read";
 import { useNodeLive } from "../queries/node";
 import { Dialog } from "./ui/Dialog";
 import { Badge } from "./ui/Badge";
-import { formatHns, formatDateLong, truncateMiddle } from "../lib/utils";
+import { formatHns, formatDate, truncateMiddle } from "../lib/utils";
 import { explorerTxUrl, openExternal } from "../lib/openExternal";
 import { isTxInfoError } from "../types";
 
@@ -135,7 +135,7 @@ export function TxInfoModal({ txid, open, onClose, isMainnet }: TxInfoModalProps
               <span className="text-gray-600">Timestamp</span>
               <span data-testid="tx-time">
                 {tx.time > 0
-                  ? formatDateLong(new Date(tx.time * 1000).toISOString())
+                  ? formatDate(new Date(tx.time * 1000).toISOString())
                   : "—"}
               </span>
             </div>

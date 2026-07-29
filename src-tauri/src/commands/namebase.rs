@@ -122,7 +122,7 @@ pub(crate) fn namebase_client_with_cookie(
 /// `before` — i.e. the server rotated it via `Set-Cookie` during this
 /// command's calls. A no-op write is skipped so an unchanged session doesn't
 /// churn the `settings` table on every dashboard poll.
-fn persist_cookie_if_changed(
+pub(crate) fn persist_cookie_if_changed(
     state: &AppState,
     before: &str,
     client: &NamebaseClient,

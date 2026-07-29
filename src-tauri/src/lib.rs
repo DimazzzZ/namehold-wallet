@@ -81,6 +81,27 @@ pub fn run() {
             std::fs::create_dir_all(db_path.parent().unwrap()).expect("failed to create data dir");
             let conn = db::connection::open(&db_path).expect("failed to open database");
             db::migrations::run(&conn).expect("failed to run migrations");
+
+            // One-shot backfill for subdomain names (pre-fix imports had just the
+            // parent TLD; now we compose {subdomain}.{domain}). Gated by a settings
+            // marker so it runs exactly once.
+            let needs_backfill = db::queries::get_settings(&conn)
+                .ok()
+                .map(|s| !s.contains_key("namebase_history_subdomain_name_backfilled_v1"))
+                .unwrap_or(true);
+            if needs_backfill {
+                if let Err(e) = db::namebase_history::backfill_subdomain_names(&conn) {
+                    eprintln!("warning: subdomain name backfill failed: {}", e);
+                } else {
+                    // Mark it done so we don't run again.
+                    let _ = db::queries::set_setting(
+                        &conn,
+                        "namebase_history_subdomain_name_backfilled_v1",
+                        "1",
+                    );
+                }
+            }
+
             app.manage(AppState {
                 db: Mutex::new(conn),
                 signer: Mutex::new(None),
@@ -206,6 +227,11 @@ pub fn run() {
             commands::namebase::namebase_transfer_domain,
             commands::namebase::namebase_withdraw_hns,
             commands::namebase::fetch_namebase_domain_withdrawals,
+            commands::namebase_history::import_namebase_history_from_file,
+            commands::namebase_history::import_namebase_history_live,
+            commands::namebase_history::get_namebase_history,
+            commands::namebase_history::get_namebase_history_summary,
+            commands::namebase_history::clear_namebase_history,
             commands::node::node_status,
             commands::node::resync_hsd_chain,
             commands::node::start_hsd,

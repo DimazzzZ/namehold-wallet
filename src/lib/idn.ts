@@ -133,3 +133,32 @@ export function displayName(name: string): string {
     })
     .join(".");
 }
+
+/**
+ * Case-insensitive substring match that hits BOTH the raw punycode form
+ * AND the decoded Unicode form of a name.
+ *
+ * Every user-facing search box in the app renders names via
+ * `displayName()` (e.g. `.сбер`, `.münchen`), so a user who types the
+ * character they SEE would otherwise get zero hits on a stored punycode
+ * label like `xn--d1aey`. Matching against both surfaces gives them:
+ *   - the visible Unicode form ("сбер", "münchen"),
+ *   - the raw ACE form ("xn--d1aey", "xn--mnchen-3ya"),
+ *   - anything mixed in a dotted name.
+ *
+ * The query is trimmed and lower-cased once by the caller convention;
+ * pass an already-normalized `query` for hot loops, or an arbitrary
+ * `query` for one-off use — this function is idempotent under
+ * `.trim().toLowerCase()`.
+ *
+ * Returns `false` for an empty `name` or empty `query`.
+ */
+export function nameMatches(name: string | null | undefined, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return false;
+  const raw = (name ?? "").toLowerCase();
+  if (!raw) return false;
+  if (raw.includes(q)) return true;
+  const decoded = displayName(raw).toLowerCase();
+  return decoded !== raw && decoded.includes(q);
+}

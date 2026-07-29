@@ -4,8 +4,8 @@ import { useActionHistory } from "../queries/read";
 import { useActiveProfile, useTxDrafts } from "../queries/wallet";
 import { PageHeader } from "./ui/PageHeader";
 import { Badge } from "./ui/Badge";
-import { formatHns, formatDateLong, amountTone } from "../lib/utils";
-import { displayName } from "../lib/idn";
+import { formatHns, formatDate, amountTone } from "../lib/utils";
+import { displayName, nameMatches } from "../lib/idn";
 import { useQueryClient } from "@tanstack/react-query";
 import { NameInfoModal } from "./NameInfoModal";
 import { BlockInfoModal } from "./BlockInfoModal";
@@ -77,7 +77,10 @@ export function ActivityView() {
     if (filterAction !== "all" && r.action !== filterAction) return false;
     if (filterStatus === "confirmed" && !r.confirmed) return false;
     if (filterStatus === "pending" && r.confirmed) return false;
-    if (searchQuery && !(r.name ?? "").toLowerCase().includes(searchQuery)) return false;
+    // Match both the raw punycode name and the decoded Unicode form the
+    // user actually sees (`displayName`), so searching "сбер" finds a row
+    // stored as `xn--90ai7ab`.
+    if (searchQuery && !nameMatches(r.name, searchQuery)) return false;
     return true;
   });
 
@@ -293,7 +296,7 @@ export function ActivityRow({
 }) {
   const meta = ACTION_META[row.action] ?? FALLBACK_META;
   const timeStr = row.sortTs > 0
-    ? formatDateLong(new Date(row.sortTs * 1000).toISOString())
+    ? formatDate(new Date(row.sortTs * 1000).toISOString())
     : "Pending";
   const tone = amountTone(row);
   const toneClass =

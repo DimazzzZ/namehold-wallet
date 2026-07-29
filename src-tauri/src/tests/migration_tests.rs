@@ -56,8 +56,8 @@ fn test_schema_version_tracking() {
     // 016 (last_explorer_sync_at, Task 11 review Finding 2),
     // 017 (backfill bid_commitments.bid_txid/reveal_txid for pre-fix rows),
     // 018 (name_bid_index for chain_scan_cursor for the chain scanner),
-    // 019 (namebase_cookie_at_rest: add namebase_cookie_v1 for encrypted storage).
-    assert_eq!(count, 19);
+    // 020 (namebase_history: imported Namebase account-history events).
+    assert_eq!(count, 20);
 }
 
 #[test]
