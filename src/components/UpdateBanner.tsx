@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useAppUpdate } from "../hooks/useAppUpdate";
 import { isTauri } from "../lib/runtime";
+import { WhatsNewModal } from "./WhatsNewModal";
 
 /**
  * Slim top banner shown when a silent auto-check (~30s after launch) finds a
@@ -13,6 +14,7 @@ import { isTauri } from "../lib/runtime";
 export function UpdateBanner() {
   const { phase, available, progress, dismissedVersion, check, install, dismiss } =
     useAppUpdate();
+  const [showNotes, setShowNotes] = useState(false);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -39,16 +41,27 @@ export function UpdateBanner() {
   const pct = progress != null ? Math.round(progress * 100) : null;
 
   return (
-    <div
-      className="px-6 py-1.5 text-xs text-blue-900 bg-blue-100 border-b border-blue-200 flex items-center gap-3"
-      data-testid="update-banner"
-    >
+    <>
+      <div
+        className="px-6 py-1.5 text-xs text-blue-900 bg-blue-100 border-b border-blue-200 flex items-center gap-3"
+        data-testid="update-banner"
+      >
       <span>
         🎉 <strong>Namehold v{available!.version}</strong> is available.
       </span>
 
       {phase === "available" && (
         <>
+          {available.notes && (
+            <button
+              type="button"
+              className="text-blue-800/70 hover:text-blue-900"
+              onClick={() => setShowNotes(true)}
+              data-testid="update-banner-whats-new"
+            >
+              What's new?
+            </button>
+          )}
           <button
             type="button"
             className="underline font-medium hover:no-underline"
@@ -79,6 +92,13 @@ export function UpdateBanner() {
           Update installed — restart from Settings.
         </span>
       )}
-    </div>
+      </div>
+      <WhatsNewModal
+        open={showNotes}
+        onClose={() => setShowNotes(false)}
+        version={available.version}
+        notes={available.notes ?? ""}
+      />
+    </>
   );
 }

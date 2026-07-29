@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-29
+
 ### Changed
 - All data tables across the app now share one consistent design: compact
   `py-1` row density, horizontal column spacing (`pr-4`), plain gray-500
@@ -30,8 +32,20 @@
   inventory, renewals), block heights (confirmation, start, renewal), txids,
   and receive-address. External-explorer UI labels are brand-neutral. The
   read API backend is unchanged (still e.hnsfans.com by default).
+- Release notes shown in-app and on the GitHub release page now come from the
+  matching `CHANGELOG.md` section instead of auto-generated PR titles. The
+  release workflow extracts the version's entry and sets it as the release
+  body, which flows through `latest.json` into the in-app updater.
 
 ### Added
+- **"What's new?" release notes** — the update banner now has a "What's new?"
+  button that opens a modal rendering the release notes as formatted Markdown
+  (headings, bullet lists, external links). The Settings → Updates card shares
+  the same rendered view. Links open in the system browser.
+- **Unicode-aware name search** — a new `nameMatches()` helper matches search
+  queries against both the decoded Unicode form (e.g. `.сбер`, `.münchen`) and
+  the raw punycode form (`xn--…`) of a name, so typing the character you see
+  finds the stored label.
 - **Reveal in-flight UI** — after broadcasting a reveal, the modal stays open
   and shows a pending-confirmation card (txid + copy + explorer link) instead of
   closing. The auctions row advances through `revealBroadcastPending` →
