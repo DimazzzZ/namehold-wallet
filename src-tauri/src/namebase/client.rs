@@ -231,6 +231,19 @@ impl NamebaseClient {
         &self.base_url
     }
 
+    /// Browser-like User-Agent used for every request.
+    ///
+    /// Namebase sits behind a CDN/WAF that applies stricter rate-limits (and,
+    /// on the heavy `/api/account/history/export` endpoint, outright 429s) to
+    /// requests whose fingerprint doesn't look like a real browser. Sending a
+    /// bare `Namehold/x.y.z` UA with no `Accept`/`Referer`/`Sec-Fetch-*`
+    /// headers reliably tripped this, even though the same cookie + URL from
+    /// the Namebase web UI worked fine. Matching a real browser's request
+    /// shape (headers below) eliminates the false rate-limit.
+    const BROWSER_UA: &'static str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+                                      AppleWebKit/537.36 (KHTML, like Gecko) \
+                                      Chrome/131.0.0.0 Safari/537.36";
+
     /// The current `Cookie:`-header value, including any replacements/deletions
     /// picked up from `Set-Cookie` response headers since construction. Used by
     /// the command layer to detect and persist a server-side cookie rotation.
@@ -261,11 +274,22 @@ impl NamebaseClient {
     async fn send_get(&self, path: &str) -> Result<reqwest::Response, AppError> {
         let url = format!("{}{}", self.base_url, path);
         let cookie = self.current_cookie();
+        let referer = format!("{}/", self.base_url);
         let resp = self
             .http
             .get(&url)
             .header("Cookie", cookie)
-            .header("User-Agent", "Namehold/0.2.1")
+            .header("User-Agent", Self::BROWSER_UA)
+            .header(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,\
+                 text/csv;q=0.9,application/json;q=0.9,*/*;q=0.8",
+            )
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Referer", referer)
+            .header("Sec-Fetch-Dest", "document")
+            .header("Sec-Fetch-Mode", "navigate")
+            .header("Sec-Fetch-Site", "same-origin")
             .send()
             .await?;
         self.capture_set_cookie(resp.headers());
@@ -279,12 +303,20 @@ impl NamebaseClient {
     ) -> Result<reqwest::Response, AppError> {
         let url = format!("{}{}", self.base_url, path);
         let cookie = self.current_cookie();
+        let referer = format!("{}/", self.base_url);
         let resp = self
             .http
             .post(&url)
             .header("Cookie", cookie)
             .header("Content-Type", "application/json")
-            .header("User-Agent", "Namehold/0.2.1")
+            .header("User-Agent", Self::BROWSER_UA)
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Referer", referer)
+            .header("Origin", &self.base_url)
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Site", "same-origin")
             .json(body)
             .send()
             .await?;

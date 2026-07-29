@@ -87,7 +87,7 @@ pub fn run() {
             // marker so it runs exactly once.
             let needs_backfill = db::queries::get_settings(&conn)
                 .ok()
-                .map(|s| s.get("namebase_history_subdomain_name_backfilled_v1").is_none())
+                .map(|s| !s.contains_key("namebase_history_subdomain_name_backfilled_v1"))
                 .unwrap_or(true);
             if needs_backfill {
                 if let Err(e) = db::namebase_history::backfill_subdomain_names(&conn) {

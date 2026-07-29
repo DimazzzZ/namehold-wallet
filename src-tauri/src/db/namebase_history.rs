@@ -103,12 +103,13 @@ pub fn upsert_events(
             // `changes()` is 1 for an insert and 1 for an ON CONFLICT update in
             // SQLite, so we can't distinguish via changes alone. Probe existence
             // first (cheap, indexed PK lookup).
-            let existed: bool = tx.query_row(
-                "SELECT 1 FROM namebase_history WHERE id = ?1",
-                params![e.id],
-                |_| Ok(true),
-            )
-            .unwrap_or(false);
+            let existed: bool = tx
+                .query_row(
+                    "SELECT 1 FROM namebase_history WHERE id = ?1",
+                    params![e.id],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
 
             stmt.execute(params![
                 e.id,
@@ -247,12 +248,15 @@ pub fn parse_data(row: &NamebaseHistoryRow) -> Value {
 /// so this backfill never needs to hit the network.
 pub fn backfill_subdomain_names(conn: &Connection) -> Result<usize, AppError> {
     // Load all subdomain rows first (small subset — ~100 in the sample fixture).
-    let mut stmt = conn.prepare(
-        "SELECT id, name, data_json FROM namebase_history WHERE family = 'subdomains'",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, data_json FROM namebase_history WHERE family = 'subdomains'")?;
     let rows: Vec<(i64, Option<String>, String)> = stmt
         .query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, String>(2)?,
+            ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
@@ -390,14 +394,21 @@ mod tests {
     /// data). Asserts the whole file round-trips and re-import is idempotent.
     #[test]
     fn imports_real_fixture_when_present() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../namebase-history-2026-07-26.csv");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../namebase-history-2026-07-26.csv"
+        );
         if !std::path::Path::new(path).exists() {
             eprintln!("skipping: fixture {path} not present");
             return;
         }
         let csv_text = std::fs::read_to_string(path).unwrap();
         let events = parse_history_csv(&csv_text).unwrap();
-        assert!(events.len() > 8000, "expected the full export, got {}", events.len());
+        assert!(
+            events.len() > 8000,
+            "expected the full export, got {}",
+            events.len()
+        );
 
         let mut conn = mem_db();
         let r1 = upsert_events(&mut conn, &events).unwrap();
@@ -417,7 +428,7 @@ mod tests {
 
     #[test]
     fn backfill_updates_subdomain_names_and_is_idempotent() {
-        let mut conn = mem_db();
+        let conn = mem_db();
 
         // Seed a confirm-transfer row with the OLD (buggy) name = "shot"
         // but the full data_json containing both domain + subdomain.

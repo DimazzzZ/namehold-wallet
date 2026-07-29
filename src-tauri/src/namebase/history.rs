@@ -153,9 +153,7 @@ fn build_event(id: i64, created_at: &str, kind: &str, data: &Value) -> NamebaseE
         normalize_name(dn)
     } else if let Some(dom) = data.get("domain").and_then(|v| v.as_str()) {
         match data.get("subdomain").and_then(|v| v.as_str()) {
-            Some(sub) if !sub.trim().is_empty() => {
-                normalize_name(&format!("{}.{}", sub, dom))
-            }
+            Some(sub) if !sub.trim().is_empty() => normalize_name(&format!("{}.{}", sub, dom)),
             _ => normalize_name(dom),
         }
     } else {
@@ -322,7 +320,10 @@ mod tests {
         assert_eq!(e.name.as_deref(), Some("moon.shot"));
         assert_eq!(e.usd_cents, Some(2900));
         assert_eq!(e.hns_doos, Some(4832721250));
-        assert_eq!(e.sale_id.as_deref(), Some("37e1df8c-07e7-4f73-a2b5-75330c2a10f2"));
+        assert_eq!(
+            e.sale_id.as_deref(),
+            Some("37e1df8c-07e7-4f73-a2b5-75330c2a10f2")
+        );
         // No bid/stake on a sale.
         assert_eq!(e.bid_doos, None);
         assert_eq!(e.stake_doos, None);

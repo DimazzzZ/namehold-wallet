@@ -32,10 +32,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "019",
         include_str!("../sql/019_namebase_cookie_at_rest.sql"),
     ),
-    (
-        "020",
-        include_str!("../sql/020_namebase_history.sql"),
-    ),
+    ("020", include_str!("../sql/020_namebase_history.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {

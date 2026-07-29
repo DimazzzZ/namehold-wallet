@@ -89,12 +89,7 @@ pub fn get_namebase_history(
     search: Option<String>,
 ) -> Result<Vec<crate::db::namebase_history::NamebaseHistoryRow>, AppError> {
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    namebase_history::list_history(
-        &db,
-        name.as_deref(),
-        family.as_deref(),
-        search.as_deref(),
-    )
+    namebase_history::list_history(&db, name.as_deref(), family.as_deref(), search.as_deref())
 }
 
 /// Get summary aggregates for the import card.
