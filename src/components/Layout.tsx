@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet } from "react-router-dom";
 import { useSettingsStore } from "../stores/settings";
 import { useActiveProfile, useWriteCapability } from "../queries/wallet";
 import { Toast } from "./ui/Toast";
@@ -58,10 +58,18 @@ export function Layout() {
           ))}
         </nav>
         <div className="px-4 py-2 border-t border-gray-200">
-          <div className="text-[10px] text-gray-400">
-            {profile ? profile.label : "No wallet"}
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[10px] text-gray-400 mt-0.5">v0.3.0</div>
+            </div>
+            <Link
+              to="/about"
+              className="text-gray-400 hover:text-gray-600 transition-colors"
+              title="About"
+            >
+              ℹ️
+            </Link>
           </div>
-          <div className="text-[10px] text-gray-400 mt-0.5">v0.3.0</div>
         </div>
       </aside>
       <main className="flex-1 flex flex-col overflow-hidden">

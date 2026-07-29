@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Layout } from "./components/Layout";
+import { AboutPage } from "./components/AboutPage";
 import { PortfolioWorkspace } from "./components/PortfolioWorkspace";
 import { MigrationWorkspace } from "./components/MigrationWorkspace";
 import { WalletView } from "./components/WalletView";
@@ -53,6 +54,7 @@ function AppRoutes() {
         <Route path="/migration" element={<MigrationWorkspace />} />
         <Route path="/portfolio" element={<PortfolioWorkspace />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/about" element={<AboutPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
@@ -70,7 +72,14 @@ export default function App() {
   if (!loaded) {
     return (
       <div className="flex h-screen items-center justify-center bg-gray-100">
-        <div className="text-gray-500">Loading...</div>
+        <div className="flex flex-col items-center gap-4">
+          {/* Spinner (CSS, matching Button.tsx pattern) */}
+          <span className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600" />
+          {/* App name */}
+          <div className="text-lg font-semibold text-gray-700">Namehold</div>
+          {/* Status message */}
+          <div className="text-sm text-gray-500">Starting up…</div>
+        </div>
       </div>
     );
   }

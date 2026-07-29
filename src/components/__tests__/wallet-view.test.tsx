@@ -186,7 +186,7 @@ describe("WalletView (non-custodial)", () => {
     await screen.findByText("Primary");
     // Click the first Unlock button (the account-bar one); the inline notice
     // Unlock buttons delegate to the same command.
-    fireEvent.click(screen.getAllByRole("button", { name: /Unlock/i })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /Unlock/i })[0]!);
 
     // Unlocking must go through the secure command (which prompts in the Rust
     // secure window) — never a React-side passphrase path.

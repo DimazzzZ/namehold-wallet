@@ -5,70 +5,18 @@
 ## [0.3.0] - 2026-07-29
 
 ### Changed
-- All data tables across the app now share one consistent design: compact
-  `py-1` row density, horizontal column spacing (`pr-4`), plain gray-500
-  headers (no bold), `text-xs font-mono` for value cells (names, amounts,
-  heights, txids, addresses), uniform `border-t border-gray-100` row borders,
-  and a `hover:bg-gray-50` highlight on every row. This unifies the Owned
-  Names, Activity, Recent-transactions, Auctions, Renewals, Batches, DNS
-  records, TLD inventory, and all Namebase-dashboard tables (domains,
-  renewals, transfer, transfer history, withdrawals), plus the shared
-  virtualized table used by the inventory view.
-- Activity view (full table + Wallet "Recent activity" card) now shares the
-  same typography and density as the Owned Names table (compact `py-1` rows,
-  plain gray headers, `font-mono` names and heights). Action labels are
-  Title Case (Send, Receive, Bid, Reveal, Register, …) instead of ALL CAPS,
-  including the filter dropdown. The full Activity table gained a dedicated
-  **Block** column (previously the block-height chip was crammed into the
-  Status cell without a header) and now has horizontal breathing room
-  between adjacent columns. Names, txids, and block heights in Activity are
-  clickable Shakeshift explorer links on mainnet. The Recent-activity card's
-  Action column now renders the same colored Badge as the full table. The
-  in-app "manage name" modal that used to open from the Activity name click
-  has been removed — use the Manage buttons on the Wallet Owned Names or
-  the Auctions rows instead.
-- Explorer links throughout the app now open on Shakeshift
-  (https://shakeshift.com): names (auctions, owned-names, recent-tx,
-  inventory, renewals), block heights (confirmation, start, renewal), txids,
-  and receive-address. External-explorer UI labels are brand-neutral. The
-  read API backend is unchanged (still e.hnsfans.com by default).
-- Release notes shown in-app and on the GitHub release page now come from the
-  matching `CHANGELOG.md` section instead of auto-generated PR titles. The
-  release workflow extracts the version's entry and sets it as the release
-  body, which flows through `latest.json` into the in-app updater.
+- **Unified table design** — all tables (Owned Names, Activity, Auctions, Renewals, Batches, DNS records, TLD inventory, Namebase dashboard) now share compact rows, consistent typography, and monospace values. Activity gained a dedicated Block column.
+- **Shakeshift explorer** — all explorer links (names, txids, addresses, block heights) now open on Shakeshift (https://shakeshift.com) instead of HNSFans.
+- **Release notes from CHANGELOG** — in-app update banner and GitHub releases now show the CHANGELOG entry instead of auto-generated PR titles.
 
 ### Added
-- **Inline "Unlock" buttons on locked-wallet notices** — every place the app
-  says "Name actions unavailable / Unlock your wallet to sign transactions"
-  (name-actions modal, send-HNS row, send-review sheet, auctions bid hint,
-  TLD bulk-finalize note) now shows an inline **Unlock** button, so users
-  can unlock in place instead of closing the modal, navigating to Wallet,
-  unlocking, and coming back. Powered by a new self-hiding `<UnlockButton>`
-  component that renders nothing when there's no active profile or the
-  wallet is already unlocked.
-- **"What's new?" release notes** — the update banner now has a "What's new?"
-  button that opens a modal rendering the release notes as formatted Markdown
-  (headings, bullet lists, external links). The Settings → Updates card shares
-  the same rendered view. Links open in the system browser.
-- **Unicode-aware name search** — a new `nameMatches()` helper matches search
-  queries against both the decoded Unicode form (e.g. `.сбер`, `.münchen`) and
-  the raw punycode form (`xn--…`) of a name, so typing the character you see
-  finds the stored label.
-- **Reveal in-flight UI** — after broadcasting a reveal, the modal stays open
-  and shows a pending-confirmation card (txid + copy + explorer link) instead of
-  closing. The auctions row advances through `revealBroadcastPending` →
-  `revealDoneWaitingForClose` → won/lost without a manual refresh (30s polling +
-  draft-confirmation watcher with a proactive toast). A confirm-before-broadcast
-  panel shows the bid amount and cycles substate labels (Unlocking → Signing →
-  Broadcasting). Covers restored/cross-device wallets via a chain-truth fallback.
-- **Block-driven stateful mock engine** — `pnpm dev` (browser) now runs a
-  virtual blockchain simulator with mutable `chainHeight` and per-name auction
-  records. Names advance deterministically through AVAILABLE → OPENING → BIDDING
-  → REVEAL → CLOSED as blocks are mined via `__webqa_mine(n)`. The seeded
-  scenario pre-loads a name in REVEAL phase ready to reveal.
-- **External link opener** — `tauri-plugin-opener` enables "View on explorer"
-  buttons that open the system browser (Shakeshift tx page). Falls back to
-  `window.open` in the browser dev mode.
+- **About page** — reachable from the ℹ️ icon next to the version number. Shows logo, version, description, and a link to report issues or request features on GitHub.
+- **Branded startup spinner** — animated spinner with app name instead of a blank white screen on launch.
+- **Inline "Unlock" buttons** — locked-wallet notices (name actions, send, bid, finalize) now have an Unlock button so you can unlock in place without navigating away.
+- **"What's new?" release notes** — the update banner shows a "What's new?" button that opens the release notes in a formatted modal.
+- **Unicode-aware name search** — search by the Unicode form (`.münchen`) or the punycode form (`xn--…`) and find the same name.
+- **Reveal in-flight UI** — after broadcasting a reveal, the modal shows a pending-confirmation card with txid and explorer link. Auctions rows update automatically without manual refresh.
+- **External link opener** — "View on explorer" buttons open the system browser directly.
 
 ## [0.2.1] - 2026-07-25
 
