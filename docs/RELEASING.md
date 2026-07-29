@@ -32,7 +32,9 @@ This creates:
 
 1. Bump the version in `src-tauri/tauri.conf.json`, `package.json`,
    `src-tauri/Cargo.toml`, `src/components/Layout.tsx`, and
-   `src-tauri/src/namebase/client.rs` (User-Agent). Add a CHANGELOG entry.
+   `src/lib/webqa-mock.ts` (`current_version`). Run `cargo check` in
+   `src-tauri/` to update `Cargo.lock`. Add a CHANGELOG entry: rename
+   `[Unreleased]` → `[X.Y.Z] - <date>` and open a fresh `[Unreleased]`.
 2. Commit and tag:
    ```bash
    git tag v0.X.0

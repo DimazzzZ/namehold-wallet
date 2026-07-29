@@ -86,6 +86,33 @@ jobs:
           RID="$(gh release view "$TAG" --json databaseId --jq .databaseId)"
           echo "release_id=$RID" >> "$GITHUB_OUTPUT"
 
+      - name: Set release notes from CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          # Extract the CHANGELOG.md section for this version:
+          # - Match from "## [$VERSION]" to the next "## [" (or EOF).
+          # - Print only the interior lines (skip the boundary headers).
+          # - Trim leading blank lines.
+          NOTES="$(awk -v ver="$VERSION" '
+            index($0, "## [" ver "]") == 1 { found=1; next }
+            found && index($0, "## [") == 1 { exit }
+            found { print }
+          ' CHANGELOG.md | sed '/./,$!d')"
+          if [ -z "$NOTES" ]; then
+            echo "::warning::No CHANGELOG.md entry found for $VERSION — keeping auto-generated notes."
+            exit 0
+          fi
+          echo "Setting release body from CHANGELOG.md ($VERSION):"
+          echo "$NOTES" | head -5
+          echo "..."
+          # Write to a temp file to avoid shell quoting issues with special chars.
+          printf '%s\n' "$NOTES" > /tmp/release-notes.md
+          gh release edit "$TAG" --notes-file /tmp/release-notes.md
+
   build:
     name: Build (${{ matrix.platform }})
     needs: prepare

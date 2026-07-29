@@ -32,6 +32,7 @@ import { TxInfoModal } from "./TxInfoModal";
 import { ActivityRow } from "./ActivityView";
 import { WalletManager } from "./WalletManager";
 import { AddWalletForm } from "./AddWalletForm";
+import { UnlockButton } from "./UnlockButton";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
@@ -728,10 +729,13 @@ export function WalletView() {
                 Auctions
               </Button>
               {!canWrite && (
-                <span className="text-sm text-amber-600">
-                  {writeCap?.reason ??
-                    "Connect a node in Settings, Refresh to sync your coins, then unlock to send."}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-amber-600">
+                    {writeCap?.reason ??
+                      "Connect a node in Settings, Refresh to sync your coins, then unlock to send."}
+                  </span>
+                  <UnlockButton size="sm" variant="primary" label="Unlock" />
+                </div>
               )}
             </div>
             <div className="text-xs text-gray-500">
@@ -1060,8 +1064,9 @@ export function WalletView() {
               </div>
             )}
             {!unlocked && !sendError && (
-              <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800">
-                You'll be asked for your passphrase in a secure window to sign.
+              <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800 flex items-center justify-between gap-2">
+                <span>You'll be asked for your passphrase in a secure window to sign.</span>
+                <UnlockButton size="sm" variant="primary" />
               </div>
             )}
             <div className="flex gap-2 justify-end">

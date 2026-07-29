@@ -21,6 +21,7 @@ import type { Asset, MigrationStatus } from "../types";
 import { formatHns, formatDate, formatCount } from "../lib/utils";
 import { displayName } from "../lib/idn";
 import { NameInfoModal } from "./NameInfoModal";
+import { UnlockButton } from "./UnlockButton";
 import { mapError } from "../lib/errors";
 import { open, save } from "../lib/dialog";
 import { invoke } from "../lib/invoke";
@@ -515,8 +516,13 @@ export function TldInventory() {
             return (
               <>
                 <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
-                  This builds, signs (in the secure window if locked), and broadcasts an
-                  on-chain name covenant. It cannot be undone.
+                  <div className="flex items-center justify-between gap-2">
+                    <span>
+                      This builds, signs (in the secure window if locked), and broadcasts an
+                      on-chain name covenant. It cannot be undone.
+                    </span>
+                    <UnlockButton size="sm" variant="primary" />
+                  </div>
                 </div>
                 <p className="text-sm text-gray-600">
                   Name: <strong>.{tld ? displayName(tld) : tld}</strong>

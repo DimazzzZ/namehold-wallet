@@ -1,7 +1,7 @@
 {
   "name": "namehold-wallet",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "packageManager": "pnpm@11.17.0",
   "scripts": {
@@ -27,6 +27,7 @@
     "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^7.0.0",
     "zod": "^3.0.0",
     "zustand": "^5.0.0"

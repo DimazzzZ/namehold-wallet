@@ -1,6 +1,7 @@
 import { useCurrentVersion } from "../queries/updates";
 import { useAppUpdate, relaunchApp } from "../hooks/useAppUpdate";
 import { Button } from "./ui/Button";
+import { ReleaseNotes } from "./ReleaseNotes";
 
 /**
  * The "Updates" card in Settings: shows the running version and drives the
@@ -46,11 +47,7 @@ export function UpdatesSettings() {
             <div className="text-sm font-medium text-blue-900">
               Version {available.version} is available
             </div>
-            {available.notes && (
-              <pre className="text-xs text-blue-800 whitespace-pre-wrap max-h-32 overflow-auto">
-                {available.notes}
-              </pre>
-            )}
+            <ReleaseNotes notes={available.notes} />
 
             {phase === "available" && (
               <Button

@@ -16,6 +16,7 @@ import {
 import { Button } from "./ui/Button";
 import { Dialog } from "./ui/Dialog";
 import { Badge } from "./ui/Badge";
+import { UnlockButton } from "./UnlockButton";
 import { BidForm } from "./name-actions/BidForm";
 import { DnsRecordsEditor } from "./name-actions/DnsRecordsEditor";
 import { GuidedAction } from "./name-actions/GuidedAction";
@@ -481,9 +482,14 @@ export function NameActionsModal({
             role="alert"
             data-testid="name-actions-blocked"
           >
-            <span className="font-semibold">Name actions unavailable.</span>{" "}
-            {writeCap?.reason ??
-              "Connect a fully-synced, address-indexed node and unlock your signer to manage names."}
+            <div className="flex items-center justify-between gap-2">
+              <span>
+                <span className="font-semibold">Name actions unavailable.</span>{" "}
+                {writeCap?.reason ??
+                  "Connect a fully-synced, address-indexed node and unlock your signer to manage names."}
+              </span>
+              <UnlockButton size="sm" variant="primary" />
+            </div>
           </div>
         )}
 
