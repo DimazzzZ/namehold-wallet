@@ -10,6 +10,7 @@ import {
 } from "../lib/auction";
 import { NameActionsModal } from "./NameActionsModal";
 import { NameInfoModal } from "./NameInfoModal";
+import { UnlockButton } from "./UnlockButton";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
 import { PageHeader } from "./ui/PageHeader";
@@ -260,9 +261,12 @@ export function AuctionsView() {
           </Button>
         </div>
         {!canWrite && (
-          <div className="text-xs text-amber-600">
-            {writeCap?.reason ??
-              "Connect a node in Settings, Refresh to sync your coins, then unlock to bid."}
+          <div className="flex items-center gap-2 text-xs text-amber-600">
+            <span>
+              {writeCap?.reason ??
+                "Connect a node in Settings, Refresh to sync your coins, then unlock to bid."}
+            </span>
+            <UnlockButton size="sm" variant="primary" label="Unlock" />
           </div>
         )}
       </div>

@@ -38,6 +38,14 @@
   body, which flows through `latest.json` into the in-app updater.
 
 ### Added
+- **Inline "Unlock" buttons on locked-wallet notices** — every place the app
+  says "Name actions unavailable / Unlock your wallet to sign transactions"
+  (name-actions modal, send-HNS row, send-review sheet, auctions bid hint,
+  TLD bulk-finalize note) now shows an inline **Unlock** button, so users
+  can unlock in place instead of closing the modal, navigating to Wallet,
+  unlocking, and coming back. Powered by a new self-hiding `<UnlockButton>`
+  component that renders nothing when there's no active profile or the
+  wallet is already unlocked.
 - **"What's new?" release notes** — the update banner now has a "What's new?"
   button that opens a modal rendering the release notes as formatted Markdown
   (headings, bullet lists, external links). The Settings → Updates card shares

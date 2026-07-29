@@ -169,7 +169,9 @@ describe("WalletView (non-custodial)", () => {
 
     await screen.findByText("Primary");
     expect(screen.getByText(/Signer locked/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Unlock/i })).toBeInTheDocument();
+    // Multiple Unlock buttons may render (account-bar + inline notices);
+    // any of them is sufficient to satisfy "an Unlock control exists".
+    expect(screen.getAllByRole("button", { name: /Unlock/i }).length).toBeGreaterThan(0);
 
     // The core guarantee: React never renders a password/secret input field.
     expect(container.querySelector('input[type="password"]')).toBeNull();
@@ -182,7 +184,9 @@ describe("WalletView (non-custodial)", () => {
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");
-    fireEvent.click(screen.getByRole("button", { name: /Unlock/i }));
+    // Click the first Unlock button (the account-bar one); the inline notice
+    // Unlock buttons delegate to the same command.
+    fireEvent.click(screen.getAllByRole("button", { name: /Unlock/i })[0]);
 
     // Unlocking must go through the secure command (which prompts in the Rust
     // secure window) — never a React-side passphrase path.
@@ -202,7 +206,7 @@ describe("WalletView (non-custodial)", () => {
     expect(screen.getByText(/Signer locked/i)).toBeInTheDocument();
     expect(screen.getByText(/no passphrase.*click Unlock/i)).toBeInTheDocument();
     expect(screen.queryByText(/Unlock with your passphrase/i)).toBeNull();
-    expect(screen.getByRole("button", { name: /Unlock/i })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Unlock/i }).length).toBeGreaterThan(0);
   });
 
   it("a passphrase wallet still shows the secure-window unlock copy", async () => {
