@@ -220,6 +220,16 @@ describe("formatDate", () => {
   it("returns the raw string for an unparseable value (never 'Invalid Date')", () => {
     expect(formatDate("not-a-date")).toBe("not-a-date");
   });
+
+  it("formats with deterministic en-US format (no locale-dependent d/m/y ordering)", () => {
+    const result = formatDate("2024-01-15T10:30:00Z");
+    expect(result).toBe("January 15, 2024 - 10:30:00");
+  });
+
+  it("omits time suffix for date-only inputs", () => {
+    const result = formatDate("2024-06-15");
+    expect(result).toBe("June 15, 2024");
+  });
 });
 
 describe("latestTimestamp (Task 11 review, Finding 2)", () => {

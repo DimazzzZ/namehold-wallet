@@ -18,7 +18,8 @@ import { EmptyState } from "./ui/EmptyState";
 import { NamebaseHistoryImport } from "./NamebaseHistoryImport";
 import { mapError } from "../lib/errors";
 import { formatDate, formatCount, formatHnsAmount, truncate } from "../lib/utils";
-import { displayName } from "../lib/idn";
+import { displayName, nameMatches } from "../lib/idn";
+import { usePagination } from "../hooks/usePagination";
 
 /** Whole days from now until an ISO date (negative = already past). */
 function daysUntil(iso: string): number | null {
@@ -743,9 +744,12 @@ export function NamebaseDashboard() {
         </div>
       </Dialog>
 
-      {/* Recent activity — collapsible section that replaces the old Transfers tab */}
+      {/* Recent activity (domain transfers) + standalone HNS withdrawals table */}
       {isConnected && (
-        <RecentActivity />
+        <>
+          <RecentActivity />
+          <HnsWithdrawals />
+        </>
       )}
 
       {/* Imported Namebase account history — always visible (file upload works offline) */}
@@ -754,9 +758,183 @@ export function NamebaseDashboard() {
   );
 }
 
-/** Recent activity section: domain transfers + HNS withdrawals. Always visible. */
+const RECENT_ACTIVITY_PAGE_SIZE = 10;
+
+/**
+ * Small pager control shared by the Namebase Dashboard's paginated tables.
+ * Mirrors the Pager pattern used in ActivityView so the two feel identical.
+ */
+function Pager({
+  page,
+  totalPages,
+  startRow,
+  endRow,
+  totalRows,
+  onGoTo,
+}: {
+  page: number;
+  totalPages: number;
+  startRow: number;
+  endRow: number;
+  totalRows: number;
+  onGoTo: (n: number) => void;
+}) {
+  const canPrev = page > 1;
+  const canNext = page < totalPages;
+  const btn =
+    "text-blue-600 hover:underline disabled:opacity-40 disabled:cursor-not-allowed disabled:no-underline";
+  return (
+    <div className="flex items-center justify-between mt-3 text-sm text-gray-500">
+      <div>
+        Rows {startRow}–{endRow} of {totalRows}
+      </div>
+      <div className="flex items-center gap-4">
+        <button
+          type="button"
+          className={btn}
+          disabled={!canPrev}
+          onClick={() => onGoTo(page - 1)}
+        >
+          ← Prev
+        </button>
+        <span className="text-gray-600">
+          Page {page} of {totalPages}
+        </span>
+        <button
+          type="button"
+          className={btn}
+          disabled={!canNext}
+          onClick={() => onGoTo(page + 1)}
+        >
+          Next →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Recent activity: paginated domain-transfer history with a name+address
+ * search box. Renders `RECENT_ACTIVITY_PAGE_SIZE` rows per page.
+ */
 function RecentActivity() {
   const { data: domainTransfers = [], isLoading } = useNamebaseDomainWithdrawals();
+  const { data: profile } = useActiveProfile();
+  const myAddress = profile?.receiveAddress ?? null;
+
+  const [search, setSearch] = useState("");
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return domainTransfers;
+    return domainTransfers.filter(
+      (t) =>
+        // Search hits both the raw punycode form AND the decoded Unicode
+        // form of the domain — the user sees `.сбер` (via `displayName`),
+        // so typing "сбер" MUST find the row even when the stored value
+        // is `xn--90ai7ab`.
+        nameMatches(t.domain, q) ||
+        (t.destination_address ?? "").toLowerCase().includes(q),
+    );
+  }, [domainTransfers, search]);
+
+  const { page, setPage, pageRows, totalRows, totalPages, pageStart, pageEnd } =
+    usePagination(filtered, RECENT_ACTIVITY_PAGE_SIZE);
+
+  return (
+    <div className="bg-white rounded p-4 border border-gray-200">
+      <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+        <div className="text-sm font-semibold text-gray-700">
+          Recent activity ({domainTransfers.length})
+        </div>
+        <input
+          type="text"
+          placeholder="Search by name or address…"
+          className="border border-gray-200 rounded px-2 py-1 text-sm w-64"
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(1);
+          }}
+          aria-label="Search domain transfers"
+          data-testid="namebase-recent-activity-search"
+        />
+      </div>
+
+      <div>
+        <h4 className="text-xs font-medium text-gray-500 mb-2">Domain transfers</h4>
+        {isLoading ? (
+          <div className="text-sm text-gray-400 py-2 text-center">Loading…</div>
+        ) : domainTransfers.length === 0 ? (
+          <EmptyState
+            title="No transfers yet"
+            description="Transfer a domain above and it'll appear here with live status."
+          />
+        ) : totalRows === 0 ? (
+          <div className="text-sm text-gray-400 py-2 text-center">
+            No transfers match your search.
+          </div>
+        ) : (
+          <>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-500 border-b">
+                  <th className="py-1 pr-4">Domain</th>
+                  <th className="py-1 pr-4">Destination</th>
+                  <th className="py-1 pr-4">Status</th>
+                  <th className="py-1">Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageRows.map((t) => {
+                  const { label, tone } = namebaseStatus(t.status);
+                  return (
+                    <tr key={t.id ?? t.domain} className="border-t border-gray-100 hover:bg-gray-50">
+                      <td className="py-1 pr-4 text-xs font-mono">.{displayName(t.domain)}</td>
+                      <td className="py-1 pr-4 font-mono text-xs text-gray-500">
+                        {truncate(t.destination_address, 16)}
+                        {!!myAddress && t.destination_address === myAddress && (
+                          <span className="ml-1 text-gray-400">(your wallet)</span>
+                        )}
+                      </td>
+                      <td className="py-1 pr-4">
+                        <Badge variant={tone} title={t.status_note ?? undefined}>
+                          {label}
+                        </Badge>
+                      </td>
+                      <td className="py-1 text-xs text-gray-500">
+                        {t.updated_at || t.created_at
+                          ? formatDate(t.updated_at || t.created_at)
+                          : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {totalRows > RECENT_ACTIVITY_PAGE_SIZE && (
+              <Pager
+                page={page}
+                totalPages={totalPages}
+                startRow={pageStart + 1}
+                endRow={pageEnd}
+                totalRows={totalRows}
+                onGoTo={setPage}
+              />
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Standalone HNS withdrawals table with pagination. Deliberately has no
+ * search — withdrawals carry only amount/address/status, and users
+ * consistently locate withdrawals by scrolling recency, not by search.
+ */
+function HnsWithdrawals() {
   const { data: withdrawals = [] } = useNamebaseWithdrawals();
   const { data: profile } = useActiveProfile();
   const myAddress = profile?.receiveAddress ?? null;
@@ -765,109 +943,67 @@ function RecentActivity() {
     [withdrawals],
   );
 
+  const { page, setPage, pageRows, totalRows, totalPages, pageStart, pageEnd } =
+    usePagination(hnsWithdrawals, RECENT_ACTIVITY_PAGE_SIZE);
+
   return (
     <div className="bg-white rounded p-4 border border-gray-200">
       <div className="text-sm font-semibold text-gray-700 mb-3">
-        Recent activity ({domainTransfers.length + hnsWithdrawals.length})
+        HNS withdrawals ({hnsWithdrawals.length})
       </div>
-
-      <div className="space-y-4">
-          {/* Domain transfers */}
-          <div>
-            <h4 className="text-xs font-medium text-gray-500 mb-2">Domain transfers</h4>
-            {isLoading ? (
-              <div className="text-sm text-gray-400 py-2 text-center">Loading…</div>
-            ) : domainTransfers.length === 0 ? (
-              <EmptyState
-                title="No transfers yet"
-                description="Transfer a domain above and it'll appear here with live status."
-              />
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-500 border-b">
-                    <th className="py-1 pr-4">Domain</th>
-                    <th className="py-1 pr-4">Destination</th>
-                    <th className="py-1 pr-4">Status</th>
-                    <th className="py-1">Updated</th>
+      {totalRows === 0 ? (
+        <EmptyState
+          title="No withdrawals yet"
+          description="Use 'Withdraw HNS' above to move funds to an address."
+        />
+      ) : (
+        <>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-500 border-b">
+                <th className="py-1 pr-4">Amount</th>
+                <th className="py-1 pr-4">Destination</th>
+                <th className="py-1 pr-4">Status</th>
+                <th className="py-1">Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pageRows.map((w) => {
+                const { label, tone } = namebaseStatus(w.status);
+                return (
+                  <tr key={w.id} className="border-t border-gray-100 hover:bg-gray-50">
+                    <td className="py-1 pr-4 text-xs font-mono">{formatHnsAmount(Number(w.amount) || 0)} HNS</td>
+                    <td className="py-1 pr-4 font-mono text-xs text-gray-500">
+                      {truncate(w.destination_address, 16)}
+                      {!!myAddress && w.destination_address === myAddress && (
+                        <span className="ml-1 text-gray-400">(your wallet)</span>
+                      )}
+                    </td>
+                    <td className="py-1 pr-4">
+                      <Badge variant={tone} title={w.status_note ?? undefined}>
+                        {label}
+                      </Badge>
+                    </td>
+                    <td className="py-1 text-xs text-gray-500">
+                      {w.created_at ? formatDate(w.created_at) : "—"}
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {domainTransfers.map((t) => {
-                    const { label, tone } = namebaseStatus(t.status);
-                    return (
-                      <tr key={t.id ?? t.domain} className="border-t border-gray-100 hover:bg-gray-50">
-                        <td className="py-1 pr-4 text-xs font-mono">.{displayName(t.domain)}</td>
-                        <td className="py-1 pr-4 font-mono text-xs text-gray-500">
-                          {truncate(t.destination_address, 16)}
-                          {!!myAddress && t.destination_address === myAddress && (
-                            <span className="ml-1 text-gray-400">(your wallet)</span>
-                          )}
-                        </td>
-                        <td className="py-1 pr-4">
-                          <Badge variant={tone} title={t.status_note ?? undefined}>
-                            {label}
-                          </Badge>
-                        </td>
-                        <td className="py-1 text-xs text-gray-500">
-                          {t.updated_at || t.created_at
-                            ? formatDate(t.updated_at || t.created_at)
-                            : "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          {/* HNS withdrawals */}
-          <div>
-            <h4 className="text-xs font-medium text-gray-500 mb-2">HNS withdrawals</h4>
-            {hnsWithdrawals.length === 0 ? (
-              <EmptyState
-                title="No withdrawals yet"
-                description="Use 'Withdraw HNS' above to move funds to an address."
-              />
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-500 border-b">
-                    <th className="py-1 pr-4">Amount</th>
-                    <th className="py-1 pr-4">Destination</th>
-                    <th className="py-1 pr-4">Status</th>
-                    <th className="py-1">Date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {hnsWithdrawals.map((w) => {
-                    const { label, tone } = namebaseStatus(w.status);
-                    return (
-                      <tr key={w.id} className="border-t border-gray-100 hover:bg-gray-50">
-                        <td className="py-1 pr-4 text-xs font-mono">{formatHnsAmount(Number(w.amount) || 0)} HNS</td>
-                        <td className="py-1 pr-4 font-mono text-xs text-gray-500">
-                          {truncate(w.destination_address, 16)}
-                          {!!myAddress && w.destination_address === myAddress && (
-                            <span className="ml-1 text-gray-400">(your wallet)</span>
-                          )}
-                        </td>
-                        <td className="py-1 pr-4">
-                          <Badge variant={tone} title={w.status_note ?? undefined}>
-                            {label}
-                          </Badge>
-                        </td>
-                        <td className="py-1 text-xs text-gray-500">
-                          {w.created_at ? formatDate(w.created_at) : "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-      </div>
+                );
+              })}
+            </tbody>
+          </table>
+          {totalRows > RECENT_ACTIVITY_PAGE_SIZE && (
+            <Pager
+              page={page}
+              totalPages={totalPages}
+              startRow={pageStart + 1}
+              endRow={pageEnd}
+              totalRows={totalRows}
+              onGoTo={setPage}
+            />
+          )}
+        </>
+      )}
     </div>
   );
 }

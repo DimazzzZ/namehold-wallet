@@ -6,10 +6,38 @@ import {
   flexRender,
   type ColumnDef,
   type SortingState,
+  type Row,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useState, useRef, useMemo } from "react";
 import { cn } from "../../lib/utils";
+import { nameMatches } from "../../lib/idn";
+
+/**
+ * Global filter that matches BOTH the raw string form and the
+ * `displayName()`-decoded form of every cell value in a row. This means a
+ * user typing the Unicode label they see (e.g. `сбер`, `münchen`) finds
+ * rows whose stored value is the raw punycode (`xn--90ai7ab`), and a user
+ * typing `xn--` still finds rows via the raw form.
+ *
+ * Delegates to the shared `nameMatches()` helper (idn.ts) for the actual
+ * punycode-aware comparison, so the matching logic lives in one place.
+ */
+function globalPunyFilter<T>(row: Row<T>, _columnId: string, filterValue: unknown): boolean {
+  if (typeof filterValue !== "string") return true;
+  const q = filterValue.trim().toLowerCase();
+  if (!q) return true;
+  const values = row.getAllCells().map((c) => c.getValue());
+  return values.some((v) => {
+    if (v == null) return false;
+    const s = String(v);
+    // nameMatches handles both raw substring matching AND punycode-decoded
+    // matching in one call. For non-name columns (numbers, dates) it still
+    // works as a plain case-insensitive substring check on the stringified
+    // value.
+    return nameMatches(s, q);
+  });
+}
 
 interface DataTableProps<T> {
   data: T[];
@@ -65,6 +93,7 @@ export function DataTable<T extends { id: number }>({
     state: { sorting, globalFilter },
     onSortingChange: setSorting,
     onGlobalFilterChange: setGlobalFilter,
+    globalFilterFn: globalPunyFilter,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),

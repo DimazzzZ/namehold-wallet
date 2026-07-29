@@ -465,8 +465,14 @@ describe("WalletView — last successful sync timestamp (Task 11 / S1)", () => {
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");
-    const expected = new Date(`${newer.replace(" ", "T")}Z`).toLocaleString();
-    expect(screen.getByText(new RegExp(`Last successful sync:\\s*${expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`))).toBeInTheDocument();
+    // `formatDate` renders in the deterministic long form
+    // ("Month DD, YYYY - HH:MM:SS", UTC-normalized) — pin down the newer
+    // timestamp against that exact output.
+    expect(
+      screen.getByText(/Last successful sync:\s*July 14, 2026 - 09:00:00/),
+    ).toBeInTheDocument();
+    // The older timestamp must NOT appear.
+    expect(screen.queryByText(/January 1, 2026/)).toBeNull();
   });
 });
 
@@ -979,7 +985,7 @@ describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () =
   it("Recent activity card renders classified rows from read_action_history and links to /activity", async () => {
     // Unix seconds for 2026-07-24 12:00:00 UTC — locks the long-date
     // assertion to a known "July 24, 2026 - 12:00:00" output regardless of
-    // the runner's timezone (formatDateLong uses UTC-normalized parsing).
+    // the runner's timezone (formatDate uses UTC-normalized parsing).
     const unix = Math.floor(Date.UTC(2026, 6, 24, 12) / 1000);
     invokeMock.mockImplementation(
       routeInvoke({
@@ -1041,7 +1047,7 @@ describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () =
     expect(incomeSpan).toBeTruthy();
     // Long-form date with time: the row's Date cell reads
     // "July 24, 2026 - 12:00:00", not the locale-dependent "24/07/2026" or
-    // "7/24/2026" that `formatDate` would produce. formatDateLong is the
+    // "7/24/2026" that `formatDate` would produce. formatDate is the
     // shared helper.
     expect(screen.getAllByText("July 24, 2026 - 12:00:00").length).toBeGreaterThan(0);
   });
