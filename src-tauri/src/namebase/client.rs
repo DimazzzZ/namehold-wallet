@@ -280,11 +280,7 @@ impl NamebaseClient {
             .get(&url)
             .header("Cookie", cookie)
             .header("User-Agent", Self::BROWSER_UA)
-            .header(
-                "Accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,\
-                 text/csv;q=0.9,application/json;q=0.9,*/*;q=0.8",
-            )
+            .header("Accept", "text/csv, application/json, */*")
             .header("Accept-Language", "en-US,en;q=0.9")
             .header("Referer", referer)
             .header("Sec-Fetch-Dest", "document")
@@ -471,8 +467,12 @@ impl NamebaseClient {
                 status
             )));
         }
-        let (expired, body) = Self::read_body_and_check_expired(resp).await?;
-        if expired {
+        let body = resp.text().await?;
+        // The CSV export legitimately returns Content-Type: text/csv, so we
+        // cannot reuse the JSON-endpoint heuristic (which flags any non-JSON
+        // content-type as expired). Instead, detect expiry by checking if the
+        // response is actually an HTML login page.
+        if body.trim_start().starts_with('<') {
             return Err(AppError::NamebaseSessionExpired);
         }
         Ok(body)

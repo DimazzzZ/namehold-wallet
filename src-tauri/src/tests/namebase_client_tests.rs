@@ -627,3 +627,93 @@ async fn test_check_session_html_200_returns_false() {
     );
     m.assert_async().await;
 }
+
+// ---------------------------------------------------------------------------
+// get_account_history — the CSV export endpoint uses a body-only expiry check
+// so a legitimate text/csv response is NOT flagged as expired (the JSON-endpoint
+// heuristic would misclassify it, since text/csv doesn't contain "json").
+// ---------------------------------------------------------------------------
+
+/// A successful CSV response with `Content-Type: text/csv` must be returned as
+/// the raw CSV body, NOT flagged as session-expired. Regression guard for the
+/// bug where the JSON-endpoint heuristic (`content-type does not contain
+/// 'json' → expired`) misfired on every valid export.
+#[tokio::test]
+async fn test_get_account_history_csv_200_is_not_session_expired() {
+    let mut server = mockito::Server::new_async().await;
+    let csv_body = "\"This export covers your Namebase account history only.\"\n\
+                    \"\"\n\
+                    \"It does NOT include Sunset activity.\"\n\
+                    \n\
+                    id,created_at,type,data\n\
+                    1,2024-01-01T00:00:00Z,auctions:place-bid:4,\"{}\"\n";
+    let m = server
+        .mock("GET", "/api/account/history/export")
+        .with_status(200)
+        .with_header("content-type", "text/csv")
+        .with_body(csv_body)
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    let body = client
+        .get_account_history()
+        .await
+        .expect("valid CSV must not be flagged as expired");
+    assert!(
+        body.contains("id,created_at,type,data"),
+        "expected export header in returned body, got: {body:?}"
+    );
+    m.assert_async().await;
+}
+
+/// An HTML login page served with HTTP 200 (Namebase's soft-expiry behavior)
+/// on the export endpoint must surface as `NamebaseSessionExpired`.
+#[tokio::test]
+async fn test_get_account_history_html_200_is_session_expired() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/account/history/export")
+        .with_status(200)
+        .with_body("<!doctype html><html><body>Please log in</body></html>")
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    let err = client
+        .get_account_history()
+        .await
+        .expect_err("HTML body should be treated as session-expired");
+    assert!(
+        matches!(err, AppError::NamebaseSessionExpired),
+        "expected NamebaseSessionExpired, got: {err:?}"
+    );
+    m.assert_async().await;
+}
+
+/// A 429 response must surface as `NamebaseRateLimited` with the `Retry-After`
+/// value parsed out, not as generic error or session-expired.
+#[tokio::test]
+async fn test_get_account_history_429_is_rate_limited() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/account/history/export")
+        .with_status(429)
+        .with_header("retry-after", "42")
+        .with_body("rate limited")
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    let err = client
+        .get_account_history()
+        .await
+        .expect_err("429 should surface as NamebaseRateLimited");
+    match err {
+        AppError::NamebaseRateLimited { retry_after_secs } => {
+            assert_eq!(retry_after_secs, 42);
+        }
+        other => panic!("expected NamebaseRateLimited, got: {other:?}"),
+    }
+    m.assert_async().await;
+}
