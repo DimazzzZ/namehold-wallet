@@ -328,20 +328,48 @@ pub fn run() {
             // actual exit at all.
             if let tauri::RunEvent::Exit = event {
                 let state = app_handle.state::<AppState>();
+
+                // If background sync is enabled, SKIP killing hsd — the daemon
+                // needs it alive to continue syncing after the app closes. The
+                // hsd process becomes orphaned but alive; next app launch adopts
+                // it via RPC probe (see start_hsd's existing adoption path).
+                let background_sync_on = state
+                    .db
+                    .lock()
+                    .ok()
+                    .and_then(|db| crate::db::queries::get_settings(&db).ok())
+                    .map(|s| {
+                        s.get(commands::daemon_ctl::SETTING_BACKGROUND_SYNC)
+                            .unwrap_or(
+                                &commands::daemon_ctl::BACKGROUND_SYNC_DEFAULT.to_string(),
+                            )
+                            == "1"
+                    })
+                    .unwrap_or(false);
+
                 let child = match state.hsd_child.lock() {
                     Ok(mut guard) => guard.take(),
                     Err(poisoned) => poisoned.into_inner().take(),
                 };
                 if let Some(mut child) = child {
-                    // Best-effort: never let a stuck hsd block the app from
-                    // closing. `kill()` + `wait()` on an already-exited child are
-                    // harmless no-ops (kill fails silently, wait returns
-                    // immediately), so this is safe to run unconditionally.
-                    if let Err(e) = child.kill() {
-                        eprintln!("hsd shutdown: kill failed (may already be dead): {e}");
-                    }
-                    if let Err(e) = child.wait() {
-                        eprintln!("hsd shutdown: wait failed: {e}");
+                    if background_sync_on {
+                        // Detach: drop the handle without killing. The child
+                        // process continues running as an orphan.
+                        eprintln!(
+                            "hsd shutdown: background sync enabled — leaving hsd alive for daemon"
+                        );
+                        drop(child);
+                    } else {
+                        // Best-effort: never let a stuck hsd block the app from
+                        // closing. `kill()` + `wait()` on an already-exited child
+                        // are harmless no-ops (kill fails silently, wait returns
+                        // immediately), so this is safe to run unconditionally.
+                        if let Err(e) = child.kill() {
+                            eprintln!("hsd shutdown: kill failed (may already be dead): {e}");
+                        }
+                        if let Err(e) = child.wait() {
+                            eprintln!("hsd shutdown: wait failed: {e}");
+                        }
                     }
                 }
             }
