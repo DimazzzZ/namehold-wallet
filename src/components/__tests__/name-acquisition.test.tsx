@@ -159,14 +159,124 @@ describe("AuctionsView — name lookup and modal", () => {
     });
   });
 
-  it("strips invalid characters from input", async () => {
-    invokeMock.mockImplementation(routeAuctions());
+  it("keeps typed characters verbatim during typing; normalizes only at submit", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "get_signer_session":
+          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+        case "get_write_capability":
+          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+        case "read_name_info":
+          return Promise.resolve({ name: "helloworld123", state: "AVAILABLE" });
+        default:
+          return Promise.resolve(null);
+      }
+    });
     render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
     await screen.findByText("Auctions");
 
     const input = screen.getByPlaceholderText("example") as HTMLInputElement;
+    // During typing: no live cleanup — the input echoes the DOM value verbatim.
     fireEvent.change(input, { target: { value: "Hello World! 123" } });
-    expect(input.value).toBe("helloworld123");
+    expect(input.value).toBe("Hello World! 123");
+
+    // At submit: the pipeline lowercases, strips invalid chars, and would encode
+    // to ACE (this input is ASCII so encoding is a no-op). Modal opens for the
+    // normalized name.
+    fireEvent.click(screen.getByRole("button", { name: /Look up/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/\.helloworld123/)).toBeInTheDocument();
+    });
+    expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "helloworld123" });
+  });
+
+  it("shows Unicode verbatim during typing; encodes to ACE only on Look up", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "get_signer_session":
+          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+        case "get_write_capability":
+          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+        case "read_name_info":
+          return Promise.resolve({ name: "xn--90ai7ab", state: "AVAILABLE" });
+        default:
+          return Promise.resolve(null);
+      }
+    });
+
+    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
+    await screen.findByText("Auctions");
+
+    const input = screen.getByPlaceholderText("example") as HTMLInputElement;
+    // During typing: the input shows the raw Unicode the user typed (NOT the
+    // punycode form — encoding on keystroke was the previous regression).
+    fireEvent.change(input, { target: { value: "сбер" } });
+    expect(input.value).toBe("сбер");
+    expect(input.value).not.toMatch(/^xn--/);
+
+    // Look up encodes and opens the modal with the ACE form.
+    const btn = screen.getByRole("button", { name: /Look up/i });
+    expect(btn).not.toBeDisabled();
+    fireEvent.click(btn);
+    await waitFor(() => {
+      expect(screen.getByText(/\.xn--90ai7ab/)).toBeInTheDocument();
+    });
+    expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "xn--90ai7ab" });
+  });
+
+  it("allows typing a Cyrillic word character-by-character without re-encoding mid-type", async () => {
+    // Red-capable regression test for the reported bug: with the input controlled
+    // by React state, if the onChange handler ACE-encodes on every keystroke, then
+    // after typing `с` the state becomes "xn--q1a", the input shows "xn--q1a",
+    // and the next keystroke appends to that punycode prefix instead of extending
+    // "с". This test simulates sequential typing and asserts the input preserves
+    // exactly what the user typed at every intermediate step.
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "get_signer_session":
+          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+        case "get_write_capability":
+          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+        case "read_name_info":
+          return Promise.resolve({ name: "xn--90ai7ab", state: "AVAILABLE" });
+        default:
+          return Promise.resolve(null);
+      }
+    });
+
+    render(<AuctionsView />, { wrapper: wrapper(["/auctions"]) });
+    await screen.findByText("Auctions");
+
+    const input = screen.getByPlaceholderText("example") as HTMLInputElement;
+
+    // Type each character sequentially. On a controlled input, the new value the
+    // browser sends is `<current value> + <new char>`, so we always append to
+    // whatever `input.value` currently is — which is precisely how the on-keystroke
+    // encoding regression manifests.
+    const word = "сбер";
+    let expected = "";
+    for (const ch of word) {
+      expected += ch;
+      fireEvent.change(input, { target: { value: input.value + ch } });
+      expect(input.value).toBe(expected);
+      expect(input.value).not.toMatch(/^xn--/);
+    }
+
+    // Sanity: after typing the whole word, the input still shows the Unicode.
+    expect(input.value).toBe("сбер");
+
+    // And Look up still encodes correctly to the ACE form.
+    fireEvent.click(screen.getByRole("button", { name: /Look up/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/\.xn--90ai7ab/)).toBeInTheDocument();
+    });
+    expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "xn--90ai7ab" });
   });
 });
 
