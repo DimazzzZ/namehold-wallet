@@ -1,4 +1,5 @@
 import type { TxSummary } from "../types";
+import { toAceName } from "./idnEncode";
 
 export function dollarydoosToHns(dollarydoos: number): string {
   return addThousandSeparators((dollarydoos / 1_000_000).toFixed(6));
@@ -238,4 +239,42 @@ export function normalizeNameInput(raw: string): string {
   // Strip any remaining leading/trailing dots after collapse
   name = name.replace(/^\.+|\.+$/g, "");
   return name;
+}
+
+/**
+ * Normalize a user-typed name for the Auctions "Get a TLD" input, with
+ * Unicode → ACE (Punycode) encoding support.
+ *
+ * Like `normalizeNameInput`, this:
+ * - lowercases
+ * - strips a leading `.` (users sometimes type `.example`)
+ * - strips a trailing `.hsd` suffix (common TLD confusion)
+ * - collapses repeated dots
+ *
+ * UNLIKE `normalizeNameInput`, this preserves and encodes Unicode characters
+ * to their ACE form (e.g. "сбер" → "xn--90ai7ab") instead of stripping them.
+ * The result is safe to send to backend commands.
+ *
+ * Returns an empty string when the input is blank after normalization or
+ * cannot be encoded.
+ */
+export function normalizeNameInputAce(raw: string): string {
+  let name = raw.trim().toLowerCase();
+  if (!name) return "";
+  // Strip leading dot: ".example" → "example"
+  name = name.replace(/^\.+/, "");
+  // Strip trailing .hsd suffix: "example.hsd" → "example"
+  name = name.replace(/\.hsd$/i, "");
+  // Strip characters that are invalid in Handshake names: keep Unicode letters,
+  // digits, hyphens, underscores, and dots (for multi-label names). This
+  // preserves Cyrillic/CJK/etc. for encoding, while stripping spaces, punctuation, etc.
+  name = name.replace(/[^\p{L}\p{N}._\-]/gu, "");
+  // Collapse repeated dots: "a..b" → "a.b"
+  name = name.replace(/\.{2,}/g, ".");
+  // Strip any remaining leading/trailing dots after collapse
+  name = name.replace(/^\.+|\.+$/g, "");
+
+  // Encode to ACE form (tr46 handles dotted names natively).
+  // This preserves Unicode input and converts it to the on-chain punycode form.
+  return toAceName(name);
 }
