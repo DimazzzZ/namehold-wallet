@@ -41,6 +41,7 @@ dirs = "6"
 # console/close events on Windows). Used only by the `namehold-syncd` binary
 # but declared as a normal dep so it's built with the main workspace.
 ctrlc = "3"
+libc = "0.2"
 
 # --- Non-custodial signing engine ---
 # secp256k1 for ECDSA signing on the Handshake curve.
@@ -76,6 +77,7 @@ keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+windows-sys = { version = "0.48", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }

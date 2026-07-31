@@ -194,6 +194,17 @@ pub fn run() {
                 commands::chain_scan::run_chain_scanner(db_path_str).await;
             });
 
+            // Background sync daemon: if the user has background sync enabled
+            // (default ON), ensure the daemon process is alive. If it crashed
+            // or the machine rebooted, respawn it.
+            {
+                let settings = match app.state::<AppState>().db.lock() {
+                    Ok(db) => crate::db::queries::get_settings(&db).unwrap_or_default(),
+                    Err(_) => Default::default(),
+                };
+                commands::daemon_ctl::ensure_daemon_if_enabled(&settings);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -253,6 +264,9 @@ pub fn run() {
             commands::sync::start_full_sync,
             commands::sync::get_sync_status,
             commands::sync::cancel_full_sync,
+            commands::daemon_ctl::is_background_sync_enabled,
+            commands::daemon_ctl::set_background_sync_enabled,
+            commands::daemon_ctl::is_daemon_alive,
             commands::read::compare_inventory_with_provider,
             commands::secure_prompt::secure_prompt_fetch,
             commands::secure_prompt::secure_prompt_submit,
