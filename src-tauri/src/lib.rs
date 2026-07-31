@@ -1,12 +1,13 @@
 #![allow(dead_code)]
 
-mod commands;
-mod db;
-mod error;
+pub mod commands;
+pub mod daemon;
+pub mod db;
+pub mod error;
 mod hsd;
 mod models;
 mod namebase;
-mod noncustodial;
+pub mod noncustodial;
 mod providers;
 mod security;
 #[cfg(test)]

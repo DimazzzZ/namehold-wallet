@@ -419,7 +419,7 @@ pub async fn cancel_full_sync(state: State<'_, AppState>) -> Result<(), AppError
 /// connection: WAL mode, `busy_timeout` (so a connection that finds the DB
 /// momentarily locked by a concurrent writer waits and retries instead of
 /// failing immediately with "database is locked"), and `foreign_keys = ON`.
-pub(crate) fn open_conn(db_path: &str) -> Result<rusqlite::Connection, AppError> {
+pub fn open_conn(db_path: &str) -> Result<rusqlite::Connection, AppError> {
     let conn = crate::db::connection::open(std::path::Path::new(db_path))?;
     crate::db::migrations::run(&conn)?;
     Ok(conn)
@@ -450,7 +450,7 @@ fn apply_node_sync_batch(
     Ok(())
 }
 
-async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
+pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
     let conn = match open_conn(db_path) {
         Ok(c) => c,
         Err(_) => return false,
@@ -501,7 +501,7 @@ async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
 /// profile's own coins are visible here, so this NEVER hits the network for
 /// other bidders' data — that's the per-bid explorer path (Stage 2 replaces
 /// it with the chain scanner).
-async fn node_discover_step(db_path: &str, profile_id: &str) {
+pub async fn node_discover_step(db_path: &str, profile_id: &str) {
     let (settings, hashes) = {
         let conn = match open_conn(db_path) {
             Ok(c) => c,
@@ -609,7 +609,7 @@ async fn cancel_requested(status: &Arc<Mutex<SyncStatus>>) -> bool {
 /// Repair owned names, looping over successive candidate windows until the whole
 /// backlog is checked (true convergence) — so ONE Sync click finishes the job in
 /// the background instead of the user re-clicking once per window.
-async fn repair_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profile_id: &str) {
+pub async fn repair_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profile_id: &str) {
     repair_step_windowed(status, db_path, profile_id, REPAIR_WINDOW).await;
 }
 
@@ -644,7 +644,7 @@ async fn repair_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profile_id:
 ///   checks also aborts (belt-and-suspenders against an infinite loop).
 /// * Cancellation — `cancel_requested` is checked at the top of each window AND
 ///   before each per-name check, so Stop is responsive even mid-window.
-pub(crate) async fn repair_step_windowed(
+pub async fn repair_step_windowed(
     status: &Arc<Mutex<SyncStatus>>,
     db_path: &str,
     profile_id: &str,
@@ -890,7 +890,7 @@ async fn record_error_and_clear_waiting(status: &Arc<Mutex<SyncStatus>>, err: &A
 /// Best-effort: a DB hiccup here must not fail an otherwise-clean sync run,
 /// so any error opening the connection or running the UPDATE is swallowed
 /// rather than pushed into `SyncStatus.errors`.
-pub(crate) async fn stamp_explorer_sync_if_clean(
+pub async fn stamp_explorer_sync_if_clean(
     status: &Arc<Mutex<SyncStatus>>,
     db_path: &str,
     profile_id: &str,
@@ -907,7 +907,7 @@ pub(crate) async fn stamp_explorer_sync_if_clean(
     }
 }
 
-pub(crate) async fn discover_step(
+pub async fn discover_step(
     status: &Arc<Mutex<SyncStatus>>,
     db_path: &str,
     profile_id: &str,
