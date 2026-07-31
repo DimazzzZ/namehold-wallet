@@ -302,6 +302,19 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
             // Drop conn - we'll reacquire locks each step via queries.
             drop(conn);
 
+            // Acquire the sync lock (app priority). If another app instance
+            // holds a fresh lock, bail — but a daemon lock is preempted.
+            if let Ok(c) = open_conn(&db_path) {
+                use crate::db::sync_lock;
+                if !sync_lock::acquire_for_app(&c, &profile_id).unwrap_or(false) {
+                    let mut s = status.lock().await;
+                    s.running = false;
+                    s.progress_label = "Another app instance is syncing this profile".into();
+                    guard.mark_completed();
+                    return;
+                }
+            }
+
             #[cfg(test)]
             if TEST_PANIC_HOOK.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 panic!("TEST_PANIC_HOOK: injected panic simulating a panic in a sync step");
@@ -383,6 +396,12 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
             // convergence/memo/cancel/backoff logic entirely (see the
             // function's own doc comment for the "clean run" definition).
             stamp_explorer_sync_if_clean(&status, &db_path, &profile_id).await;
+            // Release the sync lock so the daemon can resume. On a panic mid-sync
+            // this release is skipped, but the app lock then goes stale after
+            // STALE_THRESHOLD_SECS and the daemon takes it over — no deadlock.
+            if let Ok(c) = open_conn(&db_path) {
+                let _ = crate::db::sync_lock::release(&c, &profile_id);
+            }
             guard.mark_completed();
         });
     });

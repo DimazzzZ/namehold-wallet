@@ -164,6 +164,62 @@ pub fn release_all_owned(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Force-acquire the lock for the app, preempting any daemon-held lock.
+///
+/// The app takes priority over the daemon: when the user clicks Sync, the app
+/// grabs the lock unconditionally, stealing it from the daemon if necessary.
+/// The daemon detects the theft on its next [`refresh_heartbeat`] (returns
+/// `false`) and abandons its in-flight sync of that profile cleanly.
+///
+/// The only lock this will NOT steal is one held by another *app* process
+/// with a fresh heartbeat — but there is only ever one app instance (single
+/// window), so in practice this always succeeds. Returns `false` only if a
+/// fresh lock is held by a different PID that is also of type `app`.
+pub fn acquire_for_app(conn: &Connection, profile_id: &str) -> Result<bool, AppError> {
+    let now = now_unix();
+    let pid = std::process::id();
+    let stale_cutoff = now - STALE_THRESHOLD_SECS;
+
+    let existing: Option<(u32, String, i64)> = conn
+        .query_row(
+            "SELECT owner_pid, owner_type, heartbeat_at FROM sync_locks WHERE profile_id = ?1",
+            [profile_id],
+            |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .ok();
+
+    match existing {
+        None => {
+            conn.execute(
+                "INSERT INTO sync_locks (profile_id, owner_pid, owner_type, acquired_at, heartbeat_at)
+                 VALUES (?1, ?2, 'app', ?3, ?4)",
+                rusqlite::params![profile_id, pid, now, now],
+            )?;
+            Ok(true)
+        }
+        Some((existing_pid, owner_type, heartbeat)) => {
+            // Refuse only if a *different* app instance holds a fresh lock.
+            if existing_pid != pid && owner_type == "app" && heartbeat >= stale_cutoff {
+                return Ok(false);
+            }
+            // Otherwise (ours, daemon-held, or stale) — take it over for the app.
+            conn.execute(
+                "UPDATE sync_locks
+                 SET owner_pid = ?1, owner_type = 'app', acquired_at = ?2, heartbeat_at = ?3
+                 WHERE profile_id = ?4",
+                rusqlite::params![pid, now, now, profile_id],
+            )?;
+            Ok(true)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,5 +301,62 @@ mod tests {
         release_all_owned(&conn).unwrap();
         assert!(get_lock_info(&conn, "p1").unwrap().is_none());
         assert!(get_lock_info(&conn, "p2").unwrap().is_none());
+    }
+
+    #[test]
+    fn acquire_for_app_preempts_daemon_lock() {
+        let conn = setup_db();
+        let now = now_unix();
+        // Simulate a fresh daemon lock from another PID.
+        conn.execute(
+            "INSERT INTO sync_locks (profile_id, owner_pid, owner_type, acquired_at, heartbeat_at)
+             VALUES ('p1', 99999, 'daemon', ?1, ?2)",
+            rusqlite::params![now, now],
+        )
+        .unwrap();
+
+        // The app should steal the lock even though it's fresh.
+        assert!(acquire_for_app(&conn, "p1").unwrap());
+        let info = get_lock_info(&conn, "p1").unwrap().unwrap();
+        assert_eq!(info.owner_pid, std::process::id());
+        assert_eq!(info.owner_type, "app");
+    }
+
+    #[test]
+    fn acquire_for_app_refuses_fresh_app_lock_from_other_pid() {
+        let conn = setup_db();
+        let now = now_unix();
+        // Another app instance holds the lock.
+        conn.execute(
+            "INSERT INTO sync_locks (profile_id, owner_pid, owner_type, acquired_at, heartbeat_at)
+             VALUES ('p1', 99999, 'app', ?1, ?2)",
+            rusqlite::params![now, now],
+        )
+        .unwrap();
+
+        assert!(!acquire_for_app(&conn, "p1").unwrap());
+    }
+
+    #[test]
+    fn daemon_detects_lock_theft_via_heartbeat() {
+        let conn = setup_db();
+        // Simulate daemon lock.
+        let now = now_unix();
+        conn.execute(
+            "INSERT INTO sync_locks (profile_id, owner_pid, owner_type, acquired_at, heartbeat_at)
+             VALUES ('p1', 99999, 'daemon', ?1, ?2)",
+            rusqlite::params![now, now],
+        )
+        .unwrap();
+
+        // App steals it.
+        acquire_for_app(&conn, "p1").unwrap();
+
+        // Daemon's refresh (using PID 99999) should fail — no rows updated.
+        // We can't easily mock a different PID here, so verify the row's
+        // owner_pid is now the current PID and owner_type is 'app'.
+        let info = get_lock_info(&conn, "p1").unwrap().unwrap();
+        assert_ne!(info.owner_pid, 99999);
+        assert_eq!(info.owner_type, "app");
     }
 }

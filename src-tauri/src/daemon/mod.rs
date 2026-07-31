@@ -10,7 +10,6 @@ use std::time::Duration;
 use crate::commands::sync::{self as sync_cmd, SyncStatus};
 use crate::db::sync_lock::{self, LockOwnerType};
 use crate::error::AppError;
-use rusqlite::Connection;
 use tokio::sync::Mutex as AsyncMutex;
 
 /// How often the daemon runs a full sync cycle.
