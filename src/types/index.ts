@@ -280,6 +280,13 @@ export interface Settings {
   deadline_notify_reveal_lead_blocks: string;
   /** Float string, days of lead time before a renewal is due. */
   deadline_notify_renewal_lead_days: string;
+  /**
+   * "1" | "0" — run the background sync daemon (`namehold-syncd`) so wallet
+   * state keeps updating even when the app is closed. Default "1" (on). When
+   * enabled, hsd is left running on app exit instead of being killed, so the
+   * daemon has a node to talk to.
+   */
+  background_sync_enabled: string;
 }
 
 // ---------------------------------------------------------------------------

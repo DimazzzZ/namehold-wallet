@@ -96,6 +96,7 @@ function loadWithStoredKey() {
       deadline_notify_enabled: "false",
       deadline_notify_reveal_lead_blocks: "144",
       deadline_notify_renewal_lead_days: "30",
+      background_sync_enabled: "1",
       // The presence marker the redacted `get_settings` emits when a key is
       // stored server-side. Not part of the Settings type — cast at read time.
       __has_node_rpc_api_key: "true",
@@ -120,6 +121,7 @@ function loadWithoutStoredKey() {
       deadline_notify_enabled: "false",
       deadline_notify_reveal_lead_blocks: "144",
       deadline_notify_renewal_lead_days: "30",
+      background_sync_enabled: "1",
     },
   });
 }

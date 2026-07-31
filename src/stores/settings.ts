@@ -25,6 +25,7 @@ const DEFAULT_SETTINGS: Settings = {
   deadline_notify_enabled: "false",
   deadline_notify_reveal_lead_blocks: "144",
   deadline_notify_renewal_lead_days: "30",
+  background_sync_enabled: "1",
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
