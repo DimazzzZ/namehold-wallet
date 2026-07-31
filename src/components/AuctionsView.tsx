@@ -14,7 +14,7 @@ import { UnlockButton } from "./UnlockButton";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
 import { PageHeader } from "./ui/PageHeader";
-import { normalizeNameInput } from "../lib/utils";
+import { normalizeNameInputAce } from "../lib/utils";
 import { displayName } from "../lib/idn";
 import type { HsdName, NameActionCapabilities, AuctionTaskState } from "../types";
 
@@ -141,9 +141,9 @@ export function AuctionsView() {
   });
 
   const handleLookup = () => {
-    const trimmed = lookupName.trim();
-    if (trimmed) {
-      setManageName(trimmed);
+    const ace = normalizeNameInputAce(lookupName);
+    if (ace) {
+      setManageName(ace);
     }
   };
 
@@ -244,7 +244,7 @@ export function AuctionsView() {
             <input
               className="border border-gray-300 rounded px-2 py-1.5 text-sm w-48"
               value={lookupName}
-              onChange={(e) => setLookupName(normalizeNameInput(e.target.value))}
+              onChange={(e) => setLookupName(e.target.value)}
               placeholder="example"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && lookupName.trim()) handleLookup();

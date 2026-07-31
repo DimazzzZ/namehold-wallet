@@ -56,6 +56,9 @@ importers:
       react-router-dom:
         specifier: ^7.0.0
         version: 7.18.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      tr46:
+        specifier: ^6.0.0
+        version: 6.0.0
       zod:
         specifier: ^3.0.0
         version: 3.25.76
