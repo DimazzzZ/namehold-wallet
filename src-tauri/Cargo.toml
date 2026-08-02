@@ -2,6 +2,7 @@
 name = "namehold-wallet"
 version = "0.3.0"
 edition = "2021"
+default-run = "namehold-wallet"
 
 [lib]
 name = "namehold_wallet_lib"
