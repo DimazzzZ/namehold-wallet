@@ -32,12 +32,18 @@ npx playwright test
 - Settings UI (node controls, explorer URL, RPC URL)
 - Auction lookup and phase badge display
 - Wallet switching and add-wallet flows
+- Background sync toggle (**Settings → Connections → "Sync in background"**) —
+  checkbox enable/disable, toast feedback, form state revert on failure
 
 ### Current limitations
 The web mock (`src/lib/webqa-mock.ts`) is **static** — it returns canned data and does not persist state across commands:
 - `start_hsd()` returns success but `node_status()` still returns the hardcoded "stopped" state.
 - Building/signing/broadcasting a draft does not change the drafts list or transaction history.
 - Auction phase transitions are not simulated.
+- `set_background_sync_enabled()` returns success but does not actually spawn or
+  stop a daemon — the mock reports `is_daemon_alive: false` always, so
+  daemon-lifecycle end-to-end flows can only be validated in the Tauri or regtest
+  paths below.
 
 **To make browser QA realistic for lifecycle flows**, the mock must be upgraded to a stateful, scenario-driven backend. Until then, browser QA validates **UI structure and interaction patterns**, not end-to-end lifecycle correctness.
 
@@ -66,6 +72,22 @@ Then use the `cua-driver` skill for background automation (snapshot → click/ty
 - Folder picker (node data directory)
 - Native dialogs
 - Real node connection and IPC
+
+### Background sync daemon (end-to-end)
+
+To verify background sync works correctly:
+
+1. **Enable background sync:** Toggle **Settings → Connections → "Sync in
+   background"** ON. Confirm the daemon spawns (check `~/.namehold/syncd.pid`
+   exists and contains a valid PID).
+2. **Close the app:** Verify hsd is still running (e.g., `ps aux | grep hsd` or
+   check the PID file).
+3. **Mine or wait:** Let the daemon sync a few cycles (every 60s). Optionally
+   mine a new block on regtest to give the daemon fresh data to sync.
+4. **Reopen the app:** Verify the app adopts the running hsd (no duplicate
+   spawn). Check that wallet data is fresh (balances, transaction history).
+5. **Disable background sync:** Toggle OFF. Close the app. Verify hsd is now
+   stopped (PID file is gone, `ps aux | grep hsd` shows no process).
 
 ---
 

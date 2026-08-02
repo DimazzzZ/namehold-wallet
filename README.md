@@ -65,6 +65,18 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   Update bundles are **Ed25519-signed** at release and verified against the
   embedded public key before install; unsigned or tampered bundles are rejected.
 
+### Background sync (since v0.3.0)
+
+- Namehold can keep your wallet data fresh even when the app is closed. A
+  lightweight background daemon (`namehold-syncd`) wakes every 60 seconds and
+  syncs all wallet profiles (UTXOs, name states, transactions) from the local
+  hsd node into the shared SQLite database.
+- Controlled by a Settings checkbox **"Sync in background"** (default ON).
+- When enabled, hsd stays running after you close the app so the daemon can
+  query it; the next app launch adopts the running node (no duplicate spawned).
+- Crash recovery: if the daemon dies, the app respawns it on startup.
+- The daemon is **read-only** — it never signs transactions or broadcasts.
+
 ## How it works
 
 - **Reads are node-free.** Balances and names come from the explorer and are cached
@@ -78,6 +90,12 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 - **Write-capability gating.** Spend/name actions are enabled only when the signer
   is unlocked **and** the node is reachable, synced, and address-indexed — with a
   precise reason shown when any condition isn't met.
+- **Background sync daemon.** When "Sync in background" is enabled (Settings →
+  Connections, default ON), a separate Rust binary syncs all profiles every 60s.
+  A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync
+  and the daemon via heartbeats (10s) and stale-lock takeover (30s) so they never
+  write the same profile concurrently. The daemon writes its PID to
+  `~/.namehold/syncd.pid` for lifecycle tracking.
 
 ## Security
 
@@ -210,6 +228,8 @@ All app data lives in one SQLite file in your home folder (pairs with hsd's `~/.
 on every platform:
 
 - `~/.namehold/portfolio.db`
+- `~/.namehold/syncd.pid` — background sync daemon's process ID (present only
+  while the daemon is running)
 
 It holds your wallet profiles, the encrypted vault, the local chain cache, and (if
 used) the Portfolio inventory/batches/audit log.

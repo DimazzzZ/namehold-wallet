@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+- **Background HSD Sync Daemon** — a separate Rust binary (`namehold-syncd`) that
+  syncs wallet profiles (UTXOs, name states, transactions) from the local hsd node
+  every 60 seconds, even when the app is closed. Controlled by a Settings checkbox
+  **"Sync in background"** (default ON). When enabled, hsd stays running after app
+  exit; the next launch adopts it. A cross-process DB lock table (`sync_locks`)
+  coordinates the app's manual Sync and the daemon via heartbeats (10s) and
+  stale-lock takeover (30s) to prevent concurrent writes. Crash recovery: the app
+  respawns the daemon on startup if the toggle is ON and the daemon is dead.
+  Bundled as a Tauri sidecar (externalBin).
+- **New DB migration `021_sync_locks.sql`** — creates the `sync_locks` table for
+  cross-process sync coordination.
+
 ## [0.3.0] - 2026-07-29
 
 ### Changed
