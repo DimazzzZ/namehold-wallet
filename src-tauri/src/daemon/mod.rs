@@ -72,7 +72,11 @@ async fn sync_all_profiles(db_path: &str) -> Result<(), AppError> {
 
         // Spawn a heartbeat refresher for this profile.
         let hb_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let hb_handle = spawn_heartbeat(db_path.to_string(), profile_id.clone(), hb_stop.clone());
+        let hb_handle = sync_cmd::spawn_lock_heartbeat(
+            db_path.to_string(),
+            profile_id.clone(),
+            hb_stop.clone(),
+        );
 
         // Run the 3-step sync. If any step fails internally, it's logged;
         // the daemon just moves on. `sync_profile` itself never errors.
@@ -107,63 +111,14 @@ async fn sync_profile(db_path: &str, profile_id: &str) {
         s.running = true;
     }
 
-    // Step 1: node UTXO sync (always attempted).
-    let _ = sync_cmd::sync_node_step(db_path, profile_id).await;
-
-    // Determine if the node is authoritative (connected + fully synced).
-    // If so, we skip the explorer-driven repair/discover in favor of the
-    // node-driven equivalents — same policy as `start_full_sync`.
-    let node_authoritative = {
-        let settings = sync_cmd::open_conn(db_path)
-            .ok()
-            .and_then(|c| crate::db::queries::get_settings(&c).ok());
-        match settings {
-            Some(s) => crate::commands::read::node_ready_from_settings(&s).await,
-            None => false,
-        }
-    };
-
-    // Step 2: repair owned names (explorer path only; node path is handled
-    // inline by node_discover_step in step 3).
-    if !node_authoritative {
-        sync_cmd::repair_step(&status, db_path, profile_id).await;
-    }
-
-    // Step 3: discover new names (node or explorer path).
-    if node_authoritative {
-        sync_cmd::node_discover_step(db_path, profile_id).await;
-    } else {
-        sync_cmd::discover_step(&status, db_path, profile_id).await;
-    }
+    // Run the shared 3-step orchestration (the single source of truth, also
+    // used by the app's `start_full_sync`). `report_progress = false` because
+    // the daemon has no UI to poll the progress labels.
+    sync_cmd::run_sync_steps(&status, db_path, profile_id, /* report_progress = */ false).await;
 
     // Stamp the explorer sync timestamp on a clean run (same policy as
     // start_full_sync).
     sync_cmd::stamp_explorer_sync_if_clean(&status, db_path, profile_id).await;
-}
-
-/// Spawn a background thread that refreshes the sync lock's heartbeat every
-/// [`HEARTBEAT_INTERVAL_SECS`] until told to stop.
-fn spawn_heartbeat(
-    db_path: String,
-    profile_id: String,
-    stop: Arc<std::sync::atomic::AtomicBool>,
-) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
-            if stop.load(std::sync::atomic::Ordering::SeqCst) {
-                break;
-            }
-            if let Ok(c) = sync_cmd::open_conn(&db_path) {
-                if let Err(e) = sync_lock::refresh_heartbeat(&c, &profile_id) {
-                    eprintln!(
-                        "namehold-syncd: heartbeat refresh failed for {}: {}",
-                        profile_id, e
-                    );
-                }
-            }
-        }
-    })
 }
 
 /// Write the daemon's PID to `~/.namehold/syncd.pid`.
