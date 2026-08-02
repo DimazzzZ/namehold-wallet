@@ -187,6 +187,26 @@ fn find_daemon_binary() -> Result<PathBuf, AppError> {
         }
     }
 
+    // 3. Tauri resource dir (Linux .deb/AppImage place the sidecar under
+    //    the app's resources, not next to the launcher). On macOS and Windows
+    //    the sidecar is placed next to the main binary, so step 1 already
+    //    covers those; this is the Linux-bundle fallback.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            // Common relative resource layouts across bundle formats.
+            for rel in [
+                "../lib/Namehold",       // some Linux layouts
+                "../Resources",          // macOS .app Resources
+                "resources",             // generic resources subdir
+            ] {
+                let candidate = dir.join(rel).join(&bin_name);
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+
     Err(AppError::Other(format!(
         "cannot find daemon binary '{bin_name}' — ensure it's built and in the app bundle"
     )))

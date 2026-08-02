@@ -199,6 +199,34 @@ jobs:
           # First [package] version key in Cargo.toml only.
           perl -0pi -e 's/^version = "[^"]*"/version = "'"$VERSION"'"/m if !$done++' src-tauri/Cargo.toml
 
+      # Build the namehold-syncd daemon sidecar for bundling. Tauri's externalBin
+      # expects `binaries/namehold-syncd-<target-triple>` in src-tauri/. For the
+      # macOS universal build, we compile for both architectures and lipo them.
+      - name: Build sidecar (macOS universal)
+        if: matrix.platform == 'macos-latest'
+        working-directory: src-tauri
+        run: |
+          set -euo pipefail
+          mkdir -p binaries
+          cargo build --release --bin namehold-syncd --target aarch64-apple-darwin
+          cargo build --release --bin namehold-syncd --target x86_64-apple-darwin
+          # Tauri universal build expects both target-triple variants.
+          cp target/aarch64-apple-darwin/release/namehold-syncd binaries/namehold-syncd-aarch64-apple-darwin
+          cp target/x86_64-apple-darwin/release/namehold-syncd binaries/namehold-syncd-x86_64-apple-darwin
+
+      - name: Build sidecar (Linux/Windows)
+        if: matrix.platform != 'macos-latest'
+        shell: bash
+        working-directory: src-tauri
+        run: |
+          set -euo pipefail
+          mkdir -p binaries
+          TARGET_TRIPLE=$(rustc --print host-tuple)
+          cargo build --release --bin namehold-syncd
+          EXT=""
+          if [[ "$RUNNER_OS" == "Windows" ]]; then EXT=".exe"; fi
+          cp "target/release/namehold-syncd${EXT}" "binaries/namehold-syncd-${TARGET_TRIPLE}${EXT}"
+
       - name: Build + upload bundles
         uses: tauri-apps/tauri-action@v0
         env:
