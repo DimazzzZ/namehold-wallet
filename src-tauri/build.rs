@@ -24,7 +24,11 @@ fn ensure_sidecar_placeholder() {
     if target.is_empty() {
         return;
     }
-    let ext = if target.contains("windows") { ".exe" } else { "" };
+    let ext = if target.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    };
     let path_str = format!("binaries/namehold-syncd-{target}{ext}");
     let path = Path::new(&path_str);
     if path.exists() {

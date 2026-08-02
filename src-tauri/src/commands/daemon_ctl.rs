@@ -175,10 +175,7 @@ fn find_daemon_binary() -> Result<PathBuf, AppError> {
     }
 
     // 2. Check if it's in PATH (dev mode: `cargo build` puts both bins in target/debug).
-    if let Ok(output) = std::process::Command::new("which")
-        .arg(&bin_name)
-        .output()
-    {
+    if let Ok(output) = std::process::Command::new("which").arg(&bin_name).output() {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() {
@@ -195,9 +192,9 @@ fn find_daemon_binary() -> Result<PathBuf, AppError> {
         if let Some(dir) = exe.parent() {
             // Common relative resource layouts across bundle formats.
             for rel in [
-                "../lib/Namehold",       // some Linux layouts
-                "../Resources",          // macOS .app Resources
-                "resources",             // generic resources subdir
+                "../lib/Namehold", // some Linux layouts
+                "../Resources",    // macOS .app Resources
+                "resources",       // generic resources subdir
             ] {
                 let candidate = dir.join(rel).join(&bin_name);
                 if candidate.exists() {

@@ -134,7 +134,10 @@ pub fn release(conn: &Connection, profile_id: &str) -> Result<(), AppError> {
 }
 
 /// Check if any process holds the lock for a profile.
-pub fn get_lock_info(conn: &Connection, profile_id: &str) -> Result<Option<SyncLockInfo>, AppError> {
+pub fn get_lock_info(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<Option<SyncLockInfo>, AppError> {
     let result = conn
         .query_row(
             "SELECT profile_id, owner_pid, owner_type, acquired_at, heartbeat_at

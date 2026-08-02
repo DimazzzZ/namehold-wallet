@@ -114,7 +114,10 @@ async fn sync_profile(db_path: &str, profile_id: &str) {
     // Run the shared 3-step orchestration (the single source of truth, also
     // used by the app's `start_full_sync`). `report_progress = false` because
     // the daemon has no UI to poll the progress labels.
-    sync_cmd::run_sync_steps(&status, db_path, profile_id, /* report_progress = */ false).await;
+    sync_cmd::run_sync_steps(
+        &status, db_path, profile_id, /* report_progress = */ false,
+    )
+    .await;
 
     // Stamp the explorer sync timestamp on a clean run (same policy as
     // start_full_sync).

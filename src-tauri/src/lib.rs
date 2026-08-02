@@ -340,9 +340,7 @@ pub fn run() {
                     .and_then(|db| crate::db::queries::get_settings(&db).ok())
                     .map(|s| {
                         s.get(commands::daemon_ctl::SETTING_BACKGROUND_SYNC)
-                            .unwrap_or(
-                                &commands::daemon_ctl::BACKGROUND_SYNC_DEFAULT.to_string(),
-                            )
+                            .unwrap_or(&commands::daemon_ctl::BACKGROUND_SYNC_DEFAULT.to_string())
                             == "1"
                     })
                     .unwrap_or(false);

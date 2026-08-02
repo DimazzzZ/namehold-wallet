@@ -996,11 +996,7 @@ pub async fn stamp_explorer_sync_if_clean(
     }
 }
 
-pub async fn discover_step(
-    status: &Arc<Mutex<SyncStatus>>,
-    db_path: &str,
-    profile_id: &str,
-) {
+pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profile_id: &str) {
     let (explorer, addrs) = {
         let conn = match open_conn(db_path) {
             Ok(c) => c,
