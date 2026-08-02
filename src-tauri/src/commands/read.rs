@@ -105,7 +105,7 @@ pub(crate) async fn node_tip_height_if_synced_from_settings(
 /// fully synced, making node/local data the authoritative read source. Mirrors
 /// [`is_node_ready_for_local_reads`] for callers that only have settings/a DB
 /// connection (the background sync thread).
-pub(crate) async fn node_ready_from_settings(
+pub async fn node_ready_from_settings(
     settings: &std::collections::HashMap<String, String>,
 ) -> bool {
     node_tip_height_if_synced_from_settings(settings)

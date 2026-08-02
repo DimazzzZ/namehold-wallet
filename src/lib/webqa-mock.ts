@@ -354,9 +354,15 @@ const handlers: Record<string, Handler> = {
     signer_session_timeout_seconds: "900",
     advanced_mode: "false",
     onboarding_complete: "true",
+    background_sync_enabled: "1",
   }),
 
   update_setting: () => null,
+
+  // ── Daemon control ────────────────────────────────────────────────────
+  is_background_sync_enabled: () => true,
+  set_background_sync_enabled: () => null,
+  is_daemon_alive: () => false,
 
   // ── Updates ───────────────────────────────────────────────────────────
   // Browser QA has no real updater; report a fixed version and "up to date".

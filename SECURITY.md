@@ -26,6 +26,7 @@ available and users have had reasonable time to upgrade.
 | Namebase session cookie | AES-256-GCM under OS-keyring-held DEK (`noncustodial/cookie_vault.rs`) | Held only during the HTTP request | Redacted from `get_settings`; write-denied from renderer |
 | hsd node RPC api-key | Redacted from `get_settings`; write-denied from renderer | Held in `NodeRpcClient` struct | Never sent to the webview |
 | hsd node RPC api-key (transport) | N/A (not stored encrypted) | `guard_transport` rejects remote cleartext HTTP when a key is set; HTTPS required per [hsd API guidance](https://hsd-dev.org/api-docs/#authentication) | N/A |
+| Background sync daemon (`namehold-syncd`) | N/A — daemon holds no secrets and never has access to key material | Reads hsd RPC via the shared settings (api-key never leaves the Rust process); read-only against hsd | Rust binary — never touches the webview |
 
 ---
 
@@ -124,6 +125,58 @@ wallet functionality.
 
 ---
 
+## Background sync daemon
+
+### What the daemon does
+
+The background sync daemon (`namehold-syncd`) is a separate Rust binary that:
+
+- Runs every 60 seconds when "Sync in background" is enabled (Settings →
+  Connections, default ON).
+- Reads wallet profiles (UTXOs, name states, transactions) from the local hsd
+  node via RPC.
+- Writes sync data to the shared SQLite database (`~/.namehold/portfolio.db`).
+- Writes its process ID to `~/.namehold/syncd.pid` for lifecycle tracking.
+- **Never signs transactions, never broadcasts, never touches key material.**
+
+### Attack surfaces and mitigations
+
+#### 1. Daemon crashes or becomes unresponsive
+
+**Mitigation:** The app detects a dead daemon on startup and respawns it (if
+"Sync in background" is ON). A cross-process DB lock table (`sync_locks`) uses
+heartbeats (every 10 seconds) and stale-lock takeover (after 30 seconds) to
+detect and recover from crashes.
+
+#### 2. Orphaned hsd after app exit
+
+**Behavior (not a vulnerability):** When "Sync in background" is ON, hsd is not
+killed when the app closes. The daemon keeps it alive for background syncing.
+This is intentional — the next app launch adopts the running hsd. To stop hsd,
+disable "Sync in background" or manually click **Stop hsd** in Settings →
+Connections.
+
+**Residual risk (honest disclosure):** An attacker with local code execution as
+the app user could potentially interact with the orphaned hsd node (e.g., via
+RPC) if they know the API key. This is no worse than if the user left hsd
+running manually. Mitigations: run hsd on loopback only (`127.0.0.1`), use a
+strong API key, and disable "Sync in background" if you're concerned about
+orphaned processes.
+
+#### 3. Daemon reads stale or corrupted sync data
+
+**Mitigation:** The DB lock table ensures only one reader/writer is active at a
+time. The app's manual Sync and the daemon coordinate via heartbeats and stale
+takeover.
+
+#### 4. Daemon is read-only (no signing risk)
+
+**Guarantee:** The daemon never has access to key material, never signs
+transactions, and never broadcasts. Even if the daemon is compromised, it cannot
+steal funds or sign malicious transactions. It can only read and write sync data.
+
+---
+
 ## Mitigations reference table
 
 | Concern | Mitigation | Location | Tests |
@@ -191,3 +244,7 @@ dependencies of this crate.
 - [User Manual](./docs/USER_MANUAL.md) -- user-facing security guidance
 - [CHANGELOG](./CHANGELOG.md) -- security fixes and improvements
 - [hsd API docs](https://hsd-dev.org/api-docs/) -- Handshake node RPC reference
+| Daemon crashes mid-sync | Heartbeat every 10s; stale-lock takeover after 30s; app respawns daemon on next startup | `db/sync_lock.rs`, `commands/daemon_ctl.rs` | `sync_lock` tests |
+| Concurrent writes by app + daemon | Cross-process `sync_locks` table; app acquires with priority, daemon preempts stale locks | `db/sync_lock.rs`, `commands/sync.rs` | `sync_lock`, `sync_race` tests |
+| Daemon signs / broadcasts (would-be) | Daemon has no access to key material or signing paths — it only reads hsd and writes sync data | `bin/namehold-syncd.rs`, `daemon/mod.rs` | (compile-time — no signing API in daemon build) |
+| hsd left running after app exit | Intentional when "Sync in background" ON; hsd bound to loopback + api-key required | `lib.rs` (setup/exit hooks) | `settings-background-sync` tests |

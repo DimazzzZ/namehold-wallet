@@ -80,6 +80,15 @@ From the account bar at the top of the Wallet page, use **Add wallet** and
 **Manage wallets** to switch between wallets, reveal a wallet's phrase in the
 secure window, or delete one you no longer need.
 
+### Background sync (enabled by default)
+
+Out of the box, **Sync in background** is enabled (Settings → Connections). This
+means hsd stays running after you close the app, and a lightweight background
+daemon keeps your wallet data fresh every 60 seconds. If you'd rather sync only
+while the app is open — and have hsd stop when you close it — uncheck **Settings →
+Connections → "Sync in background"**. See [Section 11](#11-node-control) for
+details.
+
 ---
 
 ## 3. Sidebar and header
@@ -332,6 +341,26 @@ All node settings live under **Settings → Connections**.
 | **Node data directory (`hsd --prefix`)** | (system default) | Use **Browse…** to pick. |
 | **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. |
 | **Autostart HSD when the app launches** | **on** | Toggle off to keep hsd manual. |
+| **Sync in background** | **on** | When enabled, a background daemon syncs your wallet every 60 seconds, even when the app is closed. When disabled, only manual Sync (or the app's auto-sync while running) refreshes your data. |
+
+### Background sync
+
+The **Sync in background** checkbox (Settings → Connections) keeps your wallet
+data fresh without the app being open.
+
+- **When ON (default):** hsd stays running after you close the app. A background
+  daemon (`namehold-syncd`) wakes every 60 seconds and syncs all wallet profiles
+  (UTXOs, name states, transactions) from hsd into the local database. The next
+  time you launch the app, it adopts the running hsd and picks up where the daemon
+  left off — so your data is always current.
+- **When OFF:** hsd is stopped when you close the app (the classic behavior).
+  Only manual **Sync**, or the app's built-in auto-sync while the app is running,
+  refreshes your data.
+- **Crash recovery:** if the daemon dies, the app detects it on the next startup
+  and respawns it (as long as the toggle is ON).
+- **Read-only:** the daemon never signs transactions or broadcasts — it only reads
+  from hsd and writes sync data to the local database. Your keys stay locked in the
+  encrypted vault.
 
 ### Start, stop, status
 
@@ -355,6 +384,22 @@ Below the settings, the **NodeControl** panel shows a live status dot
 | Mainnet | 12037 |
 | Testnet | 13037 |
 | Regtest | 14037 |
+
+### Troubleshooting background sync
+
+**The background daemon isn't syncing.** Check that hsd is running (the status
+dot is Connected). Restart the app — it respawns the daemon on startup when
+"Sync in background" is ON. The daemon writes its process ID to
+`~/.namehold/syncd.pid` while alive.
+
+**hsd is still running after I closed the app.** This is expected when "Sync in
+background" is enabled — the daemon keeps hsd alive so it can sync in the
+background. To stop hsd, either disable "Sync in background" (hsd is then stopped
+on the next app close) or click **Stop hsd** in Settings → Connections.
+
+**I want to stop background sync.** Uncheck **Settings → Connections → "Sync in
+background"**. The daemon exits immediately, and hsd is stopped the next time you
+close the app.
 
 ---
 
@@ -422,6 +467,9 @@ All app data lives in one SQLite file in your home folder (pairs with hsd's
 It holds your wallet profiles, the encrypted vault, the local chain cache, and
 the Portfolio inventory / batches / audit log.
 
+When background sync is running, the daemon also writes its process ID to
+`~/.namehold/syncd.pid` (removed when the daemon stops).
+
 ### macOS quarantine
 
 The macOS build is not code-signed. On first launch macOS may show:
@@ -454,6 +502,10 @@ Then open the app normally.
   non-localhost URLs are allowed but warned about.
 - **Auto-lock.** The unlocked signer times out after a configurable idle
   period (Settings → Advanced → Signer session timeout, default 15 min).
+- **Background sync is read-only.** When "Sync in background" is enabled, the
+  `namehold-syncd` daemon reads from hsd and writes sync data to the local
+  database — it never signs transactions, never broadcasts, and never has access
+  to key material. Your keys stay locked in the encrypted vault.
 - **What Namehold never does.** Never asks for or transmits your seed phrase,
   never logs passphrases or private keys, never talks to a remote wallet
   service.

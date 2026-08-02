@@ -385,25 +385,37 @@ pub trait ExplorerProvider {
     /// Like a plain name lookup, but `Ok(None)` for "explorer confirms this
     /// name has no data" (404, or a recognized-empty 200 body) instead of an
     /// error — callers use this to synthesize an AVAILABLE result.
-    async fn get_name_info_optional(&self, name: &str) -> Result<Option<HsdName>, AppError>;
+    fn get_name_info_optional(
+        &self,
+        name: &str,
+    ) -> impl std::future::Future<Output = Result<Option<HsdName>, AppError>> + Send;
 
     /// The current owner outpoint `(txid, index)` of a name, or `None` if it
     /// has no recorded history.
-    async fn get_name_current_owner(&self, name: &str) -> Result<Option<(String, u32)>, AppError>;
+    fn get_name_current_owner(
+        &self,
+        name: &str,
+    ) -> impl std::future::Future<Output = Result<Option<(String, u32)>, AppError>> + Send;
 
     /// The name-bearing outputs of a single tx.
-    async fn get_tx_named_outputs(&self, hash: &str) -> Result<Vec<NamedOutput>, AppError>;
+    fn get_tx_named_outputs(
+        &self,
+        hash: &str,
+    ) -> impl std::future::Future<Output = Result<Vec<NamedOutput>, AppError>> + Send;
 
     /// One page of the txids an address participated in, plus the total count.
-    async fn get_address_txids(
+    fn get_address_txids(
         &self,
         address: &str,
         limit: u32,
         offset: u32,
-    ) -> Result<(Vec<String>, u64), AppError>;
+    ) -> impl std::future::Future<Output = Result<(Vec<String>, u64), AppError>> + Send;
 
     /// Aggregate balance across a set of watch addresses.
-    async fn get_balance(&self, addresses: &[String]) -> Result<HsdBalance, AppError>;
+    fn get_balance(
+        &self,
+        addresses: &[String],
+    ) -> impl std::future::Future<Output = Result<HsdBalance, AppError>> + Send;
 }
 
 impl ExplorerProvider for HnsFansClient {

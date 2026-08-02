@@ -4,6 +4,7 @@ import { useNodeStatus, useStartHsd, useStopHsd, useResyncHsd } from "../queries
 import { useActiveProfile, useExportBidCommitments } from "../queries/wallet";
 import { open, save } from "../lib/dialog";
 import { isTauri } from "../lib/runtime";
+import { invoke } from "../lib/invoke";
 import {
   checkNotificationPermission,
   requestNotificationPermission,
@@ -58,6 +59,7 @@ export function Settings() {
         hsd_prefix: settings.hsd_prefix,
         hsd_path: settings.hsd_path,
         autostart_hsd: settings.autostart_hsd,
+        background_sync_enabled: settings.background_sync_enabled,
         explorer_api_url: settings.explorer_api_url,
         address_gap_limit: settings.address_gap_limit,
         signer_session_timeout_seconds: settings.signer_session_timeout_seconds,
@@ -261,6 +263,42 @@ export function Settings() {
             Starts hsd against your data dir on launch. If a node is already
             running, Namehold adopts it instead of starting a duplicate. Change
             takes effect on the next launch.
+          </div>
+
+          <label className="flex items-center gap-2 text-sm pt-2">
+            <input
+              type="checkbox"
+              checked={form.background_sync_enabled === "1"}
+              onChange={async (e) => {
+                const enabled = e.target.checked;
+                // Update local form state immediately for responsive UI.
+                updateField("background_sync_enabled", enabled ? "1" : "0");
+                try {
+                  // The specialized command also spawns/stops the daemon,
+                  // and persists the setting itself. Applied immediately (no
+                  // Save button) so users see the daemon start/stop right away.
+                  await invoke("set_background_sync_enabled", { enabled });
+                  showToast(
+                    enabled
+                      ? "Background sync enabled — daemon started"
+                      : "Background sync disabled — daemon stopped",
+                    "success",
+                  );
+                } catch (err) {
+                  // Revert form state if the command failed.
+                  updateField("background_sync_enabled", enabled ? "0" : "1");
+                  showToast(`Failed to toggle background sync: ${err}`, "error");
+                }
+              }}
+              data-testid="background-sync-checkbox"
+            />
+            Sync in background (keep wallet up to date when app is closed)
+          </label>
+          <div className="text-xs text-gray-500">
+            Runs a lightweight sync process every 60 seconds. When enabled, the
+            local hsd node keeps running after you close the app so the daemon
+            can query it. The next app launch adopts the running node — no
+            duplicate is spawned.
           </div>
 
           <NodeControl dirty={dirty} hsdPathConfigured={!!settings.hsd_path?.trim()} />

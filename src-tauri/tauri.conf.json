@@ -6,7 +6,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build"
+    "beforeBuildCommand": "pnpm build && node src-tauri/build-sidecar.mjs"
   },
   "app": {
     "windows": [
@@ -25,6 +25,9 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "externalBin": [
+      "binaries/namehold-syncd"
+    ],
     "icon": [
       "icons/icon.png",
       "icons/icon.ico"

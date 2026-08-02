@@ -1,12 +1,11 @@
 /**
- * Settings — explorer base URL: config + validation + factory usage
- * (Task 11 / S1).
+ * Settings — Background sync daemon checkbox.
  *
- * The backend already builds explorer requests as `${explorer_api_url}/api/...`
- * (see `providers::explorer_client_from_settings`), so a value without an
- * `http(s)://` scheme would silently break every explorer call. This covers
- * the one bit of non-trivial UI logic here: client-side validation blocking
- * Save on a malformed URL, and a normal save persisting a normalized value.
+ * The toggle is applied IMMEDIATELY (no Save button) because flipping it has
+ * side effects the user should see right away: it spawns or stops the
+ * `namehold-syncd` daemon process. The specialized `set_background_sync_enabled`
+ * command persists the setting AND performs the spawn/stop — unlike other
+ * settings that go through the generic `update_setting` on Save.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
@@ -28,7 +27,7 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   requestPermission: vi.fn().mockResolvedValue("default"),
 }));
 
-import { Settings, validateExplorerUrl } from "../Settings";
+import { Settings } from "../Settings";
 import { useSettingsStore } from "../../stores/settings";
 
 function route(cmd: string) {
@@ -54,8 +53,14 @@ function route(cmd: string) {
     case "get_signer_session":
       return Promise.resolve({ walletProfileId: null, unlocked: false, unlockedUntilEpochMs: 0 });
     case "get_write_capability":
-      return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: null });
+      return Promise.resolve({
+        signerUnlocked: false,
+        broadcasterAvailable: false,
+        canWrite: false,
+        reason: null,
+      });
     case "update_setting":
+    case "set_background_sync_enabled":
       return Promise.resolve(null);
     default:
       return Promise.resolve(null);
@@ -102,54 +107,55 @@ beforeEach(() => {
   loadSettings();
 });
 
-describe("validateExplorerUrl (unit)", () => {
-  it("accepts empty (falls back to the backend default)", () => {
-    expect(validateExplorerUrl("")).toBeNull();
-    expect(validateExplorerUrl("   ")).toBeNull();
-  });
-
-  it("accepts http:// and https:// URLs", () => {
-    expect(validateExplorerUrl("https://e.hnsfans.com")).toBeNull();
-    expect(validateExplorerUrl("http://127.0.0.1:8080")).toBeNull();
-  });
-
-  it("rejects a URL without a scheme", () => {
-    expect(validateExplorerUrl("e.hnsfans.com")).toMatch(/http/i);
-  });
-
-  it("rejects a non-http(s) scheme", () => {
-    expect(validateExplorerUrl("ftp://e.hnsfans.com")).toMatch(/http/i);
-  });
-});
-
-describe("Settings — explorer base URL (Task 11 / S1)", () => {
-  it("shows an inline error and disables Save for a malformed URL", async () => {
+describe("Settings — Background sync checkbox", () => {
+  it("renders the checkbox checked by default (DEFAULT_SETTINGS.background_sync_enabled = '1')", async () => {
     render(<Settings />, { wrapper: wrapper() });
-    const input = await screen.findByTestId("explorer-url-input");
-
-    fireEvent.change(input, { target: { value: "not-a-url" } });
-    // Trigger `dirty` so the Save footer renders.
-    expect(await screen.findByTestId("explorer-url-error")).toBeInTheDocument();
-    const saveButton = await screen.findByRole("button", { name: /Save settings/i });
-    expect(saveButton).toBeDisabled();
+    const box = await screen.findByTestId("background-sync-checkbox");
+    expect(box).toBeChecked();
+    expect(
+      screen.getByText(/Sync in background/i),
+    ).toBeInTheDocument();
   });
 
-  it("saves a normalized (no trailing slash) URL and clears dirty state", async () => {
+  it("renders unchecked when the setting is '0'", async () => {
+    loadSettings({ background_sync_enabled: "0" });
     render(<Settings />, { wrapper: wrapper() });
-    const input = await screen.findByTestId("explorer-url-input");
+    const box = await screen.findByTestId("background-sync-checkbox");
+    expect(box).not.toBeChecked();
+  });
 
-    fireEvent.change(input, { target: { value: "https://my.explorer.example/" } });
-    expect(screen.queryByTestId("explorer-url-error")).toBeNull();
+  it("toggles OFF via set_background_sync_enabled immediately (no Save button needed)", async () => {
+    render(<Settings />, { wrapper: wrapper() });
+    const box = await screen.findByTestId("background-sync-checkbox");
+    // Starts checked (default).
+    expect(box).toBeChecked();
 
-    const saveButton = await screen.findByRole("button", { name: /Save settings/i });
-    expect(saveButton).not.toBeDisabled();
-    fireEvent.click(saveButton);
+    fireEvent.click(box);
+    expect(box).not.toBeChecked();
+
+    // The specialized command is invoked directly — no Save button click needed.
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find(
+        (c) => c[0] === "set_background_sync_enabled",
+      );
+      expect(call?.[1]).toEqual({ enabled: false });
+    });
+  });
+
+  it("toggles ON via set_background_sync_enabled immediately", async () => {
+    loadSettings({ background_sync_enabled: "0" });
+    render(<Settings />, { wrapper: wrapper() });
+    const box = await screen.findByTestId("background-sync-checkbox");
+    expect(box).not.toBeChecked();
+
+    fireEvent.click(box);
+    expect(box).toBeChecked();
 
     await waitFor(() => {
       const call = invokeMock.mock.calls.find(
-        (c) => c[0] === "update_setting" && c[1]?.key === "explorer_api_url",
+        (c) => c[0] === "set_background_sync_enabled",
       );
-      expect(call?.[1]?.value).toBe("https://my.explorer.example");
+      expect(call?.[1]).toEqual({ enabled: true });
     });
   });
 });

@@ -57,7 +57,8 @@ fn test_schema_version_tracking() {
     // 017 (backfill bid_commitments.bid_txid/reveal_txid for pre-fix rows),
     // 018 (name_bid_index for chain_scan_cursor for the chain scanner),
     // 020 (namebase_history: imported Namebase account-history events).
-    assert_eq!(count, 20);
+    // 021 (sync_locks: cross-process sync coordination for background daemon).
+    assert_eq!(count, 21);
 }
 
 #[test]

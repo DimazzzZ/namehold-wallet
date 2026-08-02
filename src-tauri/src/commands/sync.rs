@@ -212,6 +212,11 @@ impl Drop for RunningGuard {
 
 /// Start a full sync in a background thread. The frontend polls
 /// [`get_sync_status`] to see progress even across page navigation.
+///
+/// The 3-step orchestration itself lives in [`run_sync_steps`], shared with
+/// the background daemon so the two never drift apart on sync policy. While a
+/// sync runs, a heartbeat thread ([`spawn_lock_heartbeat`]) refreshes the sync
+/// lock every 10s so the daemon can't take the lock over mid-run.
 #[tauri::command]
 pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     let status = state.sync_status.clone();
@@ -302,67 +307,39 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
             // Drop conn - we'll reacquire locks each step via queries.
             drop(conn);
 
+            // Acquire the sync lock (app priority). If another app instance
+            // holds a fresh lock, bail — but a daemon lock is preempted.
+            if let Ok(c) = open_conn(&db_path) {
+                use crate::db::sync_lock;
+                if !sync_lock::acquire_for_app(&c, &profile_id).unwrap_or(false) {
+                    let mut s = status.lock().await;
+                    s.running = false;
+                    s.progress_label = "Another app instance is syncing this profile".into();
+                    guard.mark_completed();
+                    return;
+                }
+            }
+
             #[cfg(test)]
             if TEST_PANIC_HOOK.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 panic!("TEST_PANIC_HOOK: injected panic simulating a panic in a sync step");
             }
 
-            // Step 1: Node sync (best-effort)
-            {
-                let mut s = status.lock().await;
-                s.step = "node".into();
-                s.progress_label = "Syncing with local node…".into();
-            }
-            let _node_ok = sync_node_step(&db_path, &profile_id).await;
+            // Refresh the app's lock heartbeat while syncing, so a sync that
+            // runs longer than STALE_THRESHOLD_SECS doesn't let its own lock
+            // go stale and get stolen by the daemon mid-run (which would let
+            // both processes write the same profile — the corruption the lock
+            // exists to prevent).
+            let hb_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let hb_handle =
+                spawn_lock_heartbeat(db_path.clone(), profile_id.clone(), hb_stop.clone());
 
-            // Is the node authoritative (connected AND fully synced)? When it is,
-            // the explorer-backed repair/discover steps below are redundant: Step 1
-            // already refreshed the wallet's coins from the node, and owned-name
-            // state is kept current by the node coin scan plus the wallet's own
-            // covenant writes. HNSFans is only a PRE-SYNC workaround — once the
-            // node is caught up we stop calling it. (Re-checked here, per run, so a
-            // node that later falls out of sync transparently re-enables the
-            // explorer path on the next Sync.)
-            let node_authoritative = {
-                let settings = open_conn(&db_path)
-                    .ok()
-                    .and_then(|c| queries::get_settings(&c).ok());
-                match settings {
-                    Some(s) => crate::commands::read::node_ready_from_settings(&s).await,
-                    None => false,
-                }
-            };
+            // Run the shared 3-step orchestration (also used by the daemon).
+            run_sync_steps(&status, &db_path, &profile_id, true).await;
 
-            // Step 2: Repair owned names from inventory + tracked (explorer only).
-            {
-                let mut s = status.lock().await;
-                s.step = "repair".into();
-                s.progress_label = if node_authoritative {
-                    "Repairing owned names via node…".into()
-                } else {
-                    "Repairing owned names…".into()
-                };
-            }
-            if !node_authoritative {
-                repair_step(&status, &db_path, &profile_id).await;
-            }
-
-            // Step 3: Minimal explorer discovery (skipped when the node is synced —
-            // node-backed discovery runs in Step 1 / node_discover_step).
-            {
-                let mut s = status.lock().await;
-                s.step = "discover".into();
-                s.progress_label = if node_authoritative {
-                    "Scanning node for names…".into()
-                } else {
-                    "Scanning explorer for names…".into()
-                };
-            }
-            if node_authoritative {
-                node_discover_step(&db_path, &profile_id).await;
-            } else {
-                discover_step(&status, &db_path, &profile_id).await;
-            }
+            // Stop the heartbeat thread now that syncing is done.
+            hb_stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = hb_handle.join();
 
             // Done — but if either step observed a cancellation request, report
             // the run as cancelled rather than complete.
@@ -383,11 +360,123 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
             // convergence/memo/cancel/backoff logic entirely (see the
             // function's own doc comment for the "clean run" definition).
             stamp_explorer_sync_if_clean(&status, &db_path, &profile_id).await;
+            // Release the sync lock so the daemon can resume. On a panic mid-sync
+            // this release is skipped, but the app lock then goes stale after
+            // STALE_THRESHOLD_SECS and the daemon takes it over — no deadlock.
+            if let Ok(c) = open_conn(&db_path) {
+                let _ = crate::db::sync_lock::release(&c, &profile_id);
+            }
             guard.mark_completed();
         });
     });
 
     Ok(serde_json::json!({"started": true}))
+}
+
+/// Shared 3-step sync orchestration, used by both the app and the daemon.
+///
+/// This is the single source of truth for sync policy. Both [`start_full_sync`]
+/// (manual Sync button) and [`crate::daemon::sync_profile`] call this, so they
+/// never drift apart on which steps to run or when to skip them.
+///
+/// Steps:
+/// 1. Node UTXO sync (always attempted).
+/// 2. Repair owned names — explorer path only (skipped when the node is
+///    authoritative, since Step 1 already refreshed coins from the node).
+/// 3. Discover new names — node path when authoritative, explorer path otherwise.
+///
+/// `report_progress` controls whether `SyncStatus` progress labels are written:
+/// the app passes `true` (UI polls them); the daemon passes `false` (no UI,
+/// uses a throwaway status only to satisfy the step function signatures).
+pub async fn run_sync_steps(
+    status: &Arc<Mutex<SyncStatus>>,
+    db_path: &str,
+    profile_id: &str,
+    report_progress: bool,
+) {
+    // Step 1: Node sync (best-effort).
+    if report_progress {
+        let mut s = status.lock().await;
+        s.step = "node".into();
+        s.progress_label = "Syncing with local node…".into();
+    }
+    let _node_ok = sync_node_step(db_path, profile_id).await;
+
+    // Is the node authoritative (connected AND fully synced)? When it is,
+    // the explorer-backed repair/discover steps below are redundant: Step 1
+    // already refreshed the wallet's coins from the node, and owned-name
+    // state is kept current by the node coin scan plus the wallet's own
+    // covenant writes. HNSFans is only a PRE-SYNC workaround — once the
+    // node is caught up we stop calling it. (Re-checked here, per run, so a
+    // node that later falls out of sync transparently re-enables the
+    // explorer path on the next Sync.)
+    let node_authoritative = {
+        let settings = open_conn(db_path)
+            .ok()
+            .and_then(|c| queries::get_settings(&c).ok());
+        match settings {
+            Some(s) => crate::commands::read::node_ready_from_settings(&s).await,
+            None => false,
+        }
+    };
+
+    // Step 2: Repair owned names from inventory + tracked (explorer only).
+    if report_progress {
+        let mut s = status.lock().await;
+        s.step = "repair".into();
+        s.progress_label = if node_authoritative {
+            "Repairing owned names via node…".into()
+        } else {
+            "Repairing owned names…".into()
+        };
+    }
+    if !node_authoritative {
+        repair_step(status, db_path, profile_id).await;
+    }
+
+    // Step 3: Minimal explorer discovery (skipped when the node is synced —
+    // node-backed discovery runs in Step 1 / node_discover_step).
+    if report_progress {
+        let mut s = status.lock().await;
+        s.step = "discover".into();
+        s.progress_label = if node_authoritative {
+            "Scanning node for names…".into()
+        } else {
+            "Scanning explorer for names…".into()
+        };
+    }
+    if node_authoritative {
+        node_discover_step(db_path, profile_id).await;
+    } else {
+        discover_step(status, db_path, profile_id).await;
+    }
+}
+
+/// Spawn a background thread that refreshes the sync lock's heartbeat.
+///
+/// Used by [`start_full_sync`] to keep the app's lock from going stale during
+/// a long sync run. The daemon has an equivalent heartbeat spawner for the
+/// same reason. Both refresh every [`crate::daemon::HEARTBEAT_INTERVAL_SECS`].
+pub fn spawn_lock_heartbeat(
+    db_path: String,
+    profile_id: String,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    use std::sync::atomic::Ordering;
+    let interval = Duration::from_secs(crate::daemon::HEARTBEAT_INTERVAL_SECS);
+    std::thread::spawn(move || {
+        while !stop.load(Ordering::SeqCst) {
+            std::thread::sleep(interval);
+            if stop.load(Ordering::SeqCst) {
+                break;
+            }
+            if let Ok(c) = open_conn(&db_path) {
+                if let Err(e) = crate::db::sync_lock::refresh_heartbeat(&c, &profile_id) {
+                    eprintln!("start_full_sync: heartbeat refresh failed for {profile_id}: {e}");
+                }
+            }
+        }
+    })
 }
 
 /// Poll the current sync status.
@@ -419,7 +508,7 @@ pub async fn cancel_full_sync(state: State<'_, AppState>) -> Result<(), AppError
 /// connection: WAL mode, `busy_timeout` (so a connection that finds the DB
 /// momentarily locked by a concurrent writer waits and retries instead of
 /// failing immediately with "database is locked"), and `foreign_keys = ON`.
-pub(crate) fn open_conn(db_path: &str) -> Result<rusqlite::Connection, AppError> {
+pub fn open_conn(db_path: &str) -> Result<rusqlite::Connection, AppError> {
     let conn = crate::db::connection::open(std::path::Path::new(db_path))?;
     crate::db::migrations::run(&conn)?;
     Ok(conn)
@@ -450,7 +539,7 @@ fn apply_node_sync_batch(
     Ok(())
 }
 
-async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
+pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
     let conn = match open_conn(db_path) {
         Ok(c) => c,
         Err(_) => return false,
@@ -501,7 +590,7 @@ async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
 /// profile's own coins are visible here, so this NEVER hits the network for
 /// other bidders' data — that's the per-bid explorer path (Stage 2 replaces
 /// it with the chain scanner).
-async fn node_discover_step(db_path: &str, profile_id: &str) {
+pub async fn node_discover_step(db_path: &str, profile_id: &str) {
     let (settings, hashes) = {
         let conn = match open_conn(db_path) {
             Ok(c) => c,
@@ -609,7 +698,7 @@ async fn cancel_requested(status: &Arc<Mutex<SyncStatus>>) -> bool {
 /// Repair owned names, looping over successive candidate windows until the whole
 /// backlog is checked (true convergence) — so ONE Sync click finishes the job in
 /// the background instead of the user re-clicking once per window.
-async fn repair_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profile_id: &str) {
+pub async fn repair_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profile_id: &str) {
     repair_step_windowed(status, db_path, profile_id, REPAIR_WINDOW).await;
 }
 
@@ -644,7 +733,7 @@ async fn repair_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profile_id:
 ///   checks also aborts (belt-and-suspenders against an infinite loop).
 /// * Cancellation — `cancel_requested` is checked at the top of each window AND
 ///   before each per-name check, so Stop is responsive even mid-window.
-pub(crate) async fn repair_step_windowed(
+pub async fn repair_step_windowed(
     status: &Arc<Mutex<SyncStatus>>,
     db_path: &str,
     profile_id: &str,
@@ -890,7 +979,7 @@ async fn record_error_and_clear_waiting(status: &Arc<Mutex<SyncStatus>>, err: &A
 /// Best-effort: a DB hiccup here must not fail an otherwise-clean sync run,
 /// so any error opening the connection or running the UPDATE is swallowed
 /// rather than pushed into `SyncStatus.errors`.
-pub(crate) async fn stamp_explorer_sync_if_clean(
+pub async fn stamp_explorer_sync_if_clean(
     status: &Arc<Mutex<SyncStatus>>,
     db_path: &str,
     profile_id: &str,
@@ -907,11 +996,7 @@ pub(crate) async fn stamp_explorer_sync_if_clean(
     }
 }
 
-pub(crate) async fn discover_step(
-    status: &Arc<Mutex<SyncStatus>>,
-    db_path: &str,
-    profile_id: &str,
-) {
+pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profile_id: &str) {
     let (explorer, addrs) = {
         let conn = match open_conn(db_path) {
             Ok(c) => c,
