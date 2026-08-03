@@ -32,8 +32,8 @@ hsd --index-address --index-tx --api-key=<your-key>
   under Settings → Connections → "Autostart HSD when the app launches"). If hsd is
   already running when the app starts, it adopts the existing node via RPC instead
   of spawning a new one.
-- **Background sync (since v0.3.0):** When "Sync in background" is enabled in
-  Settings → Connections (default ON), hsd stays running after the app closes.
+- **Background sync:** When "Sync in background" is enabled in Settings → Connections
+  (default ON), hsd stays running after the app closes.
   A background daemon (`namehold-syncd`) wakes every 60 seconds to sync wallet
   data from hsd into the local database. The next app launch adopts the running
   hsd. To stop hsd, disable "Sync in background" or manually click **Stop hsd**

@@ -65,7 +65,7 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   Update bundles are **Ed25519-signed** at release and verified against the
   embedded public key before install; unsigned or tampered bundles are rejected.
 
-### Background sync (since v0.3.0)
+### Background sync
 
 - Namehold can keep your wallet data fresh even when the app is closed. A
   lightweight background daemon (`namehold-syncd`) wakes every 60 seconds and
@@ -77,7 +77,7 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 - Crash recovery: if the daemon dies, the app respawns it on startup.
 - The daemon is **read-only** — it never signs transactions or broadcasts.
 
-### SPV mode (since v0.3.0)
+### SPV mode
 
 - An opt-in **lightweight alternative** to the full node mode. SPV downloads only
   block headers (~几十MB vs ~15GB), enabling fast first launch and minimal disk
