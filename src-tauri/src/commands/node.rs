@@ -235,7 +235,7 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     let node_mode = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&db)?;
-        settings.get("node_mode").cloned().unwrap_or_else(|| "full".to_string())
+        crate::noncustodial::rpc::resolve_node_mode(&settings)
     };
     // When the RPC isn't answering, surface WHY the last start failed (the hsd log
     // persists past `start_hsd`'s short watch window), so a failed start never
@@ -253,7 +253,7 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     // synced, "explorer" otherwise. The frontend uses this to show which data
     // source is active. In SPV mode, always use explorer (SPV nodes don't have
     // full-chain indexes).
-    let node_synced = if node_mode == "spv" {
+    let node_synced = if node_mode.is_spv() {
         // SPV node: synced when connected (header sync is fast).
         probe.is_some()
     } else {
@@ -273,7 +273,7 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
             })
             .unwrap_or(false)
     };
-    let read_source = if node_mode == "spv" {
+    let read_source = if node_mode.is_spv() {
         // SPV mode always uses explorer for data reads (no --index-address).
         "explorer"
     } else if probe.is_some() && node_synced {
@@ -300,7 +300,7 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         // Current read source: "local" (node synced) or "explorer" (fallback).
         "read_source": read_source,
         // Node operating mode: "full" or "spv".
-        "node_mode": node_mode,
+        "node_mode": node_mode.as_str(),
     }))
 }
 
@@ -358,7 +358,7 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&db)?;
         let api_key = crate::noncustodial::rpc::resolve_node_api_key(&settings);
-        let node_mode = settings.get("node_mode").cloned().unwrap_or_else(|| "full".to_string());
+        let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
         (api_key, node_mode)
     };
     let network = active_profile_network(&state);
@@ -410,7 +410,7 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // chain (chaindb.js `verifyFlags` throws "Cannot retroactively enable …
     // indexing"). A chain synced without these must be re-synced from genesis with
     // them — there is no in-place reindex.
-    if node_mode == "spv" {
+    if node_mode.is_spv() {
         // SPV mode: download only block headers, no address/tx indexing.
         // Faster sync, less disk usage. Data reads fall back to explorer.
         cmd.arg("--spv");

@@ -8,6 +8,9 @@ export type MigrationStatus =
   | "failed_or_stuck"
   | "do_not_touch_staked";
 
+/** Node operating mode — determines sync behavior and data sources. */
+export type NodeMode = "full" | "spv";
+
 export interface Asset {
   id: number;
   tld: string;
@@ -293,7 +296,7 @@ export interface Settings {
    * - "spv": SPV mode with --spv (faster sync, less disk, explorer-dependent)
    * Only relevant when chain_source is "local_node" or "remote_node".
    */
-  node_mode: string;
+  node_mode: NodeMode;
   /** Fallback explorer URL used when primary explorer_api_url is unreachable. */
   explorer_fallback_url: string;
 }

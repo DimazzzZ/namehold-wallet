@@ -398,8 +398,8 @@ pub async fn run_sync_steps(
     let node_mode = open_conn(db_path)
         .ok()
         .and_then(|c| queries::get_settings(&c).ok())
-        .and_then(|s| s.get("node_mode").cloned())
-        .unwrap_or_else(|| "full".to_string());
+        .map(|s| crate::noncustodial::rpc::resolve_node_mode(&s))
+        .unwrap_or(crate::noncustodial::rpc::NodeMode::Full);
 
     // Step 1: Node sync (best-effort).
     // In SPV mode, use the SPV-specific step (explorer-based, no --index-address).
@@ -407,13 +407,13 @@ pub async fn run_sync_steps(
     if report_progress {
         let mut s = status.lock().await;
         s.step = "node".into();
-        s.progress_label = if node_mode == "spv" {
+        s.progress_label = if node_mode.is_spv() {
             "Syncing via SPV node…".into()
         } else {
             "Syncing with local node…".into()
         };
     }
-    if node_mode == "spv" {
+    if node_mode.is_spv() {
         let _spv_ok = crate::commands::sync_spv::sync_spv_step(db_path, profile_id).await;
     } else {
         let _node_ok = sync_node_step(db_path, profile_id).await;
@@ -430,7 +430,7 @@ pub async fn run_sync_steps(
     //
     // In SPV mode, the node is NEVER authoritative for names/UTXOs
     // (SPV nodes don't have --index-address), so always use explorer.
-    let node_authoritative = if node_mode == "spv" {
+    let node_authoritative = if node_mode.is_spv() {
         false
     } else {
         let settings = open_conn(db_path)

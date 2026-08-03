@@ -72,11 +72,11 @@ pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -
             Err(_) => return false,
         };
         match crate::db::queries::get_settings(&db) {
-            Ok(settings) => settings.get("node_mode").cloned().unwrap_or_else(|| "full".to_string()),
-            Err(_) => "full".to_string(),
+            Ok(settings) => crate::noncustodial::rpc::resolve_node_mode(&settings),
+            Err(_) => crate::noncustodial::rpc::NodeMode::Full,
         }
     };
-    if node_mode == "spv" {
+    if node_mode.is_spv() {
         return false;
     }
     node_tip_height_if_synced(state).await.is_some()

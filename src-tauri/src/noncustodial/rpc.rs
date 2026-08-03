@@ -72,6 +72,42 @@ impl ChainSource {
     }
 }
 
+/// Node operating mode — determines sync behavior and data sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeMode {
+    /// Full node with --index-address --index-tx (current behavior).
+    Full,
+    /// SPV node with --spv (faster sync, explorer-dependent).
+    Spv,
+}
+
+impl NodeMode {
+    pub fn from_setting(value: &str) -> Self {
+        match value {
+            "spv" => NodeMode::Spv,
+            _ => NodeMode::Full,
+        }
+    }
+
+    pub fn is_spv(self) -> bool {
+        matches!(self, NodeMode::Spv)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NodeMode::Full => "full",
+            NodeMode::Spv => "spv",
+        }
+    }
+}
+
+/// Resolve node_mode from settings map.
+pub fn resolve_node_mode(settings: &std::collections::HashMap<String, String>) -> NodeMode {
+    NodeMode::from_setting(
+        settings.get("node_mode").map(|s| s.as_str()).unwrap_or("full"),
+    )
+}
+
 /// A node-only JSON-RPC client.
 pub struct NodeRpcClient {
     http: Client,

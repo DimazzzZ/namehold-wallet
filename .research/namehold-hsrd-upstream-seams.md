@@ -7,7 +7,7 @@
 - Namehold PR #21, commit [`9d168a6`](https://github.com/DimazzzZ/namehold-wallet/tree/9d168a6a3af2617b24ad29aa6fd343c59b6ff4c2);
 - `handshake-rs/hns-node-rs` v0.3.4, commit [`40b456f`](https://github.com/handshake-rs/hns-node-rs/tree/40b456fa0772729542118a69f27edc37bf42a3d7) (wallet-related files не изменились на текущем `main` при проверке);
 - `handshake-rs/hns-rs` на закреплённой PR-ом ревизии [`15f7155`](https://github.com/handshake-rs/hns-rs/tree/15f715576a2111fae2a8c65fccc7860ede64bd98).
-- текущий `hns-rs/main` [`4b989aa`](https://github.com/handshake-rs/hns-rs/tree/4b989aabc132e7e79b8fd57a10f2465073faf588), чтобы не предлагать в Namehold то, что уже появилос upstream после pinned commit.
+- текущий `hns-rs/main` [`4b989aa`](https://github.com/handshake-rs/hns-rs/tree/4b989aabc132e7e79b8fd57a10f2465073faf588), чтобы не предлагать в Namehold то, что уже появилось upstream после pinned commit.
 
 Источники — только официальные исходники и документация этих репозиториев.
 
@@ -25,23 +25,32 @@ Namehold
       |
       |  3 typed operations
       v
-hns-wallet-client (upstream adapter; deep module)
+NameholdHsrdAdapter (independent implementation; deep module)
   atomic restore, bound evidence, signed-tx facts
       |
       v
 hsrd Wallet RPC v1
   canonical node/index/mempool authority
 
+upstream hns-wallet-rpc-contract + testkit
+  normative types, invariants, adversarial fixtures; no product HTTP client
+
 hns-rs
-  canonical transaction/covenant/proof/swap semantics used by the adapter
+  canonical transaction/covenant/proof/swap semantics used by both sides
 ```
 
 Правило границы:
 
-- **Upstream владеет инвариантами, которые одинаковы для любого wallet consumer**: wire schema, exact auth format, script identity, sorting/deduplication, cursor lifecycle, chain/mempool binding, canonical decode, txid/proof verification, typed errors и node-calculated fee facts.
+- **Upstream владеет normative инвариантами, которые одинаковы для любого wallet consumer**: wire schema, exact auth format, script identity, required sorting/deduplication, cursor/binding rules, typed errors, node-calculated fee facts и conformance/adversarial testkit.
+- **Namehold независимо реализует adapter state machine**: HTTP transport, complete pagination, discard/retry, binding validation, evidence join и final-artifact checks. Он может и должен использовать upstream types/testkit и canonical `hns-rs`, но не готовую upstream client implementation.
 - **Namehold владеет решениями и состоянием конкретного приложения**: seed/keys, derivation records, SQLite schema, sync schedule, coin reservations, max-fee/user approval, permission to use a remote broadcaster, action labels, presentation, Tauri security и lifecycle sidecar.
 
-Это даёт лучшую **locality**: node facts остаются рядом с node/index authority, wallet policy — рядом с user workflow. Узкий **seam** даёт высокий **leverage**: один исправленный adapter защищает все будущие wallets.
+Это даёт лучшую **locality**: node facts остаются рядом с node/index authority, wallet policy — рядом с user workflow, а qualification-sensitive orchestration — в consumer repo. Узкий **seam** даёт высокий **leverage**: один normative contract/testkit проверяет независимые adapters, не подменяя их одной референсной реализацией.
+
+Два upstream-факта здесь не являются предметом интерпретации:
+
+1. Production restore должен передать **полный sorted-unique set scripts одним `confirmed_scripts_page` traversal**, сохранить reverse map и отбросить весь partial result при смене binding. Per-address loops не эквивалентны этому контракту. [`WALLET_RPC_V1.md`](https://github.com/handshake-rs/hns-node-rs/blob/v0.3.4/docs/WALLET_RPC_V1.md#L96-L118)
+2. Wallet RPC v1 **не даёт tracked-contract registration и не транспортирует revealed preimage**; он выдаёт только evidence для заранее доверенно зарегистрированных in-process descriptors. До protocol publication, wire-version/threat review и registry lifecycle Namehold не может честно заявлять end-to-end tracked swap support. [`WALLET_RPC_V1.md`](https://github.com/handshake-rs/hns-node-rs/blob/v0.3.4/docs/WALLET_RPC_V1.md#L229-L250)
 
 ## Что уже правильно находится upstream
 
@@ -86,38 +95,36 @@ PR пинит `15f7155`, но текущий `hns-rs/main` на `4b989aa` уже
 
 Протокол при этом требует нетривиальной композиции: полный sorted script set, полный discard при смене epoch, проверка tip на каждой странице, mempool nonce/generation, opaque cursors и bound point reads. Сама документация говорит, что client должен отбрасывать partial results при любом изменении binding. [`WALLET_RPC_V1.md`](https://github.com/handshake-rs/hns-node-rs/blob/v0.3.4/docs/WALLET_RPC_V1.md#L96-L137)
 
-Это не должно быть каждый раз заново реализовано wallet-приложением. Нужен один upstream **adapter** как глубокий модуль: узкий typed interface скрывает pagination/binding/retry/validation.
+Это не должно каждый раз заново **специфицироваться** wallet-приложением: upstream должен дать один normative contract и adversarial testkit. Но concrete state-machine implementation для этого пилота должна остаться независимой в Namehold. Внутри Namehold она оформляется как **deep module** с узким typed interface, скрывающим pagination/binding/retry/validation от остального application code.
+
+Это не просто архитектурное предпочтение. hsrd явно называет **independently implemented cross-repository wallet transport adapter** частью release qualification. Если Namehold просто импортирует готовый upstream HTTP client, пропадает независимость, которую должен доказать пилот. [Wallet qualification requirement](https://github.com/handshake-rs/hns-node-rs/blob/v0.3.4/docs/readiness.md#L180-L196), [RPC conclusion](https://github.com/handshake-rs/hns-node-rs/blob/v0.3.4/docs/WALLET_RPC_V1.md#L268-L281)
 
 ### Где разместить
 
-Предпочтительно не в `hns-node` binary crate и не в Namehold, а в малом библиотечном crate/repository, например:
+Предпочтительно вынести **normative**, но не concrete client, в малые библиотечные crates:
 
-- `hns-wallet-rpc-types`: public v1 envelopes, calls, results, bounds и typed error codes; этот crate должен быть единственным wire-schema owner и использоваться и server, и client;
-- `hns-wallet-client`: transport-independent orchestration над `WalletTransport`, с optional `reqwest` implementation;
+- `hns-wallet-rpc-contract`: public v1 envelopes, calls, results, bounds, typed error codes и трёхметодный consumer trait; этот crate должен быть единственным wire-schema owner и использоваться server и independent consumers;
+- `hns-wallet-rpc-testkit`: server/client round-trip vectors, scripted stale/reorg/restart/malformed sequences и reusable conformance assertions; testkit принимает consumer implementation, но не содержит production transport;
 - canonical decode/proof/fee types берутся из одной pinned/tagged ревизии `hns-rs`.
 
-Если не хочется создавать отдельный repo, оба crates могут жить в workspace `hns-node-rs`, но они должны быть publishable и не зависеть от RocksDB/P2P/node runtime. Это сохранит хорошую module depth.
+Оба crates могут жить в workspace `hns-node-rs`, но они должны быть publishable и не зависеть от RocksDB/P2P/node runtime. Concrete `reqwest`/Tauri adapter живёт в Namehold. Это сохранит и module depth, и independent qualification.
 
 ## Минимальный upstream interface: три entry point
 
 ```rust
-pub trait WalletTransport {
-    async fn call<C: WalletRpcCall>(&self, call: C) -> Result<C::Result, RpcError>;
-}
-
-impl<T: WalletTransport> WalletClient<T> {
-    pub async fn restore_scripts(
+pub trait NoncustodialWalletBackend {
+    async fn restore_scripts(
         &self,
         scripts: &[OutputScriptId],
     ) -> Result<WalletSnapshot, RestoreError>;
 
-    pub async fn transaction_evidence(
+    async fn transaction_evidence(
         &self,
         snapshot: &WalletSnapshot,
         txids: &[TransactionHash],
     ) -> Result<Vec<VerifiedTransactionEvidence>, EvidenceError>;
 
-    pub async fn assess_signed_transaction(
+    async fn assess_signed_transaction(
         &self,
         snapshot: &WalletSnapshot,
         transaction: &Transaction,
@@ -125,6 +132,8 @@ impl<T: WalletTransport> WalletClient<T> {
     ) -> Result<SignedTransactionAssessment, AssessmentError>;
 }
 ```
+
+Это normative trait. `NameholdHsrdAdapter` независимо его реализует и проходит upstream testkit; остальной Namehold видит только эти три entry point.
 
 ### 1. `restore_scripts`
 
@@ -194,15 +203,15 @@ Namehold сейчас вручную повторяет version + length + progr
 
 | Namehold PR file | Оставить в Namehold | Вынести upstream / удалить из app layer | Почему |
 |---|---|---|---|
-| [`src-tauri/src/noncustodial/hsrd.rs`](https://github.com/DimazzzZ/namehold-wallet/blob/9d168a6a3af2617b24ad29aa6fd343c59b6ff4c2/src-tauri/src/noncustodial/hsrd.rs) | Тонкий adapter из Namehold settings/network/address labels в upstream typed results; UI-specific blockchain/name/resource JSON. | `RpcRequest/Response/Error`, все `Wire*`, auth validation, transport guard, typed error mapping, cursor loops, binding checks, `restore_address`, `transaction_evidence`, canonical tx/proof validation, fee-assessment validation, generic tracked-contract paging. | Сейчас файл смешивает wire, protocol, orchestration и presentation. Upstream-модуль даст depth; Namehold-файл станет маленьким application adapter. |
-| [`src-tauri/src/commands/sync.rs`](https://github.com/DimazzzZ/namehold-wallet/blob/9d168a6a3af2617b24ad29aa6fd343c59b6ff4c2/src-tauri/src/commands/sync.rs#L517-L575) | Profile/address lookup, scheduler, SQLite transaction, upsert/mark-used/cursor, application telemetry. | Весь multi-script read должен быть одним `restore_scripts`; Namehold не должен loop-ить по адресам. | Wallet-wide atomicity — invariant RPC, а не SQLite/UI. Сейчас per-address errors silently skipped, после чего app globally marks missing coins spent. |
-| [`src-tauri/src/commands/history.rs`](https://github.com/DimazzzZ/namehold-wallet/blob/9d168a6a3af2617b24ad29aa6fd343c59b6ff4c2/src-tauri/src/commands/history.rs#L96-L205) | Namehold action taxonomy, direction/counterparty UX, joins с local address/coin/name DB. | Typed decoded transaction + `script_index` relevance + status/inclusion/payload должны приходить из `transaction_evidence`; удалить hsd-shaped `serde_json::Value` seam. | Факты и relevance — upstream; labels `bid/reveal/send` — product policy. Текущий consumer ждёт `inputs[].coin.address`, которого producer не создаёт. [`transaction_json`](https://github.com/DimazzzZ/namehold-wallet/blob/9d168a6a3af2617b24ad29aa6fd343c59b6ff4c2/src-tauri/src/noncustodial/hsrd.rs#L1210-L1245) |
-| [`src-tauri/src/commands/tx.rs`](https://github.com/DimazzzZ/namehold-wallet/blob/9d168a6a3af2617b24ad29aa6fd343c59b6ff4c2/src-tauri/src/commands/tx.rs#L707-L755) | Draft/reservation lifecycle, coin selection, local signing, user-confirmed fee, maximum-fee/drift decision, permission для remote broadcast, persistence после relay. | Canonical final artifact + local txid + bound quote validation в `assess_signed_transaction`; raw `send_raw_transaction` может быть typed transport method, но его вызов остаётся в Namehold. | Node владеет fee/admission facts; wallet владеет consent и expenditure policy. |
+| [`src-tauri/src/noncustodial/hsrd.rs`](https://github.com/DimazzzZ/namehold-wallet/blob/9d168a6a3af2617b24ad29aa6fd343c59b6ff4c2/src-tauri/src/noncustodial/hsrd.rs) | Independent concrete HTTP adapter: full-set pagination, discard/retry, binding/evidence/final-artifact checks. Разделить его на transport/state-machine/application projections; остальному app показать только три typed entry point. | `RpcRequest/Response/Error`, все `Wire*`, error/status enums, exact auth grammar, script-ID algorithm, normative invariants и adversarial fixtures/testkit. Canonical tx/proof/name/swap validation брать из `hns-rs`, а не копировать. Dead generic tracked-contract paging отложить. | Сейчас файл смешивает wire, protocol, orchestration и presentation. Shared contract уберёт schema drift, но local implementation сохранит qualification independence. |
+| [`src-tauri/src/commands/sync.rs`](https://github.com/DimazzzZ/namehold-wallet/blob/9d168a6a3af2617b24ad29aa6fd343c59b6ff4c2/src-tauri/src/commands/sync.rs#L517-L575) | Profile/address lookup, scheduler, SQLite transaction, upsert/mark-used/cursor, application telemetry. Concrete `restore_scripts` implementation remains in the Namehold adapter. | Normative `restore_scripts` contract/testkit upstream; command layer делает один wallet-wide call и не loop-ит по адресам. | Wallet-wide atomicity — invariant RPC adapter, а не SQLite/UI. Сейчас per-address errors silently skipped, после чего app globally marks missing coins spent. |
+| [`src-tauri/src/commands/history.rs`](https://github.com/DimazzzZ/namehold-wallet/blob/9d168a6a3af2617b24ad29aa6fd343c59b6ff4c2/src-tauri/src/commands/history.rs#L96-L205) | Namehold action taxonomy, direction/counterparty UX, joins с local address/coin/name DB; independent evidence implementation живёт в adapter module. | Typed evidence result/schema/testkit upstream; command consumes decoded transaction + `script_index` relevance + status/inclusion/payload и удаляет hsd-shaped `serde_json::Value` seam. | Chain facts/relevance заданы upstream contract; labels `bid/reveal/send` — product policy. Текущий consumer ждёт `inputs[].coin.address`, которого producer не создаёт. [`transaction_json`](https://github.com/DimazzzZ/namehold-wallet/blob/9d168a6a3af2617b24ad29aa6fd343c59b6ff4c2/src-tauri/src/noncustodial/hsrd.rs#L1210-L1245) |
+| [`src-tauri/src/commands/tx.rs`](https://github.com/DimazzzZ/namehold-wallet/blob/9d168a6a3af2617b24ad29aa6fd343c59b6ff4c2/src-tauri/src/commands/tx.rs#L707-L755) | Draft/reservation lifecycle, coin selection, local signing, user-confirmed fee, maximum-fee/drift decision, permission для remote broadcast, persistence после relay; concrete assessment orchestration в local adapter. | `SignedTransactionAssessment` schema/invariants/testkit upstream; raw `send_raw_transaction` remains an explicit Namehold-triggered mutation. | Node владеет fee/admission facts; wallet владеет consent и expenditure policy. |
 | [`src-tauri/src/noncustodial/marketplace.rs`](https://github.com/DimazzzZ/namehold-wallet/blob/9d168a6a3af2617b24ad29aa6fd343c59b6ff4c2/src-tauri/src/noncustodial/marketplace.rs) | Только реальные application workflows: persistence, user approval, matching/session UI. Thin error mapping допустим. | Canonical listing/swap/HTLC types уже в `hns-rs`; node tracker descriptor/classification должен там же иметь protocol authority. До upstream registration seam dead `tracked_contract_*` methods и claims лучше отложить. | Текущий файл — почти только re-export и два decoder; это не integrated feature. |
 | `providers/signer.rs`, HD/key/draft modules | Всё: signer capability, unlock/session, derivation, transaction construction/signing. | Ничего в hsrd. | Upstream node явно обещает отсутствие key/seed/signing API. [Resource boundary](https://github.com/handshake-rs/hns-node-rs/blob/v0.3.4/docs/WALLET_RPC_V1.md#L252-L281) |
 | `commands/node.rs`, Docker, release workflows | Managed/external lifecycle, paths, process ownership, UI status, packaging, platform assets. | hsrd должен upstream публиковать readiness/network/genesis/capabilities; Namehold не должен угадывать их по process flags. | Operational ownership — app-specific; node identity/readiness — node fact. |
 | `security.rs`, settings commands, SQL migrations | Credential consent, renderer permissions, endpoint ownership, migrations и user-intent preservation. | Только reusable exact auth/transport types. | Библиотека не может защитить Tauri command или решить, какой endpoint получил user consent. |
-| Namehold tests | DB migration fixtures, wallet policy, UI, signer, real end-to-end hsrd regtest qualification. | Wire round-trips, cursor/reorg/restart/auth adversarial cases, proof/txid/quote validation и shared frozen vectors. | Implementation contract должен тестироваться upstream; consumer workflow и independent black-box qualification — в Namehold. |
+| Namehold tests | DB migration fixtures, wallet policy, UI, signer; adapter conformance против upstream testkit; real end-to-end hsrd regtest qualification. | Normative wire round-trips, scripted cursor/reorg/restart/auth adversarial cases, proof/txid/quote fixtures и server-side contract tests. | Upstream владеет oracle/testkit; Namehold независимо доказывает, что его реализация проходит этот контракт и black-box node scenarios. |
 
 ## Swap/marketplace: отдельный upstream tranche
 
@@ -245,13 +254,13 @@ Namehold сейчас вручную повторяет version + length + progr
 - quote/broadcast txid сравниваются с local final transaction;
 - remote broadcast gate enforced в backend.
 
-### Tranche B: малый upstream client
+### Tranche B: малый upstream contract/testkit
 
-1. Public v1 wire types + typed errors + auth/endpoint type.
-2. `restore_scripts`, `transaction_evidence`, `assess_signed_transaction`.
+1. Public v1 wire types + typed errors + exact auth value type.
+2. Normative `restore_scripts`, `transaction_evidence`, `assess_signed_transaction` trait/results и state-machine invariants — без production HTTP implementation.
 3. Authenticated `network` + `genesis_hash` + readiness in capabilities.
-4. Server/client round-trip fixtures и adversarial state-machine tests.
-5. Тег hsrd/client/hns-rs revisions; Namehold пинит один qualified set.
+4. Server/client round-trip fixtures и adversarial state-machine testkit, который Namehold запускает над своим adapter.
+5. Тег hsrd/contract/hns-rs revisions; Namehold пинит один qualified set, но сохраняет concrete adapter в consumer repo.
 
 ### Tranche C: independent cross-project qualification
 
@@ -278,7 +287,7 @@ Upstream сам требует именно restart/reorg/adversarial transport 
 Не нужно отказываться от PR или от синергии. Лучше изменить роль PR:
 
 - **сейчас:** integration laboratory / executable specification на experimental branch или за feature flag;
-- **параллельно:** вынести generic adapter и protocol fixes в upstream PR-ы;
-- **перед main/release merge:** заменить локальную generic реализацию на pinned upstream adapter и приложить cross-project evidence.
+- **параллельно:** вынести normative wire/types/testkit и protocol fixes в upstream PR-ы, но не concrete Namehold adapter;
+- **перед main/release merge:** перевести local adapter на pinned upstream contract types, прогнать его через upstream testkit и приложить real cross-project evidence.
 
-Так Namehold не станет случайным владельцем hsrd wallet protocol, а hsrd получит реальный consumer-driven interface. Самый ценный результат пилота — не просто «Namehold работает с hsrd», а появление глубокого повторно используемого wallet adapter с настоящей cross-repo qualification.
+Так Namehold не станет случайным владельцем hsrd wallet protocol, а hsrd получит consumer-driven normative interface и настоящую независимую проверку второй реализацией. Самый ценный результат пилота — не просто «Namehold работает с hsrd», а глубокая Namehold-side adapter module, проверяемая shared upstream contract/testkit, без копирования protocol authority.

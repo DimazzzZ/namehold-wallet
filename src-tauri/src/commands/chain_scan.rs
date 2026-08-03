@@ -62,8 +62,8 @@ pub async fn run_chain_scanner(db_path: String) {
         // In SPV mode, the node doesn't have full blocks, so the chain scanner
         // cannot walk transactions. Skip scanning and sleep longer (5 minutes)
         // to reduce resource waste.
-        let node_mode = settings.get("node_mode").map(|s| s.as_str()).unwrap_or("full");
-        if node_mode == "spv" {
+        let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
+        if node_mode.is_spv() {
             sleep(SPV_SLEEP).await;
             continue;
         }

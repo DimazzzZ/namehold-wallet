@@ -1204,8 +1204,8 @@ pub async fn get_write_capability(
                 } else if let Some(addr) = &probe_addr {
                     // SPV mode: node is synced but can't index addresses.
                     // Show a clear message instead of the generic "not address-indexed".
-                    let node_mode = settings.get("node_mode").map(|s| s.as_str()).unwrap_or("full");
-                    if node_mode == "spv" {
+                    let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
+                    if node_mode.is_spv() {
                         cap.can_write = false;
                         cap.reason = Some(
                             "SPV mode cannot send transactions. Switch to Full node mode in Settings → Connections to enable sending."
