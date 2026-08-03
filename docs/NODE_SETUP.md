@@ -69,3 +69,24 @@ When "Sync in background" is enabled (Settings → Connections, default ON):
 
 To disable background sync, uncheck **Settings → Connections → "Sync in
 background"**. hsd will be stopped the next time you close the app.
+
+## SPV mode (lightweight alternative)
+
+For users who don't need to send transactions or want faster initial setup:
+
+- **SPV mode** runs hsd with `--spv` (no `--index-address`), downloading only block
+  headers. Much faster initial sync and minimal disk usage (~几十MB vs ~15GB).
+- **Read-only** — cannot send transactions. Balance and name data come from the
+  explorer.
+- **Explorer failover** — set a fallback URL in Settings for when the primary
+  explorer is unreachable.
+- **To enable:** Settings → Connections → Node mode → select "SPV" → Save.
+- **Status indicator:** StatusStrip shows "Explorer (SPV)" when SPV mode is active.
+
+SPV mode is ideal for:
+- **Viewing your wallet** without waiting for full sync
+- **Monitoring names/auctions** without needing to send
+- **Low-disk environments** where full node storage isn't feasible
+- **Quick setup** for new users who want to see their balance immediately
+
+To send transactions, switch back to "Full node" mode and wait for sync.

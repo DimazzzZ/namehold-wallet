@@ -14,6 +14,17 @@
   Bundled as a Tauri sidecar (externalBin).
 - **New DB migration `021_sync_locks.sql`** — creates the `sync_locks` table for
   cross-process sync coordination.
+- **SPV (Simplified Payment Verification) mode** — an opt-in lightweight alternative
+  to the full node mode. SPV downloads only block headers (~几十MB vs ~15GB),
+  enabling fast first launch and minimal disk usage. Balance and name data come from
+  the explorer; sending is blocked in SPV mode (read-only). Controlled via a
+  **"Node mode"** dropdown in Settings → Connections (default: Full node).
+- **Explorer failover** — all explorer HTTP requests now support automatic failover
+  to a configurable fallback URL. Configured via "Explorer fallback URL" in Settings.
+- **SPV UI indicators** — StatusStrip shows "Explorer (SPV)" when in SPV mode to
+  explain why reads come from the explorer.
+- **SPV-aware write capability** — SPV mode shows a clear "SPV mode cannot send
+  transactions" message instead of the generic "node not address-indexed" error.
 
 ## [0.3.0] - 2026-07-29
 

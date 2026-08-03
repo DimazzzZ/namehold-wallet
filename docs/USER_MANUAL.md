@@ -342,6 +342,8 @@ All node settings live under **Settings → Connections**.
 | **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. |
 | **Autostart HSD when the app launches** | **on** | Toggle off to keep hsd manual. |
 | **Sync in background** | **on** | When enabled, a background daemon syncs your wallet every 60 seconds, even when the app is closed. When disabled, only manual Sync (or the app's auto-sync while running) refreshes your data. |
+| **Node mode** | **Full node** | **SPV** (lightweight, faster sync, explorer-dependent) or **Full node** (requires ~15GB, indexes all addresses). SPV mode is read-only — cannot send transactions. |
+| **Explorer fallback URL** | (empty) | When primary explorer is unreachable, automatically tries this URL. Leave empty to disable failover. |
 
 ### Background sync
 
@@ -361,6 +363,33 @@ data fresh without the app being open.
 - **Read-only:** the daemon never signs transactions or broadcasts — it only reads
   from hsd and writes sync data to the local database. Your keys stay locked in the
   encrypted vault.
+
+### SPV mode (lightweight)
+
+The **Node mode** dropdown (Settings → Connections) lets you choose between:
+
+- **Full node** (default): hsd runs with `--index-address --index-tx`. Requires
+  ~15GB disk space and initial sync time. Supports sending and full local data.
+- **SPV** (lightweight): hsd runs with `--spv`. Downloads only block headers
+  (~几十MB). Faster initial sync, less disk usage. **Read-only** — cannot send
+  transactions. Balance and name data come from the explorer.
+
+When SPV mode is active:
+- The **StatusStrip** shows "Explorer (SPV)" to indicate data comes from the explorer.
+- **Sending is blocked** with a clear message: "SPV mode cannot send transactions."
+- **Explorer failover** is available — set a fallback URL in Settings for when the
+  primary explorer is unreachable.
+
+**To enable SPV mode:**
+1. Go to **Settings → Connections**
+2. Change **Node mode** from "Full node" to "SPV"
+3. **Save settings** — hsd restarts with `--spv` flag
+4. Data reads now come from the explorer; sending is blocked
+
+**To switch back to full node:**
+1. Change **Node mode** back to "Full node"
+2. **Save settings** — hsd restarts with `--index-address --index-tx`
+3. Full sync begins (may take time if the chain has advanced significantly)
 
 ### Start, stop, status
 

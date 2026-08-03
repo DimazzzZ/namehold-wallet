@@ -77,6 +77,20 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 - Crash recovery: if the daemon dies, the app respawns it on startup.
 - The daemon is **read-only** — it never signs transactions or broadcasts.
 
+### SPV mode (since v0.3.0)
+
+- An opt-in **lightweight alternative** to the full node mode. SPV downloads only
+  block headers (~几十MB vs ~15GB), enabling fast first launch and minimal disk
+  usage.
+- **Balance and name data come from the explorer** — sending is blocked in SPV mode
+  (read-only).
+- Controlled via a **"Node mode"** dropdown in Settings → Connections (default:
+  Full node). When using SPV, hsd runs with `--spv` instead of `--index-address
+  --index-tx`.
+- **Explorer failover** — all explorer HTTP requests support automatic failover to a
+  configurable fallback URL.
+- **SPV indicator** in the StatusStrip — shows "Explorer (SPV)" when in SPV mode.
+
 ## How it works
 
 - **Reads are node-free.** Balances and names come from the explorer and are cached
