@@ -18,27 +18,14 @@ use crate::hsd::types::{HsdBalance, HsdBid, HsdName, HsdNameStats, HsdOwner};
 /// Error type for explorer requests — distinguishes transport errors (network
 /// down) from HTTP errors (server returned non-2xx). This allows callers to
 /// handle each case differently without fragile string matching.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ExplorerError {
     /// Network-level failure (DNS, timeout, connection refused).
-    Transport(reqwest::Error),
+    #[error("Explorer transport error: {0}")]
+    Transport(#[from] reqwest::Error),
     /// Server returned a non-2xx HTTP status code.
+    #[error("Explorer HTTP error: {0}")]
     Http(u16),
-}
-
-impl std::fmt::Display for ExplorerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ExplorerError::Transport(e) => write!(f, "Explorer transport error: {e}"),
-            ExplorerError::Http(status) => write!(f, "Explorer HTTP error: {status}"),
-        }
-    }
-}
-
-impl From<reqwest::Error> for ExplorerError {
-    fn from(e: reqwest::Error) -> Self {
-        ExplorerError::Transport(e)
-    }
 }
 
 impl From<ExplorerError> for AppError {
