@@ -65,7 +65,7 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   Update bundles are **Ed25519-signed** at release and verified against the
   embedded public key before install; unsigned or tampered bundles are rejected.
 
-### Background sync (since v0.3.0)
+### Background sync
 
 - Namehold can keep your wallet data fresh even when the app is closed. A
   lightweight background daemon (`namehold-syncd`) wakes every 60 seconds and
@@ -76,6 +76,20 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   query it; the next app launch adopts the running node (no duplicate spawned).
 - Crash recovery: if the daemon dies, the app respawns it on startup.
 - The daemon is **read-only** — it never signs transactions or broadcasts.
+
+### SPV mode
+
+- An opt-in **lightweight alternative** to the full node mode. SPV downloads only
+  block headers (~几十MB vs ~15GB), enabling fast first launch and minimal disk
+  usage.
+- **Balance and name data come from the explorer** — sending is blocked in SPV mode
+  (read-only).
+- Controlled via a **"Node mode"** dropdown in Settings → Connections (default:
+  Full node). When using SPV, hsd runs with `--spv` instead of `--index-address
+  --index-tx`.
+- **Explorer failover** — all explorer HTTP requests support automatic failover to a
+  configurable fallback URL.
+- **SPV indicator** in the StatusStrip — shows "Explorer (SPV)" when in SPV mode.
 
 ## How it works
 

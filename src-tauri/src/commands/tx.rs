@@ -1146,12 +1146,7 @@ pub async fn get_write_capability(
     let (source, allow_remote, settings, probe_addr) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
-        let source = ChainSource::from_setting(
-            settings
-                .get("chain_source")
-                .map(|s| s.as_str())
-                .unwrap_or("local_node"),
-        );
+        let source = ChainSource::from_settings(&settings);
         let allow_remote =
             settings.get("allow_remote_broadcast").map(|s| s.as_str()) == Some("true");
         // One address to probe the node's address index (if a profile exists).
@@ -1163,6 +1158,20 @@ pub async fn get_write_capability(
     };
     let mut cap =
         crate::providers::WriteCapability::evaluate(signer_unlocked, source, allow_remote);
+
+    // SPV mode is explicitly read-only — override whatever the signer evaluated
+    // with a clear SPV-specific message. This must run before the generic
+    // "broadcaster_available" check so the SPV-specific reason is shown.
+    let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
+    if node_mode.is_spv() {
+        cap.broadcaster_available = false;
+        cap.can_write = false;
+        cap.reason = Some(
+            "SPV mode cannot send transactions. Switch to Full node mode in Settings → Connections to enable sending."
+                .to_string(),
+        );
+        return Ok(cap);
+    }
 
     // Writes also need the node reachable, fully synced, AND address-indexed (the
     // wallet learns its spendable + name-owner coins via getcoinsbyaddress). If

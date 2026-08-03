@@ -394,13 +394,30 @@ pub async fn run_sync_steps(
     profile_id: &str,
     report_progress: bool,
 ) {
+    // Determine node mode from settings.
+    let node_mode = open_conn(db_path)
+        .ok()
+        .and_then(|c| queries::get_settings(&c).ok())
+        .map(|s| crate::noncustodial::rpc::resolve_node_mode(&s))
+        .unwrap_or(crate::noncustodial::rpc::NodeMode::Full);
+
     // Step 1: Node sync (best-effort).
+    // In SPV mode, use the SPV-specific step (explorer-based, no --index-address).
+    // In full mode, use the standard node sync step.
     if report_progress {
         let mut s = status.lock().await;
         s.step = "node".into();
-        s.progress_label = "Syncing with local node…".into();
+        s.progress_label = if node_mode.is_spv() {
+            "Syncing via SPV node…".into()
+        } else {
+            "Syncing with local node…".into()
+        };
     }
-    let _node_ok = sync_node_step(db_path, profile_id).await;
+    if node_mode.is_spv() {
+        let _spv_ok = crate::commands::sync_spv::sync_spv_step(db_path, profile_id).await;
+    } else {
+        let _node_ok = sync_node_step(db_path, profile_id).await;
+    }
 
     // Is the node authoritative (connected AND fully synced)? When it is,
     // the explorer-backed repair/discover steps below are redundant: Step 1
@@ -410,7 +427,12 @@ pub async fn run_sync_steps(
     // node is caught up we stop calling it. (Re-checked here, per run, so a
     // node that later falls out of sync transparently re-enables the
     // explorer path on the next Sync.)
-    let node_authoritative = {
+    //
+    // In SPV mode, the node is NEVER authoritative for names/UTXOs
+    // (SPV nodes don't have --index-address), so always use explorer.
+    let node_authoritative = if node_mode.is_spv() {
+        false
+    } else {
         let settings = open_conn(db_path)
             .ok()
             .and_then(|c| queries::get_settings(&c).ok());

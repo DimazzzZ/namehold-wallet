@@ -145,6 +145,21 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] Read source label: "Explorer" when node not synced, "Local" when synced
 - [ ] Last error shown when node start fails
 - [ ] Re-sync button appears on index mismatch
+- [ ] **Node mode dropdown** visible when chain_source ≠ explorer
+- [ ] **Node mode dropdown** hidden when chain_source = explorer
+- [ ] **Explorer fallback URL** field editable and saveable
+
+### B2. SPV mode
+- [ ] Switch to SPV mode in Settings → Node mode dropdown
+- [ ] hsd restarts with `--spv` flag (check logs)
+- [ ] StatusStrip shows "Explorer (SPV)" label
+- [ ] Balance loads from explorer (not local cache)
+- [ ] Name info loads from explorer
+- [ ] Send HNS blocked with "SPV mode cannot send transactions" message
+- [ ] Name actions blocked with clear SPV message
+- [ ] Switch back to Full node → hsd restarts with `--index-address`
+- [ ] Full sync begins after switching back
+- [ ] Explorer failover works (set invalid primary, valid fallback)
 
 ### C. Wallet flows
 - [ ] Receive address displayed with copy button

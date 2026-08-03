@@ -1465,3 +1465,30 @@ async fn write_capability_blocks_when_behind_tip() {
         "reason should mention syncing",
     );
 }
+
+#[tokio::test]
+async fn spv_mode_blocks_writes_with_clear_reason() {
+    // SPV mode cannot send transactions — the write-capability check should
+    // return a clear "SPV mode" reason, not the generic "not address-indexed".
+    let mut server = mockito::Server::new_async().await;
+    // A fully synced node so the normal sync gates pass.
+    let _bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(bi_full(100, 100, 0.9999))
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    db::queries::set_setting(&conn, "node_mode", "spv").unwrap();
+    let app = app_with(conn);
+    unlock(&app, PROFILE);
+
+    let cap = get_write_capability(app.state()).await.expect("cap");
+    assert!(!cap.can_write, "SPV mode must block writes");
+    let reason = cap.reason.unwrap_or_default();
+    assert!(
+        reason.to_lowercase().contains("spv"),
+        "reason should mention SPV; got: {reason}"
+    );
+}

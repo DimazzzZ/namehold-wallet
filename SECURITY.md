@@ -177,6 +177,50 @@ steal funds or sign malicious transactions. It can only read and write sync data
 
 ---
 
+## SPV mode
+
+### What SPV mode does
+
+SPV (Simplified Payment Verification) mode runs hsd with `--spv` instead of
+`--index-address --index-tx`. This means:
+
+- **No address indexing** — the node doesn't track which coins belong to which address.
+- **No transaction indexing** — the node doesn't store full transaction details.
+- **Read-only** — the wallet cannot send transactions in SPV mode.
+- **Explorer-dependent** — balance and name data come from the configured explorer.
+
+### Security implications
+
+1. **Explorer trust**: In SPV mode, the wallet trusts the explorer for balance and
+   name data. If the explorer is compromised, it could show incorrect data. Mitigation:
+   configure a trusted explorer and optionally set a fallback URL.
+
+2. **No local verification**: Unlike full node mode, SPV mode doesn't verify
+   transactions locally against the full chain. The explorer is the source of truth
+   for reads.
+
+3. **Read-only guarantee**: SPV mode blocks all write operations (sending, name
+   actions) at the write-capability check level. Even if the explorer is compromised,
+   it cannot trick the wallet into signing malicious transactions.
+
+4. **hsd still runs locally**: The SPV node still runs on your machine and handles
+   block header verification. The explorer is only used for data reads, not for
+   transaction validation.
+
+### When to use SPV mode
+
+- **Quick setup**: When you want to see your balance immediately without waiting for
+  full sync.
+- **Low-disk environments**: When you can't afford ~15GB for a full node.
+- **Monitoring**: When you only need to watch names/auctions without sending.
+
+### When NOT to use SPV mode
+
+- **Sending transactions**: Switch to full node mode to send.
+- **High-security requirements**: Full node mode provides stronger security guarantees.
+
+---
+
 ## Mitigations reference table
 
 | Concern | Mitigation | Location | Tests |

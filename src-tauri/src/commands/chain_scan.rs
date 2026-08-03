@@ -29,6 +29,9 @@ const BATCH_YIELD: Duration = Duration::from_millis(100);
 
 /// Sleep when the node is not ready (disconnected or syncing) before rechecking.
 const NOT_READY_SLEEP: Duration = Duration::from_secs(30);
+/// Sleep duration when in SPV mode (chain scanner is disabled, no full blocks).
+/// Longer than NOT_READY_SLEEP to reduce resource waste.
+const SPV_SLEEP: Duration = Duration::from_secs(300);
 
 /// Sleep when the scanner is caught up to the tip before polling for new blocks.
 const CAUGHT_UP_SLEEP: Duration = Duration::from_secs(10);
@@ -56,6 +59,15 @@ pub async fn run_chain_scanner(db_path: String) {
         };
 
         // Only scan when the node is authoritative.
+        // In SPV mode, the node doesn't have full blocks, so the chain scanner
+        // cannot walk transactions. Skip scanning and sleep longer (5 minutes)
+        // to reduce resource waste.
+        let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
+        if node_mode.is_spv() {
+            sleep(SPV_SLEEP).await;
+            continue;
+        }
+
         let tip =
             match crate::commands::read::node_tip_height_if_synced_from_settings(&settings).await {
                 Some(h) => h,

@@ -83,14 +83,18 @@ export function StatusStrip({ className }: { className?: string }) {
       });
 
       // Read source: "local" when the node is connected and synced, "explorer" otherwise.
+      // In SPV mode, always shows "Explorer (SPV)" to explain why reads come from explorer.
       const readSource = node?.read_source ?? "explorer";
+      const nodeMode = node?.node_mode ?? "full";
+      const isSpv = nodeMode === "spv";
       result.push({
         key: "source",
         label: "Source",
-        value: readSource === "local" ? "Local" : "Explorer",
-        tone: readSource === "local" ? "success" : "info",
-        detail:
-          readSource === "local"
+        value: isSpv ? "Explorer (SPV)" : readSource === "local" ? "Local" : "Explorer",
+        tone: isSpv ? "info" : readSource === "local" ? "success" : "info",
+        detail: isSpv
+          ? "SPV mode: data comes from explorer (no local UTXO cache)"
+          : readSource === "local"
             ? "Reading from local node cache (node synced)"
             : "Reading from external explorer (node not synced)",
         route: "/settings",

@@ -106,6 +106,9 @@ function loadSettings(over: Partial<Record<string, string>> = {}) {
       deadline_notify_reveal_lead_blocks: "144",
       deadline_notify_renewal_lead_days: "30",
       background_sync_enabled: "1",
+      node_mode: "full",
+      explorer_fallback_url: "",
+      chain_source: "local_node",
       ...over,
     },
   });

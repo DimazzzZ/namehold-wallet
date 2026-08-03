@@ -31,6 +31,9 @@ pub use signer::{
 /// each of those sites too. Every construction site now calls this instead,
 /// so there is exactly one settings key read and one fallback default
 /// ([`hnsfans::DEFAULT_EXPLORER_URL`]) in the whole app.
+///
+/// If `explorer_fallback_url` is set in settings, the client will
+/// automatically fail over to it when the primary explorer is unreachable.
 pub fn explorer_client_from_settings(
     settings: &crate::models::settings::SettingsMap,
 ) -> hnsfans::HnsFansClient {
@@ -39,5 +42,12 @@ pub fn explorer_client_from_settings(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .unwrap_or(hnsfans::DEFAULT_EXPLORER_URL);
-    hnsfans::HnsFansClient::new(url)
+    let fallback = settings
+        .get("explorer_fallback_url")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    match fallback {
+        Some(fb) => hnsfans::HnsFansClient::with_fallback(url, fb),
+        None => hnsfans::HnsFansClient::new(url),
+    }
 }

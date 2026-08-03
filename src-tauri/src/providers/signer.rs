@@ -136,6 +136,11 @@ impl WriteCapability {
             ChainSource::LocalNode => true,
             ChainSource::RemoteNode => allow_remote,
             ChainSource::Explorer => false,
+            // SPV mode is explicitly read-only in Namehold (no --index-address
+            // means no UTXO tracking). The write-capability check in tx.rs is
+            // the authoritative gate, but returning false here sends a consistent
+            // signal to the UI.
+            ChainSource::SpvNode => false,
         };
         let reason = if !signer_unlocked && !broadcaster_available {
             Some("Unlock your wallet and configure a node that can broadcast.".to_string())
@@ -143,8 +148,9 @@ impl WriteCapability {
             Some("Unlock your wallet to sign transactions.".to_string())
         } else if !broadcaster_available {
             Some(match source {
-                ChainSource::Explorer => {
-                    "The configured chain source is read-only and cannot broadcast.".to_string()
+                ChainSource::Explorer | ChainSource::SpvNode => {
+                    "The configured chain source cannot broadcast. Switch to Full node mode in Settings to enable sending."
+                        .to_string()
                 }
                 ChainSource::RemoteNode => {
                     "Remote broadcast is disabled (enable allow_remote_broadcast).".to_string()

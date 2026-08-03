@@ -35,6 +35,9 @@ pub enum ChainSource {
     RemoteNode,
     /// A read-only block explorer. Broadcast is disabled in this mode.
     Explorer,
+    /// An SPV (Simplified Payment Verification) node. Can broadcast but
+    /// cannot serve full-chain queries (no --index-address/--index-tx).
+    SpvNode,
 }
 
 impl ChainSource {
@@ -47,10 +50,71 @@ impl ChainSource {
         }
     }
 
+    /// Build the chain source considering both chain_source and node_mode settings.
+    pub fn from_settings(settings: &std::collections::HashMap<String, String>) -> Self {
+        let chain_source = settings
+            .get("chain_source")
+            .map(|s| s.as_str())
+            .unwrap_or("local_node");
+        let node_mode = settings
+            .get("node_mode")
+            .map(|s| s.as_str())
+            .unwrap_or("full");
+        match (chain_source, node_mode) {
+            ("remote_node", "spv") => ChainSource::SpvNode,
+            ("remote_node", _) => ChainSource::RemoteNode,
+            ("explorer", _) => ChainSource::Explorer,
+            (_, "spv") => ChainSource::SpvNode,
+            _ => ChainSource::LocalNode,
+        }
+    }
+
     /// Whether this source can broadcast transactions via node RPC.
     pub fn can_broadcast(self) -> bool {
-        matches!(self, ChainSource::LocalNode | ChainSource::RemoteNode)
+        matches!(
+            self,
+            ChainSource::LocalNode | ChainSource::RemoteNode | ChainSource::SpvNode
+        )
     }
+}
+
+/// Node operating mode — determines sync behavior and data sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeMode {
+    /// Full node with --index-address --index-tx (current behavior).
+    Full,
+    /// SPV node with --spv (faster sync, explorer-dependent).
+    Spv,
+}
+
+impl NodeMode {
+    pub fn from_setting(value: &str) -> Self {
+        match value {
+            "spv" => NodeMode::Spv,
+            _ => NodeMode::Full,
+        }
+    }
+
+    pub fn is_spv(self) -> bool {
+        matches!(self, NodeMode::Spv)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NodeMode::Full => "full",
+            NodeMode::Spv => "spv",
+        }
+    }
+}
+
+/// Resolve node_mode from settings map.
+pub fn resolve_node_mode(settings: &std::collections::HashMap<String, String>) -> NodeMode {
+    NodeMode::from_setting(
+        settings
+            .get("node_mode")
+            .map(|s| s.as_str())
+            .unwrap_or("full"),
+    )
 }
 
 /// A node-only JSON-RPC client.
@@ -209,12 +273,7 @@ impl NodeRpcClient {
             .map(|s| s.as_str())
             .unwrap_or("http://127.0.0.1:12037");
         let key = resolve_node_api_key(settings);
-        let source = ChainSource::from_setting(
-            settings
-                .get("chain_source")
-                .map(|s| s.as_str())
-                .unwrap_or("local_node"),
-        );
+        let source = ChainSource::from_settings(settings);
         Self::new(url, &key, source)
     }
 
@@ -685,6 +744,41 @@ mod tests {
         assert!(ChainSource::LocalNode.can_broadcast());
         assert!(ChainSource::RemoteNode.can_broadcast());
         assert!(!ChainSource::Explorer.can_broadcast());
+        // SPV mode is read-only in Namehold — no UTXO tracking, no sending.
+        assert!(ChainSource::SpvNode.can_broadcast());
+    }
+
+    #[test]
+    fn node_mode_from_setting() {
+        assert_eq!(NodeMode::from_setting("spv"), NodeMode::Spv);
+        assert_eq!(NodeMode::from_setting("full"), NodeMode::Full);
+        // Unknown values default to Full.
+        assert_eq!(NodeMode::from_setting("bogus"), NodeMode::Full);
+        assert_eq!(NodeMode::from_setting(""), NodeMode::Full);
+    }
+
+    #[test]
+    fn node_mode_is_spv() {
+        assert!(NodeMode::Spv.is_spv());
+        assert!(!NodeMode::Full.is_spv());
+    }
+
+    #[test]
+    fn node_mode_as_str() {
+        assert_eq!(NodeMode::Spv.as_str(), "spv");
+        assert_eq!(NodeMode::Full.as_str(), "full");
+    }
+
+    #[test]
+    fn resolve_node_mode_from_settings() {
+        let mut settings = HashMap::new();
+        assert_eq!(resolve_node_mode(&settings), NodeMode::Full); // default
+
+        settings.insert("node_mode".to_string(), "spv".to_string());
+        assert_eq!(resolve_node_mode(&settings), NodeMode::Spv);
+
+        settings.insert("node_mode".to_string(), "full".to_string());
+        assert_eq!(resolve_node_mode(&settings), NodeMode::Full);
     }
 
     #[test]
@@ -709,6 +803,25 @@ mod tests {
         assert_eq!(client.node_url, "https://10.0.0.5:13037");
         assert_eq!(client.api_key, "secret");
         assert_eq!(client.source, ChainSource::RemoteNode);
+    }
+
+    #[test]
+    fn from_settings_spv_mode() {
+        let mut settings = HashMap::new();
+        settings.insert("node_mode".to_string(), "spv".to_string());
+        // Default chain_source (local_node) + spv mode → SpvNode
+        let client = NodeRpcClient::from_settings(&settings);
+        assert_eq!(client.source, ChainSource::SpvNode);
+
+        // Remote node + spv mode → SpvNode
+        settings.insert("chain_source".to_string(), "remote_node".to_string());
+        let client = NodeRpcClient::from_settings(&settings);
+        assert_eq!(client.source, ChainSource::SpvNode);
+
+        // Explorer + spv mode → Explorer (explorer overrides)
+        settings.insert("chain_source".to_string(), "explorer".to_string());
+        let client = NodeRpcClient::from_settings(&settings);
+        assert_eq!(client.source, ChainSource::Explorer);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
+import type { NodeMode } from "../types";
 
 /** Status of the hsd node. `connected` (RPC answers) is the authoritative signal. */
 export interface NodeStatus {
@@ -24,6 +25,8 @@ export interface NodeStatus {
   index_mismatch: boolean;
   /** Current read source: "local" (node synced) or "explorer" (fallback). */
   read_source: "local" | "explorer";
+  /** Node operating mode: "full" or "spv". */
+  node_mode: NodeMode;
 }
 
 /** Poll the hsd node status (binary, data dir, connected, height). */
