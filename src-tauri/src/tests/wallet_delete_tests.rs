@@ -3,14 +3,14 @@ use std::path::Path;
 
 #[test]
 fn test_get_wallet_db_path() {
-    let path = crate::wallet_delete::get_wallet_db_path("/home/user/.hsd");
-    assert_eq!(path, Path::new("/home/user/.hsd/wallet"));
+    let path = crate::wallet_delete::get_wallet_db_path("/home/user/.hsrd");
+    assert_eq!(path, Path::new("/home/user/.hsrd/wallet"));
 }
 
 #[test]
 fn test_get_wallet_db_path_with_trailing_slash() {
-    let path = crate::wallet_delete::get_wallet_db_path("/Volumes/WD/hsd-data/");
-    assert_eq!(path, Path::new("/Volumes/WD/hsd-data/wallet"));
+    let path = crate::wallet_delete::get_wallet_db_path("/Volumes/WD/hsrd-data/");
+    assert_eq!(path, Path::new("/Volumes/WD/hsrd-data/wallet"));
 }
 
 #[test]

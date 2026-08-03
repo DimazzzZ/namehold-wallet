@@ -11,7 +11,7 @@
 //! loudly on the Rust side.
 //!
 //! Frontend contract of record:
-//!   - src/types/index.ts        -> HsdBalance { confirmed, unconfirmed,
+//!   - src/types/index.ts        -> ChainBalance { confirmed, unconfirmed,
 //!                                    locked_confirmed, locked_unconfirmed }
 //!   - src/lib/zod.ts            -> snake_case keys, numbers nullable
 //!   - src/lib/webqa-mock.ts     -> snake_case keys
@@ -19,35 +19,35 @@
 //! Backend seam:
 //!   - `read_balance` (commands/read.rs) returns snake_case from ALL three of
 //!     its code paths (zero-fallback json!, cached json!, and the explorer path
-//!     which maps HsdBalance -> snake_case explicitly).
+//!     which maps ChainBalance -> snake_case explicitly).
 
 // Module doc uses deep prose indentation for backend/frontend contract
 // citations; clippy misreads these as over-indented markdown list items.
 #![allow(clippy::doc_overindented_list_items)]
 
-use crate::hsd::types::HsdBalance;
+use crate::chain::types::ChainBalance;
 
-/// The hsd node RPC sends the locked fields in camelCase
-/// (`lockedConfirmed`/`lockedUnconfirmed`). `HsdBalance` MUST keep deserializing
+/// The hsrd node RPC sends the locked fields in camelCase
+/// (`lockedConfirmed`/`lockedUnconfirmed`). `ChainBalance` MUST keep deserializing
 /// that shape — this is the node-parsing side of the contract.
 #[test]
-fn hsd_balance_deserializes_node_camelcase() {
+fn hsrd_balance_deserializes_node_camelcase() {
     let node_json = r#"{"confirmed": 1000000, "unconfirmed": 500000, "lockedConfirmed": 200000, "lockedUnconfirmed": 100000}"#;
-    let b: HsdBalance = serde_json::from_str(node_json).unwrap();
+    let b: ChainBalance = serde_json::from_str(node_json).unwrap();
     assert_eq!(b.confirmed, 1_000_000);
     assert_eq!(b.unconfirmed, 500_000);
     assert_eq!(b.locked_confirmed, Some(200_000));
     assert_eq!(b.locked_unconfirmed, Some(100_000));
 }
 
-/// Guardrail documenting WHY `read_balance` must not return an `HsdBalance`
+/// Guardrail documenting WHY `read_balance` must not return an `ChainBalance`
 /// verbatim: because it deserializes from camelCase, its Serialize impl also
 /// emits camelCase, which the frontend's snake_case zod schema would silently
 /// drop. If this ever changes (e.g. someone removes `rename_all`), this test
 /// flags it so the `read_balance` mapping can be revisited.
 #[test]
-fn hsd_balance_serializes_camelcase_so_read_balance_must_map() {
-    let b = HsdBalance {
+fn hsrd_balance_serializes_camelcase_so_read_balance_must_map() {
+    let b = ChainBalance {
         confirmed: 1,
         unconfirmed: 2,
         locked_confirmed: Some(3),
@@ -57,15 +57,15 @@ fn hsd_balance_serializes_camelcase_so_read_balance_must_map() {
     // The raw struct is camelCase — NOT the frontend contract.
     assert!(
         v.get("lockedConfirmed").is_some(),
-        "HsdBalance serializes camelCase"
+        "ChainBalance serializes camelCase"
     );
     assert!(
         v.get("lockedUnconfirmed").is_some(),
-        "HsdBalance serializes camelCase"
+        "ChainBalance serializes camelCase"
     );
     assert!(
         v.get("locked_confirmed").is_none(),
-        "raw HsdBalance is NOT snake_case; read_balance must map it before returning to the FE"
+        "raw ChainBalance is NOT snake_case; read_balance must map it before returning to the FE"
     );
 }
 
@@ -77,7 +77,7 @@ fn hsd_balance_serializes_camelcase_so_read_balance_must_map() {
 #[test]
 fn read_balance_explorer_path_returns_frontend_snake_case() {
     // Mirror of the mapping applied in commands/read.rs for the explorer path.
-    let balance = HsdBalance {
+    let balance = ChainBalance {
         confirmed: 1_000_000,
         unconfirmed: 500_000,
         locked_confirmed: None, // explorer path leaves locked unknown

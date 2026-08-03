@@ -18,7 +18,7 @@ export function UpdateBanner() {
 
   useEffect(() => {
     if (!isTauri()) return;
-    // Delay the check so it doesn't compete with startup work (autostart hsd,
+    // Delay the check so it doesn't compete with startup work (autostart hsrd,
     // deadline scan, first paint). A single fire-and-forget check is enough;
     // users can re-check manually from Settings.
     const timer = window.setTimeout(() => {

@@ -10,8 +10,8 @@ import { auctionPhase, nextTransition, formatCountdown } from "../lib/auction";
 import type { NameBid } from "../types";
 
 /**
- * Render a single hsd DNS record as a compact, human-readable row. Handles
- * every real hsd record type (NS, GLUE4/6, TXT, SYNTH4/6, DS) explicitly and
+ * Render a single hsrd DNS record as a compact, human-readable row. Handles
+ * every real hsrd record type (NS, GLUE4/6, TXT, SYNTH4/6, DS) explicitly and
  * falls back to a value dump for unknown types so no data is ever hidden.
  */
 function renderRecord(rec: Record<string, unknown>): { label: string; value: string } {
@@ -60,7 +60,7 @@ interface NameInfoModalProps {
 }
 
 /**
- * Read-only modal displaying current on-chain state for a name from the hsd
+ * Read-only modal displaying current on-chain state for a name from the hsrd
  * node. Shows: state badge, countdowns, owner UTXO, registration/renewal
  * heights, DNS records, and your bids on the name. Gracefully degrades when
  * the node is unavailable (state/countdowns from explorer fallback; DNS

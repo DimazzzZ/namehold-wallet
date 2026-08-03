@@ -1,6 +1,6 @@
 //! Handshake network parameters.
 //!
-//! All constants verified against the canonical `hsd` source:
+//! All constants verified against the canonical `hsrd` source:
 //!   - lib/protocol/networks.js  (HRP, coinType, BIP32 key prefixes)
 //!   - lib/primitives/address.js (address = blake2b-160(pubkey), bech32 v0)
 //!   - lib/hd/mnemonic.js        (standard BIP39 PBKDF2-HMAC-SHA512, 2048 iters)
@@ -16,7 +16,7 @@ pub enum Network {
 }
 
 impl Network {
-    /// Bech32 human-readable prefix for addresses (hsd `addressPrefix`).
+    /// Bech32 human-readable prefix for addresses (hsrd `addressPrefix`).
     pub fn address_hrp(self) -> &'static str {
         match self {
             Network::Main => "hs",
@@ -26,7 +26,7 @@ impl Network {
         }
     }
 
-    /// BIP44 coin type (hsd `keyPrefix.coinType`).
+    /// BIP44 coin type (hsrd `keyPrefix.coinType`).
     pub fn coin_type(self) -> u32 {
         match self {
             Network::Main => 5353,
@@ -36,19 +36,19 @@ impl Network {
         }
     }
 
-    /// BIP32 xprv version bytes (hsd `keyPrefix.xprivkey`).
+    /// BIP32 xprv version bytes (hsrd `keyPrefix.xprivkey`).
     pub fn xprv_version(self) -> u32 {
-        // hsd uses the same value across networks for the binary prefix; the
+        // hsrd uses the same value across networks for the binary prefix; the
         // mainnet value 0x0488ade4 matches Bitcoin's BIP32 mainnet xprv.
         match self {
             Network::Main => 0x0488_ade4,
-            // testnet/regtest/simnet share the mainnet-style prefix in hsd's
+            // testnet/regtest/simnet share the mainnet-style prefix in hsrd's
             // binary HD serialization; only the bech32 address HRP differs.
             _ => 0x0488_ade4,
         }
     }
 
-    /// BIP32 xpub version bytes (hsd `keyPrefix.xpubkey`).
+    /// BIP32 xpub version bytes (hsrd `keyPrefix.xpubkey`).
     pub fn xpub_version(self) -> u32 {
         0x0488_b21e
     }
@@ -73,12 +73,12 @@ impl Network {
     }
 }
 
-/// Nominal blocks per day at Handshake's ~10-minute block target (hsd
+/// Nominal blocks per day at Handshake's ~10-minute block target (hsrd
 /// `networks.js` `pow.targetSpacing` = 600s). Used to convert block distances
 /// into human days; exact only in expectation.
 pub const BLOCKS_PER_DAY: f64 = 144.0;
 
-/// Name-auction consensus parameters (hsd `networks.js` `names`). Block counts.
+/// Name-auction consensus parameters (hsrd `networks.js` `names`). Block counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NameParams {
     pub tree_interval: u32,
@@ -87,7 +87,7 @@ pub struct NameParams {
     pub renewal_window: u32,
     pub transfer_lockup: u32,
     pub revocation_delay: u32,
-    /// hsd `renewalMaturity`. `getRenewalBlock` uses `height - 2*renewal_maturity`.
+    /// hsrd `renewalMaturity`. `getRenewalBlock` uses `height - 2*renewal_maturity`.
     pub renewal_maturity: u32,
 }
 

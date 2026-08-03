@@ -1,8 +1,8 @@
 /**
- * Settings — Node RPC api-key is write-only.
+ * Settings — Exact Authorization header is write-only.
  *
- * The backend redacts `node_rpc_api_key` on `get_settings` and instead emits a
- * `__has_node_rpc_api_key: "true"` presence marker. The Settings UI must:
+ * The backend redacts `hsrd_authorization` on `get_settings` and instead emits a
+ * `__has_hsrd_authorization: "true"` presence marker. The Settings UI must:
  *   - render a masked placeholder when a key is stored,
  *   - NOT clobber the stored secret when the user Saves with the field blank,
  *   - persist a new value when the user actually types one.
@@ -78,16 +78,16 @@ function wrapper() {
 }
 
 // Load a settings map that mirrors what `get_settings` returns AFTER redaction:
-// no `node_rpc_api_key` value, only the `__has_node_rpc_api_key` marker.
+// no `hsrd_authorization` value, only the `__has_hsrd_authorization` marker.
 function loadWithStoredKey() {
   useSettingsStore.setState({
     loaded: true,
     settings: {
-      node_rpc_url: "http://127.0.0.1:12037",
-      node_rpc_api_key: "",
-      hsd_prefix: "",
-      hsd_path: "",
-      autostart_hsd: "true",
+      hsrd_rpc_url: "http://127.0.0.1:12037",
+      hsrd_authorization: "",
+      hsrd_data_dir: "",
+      hsrd_path: "",
+      autostart_hsrd: "true",
       explorer_api_url: "https://e.hnsfans.com",
       address_gap_limit: "20",
       signer_session_timeout_seconds: "900",
@@ -99,7 +99,7 @@ function loadWithStoredKey() {
       background_sync_enabled: "1",
       // The presence marker the redacted `get_settings` emits when a key is
       // stored server-side. Not part of the Settings type — cast at read time.
-      __has_node_rpc_api_key: "true",
+      __has_hsrd_authorization: "true",
     } as unknown as ReturnType<typeof useSettingsStore.getState>["settings"],
   });
 }
@@ -108,11 +108,11 @@ function loadWithoutStoredKey() {
   useSettingsStore.setState({
     loaded: true,
     settings: {
-      node_rpc_url: "http://127.0.0.1:12037",
-      node_rpc_api_key: "",
-      hsd_prefix: "",
-      hsd_path: "",
-      autostart_hsd: "true",
+      hsrd_rpc_url: "http://127.0.0.1:12037",
+      hsrd_authorization: "",
+      hsrd_data_dir: "",
+      hsrd_path: "",
+      autostart_hsrd: "true",
       explorer_api_url: "https://e.hnsfans.com",
       address_gap_limit: "20",
       signer_session_timeout_seconds: "900",
@@ -127,10 +127,10 @@ function loadWithoutStoredKey() {
 }
 
 function apiKeyInput(): HTMLInputElement {
-  // The api-key Input renders as <input type="password"> with the exact label.
-  const label = screen.getByText("Node RPC API key");
+  // The Authorization value Input renders as <input type="password"> with the exact label.
+  const label = screen.getByText("Exact Authorization header");
   const input = label.parentElement?.querySelector<HTMLInputElement>('input[type="password"]');
-  if (!input) throw new Error("Node RPC API key input not found");
+  if (!input) throw new Error("Exact Authorization header input not found");
   return input;
 }
 
@@ -139,13 +139,13 @@ beforeEach(() => {
   invokeMock.mockImplementation(route);
 });
 
-describe("Settings — Node RPC api-key (write-only)", () => {
-  it("does not send node_rpc_api_key on save when field is blank and key is stored", async () => {
+describe("Settings — Exact Authorization header (write-only)", () => {
+  it("does not send hsrd_authorization on save when field is blank and key is stored", async () => {
     loadWithStoredKey();
     render(<Settings />, { wrapper: wrapper() });
     // Toggle a checkbox to trigger the dirty state so the Save button appears
-    // (without touching the api-key field, which is the subject under test).
-    fireEvent.click(await screen.findByTestId("autostart-hsd-checkbox"));
+    // (without touching the Authorization value field, which is the subject under test).
+    fireEvent.click(await screen.findByTestId("autostart-hsrd-checkbox"));
     const save = await screen.findByRole("button", { name: /Save settings/i });
     fireEvent.click(save);
 
@@ -156,16 +156,16 @@ describe("Settings — Node RPC api-key (write-only)", () => {
       ).toBe(true);
     });
 
-    // None of the update_setting calls should be for the api-key key.
+    // None of the update_setting calls should be for the Authorization value key.
     const apiKeyCall = invokeMock.mock.calls.find(
       (c) =>
         c[0] === "update_setting" &&
-        (c[1] as { key?: string })?.key === "node_rpc_api_key",
+        (c[1] as { key?: string })?.key === "hsrd_authorization",
     );
     expect(apiKeyCall).toBeUndefined();
   });
 
-  it("sends node_rpc_api_key on save when user typed a new value", async () => {
+  it("sends hsrd_authorization on save when user typed a new value", async () => {
     loadWithStoredKey();
     render(<Settings />, { wrapper: wrapper() });
 
@@ -178,22 +178,22 @@ describe("Settings — Node RPC api-key (write-only)", () => {
       const apiKeyCall = invokeMock.mock.calls.find(
         (c) =>
           c[0] === "update_setting" &&
-          (c[1] as { key?: string })?.key === "node_rpc_api_key",
+          (c[1] as { key?: string })?.key === "hsrd_authorization",
       );
       expect(apiKeyCall?.[1]).toEqual({
-        key: "node_rpc_api_key",
+        key: "hsrd_authorization",
         value: "new-secret",
       });
     });
   });
 
-  it("sends node_rpc_api_key on save when no key is stored yet (empty field, no marker)", async () => {
+  it("sends hsrd_authorization on save when no key is stored yet (empty field, no marker)", async () => {
     // When neither the value nor the marker are set, the field submits the
     // current empty value (baseline; no drop-on-blank logic applies).
     loadWithoutStoredKey();
     render(<Settings />, { wrapper: wrapper() });
-    // Trigger dirty state without touching the api-key field.
-    fireEvent.click(await screen.findByTestId("autostart-hsd-checkbox"));
+    // Trigger dirty state without touching the Authorization value field.
+    fireEvent.click(await screen.findByTestId("autostart-hsrd-checkbox"));
     const save = await screen.findByRole("button", { name: /Save settings/i });
     fireEvent.click(save);
 
@@ -201,16 +201,16 @@ describe("Settings — Node RPC api-key (write-only)", () => {
       const apiKeyCall = invokeMock.mock.calls.find(
         (c) =>
           c[0] === "update_setting" &&
-          (c[1] as { key?: string })?.key === "node_rpc_api_key",
+          (c[1] as { key?: string })?.key === "hsrd_authorization",
       );
-      expect(apiKeyCall?.[1]).toEqual({ key: "node_rpc_api_key", value: "" });
+      expect(apiKeyCall?.[1]).toEqual({ key: "hsrd_authorization", value: "" });
     });
   });
 
   it("renders masked placeholder when key is stored", async () => {
     loadWithStoredKey();
     render(<Settings />, { wrapper: wrapper() });
-    // The api-key input has a masked/'stored' placeholder rather than '(optional)'.
+    // The Authorization value input has a masked/'stored' placeholder rather than '(optional)'.
     await waitFor(() => {
       const ph = apiKeyInput().getAttribute("placeholder") ?? "";
       expect(ph).toMatch(/stored/i);

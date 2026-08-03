@@ -4,6 +4,200 @@ use crate::db::queries::NameCoin;
 use crate::AppState;
 use tauri::Manager;
 
+pub(crate) const TEST_CHAIN_EPOCH: u64 = 7;
+pub(crate) const TEST_HASH: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+pub(crate) fn wallet_result(result: serde_json::Value) -> String {
+    serde_json::json!({
+        "api_version": 1,
+        "request_id": "namehold-test",
+        "result": result,
+        "error": null
+    })
+    .to_string()
+}
+
+pub(crate) fn wallet_error(code: &str, message: &str) -> String {
+    serde_json::json!({
+        "api_version": 1,
+        "request_id": "namehold-test",
+        "result": null,
+        "error": { "code": code, "message": message, "retryable": false }
+    })
+    .to_string()
+}
+
+pub(crate) fn test_tip(height: u32) -> serde_json::Value {
+    serde_json::json!({ "hash": TEST_HASH, "height": height, "tree_root": TEST_HASH })
+}
+
+pub(crate) async fn mock_chain_tip(
+    server: &mut mockito::Server,
+    height: u32,
+    progress: f64,
+) -> Vec<mockito::Mock> {
+    let target_height = if progress >= 1.0 {
+        height
+    } else if progress > 0.0 {
+        (f64::from(height) / progress).ceil() as u32
+    } else {
+        height.saturating_add(1)
+    };
+    let tip = server
+        .mock("POST", "/api/v1/wallet")
+        .match_body(mockito::Matcher::Regex("chain_tip".into()))
+        .with_header("content-type", "application/json")
+        .with_body(wallet_result(test_tip(height)))
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    let sync = server
+        .mock("GET", "/api/v1/sync")
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "active_tip": { "height": height },
+                "target_height": target_height,
+                "verification_progress": progress
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+    vec![tip, sync]
+}
+
+pub(crate) async fn mock_chain_binding(server: &mut mockito::Server, height: u32) -> mockito::Mock {
+    server
+        .mock("POST", "/api/v1/wallet")
+        .match_body(mockito::Matcher::Regex("confirmed_scripts_page".into()))
+        .with_header("content-type", "application/json")
+        .with_body(wallet_result(serde_json::json!({
+            "chain_epoch": TEST_CHAIN_EPOCH,
+            "tip": test_tip(height),
+            "history": [],
+            "utxos": [],
+            "script_examinations": 0,
+            "continuation": null
+        })))
+        .expect_at_least(1)
+        .create_async()
+        .await
+}
+
+fn name_state_result(
+    name: &str,
+    height: u32,
+    value: u64,
+    renewals: u32,
+    claimed: u32,
+    weak: bool,
+    registered: bool,
+) -> (String, serde_json::Value) {
+    use hns_covenants::{encode_name_state, NameState};
+    use hns_primitives::{Dollarydoos, Height, Outpoint};
+
+    let name_hash = hns_covenants::hash_name(name.as_bytes()).unwrap();
+    let state = NameState {
+        name_hash,
+        name: name.as_bytes().to_vec(),
+        height: Height::new(height),
+        renewal: Height::new(height),
+        owner: Outpoint::NULL,
+        value: Dollarydoos::new(value),
+        highest: Dollarydoos::new(value),
+        resource_data: Vec::new(),
+        transfer: Height::new(0),
+        revoked: Height::new(0),
+        claimed: Height::new(claimed),
+        renewals,
+        registered,
+        expired: false,
+        weak,
+    };
+    let encoded = hex::encode(encode_name_state(&state).unwrap());
+    let wire = serde_json::json!({
+        "name_hash": name_hash.to_string(),
+        "name_hex": hex::encode(name.as_bytes()),
+        "height": height,
+        "renewal": height,
+        "owner": { "txid": TEST_HASH, "index": u32::MAX },
+        "value": value,
+        "highest": value,
+        "data_hex": "",
+        "transfer": 0,
+        "revoked": 0,
+        "claimed": claimed,
+        "renewals": renewals,
+        "registered": registered,
+        "expired": false,
+        "weak": weak
+    });
+    (encoded, wire)
+}
+
+async fn mock_name_evidence(
+    server: &mut mockito::Server,
+    name: &str,
+    state: Option<(u32, u64, u32, u32, bool, bool)>,
+    tip_height: u32,
+) -> mockito::Mock {
+    let name_hash = hns_covenants::hash_name(name.as_bytes()).unwrap();
+    let (current_state_hex, current_state) = state
+        .map(|(height, value, renewals, claimed, weak, registered)| {
+            let (encoded, wire) =
+                name_state_result(name, height, value, renewals, claimed, weak, registered);
+            (Some(encoded), Some(wire))
+        })
+        .unwrap_or((None, None));
+    server
+        .mock("POST", "/api/v1/wallet")
+        .match_body(mockito::Matcher::Regex(format!(
+            "name_evidence.*{}",
+            name_hash
+        )))
+        .with_header("content-type", "application/json")
+        .with_body(wallet_result(serde_json::json!({
+            "chain_epoch": TEST_CHAIN_EPOCH,
+            "tip": test_tip(tip_height),
+            "current_state_hex": current_state_hex,
+            "proof_state_hex": null,
+            "current_state": current_state,
+            "proof_state": null,
+            "proof": {
+                "root": TEST_HASH,
+                "name_hash": name_hash.to_string(),
+                "kind": "non_inclusion",
+                "proof_hex": "00000000"
+            },
+            "current_owner": null,
+            "proof_owner": null,
+            "data_semantics": "projected_data_hex_is_resource_bytes_not_encoded_name_state"
+        })))
+        .create_async()
+        .await
+}
+
+async fn mock_block_hash(
+    server: &mut mockito::Server,
+    tip_height: u32,
+    hash: Option<&str>,
+) -> mockito::Mock {
+    server
+        .mock("POST", "/api/v1/wallet")
+        .match_body(mockito::Matcher::Regex("block_hash".into()))
+        .with_header("content-type", "application/json")
+        .with_body(wallet_result(serde_json::json!({
+            "chain_epoch": TEST_CHAIN_EPOCH,
+            "tip": test_tip(tip_height),
+            "height": 0,
+            "hash": hash
+        })))
+        .create_async()
+        .await
+}
+
 pub(crate) fn mock_app_with(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
     tauri::test::mock_builder()
         .manage(state)
@@ -50,7 +244,7 @@ fn create_full_test_db() -> rusqlite::Connection {
     ))
     .unwrap();
     conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/011_hsd_data_dir.sql"
+        "../../../src-tauri/src/sql/011_hsrd_data_dir.sql"
     ))
     .unwrap();
     conn.execute_batch(include_str!(
@@ -82,7 +276,7 @@ pub(crate) fn create_full_test_state() -> crate::AppState {
         db: std::sync::Mutex::new(conn),
         signer: std::sync::Mutex::new(None),
         secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-        hsd_child: std::sync::Mutex::new(None),
+        hsrd_child: std::sync::Mutex::new(None),
         sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
             crate::commands::sync::SyncStatus::default(),
         )),
@@ -294,29 +488,23 @@ fn test_load_ctx_watch_only_profile_rejected() {
 #[tokio::test]
 async fn test_fetch_name_state_parses_valid_response() {
     let mut server = mockito::Server::new_async().await;
-    let name_info = serde_json::json!({
-        "info": {
-            "height": 100,
-            "value": 50000,
-            "renewals": 2,
-            "claimed": 1,
-            "weak": false
-        }
-    });
-    let m = server
-        .mock("POST", "/")
-        .with_header("content-type", "application/json")
-        .with_body(format!(r#"{{"result":{},"error":null,"id":1}}"#, name_info))
-        .create_async()
-        .await;
+    let binding = mock_chain_binding(&mut server, 1_000).await;
+    let evidence = mock_name_evidence(
+        &mut server,
+        "test-name",
+        Some((100, 50_000, 2, 1, false, false)),
+        1_000,
+    )
+    .await;
 
-    let client = crate::noncustodial::rpc::NodeRpcClient::new(
+    let client = crate::noncustodial::hsrd::HsrdClient::new(
         &server.url(),
         "",
-        crate::noncustodial::rpc::ChainSource::LocalNode,
+        crate::noncustodial::hsrd::ChainSource::ManagedSidecar,
     );
     let result = names::fetch_name_state(&client, "test-name").await;
-    m.assert_async().await;
+    binding.assert_async().await;
+    evidence.assert_async().await;
     let ns = result.unwrap();
     assert_eq!(ns.height, 100);
     assert_eq!(ns.value, 50000);
@@ -328,29 +516,23 @@ async fn test_fetch_name_state_parses_valid_response() {
 #[tokio::test]
 async fn test_fetch_name_state_weak_name() {
     let mut server = mockito::Server::new_async().await;
-    let name_info = serde_json::json!({
-        "info": {
-            "height": 50,
-            "value": 1000,
-            "renewals": 0,
-            "claimed": 0,
-            "weak": true
-        }
-    });
-    let m = server
-        .mock("POST", "/")
-        .with_header("content-type", "application/json")
-        .with_body(format!(r#"{{"result":{},"error":null,"id":1}}"#, name_info))
-        .create_async()
-        .await;
+    let binding = mock_chain_binding(&mut server, 1_000).await;
+    let evidence = mock_name_evidence(
+        &mut server,
+        "weak-name",
+        Some((50, 1_000, 0, 0, true, false)),
+        1_000,
+    )
+    .await;
 
-    let client = crate::noncustodial::rpc::NodeRpcClient::new(
+    let client = crate::noncustodial::hsrd::HsrdClient::new(
         &server.url(),
         "",
-        crate::noncustodial::rpc::ChainSource::LocalNode,
+        crate::noncustodial::hsrd::ChainSource::ManagedSidecar,
     );
     let result = names::fetch_name_state(&client, "weak-name").await;
-    m.assert_async().await;
+    binding.assert_async().await;
+    evidence.assert_async().await;
     let ns = result.unwrap();
     assert!(ns.weak);
     assert_eq!(ns.value, 1000);
@@ -359,21 +541,17 @@ async fn test_fetch_name_state_weak_name() {
 #[tokio::test]
 async fn test_fetch_name_state_missing_info_returns_error() {
     let mut server = mockito::Server::new_async().await;
-    // info is null → name has no on-chain state
-    let m = server
-        .mock("POST", "/")
-        .with_header("content-type", "application/json")
-        .with_body(r#"{"result":{"info":null},"error":null,"id":1}"#)
-        .create_async()
-        .await;
+    let binding = mock_chain_binding(&mut server, 1_000).await;
+    let evidence = mock_name_evidence(&mut server, "nonexistent", None, 1_000).await;
 
-    let client = crate::noncustodial::rpc::NodeRpcClient::new(
+    let client = crate::noncustodial::hsrd::HsrdClient::new(
         &server.url(),
         "",
-        crate::noncustodial::rpc::ChainSource::LocalNode,
+        crate::noncustodial::hsrd::ChainSource::ManagedSidecar,
     );
     let result = names::fetch_name_state(&client, "nonexistent").await;
-    m.assert_async().await;
+    binding.assert_async().await;
+    evidence.assert_async().await;
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
     assert!(msg.contains("no on-chain state"));
@@ -382,21 +560,24 @@ async fn test_fetch_name_state_missing_info_returns_error() {
 #[tokio::test]
 async fn test_fetch_name_state_defaults_missing_fields() {
     let mut server = mockito::Server::new_async().await;
-    // info exists but has no height/value/renewals/claimed/weak fields
-    let m = server
-        .mock("POST", "/")
-        .with_header("content-type", "application/json")
-        .with_body(r#"{"result":{"info":{"name":"test"}},"error":null,"id":1}"#)
-        .create_async()
-        .await;
+    // Canonical name-state bytes explicitly encode the zero/default values.
+    let binding = mock_chain_binding(&mut server, 1_000).await;
+    let evidence = mock_name_evidence(
+        &mut server,
+        "defaultname",
+        Some((0, 0, 0, 0, false, false)),
+        1_000,
+    )
+    .await;
 
-    let client = crate::noncustodial::rpc::NodeRpcClient::new(
+    let client = crate::noncustodial::hsrd::HsrdClient::new(
         &server.url(),
         "",
-        crate::noncustodial::rpc::ChainSource::LocalNode,
+        crate::noncustodial::hsrd::ChainSource::ManagedSidecar,
     );
-    let result = names::fetch_name_state(&client, "test").await;
-    m.assert_async().await;
+    let result = names::fetch_name_state(&client, "defaultname").await;
+    binding.assert_async().await;
+    evidence.assert_async().await;
     let ns = result.unwrap();
     assert_eq!(ns.height, 0);
     assert_eq!(ns.value, 0);
@@ -410,26 +591,23 @@ async fn test_fetch_name_state_defaults_missing_fields() {
 #[tokio::test]
 async fn test_renewal_block_makes_rpc_call() {
     let mut server = mockito::Server::new_async().await;
-    // blockchaininfo → tip = 1000; then getblockhash will also be called.
-    // Use .expect_at_most(2) to allow both RPC calls through.
-    let info_mock = server
-        .mock("POST", "/")
-        .with_header("content-type", "application/json")
-        .with_body(r#"{"result":{"blocks":1000},"error":null,"id":1}"#)
-        .expect_at_most(2)
-        .create_async()
-        .await;
+    let mocks = mock_chain_tip(&mut server, 1_000, 1.0).await;
+    let binding = mock_chain_binding(&mut server, 1_000).await;
+    let block = mock_block_hash(&mut server, 1_000, Some(TEST_HASH)).await;
 
-    let client = crate::noncustodial::rpc::NodeRpcClient::new(
+    let client = crate::noncustodial::hsrd::HsrdClient::new(
         &server.url(),
         "",
-        crate::noncustodial::rpc::ChainSource::LocalNode,
+        crate::noncustodial::hsrd::ChainSource::ManagedSidecar,
     );
-    // renewal_block makes multiple RPC calls; we just verify it doesn't panic
-    // and that the first call (getblockchaininfo) is made.
-    let _result =
+    let result =
         names::renewal_block(&client, crate::noncustodial::network::Network::Regtest).await;
-    info_mock.assert_async().await;
+    assert!(result.is_ok());
+    for mock in mocks {
+        mock.assert_async().await;
+    }
+    binding.assert_async().await;
+    block.assert_async().await;
 }
 
 // --- bid validation tests ---
@@ -589,6 +767,7 @@ pub(crate) fn insert_valid_profile(conn: &rusqlite::Connection, network: &str) -
         rusqlite::params![&id, network, &xpub],
     ).unwrap();
     crate::db::queries::set_active_profile(conn, &id).unwrap();
+    crate::db::queries::set_setting(conn, "hsrd_network", net.as_str()).unwrap();
 
     // Seed a derived address (branch 0, index 0) + a spendable UTXO so
     // build_open_draft (which needs funding for the fee) can succeed.
@@ -1084,55 +1263,30 @@ fn seed_bid_commitment(conn: &rusqlite::Connection, profile_id: &str, name: &str
     .unwrap();
 }
 
-/// Set up mockito RPC mocks for the RPC calls that `build_finalize_draft` and
-/// `build_reveal_draft` need: getnameinfo, getblockchaininfo, getblockhash.
-pub(crate) async fn mock_names_rpc(
-    server: &mut mockito::Server,
-) -> (mockito::Mock, mockito::Mock, mockito::Mock) {
-    let name_info = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
-        .with_body(r#"{"result":{"info":{"height":100,"value":50000,"renewals":2,"claimed":1,"weak":false}},"error":null,"id":1}"#)
-        .expect_at_least(1)
-        .create_async()
-        .await;
-    let bi = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"blocks":1000},"error":null,"id":1}"#)
-        .expect_at_least(1)
-        .create_async()
-        .await;
-    let bh = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockhash".into()))
-        .with_body(r#"{"result":"0000000000000000000000000000000000000000000000000000000000000000","error":null,"id":1}"#)
-        .expect_at_least(1)
-        .create_async()
-        .await;
-    (name_info, bi, bh)
+/// Set up authenticated wallet RPC v1 evidence used by name draft tests.
+pub(crate) async fn mock_names_rpc(server: &mut mockito::Server) -> Vec<mockito::Mock> {
+    let mut mocks = mock_chain_tip(server, 1_000, 1.0).await;
+    mocks.push(mock_chain_binding(server, 1_000).await);
+    mocks.push(mock_block_hash(server, 1_000, Some(TEST_HASH)).await);
+    for name in ["namea", "nameb", "duplicatename", "existingbid", "testname"] {
+        mocks.push(
+            mock_name_evidence(server, name, Some((100, 50_000, 2, 1, false, false)), 1_000).await,
+        );
+    }
+    mocks
 }
 
 #[tokio::test]
 async fn test_renewal_block_rejects_short_hash() {
     let mut server = mockito::Server::new_async().await;
-    let _bi = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"blocks":100},"error":null,"id":1}"#)
-        .create_async()
-        .await;
-    let _bh = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockhash".into()))
-        .with_body(r#"{"result":"00","error":null,"id":1}"#)
-        .create_async()
-        .await;
+    let _tip = mock_chain_tip(&mut server, 100, 1.0).await;
+    let _binding = mock_chain_binding(&mut server, 100).await;
+    let _block = mock_block_hash(&mut server, 100, Some("00")).await;
 
-    let client = crate::noncustodial::rpc::NodeRpcClient::new(
+    let client = crate::noncustodial::hsrd::HsrdClient::new(
         &server.url(),
         "",
-        crate::noncustodial::rpc::ChainSource::LocalNode,
+        crate::noncustodial::hsrd::ChainSource::ManagedSidecar,
     );
     let result =
         names::renewal_block(&client, crate::noncustodial::network::Network::Regtest).await;
@@ -1153,7 +1307,7 @@ async fn test_renewal_block_rejects_short_hash() {
 /// Point the node RPC at an unreachable port so `get_name_info` fails fast,
 /// forcing the node-unreachable fallback path.
 fn set_unreachable_node(conn: &rusqlite::Connection) {
-    crate::db::queries::set_setting(conn, "node_rpc_url", "http://127.0.0.1:9").unwrap();
+    crate::db::queries::set_setting(conn, "hsrd_rpc_url", "http://127.0.0.1:9").unwrap();
 }
 
 #[tokio::test]
@@ -1508,44 +1662,33 @@ async fn batch_capabilities_no_profile_returns_conservative_per_name() {
 // ============================================================================
 
 /// Point the node RPC at a mockito server so RPC calls succeed against it.
-pub(crate) fn set_node_rpc_url(conn: &rusqlite::Connection, url: &str) {
-    crate::db::queries::set_setting(conn, "node_rpc_url", url).unwrap();
+pub(crate) fn set_hsrd_rpc_url(conn: &rusqlite::Connection, url: &str) {
+    crate::db::queries::set_setting(conn, "hsrd_rpc_url", url).unwrap();
 }
 
-/// Mock `getblockchaininfo` with a given verification progress. `getnameinfo`
-/// (when `name_info` is Some) is mocked to return that CLOSED name state so the
-/// synced-node path has an authoritative phase.
+/// Mock readiness plus authenticated name evidence for capability tests.
 async fn mock_blockchain_and_name(
     server: &mut mockito::Server,
     verification_progress: f64,
     name_info: Option<&str>,
 ) -> Vec<mockito::Mock> {
-    let mut mocks = Vec::new();
-    mocks.push(
-        server
-            .mock("POST", "/")
-            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-            .with_body(format!(
-                r#"{{"result":{{"blocks":1000,"headers":1000,"verificationprogress":{}}},"error":null,"id":1}}"#,
-                verification_progress
-            ))
-            .expect_at_least(1)
-            .create_async()
-            .await,
-    );
-    if let Some(state) = name_info {
-        mocks.push(
-            server
-                .mock("POST", "/")
-                .match_body(mockito::Matcher::Regex("getnameinfo".into()))
-                .with_body(format!(
-                    r#"{{"result":{{"info":{{"name":"testname","state":"{}","stats":{{}}}}}},"error":null,"id":1}}"#,
-                    state
-                ))
-                .expect_at_least(1)
-                .create_async()
-                .await,
-        );
+    let mut mocks = mock_chain_tip(server, 1_000, verification_progress).await;
+    if let Some(phase) = name_info {
+        mocks.push(mock_chain_binding(server, 1_000).await);
+        let state = match phase {
+            "AVAILABLE" => None,
+            "REVEAL" => Some((980, 50_000, 0, 0, false, false)),
+            _ => Some((100, 50_000, 0, 0, false, true)),
+        };
+        for name in [
+            "ownedname",
+            "testname",
+            "revealtest",
+            "alreadyrevealed",
+            "lostauction",
+        ] {
+            mocks.push(mock_name_evidence(server, name, state, 1_000).await);
+        }
     }
     mocks
 }
@@ -1567,7 +1710,7 @@ pub(crate) fn first_derived_address(conn: &rusqlite::Connection, profile_id: &st
 #[tokio::test]
 async fn capabilities_node_unsynced_falls_back_to_local_evidence() {
     let mut server = mockito::Server::new_async().await;
-    // getnameinfo IS mocked too: without the sync gate the old code would take the
+    // Name evidence IS mocked too: without the sync gate the old code would take the
     // authoritative node path (owns_name=has_owner_coin=false) — proving the gate
     // is what redirects an unsynced node to the local-evidence fallback.
     let _mocks = mock_blockchain_and_name(&mut server, 0.19, Some("CLOSED")).await;
@@ -1576,7 +1719,7 @@ async fn capabilities_node_unsynced_falls_back_to_local_evidence() {
     let profile_id = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         let owner_addr = first_derived_address(&conn, &id);
         // CLOSED name owned per explorer history (owner_address is ours), but the
         // owner_txid matches no unspent tracked_utxos → has_owner_coin stays false.
@@ -1639,7 +1782,7 @@ async fn capabilities_node_synced_with_owner_coin_allows_spends() {
     let profile_id = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         let owner_addr = first_derived_address(&conn, &id);
         // A real owner coin: tracked_utxos row at our derived address, referenced
         // by a CLOSED tracked_name_states row → get_name_coin joins it (the
@@ -1695,7 +1838,7 @@ async fn capabilities_node_synced_without_owner_coin_owns_but_spend_locked() {
     let profile_id = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         let owner_addr = first_derived_address(&conn, &id);
         // owner_address is ours, but owner_txid matches no tracked_utxos row →
         // has_owner_coin stays false.
@@ -1797,7 +1940,7 @@ async fn capabilities_reveal_phase_with_unspent_bid_coin_allows_reveal() {
     let profile_id = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         seed_bid_commitment_and_coin(
             &conn,
             &id,
@@ -1837,7 +1980,7 @@ async fn capabilities_reveal_phase_after_reveal_disallows_reveal_again() {
     let profile_id = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         // Only a COV_REVEAL coin — the BID coin was already spent by a reveal.
         seed_bid_commitment_and_coin(
             &conn,
@@ -1876,7 +2019,7 @@ async fn capabilities_closed_loser_with_reveal_coin_allows_redeem() {
     let profile_id = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         seed_bid_commitment_and_coin(
             &conn,
             &id,
@@ -1914,10 +2057,10 @@ async fn test_fetch_name_state_rpc_error() {
         .create_async()
         .await;
 
-    let client = crate::noncustodial::rpc::NodeRpcClient::new(
+    let client = crate::noncustodial::hsrd::HsrdClient::new(
         &server.url(),
         "",
-        crate::noncustodial::rpc::ChainSource::LocalNode,
+        crate::noncustodial::hsrd::ChainSource::ManagedSidecar,
     );
     let result = names::fetch_name_state(&client, "nonexistent").await;
     assert!(result.is_err());
@@ -1953,7 +2096,7 @@ async fn reveal_selects_bid_coin_by_name_hash_on_shared_address() {
     {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         let addr = first_derived_address(&conn, &id);
         let cov_b = covenant_json_for("nameb", crate::noncustodial::sync::COV_BID, "BID");
         let cov_a = covenant_json_for("namea", crate::noncustodial::sync::COV_BID, "BID");
@@ -2004,7 +2147,7 @@ async fn redeem_selects_reveal_coin_by_name_hash_on_shared_address() {
     {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         let addr = first_derived_address(&conn, &id);
         let cov_b = covenant_json_for("nameb", crate::noncustodial::sync::COV_REVEAL, "REVEAL");
         let cov_a = covenant_json_for("namea", crate::noncustodial::sync::COV_REVEAL, "REVEAL");
@@ -2053,7 +2196,7 @@ async fn reveal_errors_when_no_bid_coin_matches_name_hash() {
     {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         let addr = first_derived_address(&conn, &id);
         let cov_b = covenant_json_for("nameb", crate::noncustodial::sync::COV_BID, "BID");
         seed_covenant_coin(
@@ -2090,7 +2233,7 @@ async fn reveal_errors_on_ambiguous_bid_coins_for_same_name() {
     {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         let addr = first_derived_address(&conn, &id);
         let cov_a = covenant_json_for("namea", crate::noncustodial::sync::COV_BID, "BID");
         seed_covenant_coin(
@@ -2138,7 +2281,7 @@ async fn new_bid_rotates_to_fresh_receive_address() {
         let conn = state.db.lock().unwrap();
         // insert_valid_profile seeds a funding UTXO at receive[0] → index 0 is used.
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         let receive0 = first_derived_address(&conn, &id);
         (id, receive0)
     };
@@ -2183,11 +2326,11 @@ async fn new_bid_rotates_to_fresh_receive_address() {
 
 /// `build_bid_draft` persists an estimate of the reveal-window close height
 /// (I1 / Task 4) — `start + (treeInterval + 1) + biddingPeriod +
-/// revealPeriod`, where `start` is the live `getnameinfo().info.height`
+/// revealPeriod`, where `start` is the live name-evidence `info.height`
 /// (`mock_names_rpc` returns 100) and the network params come from
 /// `Network::name_params()` (regtest here: tree_interval 5, bidding_period
 /// 5, reveal_period 10 — see `noncustodial/network.rs`). The `+ 1` and the
-/// OPENING period itself matter: hsd only lets a name enter BIDDING once
+/// OPENING period itself matter: hsrd only lets a name enter BIDDING once
 /// `height > start + treeInterval` (review C3-review-2/Task-4 Finding 2 —
 /// the original estimate omitted this OPENING period entirely).
 #[tokio::test]
@@ -2198,7 +2341,7 @@ async fn bid_draft_persists_reveal_end_height_estimate() {
     let profile_id = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         id
     };
     let app = mock_app_with(state);
@@ -2216,7 +2359,7 @@ async fn bid_draft_persists_reveal_end_height_estimate() {
             |r| r.get(0),
         )
         .unwrap();
-    // 100 (mocked getnameinfo height) + 6 (regtest treeInterval 5 + 1, the
+    // 100 (mocked name-evidence height) + 6 (regtest treeInterval 5 + 1, the
     // OPENING period) + 5 (regtest biddingPeriod) + 10 (regtest revealPeriod).
     assert_eq!(reveal_end_height, 121);
 }
@@ -2233,7 +2376,7 @@ async fn reveal_works_for_bid_on_rotated_address() {
     {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         // Derive receive index 1 (the rotated slot) from the profile's seed.
         let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
         let (_sk, pk, addr1) = crate::noncustodial::hd::derive_address(
@@ -2388,7 +2531,7 @@ async fn build_bid_draft_rejects_second_bid_when_a_draft_is_already_pending() {
     let profile_id = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         insert_extra_funding(&conn, &id, &"11".repeat(32));
         id
     };
@@ -2446,7 +2589,7 @@ async fn build_bid_draft_rejects_when_an_unspent_bid_coin_already_exists() {
     let profile_id = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         let addr = first_derived_address(&conn, &id);
         let cov = bid_covenant_json_for("existingbid", &"22".repeat(32));
         conn.execute(
@@ -2501,7 +2644,7 @@ async fn build_bid_draft_allows_bid_on_a_different_name() {
     {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         insert_extra_funding(&conn, &id, &"44".repeat(32));
     }
     let app = mock_app_with(state);
@@ -2528,7 +2671,7 @@ async fn build_bid_draft_persists_bid_txid_on_its_commitment() {
     let profile_id = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         id
     };
     let app = mock_app_with(state);
@@ -2577,7 +2720,7 @@ async fn build_reveal_draft_persists_reveal_txid_on_its_commitment() {
     let profile_id = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         let addr = first_derived_address(&conn, &id);
         let cov_a = covenant_json_for("namea", crate::noncustodial::sync::COV_BID, "BID");
         seed_covenant_coin(
@@ -2809,7 +2952,7 @@ async fn capabilities_reflect_pending_open_disables_can_open_and_waits_for_biddi
     let profile_id = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         db::queries::insert_tx_draft(
             &conn,
             "d_open",

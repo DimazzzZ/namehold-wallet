@@ -3,22 +3,22 @@
 //!
 //! Flow per profile:
 //!   1. Derive the receive/change address window (`derivation`).
-//!   2. For each address, `getcoinsbyaddress` on the node.
-//!   3. Upsert the returned coins into `tracked_utxos`, classifying each by its
+//!   2. Restore each script through authenticated wallet RPC v1 and reconcile
+//!      its confirmed and mempool evidence.
+//!   3. Upsert the verified coins into `tracked_utxos`, classifying each by its
 //!      covenant into a `spend_class` so coin selection never accidentally
 //!      spends name-locked value.
 //!   4. Mark UTXOs no longer returned by the node as spent.
 //!   5. Advance the `sync_cursors` height.
 //!
-//! Covenant classification is verified against hsd `lib/covenants/rules.js`
-//! covenant type table.
+//! Covenant values are decoded through the canonical hns-rs types.
 
 use rusqlite::{params, Connection};
 
 use crate::error::AppError;
-use crate::noncustodial::rpc::{NodeCoin, NodeCovenant};
+use crate::noncustodial::hsrd::{NodeCoin, NodeCovenant};
 
-// --- hsd covenant types (lib/covenants/rules.js `types`) -------------------
+// --- hsrd covenant types (lib/covenants/rules.js `types`) -------------------
 pub const COV_NONE: u8 = 0;
 pub const COV_CLAIM: u8 = 1;
 pub const COV_OPEN: u8 = 2;
@@ -288,12 +288,9 @@ pub fn mark_address_used(
     Ok(())
 }
 
-/// Upsert a name's on-chain state into `tracked_name_states` from a
-/// `getnameinfo` JSON payload.
-///
-/// hsd `getnameinfo` returns `{ "info": { name, nameHash, state, height,
-/// renewal, owner: { hash, index }, ... } }`, or `{ "info": null }` for an
-/// unseen name. The caller passes the full RPC result; we read `info`.
+/// Upsert a name's verified evidence projection into `tracked_name_states`.
+/// The compatibility projection is `{ "info": { ... } }`, or `{ "info":
+/// null }` for an unseen name.
 pub fn upsert_name_state(
     conn: &Connection,
     profile_id: &str,
@@ -381,7 +378,7 @@ pub fn upsert_name_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::noncustodial::rpc::{NodeCoin, NodeCovenant};
+    use crate::noncustodial::hsrd::{NodeCoin, NodeCovenant};
 
     fn mem_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -514,7 +511,7 @@ mod tests {
     fn upsert_name_state_handles_known_and_unknown() {
         let conn = mem_db();
 
-        // Known name from getnameinfo.
+        // Known name from verified evidence.
         let info = serde_json::json!({
             "info": {
                 "name": "example",

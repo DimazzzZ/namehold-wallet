@@ -189,14 +189,14 @@ describe("ActivityView", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows the index-disabled banner when the node lacks the address index", async () => {
+  it("shows the index-disabled banner when the wallet index is unavailable", async () => {
     invokeMock.mockImplementation(
-      routes(new Error("address index not enabled on this hsd node: ... (status 400)")),
+      routes(new Error("wallet index is unavailable")),
     );
     render(<ActivityView />, { wrapper: wrapper() });
     await waitFor(() =>
       expect(
-        screen.getByText(/Your node does not have/),
+        screen.getByText(/authenticated wallet index is unavailable/),
       ).toBeInTheDocument(),
     );
   });

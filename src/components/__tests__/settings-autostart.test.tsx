@@ -1,8 +1,8 @@
 /**
- * Settings — Autostart HSD checkbox.
+ * Settings — Autostart HSRD checkbox.
  *
- * The Rust setup hook reads `autostart_hsd` from the SQLite settings table on
- * app launch to decide whether to spawn hsd automatically. Here we only cover
+ * The Rust setup hook reads `autostart_hsrd` from the SQLite settings table on
+ * app launch to decide whether to spawn hsrd automatically. Here we only cover
  * the frontend surface: default value, render/toggle, and that Save persists
  * the change via `update_setting`.
  */
@@ -80,11 +80,11 @@ function loadSettings(over: Partial<Record<string, string>> = {}) {
   useSettingsStore.setState({
     loaded: true,
     settings: {
-      node_rpc_url: "http://127.0.0.1:12037",
-      node_rpc_api_key: "",
-      hsd_prefix: "",
-      hsd_path: "",
-      autostart_hsd: "true",
+      hsrd_rpc_url: "http://127.0.0.1:12037",
+      hsrd_authorization: "",
+      hsrd_data_dir: "",
+      hsrd_path: "",
+      autostart_hsrd: "true",
       explorer_api_url: "https://e.hnsfans.com",
       address_gap_limit: "20",
       signer_session_timeout_seconds: "900",
@@ -105,27 +105,27 @@ beforeEach(() => {
   loadSettings();
 });
 
-describe("Settings — Autostart HSD checkbox", () => {
-  it("renders the checkbox checked by default (DEFAULT_SETTINGS.autostart_hsd = 'true')", async () => {
+describe("Settings — Autostart HSRD checkbox", () => {
+  it("renders the checkbox checked by default (DEFAULT_SETTINGS.autostart_hsrd = 'true')", async () => {
     render(<Settings />, { wrapper: wrapper() });
-    const box = await screen.findByTestId("autostart-hsd-checkbox");
+    const box = await screen.findByTestId("autostart-hsrd-checkbox");
     expect(box).toBeChecked();
     // The label text is visible next to the checkbox.
     expect(
-      screen.getByText(/Autostart HSD when the app launches/i),
+      screen.getByText(/Autostart HSRD when the app launches/i),
     ).toBeInTheDocument();
   });
 
   it("renders unchecked when the setting is 'false'", async () => {
-    loadSettings({ autostart_hsd: "false" });
+    loadSettings({ autostart_hsrd: "false" });
     render(<Settings />, { wrapper: wrapper() });
-    const box = await screen.findByTestId("autostart-hsd-checkbox");
+    const box = await screen.findByTestId("autostart-hsrd-checkbox");
     expect(box).not.toBeChecked();
   });
 
   it("persists a toggle to 'false' via update_setting when Save is clicked", async () => {
     render(<Settings />, { wrapper: wrapper() });
-    const box = await screen.findByTestId("autostart-hsd-checkbox");
+    const box = await screen.findByTestId("autostart-hsrd-checkbox");
     fireEvent.click(box); // "true" -> "false"
     expect(box).not.toBeChecked();
 
@@ -136,9 +136,9 @@ describe("Settings — Autostart HSD checkbox", () => {
       const call = invokeMock.mock.calls.find(
         (c) =>
           c[0] === "update_setting" &&
-          (c[1] as { key?: string })?.key === "autostart_hsd",
+          (c[1] as { key?: string })?.key === "autostart_hsrd",
       );
-      expect(call?.[1]).toEqual({ key: "autostart_hsd", value: "false" });
+      expect(call?.[1]).toEqual({ key: "autostart_hsrd", value: "false" });
     });
   });
 });

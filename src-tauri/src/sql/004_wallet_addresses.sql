@@ -1,11 +1,11 @@
 -- Per-wallet address cache.
 --
 -- Stores the set of public addresses known to belong to a specific wallet
--- (identified by the hsd wallet id). This lets external read-only mode
+-- (identified by the hsrd wallet id). This lets external read-only mode
 -- automatically resolve the *selected wallet's* full balance/assets without
 -- the user having to enter watch addresses manually.
 --
--- Addresses are populated during a sync against a (local or remote) hsd by
+-- Addresses are populated during a sync against a (local or remote) hsrd by
 -- inspecting the wallet's coins and transaction history. Each row is scoped to
 -- a wallet so switching the selected wallet shows the right data.
 

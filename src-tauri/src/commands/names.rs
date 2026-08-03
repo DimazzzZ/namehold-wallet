@@ -2,7 +2,7 @@
 //! UPDATE/RENEW/TRANSFER/FINALIZE/CANCEL/REVOKE drafts.
 //!
 //! Each command resolves the active profile, fetches the current name state from
-//! the node (`getnameinfo`), constructs the covenant + funded plan via
+//! authenticated proof-bound name evidence, constructs the covenant + funded plan via
 //! `noncustodial::actions`, and persists a `wallet_tx_drafts` row. Signing and
 //! broadcast reuse `commands::tx::{sign_tx_draft, broadcast_tx_draft}` — covenant
 //! draft plans are signed by `actions::sign_plan` (dispatched there by action).
@@ -19,8 +19,8 @@ use crate::db::{self, queries};
 use crate::error::AppError;
 use crate::noncustodial::actions::{self, NameInputSpec, PrimaryOutput};
 use crate::noncustodial::hd::ExtendedPubKey;
+use crate::noncustodial::hsrd::HsrdClient;
 use crate::noncustodial::network::Network;
-use crate::noncustodial::rpc::NodeRpcClient;
 use crate::noncustodial::send::{self, SpendableCoin};
 use crate::noncustodial::sync::{self, COV_REGISTER, COV_REVEAL};
 use crate::noncustodial::tx::sighash;
@@ -91,7 +91,7 @@ pub(crate) fn fee_rate(ctx: &Ctx, fee_rate: Option<u64>) -> u64 {
         .unwrap_or(send::DEFAULT_FEE_RATE_PER_BYTE)
 }
 
-/// Minimal view of `getnameinfo` we need to build covenants.
+/// Minimal verified name-state projection needed to build covenants.
 #[derive(Debug)]
 pub(crate) struct NameState {
     pub(crate) height: u32,
@@ -102,7 +102,7 @@ pub(crate) struct NameState {
 }
 
 pub(crate) async fn fetch_name_state(
-    client: &NodeRpcClient,
+    client: &HsrdClient,
     name: &str,
 ) -> Result<NameState, AppError> {
     let v = client.get_name_info(name).await?;
@@ -127,7 +127,7 @@ pub(crate) async fn fetch_name_state(
 
 /// `getRenewalBlock`: internal-order 32-byte hash at `height - 2*renewalMaturity`.
 pub(crate) async fn renewal_block(
-    client: &NodeRpcClient,
+    client: &HsrdClient,
     network: Network,
 ) -> Result<[u8; 32], AppError> {
     let tip = client.get_blockchain_info().await?.blocks;
@@ -491,7 +491,7 @@ const OWNER_COIN_NOT_SYNCED_REASON: &str =
 /// isolation), defaulting to the active profile — resolved exactly like
 /// `read_names` via [`crate::commands::read::resolve_profile`].
 ///
-/// The node RPC (`getnameinfo`) is authoritative ONLY when the node is fully
+/// Node name evidence is authoritative ONLY when the sidecar is fully
 /// synced. When the node is unreachable OR still catching up (its wallet scan is
 /// incomplete, so its owner-coin view is unreliable), we fall back to LOCAL Sync
 /// evidence (`tracked_name_states`). A name whose recorded owner address is one
@@ -575,7 +575,7 @@ async fn evaluate_name_action_capabilities(
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         queries::get_settings(&conn)?
     };
-    let client = NodeRpcClient::from_settings(&settings);
+    let client = HsrdClient::from_settings(&settings);
 
     // 1. Fetch the name's on-chain state via RPC — but ONLY trust the node when
     //    it is fully synced. An unsynced node answers RPC yet its wallet scan is
@@ -1332,7 +1332,7 @@ pub async fn build_bid_draft(
     let nh = names::hash_name(&name)?;
     let nh_hex = hex::encode(nh);
     let raw = names::raw_name(&name)?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = HsrdClient::from_settings(&ctx.settings);
     let ns = fetch_name_state(&client, &name).await?;
 
     // Bid output goes to the NEXT UNUSED wallet receive address. Rotation keeps
@@ -1441,7 +1441,7 @@ pub async fn build_bid_draft(
     )?;
     // Estimate when the reveal window closes for the deadline scanner
     // (I1): the BID covenant's `start` item IS `ns.height` (the auction's
-    // OPEN height). From there hsd's timeline is: OPENING for
+    // OPEN height). From there hsrd's timeline is: OPENING for
     // `treeInterval + 1` blocks (name.js `isBidding`/`isOpening` — the
     // name only *enters* BIDDING once `height > start + treeInterval`),
     // THEN `biddingPeriod` blocks of BIDDING, THEN `revealPeriod` blocks
@@ -1486,7 +1486,7 @@ pub async fn build_reveal_draft(
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let nh = names::hash_name(&name)?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = HsrdClient::from_settings(&ctx.settings);
     let ns = fetch_name_state(&client, &name).await?;
 
     // Look up our bid commitment + the unspent BID coin at that address.
@@ -1555,7 +1555,7 @@ pub async fn build_redeem_draft(
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let nh = names::hash_name(&name)?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = HsrdClient::from_settings(&ctx.settings);
     let ns = fetch_name_state(&client, &name).await?;
 
     let coin = {
@@ -1606,7 +1606,7 @@ async fn owner_coin_and_state(
         queries::get_name_coin(&conn, &ctx.profile_id, name)?
             .ok_or_else(|| AppError::NotFound(format!("wallet does not hold '{name}' (sync?)")))?
     };
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = HsrdClient::from_settings(&ctx.settings);
     let ns = fetch_name_state(&client, name).await?;
     Ok((coin, ns))
 }
@@ -1622,7 +1622,7 @@ pub async fn build_register_draft(
     let rate = self::fee_rate(&ctx, fee_rate);
     let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = HsrdClient::from_settings(&ctx.settings);
     let rblock = renewal_block(&client, ctx.network).await?;
     let res_bytes = match &records {
         Some(r) if !r.is_empty() => resource::encode(r)?,
@@ -1683,7 +1683,7 @@ pub async fn build_renew_draft(
     let rate = self::fee_rate(&ctx, fee_rate);
     let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = HsrdClient::from_settings(&ctx.settings);
     let rblock = renewal_block(&client, ctx.network).await?;
     let res = actions::build_plan(
         ctx.network,
@@ -1747,7 +1747,7 @@ pub async fn build_finalize_draft(
     let nh = names::hash_name(&name)?;
     let raw = names::raw_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = HsrdClient::from_settings(&ctx.settings);
     let rblock = renewal_block(&client, ctx.network).await?;
 
     // The finalize output goes to the TRANSFER target recorded on the owner

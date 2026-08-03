@@ -26,7 +26,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsrd_child: std::sync::Mutex::new(None),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
             )),
@@ -65,14 +65,14 @@ async fn get_settings_redacts_namebase_cookie_and_marks_presence() {
 }
 
 #[tokio::test]
-async fn get_settings_redacts_node_rpc_api_key_and_marks_presence() {
+async fn get_settings_redacts_hsrd_authorization_and_marks_presence() {
     let conn = migrated_conn();
-    db::queries::set_setting(&conn, "node_rpc_api_key", "hunter2").unwrap();
+    db::queries::set_setting(&conn, "hsrd_authorization", "hunter2").unwrap();
     let app = app_with(conn);
 
     let out = get_settings(app.state()).await.unwrap();
-    assert!(out.get("node_rpc_api_key").is_none());
-    assert_eq!(out["__has_node_rpc_api_key"], "true");
+    assert!(out.get("hsrd_authorization").is_none());
+    assert_eq!(out["__has_hsrd_authorization"], "true");
 }
 
 #[tokio::test]
@@ -91,13 +91,9 @@ async fn get_settings_omits_presence_markers_when_unset() {
     let app = app_with(conn);
 
     let out = get_settings(app.state()).await.unwrap();
-    // The migrations insert default rows for node_rpc_api_key and hsd_api_key
-    // (with empty values), so the markers ARE present. Only namebase_cookie
-    // is never seeded, so its marker should be absent.
+    // Empty secret rows are not reported as configured.
     assert!(out.get("__has_namebase_cookie").is_none());
-    assert_eq!(out["__has_node_rpc_api_key"], "true");
-    // hsd_api_key is deleted by migration 010, so no marker.
-    assert!(out.get("__has_hsd_api_key").is_none());
+    assert!(out.get("__has_hsrd_authorization").is_none());
 }
 
 // --- update_setting denylist ----------------------------------------------
@@ -153,11 +149,11 @@ async fn update_setting_writes_star_star_star_for_sensitive_key() {
     let conn = migrated_conn();
     let app = app_with(conn);
 
-    // node_rpc_api_key is sensitive but NOT write-denied, so the write path
+    // hsrd_authorization is sensitive but NOT write-denied, so the write path
     // (and its audit entry) is reachable from the renderer.
     update_setting(
         app.state(),
-        "node_rpc_api_key".to_string(),
+        "hsrd_authorization".to_string(),
         "leaky-secret".to_string(),
     )
     .await

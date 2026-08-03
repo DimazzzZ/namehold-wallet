@@ -1,46 +1,21 @@
-//! Handshake name hashing + validation.
-//!
-//! Verified against hsd v6.1.1 `lib/covenants/rules.js`:
-//!   - `hashName(name)` = SHA3-256 of the ASCII name bytes (32-byte output).
-//!     (hsd uses `bcrypto/lib/sha3` which is FIPS-202 SHA3-256, NOT Keccak.)
-//!   - Names are 1..=63 ASCII chars, lowercase, no leading/trailing hyphen.
+//! Handshake name hashing + validation through `hns-covenants`.
 
 use crate::error::AppError;
-use sha3::{Digest, Sha3_256};
 
-/// Maximum name length (hsd `rules.MAX_NAME_SIZE`).
-pub const MAX_NAME_SIZE: usize = 63;
+pub use hns_covenants::MAX_NAME_SIZE;
 
-/// Validate a Handshake name (subset of hsd `verifyString`): non-empty, <= 63
+/// Validate a Handshake name (subset of hsrd `verifyString`): non-empty, <= 63
 /// ASCII chars, characters limited to `[a-z0-9]`, `_`, and `-`, with `-`/`_`
 /// not allowed at the first or last position.
 pub fn verify_name(name: &str) -> bool {
-    let len = name.len();
-    if len == 0 || len > MAX_NAME_SIZE {
-        return false;
-    }
-    for (i, ch) in name.bytes().enumerate() {
-        let ok = match ch {
-            b'a'..=b'z' | b'0'..=b'9' => true,
-            b'-' | b'_' => i != 0 && i != len - 1,
-            _ => false,
-        };
-        if !ok {
-            return false;
-        }
-    }
-    true
+    hns_covenants::validate_name(name.as_bytes())
 }
 
-/// SHA3-256 hash of a validated name (hsd `rules.hashName`).
+/// Canonical SHA3-256 name hash.
 pub fn hash_name(name: &str) -> Result<[u8; 32], AppError> {
-    if !verify_name(name) {
-        return Err(AppError::InvalidInput(format!("invalid name '{name}'")));
-    }
-    let digest = Sha3_256::digest(name.as_bytes());
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    Ok(out)
+    hns_covenants::hash_name(name.as_bytes())
+        .map(hns_primitives::NameHash::into_bytes)
+        .map_err(|_| AppError::InvalidInput(format!("invalid name '{name}'")))
 }
 
 /// The raw on-the-wire name bytes (ASCII), as pushed into covenants.

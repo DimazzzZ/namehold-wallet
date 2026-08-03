@@ -2,7 +2,7 @@
 -- commitment, so a background deadline scanner can warn before the window
 -- closes and the lockup is forfeited (I1).
 --
--- Populated at `build_bid_draft` time, where the live `getnameinfo` "height"
+-- Populated at `build_bid_draft` time, where the live name-evidence "height"
 -- (the auction's OPEN height, which the BID covenant itself carries as its
 -- `start` item) is known: reveal_end_height = start + (treeInterval + 1) +
 -- biddingPeriod + revealPeriod (network name params) — the name spends

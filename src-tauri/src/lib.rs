@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
+mod chain;
 pub mod commands;
 pub mod daemon;
 pub mod db;
 pub mod error;
-mod hsd;
 mod models;
 mod namebase;
 pub mod noncustodial;
@@ -35,9 +35,8 @@ pub struct AppState {
     /// In-flight secure prompts, keyed by prompt id. Holds secret request
     /// material (e.g. a mnemonic to reveal) in memory only, until answered.
     pub secure_prompts: Mutex<HashMap<String, PendingPrompt>>,
-    /// Handle to the hsd node the app started this session, if any. Used to
-    /// report running state and to stop the node. Not persisted across restarts.
-    pub hsd_child: Mutex<Option<std::process::Child>>,
+    /// Handle to the managed `hsrd` sidecar started this session, if any.
+    pub hsrd_child: Mutex<Option<std::process::Child>>,
     /// Persistent sync session progress. Survives page navigation.
     pub sync_status: Arc<AsyncMutex<SyncStatus>>,
 }
@@ -69,7 +68,8 @@ pub fn run() {
                 ));
             }
 
-            // Store everything under ~/.namehold (pairs with the node's ~/.hsd),
+            // Store application state under ~/.namehold, independently of the
+            // sidecar's chain directory.
             // rather than the OS app-data dir derived from the bundle identifier.
             // The identifier stays reverse-DNS for packaging/signing but no longer
             // dictates where data lives.
@@ -107,7 +107,7 @@ pub fn run() {
                 db: Mutex::new(conn),
                 signer: Mutex::new(None),
                 secure_prompts: Mutex::new(HashMap::new()),
-                hsd_child: Mutex::new(None),
+                hsrd_child: Mutex::new(None),
                 sync_status: Arc::new(AsyncMutex::new(SyncStatus::default())),
             });
 
@@ -140,14 +140,14 @@ pub fn run() {
                 }
             });
 
-            // Autostart hsd (default ON). Fires once at launch, before any
+            // Autostart the managed sidecar (default ON). Fires once at launch, before any
             // window trigger, so the node comes up without a "Node: Offline"
             // flash while the frontend mounts. Fire-and-forget: any failure
             // (misconfigured paths, version gate, spawn error) is logged and
             // left for the user to resolve via Settings — it never blocks app
-            // startup. `start_hsd` is idempotent (it adopts an already-running
+            // startup. `start_hsrd` is idempotent (it adopts an already-running
             // node via RPC rather than spawning a duplicate), so this is safe
-            // even when the user launched hsd manually beforehand.
+            // even when the user launched hsrd manually beforehand.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<AppState>();
@@ -156,7 +156,7 @@ pub fn run() {
                         Ok(db) => match crate::db::queries::get_settings(&db) {
                             // Missing key → default ON, matching DEFAULT_SETTINGS.
                             Ok(settings) => {
-                                settings.get("autostart_hsd").map(String::as_str) != Some("false")
+                                settings.get("autostart_hsrd").map(String::as_str) != Some("false")
                             }
                             Err(e) => {
                                 eprintln!(
@@ -174,24 +174,9 @@ pub fn run() {
                 if !enabled {
                     return;
                 }
-                if let Err(e) = commands::node::start_hsd(state).await {
-                    eprintln!("hsd autostart skipped: {e}");
+                if let Err(e) = commands::node::start_hsrd(state).await {
+                    eprintln!("hsrd autostart skipped: {e}");
                 }
-            });
-
-            // Chain scanner (Feature 3, Stage 2): a background task that walks
-            // blocks from the fully-synced local node and indexes BID/REVEAL
-            // covenant outputs per name into `name_bid_outpoints`. This is what
-            // lets `read_name_bids` show ALL bidders — not just the wallet's
-            // own — without touching the HNSFans explorer once the node is
-            // authoritative. The scanner idles (30s poll) when the node is
-            // disconnected or still syncing, and sleeps (10s) when it's caught
-            // up to the tip. Resumable via `chain_scan_cursor` — the cost of
-            // an app restart is one `getblockchaininfo` + one cursor read, not
-            // a re-scan.
-            let db_path_str = db_path.to_string_lossy().to_string();
-            tauri::async_runtime::spawn(async move {
-                commands::chain_scan::run_chain_scanner(db_path_str).await;
             });
 
             // Background sync daemon: if the user has background sync enabled
@@ -245,9 +230,9 @@ pub fn run() {
             commands::namebase_history::get_namebase_history_summary,
             commands::namebase_history::clear_namebase_history,
             commands::node::node_status,
-            commands::node::resync_hsd_chain,
-            commands::node::start_hsd,
-            commands::node::stop_hsd,
+            commands::node::resync_hsrd_chain,
+            commands::node::start_hsrd,
+            commands::node::stop_hsrd,
             commands::read::read_balance,
             commands::read::read_names,
             commands::read::read_auction_position_names,
@@ -322,17 +307,17 @@ pub fn run() {
             // stops, regardless of how the app is closing (last window closed,
             // Cmd+Q, `AppHandle::exit`/`restart`, `ExitRequested` left
             // unprevented, …) — so hooking only this one event is enough to
-            // reap the hsd child on every exit path. `ExitRequested` fires
+            // reap the sidecar child on every exit path. `ExitRequested` fires
             // earlier and can be cancelled by a listener (`api.prevent_exit()`),
             // so it's the wrong place to kill anything: it may not represent an
             // actual exit at all.
             if let tauri::RunEvent::Exit = event {
                 let state = app_handle.state::<AppState>();
 
-                // If background sync is enabled, SKIP killing hsd — the daemon
-                // needs it alive to continue syncing after the app closes. The
-                // hsd process becomes orphaned but alive; next app launch adopts
-                // it via RPC probe (see start_hsd's existing adoption path).
+                // If background sync is enabled, leave the sidecar alive — the daemon
+                // needs it to continue syncing after the app closes. The
+                // process becomes orphaned but alive; next app launch adopts
+                // it via RPC probe (see start_hsrd's existing adoption path).
                 let background_sync_on = state
                     .db
                     .lock()
@@ -345,7 +330,7 @@ pub fn run() {
                     })
                     .unwrap_or(false);
 
-                let child = match state.hsd_child.lock() {
+                let child = match state.hsrd_child.lock() {
                     Ok(mut guard) => guard.take(),
                     Err(poisoned) => poisoned.into_inner().take(),
                 };
@@ -354,19 +339,19 @@ pub fn run() {
                         // Detach: drop the handle without killing. The child
                         // process continues running as an orphan.
                         eprintln!(
-                            "hsd shutdown: background sync enabled — leaving hsd alive for daemon"
+                            "hsrd shutdown: background sync enabled — leaving sidecar alive for daemon"
                         );
                         drop(child);
                     } else {
-                        // Best-effort: never let a stuck hsd block the app from
+                        // Best-effort: never let a stuck sidecar block the app from
                         // closing. `kill()` + `wait()` on an already-exited child
                         // are harmless no-ops (kill fails silently, wait returns
                         // immediately), so this is safe to run unconditionally.
                         if let Err(e) = child.kill() {
-                            eprintln!("hsd shutdown: kill failed (may already be dead): {e}");
+                            eprintln!("hsrd shutdown: kill failed (may already be dead): {e}");
                         }
                         if let Err(e) = child.wait() {
-                            eprintln!("hsd shutdown: wait failed: {e}");
+                            eprintln!("hsrd shutdown: wait failed: {e}");
                         }
                     }
                 }

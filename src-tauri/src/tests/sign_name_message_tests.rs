@@ -1,5 +1,5 @@
 //! Command-level tests for `sign_name_message` (Task 3): the wallet key that
-//! owns a name signs an arbitrary message (hsd `signmessagewithname` parity),
+//! owns a name signs an arbitrary message (hsrd `signmessagewithname` parity),
 //! for domain-claim verification flows such as Namebase's.
 //!
 //! Drives the REAL `#[tauri::command]` with a managed `AppState` over a
@@ -124,7 +124,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsrd_child: std::sync::Mutex::new(None),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
             )),
@@ -162,9 +162,9 @@ async fn signs_and_returns_signature_pubkey_address_for_the_owning_key() {
 
     let signature_b64 = result["signature"].as_str().expect("signature field");
     let sig_bytes = BASE64.decode(signature_b64).expect("valid base64");
-    assert_eq!(sig_bytes.len(), 64, "hsd compact signature is 64 bytes");
+    assert_eq!(sig_bytes.len(), 64, "hsrd compact signature is 64 bytes");
 
-    // Verify against the SAME pubkey the command reports, over the exact hsd
+    // Verify against the SAME pubkey the command reports, over the exact hsrd
     // preimage — proves the returned signature is genuinely usable, not just
     // well-formed.
     let pubkey_hex = result["publicKey"].as_str().expect("publicKey field");

@@ -13,7 +13,7 @@ import {
   taskStateUrgencyRank,
   validateBidInputs,
 } from "./auction";
-import type { HsdNameStats } from "../types";
+import type { ChainNameStats } from "../types";
 
 describe("auctionPhase", () => {
   it("maps known states to labelled badges", () => {
@@ -36,7 +36,7 @@ describe("auctionPhase", () => {
 
 describe("nextTransition", () => {
   it("picks the countdown for the current phase", () => {
-    const stats: HsdNameStats = { blocksUntilReveal: 12, hoursUntilReveal: 2 };
+    const stats: ChainNameStats = { blocksUntilReveal: 12, hoursUntilReveal: 2 };
     expect(nextTransition("BIDDING", stats)).toEqual({
       label: "Reveal starts in",
       blocks: 12,

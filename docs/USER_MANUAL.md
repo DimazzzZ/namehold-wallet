@@ -39,11 +39,11 @@ and never sends your seed anywhere. There is **no external wallet service** — 
 wallet talks directly to the Handshake network:
 
 - **Reads (balances, owned names, name info): no node required.** Data comes from
-  the HNSFans explorer by default. When your local hsd is synced, the wallet
+  the HNSFans explorer by default. When your local hsrd is synced, the wallet
   automatically switches to node-authoritative reads (faster, more reliable).
-- **Writes (Send HNS, name actions): local hsd required.** Broadcasting a
+- **Writes (Send HNS, name actions): local hsrd required.** Broadcasting a
   Handshake transaction and finding your unspent coins needs a local
-  **address-indexed** hsd node — no hosted provider offers that today.
+  hsrd sidecar with authenticated wallet RPC v1 and its wallet index enabled.
 
 Your **secrets never touch the web UI.** Passphrases and recovery phrases are
 entered and displayed only inside a small **Rust-owned secure window**.
@@ -55,9 +55,9 @@ entered and displayed only inside a small **Rust-owned secure window**.
 ### Prerequisites
 
 - The Namehold desktop app (macOS `.dmg`, Windows `.msi`, or Linux `.AppImage`/`.deb`).
-- To **send HNS or perform name actions**, you also need [hsd](https://github.com/handshake-org/hsd)
+- To **send HNS or perform name actions**, you also need [hsrd](https://github.com/handshake-org/hsrd)
   — the app can start it for you (see [Node control](#11-node-control)). Reads
-  work without hsd.
+  work without hsrd.
 
 ### First launch — Onboarding
 
@@ -83,9 +83,9 @@ secure window, or delete one you no longer need.
 ### Background sync (enabled by default)
 
 Out of the box, **Sync in background** is enabled (Settings → Connections). This
-means hsd stays running after you close the app, and a lightweight background
+means hsrd stays running after you close the app, and a lightweight background
 daemon keeps your wallet data fresh every 60 seconds. If you'd rather sync only
-while the app is open — and have hsd stop when you close it — uncheck **Settings →
+while the app is open — and have hsrd stop when you close it — uncheck **Settings →
 Connections → "Sync in background"**. See [Section 11](#11-node-control) for
 details.
 
@@ -185,15 +185,15 @@ You can write when **all** of these hold:
 
 1. **Signer unlockable** — a wallet is loaded and either unlocked or has a
    passphrase you can enter.
-2. **Node reachable** — local hsd RPC responds.
-3. **Node synced** — hsd's `verification_progress` is ≥ 99.99% (or blocks meet
+2. **Sidecar reachable** — authenticated hsrd wallet RPC v1 responds.
+3. **Node synced** — hsrd's `verification_progress` is ≥ 99.99% (or blocks meet
    headers on a network without a progress value, e.g. regtest with a single
    miner).
-4. **Address-indexed** — hsd was started with `--index-address` (required to
-   discover your unspent coins).
+4. **Wallet index ready** — hsrd has restored authenticated history, UTXOs,
+   names, and mempool evidence for the wallet's derived scripts.
 
 When any condition fails, the reason is shown in plain text (e.g. "Node not
-synced (12%)", "hsd not address-indexed — re-sync required", "Signer locked").
+synced (12%)", "hsrd wallet index unavailable", "Signer locked").
 
 ---
 
@@ -337,10 +337,10 @@ All node settings live under **Settings → Connections**.
 |-------|---------|-------|
 | **Explorer base URL (reads)** | `https://e.hnsfans.com` | For node-free reads. |
 | **Node RPC URL (sending)** | `http://127.0.0.1:12037` | Mainnet. Testnet 13037, regtest 14037. |
-| **Node RPC API key** | (empty) | Match hsd's `--api-key`. |
-| **Node data directory (`hsd --prefix`)** | (system default) | Use **Browse…** to pick. |
-| **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. |
-| **Autostart HSD when the app launches** | **on** | Toggle off to keep hsd manual. |
+| **Node RPC API key** | (empty) | Match hsrd's `--api-key`. |
+| **Node data directory (`hsrd --prefix`)** | (system default) | Use **Browse…** to pick. |
+| **hsrd binary path** | (auto) | Only needed if hsrd isn't on PATH. |
+| **Autostart HSRD when the app launches** | **on** | Toggle off to keep hsrd manual. |
 | **Sync in background** | **on** | When enabled, a background daemon syncs your wallet every 60 seconds, even when the app is closed. When disabled, only manual Sync (or the app's auto-sync while running) refreshes your data. |
 
 ### Background sync
@@ -348,33 +348,33 @@ All node settings live under **Settings → Connections**.
 The **Sync in background** checkbox (Settings → Connections) keeps your wallet
 data fresh without the app being open.
 
-- **When ON (default):** hsd stays running after you close the app. A background
+- **When ON (default):** hsrd stays running after you close the app. A background
   daemon (`namehold-syncd`) wakes every 60 seconds and syncs all wallet profiles
-  (UTXOs, name states, transactions) from hsd into the local database. The next
-  time you launch the app, it adopts the running hsd and picks up where the daemon
+  (UTXOs, name states, transactions) from hsrd into the local database. The next
+  time you launch the app, it adopts the running hsrd and picks up where the daemon
   left off — so your data is always current.
-- **When OFF:** hsd is stopped when you close the app (the classic behavior).
+- **When OFF:** hsrd is stopped when you close the app (the classic behavior).
   Only manual **Sync**, or the app's built-in auto-sync while the app is running,
   refreshes your data.
 - **Crash recovery:** if the daemon dies, the app detects it on the next startup
   and respawns it (as long as the toggle is ON).
 - **Read-only:** the daemon never signs transactions or broadcasts — it only reads
-  from hsd and writes sync data to the local database. Your keys stay locked in the
+  from hsrd and writes sync data to the local database. Your keys stay locked in the
   encrypted vault.
 
 ### Start, stop, status
 
 Below the settings, the **NodeControl** panel shows a live status dot
 (Connected · Starting · Stopped · Syncing %), the read source (**Local** or
-**Explorer**), the data directory and hsd version. Buttons:
+**Explorer**), the data directory and hsrd version. Buttons:
 
-- **Start hsd** — spawns hsd with the required flags (`--index-address
-  --index-tx`). If hsd is already running, it adopts it via RPC.
-- **Stop hsd** — stops the node.
-- **Re-sync node data** — appears only when the app detects an
-  **index mismatch** (hsd's existing chain was synced without `--index-address`).
-  hsd cannot add indexes retroactively, so this moves the old `blocks/`,
-  `chain/`, `tree/` aside and resyncs with the right flags. Expect this to
+- **Start hsrd** — spawns hsrd with native sync, P2P discovery, transaction
+  relay, and its durable wallet index. If hsrd is already running, it adopts
+  it through authenticated wallet RPC v1.
+- **Stop hsrd** — stops the node.
+- **Re-sync node data** — appears when the wallet index is unavailable for the
+  existing data set. It moves the entire data directory to a timestamped,
+  recoverable backup and starts a clean wallet-indexed sync. Expect this to
   take hours the first time.
 
 ### Ports
@@ -387,18 +387,18 @@ Below the settings, the **NodeControl** panel shows a live status dot
 
 ### Troubleshooting background sync
 
-**The background daemon isn't syncing.** Check that hsd is running (the status
+**The background daemon isn't syncing.** Check that hsrd is running (the status
 dot is Connected). Restart the app — it respawns the daemon on startup when
 "Sync in background" is ON. The daemon writes its process ID to
 `~/.namehold/syncd.pid` while alive.
 
-**hsd is still running after I closed the app.** This is expected when "Sync in
-background" is enabled — the daemon keeps hsd alive so it can sync in the
-background. To stop hsd, either disable "Sync in background" (hsd is then stopped
-on the next app close) or click **Stop hsd** in Settings → Connections.
+**hsrd is still running after I closed the app.** This is expected when "Sync in
+background" is enabled — the daemon keeps hsrd alive so it can sync in the
+background. To stop hsrd, either disable "Sync in background" (hsrd is then stopped
+on the next app close) or click **Stop hsrd** in Settings → Connections.
 
 **I want to stop background sync.** Uncheck **Settings → Connections → "Sync in
-background"**. The daemon exits immediately, and hsd is stopped the next time you
+background"**. The daemon exits immediately, and hsrd is stopped the next time you
 close the app.
 
 ---
@@ -457,8 +457,8 @@ wallet,false,Finance,"medium_value",Finance TLD
 
 ### Data location
 
-All app data lives in one SQLite file in your home folder (pairs with hsd's
-`~/.hsd`), on every platform:
+All app data lives in one SQLite file in your home folder (pairs with hsrd's
+`~/.hsrd`), on every platform:
 
 ```
 ~/.namehold/portfolio.db
@@ -496,14 +496,14 @@ Then open the app normally.
 - **Local-first.** No cloud, no telemetry. Keys and secrets stay on your
   device. By default, balance/name lookups go to the public HNSFans explorer,
   which therefore sees your wallet addresses and the names you track; running
-  your own hsd node keeps those lookups fully local. The only other outbound
+  your own hsrd node keeps those lookups fully local. The only other outbound
   HTTP is to your configured node.
-- **Localhost-first.** Namehold connects to hsd on `127.0.0.1` by default;
+- **Localhost-first.** Namehold connects to hsrd on `127.0.0.1` by default;
   non-localhost URLs are allowed but warned about.
 - **Auto-lock.** The unlocked signer times out after a configurable idle
   period (Settings → Advanced → Signer session timeout, default 15 min).
 - **Background sync is read-only.** When "Sync in background" is enabled, the
-  `namehold-syncd` daemon reads from hsd and writes sync data to the local
+  `namehold-syncd` daemon reads from hsrd and writes sync data to the local
   database — it never signs transactions, never broadcasts, and never has access
   to key material. Your keys stay locked in the encrypted vault.
 - **What Namehold never does.** Never asks for or transmits your seed phrase,
@@ -520,30 +520,29 @@ Hover the button (or open the Send dialog) to see the exact reason. Common
 ones:
 
 - **"Signer locked"** — click **Unlock** on the account bar.
-- **"Node not synced (N%)"** — wait for hsd to finish syncing.
-- **"hsd not address-indexed"** — hsd was started without `--index-address`.
-  Restart hsd from Settings → Connections; the app adds the flag. If your
-  chain was already synced without it, use **Re-sync node data**.
-- **"Node unreachable"** — check that hsd is running (Settings shows a red dot)
-  and the RPC URL/API key match.
+- **"Node not synced (N%)"** — wait for hsrd to finish syncing.
+- **"hsrd wallet index unavailable"** — restart hsrd from Settings →
+  Connections with wallet indexing enabled. If the existing data set cannot
+  add the profile, use **Re-sync node data**.
+- **"Node unreachable"** — check that hsrd is running (Settings shows a red dot)
+  and the wallet RPC URL/exact Authorization value match.
 
 ### The DNS editor opens empty for a name I know has records
 
 Prefill needs a synced node. If you're on Explorer reads only, the editor
-starts empty. Start / wait for hsd and re-open the modal.
+starts empty. Start / wait for hsrd and re-open the modal.
 
-### "Cannot retroactively enable indexing" from hsd
+### Wallet index unavailable from hsrd
 
-hsd cannot add an index to an already-synced chain. In Settings the app shows
-the **Re-sync node data** button — this moves the old `blocks/`, `chain/`,
-`tree/` aside and resyncs with `--index-address --index-tx`. Expect a few
-hours on mainnet.
+In Settings the app shows **Re-sync node data**. This moves the old hsrd data
+directory to a timestamped backup and starts a clean sync with the wallet-index
+profile enabled. Expect a few hours on mainnet.
 
 ### Balance shows 0 after import
 
 A freshly imported wallet won't show any HNS until:
 1. The node is synced,
-2. The address index has caught up,
+2. Wallet restoration/indexing has caught up,
 3. **Sync** has been clicked (or the auto-sync loop has run once).
 
 ### Send fails with "Not sent"

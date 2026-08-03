@@ -58,7 +58,7 @@ pub(crate) fn resolve_profile(
     active_profile(state)
 }
 
-/// Check if the local hsd node is connected AND fully synced, making local
+/// Check if the local hsrd node is connected AND fully synced, making local
 /// cached data the preferred read source. Returns `true` when the node RPC
 /// answers and the chain is caught up (height ≥ headers, or progress ≥ 0.9999).
 pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -> bool {
@@ -84,7 +84,7 @@ pub(crate) async fn node_tip_height_if_synced(state: &State<'_, AppState>) -> Op
 pub(crate) async fn node_tip_height_if_synced_from_settings(
     settings: &std::collections::HashMap<String, String>,
 ) -> Option<i64> {
-    let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(settings);
+    let client = crate::noncustodial::hsrd::HsrdClient::from_settings(settings);
     let info = client.get_blockchain_info().await.ok()?;
     // Connected — now check if synced.
     // When verification_progress is available it is the most reliable signal —
@@ -122,7 +122,7 @@ fn explorer_client(settings: &std::collections::HashMap<String, String>) -> HnsF
 
 /// Node-only owned-name discovery for [`discover_owned_names`]. Resolves the
 /// wallet's name-covenant coins to names via the node (`getnamebyhash` with a
-/// rawName fallback), fetches each name's `getnameinfo`, and upserts an
+/// rawName fallback), fetches each name's verified evidence, and upserts an
 /// authoritative `tracked_name_states` row — no explorer calls. Returns the
 /// same `{ discovered, names }` shape as the explorer path.
 async fn discover_owned_names_via_node(
@@ -136,7 +136,7 @@ async fn discover_owned_names_via_node(
         (settings, hashes)
     };
 
-    let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+    let client = crate::noncustodial::hsrd::HsrdClient::from_settings(&settings);
 
     // Resolve each hash → name (node's getnamebyhash, else the coin's rawName).
     let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -179,7 +179,7 @@ async fn discover_owned_names_via_node(
 }
 
 /// Node-only owned-name reconciliation for [`repair_owned_names`]. For each
-/// candidate name, ask the node for authoritative state via `getnameinfo` and
+/// candidate name, ask the sidecar for authoritative proof-bound state and
 /// resolve the owner outpoint's address via `gettxout` — the same information
 /// the explorer path derives from `/history`, without HNSFans.
 async fn repair_owned_names_via_node(
@@ -207,7 +207,7 @@ async fn repair_owned_names_via_node(
         candidates.push(n);
     }
 
-    let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+    let client = crate::noncustodial::hsrd::HsrdClient::from_settings(&settings);
 
     let mut errors: Vec<String> = Vec::new();
     let mut repaired = 0u32;
@@ -217,7 +217,7 @@ async fn repair_owned_names_via_node(
         let info_result = match client.get_name_info(name).await {
             Ok(v) => v,
             Err(e) => {
-                errors.push(format!("{name}: getnameinfo failed — {e}"));
+                errors.push(format!("{name}: name evidence failed — {e}"));
                 continue;
             }
         };
@@ -266,12 +266,12 @@ async fn repair_owned_names_via_node(
         ) {
             (true, Some(info), Some(txid), Some(vout), Some(addr)) => {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-                // Reuse the existing upsert — it accepts a `getnameinfo.info`
+                // Reuse the existing upsert — it accepts the compatibility `info`
                 // payload (the same shape the explorer's `get_name_info_optional`
                 // returns) plus (owner_txid, owner_vout, owner_address).
-                let info_shaped: crate::hsd::types::HsdName = serde_json::from_value(info)
+                let info_shaped: crate::chain::types::ChainName = serde_json::from_value(info)
                     .map_err(|e| {
-                        AppError::Rpc(format!("malformed node getnameinfo for {name}: {e}"))
+                        AppError::Rpc(format!("malformed name evidence for {name}: {e}"))
                     })?;
                 queries::upsert_owned_name(&conn, profile_id, &info_shaped, &txid, vout, &addr)?;
                 queries::mark_asset_finalized_owned(&conn, name, info_shaped.state.as_deref())?;
@@ -294,7 +294,7 @@ async fn repair_owned_names_via_node(
 }
 
 /// Balance read with automatic source selection:
-///   1. If the local hsd node is connected AND fully synced → use the local
+///   1. If the local hsrd node is connected AND fully synced → use the local
 ///      chain cache (authoritative, no network hop).
 ///   2. Otherwise → fall back to the HNSFans explorer over the profile's
 ///      watch addresses.
@@ -368,10 +368,10 @@ pub async fn read_balance(
     }
     if !addrs.is_empty() {
         if let Ok(balance) = client.get_balance(&addrs).await {
-            // `HsdBalance` deserializes from the hsd node's camelCase RPC, so its
+            // `ChainBalance` deserializes from the hsrd node's camelCase RPC, so its
             // Serialize impl also emits camelCase (`lockedConfirmed`). The frontend
             // contract for `read_balance` is snake_case (see the two json! paths
-            // above, src/types HsdBalance, and src/lib/zod.ts), so map explicitly
+            // above, src/types ChainBalance, and src/lib/zod.ts), so map explicitly
             // here — returning the struct verbatim would silently drop the locked
             // fields on the FE. Covered by read_balance_serializes_snake_case.
             return Ok(serde_json::json!({
@@ -579,7 +579,7 @@ pub async fn discover_owned_names(
 
     // 2 + 3. Confirm current ownership (via explorer history, NOT the dead
     // `owner.hash` field) and resolve live state.
-    let mut owned: Vec<(crate::hsd::types::HsdName, String, u32, String)> = Vec::new();
+    let mut owned: Vec<(crate::chain::types::ChainName, String, u32, String)> = Vec::new();
     for name in &candidates {
         sleep(DISCOVERY_THROTTLE).await;
         let resolution = match crate::commands::sync::resolve_owner_via_history(
@@ -616,10 +616,10 @@ pub async fn discover_owned_names(
     Ok(serde_json::json!({ "discovered": owned.len(), "names": names, "partial": partial }))
 }
 
-/// Single-name lookup with live auction state. Prefers the node (`getnameinfo`
+/// Single-name lookup with live auction state. Prefers verified node evidence
 /// is the authoritative source of phase + countdown data, and works on regtest
 /// where there's no explorer), falling back to the HNSFans explorer when no node
-/// is reachable. Both paths normalize to the frontend `HsdName` shape.
+/// is reachable. Both paths normalize to the frontend `ChainName` shape.
 ///
 /// When the node confirms a name exists in the Handshake namespace but has never
 /// been opened on-chain (`info` is null), we synthesize an `AVAILABLE` response
@@ -637,12 +637,12 @@ pub async fn read_name_info(
     };
 
     // Node first — but ONLY when it is fully synced. An unsynced node answers
-    // `getnameinfo` with a stale/partial `state`, which would feed a wrong
+    // a stale/partial name projection, which would feed a wrong
     // `badge.phase` to the modal. Gate on the same sync check as the balance/name
     // reads so an unsynced node falls through to the explorer path below.
-    // `getnameinfo` returns `{ info: { name, state, stats:{…phase…} } }`
+    // Verified evidence projects as `{ info: { name, state, stats:{…phase…} } }`
     // (or null `info` for a name that has never been touched on-chain).
-    let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+    let node = crate::noncustodial::hsrd::HsrdClient::from_settings(&settings);
     if is_node_ready_for_local_reads(&state).await {
         if let Ok(raw) = node.get_name_info(&name).await {
             // The node knows the name — `info` is present and carries auction state.
@@ -654,7 +654,7 @@ pub async fn read_name_info(
             // `info` is null → the name exists in the HNS namespace but has never
             // been opened. Synthesize an AVAILABLE entry so the frontend can offer
             // the "Open auction" action cleanly.
-            return Ok(serde_json::to_value(&crate::hsd::types::HsdName {
+            return Ok(serde_json::to_value(&crate::chain::types::ChainName {
                 name: name.clone(),
                 name_hash: None,
                 state: Some("AVAILABLE".to_string()),
@@ -684,7 +684,7 @@ pub async fn read_name_info(
         Ok(Some(info)) => Ok(serde_json::to_value(&info)?),
         Ok(None) => {
             // Explorer confirms the name is unknown — synthesize AVAILABLE.
-            Ok(serde_json::to_value(&crate::hsd::types::HsdName {
+            Ok(serde_json::to_value(&crate::chain::types::ChainName {
                 name: name.clone(),
                 name_hash: None,
                 state: Some("AVAILABLE".to_string()),
@@ -735,7 +735,7 @@ pub(crate) fn empty_name_bids_response(name: &str) -> serde_json::Value {
 /// without a `txid` (not yet indexed) can never match and is reported with
 /// `mine:false, myValue:null`, but still counts in the returned `bids` array.
 pub(crate) fn merge_name_bids(
-    info: &crate::hsd::types::HsdName,
+    info: &crate::chain::types::ChainName,
     commitments: &[queries::BidCommitmentRow],
     name: &str,
 ) -> serde_json::Value {
@@ -797,7 +797,7 @@ pub(crate) fn merge_name_bids(
 /// competitor's coin. `commitments` MUST be scoped to the resolved profile by
 /// the caller.
 pub(crate) fn merge_indexed_bids(
-    indexed: &[crate::hsd::types::HsdBid],
+    indexed: &[crate::chain::types::ChainBid],
     commitments: &[queries::BidCommitmentRow],
     name: &str,
 ) -> serde_json::Value {
@@ -855,8 +855,8 @@ pub(crate) fn merge_indexed_bids(
 /// reveal a competitor's true value before REVEAL). Read-only; feeds the
 /// auction bids panel inside the name actions modal.
 ///
-/// Node `getnameinfo` has no per-bid array (aggregates only — see
-/// `HsdName.bids` doc), so this always goes through the explorer. Degrades to
+/// Node name evidence has no per-bid array (aggregates only — see
+/// `ChainName.bids` doc), so this always goes through the explorer. Degrades to
 /// an empty response (never an error/panic) when no profile resolves or the
 /// explorer has nothing for the name; a real transport failure still
 /// propagates as `Err`. `wallet_profile_id` pins the read to a specific
@@ -873,42 +873,8 @@ pub async fn read_name_bids(
         None => return Ok(empty_name_bids_response(&name)),
     };
 
-    // Node-only path: when the node is authoritative AND the chain scanner has
-    // indexed past the name's auction height, serve bids from the local
-    // `name_bid_outpoints` table — no HNSFans call. Fall through to the
-    // explorer when the scanner hasn't caught up yet.
-    if is_node_ready_for_local_reads(&state).await {
-        let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name(&name)?);
-        let (indexed_bids, commitments, scanner_height, name_height) = {
-            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-            let indexed = crate::commands::chain_scan::read_indexed_bids(&conn, &name_hash_hex)?;
-            let comms = queries::list_bid_commitments(&conn, &id)?;
-            let cursor_h = crate::commands::chain_scan::scan_cursor_height(&conn);
-            // The name's on-chain height (auction OPEN height) — if we have a
-            // tracked_name_states row, use its `height`; otherwise fall through.
-            let nh: Option<i64> = conn
-                .query_row(
-                    "SELECT height FROM tracked_name_states WHERE wallet_profile_id = ?1 AND name = ?2",
-                    rusqlite::params![id, name],
-                    |r| r.get(0),
-                )
-                .ok()
-                .flatten();
-            (indexed, comms, cursor_h, nh)
-        };
-
-        // Only serve from the index if the scanner has reached the name's
-        // auction height (so we're confident we've seen all BIDs). If the
-        // name_height is unknown (name never opened?), or the scanner hasn't
-        // caught up, fall through to the explorer.
-        let scanner_covers = name_height.map(|nh| scanner_height >= nh).unwrap_or(false);
-
-        if scanner_covers {
-            return Ok(merge_indexed_bids(&indexed_bids, &commitments, &name));
-        }
-    }
-
-    // Explorer fallback (pre-sync or scanner hasn't reached the name yet).
+    // Public per-bid auction inventory remains an optional explorer view. All
+    // wallet-owned evidence and chain decisions come from the sidecar.
     let (client, commitments) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
@@ -939,7 +905,7 @@ pub(crate) fn records_from_resource(resource: &serde_json::Value) -> Vec<serde_j
         .unwrap_or_default()
 }
 
-/// Current DNS *resource* for a name, read from the local hsd node
+/// Current DNS *resource* for a name, read from the local hsrd node
 /// (`getnameresource`). Node-only: the HNSFans explorer does not return
 /// resource records, and UPDATE requires a synced node anyway.
 ///
@@ -980,9 +946,9 @@ pub async fn read_name_records(
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             queries::get_settings(&conn)?
         };
-        let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+        let node = crate::noncustodial::hsrd::HsrdClient::from_settings(&settings);
         if let Ok(res) = node.get_name_resource(&name).await {
-            // hsd's `getnameresource` returns `null` (not an object) when a
+            // hsrd's `getnameresource` returns `null` (not an object) when a
             // name has no resource. Normalize to the uniform empty shape so
             // frontends can always index `.records` safely.
             if res.is_null() {
@@ -997,7 +963,7 @@ pub async fn read_name_records(
                 }
                 return Ok(serde_json::Value::Object(map));
             }
-            // Non-object, non-null (shouldn't happen with real hsd) —
+            // Non-object, non-null (shouldn't happen with real hsrd) —
             // degrade rather than surface a surprise shape.
             return Ok(empty_resource());
         }
@@ -1005,105 +971,31 @@ pub async fn read_name_records(
     Ok(empty_resource())
 }
 
-/// Compact block details for the in-app Block Info modal, read from the local
-/// hsd node (`getblockhash` → `getblock`). Node-only: the explorer path does
-/// not expose block internals, so this soft-degrades to `null` whenever no
-/// synced node is reachable (the frontend renders a "requires synced node"
-/// state rather than surfacing an error). Mirrors the graceful-degrade
-/// contract of [`read_name_records`].
-///
-/// Returns `{ height, hash, time, txCount, minerReward, difficulty }` where
-/// `minerReward` is the sum of the coinbase (first tx) output values in doos.
+/// Block internals are deliberately outside authenticated wallet RPC v1.
+/// Keep the existing frontend command ABI, but return `null` instead of
+/// falling back to an unauthenticated or backend-specific block interface.
 #[tauri::command]
 pub async fn read_block_info(
-    state: State<'_, AppState>,
-    height: i64,
+    _state: State<'_, AppState>,
+    _height: i64,
 ) -> Result<serde_json::Value, AppError> {
-    // Node-only: without a synced local node there's nothing to read. Soft-
-    // degrade to null so the modal can show a "requires synced node" hint.
-    if height < 0 || !is_node_ready_for_local_reads(&state).await {
-        return Ok(serde_json::Value::Null);
-    }
-
-    // Read settings under a short lock, then drop the guard BEFORE the async
-    // RPC calls — never hold the DB mutex across an .await.
-    let settings = {
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        queries::get_settings(&conn)?
-    };
-    let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
-
-    // getblockhash(height) → getblock(hash, verbose, verboseTx). Any RPC
-    // failure (node fell over mid-read, height beyond tip) soft-degrades.
-    let hash = match node.get_block_hash(height).await {
-        Ok(h) => h,
-        Err(_) => return Ok(serde_json::Value::Null),
-    };
-    let block = match node.get_block(&hash).await {
-        Ok(b) => b,
-        Err(_) => return Ok(serde_json::Value::Null),
-    };
-
-    // hsd verbose block: { hash, height, time, difficulty, tx: [ { outputs:
-    // [ { value } ] }, ... ] }. The coinbase is tx[0]; its outputs sum to the
-    // miner reward (subsidy + fees). Guard every access — a missing/short
-    // array yields a 0 reward rather than a panic.
-    let txs = block.get("tx").and_then(|v| v.as_array());
-    let tx_count = txs.map(|a| a.len()).unwrap_or(0);
-    let miner_reward: i64 = txs
-        .and_then(|a| a.first())
-        .and_then(|coinbase| coinbase.get("outputs"))
-        .and_then(|o| o.as_array())
-        .map(|outs| {
-            outs.iter()
-                .filter_map(|out| out.get("value").and_then(|v| v.as_i64()))
-                .sum()
-        })
-        .unwrap_or(0);
-
-    let block_height = block
-        .get("height")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(height);
-    let time = block.get("time").and_then(|v| v.as_i64()).unwrap_or(0);
-    let difficulty = block
-        .get("difficulty")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-
-    Ok(serde_json::json!({
-        "height": block_height,
-        "hash": hash,
-        "time": time,
-        "txCount": tx_count,
-        "minerReward": miner_reward,
-        "difficulty": difficulty,
-    }))
+    Ok(serde_json::Value::Null)
 }
 
 /// Compact transaction details for the in-app Transaction Info modal, read
-/// from the local hsd node via the REST `GET /tx/:hash` route. Node-only.
-///
-/// **Why REST, not `getrawtransaction`:** the JSON-RPC verbose path can't
-/// resolve prevouts for a confirmed tx whose inputs are already spent (those
-/// UTXOs left the coin set), so it omits `fee` and `inputs[].coin`. The REST
-/// route resolves them through the tx-index, giving a reliable fee even for
-/// old txs. Mirrors [`read_block_info`].
+/// from authenticated, proof-bound wallet RPC v1 transaction evidence.
 ///
 /// Returns `{ txid, confirmations, height, block, time, fee, inputsCount,
-/// outputsCount, totalOut }`. **hsd emits all tx amounts as integer
-/// dollarydoos** (matches `NodeCoin.value: i64` at `rpc.rs:561` and the
-/// canonical extractors at `db/queries.rs:1854` and `commands/history.rs:123`
-/// — no HNS-float conversion anywhere in the hsd RPC path).
+/// outputsCount, totalOut }`. Amounts are integer dollarydoos throughout.
 ///
 /// Tri-state return:
 /// - the full tx object (normal case);
-/// - `{ "error": "tx_index_disabled" }` when the node lacks `--index-tx`
-///   (the modal renders a distinct "enable --index-tx" hint);
+/// - `{ "error": "wallet_index_unavailable" }` when wallet evidence is not
+///   available yet;
 /// - `Null` for any other soft-degrade (no synced node, unknown tx, generic
 ///   RPC failure) → the modal shows "requires synced node".
 ///
-/// `fee` is nullable within the tx object: we use hsd's top-level `fee` when
+/// `fee` is nullable within the tx object: we use hsrd's top-level `fee` when
 /// present, else compute `Σ inputs[].coin.value − Σ outputs[].value`. It's
 /// `null` only for genuine coinbase txs (no real inputs) — rendered as `—`,
 /// an honest "unknown" rather than a misleading `0`.
@@ -1123,23 +1015,21 @@ pub async fn read_tx_info(
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         queries::get_settings(&conn)?
     };
-    let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+    let node = crate::noncustodial::hsrd::HsrdClient::from_settings(&settings);
 
-    // REST GET /tx/:hash — resolves spent prevouts via the tx-index, so
-    // `fee` and `inputs[].coin` are populated even for old confirmed txs.
+    // The client verifies the response envelope, request binding, payload
+    // hash, canonical transaction bytes, and inclusion evidence before this
+    // projection reaches the UI.
     let tx = match node.get_tx_by_hash(&txid).await {
         Ok(t) if !t.is_null() => t,
         Ok(_) => return Ok(serde_json::Value::Null), // 404 / miss
-        Err(AppError::Rpc(msg)) if msg.to_ascii_lowercase().contains("tx index not enabled") => {
-            // Distinct signal: the node responds but lacks --index-tx. The
-            // modal renders a "tx index required" hint rather than the
-            // misleading "requires synced node" message.
-            return Ok(serde_json::json!({ "error": "tx_index_disabled" }));
+        Err(AppError::Rpc(msg)) if msg.to_ascii_lowercase().contains("wallet index") => {
+            return Ok(serde_json::json!({ "error": "wallet_index_unavailable" }));
         }
         Err(_) => return Ok(serde_json::Value::Null), // generic degrade
     };
 
-    // REST tx shape: { hash, confirmations, height, block, time,
+    // Evidence projection: { hash, confirmations, height, block, time,
     //                  fee (integer doos), inputs: [ { coin: { value } } ],
     //                  outputs: [ { value (doos) } ] }
     // Guard every access; all amount extraction uses .as_i64().
@@ -1187,13 +1077,13 @@ pub async fn read_tx_info(
     }))
 }
 
-/// Extract the fee and total output value from an hsd `getrawtransaction`
-/// verbose response. Pure — no state, no lock, no RPC — so it's the seam we
+/// Extract the fee and total output value from an authenticated transaction
+/// evidence projection. Pure — no state, no lock, no RPC — so it's the seam we
 /// unit-test the fee logic through.
 ///
 /// Returns `(fee, total_out)` where both are in doos and `fee` is `None` when
-/// hsd's top-level `fee` is absent AND we can't recover it from the input
-/// coins (e.g. coinbase txs, or when hsd's `inputs[].coin.value` isn't fully
+/// hsrd's top-level `fee` is absent AND we can't recover it from the input
+/// coins (e.g. coinbase txs, or when hsrd's `inputs[].coin.value` isn't fully
 /// resolved). `None` intentionally propagates to the JSON as `null`, which
 /// the frontend renders as `—` — an honest "unknown" beats a misleading `0`.
 pub(crate) fn compute_tx_fee_and_total(tx: &serde_json::Value) -> (Option<i64>, i64) {
@@ -1209,7 +1099,7 @@ pub(crate) fn compute_tx_fee_and_total(tx: &serde_json::Value) -> (Option<i64>, 
         })
         .unwrap_or(0);
 
-    // Try hsd's top-level `fee` first (integer doos when present).
+    // Try hsrd's top-level `fee` first (integer doos when present).
     if let Some(f) = tx.get("fee").and_then(|v| v.as_i64()).filter(|d| *d >= 0) {
         return (Some(f), total_out);
     }
@@ -1217,7 +1107,7 @@ pub(crate) fn compute_tx_fee_and_total(tx: &serde_json::Value) -> (Option<i64>, 
     // Otherwise compute from resolved input coins:
     //   fee = Σ inputs[].coin.value − Σ outputs[].value
     // Bail (return None) if any input lacks a resolved `coin.value` — that
-    // covers coinbase txs and any partial hsd response.
+    // covers coinbase txs and any partial hsrd response.
     let fee = tx
         .get("inputs")
         .and_then(|v| v.as_array())
@@ -1247,7 +1137,7 @@ mod tx_fee_tests {
     use serde_json::json;
 
     #[test]
-    fn uses_hsd_top_level_fee_when_present() {
+    fn uses_hsrd_top_level_fee_when_present() {
         let tx = json!({
             "fee": 1200,
             "inputs": [
@@ -1261,9 +1151,9 @@ mod tx_fee_tests {
     }
 
     #[test]
-    fn computes_fee_from_input_coins_when_hsd_fee_missing() {
-        // Common case: hsd omits `fee` on `getrawtransaction` verbose but
-        // gives us all input coins. fee = (500 + 400) − (600 + 200) = 100.
+    fn computes_fee_from_input_coins_when_hsrd_fee_missing() {
+        // If evidence omits the explicit fee but resolves all input coins,
+        // fee = (500 + 400) − (600 + 200) = 100.
         let tx = json!({
             "inputs": [
                 { "coin": { "value": 500 } },
@@ -1295,7 +1185,7 @@ mod tx_fee_tests {
     }
 
     #[test]
-    fn negative_hsd_fee_falls_through_to_computation() {
+    fn negative_hsrd_fee_falls_through_to_computation() {
         // Defensive: a negative top-level fee (shouldn't happen but guard it)
         // is ignored, and we recompute from coins.
         let tx = json!({
@@ -1397,8 +1287,8 @@ pub(crate) fn estimate_persisted_height(
         }
     };
 
-    // Per-name stats snapshots. raw_json is either the explorer HsdName shape
-    // (stats at the root) or the node getnameinfo result ({"info": {...}}).
+    // Per-name stats snapshots. raw_json is either the explorer ChainName shape
+    // (stats at the root) or the node evidence projection ({"info": {...}}).
     let mut stmt = conn.prepare(
         "SELECT raw_json,
                 CAST((strftime('%s','now') - strftime('%s', updated_at)) / 600 AS INTEGER)
@@ -1748,7 +1638,7 @@ pub async fn repair_owned_names(state: State<'_, AppState>) -> Result<serde_json
         None => return Ok(serde_json::json!({"repaired":0,"discovered":0,"errors":[]})),
     };
 
-    // Node-only path: when the node is authoritative, `getnameinfo`'s
+    // Node-only path: when the node is authoritative, its proof-bound
     // `owner:{hash,index}` IS the current owner outpoint — no explorer history
     // crawl needed. We iterate the same candidate set (inventory TLDs + tracked
     // names) but resolve state and ownership directly against the node.

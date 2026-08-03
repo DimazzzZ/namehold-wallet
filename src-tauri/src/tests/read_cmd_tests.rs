@@ -10,13 +10,13 @@ use rusqlite::params;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
+use crate::chain::types::{ChainBid, ChainName};
 use crate::commands::read::{
     compare_inventory_with_provider, discover_owned_names, empty_name_bids_response,
     merge_name_bids, read_auction_position_names, read_balance, read_name_bids, read_name_info,
     read_name_records, read_names, read_transactions, records_from_resource,
 };
 use crate::db;
-use crate::hsd::types::{HsdBid, HsdName};
 use crate::AppState;
 
 // ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsrd_child: std::sync::Mutex::new(None),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
             )),
@@ -775,10 +775,10 @@ async fn auction_positions_distinct_open_and_bid_same_name() {
 // read_name_bids / merge_name_bids — helpers
 // ---------------------------------------------------------------------------
 
-/// A minimal `HsdName` carrying only `bids` + the aggregate fields
+/// A minimal `ChainName` carrying only `bids` + the aggregate fields
 /// `merge_name_bids` passes through verbatim.
-fn hsd_name_with_bids(name: &str, bids: Vec<HsdBid>) -> HsdName {
-    HsdName {
+fn hsrd_name_with_bids(name: &str, bids: Vec<ChainBid>) -> ChainName {
+    ChainName {
         name: name.to_string(),
         name_hash: None,
         state: Some("REVEAL".to_string()),
@@ -796,8 +796,8 @@ fn hsd_name_with_bids(name: &str, bids: Vec<HsdBid>) -> HsdName {
     }
 }
 
-fn hsd_bid(txid: Option<&str>) -> HsdBid {
-    HsdBid {
+fn hsrd_bid(txid: Option<&str>) -> ChainBid {
+    ChainBid {
         txid: txid.map(|s| s.to_string()),
         index: Some(0),
         lockup: Some(2_000_000),
@@ -840,7 +840,7 @@ fn bid_commitment_row(
 
 #[test]
 fn merge_name_bids_matched_txid_is_mine_with_plaintext_value() {
-    let info = hsd_name_with_bids("foo", vec![hsd_bid(Some("txA")), hsd_bid(Some("txB"))]);
+    let info = hsrd_name_with_bids("foo", vec![hsrd_bid(Some("txA")), hsrd_bid(Some("txB"))]);
     let commitments = vec![bid_commitment_row("foo", "txA", 1_500_000)];
 
     let val = merge_name_bids(&info, &commitments, "foo");
@@ -864,7 +864,7 @@ fn merge_name_bids_matched_txid_is_mine_with_plaintext_value() {
 fn merge_name_bids_commitment_for_another_name_does_not_mark_mine() {
     // Same txid, but the commitment belongs to a DIFFERENT name — must not
     // mark the bid as mine even though the txid matches exactly.
-    let info = hsd_name_with_bids("foo", vec![hsd_bid(Some("txA"))]);
+    let info = hsrd_name_with_bids("foo", vec![hsrd_bid(Some("txA"))]);
     let commitments = vec![bid_commitment_row("othername", "txA", 1_500_000)];
 
     let val = merge_name_bids(&info, &commitments, "foo");
@@ -876,7 +876,7 @@ fn merge_name_bids_commitment_for_another_name_does_not_mark_mine() {
 
 #[test]
 fn merge_name_bids_bid_without_txid_never_matches() {
-    let info = hsd_name_with_bids("foo", vec![hsd_bid(None)]);
+    let info = hsrd_name_with_bids("foo", vec![hsrd_bid(None)]);
     let commitments = vec![bid_commitment_row("foo", "txA", 1_500_000)];
 
     let val = merge_name_bids(&info, &commitments, "foo");
@@ -889,7 +889,7 @@ fn merge_name_bids_bid_without_txid_never_matches() {
 
 #[test]
 fn merge_name_bids_no_bids_yields_empty_array_and_zero_count() {
-    let info = hsd_name_with_bids("foo", vec![]);
+    let info = hsrd_name_with_bids("foo", vec![]);
     let val = merge_name_bids(&info, &[], "foo");
     assert_eq!(val["bids"], serde_json::json!([]));
     assert_eq!(val["myBidCount"], 0);
@@ -897,9 +897,9 @@ fn merge_name_bids_no_bids_yields_empty_array_and_zero_count() {
 
 #[test]
 fn merge_name_bids_none_bids_on_info_yields_empty_array() {
-    // `info.bids == None` (e.g. a node-sourced HsdName, or an explorer entry
+    // `info.bids == None` (e.g. a node-sourced ChainName, or an explorer entry
     // with no `bids` key at all) must degrade to an empty array, not panic.
-    let mut info = hsd_name_with_bids("foo", vec![]);
+    let mut info = hsrd_name_with_bids("foo", vec![]);
     info.bids = None;
     let val = merge_name_bids(&info, &[], "foo");
     assert_eq!(val["bids"], serde_json::json!([]));
@@ -1055,66 +1055,6 @@ async fn read_name_bids_per_wallet_isolation() {
 }
 
 // ---------------------------------------------------------------------------
-// read_name_bids — node synced but scanner hasn't reached the name's auction
-// height yet → fall through to the explorer (don't serve an empty local index)
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn read_name_bids_falls_through_to_explorer_when_scanner_behind() {
-    let mut server = mockito::Server::new_async().await;
-    // Node reports fully synced so the node-first branch is entered.
-    let _node = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(
-            r#"{"result":{"blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
-        )
-        .expect_at_least(1)
-        .create_async()
-        .await;
-    // Explorer returns a bid the local index does NOT have.
-    let _explorer = server
-        .mock("GET", "/api/names/behindname")
-        .with_status(200)
-        .with_body(
-            r#"{"name":"behindname","state":"BIDDING","highest":4200000,
-                "bids":[{"txid":"txExplorer","index":0,"lockup":4200000}]}"#,
-        )
-        .create_async()
-        .await;
-
-    let conn = empty_db();
-    add_profile(&conn, "W1", "regtest");
-    db::queries::set_active_profile(&conn, "W1").unwrap();
-    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
-    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
-    // Name opened at height 900; scanner cursor left at 100 → scanner has NOT
-    // reached the auction, so scanner_covers is false and we fall through.
-    conn.execute(
-        "INSERT INTO tracked_name_states
-            (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, height)
-         VALUES ('W1', 'behindname', '', 'BIDDING', NULL, NULL, 900)",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "UPDATE chain_scan_cursor SET last_height = 100 WHERE id = 1",
-        [],
-    )
-    .unwrap();
-
-    let app = app_with(conn);
-    let val = read_name_bids(app.state(), "behindname".into(), Some("W1".into()))
-        .await
-        .unwrap();
-    // Served from the explorer fallback, not the (empty) local index.
-    let bids = val["bids"].as_array().expect("bids array");
-    assert_eq!(bids.len(), 1);
-    assert_eq!(bids[0]["txid"], "txExplorer");
-    assert_eq!(val["highest"], 4_200_000);
-}
-
-// ---------------------------------------------------------------------------
 // records_from_resource — pure helper (Manage DNS: current records prefill)
 // ---------------------------------------------------------------------------
 
@@ -1136,7 +1076,7 @@ fn records_from_resource_extracts_array() {
 fn records_from_resource_handles_null_missing_and_non_array() {
     // `records` absent → empty.
     assert!(records_from_resource(&serde_json::json!({})).is_empty());
-    // `records: null` (hsd shape for a name with no resource) → empty.
+    // `records: null` (hsrd shape for a name with no resource) → empty.
     assert!(records_from_resource(&serde_json::json!({ "records": null })).is_empty());
     // Non-object top-level (e.g. a literal null from a name that was never
     // opened) → empty; must not panic.

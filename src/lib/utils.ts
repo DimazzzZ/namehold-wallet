@@ -215,12 +215,12 @@ export function truncateMiddle(s: string, head = 8, tail = 6): string {
 }
 
 /**
- * Normalize a user-typed name into a form suitable for hsd name lookups.
+ * Normalize a user-typed name into a form suitable for hsrd name lookups.
  *
  * - trims whitespace
  * - lowercases
  * - strips a leading `.` (users sometimes type `.example`)
- * - strips a trailing `.hsd` suffix (common TLD confusion)
+ * - strips a trailing `.hsrd` suffix (common TLD confusion)
  * - collapses repeated dots
  *
  * Returns an empty string when the input is blank after normalization.
@@ -230,8 +230,8 @@ export function normalizeNameInput(raw: string): string {
   if (!name) return "";
   // Strip leading dot: ".example" → "example"
   name = name.replace(/^\.+/, "");
-  // Strip trailing .hsd suffix: "example.hsd" → "example"
-  name = name.replace(/\.hsd$/i, "");
+  // Strip trailing .hsrd suffix: "example.hsrd" → "example"
+  name = name.replace(/\.hsrd$/i, "");
   // Keep only valid Handshake name characters: a-z, 0-9, hyphens, dots
   name = name.replace(/[^a-z0-9.\-]/g, "");
   // Collapse repeated dots: "a..b" → "a.b"
@@ -248,7 +248,7 @@ export function normalizeNameInput(raw: string): string {
  * Like `normalizeNameInput`, this:
  * - lowercases
  * - strips a leading `.` (users sometimes type `.example`)
- * - strips a trailing `.hsd` suffix (common TLD confusion)
+ * - strips a trailing `.hsrd` suffix (common TLD confusion)
  * - collapses repeated dots
  *
  * UNLIKE `normalizeNameInput`, this preserves and encodes Unicode characters
@@ -263,8 +263,8 @@ export function normalizeNameInputAce(raw: string): string {
   if (!name) return "";
   // Strip leading dot: ".example" → "example"
   name = name.replace(/^\.+/, "");
-  // Strip trailing .hsd suffix: "example.hsd" → "example"
-  name = name.replace(/\.hsd$/i, "");
+  // Strip trailing .hsrd suffix: "example.hsrd" → "example"
+  name = name.replace(/\.hsrd$/i, "");
   // Strip characters that are invalid in Handshake names: keep Unicode letters,
   // digits, hyphens, underscores, and dots (for multi-label names). This
   // preserves Cyrillic/CJK/etc. for encoding, while stripping spaces, punctuation, etc.

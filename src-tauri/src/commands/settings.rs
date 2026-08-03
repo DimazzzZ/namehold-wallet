@@ -12,7 +12,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<serde_json::Valu
     // only consumed by backend commands). Emit a "__has_<key>": "true" marker
     // so the UI can still show "configured" without seeing the value.
     for &key in security::SENSITIVE_SETTING_KEYS {
-        if settings.remove(key).is_some() {
+        if settings.remove(key).is_some_and(|value| !value.is_empty()) {
             settings.insert(format!("__has_{key}"), "true".to_string());
         }
     }
@@ -96,6 +96,6 @@ mod tests {
     fn write_denylist_covers_namebase_base_url() {
         assert!(security::is_renderer_write_denied("namebase_base_url"));
         assert!(security::is_renderer_write_denied("namebase_cookie"));
-        assert!(!security::is_renderer_write_denied("node_rpc_api_key"));
+        assert!(!security::is_renderer_write_denied("hsrd_authorization"));
     }
 }

@@ -1,10 +1,10 @@
-// Convert a simple {type, ...fields} row editor into the hsd resource-record
+// Convert a simple {type, ...fields} row editor into the hsrd resource-record
 // array that `build_register_draft` / `build_update_draft` accept (the same
 // shape the raw-JSON textarea used, e.g. `[{"type":"TXT","txt":["…"]}, …]`).
 //
 // The record-type set mirrors what the Rust backend (`resource.rs::encode`)
 // actually supports for Handshake root-zone resources. A/AAAA/CNAME are NOT
-// valid hsd record types — the backend rejects them, so they are intentionally
+// valid hsrd record types — the backend rejects them, so they are intentionally
 // absent here.
 
 export type DnsRecordType = "DS" | "NS" | "GLUE4" | "GLUE6" | "SYNTH4" | "SYNTH6" | "TXT";
@@ -54,7 +54,7 @@ export function valuePlaceholder(type: DnsRecordType): string {
   }
 }
 
-/** Serialize one row to its hsd record object (null if required fields are blank). */
+/** Serialize one row to its hsrd record object (null if required fields are blank). */
 export function rowToRecord(row: DnsRow): Record<string, unknown> | null {
   switch (row.type) {
     case "TXT": {
@@ -107,10 +107,10 @@ export function rowsToRecords(rows: DnsRow[]): Record<string, unknown>[] | null 
 }
 
 // ---------------------------------------------------------------------------
-// Inverse: hsd record → editor row (for prefilling current records from node)
+// Inverse: hsrd record → editor row (for prefilling current records from node)
 // ---------------------------------------------------------------------------
 
-/** Convert a single hsd record object back into an editor row. Returns `null`
+/** Convert a single hsrd record object back into an editor row. Returns `null`
  *  for unrecognized types (they're silently dropped from the row editor; the
  *  user can still see/edit them in the raw-JSON Advanced mode). */
 export function recordToRow(rec: Record<string, unknown>): DnsRow | null {
@@ -145,7 +145,7 @@ export function recordToRow(rec: Record<string, unknown>): DnsRow | null {
   }
 }
 
-/** Convert an array of hsd records into editor rows, dropping unknown types. */
+/** Convert an array of hsrd records into editor rows, dropping unknown types. */
 export function recordsToRows(records: Record<string, unknown>[]): DnsRow[] {
   return records.map(recordToRow).filter((r): r is DnsRow => r !== null);
 }

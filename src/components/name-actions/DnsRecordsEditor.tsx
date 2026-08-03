@@ -12,7 +12,7 @@ import {
  * Rows state lives in the orchestrator; the two call sites only differ in their
  * data-testids, switched by `variant`.
  *
- * Field layout depends on the row's record type (Task 2 — real hsd type set):
+ * Field layout depends on the row's record type (Task 2 — real hsrd type set):
  *  - TXT / NS / SYNTH4 / SYNTH6: a single value input.
  *  - GLUE4 / GLUE6: two inputs (nameserver + address).
  *  - DS: four inputs (keyTag, algorithm, digestType, digest).

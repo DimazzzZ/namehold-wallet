@@ -7,7 +7,7 @@ pub fn create_test_db() -> Connection {
         .unwrap();
     let sql = include_str!("../../../src-tauri/src/sql/001_initial.sql");
     conn.execute_batch(sql).unwrap();
-    let sql2 = include_str!("../../../src-tauri/src/sql/002_hsd_prefix.sql");
+    let sql2 = include_str!("../../../src-tauri/src/sql/002_hsrd_data_dir.sql");
     conn.execute_batch(sql2).unwrap();
     let sql3 = include_str!("../../../src-tauri/src/sql/003_provider_modes.sql");
     conn.execute_batch(sql3).unwrap();
@@ -20,7 +20,7 @@ pub fn create_test_state() -> crate::AppState {
         db: Mutex::new(conn),
         signer: Mutex::new(None),
         secure_prompts: Mutex::new(std::collections::HashMap::new()),
-        hsd_child: Mutex::new(None),
+        hsrd_child: Mutex::new(None),
         sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
             crate::commands::sync::SyncStatus::default(),
         )),

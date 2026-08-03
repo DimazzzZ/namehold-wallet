@@ -18,12 +18,12 @@ fn setup_db() -> Connection {
 fn test_settings_crud() {
     let conn = setup_db();
     let settings = crate::db::queries::get_settings(&conn).unwrap();
-    assert!(settings.contains_key("hsd_wallet_api_url"));
-    assert_eq!(settings["hsd_wallet_api_url"], "http://127.0.0.1:12039");
+    assert!(settings.contains_key("hsrd_rpc_url"));
+    assert_eq!(settings["hsrd_rpc_url"], "http://127.0.0.1:12037");
 
-    crate::db::queries::set_setting(&conn, "hsd_wallet_api_url", "http://127.0.0.1:14039").unwrap();
+    crate::db::queries::set_setting(&conn, "hsrd_rpc_url", "http://127.0.0.1:14037").unwrap();
     let settings = crate::db::queries::get_settings(&conn).unwrap();
-    assert_eq!(settings["hsd_wallet_api_url"], "http://127.0.0.1:14039");
+    assert_eq!(settings["hsrd_rpc_url"], "http://127.0.0.1:14037");
 
     crate::db::queries::set_setting(&conn, "new_key", "new_value").unwrap();
     let settings = crate::db::queries::get_settings(&conn).unwrap();

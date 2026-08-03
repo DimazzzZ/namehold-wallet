@@ -1,8 +1,8 @@
-//! hsd-compatible "sign message with name" — proves ownership of a wallet
+//! hsrd-compatible "sign message with name" — proves ownership of a wallet
 //! key (e.g. the one that owns a name) by signing arbitrary text, for
 //! third-party verification flows such as Namebase's domain-claim process.
 //!
-//! Verified against hsd master source:
+//! Verified against hsrd master source:
 //!   - `lib/wallet/wallet.js` `signMessageWithName` / `signMessage`, which
 //!     call into `lib/utils/message.js` `sign(msg, key)`:
 //!       `const hash = Message.hash(msg);` then
@@ -20,10 +20,10 @@
 //!     detail, not part of message signing) and no recovery id (this is NOT
 //!     a recoverable signature).
 //!
-//! The output is base64(sig_64_bytes), matching what hsd's RPC
+//! The output is base64(sig_64_bytes), matching what hsrd's RPC
 //! `signmessagewithname` / `signmessage` returns.
 
-// Module doc quotes hsd source with deep prose indentation; clippy misreads the
+// Module doc quotes hsrd source with deep prose indentation; clippy misreads the
 // continuation lines as over-indented markdown list items. Keep the citations
 // readable and silence the lint.
 #![allow(clippy::doc_overindented_list_items)]
@@ -33,11 +33,11 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use secp256k1::{Message, Secp256k1, SecretKey};
 
-/// hsd's message-signing magic prefix (`${pkg.currency} signed message:\n`
+/// hsrd's message-signing magic prefix (`${pkg.currency} signed message:\n`
 /// with currency = "handshake").
 pub const MESSAGE_MAGIC: &[u8] = b"handshake signed message:\n";
 
-/// The exact preimage hsd hashes before signing: `MAGIC || utf8(text)`.
+/// The exact preimage hsrd hashes before signing: `MAGIC || utf8(text)`.
 pub fn message_preimage(text: &str) -> Vec<u8> {
     let mut preimage = Vec::with_capacity(MESSAGE_MAGIC.len() + text.len());
     preimage.extend_from_slice(MESSAGE_MAGIC);
@@ -45,7 +45,7 @@ pub fn message_preimage(text: &str) -> Vec<u8> {
     preimage
 }
 
-/// Sign `text` with `secret`, reproducing hsd's `signmessagewithname` /
+/// Sign `text` with `secret`, reproducing hsrd's `signmessagewithname` /
 /// `signmessage` byte-for-byte: base64 of a 64-byte compact (low-S) ECDSA
 /// signature over `blake2b256(MAGIC || text)`. Pure — no session, no DB, no
 /// I/O — so it's directly testable against known vectors.
@@ -93,7 +93,7 @@ mod tests {
 
     /// Round-trip: sign with a known key, base64-decode, and verify against
     /// the derived compressed pubkey over the same preimage hash. Proves the
-    /// helper produces a valid, verifiable signature over hsd's exact digest.
+    /// helper produces a valid, verifiable signature over hsrd's exact digest.
     #[test]
     fn sign_handshake_message_round_trips_through_verification() {
         let secret = test_secret();
@@ -107,7 +107,7 @@ mod tests {
         assert_eq!(
             sig_bytes.len(),
             64,
-            "hsd compact signatures are 64 bytes, non-recoverable"
+            "hsrd compact signatures are 64 bytes, non-recoverable"
         );
 
         let sig = secp256k1::ecdsa::Signature::from_compact(&sig_bytes).expect("valid compact sig");
@@ -128,7 +128,7 @@ mod tests {
     }
 
     /// Signing is deterministic (RFC 6979) — repeated calls with the same
-    /// key+message reproduce the identical base64 signature, matching hsd
+    /// key+message reproduce the identical base64 signature, matching hsrd
     /// (bcrypto's secp256k1.sign is also RFC-6979 deterministic).
     #[test]
     fn signing_is_deterministic() {

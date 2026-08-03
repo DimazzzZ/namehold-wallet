@@ -1,7 +1,6 @@
 pub mod assets;
 pub mod batches;
 pub mod bids;
-pub mod chain_scan;
 pub mod csv;
 pub mod daemon_ctl;
 pub mod deadlines;

@@ -1,4 +1,4 @@
-//! Handshake DNS `Resource` encode/decode, verified against hsd v6.1.1
+//! Handshake DNS `Resource` encode/decode, verified against hsrd v6.1.1
 //! `lib/dns/resource.js` + `lib/dns/common.js`.
 //!
 //! Wire format: `u8(version=0)` then, for each record, `u8(type)` + the
@@ -6,7 +6,7 @@
 //! (`hsTypes`): DS=0, NS=1, GLUE4=2, GLUE6=3, SYNTH4=4, SYNTH6=5, TXT=6.
 //!
 //! Domain names use the bns label encoding (`u8(len)+label …` terminated by a
-//! 0 byte). We emit them UNCOMPRESSED, which hsd's reader accepts.
+//! 0 byte). We emit them UNCOMPRESSED, which hsrd's reader accepts.
 //!
 //! Records are exchanged with the frontend as JSON objects matching Bob
 //! Wallet's shape, e.g. `{"type":"TXT","txt":["hello"]}`,
@@ -51,23 +51,6 @@ fn write_name(out: &mut Vec<u8>, name: &str) -> Result<(), AppError> {
     }
     out.push(0);
     Ok(())
-}
-
-fn read_name(buf: &[u8], pos: &mut usize) -> Result<String, AppError> {
-    let mut labels = Vec::new();
-    loop {
-        let len = *buf.get(*pos).ok_or_else(|| err("truncated name"))? as usize;
-        *pos += 1;
-        if len == 0 {
-            break;
-        }
-        if len > 63 || *pos + len > buf.len() {
-            return Err(err("bad DNS label"));
-        }
-        labels.push(String::from_utf8_lossy(&buf[*pos..*pos + len]).to_string());
-        *pos += len;
-    }
-    Ok(format!("{}.", labels.join(".")))
 }
 
 fn write_ipv4(out: &mut Vec<u8>, s: &str) -> Result<(), AppError> {
@@ -188,7 +171,9 @@ pub fn encode(records: &[serde_json::Value]) -> Result<Vec<u8>, AppError> {
             other => return Err(err(format!("unsupported record type '{other}'"))),
         }
     }
-    Ok(out)
+    hns_covenants::Resource::new(out)
+        .map(hns_covenants::Resource::into_bytes)
+        .map_err(|error| err(format!("invalid canonical name resource: {error}")))
 }
 
 /// Decode raw Resource bytes to a list of record JSON objects.
@@ -196,93 +181,65 @@ pub fn decode(buf: &[u8]) -> Result<Vec<serde_json::Value>, AppError> {
     if buf.is_empty() {
         return Ok(Vec::new()); // EMPTY covenant item = no resource
     }
-    if buf[0] != VERSION {
-        return Err(err("unsupported resource version"));
-    }
-    let mut pos = 1usize;
-    let mut records = Vec::new();
-    while pos < buf.len() {
-        let kind = buf[pos];
-        pos += 1;
-        match kind {
-            TYPE_TXT => {
-                let count = *buf.get(pos).ok_or_else(|| err("truncated TXT"))? as usize;
-                pos += 1;
-                let mut txt = Vec::new();
-                for _ in 0..count {
-                    let len = *buf.get(pos).ok_or_else(|| err("truncated TXT string"))? as usize;
-                    pos += 1;
-                    if pos + len > buf.len() {
-                        return Err(err("truncated TXT bytes"));
-                    }
-                    txt.push(String::from_utf8_lossy(&buf[pos..pos + len]).to_string());
-                    pos += len;
-                }
-                records.push(serde_json::json!({ "type": "TXT", "txt": txt }));
-            }
-            TYPE_NS => {
-                let ns = read_name(buf, &mut pos)?;
-                records.push(serde_json::json!({ "type": "NS", "ns": ns }));
-            }
-            TYPE_GLUE4 | TYPE_GLUE6 => {
-                let ns = read_name(buf, &mut pos)?;
-                let (label, n) = if kind == TYPE_GLUE4 {
-                    ("GLUE4", 4)
-                } else {
-                    ("GLUE6", 16)
-                };
-                if pos + n > buf.len() {
-                    return Err(err("truncated glue IP"));
-                }
-                let addr = read_ip(&buf[pos..pos + n]);
-                pos += n;
-                records.push(serde_json::json!({ "type": label, "ns": ns, "address": addr }));
-            }
-            TYPE_SYNTH4 | TYPE_SYNTH6 => {
-                let (label, n) = if kind == TYPE_SYNTH4 {
-                    ("SYNTH4", 4)
-                } else {
-                    ("SYNTH6", 16)
-                };
-                if pos + n > buf.len() {
-                    return Err(err("truncated synth IP"));
-                }
-                let addr = read_ip(&buf[pos..pos + n]);
-                pos += n;
-                records.push(serde_json::json!({ "type": label, "address": addr }));
-            }
-            TYPE_DS => {
-                if pos + 5 > buf.len() {
-                    return Err(err("truncated DS"));
-                }
-                let key_tag = u16::from_be_bytes([buf[pos], buf[pos + 1]]);
-                let algorithm = buf[pos + 2];
-                let digest_type = buf[pos + 3];
-                let dlen = buf[pos + 4] as usize;
-                pos += 5;
-                if pos + dlen > buf.len() {
-                    return Err(err("truncated DS digest"));
-                }
-                let digest = hex::encode(&buf[pos..pos + dlen]);
-                pos += dlen;
-                records.push(serde_json::json!({
-                    "type": "DS", "keyTag": key_tag, "algorithm": algorithm,
-                    "digestType": digest_type, "digest": digest
-                }));
-            }
-            other => return Err(err(format!("unknown resource record type {other}"))),
-        }
-    }
-    Ok(records)
+    let resource = hns_covenants::Resource::decode(buf)
+        .map_err(|error| err(format!("invalid canonical name resource: {error}")))?;
+    Ok(resource.records().iter().map(record_json).collect())
 }
 
-fn read_ip(bytes: &[u8]) -> String {
-    if bytes.len() == 4 {
-        Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string()
+fn display_name(name: &hns_covenants::ResourceName) -> String {
+    if name.is_root() {
+        ".".to_string()
     } else {
-        let mut octets = [0u8; 16];
-        octets.copy_from_slice(bytes);
-        Ipv6Addr::from(octets).to_string()
+        format!(
+            "{}.",
+            name.labels()
+                .iter()
+                .map(|label| String::from_utf8_lossy(label))
+                .collect::<Vec<_>>()
+                .join(".")
+        )
+    }
+}
+
+fn record_json(record: &hns_covenants::ResourceRecord) -> serde_json::Value {
+    use hns_covenants::ResourceRecord;
+    match record {
+        ResourceRecord::Ds {
+            key_tag,
+            algorithm,
+            digest_type,
+            digest,
+        } => serde_json::json!({
+            "type": "DS", "keyTag": key_tag, "algorithm": algorithm,
+            "digestType": digest_type, "digest": hex::encode(digest)
+        }),
+        ResourceRecord::Ns { name_server } => {
+            serde_json::json!({ "type": "NS", "ns": display_name(name_server) })
+        }
+        ResourceRecord::Glue4 {
+            name_server,
+            address,
+        } => serde_json::json!({
+            "type": "GLUE4", "ns": display_name(name_server),
+            "address": Ipv4Addr::from(*address).to_string()
+        }),
+        ResourceRecord::Glue6 {
+            name_server,
+            address,
+        } => serde_json::json!({
+            "type": "GLUE6", "ns": display_name(name_server),
+            "address": Ipv6Addr::from(*address).to_string()
+        }),
+        ResourceRecord::Synth4 { address } => serde_json::json!({
+            "type": "SYNTH4", "address": Ipv4Addr::from(*address).to_string()
+        }),
+        ResourceRecord::Synth6 { address } => serde_json::json!({
+            "type": "SYNTH6", "address": Ipv6Addr::from(*address).to_string()
+        }),
+        ResourceRecord::Txt { strings } => serde_json::json!({
+            "type": "TXT",
+            "txt": strings.iter().map(|value| String::from_utf8_lossy(value)).collect::<Vec<_>>()
+        }),
     }
 }
 
@@ -454,7 +411,10 @@ mod tests {
         let buf = vec![99u8]; // version 99
         let err = decode(&buf).unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("unsupported resource version"), "msg: {msg}");
+        assert!(
+            msg.contains("unsupported Handshake resource version"),
+            "msg: {msg}"
+        );
     }
 
     #[test]
@@ -462,7 +422,10 @@ mod tests {
         let buf = vec![0u8, 99u8]; // version 0, type 99
         let err = decode(&buf).unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("unknown resource record type"), "msg: {msg}");
+        assert!(
+            msg.contains("unsupported Handshake resource record type"),
+            "msg: {msg}"
+        );
     }
 
     #[test]
@@ -470,7 +433,7 @@ mod tests {
         let buf = vec![0u8, TYPE_TXT]; // version 0, TXT type, but no count
         let err = decode(&buf).unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("truncated"), "msg: {msg}");
+        assert!(msg.contains("unexpected end of input"), "msg: {msg}");
     }
 
     #[test]
@@ -478,7 +441,7 @@ mod tests {
         let buf = vec![0u8, TYPE_DS, 0, 0]; // version 0, DS type, but truncated
         let err = decode(&buf).unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("truncated"), "msg: {msg}");
+        assert!(msg.contains("unexpected end of input"), "msg: {msg}");
     }
 
     // --- additional record type tests ---

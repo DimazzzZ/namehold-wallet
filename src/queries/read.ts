@@ -6,8 +6,8 @@ import { useNodeLive } from "./node";
 import type { ActionRow } from "../lib/zod";
 import type {
   BlockInfo,
-  HsdBalance,
-  HsdName,
+  ChainBalance,
+  ChainName,
   NameActionCapabilities,
   NameBids,
   NameResource,
@@ -36,17 +36,17 @@ const STALE_TIME = 15_000;
  * last-known value (persisted in the chain cache, survives restart) is shown
  * until the next sync/Refresh.
  */
-export function useReadBalance(): UseQueryResult<HsdBalance | null> {
+export function useReadBalance(): UseQueryResult<ChainBalance | null> {
   const { data: profile } = useActiveProfile();
   const profileId = profile?.id ?? null;
   const nodeLive = useNodeLive();
-  return useQuery<HsdBalance | null>({
+  return useQuery<ChainBalance | null>({
     queryKey: ["read", "balance", profileId],
     enabled: profileId != null,
     queryFn: async () => {
       // Pin the read to THIS wallet so a fetch can never return another
       // profile's balance (the active profile may flip mid-switch).
-      const raw = await invoke<HsdBalance | null>("read_balance", {
+      const raw = await invoke<ChainBalance | null>("read_balance", {
         walletProfileId: profileId,
       });
       return raw ?? null;
@@ -57,13 +57,13 @@ export function useReadBalance(): UseQueryResult<HsdBalance | null> {
 }
 
 /** Provider-aware list of owned / watched names, pinned to the active wallet. */
-export function useReadNames(): UseQueryResult<HsdName[]> {
+export function useReadNames(): UseQueryResult<ChainName[]> {
   const profileId = useActiveProfile().data?.id ?? null;
-  return useQuery<HsdName[]>({
+  return useQuery<ChainName[]>({
     queryKey: ["read", "names", profileId],
     enabled: profileId != null,
     queryFn: async () => {
-      const raw = await invoke<HsdName[] | null>("read_names", {
+      const raw = await invoke<ChainName[] | null>("read_names", {
         walletProfileId: profileId,
       });
       return Array.isArray(raw) ? raw : [];
@@ -77,10 +77,8 @@ export function useReadNames(): UseQueryResult<HsdName[]> {
  * active wallet, classified into Send / Receive / OPEN / BID / REVEAL /
  * REDEEM / REGISTER / UPDATE / RENEW / TRANSFER / FINALIZE / REVOKE.
  *
- * Requires a synced hsd node with `--index-tx` and `--index-address`. When the
- * node lacks the address index the backend rejects with an error message
- * containing "address index not enabled" — the caller can surface a
- * dedicated banner (see `ActivityView`).
+ * Requires a synced hsrd authenticated wallet index. When restoration/history
+ * evidence is unavailable, the caller surfaces a dedicated banner.
  */
 export function useActionHistory(): UseQueryResult<ActionRow[]> {
   const profileId = useActiveProfile().data?.id ?? null;
@@ -156,12 +154,12 @@ export function useReadRenewals(): UseQueryResult<RenewalsResponse | null> {
 /** Provider-aware single-name lookup. */
 export function useReadNameInfo(
   name: string | null | undefined,
-): UseQueryResult<HsdName | null> {
-  return useQuery<HsdName | null>({
+): UseQueryResult<ChainName | null> {
+  return useQuery<ChainName | null>({
     queryKey: ["read", "name", name ?? ""],
     enabled: Boolean(name && name.trim().length > 0),
     queryFn: async () => {
-      const raw = await invoke<HsdName | null>("read_name_info", {
+      const raw = await invoke<ChainName | null>("read_name_info", {
         name: name!.trim(),
       });
       return raw ?? null;
@@ -225,7 +223,7 @@ export function useNameBids(
 }
 
 /**
-* Current DNS records for a name, read from the local hsd node
+* Current DNS records for a name, read from the local hsrd node
 * (`read_name_records` → `getnameresource`). Node-only: the explorer doesn't
 * expose resource records, so this returns `[]` whenever no synced node is
 * reachable (the backend degrades gracefully and never errors). The name
@@ -291,7 +289,7 @@ export function useReadBlockInfo(
  * Compact transaction details for the in-app Transaction Info modal. Node-only:
  * the backend `read_tx_info` command returns tri-state:
  *   • a full `TxInfo` object (normal case);
- *   • `{ error: "tx_index_disabled" }` when the node lacks `--index-tx`
+ *   • `{ error: "wallet_index_unavailable" }` when wallet evidence is unavailable
  *     (modal shows a distinct hint — narrow with `isTxInfoError`);
  *   • `null` for any other soft-degrade (no synced node, unknown tx, etc.).
  * Pending txs gain confirmations over time, so a short stale time keeps

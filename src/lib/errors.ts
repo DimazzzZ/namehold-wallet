@@ -1,7 +1,7 @@
 // Friendly messages for the NON-CUSTODIAL model. Matching is a case-insensitive
 // substring scan over the raw error text (first match wins), so the more
-// specific patterns are listed first. No legacy hsd-wallet / API-key / "wallet
-// ID" copy — this app holds its own keys and reads via an explorer.
+// specific patterns are listed first. Namehold holds its own keys; sidecar
+// authorization is transport-only and grants no signing authority.
 const ERROR_MAP: Record<string, string> = {
   // Explorer rate-limited (HNSFans answers rapid bursts with HTTP 403).
   "status 403": "The explorer is busy (rate-limited). Wait a moment and Refresh again.",
@@ -16,14 +16,14 @@ const ERROR_MAP: Record<string, string> = {
   // Signer state (still valid in the non-custodial model).
   "wallet locked": "Your signer is locked — click Unlock first.",
   "wallet is locked": "Your signer is locked — click Unlock first.",
-  // Node not address-indexed (getcoinsbyaddress unavailable) — blocks all spends.
-  "getcoinsbyaddress":
-    "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start hsd) and let it finish syncing.",
-  "index-address":
-    "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start hsd) and let it finish syncing.",
+  // Durable wallet restoration index is required by wallet RPC v1.
+  "wallet index":
+    "hsrd needs its wallet-index profile. Re-sync from Settings so the index is present from the first block.",
+  "wallet-index":
+    "hsrd needs its wallet-index profile. Re-sync from Settings so the index is present from the first block.",
   // The name's coin isn't in the wallet's synced set yet.
   "does not hold":
-    "This wallet hasn't synced this name's coin yet — make sure your node is fully synced and address-indexed (Settings), Refresh, then try again.",
+    "This wallet hasn't restored the name owner coin yet — make sure hsrd is fully synced and wallet-indexed, Refresh, then try again.",
   // Sending.
   "insufficient funds": "Insufficient HNS balance for this transaction.",
 };

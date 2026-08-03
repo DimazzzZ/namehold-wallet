@@ -1,4 +1,4 @@
-import type { HsdBalance, StatusTone, WalletTransactionRow } from "../types";
+import type { ChainBalance, StatusTone, WalletTransactionRow } from "../types";
 
 /**
  * Pure, framework-free normalization helpers shared by the read query layer.
@@ -29,8 +29,8 @@ export function serializeStringArraySetting(values: string[]): string {
 }
 
 /**
- * Normalize a raw transaction object (from hsd or an external provider) into the
- * UI-facing `WalletTransactionRow`. Handles both the hsd shape (outputs/fee) and
+ * Normalize a raw transaction object (from hsrd or an external provider) into the
+ * UI-facing `WalletTransactionRow`. Handles both the hsrd shape (outputs/fee) and
  * the flatter external shape (value/amount/address fields).
  */
 export function normalizeTransaction(
@@ -114,7 +114,7 @@ export function normalizeTransaction(
 }
 
 /** Total spendable + pending balance in doos. */
-export function totalBalanceDoos(balance: HsdBalance | null | undefined): number {
+export function totalBalanceDoos(balance: ChainBalance | null | undefined): number {
   if (!balance) return 0;
   return balance.confirmed + balance.unconfirmed;
 }

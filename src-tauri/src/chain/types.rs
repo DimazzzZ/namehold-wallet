@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HsdNodeInfo {
+pub struct ChainNodeInfo {
     pub version: Option<String>,
     pub chain: Option<serde_json::Value>,
     pub network: Option<String>,
@@ -10,7 +10,7 @@ pub struct HsdNodeInfo {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HsdWalletInfo {
+pub struct ChainWalletInfo {
     #[serde(default)]
     pub wid: Option<serde_json::Value>,
     pub id: Option<String>,
@@ -22,7 +22,7 @@ pub struct HsdWalletInfo {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HsdBalance {
+pub struct ChainBalance {
     pub confirmed: i64,
     pub unconfirmed: i64,
     pub locked_unconfirmed: Option<i64>,
@@ -31,26 +31,26 @@ pub struct HsdBalance {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HsdName {
+pub struct ChainName {
     pub name: String,
     pub name_hash: Option<String>,
     pub state: Option<String>,
     pub height: Option<u64>,
     pub renewal: Option<u64>,
-    pub owner: Option<HsdOwner>,
+    pub owner: Option<ChainOwner>,
     pub value: Option<u64>,
     pub highest: Option<u64>,
     pub registered: Option<bool>,
     pub expired: Option<bool>,
-    pub stats: Option<HsdNameStats>,
+    pub stats: Option<ChainNameStats>,
     pub transfer: Option<serde_json::Value>,
     pub revoked: Option<bool>,
     /// Per-bid detail for this name, sourced only from the HNSFans explorer
-    /// (`getnameinfo` on the node returns only aggregates — no per-bid array).
+    /// (authenticated node evidence returns only aggregates — no per-bid array).
     /// `None` when the source didn't supply a `bids` array at all (e.g. a
-    /// node-sourced `HsdName`); `Some(vec![])` when it did but there are no
+    /// node-sourced `ChainName`); `Some(vec![])` when it did but there are no
     /// bids yet. Always the LAST field — see `read_name_bids` (Task 1).
-    pub bids: Option<Vec<HsdBid>>,
+    pub bids: Option<Vec<ChainBid>>,
 }
 
 /// A single bid on a name, as reported by the HNSFans explorer's `bids` array.
@@ -59,7 +59,7 @@ pub struct HsdName {
 /// can't be matched to a local commitment (see `merge_name_bids`).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HsdBid {
+pub struct ChainBid {
     pub txid: Option<String>,
     pub index: Option<u32>,
     pub lockup: Option<u64>,
@@ -72,20 +72,20 @@ pub struct HsdBid {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HsdOwner {
+pub struct ChainOwner {
     pub hash: String,
     pub index: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HsdNameStats {
+pub struct ChainNameStats {
     pub renewal_period_start: Option<u64>,
     pub renewal_period_end: Option<u64>,
     pub blocks_until_expire: Option<i64>,
     pub days_until_expire: Option<f64>,
     // Auction-phase fields (present only in the relevant phase of a
-    // `getnameinfo` response; all optional so a name in any state parses).
+    // verified name-state projection; all optional so any state parses).
     pub open_period_start: Option<u64>,
     pub open_period_end: Option<u64>,
     pub bid_period_start: Option<u64>,
@@ -103,7 +103,7 @@ pub struct HsdNameStats {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct HsdAddress {
+pub struct ChainAddress {
     pub name: Option<String>,
     pub account: Option<u64>,
     pub branch: Option<u64>,

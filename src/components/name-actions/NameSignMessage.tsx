@@ -8,7 +8,7 @@ import type { NameActionCapabilities, NameSignature } from "../../types";
 
 /**
  * "Sign message" panel (Task 3): lets the wallet prove ownership of a name by
- * signing an exact piece of text with the owning key — reproduces hsd's
+ * signing an exact piece of text with the owning key — reproduces hsrd's
  * `signmessagewithname` byte-for-byte, which is what Namebase's domain-claim
  * verification flow asks for (paste an exact message, sign it, paste the
  * signature back).

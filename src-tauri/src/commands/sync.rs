@@ -6,7 +6,7 @@
 
 use crate::db::queries;
 use crate::error::AppError;
-use crate::noncustodial::rpc::NodeRpcClient;
+use crate::noncustodial::hsrd::HsrdClient;
 use crate::AppState;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -522,7 +522,7 @@ pub fn open_conn(db_path: &str) -> Result<rusqlite::Connection, AppError> {
 fn apply_node_sync_batch(
     conn: &mut rusqlite::Connection,
     profile_id: &str,
-    coins: &[crate::noncustodial::rpc::NodeCoin],
+    coins: &[crate::noncustodial::hsrd::NodeCoin],
     height: i64,
 ) -> Result<(), AppError> {
     let tx = conn.unchecked_transaction()?;
@@ -554,7 +554,7 @@ pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
     };
     drop(conn);
 
-    let client = NodeRpcClient::from_settings(&settings);
+    let client = HsrdClient::from_settings(&settings);
     let height = match client.get_blockchain_info().await {
         Ok(info) => info.blocks,
         Err(_) => return false,
@@ -581,8 +581,8 @@ pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
 /// Mechanism: enumerate the name hashes referenced by the wallet's unspent
 /// name-covenant coins (which cover every name the wallet has an active
 /// auction position in OR currently owns), resolve each to a name string (via
-/// hsd `getnamebyhash`, falling back to the coin's own `rawName` items[2]
-/// for OPEN/BID/FINALIZE covenants), then `getnameinfo` and upsert into
+/// hsrd `getnamebyhash`, falling back to the coin's own `rawName` items[2]
+/// for OPEN/BID/FINALIZE covenants), then fetch verified name evidence and upsert into
 /// `tracked_name_states` so `read_names` serves them.
 ///
 /// Best-effort: transient RPC failures on individual names are skipped rather
@@ -608,11 +608,11 @@ pub async fn node_discover_step(db_path: &str, profile_id: &str) {
         return;
     }
 
-    let client = NodeRpcClient::from_settings(&settings);
+    let client = HsrdClient::from_settings(&settings);
 
     // Resolve each hash → name (prefer node's `getnamebyhash`; fall back to the
     // coin's own rawName when the node can't resolve it). De-dup so we call
-    // getnameinfo at most once per name.
+    // Fetch name evidence at most once per name.
     let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for h in &hashes {
         let resolved = match client.get_name_by_hash(&h.name_hash_hex).await {
@@ -922,7 +922,7 @@ pub async fn repair_step_windowed(
 fn apply_repair_owned(
     conn: &mut rusqlite::Connection,
     profile_id: &str,
-    info: &crate::hsd::types::HsdName,
+    info: &crate::chain::types::ChainName,
     owner_txid: &str,
     owner_vout: u32,
     owner_address: &str,
@@ -1293,7 +1293,7 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
 #[cfg(test)]
 mod db_hardening_tests {
     use super::*;
-    use crate::noncustodial::rpc::NodeCoin;
+    use crate::noncustodial::hsrd::NodeCoin;
 
     fn temp_db_path(tag: &str) -> std::path::PathBuf {
         use std::sync::atomic::{AtomicUsize, Ordering};

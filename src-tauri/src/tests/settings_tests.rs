@@ -4,10 +4,7 @@ fn setup_db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
         .unwrap();
-    let sql = include_str!("../../../src-tauri/src/sql/001_initial.sql");
-    conn.execute_batch(sql).unwrap();
-    let sql2 = include_str!("../../../src-tauri/src/sql/002_hsd_prefix.sql");
-    conn.execute_batch(sql2).unwrap();
+    crate::db::migrations::run(&conn).unwrap();
     conn
 }
 
@@ -15,13 +12,13 @@ fn setup_db() -> Connection {
 fn test_get_settings_returns_all_defaults() {
     let conn = setup_db();
     let settings = crate::db::queries::get_settings(&conn).unwrap();
-    assert!(settings.contains_key("hsd_wallet_api_url"));
-    assert!(settings.contains_key("hsd_node_api_url"));
-    assert!(settings.contains_key("hsd_api_key"));
-    assert!(settings.contains_key("hsd_wallet_id"));
-    assert!(settings.contains_key("hsd_network"));
-    assert!(settings.contains_key("hsd_prefix"));
-    assert!(settings.contains_key("write_mode"));
+    assert!(settings.contains_key("hsrd_rpc_url"));
+    assert!(settings.contains_key("hsrd_authorization"));
+    assert!(settings.contains_key("hsrd_network"));
+    assert!(settings.contains_key("hsrd_data_dir"));
+    assert!(settings.contains_key("hsrd_path"));
+    assert!(settings.contains_key("chain_source"));
+    assert!(!settings.contains_key("write_mode"));
 }
 
 #[test]
@@ -35,9 +32,9 @@ fn test_set_setting_creates_new() {
 #[test]
 fn test_set_setting_updates_existing() {
     let conn = setup_db();
-    crate::db::queries::set_setting(&conn, "hsd_network", "testnet").unwrap();
+    crate::db::queries::set_setting(&conn, "hsrd_network", "testnet").unwrap();
     let settings = crate::db::queries::get_settings(&conn).unwrap();
-    assert_eq!(settings["hsd_network"], "testnet");
+    assert_eq!(settings["hsrd_network"], "testnet");
 }
 
 #[test]

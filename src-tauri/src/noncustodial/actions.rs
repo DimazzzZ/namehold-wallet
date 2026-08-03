@@ -79,7 +79,7 @@ pub struct PlanResult {
     pub input_total: u64,
 }
 
-/// hsd txid hex → 32-byte prevout hash. Handshake does NOT byte-reverse hashes,
+/// hsrd txid hex → 32-byte prevout hash. Handshake does NOT byte-reverse hashes,
 /// so this is a plain decode with no reversal (matching the node's coin hash and
 /// what gets written into the spending input's prevout).
 fn outpoint_hash(txid: &str) -> Result<[u8; 32], AppError> {
@@ -179,7 +179,7 @@ pub fn build_plan(
     let mut plan_outputs = vec![PlanOutput {
         value: primary.value,
         address: primary.address.clone(),
-        covenant_type: primary.covenant.covenant_type,
+        covenant_type: primary.covenant.kind.as_u8(),
         covenant_items_hex: primary.covenant.items.iter().map(hex::encode).collect(),
     }];
     if change > 0 {
@@ -239,7 +239,7 @@ fn rebuild_unsigned(plan: &DraftPlan, network: Network) -> Result<Transaction, A
             value: out.value,
             address: output_address_from_string(network, &out.address)?,
             covenant: Covenant {
-                covenant_type: out.covenant_type,
+                kind: hns_covenants::CovenantKind::from_u8(out.covenant_type),
                 items,
             },
         });

@@ -16,10 +16,10 @@
 //!   4. Re-derive each input's signing key from the unlocked session and sign
 //!      with `sign_p2wpkh_input` (P2WPKH, SIGHASH_ALL).
 //!
-//! Fee policy is verified against hsd `lib/protocol/policy.js`:
+//! Fee policy is verified against hsrd `lib/protocol/policy.js`:
 //!   - `MIN_RELAY = 1000` dollarydoos per 1000 bytes (1 dood/byte floor).
 //!   - Dust is computed from the output size at the min relay rate; for a
-//!     standard 31-byte P2WPKH output hsd's threshold works out well under
+//!     standard 31-byte P2WPKH output hsrd's threshold works out well under
 //!     `DUST_THRESHOLD`. We use a conservative fixed dust floor below.
 
 use rusqlite::{params, Connection};
@@ -32,7 +32,7 @@ use crate::noncustodial::tx::{
     output_address_from_string, sighash, Covenant, Input, Outpoint, Output, Transaction,
 };
 
-/// Minimum relay fee rate in dollarydoos per byte (hsd `MIN_RELAY` is 1000
+/// Minimum relay fee rate in dollarydoos per byte (hsrd `MIN_RELAY` is 1000
 /// dollarydoos per 1000 bytes = 1 dollarydoo/byte).
 pub const MIN_FEE_RATE_PER_BYTE: u64 = 1;
 
@@ -78,7 +78,7 @@ pub const TX_OVERHEAD_VBYTES: u64 = 10;
 /// `derived_addresses` (see [`load_spendable_coins`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpendableCoin {
-    /// Funding transaction id in hsd natural-order hex (as stored / as the node
+    /// Funding transaction id in hsrd natural-order hex (as stored / as the node
     /// reports it; Handshake does not byte-reverse hashes).
     pub txid: String,
     pub vout: u32,
@@ -391,7 +391,7 @@ pub fn select_all_coins(
     })
 }
 
-/// Convert an hsd txid hex into the 32-byte prevout hash used by [`Outpoint`].
+/// Convert an hsrd txid hex into the 32-byte prevout hash used by [`Outpoint`].
 ///
 /// Handshake does NOT byte-reverse hashes (unlike Bitcoin): the hash string the
 /// node reports for a coin is the exact byte order written into a spending
@@ -417,7 +417,7 @@ fn outpoint_hash_from_txid(txid: &str) -> Result<[u8; 32], AppError> {
 pub struct BuiltTransaction {
     /// Fully-signed transaction, hex-encoded for `sendrawtransaction`.
     pub tx_hex: String,
-    /// Transaction id in hsd natural-order hex (no Bitcoin-style reversal).
+    /// Transaction id in hsrd natural-order hex (no Bitcoin-style reversal).
     pub txid: String,
     pub fee: u64,
     pub input_total: u64,

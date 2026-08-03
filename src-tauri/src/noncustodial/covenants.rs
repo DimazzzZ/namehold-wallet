@@ -1,7 +1,7 @@
 //! Covenant builders for Handshake name actions.
 //!
 //! Each builder returns a [`tx::Covenant`] whose `items` are in the exact order
-//! hsd v6.1.1 `lib/wallet/wallet.js` pushes them. Covenant pushes map to items
+//! hsrd v6.1.1 `lib/wallet/wallet.js` pushes them. Covenant pushes map to items
 //! as: `pushHash(h)` → raw bytes; `pushU32(n)` → 4-byte LE; `pushU8(n)` → 1
 //! byte; `push(buf)` → buf (an empty item for `EMPTY`).
 //!
@@ -14,6 +14,7 @@ use crate::noncustodial::sync::{
     COV_TRANSFER, COV_UPDATE,
 };
 use crate::noncustodial::tx::Covenant;
+use hns_covenants::CovenantKind;
 
 fn u32le(n: u32) -> Vec<u8> {
     n.to_le_bytes().to_vec()
@@ -22,7 +23,7 @@ fn u32le(n: u32) -> Vec<u8> {
 /// OPEN: value 0. items `[nameHash, u32(0), rawName]`.
 pub fn open(name_hash: &[u8; 32], raw_name: &[u8]) -> Covenant {
     Covenant {
-        covenant_type: COV_OPEN,
+        kind: CovenantKind::from_u8(COV_OPEN),
         items: vec![name_hash.to_vec(), u32le(0), raw_name.to_vec()],
     }
 }
@@ -31,7 +32,7 @@ pub fn open(name_hash: &[u8; 32], raw_name: &[u8]) -> Covenant {
 /// `start` is the OPEN height of the auction (name-state `height`).
 pub fn bid(name_hash: &[u8; 32], start: u32, raw_name: &[u8], blind: &[u8; 32]) -> Covenant {
     Covenant {
-        covenant_type: COV_BID,
+        kind: CovenantKind::from_u8(COV_BID),
         items: vec![
             name_hash.to_vec(),
             u32le(start),
@@ -44,7 +45,7 @@ pub fn bid(name_hash: &[u8; 32], start: u32, raw_name: &[u8], blind: &[u8; 32]) 
 /// REVEAL: value = true bid value. items `[nameHash, u32(height), nonce]`.
 pub fn reveal(name_hash: &[u8; 32], height: u32, nonce: &[u8; 32]) -> Covenant {
     Covenant {
-        covenant_type: COV_REVEAL,
+        kind: CovenantKind::from_u8(COV_REVEAL),
         items: vec![name_hash.to_vec(), u32le(height), nonce.to_vec()],
     }
 }
@@ -52,7 +53,7 @@ pub fn reveal(name_hash: &[u8; 32], height: u32, nonce: &[u8; 32]) -> Covenant {
 /// REDEEM (reclaim a losing bid's lockup). items `[nameHash, u32(height)]`.
 pub fn redeem(name_hash: &[u8; 32], height: u32) -> Covenant {
     Covenant {
-        covenant_type: COV_REDEEM,
+        kind: CovenantKind::from_u8(COV_REDEEM),
         items: vec![name_hash.to_vec(), u32le(height)],
     }
 }
@@ -65,7 +66,7 @@ pub fn register(
     renewal_block: &[u8; 32],
 ) -> Covenant {
     Covenant {
-        covenant_type: COV_REGISTER,
+        kind: CovenantKind::from_u8(COV_REGISTER),
         items: vec![
             name_hash.to_vec(),
             u32le(height),
@@ -78,7 +79,7 @@ pub fn register(
 /// UPDATE: items `[nameHash, u32(height), resource]`.
 pub fn update(name_hash: &[u8; 32], height: u32, resource: &[u8]) -> Covenant {
     Covenant {
-        covenant_type: COV_UPDATE,
+        kind: CovenantKind::from_u8(COV_UPDATE),
         items: vec![name_hash.to_vec(), u32le(height), resource.to_vec()],
     }
 }
@@ -86,7 +87,7 @@ pub fn update(name_hash: &[u8; 32], height: u32, resource: &[u8]) -> Covenant {
 /// RENEW: items `[nameHash, u32(height), renewalBlock]`.
 pub fn renew(name_hash: &[u8; 32], height: u32, renewal_block: &[u8; 32]) -> Covenant {
     Covenant {
-        covenant_type: COV_RENEW,
+        kind: CovenantKind::from_u8(COV_RENEW),
         items: vec![name_hash.to_vec(), u32le(height), renewal_block.to_vec()],
     }
 }
@@ -94,7 +95,7 @@ pub fn renew(name_hash: &[u8; 32], height: u32, renewal_block: &[u8; 32]) -> Cov
 /// TRANSFER: items `[nameHash, u32(height), u8(addrVersion), addrHash]`.
 pub fn transfer(name_hash: &[u8; 32], height: u32, addr_version: u8, addr_hash: &[u8]) -> Covenant {
     Covenant {
-        covenant_type: COV_TRANSFER,
+        kind: CovenantKind::from_u8(COV_TRANSFER),
         items: vec![
             name_hash.to_vec(),
             u32le(height),
@@ -117,7 +118,7 @@ pub fn finalize(
     renewal_block: &[u8; 32],
 ) -> Covenant {
     Covenant {
-        covenant_type: COV_FINALIZE,
+        kind: CovenantKind::from_u8(COV_FINALIZE),
         items: vec![
             name_hash.to_vec(),
             u32le(height),
@@ -130,11 +131,11 @@ pub fn finalize(
     }
 }
 
-/// CANCEL (revert an in-flight TRANSFER). NOTE: hsd encodes this as an UPDATE
+/// CANCEL (revert an in-flight TRANSFER). NOTE: hsrd encodes this as an UPDATE
 /// covenant with an EMPTY resource: items `[nameHash, u32(height), EMPTY]`.
 pub fn cancel(name_hash: &[u8; 32], height: u32) -> Covenant {
     Covenant {
-        covenant_type: COV_UPDATE,
+        kind: CovenantKind::from_u8(COV_UPDATE),
         items: vec![name_hash.to_vec(), u32le(height), Vec::new()],
     }
 }
@@ -142,7 +143,7 @@ pub fn cancel(name_hash: &[u8; 32], height: u32) -> Covenant {
 /// REVOKE: items `[nameHash, u32(height)]`.
 pub fn revoke(name_hash: &[u8; 32], height: u32) -> Covenant {
     Covenant {
-        covenant_type: COV_REVOKE,
+        kind: CovenantKind::from_u8(COV_REVOKE),
         items: vec![name_hash.to_vec(), u32le(height)],
     }
 }
@@ -155,7 +156,7 @@ mod tests {
     fn open_layout() {
         let nh = [9u8; 32];
         let cov = open(&nh, b"example");
-        assert_eq!(cov.covenant_type, COV_OPEN);
+        assert_eq!(cov.kind.as_u8(), COV_OPEN);
         assert_eq!(cov.items.len(), 3);
         assert_eq!(cov.items[0], nh.to_vec());
         assert_eq!(cov.items[1], vec![0, 0, 0, 0]); // u32 LE 0
@@ -168,13 +169,13 @@ mod tests {
         let blind = [2u8; 32];
         let nonce = [3u8; 32];
         let b = bid(&nh, 100, b"abc", &blind);
-        assert_eq!(b.covenant_type, COV_BID);
+        assert_eq!(b.kind.as_u8(), COV_BID);
         assert_eq!(b.items.len(), 4);
         assert_eq!(b.items[1], 100u32.to_le_bytes().to_vec());
         assert_eq!(b.items[3], blind.to_vec());
 
         let r = reveal(&nh, 150, &nonce);
-        assert_eq!(r.covenant_type, COV_REVEAL);
+        assert_eq!(r.kind.as_u8(), COV_REVEAL);
         assert_eq!(
             r.items,
             vec![nh.to_vec(), 150u32.to_le_bytes().to_vec(), nonce.to_vec()]
@@ -186,18 +187,18 @@ mod tests {
         let nh = [4u8; 32];
         let rb = [5u8; 32];
         let t = transfer(&nh, 200, 0, &[6u8; 20]);
-        assert_eq!(t.covenant_type, COV_TRANSFER);
+        assert_eq!(t.kind.as_u8(), COV_TRANSFER);
         assert_eq!(t.items[2], vec![0u8]); // version byte
         assert_eq!(t.items[3], vec![6u8; 20]);
 
         let f = finalize(&nh, 200, b"abc", 0, 0, 3, &rb);
-        assert_eq!(f.covenant_type, COV_FINALIZE);
+        assert_eq!(f.kind.as_u8(), COV_FINALIZE);
         assert_eq!(f.items.len(), 7);
         assert_eq!(f.items[5], 3u32.to_le_bytes().to_vec()); // renewals
 
         // CANCEL is an UPDATE covenant with an empty resource item.
         let c = cancel(&nh, 200);
-        assert_eq!(c.covenant_type, COV_UPDATE);
+        assert_eq!(c.kind.as_u8(), COV_UPDATE);
         assert_eq!(c.items.len(), 3);
         assert!(c.items[2].is_empty());
     }

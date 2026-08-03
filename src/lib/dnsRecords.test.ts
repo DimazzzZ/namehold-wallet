@@ -186,7 +186,7 @@ describe("recordToRow — inverse mapper (Manage DNS prefill)", () => {
 });
 
 describe("recordsToRows — batch inverse mapper", () => {
-  it("round-trips a mixed set of hsd records to rows", () => {
+  it("round-trips a mixed set of hsrd records to rows", () => {
     const records = [
       { type: "TXT", txt: ["hello"] },
       { type: "NS", ns: "ns1.example." },

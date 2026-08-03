@@ -17,7 +17,7 @@ use crate::commands::read::compute_renewals;
 use crate::db;
 
 const PROFILE: &str = "p1";
-/// Mainnet renewal window in blocks (hsd networks.js).
+/// Mainnet renewal window in blocks (hsrd networks.js).
 const WINDOW: i64 = 105_120;
 /// ~10-minute blocks.
 const BLOCKS_PER_DAY: i64 = 144;
@@ -239,7 +239,7 @@ fn live_node_height_reports_node_source() {
 #[test]
 fn explorer_stats_derive_height_when_node_not_synced() {
     let conn = mem_db();
-    // Explorer-shaped raw_json (HsdName serialization): stats say that at fetch
+    // Explorer-shaped raw_json (ChainName serialization): stats say that at fetch
     // time the chain was at renewalPeriodEnd - blocksUntilExpire = 260_000.
     let raw = r#"{"name":"expname","state":"CLOSED","stats":{"renewalPeriodEnd":300000,"blocksUntilExpire":40000}}"#;
     seed_tracked(&conn, "expname", Some(194_880), Some(raw));

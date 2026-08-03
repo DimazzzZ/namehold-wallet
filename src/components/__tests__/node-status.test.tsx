@@ -42,10 +42,10 @@ type NodeOver = Partial<{
 
 function nodeStatus(over: NodeOver = {}) {
   return {
-    binary: "/usr/local/bin/hsd",
+    binary: "/usr/local/bin/hsrd",
     binary_found: true,
-    version: "hsd 8.0.0",
-    data_dir: "/Volumes/WD/hsd-data",
+    version: "hsrd 8.0.0",
+    data_dir: "/Volumes/WD/hsrd-data",
     network: "main",
     process_alive: false,
     connected: false,
@@ -96,11 +96,11 @@ function loadSettings(over: Partial<Record<string, string>> = {}) {
   useSettingsStore.setState({
     loaded: true,
     settings: {
-      node_rpc_url: "http://127.0.0.1:12037",
-      node_rpc_api_key: "",
-      hsd_prefix: "",
-      hsd_path: "",
-      autostart_hsd: "true",
+      hsrd_rpc_url: "http://127.0.0.1:12037",
+      hsrd_authorization: "",
+      hsrd_data_dir: "",
+      hsrd_path: "",
+      autostart_hsrd: "true",
       explorer_api_url: "https://e.hnsfans.com",
       address_gap_limit: "20",
       signer_session_timeout_seconds: "900",
@@ -127,7 +127,7 @@ describe("Node status (truthful, RPC-based)", () => {
 
     expect(await screen.findByText(/Connected.*block 218456/i)).toBeInTheDocument();
     // When connected, the control offers Stop (not a Start that could lie green).
-    expect(await screen.findByRole("button", { name: /Stop hsd/i })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Stop hsrd/i })).toBeInTheDocument();
   });
 
   it("Settings shows the sync progress while behind the chain tip (blocks < headers)", async () => {
@@ -142,7 +142,7 @@ describe("Node status (truthful, RPC-based)", () => {
   });
 
   it("Settings shows Syncing without denominator when blocks == headers but progress < 0.9999 (early IBD)", async () => {
-    // hsd in early IBD reports headers == height (hasn't learned peers' higher headers yet).
+    // hsrd in early IBD reports headers == height (hasn't learned peers' higher headers yet).
     // This is 19% complete, so it's not synced. Must NOT show the confusing "/ 65027" denominator.
     invokeMock.mockImplementation(
       route(nodeStatus({ connected: true, process_alive: true, height: 65027, headers: 65027, verification_progress: 0.19 })),
@@ -189,41 +189,41 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(await screen.findByTestId("node-sync-progress")).toHaveTextContent(/40%/);
   });
 
-  it("Start hsd is enabled when the binary is found and nothing is running", async () => {
+  it("Start hsrd is enabled when the binary is found and nothing is running", async () => {
     invokeMock.mockImplementation(route(nodeStatus({ binary_found: true })));
     render(<Settings />, { wrapper: wrapper() });
-    const btn = await screen.findByRole("button", { name: /Start hsd/i });
+    const btn = await screen.findByRole("button", { name: /Start hsrd/i });
     await waitFor(() => expect(btn).toBeEnabled());
   });
 
-  it("Start hsd is enabled when the binary isn't auto-found but an hsd path is set", async () => {
-    loadSettings({ hsd_path: "/Users/me/.nvm/versions/node/v20/bin/hsd" });
+  it("Start hsrd is enabled when the binary isn't auto-found but an hsrd path is set", async () => {
+    loadSettings({ hsrd_path: "/Users/me/.nvm/versions/node/v20/bin/hsrd" });
     invokeMock.mockImplementation(route(nodeStatus({ binary_found: false })));
     render(<Settings />, { wrapper: wrapper() });
-    const btn = await screen.findByRole("button", { name: /Start hsd/i });
+    const btn = await screen.findByRole("button", { name: /Start hsrd/i });
     await waitFor(() => expect(btn).toBeEnabled());
   });
 
-  it("Start hsd is disabled when no binary is found and no path is set", async () => {
+  it("Start hsrd is disabled when no binary is found and no path is set", async () => {
     invokeMock.mockImplementation(route(nodeStatus({ binary_found: false })));
     render(<Settings />, { wrapper: wrapper() });
-    expect(await screen.findByRole("button", { name: /Start hsd/i })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: /Start hsrd/i })).toBeDisabled();
   });
 
-  it("surfaces the hsd start error (not a silent Starting…) when the RPC is down", async () => {
+  it("surfaces the hsrd start error (not a silent Starting…) when the RPC is down", async () => {
     invokeMock.mockImplementation(
       route(
         nodeStatus({
           connected: false,
           process_alive: false,
           last_error:
-            "This chain was synced without the address index, and hsd can't add an index to an existing chain. Re-sync with address indexing …",
+            "hsrd wallet index is unavailable for this data set. Re-sync with wallet indexing enabled …",
         }),
       ),
     );
     render(<Settings />, { wrapper: wrapper() });
     const err = await screen.findByTestId("node-last-error");
-    expect(err).toHaveTextContent(/indexes don't match|address index|re-sync/i);
+    expect(err).toHaveTextContent(/wallet index|re-sync/i);
     // A plain error (not an index mismatch) offers no re-sync button.
     expect(screen.queryByTestId("node-resync")).toBeNull();
   });
@@ -246,7 +246,7 @@ describe("Node status (truthful, RPC-based)", () => {
     const btn = await screen.findByTestId("node-resync");
     fireEvent.click(btn);
     await waitFor(() => {
-      expect(invokeMock.mock.calls.map((c) => c[0])).toContain("resync_hsd_chain");
+      expect(invokeMock.mock.calls.map((c) => c[0])).toContain("resync_hsrd_chain");
     });
     window.confirm = orig;
   });
@@ -260,15 +260,15 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(screen.queryByRole("button", { name: /Manage wallets/i })).toBeNull();
   });
 
-  it("offers Stop hsd for a connected node even if the app didn't spawn it", async () => {
+  it("offers Stop hsrd for a connected node even if the app didn't spawn it", async () => {
     // External/adopted node: connected via RPC but no child handle (process_alive
     // false). The app must still let the user stop it.
     invokeMock.mockImplementation(
       route(nodeStatus({ connected: true, process_alive: false, height: 500 })),
     );
     render(<Settings />, { wrapper: wrapper() });
-    expect(await screen.findByRole("button", { name: /Stop hsd/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Start hsd/i })).toBeNull();
+    expect(await screen.findByRole("button", { name: /Stop hsrd/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Start hsrd/i })).toBeNull();
   });
 
   it("Settings shows Starting… when the process is alive but RPC isn't up yet", async () => {
@@ -278,12 +278,12 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(await screen.findByText(/Starting…/i)).toBeInTheDocument();
   });
 
-  it("Settings shows Stopped when nothing is running", async () => {
+  it("Settings shows Sidecar stopped when nothing is running", async () => {
     invokeMock.mockImplementation(route(nodeStatus()));
     render(<Settings />, { wrapper: wrapper() });
 
-    expect(await screen.findByText(/^Stopped$/i)).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /Start hsd/i })).toBeInTheDocument();
+    expect(await screen.findByText(/^Sidecar stopped$/i)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Start hsrd/i })).toBeInTheDocument();
   });
 
   it("StatusStrip says Node: Connected when the RPC answers", async () => {
@@ -320,30 +320,30 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(await screen.findByText("Local")).toBeInTheDocument();
   });
 
-  it("Settings shows Read source: Explorer when node is not synced", async () => {
+  it("Settings shows the cache/auxiliary source when hsrd is not synced", async () => {
     invokeMock.mockImplementation(route(nodeStatus({ connected: false, read_source: "explorer" })));
     render(<Settings />, { wrapper: wrapper() });
 
     expect(await screen.findByText(/Read source:/)).toBeInTheDocument();
-    expect(await screen.findByText("Explorer")).toBeInTheDocument();
+    expect(await screen.findByText("Local cache / auxiliary provider")).toBeInTheDocument();
   });
 
-  it("Settings shows Read source: Local node cache when node is synced", async () => {
+  it("Settings shows Read source: Authenticated sidecar when hsrd is synced", async () => {
     invokeMock.mockImplementation(
       route(nodeStatus({ connected: true, process_alive: true, height: 100, headers: 100, read_source: "local" })),
     );
     render(<Settings />, { wrapper: wrapper() });
 
     expect(await screen.findByText(/Read source:/)).toBeInTheDocument();
-    expect(await screen.findByText("Local node cache")).toBeInTheDocument();
+    expect(await screen.findByText("Authenticated sidecar")).toBeInTheDocument();
   });
 
-  it("Settings shows updated explorer description about fallback behavior", async () => {
+  it("Settings describes the explorer as non-authoritative fallback", async () => {
     invokeMock.mockImplementation(route(nodeStatus()));
     render(<Settings />, { wrapper: wrapper() });
 
     expect(
-      await screen.findByText(/when the node is connected and fully synced, reads come from the local node cache/i),
+      await screen.findByText(/wallet restoration, spend decisions, proofs, fees, and relay use authenticated wallet RPC v1/i),
     ).toBeInTheDocument();
   });
 });

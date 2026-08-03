@@ -1,6 +1,6 @@
 //! Handshake address encoding.
 //!
-//! Verified against hsd `lib/primitives/address.js`:
+//! Verified against hsrd `lib/primitives/address.js`:
 //!   - P2WPKH: `fromHash(blake2b.digest(pubkey, 20), 0)` — version 0,
 //!     20-byte Blake2b hash of the **compressed** public key.
 //!   - Encoding: `bech32.encode(hrp, version, hash)` — BIP-173 Bech32
@@ -14,13 +14,13 @@ use blake2::digest::consts::U20;
 use blake2::Blake2b;
 use blake2::Digest;
 
-/// Blake2b with a 20-byte (160-bit) output, matching hsd's
+/// Blake2b with a 20-byte (160-bit) output, matching hsrd's
 /// `blake2b.digest(key, 20)`.
 type Blake2b160 = Blake2b<U20>;
 
 /// Compute the 20-byte Blake2b-160 hash of a compressed public key.
 ///
-/// `pubkey` MUST be the 33-byte SEC1 compressed encoding, matching hsd which
+/// `pubkey` MUST be the 33-byte SEC1 compressed encoding, matching hsrd which
 /// always hashes compressed keys for P2WPKH.
 pub fn pubkey_to_hash160(pubkey: &[u8]) -> [u8; 20] {
     let mut hasher = Blake2b160::new();
@@ -56,7 +56,7 @@ pub fn address_from_pubkey(network: Network, compressed_pubkey: &[u8]) -> Result
 /// On Handshake (as on Bitcoin segwit v0), a witness program is serialized in
 /// a script as: `OP_<version> <push len> <program>`. For witness version 0 the
 /// opcode is `0x00`, so a P2WPKH output script is `00 14 <hash160>` (22 bytes).
-/// Verified against hsd `lib/script/script.js` `fromProgram(0, hash)`.
+/// Verified against hsrd `lib/script/script.js` `fromProgram(0, hash)`.
 pub fn p2wpkh_script_pubkey(hash160: &[u8; 20]) -> Vec<u8> {
     let mut script = Vec::with_capacity(22);
     script.push(0x00); // OP_0 (witness version 0)
@@ -101,12 +101,12 @@ pub fn is_valid(network: Network, addr: &str) -> bool {
 mod tests {
     use super::*;
 
-    // CANONICAL hsd vector from hsd/test/address-test.js:
+    // CANONICAL hsrd vector from hsrd/test/address-test.js:
     //   raw hash160 = 6d5571fdbca1019cd0f0cd792d1b0bdfa7651c7e
     //   address     = hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx
-    // This proves our bech32 v0 encoding byte-for-byte matches hsd.
+    // This proves our bech32 v0 encoding byte-for-byte matches hsrd.
     #[test]
-    fn matches_canonical_hsd_mainnet_address() {
+    fn matches_canonical_hsrd_mainnet_address() {
         let raw = hex::decode("6d5571fdbca1019cd0f0cd792d1b0bdfa7651c7e").unwrap();
         let mut hash160 = [0u8; 20];
         hash160.copy_from_slice(&raw);
@@ -120,7 +120,7 @@ mod tests {
     }
 
     // Validate that the `blake2` crate produces the same Blake2b-160 digest
-    // hsd uses (bcrypto blake2b with output length 20, no key, no personal).
+    // hsrd uses (bcrypto blake2b with output length 20, no key, no personal).
     // Canonical Blake2b vector: blake2b-160 of the empty input.
     // (Reference: BLAKE2 official test vectors / RFC 7693 derived.)
     #[test]

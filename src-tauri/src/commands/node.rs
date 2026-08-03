@@ -1,70 +1,56 @@
-//! App-managed hsd node lifecycle.
-//!
-//! Reads are node-free (explorer); a node is needed only to broadcast/sync. The
-//! app can start hsd against a user-chosen data directory (`hsd_prefix` setting)
-//! so a large chain lands on, say, an external volume instead of `~/.hsd`. The
-//! `--api-key` and network are kept in sync with the RPC the app itself uses
-//! (`node_rpc_api_key` + the active profile's network), so "the node the app
-//! starts" and "the node the app talks to" are the same node.
+//! Managed `hsrd` sidecar lifecycle.
+
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use crate::db;
 use crate::error::AppError;
+use crate::noncustodial::hsrd::{resolve_authorization, HsrdClient};
 use crate::noncustodial::network::Network;
-use crate::noncustodial::rpc::NodeRpcClient;
 use crate::AppState;
-use std::process::{Command, Stdio};
 use tauri::State;
 use tokio::time::{sleep, Duration};
 
-/// First usable hsd path given an explicit override and an ordered candidate
-/// list. An explicit `hsd_path` is honored verbatim (trust the user — the binary
-/// may not exist yet at lookup time); otherwise the first existing candidate
-/// wins. Returns `None` if nothing matches (caller falls back to `which`/PATH).
-/// Pure (no env reads) so it's unit-testable.
-pub(crate) fn pick_hsd_path(override_path: Option<&str>, candidates: &[String]) -> Option<String> {
-    if let Some(p) = override_path {
-        let p = p.trim();
-        if !p.is_empty() {
-            return Some(p.to_string());
-        }
+pub(crate) const HSRD_MIN_VERSION: (u32, u32, u32) = (0, 3, 4);
+const DEFAULT_RPC_BIND: &str = "127.0.0.1:12037";
+const AUTHORIZATION_FILE: &str = "namehold-wallet.authorization";
+const LOG_FILE: &str = "namehold-hsrd.log";
+
+pub(crate) fn pick_hsrd_path(override_path: Option<&str>, candidates: &[String]) -> Option<String> {
+    if let Some(path) = override_path.map(str::trim).filter(|path| !path.is_empty()) {
+        return Some(path.to_string());
     }
     candidates
         .iter()
-        .find(|c| std::path::Path::new(c).exists())
+        .find(|candidate| Path::new(candidate).exists())
         .cloned()
 }
 
-/// Common hsd install locations to probe (a GUI-launched app has a minimal PATH,
-/// so the user's shell PATH isn't available — we must look in the usual dirs).
-pub(crate) fn hsd_candidates() -> Vec<String> {
+pub(crate) fn hsrd_candidates() -> Vec<String> {
     let mut candidates = vec![
-        "/opt/homebrew/bin/hsd".to_string(),
-        "/usr/local/bin/hsd".to_string(),
+        "/opt/homebrew/bin/hsrd".to_string(),
+        "/usr/local/bin/hsrd".to_string(),
     ];
-    if let Ok(home) = std::env::var("HOME") {
-        candidates.push(format!("{home}/.npm-global/bin/hsd"));
-        candidates.push(format!("{home}/.npm/bin/hsd"));
-        candidates.push(format!("{home}/.local/bin/hsd"));
-        // nvm-managed node installs: ~/.nvm/versions/node/<ver>/bin/hsd
-        if let Ok(entries) = std::fs::read_dir(format!("{home}/.nvm/versions/node")) {
-            for e in entries.flatten() {
-                let cand = e.path().join("bin/hsd");
-                if cand.exists() {
-                    candidates.push(cand.to_string_lossy().to_string());
-                }
-            }
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".cargo/bin/hsrd").to_string_lossy().to_string());
+        candidates.push(home.join(".local/bin/hsrd").to_string_lossy().to_string());
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            candidates.push(parent.join("hsrd").to_string_lossy().to_string());
         }
     }
     candidates
 }
 
-/// Locate the hsd binary: an explicit `hsd_path` override first, then common
-/// install dirs, then `which hsd`, then the bare name (resolved via PATH).
-pub(crate) fn find_hsd_binary(override_path: Option<&str>) -> String {
-    if let Some(found) = pick_hsd_path(override_path, &hsd_candidates()) {
-        return found;
+pub(crate) fn find_hsrd_binary(override_path: Option<&str>) -> String {
+    if let Some(path) = pick_hsrd_path(override_path, &hsrd_candidates()) {
+        return path;
     }
-    if let Ok(output) = Command::new("which").arg("hsd").output() {
+    if let Ok(output) = Command::new("which").arg("hsrd").output() {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() {
@@ -72,146 +58,145 @@ pub(crate) fn find_hsd_binary(override_path: Option<&str>) -> String {
             }
         }
     }
-    "hsd".to_string()
+    "hsrd".to_string()
 }
 
-/// The explicit `hsd_path` setting, if set and non-empty.
-fn configured_hsd_path(state: &AppState) -> Option<String> {
-    let db = state.db.lock().ok()?;
-    let settings = db::queries::get_settings(&db).ok()?;
-    settings
-        .get("hsd_path")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// `hsd --version`, if the binary runs.
-fn get_hsd_version(binary: &str) -> Option<String> {
-    let output = Command::new(binary).arg("--version").output().ok()?;
-    if output.status.success() {
-        let v = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        (!v.is_empty()).then_some(v)
-    } else {
-        None
-    }
-}
-
-/// Minimum supported hsd release line. Below this, the wallet's index-flag and
-/// RPC-shape assumptions (`--index-address`/`--index-tx`, `getblockchaininfo`
-/// fields this code reads) aren't guaranteed to hold — hsd 8.x is what's been
-/// verified against.
-pub(crate) const HSD_MIN_VERSION: (u32, u32, u32) = (8, 0, 0);
-
-/// Parse a semver-ish "major[.minor[.patch]]" prefix out of `hsd --version`
-/// output. Tolerates a leading `v`/`V`, a trailing pre-release/build suffix
-/// (`-rc.1`, `+build.5`), surrounding whitespace, and a missing minor/patch
-/// (defaulted to 0). Returns `None` when no leading integer major version can
-/// be found (empty input, garbage, or a lone `v`/`V` with no digits).
-pub(crate) fn parse_hsd_version(raw: &str) -> Option<(u32, u32, u32)> {
-    let s = raw.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let s = s.strip_prefix(['v', 'V']).unwrap_or(s);
-    let core = s
-        .split(|c: char| c == '-' || c == '+' || c.is_whitespace())
+pub(crate) fn parse_hsrd_version(raw: &str) -> Option<(u32, u32, u32)> {
+    let token = raw.split_whitespace().find(|part| {
+        part.trim_start_matches(['v', 'V'])
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
+    })?;
+    let core = token
+        .trim_start_matches(['v', 'V'])
+        .split(['-', '+'])
         .next()?;
-    if core.is_empty() {
-        return None;
-    }
     let mut parts = core.split('.');
-    let major: u32 = parts.next()?.parse().ok()?;
-    let minor: u32 = match parts.next() {
-        Some(p) => p.parse().ok()?,
-        None => 0,
-    };
-    let patch: u32 = match parts.next() {
-        Some(p) => p.parse().ok()?,
-        None => 0,
-    };
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
     Some((major, minor, patch))
 }
 
-/// Render a `(major, minor, patch)` tuple as `"major.minor.patch"` for error text.
-fn format_version(v: (u32, u32, u32)) -> String {
-    format!("{}.{}.{}", v.0, v.1, v.2)
+fn format_version(version: (u32, u32, u32)) -> String {
+    format!("{}.{}.{}", version.0, version.1, version.2)
 }
 
-/// The configured hsd data directory, or hsd's own default (`~/.hsd`) when unset.
-fn resolve_data_dir(state: &AppState) -> Result<String, AppError> {
+fn get_hsrd_version(binary: &str) -> Option<String> {
+    let output = Command::new(binary).arg("--version").output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn configured_hsrd_path(state: &AppState) -> Option<String> {
+    let db = state.db.lock().ok()?;
+    db::queries::get_settings(&db)
+        .ok()?
+        .get("hsrd_path")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_data_dir(state: &AppState) -> Result<PathBuf, AppError> {
     let configured = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         db::queries::get_settings(&db)?
-            .get("hsd_prefix")
+            .get("hsrd_data_dir")
             .cloned()
             .unwrap_or_default()
     };
-    let configured = configured.trim();
-    if !configured.is_empty() {
-        return Ok(configured.to_string());
+    if !configured.trim().is_empty() {
+        return Ok(PathBuf::from(configured.trim()));
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    Ok(format!("{home}/.hsd"))
+    dirs::home_dir()
+        .map(|home| home.join(".hsrd"))
+        .ok_or_else(|| AppError::Other("could not resolve the home directory".into()))
 }
 
-/// The active profile's network, defaulting to mainnet — matches the network the
-/// rest of the app operates on (and the default RPC port).
 fn active_profile_network(state: &AppState) -> Network {
-    let conn = match state.db.lock() {
-        Ok(c) => c,
-        Err(_) => return Network::Main,
-    };
-    let id = db::queries::get_active_profile_id(&conn).unwrap_or_default();
-    if id.is_empty() {
+    let Ok(db) = state.db.lock() else {
         return Network::Main;
-    }
-    match db::queries::get_wallet_profile(&conn, &id) {
-        Ok(Some(p)) => crate::noncustodial::derivation::network_from_profile(&p.network)
-            .unwrap_or(Network::Main),
-        _ => Network::Main,
+    };
+    let Ok(profile_id) = db::queries::get_active_profile_id(&db) else {
+        return Network::Main;
+    };
+    db::queries::get_wallet_profile(&db, &profile_id)
+        .ok()
+        .flatten()
+        .and_then(|profile| Network::from_str_opt(&profile.network))
+        .unwrap_or_default()
+}
+
+fn network_argument(network: Network) -> &'static str {
+    match network {
+        Network::Main => "mainnet",
+        Network::Testnet => "testnet",
+        Network::Regtest => "regtest",
+        Network::Simnet => "simnet",
     }
 }
 
-/// Whether the hsd we started this session is still alive. Reaps a child that has
-/// exited (clearing the handle) so the status reflects reality.
+fn configured_rpc_bind(state: &AppState) -> Result<SocketAddr, AppError> {
+    let endpoint = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::get_settings(&db)?
+            .get("hsrd_rpc_url")
+            .cloned()
+            .unwrap_or_else(|| format!("http://{DEFAULT_RPC_BIND}"))
+    };
+    let url = url::Url::parse(&endpoint)
+        .map_err(|e| AppError::InvalidInput(format!("invalid sidecar RPC URL: {e}")))?;
+    if url.scheme() != "http" {
+        return Err(AppError::InvalidInput(
+            "the managed sidecar RPC URL must use loopback HTTP".into(),
+        ));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| AppError::InvalidInput("sidecar RPC URL has no host".into()))?;
+    let ip: IpAddr = if host.eq_ignore_ascii_case("localhost") {
+        "127.0.0.1".parse().expect("loopback")
+    } else {
+        host.parse()
+            .map_err(|_| AppError::InvalidInput("managed sidecar host must be an IP".into()))?
+    };
+    if !ip.is_loopback() {
+        return Err(AppError::InvalidInput(
+            "the managed sidecar must bind to loopback".into(),
+        ));
+    }
+    Ok(SocketAddr::new(ip, url.port().unwrap_or(12037)))
+}
+
 fn is_running(state: &AppState) -> Result<bool, AppError> {
-    let mut guard = state
-        .hsd_child
+    let mut child = state
+        .hsrd_child
         .lock()
         .map_err(|e| AppError::Lock(e.to_string()))?;
-    let running = match guard.as_mut() {
-        Some(child) => matches!(child.try_wait(), Ok(None)),
-        None => false,
-    };
+    let running = child
+        .as_mut()
+        .is_some_and(|process| matches!(process.try_wait(), Ok(None)));
     if !running {
-        *guard = None;
+        *child = None;
     }
     Ok(running)
 }
 
-/// A successful node RPC probe: the node answered `getblockchaininfo`.
 struct NodeProbe {
     height: i64,
-    /// Sync progress 0.0..=1.0, when the node reports it.
     verification_progress: Option<f64>,
-    /// Peers' best header height (the sync target), when reported.
     headers: Option<i64>,
 }
 
-/// The authoritative "is the node actually answering?" check: probe the node RPC
-/// (same `getblockchaininfo` call the sync + write-capability paths use). Returns
-/// `Some` only when the RPC answers — this is what `connected` is based on,
-/// since process liveness is not proof the RPC server is up. Carries sync
-/// progress so the UI can show how far the node has caught up.
 async fn probe_node(state: &AppState) -> Option<NodeProbe> {
-    // Clone the settings map under the lock, then drop it — never hold the db
-    // mutex across the await.
     let settings = {
         let db = state.db.lock().ok()?;
         db::queries::get_settings(&db).ok()?
     };
-    let client = NodeRpcClient::from_settings(&settings);
-    client
+    HsrdClient::from_settings(&settings)
         .get_blockchain_info()
         .await
         .ok()
@@ -222,51 +207,23 @@ async fn probe_node(state: &AppState) -> Option<NodeProbe> {
         })
 }
 
-/// Node status for the Settings UI + status strip. `connected` (RPC answers) is
-/// the authoritative signal; `process_alive` only reflects the child we spawned.
 #[tauri::command]
 pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let binary = find_hsd_binary(configured_hsd_path(&state).as_deref());
-    let version = get_hsd_version(&binary);
+    let binary = find_hsrd_binary(configured_hsrd_path(&state).as_deref());
+    let version = get_hsrd_version(&binary);
     let data_dir = resolve_data_dir(&state)?;
     let process_alive = is_running(&state)?;
     let probe = probe_node(&state).await;
-    // When the RPC isn't answering, surface WHY the last start failed (the hsd log
-    // persists past `start_hsd`'s short watch window), so a failed start never
-    // shows as a silent "Starting…/Stopped".
-    let err = if probe.is_none() {
-        node_start_error(&data_dir)
-    } else {
-        None
-    };
-    let (last_error, index_mismatch) = match err {
-        Some((msg, mismatch)) => (Some(msg), mismatch),
-        None => (None, false),
-    };
-    // Determine the current read source: "local" when the node is connected and
-    // synced, "explorer" otherwise. The frontend uses this to show which data
-    // source is active.
-    let node_synced = probe
-        .as_ref()
-        .map(|p| {
-            // When verification_progress is available, it is the most reliable signal.
-            // A node can report height == headers while still only ~8% verified if it
-            // is far behind the real chain tip. Always gate on progress when present.
-            if let Some(progress) = p.verification_progress {
-                progress >= 0.9999
-            } else if let Some(headers) = p.headers {
-                headers > 0 && p.height >= headers
-            } else {
-                true
-            }
-        })
-        .unwrap_or(false);
-    let read_source = if probe.is_some() && node_synced {
-        "local"
-    } else {
-        "explorer"
-    };
-
+    let error = probe
+        .is_none()
+        .then(|| node_start_error(&data_dir))
+        .flatten();
+    let synced = probe.as_ref().is_some_and(|value| {
+        value.verification_progress.map_or_else(
+            || value.headers.is_none_or(|headers| value.height >= headers),
+            |progress| progress >= 0.9999,
+        )
+    });
     Ok(serde_json::json!({
         "binary": binary,
         "binary_found": version.is_some(),
@@ -275,192 +232,178 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         "network": active_profile_network(&state).as_str(),
         "process_alive": process_alive,
         "connected": probe.is_some(),
-        "height": probe.as_ref().map(|p| p.height),
-        "verification_progress": probe.as_ref().and_then(|p| p.verification_progress),
-        "headers": probe.as_ref().and_then(|p| p.headers),
-        "last_error": last_error,
-        // True when the failure is a chain/index-flag mismatch hsd can't fix in
-        // place — the UI offers a one-click re-sync for this case.
-        "index_mismatch": index_mismatch,
-        // Current read source: "local" (node synced) or "explorer" (fallback).
-        "read_source": read_source,
+        "height": probe.as_ref().map(|value| value.height),
+        "verification_progress": probe.as_ref().and_then(|value| value.verification_progress),
+        "headers": probe.as_ref().and_then(|value| value.headers),
+        "last_error": error,
+        "index_mismatch": error.as_deref().is_some_and(|message| message.contains("wallet index")),
+        "read_source": if synced { "sidecar" } else { "unavailable" }
     }))
 }
 
-/// If `<data_dir>/namehold-hsd.log` records a startup failure, return
-/// `(human_reason, is_index_mismatch)`. `None` when there's no log or it doesn't
-/// look like an error. The index-mismatch case (hsd can't retro-enable an index)
-/// gets specific guidance and flags the UI to offer a one-click re-sync.
-pub(crate) fn node_start_error(data_dir: &str) -> Option<(String, bool)> {
-    let log_path = std::path::Path::new(data_dir).join("namehold-hsd.log");
-    let body = std::fs::read_to_string(&log_path).ok()?;
-    let body = body.trim();
-    if body.is_empty() || (!body.contains("Error") && !body.contains("error")) {
+pub(crate) fn node_start_error(data_dir: &Path) -> Option<String> {
+    let body = fs::read_to_string(data_dir.join(LOG_FILE)).ok()?;
+    if body.trim().is_empty() || !body.to_ascii_lowercase().contains("error") {
         return None;
     }
-    let tail: Vec<&str> = body.lines().rev().take(8).collect();
-    let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
-    if body.contains("retroactively") && body.contains("indexing") {
-        Some((
-            format!(
-                "This chain's indexes don't match what the wallet needs, and hsd can't \
-                 change a chain's indexes in place. Re-sync the node data (the old chain \
-                 is moved to a backup), or point Node RPC at an already-indexed node.\n\n{tail}"
-            ),
-            true,
-        ))
-    } else {
-        Some((format!("hsd failed to start:\n\n{tail}"), false))
-    }
+    let tail = body
+        .trim_end()
+        .lines()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!("hsrd failed to start:\n\n{tail}"))
 }
 
-/// Start hsd against the configured data directory. The data dir comes from the
-/// `hsd_prefix` setting (default `~/.hsd`); the API key mirrors `node_rpc_api_key`
-/// and the network mirrors the active profile, so the app talks to exactly the
-/// node it started.
-#[tauri::command]
-pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    if is_running(&state)? {
-        return Err(AppError::Other("hsd is already running.".to_string()));
+fn ensure_authorization(state: &AppState, data_dir: &Path) -> Result<PathBuf, AppError> {
+    let path = data_dir.join(AUTHORIZATION_FILE);
+    let settings = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::get_settings(&db)?
+    };
+    let mut authorization = resolve_authorization(&settings);
+    if authorization.is_empty() {
+        authorization = fs::read_to_string(&path)
+            .ok()
+            .map(|value| value.trim_end_matches(['\r', '\n']).to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| format!("Bearer {}", hex::encode(rand::random::<[u8; 32]>())));
     }
-    // A node may already be running (e.g. one started in a previous app session,
-    // or the user's own). If its RPC already answers, adopt it — never spawn a
-    // duplicate, which would only collide on the data-dir lock.
+    if authorization.len() > 4_096
+        || authorization
+            .bytes()
+            .any(|byte| !(0x20..=0x7e).contains(&byte))
+    {
+        return Err(AppError::InvalidInput(
+            "sidecar Authorization must be 1..=4096 visible ASCII bytes".into(),
+        ));
+    }
+    write_private_file(&path, authorization.as_bytes())?;
+    let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    db::queries::set_setting(&db, "hsrd_authorization", &authorization)?;
+    Ok(path)
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn start_hsrd(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+    if is_running(&state)? {
+        return Err(AppError::Other("hsrd is already running".into()));
+    }
     if let Some(probe) = probe_node(&state).await {
         return Ok(serde_json::json!({
             "connected": true,
-            "process_alive": is_running(&state)?,
+            "process_alive": false,
             "height": probe.height,
+            "adopted": true
         }));
     }
 
-    let data_dir = resolve_data_dir(&state)?;
-    // Use the same effective api-key the RPC client uses (explicit setting, else
-    // the data dir's hsd.conf), so the node we start and the node we talk to agree.
-    let api_key = {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let settings = db::queries::get_settings(&db)?;
-        crate::noncustodial::rpc::resolve_node_api_key(&settings)
-    };
-    let network = active_profile_network(&state);
-
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|e| AppError::Other(format!("cannot create data dir {data_dir}: {e}")))?;
-
-    let binary = find_hsd_binary(configured_hsd_path(&state).as_deref());
-
-    // Refuse to spawn a too-old hsd: it may silently lack the index flags or
-    // RPC fields this wallet relies on. If the version can't be determined at
-    // all (binary missing, or output we can't parse), don't block here — a
-    // missing binary fails naturally at `cmd.spawn()` below with its own clear
-    // error, and unparseable-but-present output is more likely a future hsd
-    // version's format changing than an actual incompatibility, so we warn and
-    // proceed rather than lock users out.
-    if let Some(raw) = get_hsd_version(&binary) {
-        match parse_hsd_version(&raw) {
-            Some(found) if found < HSD_MIN_VERSION => {
+    let binary = find_hsrd_binary(configured_hsrd_path(&state).as_deref());
+    if let Some(raw) = get_hsrd_version(&binary) {
+        if let Some(found) = parse_hsrd_version(&raw) {
+            if found < HSRD_MIN_VERSION {
                 return Err(AppError::Other(format!(
-                    "hsd {} (found at {binary}) is older than the minimum supported \
-                     version {}. This wallet relies on index flags and RPC behavior \
-                     introduced in hsd 8.x. Upgrade hsd — e.g. `npm install -g hsd@latest` \
-                     or `brew upgrade hsd` — then try again.",
+                    "hsrd {} is older than required {}; install a current hsrd release",
                     raw.trim(),
-                    format_version(HSD_MIN_VERSION),
+                    format_version(HSRD_MIN_VERSION)
                 )));
             }
-            Some(_) => {}
-            None => {
-                eprintln!(
-                    "warning: could not parse hsd version output ({raw:?}) from {binary}; \
-                     skipping minimum-version check"
-                );
-            }
         }
     }
 
-    let mut cmd = Command::new(&binary);
-    cmd.arg(format!("--prefix={data_dir}"));
-    if !api_key.trim().is_empty() {
-        cmd.arg(format!("--api-key={}", api_key.trim()));
-    }
-    // The wallet learns its spendable + name-owner coins via `getcoinsbyaddress`
-    // (ADDRESS index); `getrawtransaction` (TX index) backs the transaction-history
-    // cache AND the pending→confirmed tracking that looks a sent tx up by id.
-    //
-    // IMPORTANT: hsd cannot retroactively enable an index on an already-synced
-    // chain (chaindb.js `verifyFlags` throws "Cannot retroactively enable …
-    // indexing"). A chain synced without these must be re-synced from genesis with
-    // them — there is no in-place reindex.
-    cmd.arg("--index-address");
-    cmd.arg("--index-tx");
-    match network {
-        Network::Testnet => {
-            cmd.arg("--testnet");
-        }
-        Network::Regtest => {
-            cmd.arg("--regtest");
-        }
-        Network::Simnet => {
-            cmd.arg("--simnet");
-        }
-        Network::Main => {}
-    }
-    // Capture hsd's output to a log file so a failed start has a visible reason
-    // (port busy, bad data dir, network mismatch) instead of vanishing into null.
-    let log_path = std::path::Path::new(&data_dir).join("namehold-hsd.log");
-    let log = std::fs::File::create(&log_path)
-        .map_err(|e| AppError::Other(format!("cannot open hsd log {}: {e}", log_path.display())))?;
-    let log_err = log
-        .try_clone()
-        .map_err(|e| AppError::Other(format!("cannot prepare hsd log: {e}")))?;
-    cmd.stdout(Stdio::from(log)).stderr(Stdio::from(log_err));
-
-    let child = cmd
-        .spawn()
-        .map_err(|e| AppError::Other(format!("failed to start hsd ({binary}): {e}")))?;
-
+    let data_dir = resolve_data_dir(&state)?;
+    fs::create_dir_all(&data_dir)?;
+    let authorization_file = ensure_authorization(&state, &data_dir)?;
+    let network = active_profile_network(&state);
+    let bind = configured_rpc_bind(&state)?;
     {
-        let mut guard = state
-            .hsd_child
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::set_setting(&db, "hsrd_network", network.as_str())?;
+    }
+
+    let log_path = data_dir.join(LOG_FILE);
+    let log = fs::File::create(&log_path)?;
+    let log_error = log.try_clone()?;
+    let child = Command::new(&binary)
+        .arg("--network")
+        .arg(network_argument(network))
+        .arg("--data-dir")
+        .arg(&data_dir)
+        .arg("--rpc-bind")
+        .arg(bind.to_string())
+        .arg("--rpc-authorization-header-file")
+        .arg(&authorization_file)
+        .arg("--native-sync")
+        .arg("--p2p-discovery")
+        .arg("--wallet-index")
+        .arg("--storage-mode")
+        .arg("archive")
+        .arg("--mining-engine")
+        .arg("--transaction-relay")
+        .arg("--acknowledge-incomplete-consensus")
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_error))
+        .spawn()
+        .map_err(|e| AppError::Other(format!("failed to start hsrd ({binary}): {e}")))?;
+    {
+        let mut slot = state
+            .hsrd_child
             .lock()
             .map_err(|e| AppError::Lock(e.to_string()))?;
-        *guard = Some(child);
+        *slot = Some(child);
     }
     {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         db.execute(
-            "INSERT INTO audit_log (action, detail) VALUES ('start_hsd', ?1)",
-            [serde_json::json!({"data_dir": data_dir, "network": network.as_str()}).to_string()],
+            "INSERT INTO audit_log (action, detail) VALUES ('start_hsrd', ?1)",
+            [serde_json::json!({
+                "data_dir": data_dir,
+                "network": network.as_str(),
+                "wallet_rpc_api_version": 1
+            })
+            .to_string()],
         )?;
     }
 
-    // Atomic outcome: wait until the node's RPC actually answers (success), the
-    // child exits (failure — surface the log tail), or we time out (still
-    // starting — node_status polling flips it green when RPC comes up).
     for _ in 0..30 {
-        // Did the child die during startup?
         {
-            let mut guard = state
-                .hsd_child
+            let mut slot = state
+                .hsrd_child
                 .lock()
                 .map_err(|e| AppError::Lock(e.to_string()))?;
-            let exited = match guard.as_mut() {
-                Some(child) => matches!(child.try_wait(), Ok(Some(_))),
-                None => true,
-            };
+            let exited = slot
+                .as_mut()
+                .is_none_or(|process| !matches!(process.try_wait(), Ok(None)));
             if exited {
-                *guard = None;
-                drop(guard);
-                let tail = read_log_tail(&log_path);
-                // A data-dir lock means another hsd already owns this directory.
-                if tail.contains("LOCK") || tail.contains("Resource temporarily unavailable") {
-                    return Err(AppError::Other(format!(
-                        "A node is already running on this data directory ({data_dir}). \
-                         The app will use it once it can reach its RPC — set the Node RPC \
-                         API key in Settings (or it's read from hsd.conf).{tail}"
-                    )));
-                }
-                return Err(AppError::Other(format!("hsd exited on startup.{tail}")));
+                *slot = None;
+                return Err(AppError::Other(format!(
+                    "hsrd exited during startup.{}",
+                    read_log_tail(&log_path)
+                )));
             }
         }
         if let Some(probe) = probe_node(&state).await {
@@ -469,134 +412,100 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
                 "process_alive": true,
                 "height": probe.height,
                 "data_dir": data_dir,
-                "network": network.as_str(),
+                "network": network.as_str()
             }));
         }
         sleep(Duration::from_millis(500)).await;
     }
-
     Ok(serde_json::json!({
         "connected": false,
         "process_alive": true,
         "data_dir": data_dir,
         "network": network.as_str(),
-        "message": "hsd is still starting; status will update when its RPC responds.",
+        "message": "hsrd is starting; authenticated wallet RPC will become available after initialization"
     }))
 }
 
-/// Last few lines of the hsd log, for surfacing a startup failure reason.
-pub(crate) fn read_log_tail(path: &std::path::Path) -> String {
-    match std::fs::read_to_string(path) {
-        Ok(s) if !s.trim().is_empty() => {
-            let tail: Vec<&str> = s.trim_end().lines().rev().take(8).collect();
-            let tail = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+pub(crate) fn read_log_tail(path: &Path) -> String {
+    fs::read_to_string(path)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            let tail = value
+                .trim_end()
+                .lines()
+                .rev()
+                .take(8)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
             format!(" Last log lines:\n{tail}")
-        }
-        _ => String::new(),
-    }
+        })
+        .unwrap_or_default()
 }
 
-/// Stop hsd. Kills the child we spawned (if any) AND asks any reachable node to
-/// shut down over RPC — so the app can stop a node it adopted or that the user
-/// started outside the app, not just one from this session.
 #[tauri::command]
-pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
-    let child = {
-        let mut guard = state
-            .hsd_child
-            .lock()
-            .map_err(|e| AppError::Lock(e.to_string()))?;
-        guard.take()
-    };
-    if let Some(mut child) = child {
-        let _ = child.kill();
-        let _ = child.wait();
+pub async fn stop_hsrd(state: State<'_, AppState>) -> Result<(), AppError> {
+    let child = state
+        .hsrd_child
+        .lock()
+        .map_err(|e| AppError::Lock(e.to_string()))?
+        .take();
+    if let Some(mut process) = child {
+        process.kill()?;
+        process.wait()?;
+    } else if probe_node(&state).await.is_some() {
+        return Err(AppError::InvalidInput(
+            "the reachable hsrd process is externally managed and was not stopped".into(),
+        ));
     }
-
-    // Snapshot settings (no lock held across the await), then ask any node still
-    // answering to stop. Best-effort: if nothing's reachable, that's fine.
-    let settings = {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::get_settings(&db)?
-    };
-    let _ = NodeRpcClient::from_settings(&settings).stop().await;
-
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db.execute(
-        "INSERT INTO audit_log (action, detail) VALUES ('stop_hsd', ?1)",
-        ["{}"],
+        "INSERT INTO audit_log (action, detail) VALUES ('stop_hsrd', 'managed sidecar')",
+        [],
     )?;
     Ok(())
 }
 
-/// The on-disk chain artifacts to move aside for a re-sync, by network. Mainnet
-/// stores them at the prefix root; other networks under a per-network subdir.
-/// Pure (path computation only) so it's unit-testable.
-pub(crate) fn chain_paths_for_network(data_dir: &str, network: Network) -> Vec<std::path::PathBuf> {
-    let base = std::path::Path::new(data_dir);
-    match network {
-        Network::Main => ["blocks", "chain", "tree"]
-            .iter()
-            .map(|p| base.join(p))
-            .collect(),
-        Network::Testnet => vec![base.join("testnet")],
-        Network::Regtest => vec![base.join("regtest")],
-        Network::Simnet => vec![base.join("simnet")],
-    }
-}
-
-/// One-click recovery for an index/flag mismatch: stop the managed node, move the
-/// current chain data to a timestamped backup under the data dir, then start hsd
-/// fresh so it re-syncs with the wallet's required indexes. The backup is
-/// reversible (the wallet/key/conf are left in place); reads stay node-free.
 #[tauri::command]
-pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    // 1. Stop any node we manage so the chain files aren't locked.
+pub async fn resync_hsrd_chain(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+    if let Some(mut process) = state
+        .hsrd_child
+        .lock()
+        .map_err(|e| AppError::Lock(e.to_string()))?
+        .take()
     {
-        let mut guard = state
-            .hsd_child
-            .lock()
-            .map_err(|e| AppError::Lock(e.to_string()))?;
-        if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        let _ = process.kill();
+        let _ = process.wait();
     }
-
     let data_dir = resolve_data_dir(&state)?;
-    let network = active_profile_network(&state);
-
-    // 2. Move existing chain artifacts into a timestamped backup dir.
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let backup = std::path::Path::new(&data_dir).join(format!("_noindex-backup-{ts}"));
-    std::fs::create_dir_all(&backup)
-        .map_err(|e| AppError::Other(format!("cannot create backup dir: {e}")))?;
-    let mut moved = Vec::new();
-    for p in chain_paths_for_network(&data_dir, network) {
-        if p.exists() {
-            let name = p
-                .file_name()
-                .ok_or_else(|| AppError::Other("bad chain path".into()))?;
-            std::fs::rename(&p, backup.join(name))
-                .map_err(|e| AppError::Other(format!("cannot move {}: {e}", p.display())))?;
-            moved.push(p.display().to_string());
-        }
+    let authorization = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        resolve_authorization(&db::queries::get_settings(&db)?)
+    };
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let backup = data_dir.with_file_name(format!(
+        "{}-backup-{timestamp}",
+        data_dir
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("hsrd-data")
+    ));
+    if data_dir.exists() {
+        fs::rename(&data_dir, &backup)?;
+    }
+    fs::create_dir_all(&data_dir)?;
+    if !authorization.is_empty() {
+        write_private_file(&data_dir.join(AUTHORIZATION_FILE), authorization.as_bytes())?;
     }
     {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         db.execute(
-            "INSERT INTO audit_log (action, detail) VALUES ('resync_hsd_chain', ?1)",
-            [serde_json::json!({
-                "backup": backup.display().to_string(),
-                "moved": moved,
-            })
-            .to_string()],
+            "INSERT INTO audit_log (action, detail) VALUES ('resync_hsrd_chain', ?1)",
+            [serde_json::json!({ "backup": backup }).to_string()],
         )?;
     }
-
-    // 3. Start hsd fresh — it re-syncs with the required indexes.
-    start_hsd(state).await
+    start_hsrd(state).await
 }

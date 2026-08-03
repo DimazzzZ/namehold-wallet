@@ -13,7 +13,7 @@ use crate::noncustodial::network::Network;
 use crate::noncustodial::sync::COV_BID;
 use crate::tests::names_cmd_tests::{
     create_full_test_state, first_derived_address, insert_valid_profile, mock_app_with,
-    mock_names_rpc, set_node_rpc_url,
+    mock_names_rpc, set_hsrd_rpc_url,
 };
 use tauri::Manager;
 
@@ -84,7 +84,7 @@ async fn recover_restores_commitment_and_unlocks_reveal() {
     let (profile_id, addr) = {
         let conn = state.db.lock().unwrap();
         let id = insert_valid_profile(&conn, "regtest");
-        set_node_rpc_url(&conn, &server.url());
+        set_hsrd_rpc_url(&conn, &server.url());
         let addr = first_derived_address(&conn, &id);
         (id, addr)
     };

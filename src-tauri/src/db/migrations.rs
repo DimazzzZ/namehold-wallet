@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 const MIGRATIONS: &[(&str, &str)] = &[
     ("001", include_str!("../sql/001_initial.sql")),
-    ("002", include_str!("../sql/002_hsd_prefix.sql")),
+    ("002", include_str!("../sql/002_hsrd_data_dir.sql")),
     ("003", include_str!("../sql/003_provider_modes.sql")),
     ("004", include_str!("../sql/004_wallet_addresses.sql")),
     ("005", include_str!("../sql/005_fix_hnsfans_api_url.sql")),
@@ -20,7 +20,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
     ("009", include_str!("../sql/009_node_rpc_settings.sql")),
     ("010", include_str!("../sql/010_drop_legacy_settings.sql")),
-    ("011", include_str!("../sql/011_hsd_data_dir.sql")),
+    ("011", include_str!("../sql/011_hsrd_data_dir.sql")),
     ("012", include_str!("../sql/012_tx_draft_confirmations.sql")),
     ("013", include_str!("../sql/013_owner_address.sql")),
     ("014", include_str!("../sql/014_reveal_end_height.sql")),
@@ -34,6 +34,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
     ("020", include_str!("../sql/020_namebase_history.sql")),
     ("021", include_str!("../sql/021_sync_locks.sql")),
+    ("022", include_str!("../sql/022_hsrd_backend.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -75,7 +76,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 21, "expected 21 migrations, got {count}");
+        assert_eq!(count, 22, "expected 22 migrations, got {count}");
     }
 
     #[test]
@@ -86,7 +87,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 21);
+        assert_eq!(count, 22);
     }
 
     #[test]

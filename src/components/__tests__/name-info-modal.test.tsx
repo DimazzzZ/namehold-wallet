@@ -6,7 +6,7 @@ import { NameInfoModal } from "../NameInfoModal";
 import { useReadNameInfo, useNameBids, useNameRecords } from "../../queries/read";
 import { useActiveProfile } from "../../queries/wallet";
 import { useNodeLive } from "../../queries/node";
-import type { HsdName, NameBids } from "../../types";
+import type { ChainName, NameBids } from "../../types";
 
 // Mock the query hooks
 vi.mock("../../queries/read");
@@ -57,7 +57,7 @@ beforeEach(() => {
 
 describe("NameInfoModal", () => {
   it("renders state badge and countdown for a BIDDING name", () => {
-    const nameInfo: HsdName = {
+    const nameInfo: ChainName = {
       name: "example",
       state: "BIDDING",
       registered: false,
@@ -87,10 +87,10 @@ describe("NameInfoModal", () => {
 
   it("does NOT show 'Expired' badge during an active auction phase (REVEAL + expired=true)", () => {
     // A name whose PREVIOUS registration lapsed but that's currently going
-    // through a new auction (REVEAL). hsd reports `expired: true` on the
+    // through a new auction (REVEAL). hsrd reports `expired: true` on the
     // stale prior state; showing that badge alongside "Reveal" confuses
     // users into thinking the current auction is expired. Suppressed.
-    const nameInfo: HsdName = {
+    const nameInfo: ChainName = {
       name: "namehold",
       state: "REVEAL",
       registered: false,
@@ -117,7 +117,7 @@ describe("NameInfoModal", () => {
   });
 
   it("renders Paid price + Top bid for a CLOSED name", () => {
-    const nameInfo: HsdName = {
+    const nameInfo: ChainName = {
       name: "example",
       state: "CLOSED",
       registered: true,
@@ -144,7 +144,7 @@ describe("NameInfoModal", () => {
   });
 
   it("hides owner UTXO row when owner is null", () => {
-    const nameInfo: HsdName = {
+    const nameInfo: ChainName = {
       name: "example",
       state: "AVAILABLE",
       registered: false,
@@ -166,7 +166,7 @@ describe("NameInfoModal", () => {
   });
 
   it("shows transfer status when transfer is non-zero", () => {
-    const nameInfo: HsdName = {
+    const nameInfo: ChainName = {
       name: "example",
       state: "TRANSFER",
       registered: true,
@@ -188,7 +188,7 @@ describe("NameInfoModal", () => {
   });
 
   it("renders DNS records with TTL when node is live", () => {
-    const nameInfo: HsdName = {
+    const nameInfo: ChainName = {
       name: "example",
       state: "CLOSED",
       registered: true,
@@ -224,7 +224,7 @@ describe("NameInfoModal", () => {
   });
 
   it("shows 'Requires a synced node' when node is not live", () => {
-    const nameInfo: HsdName = {
+    const nameInfo: ChainName = {
       name: "example",
       state: "CLOSED",
       registered: true,
@@ -248,7 +248,7 @@ describe("NameInfoModal", () => {
   });
 
   it("renders explorer link", () => {
-    const nameInfo: HsdName = {
+    const nameInfo: ChainName = {
       name: "example",
       state: "CLOSED",
       registered: true,
@@ -272,7 +272,7 @@ describe("NameInfoModal", () => {
   });
 
   it("passes raw (punycode) name to read_name_info", () => {
-    const nameInfo: HsdName = {
+    const nameInfo: ChainName = {
       name: "xn--e1afmkfd.xn--p1ai",
       state: "CLOSED",
       registered: true,
@@ -294,7 +294,7 @@ describe("NameInfoModal", () => {
   });
 
   it("renders my bids when present", () => {
-    const nameInfo: HsdName = {
+    const nameInfo: ChainName = {
       name: "example",
       state: "BIDDING",
       registered: false,

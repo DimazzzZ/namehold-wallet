@@ -63,18 +63,18 @@ describe("normalizeNameInputAce", () => {
     expect(normalizeNameInputAce(".сбер")).toBe("xn--90ai7ab");
   });
 
-  it("strips a trailing .hsd suffix before encoding", () => {
-    expect(normalizeNameInputAce("сбер.hsd")).toBe("xn--90ai7ab");
+  it("strips a trailing .hsrd suffix before encoding", () => {
+    expect(normalizeNameInputAce("сбер.hsrd")).toBe("xn--90ai7ab");
   });
 
   it("collapses repeated dots and trims", () => {
-    // Trailing whitespace/dots stripped; .hsd suffix removed.
-    expect(normalizeNameInputAce("  сбер.hsd  ")).toBe("xn--90ai7ab");
+    // Trailing whitespace/dots stripped; .hsrd suffix removed.
+    expect(normalizeNameInputAce("  сбер.hsrd  ")).toBe("xn--90ai7ab");
   });
 
   it("passes ASCII input through (unchanged, lowercased)", () => {
     expect(normalizeNameInputAce("Example")).toBe("example");
-    expect(normalizeNameInputAce("example.hsd")).toBe("example");
+    expect(normalizeNameInputAce("example.hsrd")).toBe("example");
   });
 
   it("returns empty string for blank input", () => {

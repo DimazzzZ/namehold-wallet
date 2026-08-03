@@ -24,9 +24,9 @@ available and users have had reasonable time to upgrade.
 |-------|-------------------|---------------------|-------------------|
 | BIP39 seed phrase | Argon2id + AES-256-GCM under user passphrase (`noncustodial/vault.rs`) | Time-boxed session; zeroized on lock (`noncustodial/session.rs`) | Never crosses into the webview |
 | Namebase session cookie | AES-256-GCM under OS-keyring-held DEK (`noncustodial/cookie_vault.rs`) | Held only during the HTTP request | Redacted from `get_settings`; write-denied from renderer |
-| hsd node RPC api-key | Redacted from `get_settings`; write-denied from renderer | Held in `NodeRpcClient` struct | Never sent to the webview |
-| hsd node RPC api-key (transport) | N/A (not stored encrypted) | `guard_transport` rejects remote cleartext HTTP when a key is set; HTTPS required per [hsd API guidance](https://hsd-dev.org/api-docs/#authentication) | N/A |
-| Background sync daemon (`namehold-syncd`) | N/A — daemon holds no secrets and never has access to key material | Reads hsd RPC via the shared settings (api-key never leaves the Rust process); read-only against hsd | Rust binary — never touches the webview |
+| hsrd exact Authorization value | Redacted from `get_settings`; write-only renderer field | Held only by the Rust RPC client | Never returned to the webview |
+| hsrd transport | N/A | `guard_transport` rejects authenticated remote cleartext HTTP; HTTPS is required away from loopback | N/A |
+| Background sync daemon (`namehold-syncd`) | N/A — daemon has no key material | Uses the same authenticated read-only wallet restoration boundary | Rust binary — never touches the webview |
 
 ---
 
@@ -85,24 +85,18 @@ VS Code, etc.).
 - Renderer cannot write the setting: `namebase_base_url` is in
   `RENDERER_WRITE_DENYLIST`
 
-#### 4. hsd node RPC api-key sent over cleartext HTTP
+#### 4. hsrd Authorization sent over cleartext HTTP
 
-The [hsd API documentation](https://hsd-dev.org/api-docs/#authentication)
-explicitly states: *"If you intend to use API via network and setup api-key,
-make sure to setup ssl too."*
-
-**Mitigation:** `guard_transport` (`noncustodial/rpc.rs:139`) enforces this
-requirement:
+**Mitigation:** `guard_transport` (`noncustodial/hsrd.rs`) enforces the wallet
+RPC v1 transport boundary:
 
 - `https://` is accepted for any host (key retained)
 - `http://` is accepted only for loopback addresses (`127.0.0.1`, `::1`,
   `localhost`)
-- Remote `http://` with a non-empty api-key is **rejected** with a clear error
-- If `NodeRpcClient::new` is called with a remote HTTP URL, it blanks the
-  api-key defensively (`rpc.rs:172-184`) so the key is never sent cleartext
-  even if the guard is somehow bypassed
-
-This fully complies with the hsd node API's security guidance.
+- Remote `http://` with a non-empty Authorization value is **rejected**
+- The client binds every success to API version 1 and its random request ID
+- Chain and mempool multi-read operations reject changed snapshot bindings
+- Name-state evidence is accepted only after strict Urkel proof verification
 
 ### The lower-risk alternative (documented, not enforced)
 
@@ -120,7 +114,7 @@ then use Namehold's chain-monitoring to confirm arrival. This workflow:
 The Namebase session cookie is used **only** by the migration helper
 (`commands/namebase.rs`). It is **never** needed for the wallet's core
 non-custodial operation (holding keys, signing transactions, broadcasting via
-hsd RPC, tracking owned names). A user who disconnects Namebase loses zero
+hsrd RPC, tracking owned names). A user who disconnects Namebase loses zero
 wallet functionality.
 
 ---
@@ -133,7 +127,7 @@ The background sync daemon (`namehold-syncd`) is a separate Rust binary that:
 
 - Runs every 60 seconds when "Sync in background" is enabled (Settings →
   Connections, default ON).
-- Reads wallet profiles (UTXOs, name states, transactions) from the local hsd
+- Reads wallet profiles (UTXOs, name states, transactions) from the local hsrd
   node via RPC.
 - Writes sync data to the shared SQLite database (`~/.namehold/portfolio.db`).
 - Writes its process ID to `~/.namehold/syncd.pid` for lifecycle tracking.
@@ -148,20 +142,19 @@ The background sync daemon (`namehold-syncd`) is a separate Rust binary that:
 heartbeats (every 10 seconds) and stale-lock takeover (after 30 seconds) to
 detect and recover from crashes.
 
-#### 2. Orphaned hsd after app exit
+#### 2. Orphaned hsrd after app exit
 
-**Behavior (not a vulnerability):** When "Sync in background" is ON, hsd is not
+**Behavior (not a vulnerability):** When "Sync in background" is ON, hsrd is not
 killed when the app closes. The daemon keeps it alive for background syncing.
-This is intentional — the next app launch adopts the running hsd. To stop hsd,
-disable "Sync in background" or manually click **Stop hsd** in Settings →
+This is intentional — the next app launch adopts the running hsrd. To stop hsrd,
+disable "Sync in background" or manually click **Stop hsrd** in Settings →
 Connections.
 
 **Residual risk (honest disclosure):** An attacker with local code execution as
-the app user could potentially interact with the orphaned hsd node (e.g., via
-RPC) if they know the API key. This is no worse than if the user left hsd
-running manually. Mitigations: run hsd on loopback only (`127.0.0.1`), use a
-strong API key, and disable "Sync in background" if you're concerned about
-orphaned processes.
+the app user could read the managed sidecar's private Authorization file and
+query its wallet-scoped RPC. The sidecar still has no seed or signing ability.
+Use OS account isolation and disable background sync if the process should not
+remain available after the UI closes.
 
 #### 3. Daemon reads stale or corrupted sync data
 
@@ -187,7 +180,7 @@ steal funds or sign malicious transactions. It can only read and write sync data
 | Base URL redirect (production) | Release build ignores setting | `namebase.rs:24-27` | `namebase.rs::tests` |
 | Cookie on disk (offline attacker) | AES-256-GCM under OS-keyring DEK | `cookie_vault.rs` | `cookie_vault::tests` |
 | Signing without confirmation | Rust-owned secure window | `tx.rs:505-506` | `tx_lifecycle_tests` |
-| RPC api-key sent cleartext | `guard_transport` rejects remote HTTP | `rpc.rs:139-168` | `rpc.rs::tests` |
+| Authorization sent cleartext | `guard_transport` rejects remote HTTP | `noncustodial/hsrd.rs` | `hsrd::tests` |
 | Audit log leaks secrets | Redacted to `***` on write; re-redacted on read | `settings.rs:40-41, 68-69` | `settings_cmd_tests` |
 
 ---
@@ -243,8 +236,8 @@ dependencies of this crate.
 - [README](./README.md) -- feature overview and architecture
 - [User Manual](./docs/USER_MANUAL.md) -- user-facing security guidance
 - [CHANGELOG](./CHANGELOG.md) -- security fixes and improvements
-- [hsd API docs](https://hsd-dev.org/api-docs/) -- Handshake node RPC reference
+- [hsrd wallet RPC v1](https://github.com/handshake-rs/hns-node-rs/blob/main/docs/WALLET_RPC_V1.md) -- authenticated wallet boundary
 | Daemon crashes mid-sync | Heartbeat every 10s; stale-lock takeover after 30s; app respawns daemon on next startup | `db/sync_lock.rs`, `commands/daemon_ctl.rs` | `sync_lock` tests |
 | Concurrent writes by app + daemon | Cross-process `sync_locks` table; app acquires with priority, daemon preempts stale locks | `db/sync_lock.rs`, `commands/sync.rs` | `sync_lock`, `sync_race` tests |
-| Daemon signs / broadcasts (would-be) | Daemon has no access to key material or signing paths — it only reads hsd and writes sync data | `bin/namehold-syncd.rs`, `daemon/mod.rs` | (compile-time — no signing API in daemon build) |
-| hsd left running after app exit | Intentional when "Sync in background" ON; hsd bound to loopback + api-key required | `lib.rs` (setup/exit hooks) | `settings-background-sync` tests |
+| Daemon signs / broadcasts (would-be) | Daemon has no access to key material or signing paths — it only reads hsrd and writes sync data | `bin/namehold-syncd.rs`, `daemon/mod.rs` | (compile-time — no signing API in daemon build) |
+| hsrd left running after app exit | Intentional when background sync is enabled; loopback + exact Authorization required | `lib.rs` | `settings-background-sync` tests |

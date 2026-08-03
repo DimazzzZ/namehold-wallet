@@ -52,7 +52,6 @@ bip39 = "2"
 # Hashing primitives used across HD derivation, address encoding, and sighash.
 hmac = "0.12"
 sha2 = "0.10"
-sha3 = "0.10"
 ripemd = "0.1"
 blake2 = "0.10"
 # Bech32 for Handshake (hs1...) address encoding.
@@ -64,9 +63,20 @@ rand = "0.8"
 hex = "0.4"
 # Zeroize secrets in memory.
 zeroize = { version = "1", features = ["derive"] }
-# base64 encoding for hsd-compatible signed-message output (signmessagewithname parity).
+# base64 encoding for hsrd-compatible signed-message output (signmessagewithname parity).
 base64 = "0.22"
 url = "2.5.8"
+
+# --- Canonical Handshake protocol implementation (hns-rs) ---
+# Keep the transaction, covenant, script, swap, and marketplace layers on one
+# immutable revision so wire formats cannot drift independently.
+hns-primitives = { git = "https://github.com/handshake-rs/hns-rs.git", rev = "15f715576a2111fae2a8c65fccc7860ede64bd98" }
+hns-transaction = { git = "https://github.com/handshake-rs/hns-rs.git", rev = "15f715576a2111fae2a8c65fccc7860ede64bd98" }
+hns-covenants = { git = "https://github.com/handshake-rs/hns-rs.git", rev = "15f715576a2111fae2a8c65fccc7860ede64bd98" }
+hns-script = { git = "https://github.com/handshake-rs/hns-rs.git", rev = "15f715576a2111fae2a8c65fccc7860ede64bd98" }
+hns-swap = { git = "https://github.com/handshake-rs/hns-rs.git", rev = "15f715576a2111fae2a8c65fccc7860ede64bd98" }
+hns-marketplace-protocol = { git = "https://github.com/handshake-rs/hns-rs.git", rev = "15f715576a2111fae2a8c65fccc7860ede64bd98" }
+hns-urkel-proof = { git = "https://github.com/handshake-rs/hns-rs.git", rev = "15f715576a2111fae2a8c65fccc7860ede64bd98" }
 
 # OS keyring for the Namebase-cookie data-encryption key. v3 ships no backend
 # by default — pick the native store per OS. Linux uses the Secret Service

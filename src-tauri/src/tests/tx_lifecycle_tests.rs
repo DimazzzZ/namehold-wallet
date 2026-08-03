@@ -1,8 +1,8 @@
-//! Full transaction lifecycle integration tests against a mock hsd node.
+//! Full transaction lifecycle integration tests against a mock hsrd node.
 //!
 //! These drive the REAL `#[tauri::command]` functions (`build_send_hns_draft`,
 //! `sign_tx_draft`, `broadcast_tx_draft`) with a managed `AppState` over a fully
-//! -migrated in-memory DB and a `mockito` JSON-RPC node. They prove the
+//! -migrated in-memory DB and strict `mockito` wallet-RPC v1 envelopes. They prove the
 //! end-to-end orchestration — coin selection → draft persistence → signing →
 //! broadcast/status — behaves correctly, and that every guard that protects
 //! funds (watch-only, non-positive amount, profile mismatch, broadcasting an
@@ -24,6 +24,10 @@ use crate::noncustodial::hd::{self, ExtendedPrivKey, ExtendedPubKey};
 use crate::noncustodial::network::Network;
 use crate::noncustodial::session::SignerSession;
 use crate::noncustodial::types::TxSummary;
+use crate::tests::names_cmd_tests::{
+    mock_chain_binding, mock_chain_tip, test_tip, wallet_error, wallet_result, TEST_CHAIN_EPOCH,
+    TEST_HASH,
+};
 use crate::AppState;
 
 const MNEMONIC: &str = "april coyote civil finger crane uncle situate moon choice wrong \
@@ -82,7 +86,7 @@ fn seeded_conn(node_url: &str, value: u64) -> rusqlite::Connection {
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE).unwrap();
-    db::queries::set_setting(&conn, "node_rpc_url", node_url).unwrap();
+    db::queries::set_setting(&conn, "hsrd_rpc_url", node_url).unwrap();
 
     conn.execute(
         "INSERT INTO derived_addresses
@@ -140,7 +144,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsrd_child: std::sync::Mutex::new(None),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
             )),
@@ -174,19 +178,159 @@ fn summary_of(row: &db::queries::TxDraftRow) -> TxSummary {
     serde_json::from_str(&row.summary_json).expect("summary parses")
 }
 
+fn evidence_transaction() -> &'static (String, String) {
+    static TX: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    TX.get_or_init(|| {
+        let tx = crate::noncustodial::tx::Transaction::new();
+        (tx.txid(), hex::encode(tx.serialize()))
+    })
+}
+
+async fn mock_mempool_snapshot(server: &mut mockito::Server, tip: u32) -> mockito::Mock {
+    server
+        .mock("POST", "/api/v1/wallet")
+        .match_body(mockito::Matcher::Regex("mempool_scripts_page".into()))
+        .with_header("content-type", "application/json")
+        .with_body(wallet_result(serde_json::json!({
+            "chain_epoch": TEST_CHAIN_EPOCH,
+            "tip": test_tip(tip),
+            "instance_nonce": TEST_HASH,
+            "generation": 11,
+            "entries": [],
+            "continuation": null
+        })))
+        .expect_at_least(1)
+        .create_async()
+        .await
+}
+
+async fn mock_fee_quote(server: &mut mockito::Server, tip: u32) -> Vec<mockito::Mock> {
+    let mut mocks = vec![mock_chain_binding(server, tip).await];
+    mocks.push(mock_mempool_snapshot(server, tip).await);
+    mocks.push(
+        server
+            .mock("POST", "/api/v1/wallet")
+            .match_body(mockito::Matcher::Regex("quote_transaction_fee".into()))
+            .with_header("content-type", "application/json")
+            .with_body(wallet_result(serde_json::json!({
+                "txid": evidence_transaction().0.clone(),
+                "chain_epoch": TEST_CHAIN_EPOCH,
+                "tip": test_tip(tip),
+                "mempool_instance_nonce": TEST_HASH,
+                "mempool_generation": 11,
+                "target_blocks": 6,
+                "rate_atomic_units_per_1000_policy_vbytes": 1_000,
+                "rate_sample_count": 1,
+                "rate_source": "mempool",
+                "transaction_weight": 400,
+                "transaction_sigops": 1,
+                "sigop_adjusted_policy_vbytes": 100,
+                "minimum_policy_fee_atomic_units": 100,
+                "actual_fee_atomic_units": 1_000,
+                "meets_minimum_policy_fee": true,
+                "minimum_policy_fee_shortfall_atomic_units": 0
+            })))
+            .create_async()
+            .await,
+    );
+    mocks
+}
+
+async fn mock_broadcast_success(
+    server: &mut mockito::Server,
+    tip: u32,
+    txid: &str,
+) -> Vec<mockito::Mock> {
+    let mut mocks = mock_fee_quote(server, tip).await;
+    mocks.push(
+        server
+            .mock("POST", "/api/v1/wallet")
+            .match_body(mockito::Matcher::Regex("broadcast_transaction".into()))
+            .with_header("content-type", "application/json")
+            .with_body(wallet_result(serde_json::json!({
+                "txid": txid,
+                "newly_admitted": true,
+                "attempted_peers": 2,
+                "queued_peers": 2,
+                "failed_peers": 0
+            })))
+            .create_async()
+            .await,
+    );
+    mocks
+}
+
+async fn mock_broadcast_rejection(server: &mut mockito::Server, tip: u32) -> Vec<mockito::Mock> {
+    let mut mocks = mock_fee_quote(server, tip).await;
+    mocks.push(
+        server
+            .mock("POST", "/api/v1/wallet")
+            .match_body(mockito::Matcher::Regex("broadcast_transaction".into()))
+            .with_header("content-type", "application/json")
+            .with_body(wallet_error(
+                "transaction_rejected",
+                "transaction inputs are missing or spent",
+            ))
+            .create_async()
+            .await,
+    );
+    mocks
+}
+
+#[derive(Clone, Copy)]
+enum TestTxState {
+    Unknown,
+    Mempool,
+    Confirmed { height: u32, confirmations: u32 },
+}
+
+async fn mock_transaction_evidence(
+    server: &mut mockito::Server,
+    tip: u32,
+    state: TestTxState,
+) -> mockito::Mock {
+    let inclusion = match state {
+        TestTxState::Confirmed {
+            height,
+            confirmations,
+        } => Some(serde_json::json!({
+            "block_hash": TEST_HASH,
+            "height": height,
+            "transaction_index": 0,
+            "confirmations": confirmations
+        })),
+        _ => None,
+    };
+    let known = !matches!(state, TestTxState::Unknown);
+    server
+        .mock("POST", "/api/v1/wallet")
+        .match_body(mockito::Matcher::Regex("transaction_evidence".into()))
+        .with_header("content-type", "application/json")
+        .with_body(wallet_result(serde_json::json!({
+            "chain_epoch": TEST_CHAIN_EPOCH,
+            "mempool_instance_nonce": TEST_HASH,
+            "mempool_generation": 11,
+            "tip": test_tip(tip),
+            "status": match state {
+                TestTxState::Unknown => "unknown",
+                TestTxState::Mempool => "mempool",
+                TestTxState::Confirmed { .. } => "confirmed"
+            },
+            "inclusion": inclusion,
+            "payload": if known { "retained" } else { "absent" },
+            "transaction_hex": known.then(|| evidence_transaction().1.clone())
+        })))
+        .create_async()
+        .await
+}
+
 // --- happy path: build -> sign -> broadcast --------------------------------
 
 #[tokio::test]
 async fn full_lifecycle_build_sign_broadcast_succeeds() {
     let mut server = mockito::Server::new_async().await;
-    // hsd returns the txid string as the JSON-RPC result.
     let node_txid = "abc0000000000000000000000000000000000000000000000000000000000def";
-    let m = server
-        .mock("POST", "/")
-        .with_header("content-type", "application/json")
-        .with_body(format!(r#"{{"result":"{node_txid}","error":null,"id":1}}"#))
-        .create_async()
-        .await;
+    let _mocks = mock_broadcast_success(&mut server, 1_000, node_txid).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     let app = app_with(conn);
@@ -228,7 +372,6 @@ async fn full_lifecycle_build_sign_broadcast_succeeds() {
         .expect("broadcast");
     assert_eq!(result.status, "broadcasted");
     assert_eq!(result.txid, node_txid);
-    m.assert_async().await;
 
     // The draft row reflects the broadcast.
     let row = draft_row(&app, &draft_id);
@@ -241,12 +384,7 @@ async fn full_lifecycle_build_sign_broadcast_succeeds() {
 #[tokio::test]
 async fn broadcast_failure_marks_draft_failed_and_errors() {
     let mut server = mockito::Server::new_async().await;
-    // hsd-style RPC error envelope (e.g. "missing inputs" / "bad-txns").
-    let _m = server
-        .mock("POST", "/")
-        .with_body(r#"{"result":null,"error":{"message":"TX rejected: bad-txns-inputs-missingorspent","code":-26},"id":1}"#)
-        .create_async()
-        .await;
+    let _mocks = mock_broadcast_rejection(&mut server, 1_000).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     let app = app_with(conn);
@@ -274,45 +412,41 @@ async fn broadcast_failure_marks_draft_failed_and_errors() {
 
 // --- confirmation tracking (broadcasted -> confirmed / dropped) ------------
 
-const DRAFT_TXID: &str = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0";
-
 /// Seed a `broadcasted` draft (with a txid) for the active profile.
 fn seed_broadcasted_draft(conn: &rusqlite::Connection, id: &str) {
     db::queries::insert_tx_draft(conn, id, PROFILE, "send_hns", "00", "{}", "{}").unwrap();
-    db::queries::update_tx_draft_status(conn, id, "broadcasted", None, Some(DRAFT_TXID)).unwrap();
+    db::queries::update_tx_draft_status(
+        conn,
+        id,
+        "broadcasted",
+        None,
+        Some(&evidence_transaction().0),
+    )
+    .unwrap();
 }
 
-/// getblockchaininfo + getrawtransaction mocks (matched by method in the body).
+/// Chain readiness plus snapshot-bound transaction evidence.
 async fn mock_node(
     server: &mut mockito::Server,
-    tip: i64,
-    getrawtx_body: &str,
-) -> (mockito::Mock, mockito::Mock) {
-    let info = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(format!(
-            r#"{{"result":{{"blocks":{tip},"headers":{tip}}},"error":null,"id":1}}"#
-        ))
-        .expect_at_least(1)
-        .create_async()
-        .await;
-    let tx = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getrawtransaction".into()))
-        .with_body(getrawtx_body)
-        .create_async()
-        .await;
-    (info, tx)
+    tip: u32,
+    state: TestTxState,
+) -> Vec<mockito::Mock> {
+    let mut mocks = mock_chain_tip(server, tip, 1.0).await;
+    mocks.push(mock_chain_binding(server, tip).await);
+    mocks.push(mock_transaction_evidence(server, tip, state).await);
+    mocks
 }
 
 #[tokio::test]
 async fn refresh_marks_a_mined_draft_confirmed() {
     let mut server = mockito::Server::new_async().await;
-    let (_info, _tx) = mock_node(
+    let _mocks = mock_node(
         &mut server,
         437,
-        r#"{"result":{"confirmations":3,"height":435},"error":null,"id":1}"#,
+        TestTxState::Confirmed {
+            height: 435,
+            confirmations: 3,
+        },
     )
     .await;
 
@@ -333,12 +467,7 @@ async fn refresh_marks_a_mined_draft_confirmed() {
 async fn refresh_marks_a_long_unfound_draft_dropped() {
     let mut server = mockito::Server::new_async().await;
     // Node reachable, but the tx is not found (evicted / never confirmed).
-    let (_info, _tx) = mock_node(
-        &mut server,
-        500,
-        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
-    )
-    .await;
+    let _mocks = mock_node(&mut server, 500, TestTxState::Unknown).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_broadcasted_draft(&conn, "drf2");
@@ -372,12 +501,7 @@ async fn refresh_keeps_a_fresh_unfound_draft_pending() {
     // A just-broadcast tx the node hasn't indexed yet must NOT be killed early —
     // it stays `broadcasted` until the grace window elapses.
     let mut server = mockito::Server::new_async().await;
-    let (_info, _tx) = mock_node(
-        &mut server,
-        500,
-        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
-    )
-    .await;
+    let _mocks = mock_node(&mut server, 500, TestTxState::Unknown).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_broadcasted_draft(&conn, "drf3"); // created_at = now (age ~0s)
@@ -406,7 +530,14 @@ async fn refresh_is_a_soft_noop_when_node_unreachable() {
 /// profile.
 fn seed_confirmed_draft(conn: &rusqlite::Connection, id: &str, height: i64) {
     db::queries::insert_tx_draft(conn, id, PROFILE, "send_hns", "00", "{}", "{}").unwrap();
-    db::queries::update_tx_draft_status(conn, id, "broadcasted", None, Some(DRAFT_TXID)).unwrap();
+    db::queries::update_tx_draft_status(
+        conn,
+        id,
+        "broadcasted",
+        None,
+        Some(&evidence_transaction().0),
+    )
+    .unwrap();
     db::queries::update_tx_draft_confirmation(conn, id, height, None).unwrap();
 }
 
@@ -414,16 +545,11 @@ fn seed_confirmed_draft(conn: &rusqlite::Connection, id: &str, height: i64) {
 async fn refresh_reverts_a_reorged_confirmed_draft_to_broadcasted() {
     // The draft was confirmed at height 490 (well within the 12-confirmation
     // finality depth at tip 495: 495-490+1 = 6 confs). The node has now
-    // "forgotten" the tx entirely (getrawtransaction 404s) — a reorg un-mined
+    // returned definitive unknown-transaction evidence — a reorg un-mined
     // it. It must revert to `broadcasted` (re-entering mempool tracking) with
     // its height cleared, NOT stay silently `confirmed`.
     let mut server = mockito::Server::new_async().await;
-    let (_info, _tx) = mock_node(
-        &mut server,
-        495,
-        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
-    )
-    .await;
+    let _mocks = mock_node(&mut server, 495, TestTxState::Unknown).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_confirmed_draft(&conn, "drf5", 490);
@@ -444,7 +570,7 @@ async fn refresh_reverts_a_reorged_confirmed_draft_to_broadcasted() {
     );
     assert_eq!(
         row.txid.as_deref(),
-        Some(DRAFT_TXID),
+        Some(evidence_transaction().0.as_str()),
         "txid must survive the revert"
     );
     assert!(
@@ -468,12 +594,7 @@ async fn refresh_reverted_draft_gets_a_fresh_dropped_grace_window() {
     // Node never finds the tx across both polls below — first read is
     // interpreted as "reorg un-mined the confirmed draft", second read (now
     // that it's back to `broadcasted`) is the dropped-grace decision point.
-    let (_info, _tx) = mock_node(
-        &mut server,
-        495,
-        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
-    )
-    .await;
+    let _mocks = mock_node(&mut server, 495, TestTxState::Unknown).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_confirmed_draft(&conn, "drf12", 490);
@@ -514,17 +635,12 @@ async fn refresh_reverted_draft_gets_a_fresh_dropped_grace_window() {
 async fn refresh_does_not_repoll_a_deeply_buried_confirmed_draft() {
     // Confirmed at height 100, tip 111 → 111-100+1 = 12 confirmations, exactly
     // at the finality depth. Must NOT be re-polled at all (cheap exit) — the
-    // getrawtransaction mock asserts it is never hit.
+    // Transaction-evidence mock asserts it is never hit.
     let mut server = mockito::Server::new_async().await;
-    let _info = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"blocks":111,"headers":111},"error":null,"id":1}"#)
-        .create_async()
-        .await;
+    let _info = mock_chain_tip(&mut server, 111, 1.0).await;
     let _tx = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getrawtransaction".into()))
+        .mock("POST", "/api/v1/wallet")
+        .match_body(mockito::Matcher::Regex("transaction_evidence".into()))
         .expect(0)
         .create_async()
         .await;
@@ -551,13 +667,11 @@ async fn refresh_does_not_repoll_a_deeply_buried_confirmed_draft() {
 
 // --- broadcast_pending auto-resolution (folded-in from Task 5 review) ------
 
-const PENDING_TXID: &str = "cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafeba";
-
 /// Seed a `broadcast_pending` draft (transport-ambiguous broadcast, no DB
 /// txid) whose `summary_json` carries the locally-computed txid, exactly as
 /// `build_send_hns_draft`/`sign_tx_draft` persist it in production.
 fn seed_broadcast_pending_draft(conn: &rusqlite::Connection, id: &str) {
-    let summary = format!(r#"{{"txid":"{PENDING_TXID}"}}"#);
+    let summary = format!(r#"{{"txid":"{}"}}"#, evidence_transaction().0);
     db::queries::insert_tx_draft(conn, id, PROFILE, "send_hns", "00", "{}", &summary).unwrap();
     db::queries::update_tx_draft_status(conn, id, "broadcast_pending", Some("ambiguous"), None)
         .unwrap();
@@ -570,12 +684,7 @@ async fn refresh_promotes_broadcast_pending_to_broadcasted_when_node_knows_it() 
     // `broadcasted` and persist the locally-computed txid (the DB `txid`
     // column was NULL until now).
     let mut server = mockito::Server::new_async().await;
-    let (_info, _tx) = mock_node(
-        &mut server,
-        500,
-        r#"{"result":{"confirmations":0},"error":null,"id":1}"#,
-    )
-    .await;
+    let _mocks = mock_node(&mut server, 500, TestTxState::Mempool).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_broadcast_pending_draft(&conn, "drf7");
@@ -586,7 +695,7 @@ async fn refresh_promotes_broadcast_pending_to_broadcasted_when_node_knows_it() 
 
     let row = draft_row(&app, "drf7");
     assert_eq!(row.status, "broadcasted");
-    assert_eq!(row.txid.as_deref(), Some(PENDING_TXID));
+    assert_eq!(row.txid.as_deref(), Some(evidence_transaction().0.as_str()));
 }
 
 #[tokio::test]
@@ -594,10 +703,13 @@ async fn refresh_promotes_broadcast_pending_straight_to_confirmed_when_already_m
     // The node already mined it while the broadcast outcome was ambiguous —
     // the exact "mined-then-retried mislabel" this closes (Task 5 review).
     let mut server = mockito::Server::new_async().await;
-    let (_info, _tx) = mock_node(
+    let _mocks = mock_node(
         &mut server,
         500,
-        r#"{"result":{"confirmations":2,"height":499},"error":null,"id":1}"#,
+        TestTxState::Confirmed {
+            height: 499,
+            confirmations: 2,
+        },
     )
     .await;
 
@@ -610,7 +722,7 @@ async fn refresh_promotes_broadcast_pending_straight_to_confirmed_when_already_m
     let row = draft_row(&app, "drf8");
     assert_eq!(row.status, "confirmed");
     assert_eq!(row.confirmation_height, Some(499));
-    assert_eq!(row.txid.as_deref(), Some(PENDING_TXID));
+    assert_eq!(row.txid.as_deref(), Some(evidence_transaction().0.as_str()));
 }
 
 #[tokio::test]
@@ -620,12 +732,7 @@ async fn refresh_fails_broadcast_pending_after_grace_and_releases_reservation() 
     // creation) has elapsed — treat like a failed broadcast: `failed` status,
     // reservation released, so the coin isn't held hostage forever.
     let mut server = mockito::Server::new_async().await;
-    let (_info, _tx) = mock_node(
-        &mut server,
-        500,
-        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
-    )
-    .await;
+    let _mocks = mock_node(&mut server, 500, TestTxState::Unknown).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_broadcast_pending_draft(&conn, "drf9");
@@ -660,12 +767,7 @@ async fn refresh_leaves_a_fresh_broadcast_pending_draft_untouched_within_grace()
     // Same "not found" answer, but the draft was updated moments ago — still
     // within the grace window, so it must NOT be judged failed yet.
     let mut server = mockito::Server::new_async().await;
-    let (_info, _tx) = mock_node(
-        &mut server,
-        500,
-        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
-    )
-    .await;
+    let _mocks = mock_node(&mut server, 500, TestTxState::Unknown).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_broadcast_pending_draft(&conn, "drf10"); // updated_at = now
@@ -774,20 +876,16 @@ async fn sign_rejects_when_locked() {
 }
 
 #[tokio::test]
-async fn remote_node_source_can_broadcast() {
+async fn remote_sidecar_source_can_broadcast() {
     // A configured REMOTE node must be able to broadcast (the old
     // allow_remote_broadcast gate was removed — configuring the node is the
-    // opt-in). Same build→sign→broadcast flow, but chain_source = remote_node.
+    // opt-in). Same build→sign→broadcast flow, but chain_source = remote_sidecar.
     let mut server = mockito::Server::new_async().await;
     let node_txid = "fee0000000000000000000000000000000000000000000000000000000000abc";
-    let _m = server
-        .mock("POST", "/")
-        .with_body(format!(r#"{{"result":"{node_txid}","error":null,"id":1}}"#))
-        .create_async()
-        .await;
+    let _mocks = mock_broadcast_success(&mut server, 1_000, node_txid).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
-    db::queries::set_setting(&conn, "chain_source", "remote_node").unwrap();
+    db::queries::set_setting(&conn, "chain_source", "remote_sidecar").unwrap();
     let app = app_with(conn);
 
     let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
@@ -805,72 +903,41 @@ async fn remote_node_source_can_broadcast() {
     assert_eq!(result.txid, node_txid);
 }
 
-#[tokio::test]
-async fn explorer_source_refuses_broadcast_before_any_rpc() {
-    // In read-only (explorer) mode broadcasting must be refused at the command
-    // level BEFORE touching the node. The mock server would return success if it
-    // were ever called, so erroring out proves the guard fired (no funds moved).
-    let mut server = mockito::Server::new_async().await;
-    let m = server
-        .mock("POST", "/")
-        .with_body(r#"{"result":"deadbeef","error":null,"id":1}"#)
-        .expect(0) // must never be hit
-        .create_async()
-        .await;
-
-    let conn = seeded_conn(&server.url(), 2_000_000);
-    db::queries::set_setting(&conn, "chain_source", "explorer").unwrap();
-    let app = app_with(conn);
-
-    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
-        .await
-        .expect("build");
-    unlock(&app, PROFILE);
-    sign_tx_draft_inner(&app.state(), &draft.id)
-        .await
-        .expect("sign");
-
-    let err = broadcast_tx_draft(app.state(), draft.id.clone())
-        .await
-        .expect_err("explorer mode must refuse to broadcast");
-    match err {
-        AppError::InvalidInput(msg) => assert!(msg.contains("read-only"), "msg: {msg}"),
-        other => panic!("expected read-only InvalidInput, got {other:?}"),
-    }
-    // The draft must NOT be recorded as broadcasted, and the node was never hit.
-    assert_ne!(draft_row(&app, &draft.id).status, "broadcasted");
-    m.assert_async().await;
-}
-
 // --- sync_wallet_state against a mock node ---------------------------------
 
 #[tokio::test]
 async fn sync_wallet_state_fetches_coins_and_reports_reachable() {
     let mut server = mockito::Server::new_async().await;
     let addr = recv_addr();
-    let coin = format!(
-        r#"{{"hash":"{COIN_TXID}","index":7,"value":2000000,"address":"{addr}","height":120,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
-    );
-    // Specific matchers first; the catch-all (best-effort getrawtransaction /
-    // getnameinfo) last so it only handles what the specific ones don't.
-    let _bi = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(r#"{"result":{"chain":"main","blocks":150000},"error":null,"id":1}"#)
-        .create_async()
-        .await;
-    // Address coins come from the node REST route, NOT JSON-RPC — return the raw
-    // coin array (no envelope).
+    let (_version, program) = crate::noncustodial::address::decode(Network::Main, &addr).unwrap();
+    let _tip = mock_chain_tip(&mut server, 150_000, 1.0).await;
     let _coins = server
-        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
-        .with_body(format!(r#"[{coin}]"#))
+        .mock("POST", "/api/v1/wallet")
+        .match_body(mockito::Matcher::Regex("confirmed_scripts_page".into()))
+        .with_header("content-type", "application/json")
+        .with_body(wallet_result(serde_json::json!({
+            "chain_epoch": TEST_CHAIN_EPOCH,
+            "tip": test_tip(150_000),
+            "history": [],
+            "utxos": [{
+                "script_index": 0,
+                "coin": {
+                    "outpoint": { "txid": COIN_TXID, "index": 7 },
+                    "value": 2_000_000,
+                    "height": 120,
+                    "coinbase": false,
+                    "address": { "version": 0, "hash": hex::encode(program) },
+                    "covenant": { "kind": 0, "items": [] }
+                }
+            }],
+            "script_examinations": 1,
+            "continuation": null
+        })))
+        .expect_at_least(1)
         .create_async()
         .await;
-    let _other = server
-        .mock("POST", "/")
-        .with_body(r#"{"result":null,"error":{"message":"not found"},"id":1}"#)
-        .create_async()
-        .await;
+    let _mempool = mock_mempool_snapshot(&mut server, 150_000).await;
+    let _tx = mock_transaction_evidence(&mut server, 150_000, TestTxState::Unknown).await;
 
     // seeded_conn already inserts a tracked_utxo for COIN_TXID; the sync will
     // upsert the node-reported coin over it.
@@ -885,24 +952,12 @@ async fn sync_wallet_state_fetches_coins_and_reports_reachable() {
     assert_eq!(res["liquidDoos"], serde_json::json!(2000000));
 }
 
-// --- get_write_capability: synced + address-indexed gating -----------------
-
-/// hsd `getblockchaininfo` body with the given (lowercase) verificationprogress.
-fn bi_body(progress: f64) -> String {
-    format!(
-        r#"{{"result":{{"chain":"main","blocks":100,"verificationprogress":{progress}}},"error":null,"id":1}}"#
-    )
-}
+// --- get_write_capability: synced + wallet-index gating --------------------
 
 #[tokio::test]
 async fn write_capability_blocks_while_node_syncing() {
     let mut server = mockito::Server::new_async().await;
-    let _bi = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(bi_body(0.4))
-        .create_async()
-        .await;
+    let _node = mock_chain_tip(&mut server, 100, 0.4).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     let app = app_with(conn);
@@ -967,19 +1022,17 @@ async fn sign_rejects_when_user_cancels_confirmation() {
 }
 
 #[tokio::test]
-async fn write_capability_blocks_when_not_address_indexed() {
+async fn write_capability_blocks_when_wallet_index_is_unavailable() {
     let mut server = mockito::Server::new_async().await;
-    let _bi = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(bi_body(0.9999))
-        .create_async()
-        .await;
-    // Synced, but the node's REST coin route rejects (address index disabled).
-    let _coins = server
-        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
-        .with_status(400)
-        .with_body(r#"{"error":{"message":"Address indexing not available."}}"#)
+    let _node = mock_chain_tip(&mut server, 100, 1.0).await;
+    let _wallet_index = server
+        .mock("POST", "/api/v1/wallet")
+        .match_body(mockito::Matcher::Regex("confirmed_scripts_page".into()))
+        .with_header("content-type", "application/json")
+        .with_body(wallet_error(
+            "wallet_index_unavailable",
+            "wallet index is not ready",
+        ))
         .create_async()
         .await;
 
@@ -988,30 +1041,25 @@ async fn write_capability_blocks_when_not_address_indexed() {
     unlock(&app, PROFILE);
 
     let cap = get_write_capability(app.state()).await.expect("cap");
-    assert!(!cap.can_write, "un-indexed node must block writes");
+    assert!(
+        !cap.can_write,
+        "an unavailable wallet index must block writes"
+    );
     assert!(
         cap.reason
             .unwrap_or_default()
             .to_lowercase()
-            .contains("address-index"),
-        "reason should mention address indexing",
+            .contains("wallet index"),
+        "reason should mention the wallet index",
     );
 }
 
 #[tokio::test]
 async fn write_capability_allows_when_synced_indexed_and_unlocked() {
     let mut server = mockito::Server::new_async().await;
-    let _bi = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(bi_body(0.9999))
-        .create_async()
-        .await;
-    let _coins = server
-        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
-        .with_body("[]")
-        .create_async()
-        .await;
+    let _node = mock_chain_tip(&mut server, 100, 1.0).await;
+    let _wallet_index = mock_chain_binding(&mut server, 100).await;
+    let _mempool = mock_mempool_snapshot(&mut server, 100).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     let app = app_with(conn);
@@ -1155,11 +1203,7 @@ async fn deleting_a_draft_frees_its_coin_for_a_later_draft() {
 async fn deleting_a_broadcasted_draft_is_refused() {
     let mut server = mockito::Server::new_async().await;
     let node_txid = "abc0000000000000000000000000000000000000000000000000000000000def";
-    let _m = server
-        .mock("POST", "/")
-        .with_body(format!(r#"{{"result":"{node_txid}","error":null,"id":1}}"#))
-        .create_async()
-        .await;
+    let _mocks = mock_broadcast_success(&mut server, 1_000, node_txid).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     let app = app_with(conn);
@@ -1251,11 +1295,7 @@ async fn resign_uses_the_reserved_coin_even_if_a_larger_coin_arrived_later() {
 #[tokio::test]
 async fn broadcast_rejection_frees_the_coin_for_a_new_draft() {
     let mut server = mockito::Server::new_async().await;
-    let _m = server
-        .mock("POST", "/")
-        .with_body(r#"{"result":null,"error":{"message":"TX rejected: bad-txns-inputs-missingorspent","code":-26},"id":1}"#)
-        .create_async()
-        .await;
+    let _mocks = mock_broadcast_rejection(&mut server, 1_000).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     let app = app_with(conn);
@@ -1281,12 +1321,9 @@ async fn broadcast_rejection_frees_the_coin_for_a_new_draft() {
 }
 
 #[tokio::test]
-async fn broadcast_transport_error_keeps_reservation_and_is_not_marked_failed() {
-    // Finding 2 (Task 5 review): a transport failure (connection refused/
-    // dropped, timeout, ...) is NOT the same as the node answering with a
-    // definitive rejection — the node may already hold the tx. Point the
-    // draft at an address nothing listens on so `send_raw_transaction` fails
-    // with a transport error (`AppError::Http`, not `AppError::Rpc`).
+async fn fee_quote_transport_error_keeps_signed_reservation() {
+    // If the mandatory pre-broadcast policy quote cannot be obtained, relay is
+    // never attempted and the signed draft remains safely retryable.
     let conn = seeded_conn("http://127.0.0.1:12037", 2_000_000);
     let app = app_with(conn);
     let to = recv_addr();
@@ -1301,7 +1338,7 @@ async fn broadcast_transport_error_keeps_reservation_and_is_not_marked_failed() 
     {
         let state = app.state::<AppState>();
         let conn = state.db.lock().unwrap();
-        db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+        db::queries::set_setting(&conn, "hsrd_rpc_url", "http://127.0.0.1:1").unwrap();
     }
 
     let err = broadcast_tx_draft(app.state(), draft.id.clone())
@@ -1312,17 +1349,10 @@ async fn broadcast_transport_error_keeps_reservation_and_is_not_marked_failed() 
         "a transport failure must NOT be classified as a definitive node rejection, got {err:?}"
     );
 
-    // The draft is recorded as ambiguous, never "failed" (which would claim
-    // the broadcast definitely did not happen — we don't know that).
+    // The quote failed before relay, so the draft stays signed and retryable.
     let row = draft_row(&app, &draft.id);
-    assert_eq!(
-        row.status, "broadcast_pending",
-        "a transport-ambiguous broadcast must not be recorded as failed"
-    );
-    assert!(
-        row.error_message.is_some(),
-        "the ambiguous outcome should still be explained"
-    );
+    assert_eq!(row.status, "signed");
+    assert!(row.error_message.is_none());
 
     // Critically: the coin reservation survives — a new build must NOT be
     // able to claim it while the first draft's fate is unknown.
@@ -1332,7 +1362,7 @@ async fn broadcast_transport_error_keeps_reservation_and_is_not_marked_failed() 
     );
     let err2 = build_send_hns_draft(app.state(), to, 500_000, Some(1), None)
         .await
-        .expect_err("a transport-ambiguous broadcast must keep its reservation");
+        .expect_err("a failed policy quote must keep its reservation");
     assert!(matches!(err2, AppError::InvalidInput(_)), "got {err2:?}");
 }
 
@@ -1402,14 +1432,7 @@ async fn explicit_release_frees_the_coin_without_deleting_the_draft() {
     );
 }
 
-// --- get_write_capability: synced = chain tip reached (blocks >= headers) ----
-
-/// getblockchaininfo body with explicit blocks/headers + (low) progress.
-fn bi_full(blocks: i64, headers: i64, progress: f64) -> String {
-    format!(
-        r#"{{"result":{{"chain":"main","blocks":{blocks},"headers":{headers},"verificationprogress":{progress}}},"error":null,"id":1}}"#
-    )
-}
+// --- get_write_capability: authenticated sync status -----------------------
 
 #[tokio::test]
 async fn write_capability_blocks_at_tip_with_low_progress() {
@@ -1417,12 +1440,7 @@ async fn write_capability_blocks_at_tip_with_low_progress() {
     // reports "tip reached" while still far behind the real chain. The progress
     // gate must block writes in this case.
     let mut server = mockito::Server::new_async().await;
-    let _bi = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(bi_full(317, 317, 0.9997))
-        .create_async()
-        .await;
+    let _node = mock_chain_tip(&mut server, 317, 0.9997).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     let app = app_with(conn);
@@ -1444,12 +1462,7 @@ async fn write_capability_blocks_at_tip_with_low_progress() {
 async fn write_capability_blocks_when_behind_tip() {
     // blocks < headers → genuinely mid-sync → blocked, even with high progress.
     let mut server = mockito::Server::new_async().await;
-    let _bi = server
-        .mock("POST", "/")
-        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
-        .with_body(bi_full(100, 200, 0.9999))
-        .create_async()
-        .await;
+    let _node = mock_chain_tip(&mut server, 100, 0.5).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     let app = app_with(conn);

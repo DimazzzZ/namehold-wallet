@@ -39,7 +39,7 @@ type Handler = (args?: Record<string, unknown>) => unknown;
 const OPEN_BLOCKS = 3;
 const BID_BLOCKS = 5;
 const REVEAL_BLOCKS = 5;
-/** Heuristic hsd-ish minutes per block, only for the *hoursUntil* display. */
+/** Heuristic hsrd-ish minutes per block, only for the *hoursUntil* display. */
 const MINUTES_PER_BLOCK = 10;
 
 type MockPhase =
@@ -345,10 +345,10 @@ function auctionPositionNames(): string[] {
 const handlers: Record<string, Handler> = {
   // ── Settings ──────────────────────────────────────────────────────────
   get_settings: () => ({
-    node_rpc_url: "http://127.0.0.1:12037",
-    node_rpc_api_key: "",
-    hsd_prefix: "",
-    hsd_path: "",
+    hsrd_rpc_url: "http://127.0.0.1:12037",
+    hsrd_authorization: "",
+    hsrd_data_dir: "",
+    hsrd_path: "",
     explorer_api_url: "https://e.hnsfans.com",
     address_gap_limit: "20",
     signer_session_timeout_seconds: "900",
@@ -621,7 +621,7 @@ const handlers: Record<string, Handler> = {
 
   // ── Node ──────────────────────────────────────────────────────────────
   node_status: () => ({
-    binary: "hsd",
+    binary: "hsrd",
     binary_found: false,
     version: "webqa-mock",
     data_dir: "",
@@ -642,7 +642,7 @@ const handlers: Record<string, Handler> = {
     error: null,
   }),
 
-  start_hsd: () => ({
+  start_hsrd: () => ({
     running: true,
     network: "mainnet",
     height: 100000,
@@ -652,8 +652,8 @@ const handlers: Record<string, Handler> = {
     message: "Started (mock)",
   }),
 
-  stop_hsd: () => null,
-  resync_hsd_chain: () => null,
+  stop_hsrd: () => null,
+  resync_hsrd_chain: () => null,
 
   // ── Drafts ────────────────────────────────────────────────────────────
   list_tx_drafts: () => {

@@ -1,7 +1,7 @@
 //! `namehold-syncd` — background sync daemon.
 //!
 //! Runs continuously (60s interval), syncing all wallet profiles from the
-//! HSD node into the local SQLite database at `~/.namehold/portfolio.db`.
+//! HSRD node into the local SQLite database at `~/.namehold/portfolio.db`.
 //!
 //! Spawned by the Tauri app as a detached process when the user enables the
 //! "Sync in background" setting. Coordinates with the app via a database-backed

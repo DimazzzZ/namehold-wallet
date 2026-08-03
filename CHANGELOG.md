@@ -3,10 +3,19 @@
 ## [Unreleased]
 
 ### Added
-- **Background HSD Sync Daemon** — a separate Rust binary (`namehold-syncd`) that
-  syncs wallet profiles (UTXOs, name states, transactions) from the local hsd node
+- **Authenticated hsrd wallet backend** — Namehold now uses hsrd wallet RPC v1
+  for wallet restoration, history/UTXOs, proof-bound name state, mempool
+  reconciliation, final fee quotes, transaction admission/relay, and tracked
+  swap contracts. Managed sidecars use a private exact-Authorization file;
+  remote sidecars require HTTPS when authorization is configured.
+- **Canonical hns-rs protocol stack** — transaction, covenant, script/sighash,
+  resource, swap, marketplace-protocol, and Urkel-proof handling are pinned to
+  one immutable hns-rs revision. Namehold retains encrypted seed custody,
+  BIP39/BIP44 derivation, transaction planning, and local signing.
+- **Background HSRD Sync Daemon** — a separate Rust binary (`namehold-syncd`) that
+  syncs wallet profiles (UTXOs, name states, transactions) from the local hsrd node
   every 60 seconds, even when the app is closed. Controlled by a Settings checkbox
-  **"Sync in background"** (default ON). When enabled, hsd stays running after app
+  **"Sync in background"** (default ON). When enabled, hsrd stays running after app
   exit; the next launch adopts it. A cross-process DB lock table (`sync_locks`)
   coordinates the app's manual Sync and the daemon via heartbeats (10s) and
   stale-lock takeover (30s) to prevent concurrent writes. Crash recovery: the app
@@ -55,8 +64,8 @@
   attack-surface mitigations, residual risks (honest disclosure), the
   lower-risk manual-transfer alternative, and a reference table mapping each
   concern to the enforcing code + tests.
-- Redact sensitive settings (`namebase_cookie`, `node_rpc_api_key`,
-  `hsd_api_key`) from `get_settings`; the renderer now sees only
+- Redact sensitive settings (`namebase_cookie`, `hsrd_authorization`) from
+  `get_settings`; the renderer now sees only
   `__has_<key>` presence markers, never the raw value.
 - Enforce a host allowlist on the Namebase API base URL, require HTTPS for
   the real Namebase host (no cleartext), and treat the `namebase_base_url`
@@ -69,8 +78,8 @@
   main webview cannot swap details silently.
 - Redact sensitive values in `audit_log`; `get_audit_log` also re-redacts
   legacy plaintext rows on read (defense in depth).
-- Refuse to send an RPC api-key over plaintext HTTP to a non-loopback host;
-  `NodeRpcClient::new` blanks the key defensively when misused.
+- Refuse to send an Authorization value over plaintext HTTP to a non-loopback
+  host; remote authenticated sidecars require HTTPS.
 - Ship a restrictive Content Security Policy for the Tauri webviews.
 
 ### CI / tooling
@@ -95,24 +104,24 @@
 ### Fixed
 - README and USER_MANUAL privacy claim: the app is local-first, not
   local-only. The docs now spell out that the HNSFans explorer sees wallet
-  addresses and tracked names by default and how to run a local hsd node
+  addresses and tracked names by default and how to run a local hsrd node
   for fully local lookups.
 
 ## [0.2.0]
 
 ### Added
 - **Node-only reads + chain scanner** — owned names, balances, and per-name bid
-  history read directly from the local hsd node when synced, eliminating explorer
+  history read directly from the local hsrd node when synced, eliminating explorer
   dependency for synced wallets. A background chain scanner indexes BID/REVEAL
   outpoints for honest bid display.
 - **DNS record prefill** — the Manage DNS editor in the Name Actions modal now
   prefills existing on-chain records (`getnameresource`) so you can edit rather
   than re-enter from scratch.
-- **Autostart hsd** — the app starts hsd on launch by default (toggleable in
-  Settings → Connections). If hsd is already running, it adopts the existing node.
+- **Autostart hsrd** — the app starts hsrd on launch by default (toggleable in
+  Settings → Connections). If hsrd is already running, it adopts the existing node.
 - **Message signing** — sign an arbitrary message with the wallet key that owns a
   name (proves name ownership off-chain).
-- **Richer DNS editor** — real hsd record types (DS, GLUE4/6, SYNTH4/6) with
+- **Richer DNS editor** — real hsrd record types (DS, GLUE4/6, SYNTH4/6) with
   multi-field editing; raw-JSON advanced toggle.
 - **Owned-names filter** — substring search for the Owned Names list.
 - **Per-bid detail in auctions** — `NameBidsPanel` shows individual bids with
@@ -139,11 +148,11 @@
 
 ### Added
 - Non-custodial wallet: HD key derivation (BIP39/BIP32), transaction building, signing, address generation
-- hsd chain backend: direct RPC to hsd node for balance, names, transactions, and mempool
+- hsrd chain backend: direct RPC to hsrd node for balance, names, transactions, and mempool
 - Name operations: register, transfer, renew, update, redeem, finalize
 - Auction flow: bidding, revealing, and domain lifecycle tracking
 - Namebase integration: import domains from Namebase, bulk transfers, renewal calendar
-- hsd node control: start/stop/restart, one-click re-sync, index-setup adaptation
+- hsrd node control: start/stop/restart, one-click re-sync, index-setup adaptation
 - Multi-provider read architecture with advanced and onboarding flows
 - App shell with navigation, settings, and wallet lifecycle management
 - Transaction confirmation tracking and send-max support

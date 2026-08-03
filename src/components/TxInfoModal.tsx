@@ -15,7 +15,7 @@ interface TxInfoModalProps {
 }
 
 /**
- * Read-only modal displaying on-chain transaction details from the local hsd
+ * Read-only modal displaying on-chain transaction details from the local hsrd
  * node. Shows: status (Confirmed/Pending), confirmations, block height,
  * timestamp, fee, input/output counts, total output value.
  *
@@ -69,15 +69,14 @@ export function TxInfoModal({ txid, open, onClose, isMainnet }: TxInfoModalProps
           </div>
         )}
 
-        {/* Node lacks --index-tx — distinct signal, not a sync issue. */}
+        {/* Wallet evidence is unavailable — distinct from an unknown tx. */}
         {!isLoading && indexDisabled && (
           <div
             className="text-amber-700 bg-amber-50 border border-amber-200 rounded p-2 text-xs"
             data-testid="tx-info-index-disabled"
           >
-            This node has transaction indexing disabled. Enable{" "}
-            <code className="font-mono">--index-tx</code> on your hsd node to
-            view transaction details.
+            hsrd's authenticated wallet index is unavailable. Start hsrd from
+            Settings with wallet indexing enabled and let restoration finish.
           </div>
         )}
 

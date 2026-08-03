@@ -48,7 +48,7 @@ export const BatchSchema = z.object({
   updated_at: z.string(),
 });
 
-export const HsdBalanceSchema = z.object({
+export const ChainBalanceSchema = z.object({
   confirmed: z.number(),
   unconfirmed: z.number(),
   locked_unconfirmed: z.number().nullable(),

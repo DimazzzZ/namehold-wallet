@@ -1,9 +1,9 @@
-//! Bid blind + nonce, verified against hsd v6.1.1.
+//! Bid blind + nonce, verified against hsrd v6.1.1.
 //!
 //! `blind(value, nonce) = blake2b256( u64_le(value) || nonce[32] )`
-//!   (hsd `rules.blind`).
+//!   (hsrd `rules.blind`).
 //!
-//! Nonce derivation (hsd `wallet.generateNonce` / `_getNoncePublicKeys`):
+//! Nonce derivation (hsrd `wallet.generateNonce` / `_getNoncePublicKeys`):
 //!   index  = (hi(value) ^ lo(value)) & 0x7fffffff
 //!   pubkey = accountXpub.derive(index).publicKey        (non-hardened, public)
 //!   nonce  = blake2b256( addressHash160[20] || pubkey[33] || nameHash[32] )
@@ -16,7 +16,7 @@ use crate::error::AppError;
 use crate::noncustodial::hd::ExtendedPubKey;
 use crate::noncustodial::tx::blake2b256;
 
-/// hsd `Rules.blind`: blake2b256 of `u64_le(value) || nonce`.
+/// hsrd `Rules.blind`: blake2b256 of `u64_le(value) || nonce`.
 pub fn compute_blind(value: u64, nonce: &[u8; 32]) -> [u8; 32] {
     let mut data = Vec::with_capacity(40);
     data.extend_from_slice(&value.to_le_bytes());
@@ -24,7 +24,7 @@ pub fn compute_blind(value: u64, nonce: &[u8; 32]) -> [u8; 32] {
     blake2b256(&data)
 }
 
-/// hsd `wallet.generateNonce` for a single-sig account.
+/// hsrd `wallet.generateNonce` for a single-sig account.
 ///
 /// * `account_xpub` — the BIP44 account node (`m/44'/coin'/account'`).
 /// * `name_hash` — SHA3-256 of the name.

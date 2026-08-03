@@ -37,7 +37,7 @@ npx playwright test
 
 ### Current limitations
 The web mock (`src/lib/webqa-mock.ts`) is **static** — it returns canned data and does not persist state across commands:
-- `start_hsd()` returns success but `node_status()` still returns the hardcoded "stopped" state.
+- `start_hsrd()` returns success but `node_status()` still returns the hardcoded "stopped" state.
 - Building/signing/broadcasting a draft does not change the drafts list or transaction history.
 - Auction phase transitions are not simulated.
 - `set_background_sync_enabled()` returns success but does not actually spawn or
@@ -80,42 +80,35 @@ To verify background sync works correctly:
 1. **Enable background sync:** Toggle **Settings → Connections → "Sync in
    background"** ON. Confirm the daemon spawns (check `~/.namehold/syncd.pid`
    exists and contains a valid PID).
-2. **Close the app:** Verify hsd is still running (e.g., `ps aux | grep hsd` or
+2. **Close the app:** Verify hsrd is still running (e.g., `ps aux | grep hsrd` or
    check the PID file).
 3. **Mine or wait:** Let the daemon sync a few cycles (every 60s). Optionally
    mine a new block on regtest to give the daemon fresh data to sync.
-4. **Reopen the app:** Verify the app adopts the running hsd (no duplicate
+4. **Reopen the app:** Verify the app adopts the running hsrd (no duplicate
    spawn). Check that wallet data is fresh (balances, transaction history).
-5. **Disable background sync:** Toggle OFF. Close the app. Verify hsd is now
-   stopped (PID file is gone, `ps aux | grep hsd` shows no process).
+5. **Disable background sync:** Toggle OFF. Close the app. Verify hsrd is now
+   stopped (PID file is gone, `ps aux | grep hsrd` shows no process).
 
 ---
 
 ## 3. Regtest (deterministic chain)
 
 ### When to use
-Full end-to-end lifecycle validation with real hsd RPC. This is the only mode where auction lifecycle transitions actually happen on-chain.
+Full end-to-end lifecycle validation with real authenticated hsrd wallet RPC v1. This is the only mode where auction lifecycle transitions actually happen on-chain.
 
 ### Prerequisites
-1. hsd installed and available on PATH
-2. A regtest node running:
-   ```bash
-   hsd --network=regtest --daemon
-   ```
-3. The app configured to connect to `http://127.0.0.1:14037` (regtest RPC port).
-4. The regtest wallet funded by mining blocks:
-   ```bash
-   hsd-cli rpc generate 200
-   ```
+1. hsrd installed and started with the regtest flags and private Authorization
+   file in [REGTEST_TESTING.md](REGTEST_TESTING.md).
+2. The app configured for `http://127.0.0.1:14037` and the exact Authorization
+   header value.
+3. A funded derived address. Mine and advance blocks through the node project's
+   supported mining/P2P tooling; wallet RPC v1 intentionally exposes no mining
+   or arbitrary block methods.
 
 ### Auction lifecycle on regtest
-```bash
-# Mine blocks to advance through auction phases
-hsd-cli rpc generate 1    # advance 1 block
-hsd-cli rpc generate 720  # advance through OPENING phase
-hsd-cli rpc generate 720  # advance through BIDDING phase
-hsd-cli rpc generate 1440 # advance through REVEAL phase
-```
+Advance regtest blocks externally and refresh Namehold after each phase. Verify
+that wallet restoration observes OPENING, BIDDING, REVEAL, and CLOSED through
+proof-bound name evidence.
 
 ### What can be validated
 - Send HNS between wallets
@@ -140,7 +133,7 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] Explorer URL field editable and saveable
 - [ ] Node RPC URL field editable and saveable
 - [ ] Node data directory field + Browse button (Tauri only)
-- [ ] Start/Stop hsd buttons reflect node state
+- [ ] Start/Stop hsrd buttons reflect node state
 - [ ] Sync progress bar shows during sync, 100% when synced
 - [ ] Read source label: "Explorer" when node not synced, "Local" when synced
 - [ ] Last error shown when node start fails
@@ -268,7 +261,7 @@ Every exclusion **must** have a short comment explaining why it is excluded.
 | Unit | Pure helpers: validation, derivation, fee math, error mapping | `#[test]` / `#[tokio::test]` |
 | Integration | Command orchestration: DB + mockito RPC + Tauri mock app | `tauri::test::mock_builder`, `mockito`, in-memory SQLite |
 | Native | Secure window, folder picker, real Tauri IPC | `pnpm tauri dev` + `cua-driver` |
-| E2E chain | Send, auction lifecycle, covenant acceptance | `hsd --network=regtest` |
+| E2E chain | Send, auction lifecycle, covenant acceptance | `hsrd --network=regtest` |
 
 ### Regenerating coverage
 
@@ -298,6 +291,6 @@ cd src-tauri && cargo llvm-cov --open
 | Rust read commands | `src-tauri/src/commands/read.rs` |
 | Rust name commands | `src-tauri/src/commands/names.rs` |
 | HNSFans adapter | `src-tauri/src/providers/hnsfans.rs` |
-| Backend types | `src-tauri/src/hsd/types.rs` |
+| Backend types | `src-tauri/src/hsrd/types.rs` |
 | Existing tests | `src/components/__tests__/` |
 | Regtest docs | `docs/REGTEST_TESTING.md` |

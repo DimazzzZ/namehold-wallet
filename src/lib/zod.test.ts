@@ -4,7 +4,7 @@ import {
   BatchStatus,
   AssetSchema,
   BatchSchema,
-  HsdBalanceSchema,
+  ChainBalanceSchema,
 } from "./zod";
 
 describe("MigrationStatus", () => {
@@ -142,10 +142,10 @@ describe("BatchSchema", () => {
   });
 });
 
-describe("HsdBalanceSchema", () => {
+describe("ChainBalanceSchema", () => {
   it("accepts valid balance", () => {
     expect(
-      HsdBalanceSchema.safeParse({
+      ChainBalanceSchema.safeParse({
         confirmed: 1000000,
         unconfirmed: 500000,
         locked_unconfirmed: 0,
@@ -156,7 +156,7 @@ describe("HsdBalanceSchema", () => {
 
   it("accepts null locked fields", () => {
     expect(
-      HsdBalanceSchema.safeParse({
+      ChainBalanceSchema.safeParse({
         confirmed: 1000000,
         unconfirmed: 0,
         locked_unconfirmed: null,

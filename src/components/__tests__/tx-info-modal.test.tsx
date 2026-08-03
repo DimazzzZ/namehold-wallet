@@ -182,7 +182,7 @@ describe("TxInfoModal", () => {
   });
 
   it("renders '—' when fee is null (coinbase / unresolved inputs)", () => {
-    // Coinbase txs and any hsd response with unresolved input coins yield
+    // Coinbase txs and any hsrd response with unresolved input coins yield
     // fee=null; the modal must NOT show "0" — that was the original bug.
     mockUseReadTxInfo.mockReturnValue({
       data: { ...CONFIRMED_TX, fee: null },
@@ -224,12 +224,13 @@ describe("TxInfoModal", () => {
     expect(text).not.toContain("100,000,000");
   });
 
-  it("shows 'tx index required' hint when backend returns tx_index_disabled error", () => {
-    // When the node lacks --index-tx, the backend returns { error: "tx_index_disabled" }
+  it("shows a wallet-index hint when evidence is unavailable", () => {
+    // The backend returns a capability error rather than conflating it with an
+    // unknown transaction.
     // rather than null. The modal must show the targeted hint, NOT the generic
     // "requires synced node" message, and NOT any tx content rows.
     mockUseReadTxInfo.mockReturnValue({
-      data: { error: "tx_index_disabled" },
+      data: { error: "wallet_index_unavailable" },
       isLoading: false,
       isError: false,
     } as any);
@@ -240,7 +241,7 @@ describe("TxInfoModal", () => {
 
     // The index-disabled hint renders.
     expect(screen.getByTestId("tx-info-index-disabled")).toBeInTheDocument();
-    expect(screen.getByText(/--index-tx/)).toBeInTheDocument();
+    expect(screen.getByText(/authenticated wallet index is unavailable/)).toBeInTheDocument();
     // The generic "requires synced node" does NOT render.
     expect(screen.queryByTestId("tx-info-no-node")).not.toBeInTheDocument();
     // No tx content rows render.

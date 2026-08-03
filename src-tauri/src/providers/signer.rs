@@ -1,10 +1,11 @@
 //! Signing abstraction + non-custodial write-capability gate.
 //!
 //! Namehold is non-custodial: it owns key material and signs transactions
-//! locally, sending only fully-signed transactions to a node for broadcast.
+//! locally, sending only fully-signed transactions to the sidecar for admission
+//! and relay.
 //! Write capability therefore depends on TWO things being true at once:
 //!   1. the local signer session is unlocked (keys in memory), and
-//!   2. a broadcaster is available (a node RPC source that can `sendrawtransaction`).
+//!   2. an authenticated sidecar broadcaster is available.
 //!
 //! [`WriteCapability`] captures that gate for the frontend. The actual
 //! covenant-aware signing of a Handshake transaction lives in
@@ -14,13 +15,13 @@
 //! backends; [`LocalHotSigner`] reports availability through it.
 
 use crate::error::AppError;
-use crate::noncustodial::rpc::ChainSource;
+use crate::noncustodial::hsrd::ChainSource;
 use serde::Serialize;
 
 /// Which signing strategy is active. Mirrors the `future_signer_mode` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignerMode {
-    /// No local signer. Writes go through a trusted hsd which signs internally.
+    /// No local signer.
     None,
     /// Reserved: Namehold will hold keys and sign locally. Not yet implemented.
     LocalSignerPlanned,
@@ -116,7 +117,7 @@ impl SignerBackend for LocalHotSigner {
 }
 
 /// Non-custodial write capability: writes require BOTH an unlocked signer AND a
-/// broadcaster that can `sendrawtransaction`. Serialized to the frontend so the
+/// broadcaster that can admit and relay a signed transaction. Serialized to the frontend so the
 /// UI can enable/disable spend actions with an accurate reason.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,9 +134,8 @@ impl WriteCapability {
     /// matters for a remote node source.
     pub fn evaluate(signer_unlocked: bool, source: ChainSource, allow_remote: bool) -> Self {
         let broadcaster_available = match source {
-            ChainSource::LocalNode => true,
-            ChainSource::RemoteNode => allow_remote,
-            ChainSource::Explorer => false,
+            ChainSource::ManagedSidecar => true,
+            ChainSource::RemoteSidecar => allow_remote,
         };
         let reason = if !signer_unlocked && !broadcaster_available {
             Some("Unlock your wallet and configure a node that can broadcast.".to_string())
@@ -143,13 +143,10 @@ impl WriteCapability {
             Some("Unlock your wallet to sign transactions.".to_string())
         } else if !broadcaster_available {
             Some(match source {
-                ChainSource::Explorer => {
-                    "The configured chain source is read-only and cannot broadcast.".to_string()
-                }
-                ChainSource::RemoteNode => {
+                ChainSource::RemoteSidecar => {
                     "Remote broadcast is disabled (enable allow_remote_broadcast).".to_string()
                 }
-                ChainSource::LocalNode => unreachable!(),
+                ChainSource::ManagedSidecar => unreachable!(),
             })
         } else {
             None
@@ -210,23 +207,23 @@ mod tests {
     #[test]
     fn write_capability_requires_unlock_and_broadcaster() {
         // Locked + local node: no write, reason mentions unlocking.
-        let c = WriteCapability::evaluate(false, ChainSource::LocalNode, false);
+        let c = WriteCapability::evaluate(false, ChainSource::ManagedSidecar, false);
         assert!(!c.can_write);
         assert!(c.broadcaster_available);
         assert!(c.reason.unwrap().to_lowercase().contains("unlock"));
 
         // Unlocked + local node: can write.
-        let c = WriteCapability::evaluate(true, ChainSource::LocalNode, false);
+        let c = WriteCapability::evaluate(true, ChainSource::ManagedSidecar, false);
         assert!(c.can_write);
         assert!(c.reason.is_none());
 
         // Unlocked + explorer: read-only source blocks broadcast.
-        let c = WriteCapability::evaluate(true, ChainSource::Explorer, false);
+        let c = WriteCapability::evaluate(true, ChainSource::RemoteSidecar, false);
         assert!(!c.can_write);
         assert!(!c.broadcaster_available);
 
         // Unlocked + remote node, opt-in off vs on.
-        assert!(!WriteCapability::evaluate(true, ChainSource::RemoteNode, false).can_write);
-        assert!(WriteCapability::evaluate(true, ChainSource::RemoteNode, true).can_write);
+        assert!(!WriteCapability::evaluate(true, ChainSource::RemoteSidecar, false).can_write);
+        assert!(WriteCapability::evaluate(true, ChainSource::RemoteSidecar, true).can_write);
     }
 }

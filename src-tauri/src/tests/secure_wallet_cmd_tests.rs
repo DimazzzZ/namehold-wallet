@@ -26,7 +26,7 @@ fn create_full_test_db() -> rusqlite::Connection {
         .unwrap();
     conn.execute_batch(include_str!("../../../src-tauri/src/sql/010_drop_legacy_settings.sql"))
         .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/011_hsd_data_dir.sql"))
+    conn.execute_batch(include_str!("../../../src-tauri/src/sql/011_hsrd_data_dir.sql"))
         .unwrap();
     conn.execute_batch(include_str!("../../../src-tauri/src/sql/012_tx_draft_confirmations.sql"))
         .unwrap();
@@ -39,7 +39,7 @@ fn create_full_test_state() -> AppState {
         db: std::sync::Mutex::new(conn),
         signer: std::sync::Mutex::new(None),
         secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-        hsd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+        hsrd_child: std::sync::Mutex::new(None), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
     }
 }
 

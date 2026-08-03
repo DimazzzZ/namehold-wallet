@@ -16,7 +16,7 @@ import { Badge } from "./ui/Badge";
 import { PageHeader } from "./ui/PageHeader";
 import { normalizeNameInputAce } from "../lib/utils";
 import { displayName } from "../lib/idn";
-import type { HsdName, NameActionCapabilities, AuctionTaskState } from "../types";
+import type { ChainName, NameActionCapabilities, AuctionTaskState } from "../types";
 
 /**
  * Live task states that count as "still in the auction" for a position name
@@ -108,7 +108,7 @@ export function AuctionsView() {
   // registered name is excluded upstream by the backend before it's even a
   // position; a lost-and-redeemed one settles into `unavailableOther`/no
   // caps and quietly drops here) rather than needing separate bookkeeping.
-  const positionRows: HsdName[] = dedupedPositionNames
+  const positionRows: ChainName[] = dedupedPositionNames
     .filter((name) => {
       const caps = capsByName.get(name);
       return caps != null && ACTIVE_POSITION_TASK_STATES.has(caps.taskState);
@@ -153,7 +153,7 @@ export function AuctionsView() {
 
   // Render a task row from the pre-fetched batch capabilities (no per-row
   // fetch — see `capsByName` above).
-  const TaskRow = ({ name: n }: { name: HsdName }) => {
+  const TaskRow = ({ name: n }: { name: ChainName }) => {
     const summary: AuctionTaskSummary | null = taskSummaryFromCapabilities(
       capsByName.get(n.name),
     );

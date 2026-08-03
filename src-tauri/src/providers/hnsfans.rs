@@ -3,7 +3,7 @@
 //! This adapter is strictly read-only. It is used either as a fallback in
 //! `auto_fallback` mode, or as the sole source in `external_read_only` mode.
 //! It normalizes explorer responses into the same shapes the frontend already
-//! consumes from a local hsd (`HsdBalance`, `HsdName`, transaction rows).
+//! consumes from a local hsrd (`ChainBalance`, `ChainName`, transaction rows).
 //!
 //! The HNSFans API surface used here is intentionally small and defensive:
 //! every field is treated as optional and missing data degrades gracefully
@@ -12,8 +12,8 @@
 use reqwest::Client;
 use std::time::Duration;
 
+use crate::chain::types::{ChainBalance, ChainBid, ChainName, ChainNameStats, ChainOwner};
 use crate::error::AppError;
-use crate::hsd::types::{HsdBalance, HsdBid, HsdName, HsdNameStats, HsdOwner};
 
 /// The default explorer API host, serving the documented `/api/addresses`,
 /// `/api/names`, and `/api/txs` routes. This is now the SOLE hard-coded
@@ -77,7 +77,7 @@ impl HnsFansClient {
     /// per-address request fails (transport error or non-2xx), this returns an
     /// error rather than a misleading zero balance. A zero is only returned
     /// when the explorer genuinely reports zero for reachable addresses.
-    pub async fn get_balance(&self, addresses: &[String]) -> Result<HsdBalance, AppError> {
+    pub async fn get_balance(&self, addresses: &[String]) -> Result<ChainBalance, AppError> {
         let mut confirmed: i64 = 0;
         let mut unconfirmed: i64 = 0;
         let mut attempted = 0usize;
@@ -124,7 +124,7 @@ impl HnsFansClient {
             )));
         }
 
-        Ok(HsdBalance {
+        Ok(ChainBalance {
             confirmed,
             unconfirmed,
             locked_unconfirmed: None,
@@ -132,7 +132,7 @@ impl HnsFansClient {
         })
     }
 
-    /// Resolve a set of names into the standard `HsdName` shape.
+    /// Resolve a set of names into the standard `ChainName` shape.
     ///
     /// The `e.hnsfans.com` explorer does not expose a "names owned by address"
     /// route, so name discovery by address is not possible in external
@@ -146,8 +146,8 @@ impl HnsFansClient {
         &self,
         _addresses: &[String],
         watch_names: &[String],
-    ) -> Result<Vec<HsdName>, AppError> {
-        let mut names: Vec<HsdName> = Vec::new();
+    ) -> Result<Vec<ChainName>, AppError> {
+        let mut names: Vec<ChainName> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for watch in watch_names {
@@ -166,7 +166,7 @@ impl HnsFansClient {
     }
 
     /// Fetch detail for a single name via `/api/names/:name`.
-    pub async fn get_name_info(&self, name: &str) -> Result<HsdName, AppError> {
+    pub async fn get_name_info(&self, name: &str) -> Result<ChainName, AppError> {
         let url = format!("{}/api/names/{}", self.base_url, name.trim());
         let resp = self.http.get(&url).send().await?;
         if !resp.status().is_success() {
@@ -189,7 +189,7 @@ impl HnsFansClient {
     /// the name is not found (HTTP 404 or empty/unparseable body) instead of
     /// treating it as an error.  Real transport failures (DNS, timeout, 5xx)
     /// still propagate as `Err`.
-    pub async fn get_name_info_optional(&self, name: &str) -> Result<Option<HsdName>, AppError> {
+    pub async fn get_name_info_optional(&self, name: &str) -> Result<Option<ChainName>, AppError> {
         let url = format!("{}/api/names/{}", self.base_url, name.trim());
         let resp = self.http.get(&url).send().await?;
         // 404 → name unknown to the explorer (untouched / never opened).
@@ -388,7 +388,7 @@ pub trait ExplorerProvider {
     fn get_name_info_optional(
         &self,
         name: &str,
-    ) -> impl std::future::Future<Output = Result<Option<HsdName>, AppError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<ChainName>, AppError>> + Send;
 
     /// The current owner outpoint `(txid, index)` of a name, or `None` if it
     /// has no recorded history.
@@ -415,11 +415,11 @@ pub trait ExplorerProvider {
     fn get_balance(
         &self,
         addresses: &[String],
-    ) -> impl std::future::Future<Output = Result<HsdBalance, AppError>> + Send;
+    ) -> impl std::future::Future<Output = Result<ChainBalance, AppError>> + Send;
 }
 
 impl ExplorerProvider for HnsFansClient {
-    async fn get_name_info_optional(&self, name: &str) -> Result<Option<HsdName>, AppError> {
+    async fn get_name_info_optional(&self, name: &str) -> Result<Option<ChainName>, AppError> {
         HnsFansClient::get_name_info_optional(self, name).await
     }
 
@@ -440,7 +440,7 @@ impl ExplorerProvider for HnsFansClient {
         HnsFansClient::get_address_txids(self, address, limit, offset).await
     }
 
-    async fn get_balance(&self, addresses: &[String]) -> Result<HsdBalance, AppError> {
+    async fn get_balance(&self, addresses: &[String]) -> Result<ChainBalance, AppError> {
         HnsFansClient::get_balance(self, addresses).await
     }
 }
@@ -567,7 +567,7 @@ fn extract_name_array(body: &serde_json::Value) -> Vec<serde_json::Value> {
     }
 }
 
-/// Normalize a name payload into the standard `HsdName` shape.
+/// Normalize a name payload into the standard `ChainName` shape.
 ///
 /// This handles two payload variants:
 ///   * the `e.hnsfans.com` explorer shape, where the name hash is in `hash`,
@@ -575,7 +575,7 @@ fn extract_name_array(body: &serde_json::Value) -> Vec<serde_json::Value> {
 ///     and `revoked` is a numeric flag (`0`/`1`);
 ///   * the older/object-style shape, where the hash is in `nameHash`, `owner`
 ///     is an object/string, and renewal stats live under `stats`.
-pub(crate) fn normalize_name(entry: &serde_json::Value) -> Option<HsdName> {
+pub(crate) fn normalize_name(entry: &serde_json::Value) -> Option<ChainName> {
     let name = entry
         .get("name")
         .and_then(|v| v.as_str())
@@ -587,19 +587,19 @@ pub(crate) fn normalize_name(entry: &serde_json::Value) -> Option<HsdName> {
             .and_then(|v| v.as_str())
             .or_else(|| o.as_str())
             .map(|s| s.to_string());
-        hash.map(|hash| HsdOwner {
+        hash.map(|hash| ChainOwner {
             hash,
             index: o.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
         })
     });
 
-    let stats = entry.get("stats").map(|s| HsdNameStats {
+    let stats = entry.get("stats").map(|s| ChainNameStats {
         renewal_period_start: s.get("renewalPeriodStart").and_then(|v| v.as_u64()),
         renewal_period_end: s.get("renewalPeriodEnd").and_then(|v| v.as_u64()),
         blocks_until_expire: s.get("blocksUntilExpire").and_then(|v| v.as_i64()),
         days_until_expire: s.get("daysUntilExpire").and_then(|v| v.as_f64()),
         // Auction-phase stats — best-effort: the explorer may omit these, in
-        // which case the node `getnameinfo` path is the source of truth.
+        // which case verified node name evidence is the source of truth.
         open_period_start: s.get("openPeriodStart").and_then(|v| v.as_u64()),
         open_period_end: s.get("openPeriodEnd").and_then(|v| v.as_u64()),
         bid_period_start: s.get("bidPeriodStart").and_then(|v| v.as_u64()),
@@ -645,7 +645,7 @@ pub(crate) fn normalize_name(entry: &serde_json::Value) -> Option<HsdName> {
     });
 
     // Per-bid detail (Task 1 / auction bids panel). Only the HNSFans explorer
-    // supplies this — node `getnameinfo` has no `bids` array, so this stays
+    // supplies this — node name evidence has no `bids` array, so this stays
     // `None` for node-sourced entries (nothing to map). A bid entry missing
     // `txid` is still kept (see `normalize_bid`) so it counts toward totals.
     let bids = entry
@@ -653,7 +653,7 @@ pub(crate) fn normalize_name(entry: &serde_json::Value) -> Option<HsdName> {
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(normalize_bid).collect());
 
-    Some(HsdName {
+    Some(ChainName {
         name,
         name_hash,
         state: entry
@@ -678,8 +678,8 @@ pub(crate) fn normalize_name(entry: &serde_json::Value) -> Option<HsdName> {
 /// Every field is optional and defensively extracted — a bid missing `txid`
 /// (not yet broadcast/indexed by the explorer) is still returned so it counts
 /// toward `myBidCount`/totals; it just can't be matched to a local commitment.
-fn normalize_bid(entry: &serde_json::Value) -> Option<HsdBid> {
-    Some(HsdBid {
+fn normalize_bid(entry: &serde_json::Value) -> Option<ChainBid> {
+    Some(ChainBid {
         txid: entry
             .get("txid")
             .and_then(|v| v.as_str())
@@ -861,7 +861,7 @@ mod tests {
     #[test]
     fn normalize_name_maps_auction_phase_stats() {
         // A BIDDING name carries the bid period + the countdown to reveal; the
-        // new optional stats fields must be parsed (camelCase from getnameinfo).
+        // new optional stats fields must be parsed from the camelCase projection.
         let entry = json!({
             "name": "cuatesttld",
             "state": "BIDDING",
@@ -896,7 +896,7 @@ mod tests {
     #[test]
     fn normalize_name_maps_bids_array() {
         // Task 1: the explorer's per-bid detail — only source of per-bid data
-        // (node `getnameinfo` has none). Every field is extracted.
+        // (node name evidence has none). Every field is extracted.
         let entry = json!({
             "name": "cuatesttld",
             "state": "REVEAL",
@@ -930,7 +930,7 @@ mod tests {
     #[test]
     fn normalize_name_without_bids_field_leaves_bids_none() {
         // A node-sourced (or older-shape) payload with no `bids` array at all
-        // must leave `HsdName.bids` as `None`, not `Some(vec![])` — the
+        // must leave `ChainName.bids` as `None`, not `Some(vec![])` — the
         // distinction matters for `read_name_bids`'s empty-response contract.
         let entry = json!({ "name": "x", "state": "CLOSED" });
         let name = normalize_name(&entry).expect("should normalize");

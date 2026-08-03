@@ -1,17 +1,17 @@
 //! BIP32 / BIP39 / BIP44 hierarchical deterministic key derivation for
 //! Handshake.
 //!
-//! Verified against hsd:
+//! Verified against hsrd:
 //!   - lib/hd/mnemonic.js: standard BIP39 seed =
 //!       PBKDF2(HMAC-SHA512, NFKD(phrase), "mnemonic"+NFKD(passphrase), 2048, 64)
 //!     The `bip39` crate's `Mnemonic::to_seed` implements exactly this.
 //!   - lib/protocol/networks.js: coinType per network (5353 main, etc.).
-//!   - BIP32 master/child derivation is identical to Bitcoin; hsd reuses the
+//!   - BIP32 master/child derivation is identical to Bitcoin; hsrd reuses the
 //!     standard scheme with secp256k1.
 //!
 //! Derivation path follows BIP44: m / 44' / coin' / account' / change / index.
 
-// Module doc uses deep prose indentation for hsd spec citations and formula
+// Module doc uses deep prose indentation for hsrd spec citations and formula
 // continuation lines; clippy misreads these as over-indented markdown list
 // items. Reformatting would harm readability, so silence the lint here.
 #![allow(clippy::doc_overindented_list_items)]
@@ -47,7 +47,7 @@ impl ExtendedPrivKey {
     ///
     /// master = HMAC-SHA512(key="Bitcoin seed", data=seed)
     /// left 32 bytes -> secret key, right 32 bytes -> chain code.
-    /// hsd uses the same "Bitcoin seed" constant as standard BIP32.
+    /// hsrd uses the same "Bitcoin seed" constant as standard BIP32.
     pub fn from_seed(seed: &[u8]) -> Result<Self, AppError> {
         let mut mac = HmacSha512::new_from_slice(b"Bitcoin seed")
             .map_err(|e| AppError::Crypto(format!("hmac init: {e}")))?;
@@ -364,7 +364,7 @@ pub fn bip44_path(network: Network, account: u32, change: u32, index: u32) -> [u
 }
 
 /// Derive a seed from a mnemonic phrase + optional passphrase using standard
-/// BIP39 (matches hsd `mnemonic.toSeed`).
+/// BIP39 (matches hsrd `mnemonic.toSeed`).
 pub fn seed_from_mnemonic(phrase: &str, passphrase: &str) -> Result<[u8; 64], AppError> {
     let mnemonic = Mnemonic::parse(phrase.trim())
         .map_err(|e| AppError::InvalidInput(format!("invalid mnemonic: {e}")))?;
@@ -393,7 +393,7 @@ mod tests {
     use super::*;
 
     // Standard BIP32 test vector 1 (seed 000102...0f) verifies our derivation
-    // matches the canonical spec, which hsd also follows.
+    // matches the canonical spec, which hsrd also follows.
     #[test]
     fn bip32_master_from_known_seed() {
         let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
@@ -417,7 +417,7 @@ mod tests {
         let child = master.derive_child(HARDENED_OFFSET).expect("child");
         // Verified by decoding the canonical BIP32 vector-1 m/0' xprv:
         // raw private key tail is ...0715a2d911a0afea (NOT a8 — a common
-        // transcription error). hsd uses identical BIP32 derivation.
+        // transcription error). hsrd uses identical BIP32 derivation.
         assert_eq!(
             hex::encode(child.secret.secret_bytes()),
             "edb2e14f9ee77d26dd93b4ecede8d16ed408ce149b6cd80b0715a2d911a0afea"

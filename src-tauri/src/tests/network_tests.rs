@@ -26,7 +26,7 @@ fn test_coin_type_all_variants() {
 
 #[test]
 fn test_xprv_version_all_variants() {
-    // All networks use the same xprv version in hsd
+    // All networks use the same xprv version in hsrd
     assert_eq!(Network::Main.xprv_version(), 0x0488_ade4);
     assert_eq!(Network::Testnet.xprv_version(), 0x0488_ade4);
     assert_eq!(Network::Regtest.xprv_version(), 0x0488_ade4);

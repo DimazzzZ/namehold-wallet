@@ -38,7 +38,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             db: std::sync::Mutex::new(conn),
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-            hsd_child: std::sync::Mutex::new(None),
+            hsrd_child: std::sync::Mutex::new(None),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
             )),
@@ -89,7 +89,7 @@ fn seeded_db() -> std::path::PathBuf {
     // so repair/discover short-circuit without any HTTP call, and the one
     // node RPC call (`get_blockchain_info`) fails fast (connection refused)
     // rather than reaching a real node.
-    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    db::queries::set_setting(&conn, "hsrd_rpc_url", "http://127.0.0.1:1").unwrap();
     db::queries::set_setting(&conn, "explorer_api_url", "http://127.0.0.1:1").unwrap();
     drop(conn);
     path

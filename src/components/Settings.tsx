@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useSettingsStore } from "../stores/settings";
-import { useNodeStatus, useStartHsd, useStopHsd, useResyncHsd } from "../queries/node";
+import { useNodeStatus, useStartChain, useStopChain, useResyncChain } from "../queries/node";
 import { useActiveProfile, useExportBidCommitments } from "../queries/wallet";
 import { open, save } from "../lib/dialog";
 import { isTauri } from "../lib/runtime";
@@ -35,11 +35,11 @@ export function validateExplorerUrl(raw: string): string | null {
 /**
  * One coherent settings model for the non-custodial wallet:
  *   - Wallet: the active profile (managed on the Wallet page).
- *   - Connections: the explorer URL (node-free reads) and the hsd node RPC
- *     (needed only to send).
+ *   - Connections: the authenticated hsrd wallet RPC and an optional public
+ *     explorer used only for auxiliary public views.
  *   - Advanced (collapsed): address gap limit, signer session timeout, and the
  *     advanced-navigation toggle.
- * No legacy hsd-wallet / connection-mode / write-mode config.
+ * No legacy hsrd-wallet / connection-mode / write-mode config.
  */
 export function Settings() {
   const { settings, loaded, saveAll } = useSettingsStore();
@@ -54,11 +54,11 @@ export function Settings() {
   useEffect(() => {
     if (settings) {
       setForm({
-        node_rpc_url: settings.node_rpc_url,
-        node_rpc_api_key: settings.node_rpc_api_key,
-        hsd_prefix: settings.hsd_prefix,
-        hsd_path: settings.hsd_path,
-        autostart_hsd: settings.autostart_hsd,
+        hsrd_rpc_url: settings.hsrd_rpc_url,
+        hsrd_authorization: settings.hsrd_authorization,
+        hsrd_data_dir: settings.hsrd_data_dir,
+        hsrd_path: settings.hsrd_path,
+        autostart_hsrd: settings.autostart_hsrd,
         background_sync_enabled: settings.background_sync_enabled,
         explorer_api_url: settings.explorer_api_url,
         address_gap_limit: settings.address_gap_limit,
@@ -86,17 +86,17 @@ export function Settings() {
   // default). Returns null when valid.
   const explorerUrlError = validateExplorerUrl(form.explorer_api_url ?? "");
 
-  // Pick the hsd data directory with the native folder browser (Finder).
+  // Pick the hsrd data directory with the native folder browser (Finder).
   const pickDataDir = async () => {
     try {
       const selected = await open({
         directory: true,
         multiple: false,
-        title: "Choose hsd data directory",
-        defaultPath: form.hsd_prefix || undefined,
+        title: "Choose hsrd data directory",
+        defaultPath: form.hsrd_data_dir || undefined,
       });
       if (typeof selected === "string") {
-        updateField("hsd_prefix", selected);
+        updateField("hsrd_data_dir", selected);
       }
     } catch (e) {
       showToast(`Couldn't open folder picker: ${e}`, "error");
@@ -115,15 +115,15 @@ export function Settings() {
       ...form,
       explorer_api_url: (form.explorer_api_url ?? "").trim().replace(/\/+$/, ""),
     };
-    // Secret fields (currently `node_rpc_api_key`) are write-only: the backend
+    // Secret fields (currently `hsrd_authorization`) are write-only: the backend
     // never returns their value, so the form always starts empty even when one
     // is stored. Saving that empty value would clobber the stored secret.
     // Skip the field on save when it's still empty AND the backend reported a
     // stored value via the `__has_<key>` marker.
     const hasStoredApiKey =
-      (settings as unknown as Record<string, string>)["__has_node_rpc_api_key"] === "true";
-    if (hasStoredApiKey && (normalized.node_rpc_api_key ?? "") === "") {
-      delete normalized.node_rpc_api_key;
+      (settings as unknown as Record<string, string>)["__has_hsrd_authorization"] === "true";
+    if (hasStoredApiKey && (normalized.hsrd_authorization ?? "") === "") {
+      delete normalized.hsrd_authorization;
     }
     setSaving(true);
     try {
@@ -186,34 +186,34 @@ export function Settings() {
             </div>
           ) : (
             <div className="text-xs text-gray-500">
-              Balance and names are read from this explorer when the node is not
-              synced. When the node is connected and fully synced, reads come from
-              the local node cache instead. Takes effect on the next Sync/read.
+              Optional public fallback for non-authoritative views while hsrd is
+              unavailable. Wallet restoration, spend decisions, proofs, fees, and
+              relay use authenticated wallet RPC v1. Takes effect on the next Sync.
             </div>
           )}
         </div>
 
         <div className="space-y-2 pt-2 border-t border-gray-100">
           <Input
-            label="Node RPC URL (sending)"
-            value={form.node_rpc_url ?? ""}
-            onChange={(e) => updateField("node_rpc_url", e.target.value)}
+            label="hsrd RPC base URL"
+            value={form.hsrd_rpc_url ?? ""}
+            onChange={(e) => updateField("hsrd_rpc_url", e.target.value)}
             placeholder="http://127.0.0.1:12037"
           />
           <Input
-            label="Node RPC API key"
+            label="Exact Authorization header"
             type="password"
-            value={form.node_rpc_api_key ?? ""}
-            onChange={(e) => updateField("node_rpc_api_key", e.target.value)}
+            value={form.hsrd_authorization ?? ""}
+            onChange={(e) => updateField("hsrd_authorization", e.target.value)}
             placeholder={
-              (settings as unknown as Record<string, string>)["__has_node_rpc_api_key"] === "true"
+              (settings as unknown as Record<string, string>)["__has_hsrd_authorization"] === "true"
                 ? "•••••• (stored — leave blank to keep)"
                 : "(optional)"
             }
           />
           <div className="text-xs text-gray-500">
-            Needed only to send or do name actions. Run hsd with{" "}
-            <code>--index-address</code>. See NODE_SETUP.md.
+            Enter the complete value expected by wallet RPC v1, such as{" "}
+            <code>Bearer &lt;token&gt;</code>. Remote authenticated URLs must use HTTPS.
           </div>
         </div>
 
@@ -221,10 +221,10 @@ export function Settings() {
           <div className="flex items-end gap-2">
             <div className="flex-1">
               <Input
-                label="Node data directory (hsd --prefix)"
-                value={form.hsd_prefix ?? ""}
-                onChange={(e) => updateField("hsd_prefix", e.target.value)}
-                placeholder="(default: ~/.hsd)"
+                label="Sidecar data directory (hsrd --data-dir)"
+                value={form.hsrd_data_dir ?? ""}
+                onChange={(e) => updateField("hsrd_data_dir", e.target.value)}
+                placeholder="(default: ~/.hsrd)"
               />
             </div>
             <Button size="sm" variant="secondary" onClick={pickDataDir}>
@@ -232,35 +232,35 @@ export function Settings() {
             </Button>
           </div>
           <div className="text-xs text-gray-500">
-            Where hsd stores the chain. Point this at e.g.{" "}
-            <code>/Volumes/WD/hsd-data</code> to keep the large chain off your home
-            disk. Empty uses hsd's default (<code>~/.hsd</code>).
+            Where hsrd stores the chain. Point this at e.g.{" "}
+            <code>/Volumes/WD/hsrd-data</code> to keep the large chain off your home
+            disk. Empty uses hsrd's default (<code>~/.hsrd</code>).
           </div>
 
           <Input
-            label="hsd binary path (optional)"
-            value={form.hsd_path ?? ""}
-            onChange={(e) => updateField("hsd_path", e.target.value)}
-            placeholder="(auto-detect: Homebrew / npm / nvm / PATH)"
+            label="hsrd binary path (optional)"
+            value={form.hsrd_path ?? ""}
+            onChange={(e) => updateField("hsrd_path", e.target.value)}
+            placeholder="(auto-detect: Cargo / local bin / PATH)"
           />
           <div className="text-xs text-gray-500">
-            Leave empty to auto-detect. Set this if the app can't find your hsd
-            install (e.g. <code>$(which hsd)</code>). Save settings to apply.
+            Leave empty to auto-detect. Set this if the app can't find your hsrd
+            install (e.g. <code>$(which hsrd)</code>). Save settings to apply.
           </div>
 
           <label className="flex items-center gap-2 text-sm pt-2">
             <input
               type="checkbox"
-              checked={form.autostart_hsd === "true"}
+              checked={form.autostart_hsrd === "true"}
               onChange={(e) =>
-                updateField("autostart_hsd", e.target.checked ? "true" : "false")
+                updateField("autostart_hsrd", e.target.checked ? "true" : "false")
               }
-              data-testid="autostart-hsd-checkbox"
+              data-testid="autostart-hsrd-checkbox"
             />
-            Autostart HSD when the app launches
+            Autostart HSRD when the app launches
           </label>
           <div className="text-xs text-gray-500">
-            Starts hsd against your data dir on launch. If a node is already
+            Starts hsrd against your data dir on launch. If a node is already
             running, Namehold adopts it instead of starting a duplicate. Change
             takes effect on the next launch.
           </div>
@@ -296,12 +296,12 @@ export function Settings() {
           </label>
           <div className="text-xs text-gray-500">
             Runs a lightweight sync process every 60 seconds. When enabled, the
-            local hsd node keeps running after you close the app so the daemon
-            can query it. The next app launch adopts the running node — no
+            local hsrd sidecar keeps running after you close the app so the daemon
+            can restore wallet state. The next app launch adopts it — no
             duplicate is spawned.
           </div>
 
-          <NodeControl dirty={dirty} hsdPathConfigured={!!settings.hsd_path?.trim()} />
+          <NodeControl dirty={dirty} hsrdPathConfigured={!!settings.hsrd_path?.trim()} />
         </div>
       </div>
 
@@ -387,15 +387,15 @@ export function Settings() {
 }
 
 /**
- * Start/stop the app-managed hsd node and show its live status. hsd is launched
+ * Start/stop the app-managed hsrd sidecar and show its live status. It is launched
  * with the configured data directory; `dirty` warns that an unsaved directory
  * change won't apply until settings are saved.
  */
-function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConfigured: boolean }) {
+function NodeControl({ dirty, hsrdPathConfigured }: { dirty: boolean; hsrdPathConfigured: boolean }) {
   const { data: status } = useNodeStatus();
-  const start = useStartHsd();
-  const stop = useStopHsd();
-  const resync = useResyncHsd();
+  const start = useStartChain();
+  const stop = useStopChain();
+  const resync = useResyncChain();
   const showToast = useUiStore((s) => s.showToast);
 
   const connected = status?.connected ?? false;
@@ -429,41 +429,41 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
       : `Syncing · ${pct}%`
     : processAlive
       ? "Starting…"
-      : "Stopped";
+      : "Sidecar stopped";
 
   const onStart = async () => {
     try {
       const res = await start.mutateAsync();
       if (res?.connected) {
-        showToast("hsd connected", "success");
+        showToast("hsrd wallet RPC connected", "success");
       } else {
-        showToast("hsd is starting… status will update when its RPC responds.", "info");
+        showToast("hsrd is starting… status will update when its RPC responds.", "info");
       }
     } catch (e) {
-      showToast(`Failed to start hsd: ${e}`, "error");
+      showToast(`Failed to start hsrd: ${e}`, "error");
     }
   };
   const onStop = async () => {
     try {
       await stop.mutateAsync();
-      showToast("hsd stopped", "success");
+      showToast("hsrd stopped", "success");
     } catch (e) {
-      showToast(`Failed to stop hsd: ${e}`, "error");
+      showToast(`Failed to stop hsrd: ${e}`, "error");
     }
   };
   const onResync = async () => {
     if (
       !window.confirm(
         "Re-sync node data?\n\nYour current chain will be moved to a timestamped " +
-          "backup folder in the data directory, and hsd will re-sync from scratch " +
-          "with the indexes the wallet needs. This can take a while. Your wallet " +
+          "backup folder in the data directory, and hsrd will re-sync from scratch " +
+          "with the wallet-index profile. This can take a while. Your wallet " +
           "keys are NOT affected.",
       )
     )
       return;
     try {
       await resync.mutateAsync();
-      showToast("Re-syncing: old chain backed up; hsd is downloading again.", "info");
+      showToast("Re-syncing: old chain backed up; hsrd is downloading again.", "info");
     } catch (e) {
       showToast(`Failed to re-sync: ${e}`, "error");
     }
@@ -478,15 +478,15 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
         </div>
         {processAlive || connected ? (
           <Button size="sm" variant="secondary" onClick={onStop} disabled={stop.isPending}>
-            {stop.isPending ? "Stopping…" : "Stop hsd"}
+            {stop.isPending ? "Stopping…" : "Stop hsrd"}
           </Button>
         ) : (
           <Button
             size="sm"
             onClick={onStart}
-            disabled={start.isPending || connected || (!status?.binary_found && !hsdPathConfigured)}
+            disabled={start.isPending || connected || (!status?.binary_found && !hsrdPathConfigured)}
           >
-            {start.isPending ? "Starting…" : "Start hsd"}
+            {start.isPending ? "Starting…" : "Start hsrd"}
           </Button>
         )}
       </div>
@@ -518,7 +518,7 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
       )}
         <div className="text-xs text-gray-500 space-y-0.5">
         <div>
-          Read source: <span className="font-medium">{status?.read_source === "local" ? "Local node cache" : "Explorer"}</span>
+          Read source: <span className="font-medium">{status?.read_source === "local" ? "Authenticated sidecar" : "Local cache / auxiliary provider"}</span>
         </div>
         <div>
           Data dir: <code>{status?.data_dir ?? "…"}</code>
@@ -526,11 +526,11 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
         <div>
           {status?.binary_found ? (
             <>
-              hsd {status.version} · {status.network}
+              hsrd {status.version} · {status.network}
             </>
           ) : (
             <span className="text-red-600">
-              hsd binary not found — install it (<code>npm i -g hsd</code>).
+              hsrd binary not found — build <code>hns-node</code> with Cargo or select its path above.
             </span>
           )}
         </div>

@@ -115,7 +115,7 @@ export function ActivityView() {
   };
 
   const isIndexError =
-    isError && error instanceof Error && error.message.includes("address index not enabled");
+    isError && error instanceof Error && /wallet[- ]index/i.test(error.message);
 
   return (
     <div>
@@ -165,9 +165,8 @@ export function ActivityView() {
       {/* Error states */}
       {isIndexError && (
         <div className="bg-yellow-50 border border-yellow-200 rounded p-4 mb-4 text-sm text-yellow-800">
-          Your node does not have <code className="font-mono">--index-address</code> enabled.
-          Restart it with <code className="font-mono">--index-address --index-tx</code> to
-          enable full history. App-managed nodes already have both enabled.
+          hsrd's authenticated wallet index is unavailable. Start hsrd from Settings with
+          wallet indexing enabled, then let restoration finish before refreshing history.
         </div>
       )}
       {isError && !isIndexError && (

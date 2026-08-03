@@ -2,54 +2,54 @@ use crate::commands::node;
 use crate::noncustodial::network::Network;
 use tauri::Manager;
 
-// --- pick_hsd_path tests ---
+// --- pick_hsrd_path tests ---
 
 #[test]
-fn test_pick_hsd_path_override_wins() {
-    let result = node::pick_hsd_path(Some("/custom/hsd"), &[]);
-    assert_eq!(result, Some("/custom/hsd".to_string()));
+fn test_pick_hsrd_path_override_wins() {
+    let result = node::pick_hsrd_path(Some("/custom/hsrd"), &[]);
+    assert_eq!(result, Some("/custom/hsrd".to_string()));
 }
 
 #[test]
-fn test_pick_hsd_path_override_trimmed() {
-    let result = node::pick_hsd_path(Some("  /custom/hsd  "), &[]);
-    assert_eq!(result, Some("/custom/hsd".to_string()));
+fn test_pick_hsrd_path_override_trimmed() {
+    let result = node::pick_hsrd_path(Some("  /custom/hsrd  "), &[]);
+    assert_eq!(result, Some("/custom/hsrd".to_string()));
 }
 
 #[test]
-fn test_pick_hsd_path_empty_override_skipped() {
-    let result = node::pick_hsd_path(Some(""), &["/nonexistent".to_string()]);
+fn test_pick_hsrd_path_empty_override_skipped() {
+    let result = node::pick_hsrd_path(Some(""), &["/nonexistent".to_string()]);
     assert_eq!(result, None);
 }
 
 #[test]
-fn test_pick_hsd_path_whitespace_override_skipped() {
-    let result = node::pick_hsd_path(Some("   "), &[]);
+fn test_pick_hsrd_path_whitespace_override_skipped() {
+    let result = node::pick_hsrd_path(Some("   "), &[]);
     assert_eq!(result, None);
 }
 
 #[test]
-fn test_pick_hsd_path_no_override_no_candidates() {
-    let result = node::pick_hsd_path(None, &[]);
+fn test_pick_hsrd_path_no_override_no_candidates() {
+    let result = node::pick_hsrd_path(None, &[]);
     assert_eq!(result, None);
 }
 
 #[test]
-fn test_pick_hsd_path_no_match() {
-    let result = node::pick_hsd_path(None, &["/nonexistent/path/hsd".to_string()]);
+fn test_pick_hsrd_path_no_match() {
+    let result = node::pick_hsrd_path(None, &["/nonexistent/path/hsrd".to_string()]);
     assert_eq!(result, None);
 }
 
 #[test]
-fn test_pick_hsd_path_matches_existing_candidate() {
+fn test_pick_hsrd_path_matches_existing_candidate() {
     // /bin/sh exists on all unix systems
-    let result = node::pick_hsd_path(None, &["/nonexistent".to_string(), "/bin/sh".to_string()]);
+    let result = node::pick_hsrd_path(None, &["/nonexistent".to_string(), "/bin/sh".to_string()]);
     assert_eq!(result, Some("/bin/sh".to_string()));
 }
 
 #[test]
-fn test_pick_hsd_path_first_match_wins() {
-    let result = node::pick_hsd_path(
+fn test_pick_hsrd_path_first_match_wins() {
+    let result = node::pick_hsrd_path(
         None,
         &["/bin/sh".to_string(), "/bin/ls".to_string()],
     );
@@ -97,7 +97,7 @@ fn test_node_start_error_no_log() {
 fn test_node_start_error_empty_log() {
     let dir = std::env::temp_dir().join("namehold_test_empty_log");
     let _ = std::fs::create_dir_all(&dir);
-    let log_path = dir.join("namehold-hsd.log");
+    let log_path = dir.join("namehold-hsrd.log");
     std::fs::write(&log_path, "").unwrap();
     let result = node::node_start_error(dir.to_str().unwrap());
     assert!(result.is_none());
@@ -108,8 +108,8 @@ fn test_node_start_error_empty_log() {
 fn test_node_start_error_clean_log() {
     let dir = std::env::temp_dir().join("namehold_test_clean_log");
     let _ = std::fs::create_dir_all(&dir);
-    let log_path = dir.join("namehold-hsd.log");
-    std::fs::write(&log_path, "hsd started successfully\nlistening on port 12038\n").unwrap();
+    let log_path = dir.join("namehold-hsrd.log");
+    std::fs::write(&log_path, "hsrd started successfully\nlistening on port 12038\n").unwrap();
     let result = node::node_start_error(dir.to_str().unwrap());
     assert!(result.is_none());
     let _ = std::fs::remove_dir_all(&dir);
@@ -119,13 +119,13 @@ fn test_node_start_error_clean_log() {
 fn test_node_start_error_generic_error() {
     let dir = std::env::temp_dir().join("namehold_test_generic_err");
     let _ = std::fs::create_dir_all(&dir);
-    let log_path = dir.join("namehold-hsd.log");
+    let log_path = dir.join("namehold-hsrd.log");
     std::fs::write(&log_path, "Error: port 12038 already in use\n").unwrap();
     let result = node::node_start_error(dir.to_str().unwrap());
     assert!(result.is_some());
     let (msg, mismatch) = result.unwrap();
     assert!(!mismatch);
-    assert!(msg.contains("hsd failed to start"));
+    assert!(msg.contains("hsrd failed to start"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -133,7 +133,7 @@ fn test_node_start_error_generic_error() {
 fn test_node_start_error_index_mismatch() {
     let dir = std::env::temp_dir().join("namehold_test_idx_mismatch");
     let _ = std::fs::create_dir_all(&dir);
-    let log_path = dir.join("namehold-hsd.log");
+    let log_path = dir.join("namehold-hsrd.log");
     std::fs::write(
         &log_path,
         "Error: Cannot retroactively enable indexing on an existing chain\n",
@@ -178,11 +178,11 @@ fn test_read_log_tail_empty_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// Note: resolve_data_dir, active_profile_network, is_running, configured_hsd_path
+// Note: resolve_data_dir, active_profile_network, is_running, configured_hsrd_path
 // are private fn — tested indirectly via the node_status command test below.
 
 // --- node_status command test (covers resolve_data_dir, active_profile_network,
-//     is_running, configured_hsd_path, find_hsd_binary, get_hsd_version, probe_node) ---
+//     is_running, configured_hsrd_path, find_hsrd_binary, get_hsrd_version, probe_node) ---
 
 #[tokio::test]
 async fn test_node_status_command() {
@@ -191,7 +191,7 @@ async fn test_node_status_command() {
         .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app");
-    // node_status will fail to probe the node (no hsd running) but should return
+    // node_status will fail to probe the node (no hsrd running) but should return
     // a valid JSON with the expected shape.
     let result = crate::commands::node::node_status(app.state()).await;
     assert!(result.is_ok());

@@ -46,10 +46,10 @@ const profile = {
 
 function nodeStatus() {
   return {
-    binary: "/usr/local/bin/hsd",
+    binary: "/usr/local/bin/hsrd",
     binary_found: true,
-    version: "hsd 8.0.0",
-    data_dir: "/Volumes/WD/hsd-data",
+    version: "hsrd 8.0.0",
+    data_dir: "/Volumes/WD/hsrd-data",
     network: "main",
     process_alive: false,
     connected: false,
@@ -92,11 +92,11 @@ function loadSettings(over: Partial<Record<string, string>> = {}) {
   useSettingsStore.setState({
     loaded: true,
     settings: {
-      node_rpc_url: "http://127.0.0.1:12037",
-      node_rpc_api_key: "",
-      hsd_prefix: "",
-      hsd_path: "",
-      autostart_hsd: "true",
+      hsrd_rpc_url: "http://127.0.0.1:12037",
+      hsrd_authorization: "",
+      hsrd_data_dir: "",
+      hsrd_path: "",
+      autostart_hsrd: "true",
       explorer_api_url: "https://e.hnsfans.com",
       address_gap_limit: "20",
       signer_session_timeout_seconds: "900",

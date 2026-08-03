@@ -48,20 +48,20 @@ export interface BatchWithAssets extends Batch {
   assets: Asset[];
 }
 
-export interface HsdBalance {
+export interface ChainBalance {
   confirmed: number;
   unconfirmed: number;
   locked_unconfirmed: number | null;
   locked_confirmed: number | null;
 }
 
-export interface HsdName {
+export interface ChainName {
   name: string;
   /**
    * The name's on-chain auction state: AVAILABLE, OPENING, BIDDING, REVEAL,
    * CLOSED, TRANSFER, REVOKED, etc.  The backend synthesizes `"AVAILABLE"`
    * for names that have never been opened (node confirms the name is valid
-   * but `getnameinfo.info` is null, or the explorer returns 404).
+   * but authenticated name evidence is absent, or the explorer returns 404).
    */
   state: string | null;
   height: number | null;
@@ -70,11 +70,11 @@ export interface HsdName {
   value?: number | null;
   highest?: number | null;
   /**
-   * Auction state stats from hsd `getnameinfo` (camelCase, as the Rust `HsdName`
-   * serializes). All optional: only the fields for the name's current phase are
+   * Auction state stats from hsrd's verified name-state projection (camelCase,
+   * as the Rust `ChainName` serializes). All optional: only the current phase's
    * present, and the explorer path may omit the auction ones entirely.
    */
-  stats: HsdNameStats | null;
+  stats: ChainNameStats | null;
   /** Non-zero block height while the name is mid-transfer (0/null otherwise). */
   transfer?: number | null;
   /** True when the name is registered (CLOSED + owned). */
@@ -83,7 +83,7 @@ export interface HsdName {
   expired?: boolean | null;
 }
 
-export interface HsdNameStats {
+export interface ChainNameStats {
   renewalPeriodStart?: number | null;
   renewalPeriodEnd?: number | null;
   blocksUntilExpire?: number | null;
@@ -123,14 +123,13 @@ export interface NameResource {
   ttl?: number | null;
   /** Resource serial number. */
   serial?: number | null;
-  /** Any additional fields hsd may include in future versions. */
+  /** Any additional fields hsrd may include in future versions. */
   [key: string]: unknown;
 }
 
 /**
- * Compact block details from `read_block_info` (node-only). The backend
- * soft-degrades to `null` when no synced node is reachable, so the frontend
- * must handle a nullable query result.
+ * Legacy block-modal shape. Authenticated wallet RPC v1 does not expose
+ * arbitrary block reads, so `read_block_info` currently returns `null`.
  */
 export interface BlockInfo {
   height: number;
@@ -150,8 +149,7 @@ export interface BlockInfo {
  * Compact transaction details from `read_tx_info` (node-only). The backend
  * soft-degrades to `null` when no synced node is reachable or the tx is
  * unknown, so the frontend must handle a nullable query result. All amounts
- * are in doos (backend converts hsd's HNS floats to doos so the frontend
- * amount contract stays uniform).
+ * are integer doos throughout the authenticated evidence path.
  */
 export interface TxInfo {
   txid: string;
@@ -164,7 +162,7 @@ export interface TxInfo {
   time: number;
   /**
    * Fee in doos, or `null` when the node couldn't determine it (coinbase
-   * transactions, or an hsd response with unresolved input coins). The modal
+   * transactions, or an hsrd response with unresolved input coins). The modal
    * renders `null` as `—`; a real `0` fee wouldn't happen on a normal HNS
    * tx, so a displayed `0` was always the misleading case.
    */
@@ -178,12 +176,12 @@ export interface TxInfo {
 /**
  * Discriminated-error result `read_tx_info` returns when the node can respond
  * but is missing a capability required to fill the response shape. Currently
- * only `tx_index_disabled` (the node lacks `--index-tx`). Kept as a distinct
+ * only `wallet_index_unavailable`. Kept as a distinct
  * shape so the modal can show a targeted hint instead of the generic
  * "requires synced node" message.
  */
 export interface TxInfoError {
-  error: "tx_index_disabled";
+  error: "wallet_index_unavailable";
 }
 
 /** Narrows a `read_tx_info` result to the error shape. */
@@ -243,24 +241,24 @@ export interface WalletSnapshot {
 }
 
 /**
- * The single non-custodial settings model. Reads come from the explorer
- * (`explorer_api_url`); sending uses one hsd node (`node_rpc_url`). Keys are
- * local; there is no legacy hsd-wallet / connection-mode config.
+ * Namehold retains custody/signing while authenticated hsrd wallet RPC supplies
+ * chain evidence and relay. The explorer URL is optional auxiliary public data.
  */
 export interface Settings {
-  /** hsd node RPC used for sync + broadcast (sending). */
-  node_rpc_url: string;
-  node_rpc_api_key: string;
-  /** hsd data directory ("prefix") used when the app starts hsd. Empty = ~/.hsd. */
-  hsd_prefix: string;
-  /** Explicit path to the hsd binary. Empty = auto-discover (common dirs + PATH). */
-  hsd_path: string;
+  /** hsrd base URL; wallet RPC v1 is mounted at `/api/v1/wallet`. */
+  hsrd_rpc_url: string;
+  /** Exact HTTP Authorization value; redacted after storage. */
+  hsrd_authorization: string;
+  /** hsrd `--data-dir`; empty uses ~/.hsrd. */
+  hsrd_data_dir: string;
+  /** Explicit path to the hsrd binary. Empty = auto-discover (common dirs + PATH). */
+  hsrd_path: string;
   /**
-   * "true" | "false" — start hsd automatically when the app launches. Default
+   * "true" | "false" — start hsrd automatically when the app launches. Default
    * "true". Honored only at app-launch time (a runtime toggle affects the next
    * launch, not the current process).
    */
-  autostart_hsd: string;
+  autostart_hsrd: string;
   /** HNSFans explorer used for node-free reads (balance + names). */
   explorer_api_url: string;
   /** Integer string, default "20". */
@@ -283,8 +281,8 @@ export interface Settings {
   /**
    * "1" | "0" — run the background sync daemon (`namehold-syncd`) so wallet
    * state keeps updating even when the app is closed. Default "1" (on). When
-   * enabled, hsd is left running on app exit instead of being killed, so the
-   * daemon has a node to talk to.
+   * enabled, hsrd is left running on app exit so the read-only daemon can keep
+   * restoring authenticated wallet state.
    */
   background_sync_enabled: string;
 }
@@ -375,7 +373,7 @@ export interface WriteCapability {
 }
 
 /**
- * Result of `sign_name_message`: an hsd `signmessagewithname`-compatible
+ * Result of `sign_name_message`: an hsrd `signmessagewithname`-compatible
  * signature over an exact message, produced with the wallet key that owns a
  * name — used for third-party domain-claim verification (e.g. Namebase).
  * Not a spend; the private key never leaves the backend.
@@ -403,8 +401,8 @@ export interface WalletBalances {
 export interface WalletReadModel {
   address: string | null;
   watchAddresses: string[];
-  balance: HsdBalance | null;
-  names: HsdName[];
+  balance: ChainBalance | null;
+  names: ChainName[];
   transactions: WalletTransactionRow[];
   lastUpdatedAt?: string | null;
 }

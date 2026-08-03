@@ -1,19 +1,18 @@
--- Settings for the non-custodial signing engine. These control how the local
--- wallet engine talks to a node for broadcast/reads and which active wallet
--- profile is selected. See implementation_plan.md.
+-- Settings for the non-custodial signing engine and authenticated sidecar.
 
 INSERT OR IGNORE INTO settings (key, value) VALUES
     -- Selected non-custodial wallet profile id (empty = none selected).
     ('active_wallet_profile_id',        ''),
-    -- Where to broadcast signed transactions and read chain state from.
-    -- 'local_node' = managed/local hsd node RPC; 'remote_node' = user-provided
-    -- node RPC; 'explorer' = read-only explorer (broadcast disabled).
-    ('chain_source',                    'local_node'),
-    ('node_rpc_url',                    'http://127.0.0.1:12037'),
-    ('node_rpc_api_key',                ''),
+    -- The sidecar may be managed locally or supplied at a remote HTTPS URL.
+    ('chain_source',                    'managed_sidecar'),
+    ('hsrd_rpc_url',                    'http://127.0.0.1:12037'),
+    -- Exact Authorization header value expected by wallet RPC v1.
+    ('hsrd_authorization',              ''),
+    ('hsrd_network',                    'main'),
+    ('hsrd_path',                       ''),
+    ('autostart_hsrd',                  'true'),
     ('explorer_api_url',                'https://e.hnsfans.com'),
-    -- Custody model: 'noncustodial_local' (Namehold holds keys, signs locally)
-    -- or 'legacy_hsd_wallet' (deprecated: hsd wallet holds keys and signs).
+    -- Namehold always owns keys and signs locally.
     ('custody_mode',                    'noncustodial_local'),
     -- Allow broadcasting locally-signed transactions to a remote provider.
     ('allow_remote_broadcast',          'false'),

@@ -17,8 +17,8 @@ use tauri::{AppHandle, Runtime, State};
 use crate::commands::secure_prompt::{prompt_secure, SecurePromptRequest};
 use crate::db;
 use crate::error::AppError;
+use crate::noncustodial::hsrd::{ChainSource, HsrdClient};
 use crate::noncustodial::network::Network;
-use crate::noncustodial::rpc::{ChainSource, NodeRpcClient};
 use crate::noncustodial::send;
 use crate::noncustodial::types::{BroadcastResult, TxDraftSummary, TxSummary};
 use crate::noncustodial::{derivation, sync};
@@ -140,7 +140,7 @@ async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Option<u64>) ->
     };
     match settings {
         Some(s) => {
-            let client = NodeRpcClient::from_settings(&s);
+            let client = HsrdClient::from_settings(&s);
             client
                 .estimate_smart_fee(6)
                 .await
@@ -204,7 +204,7 @@ pub async fn sync_wallet_state(
         (profile.id, addresses, settings)
     };
 
-    let client = NodeRpcClient::from_settings(&settings);
+    let client = HsrdClient::from_settings(&settings);
 
     // Probe the node first. If it's unreachable, that's expected in explorer /
     // read-only mode: balances + names come from the explorer, so this is NOT an
@@ -228,19 +228,18 @@ pub async fn sync_wallet_state(
             Ok(mut coins) => all_coins.append(&mut coins),
             Err(e) => {
                 let url = settings
-                    .get("node_rpc_url")
+                    .get("hsrd_rpc_url")
                     .map(|s| s.as_str())
                     .unwrap_or("the configured node");
-                // A connection failure (no node listening) is reported by the RPC
-                // client as AppError::Http; an actual RPC method error (e.g.
-                // address index disabled) comes back as AppError::Rpc.
+                // Transport failures and authenticated wallet-index errors are
+                // reported separately so the remedy stays actionable.
                 return Err(match e {
                     AppError::Http(_) => AppError::Rpc(format!(
-                        "Can't reach your local node at {url}. Start hsd (with --index-address) \
-                         to sync and send. Reads still work via the explorer."
+                        "Can't reach your sidecar at {url}. Start hsrd to sync and send. \
+                         Reads still work from the local cache and auxiliary explorer."
                     )),
                     other => AppError::Rpc(format!(
-                        "getcoinsbyaddress failed for {addr} (is the node's --index-address enabled?): {other}"
+                        "authenticated wallet restoration failed for {addr}: {other}"
                     )),
                 });
             }
@@ -304,10 +303,10 @@ pub async fn sync_wallet_state(
 async fn refresh_name_states(
     state: &State<'_, AppState>,
     profile_id: &str,
-    client: &NodeRpcClient,
+    client: &HsrdClient,
 ) -> Result<usize, AppError> {
     // Only refresh on-chain state for names the wallet already tracks/owns — NOT
-    // the whole migration inventory (that could be hundreds of `getnameinfo`
+    // the whole migration inventory (that could be hundreds of name-evidence
     // calls per sync). Newly-owned names are surfaced by node-free discovery and
     // the coin scan; inventory-vs-chain comparison uses the explorer directly.
     let candidates: Vec<String> = {
@@ -353,7 +352,7 @@ pub async fn sync_tracked_names(
         }
         (id, db::queries::get_settings(&conn)?)
     };
-    let client = NodeRpcClient::from_settings(&settings);
+    let client = HsrdClient::from_settings(&settings);
     let n = refresh_name_states(&state, &profile_id, &client).await?;
     Ok(serde_json::json!({ "walletProfileId": profile_id, "namesSynced": n }))
 }
@@ -631,7 +630,7 @@ pub(crate) async fn sign_tx_draft_inner(
 }
 
 /// Sign an arbitrary message with the wallet key that owns `name`, reproducing
-/// hsd's `signmessagewithname` byte-for-byte (see `noncustodial::message`).
+/// hsrd's `signmessagewithname` byte-for-byte (see `noncustodial::message`).
 /// Used to satisfy third-party domain-claim verification (e.g. Namebase),
 /// which asks the user to sign an exact message with the owning key and paste
 /// the resulting signature back.
@@ -651,7 +650,7 @@ pub async fn sign_name_message(
 
     // 1. DB: resolve the account index + the name's owner coin (branch/index),
     // and the signer-session ttl. `get_name_coin` only returns a hit when this
-    // profile currently holds the name's owner UTXO (mirrors hsd `isClosed` —
+    // profile currently holds the name's owner UTXO (mirrors hsrd `isClosed` —
     // no coin, no proof of ownership to sign for).
     let (account, coin, ttl_ms) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -724,10 +723,17 @@ pub async fn broadcast_tx_draft(
         (signed, settings)
     };
 
-    // Any configured node (local OR remote) can broadcast — configuring a Node
-    // RPC URL is the opt-in. The only refusal is a read-only Explorer source,
-    // which `send_raw_transaction` rejects internally.
-    let client = NodeRpcClient::from_settings(&settings);
+    // Bind admission policy to the same authenticated chain+mempool snapshot
+    // immediately before relay. The sidecar calculates policy weight, sigops,
+    // and the minimum fee; Namehold still owns and signed the transaction.
+    let client = HsrdClient::from_settings(&settings);
+    let quote = client.quote_transaction_fee(&signed_hex, 6).await?;
+    if !quote.meets_minimum_policy_fee {
+        return Err(AppError::InvalidInput(format!(
+            "signed transaction is below current sidecar policy by {} atomic units",
+            quote.minimum_policy_fee_shortfall_atomic_units
+        )));
+    }
     match client.send_raw_transaction(&signed_hex).await {
         Ok(txid) => {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -759,15 +765,15 @@ pub async fn broadcast_tx_draft(
                 status: "broadcasted".to_string(),
             })
         }
-        // `AppError::Rpc(_)` means the node itself answered — with a JSON-RPC
-        // error envelope, an unparsable body, or an empty result (see
-        // `NodeRpcClient::call`) — so the node definitively did NOT accept
+        // `AppError::Rpc(_)` means authenticated wallet RPC returned a bound
+        // rejection, malformed envelope, or empty admission result, so the
+        // sidecar definitively did NOT accept
         // this tx (e.g. a double-spend, a stale/evicted input, or a
         // malformed request). The coins were never actually spent: mark the
         // draft `failed` and free the reservation immediately rather than
         // making the user wait out the TTL to retry. This mirrors
-        // `refresh_tx_confirmations`, which treats `Err(AppError::Rpc(_))`
-        // from `getrawtransaction` as the definitive "not found" signal.
+        // `refresh_tx_confirmations`, which treats a bound unknown-transaction
+        // evidence result as the definitive "not found" signal.
         Err(e @ AppError::Rpc(_)) => {
             let msg = e.to_string();
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -796,7 +802,7 @@ pub async fn broadcast_tx_draft(
         // doesn't (past the eviction grace), the draft is marked `failed`
         // and the reservation released. A manual retry is also always safe:
         // if the node never got the first attempt, `sendrawtransaction`
-        // sends it now; if it already has the tx (mempool or mined), hsd
+        // sends it now; if it already has the tx (mempool or mined), hsrd
         // accepts the retry and returns the same txid rather than erroring.
         Err(e) => {
             let msg = e.to_string();
@@ -915,7 +921,7 @@ pub async fn refresh_tx_confirmations(
     };
 
     // 2. Probe the node. Unreachable → soft no-op (never touch drafts on a blip).
-    let client = NodeRpcClient::from_settings(&settings);
+    let client = HsrdClient::from_settings(&settings);
     let tip = match client.get_blockchain_info().await {
         Ok(info) => info.blocks,
         Err(_) => return Ok(empty_result(Some(&profile_id), false)),
@@ -1150,11 +1156,11 @@ pub async fn get_write_capability(
             settings
                 .get("chain_source")
                 .map(|s| s.as_str())
-                .unwrap_or("local_node"),
+                .unwrap_or("managed_sidecar"),
         );
         let allow_remote =
             settings.get("allow_remote_broadcast").map(|s| s.as_str()) == Some("true");
-        // One address to probe the node's address index (if a profile exists).
+        // One address to probe authenticated wallet restoration (if a profile exists).
         let probe_addr = active_profile(&conn)
             .ok()
             .and_then(|p| db::queries::get_profile_addresses(&conn, &p.id).ok())
@@ -1164,15 +1170,15 @@ pub async fn get_write_capability(
     let mut cap =
         crate::providers::WriteCapability::evaluate(signer_unlocked, source, allow_remote);
 
-    // Writes also need the node reachable, fully synced, AND address-indexed (the
-    // wallet learns its spendable + name-owner coins via getcoinsbyaddress). If
-    // any is missing, downgrade to read-only with a precise, actionable reason.
+    // Writes also need the sidecar reachable, fully synced, and able to answer
+    // authenticated wallet-index restoration. If any is missing, downgrade to
+    // read-only with a precise, actionable reason.
     if cap.can_write {
-        let client = NodeRpcClient::from_settings(&settings);
+        let client = HsrdClient::from_settings(&settings);
         match client.get_blockchain_info().await {
             Err(_) => {
                 let url = settings
-                    .get("node_rpc_url")
+                    .get("hsrd_rpc_url")
                     .map(|s| s.as_str())
                     .unwrap_or("your node");
                 cap.broadcaster_available = false;
@@ -1210,7 +1216,7 @@ pub async fn get_write_capability(
                     if client.get_coins_by_address(addr).await.is_err() {
                         cap.can_write = false;
                         cap.reason = Some(
-                            "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start hsd) and let it finish syncing."
+                            "The authenticated wallet index is unavailable — restart hsrd with wallet indexing enabled (Settings → Start hsrd) and let it finish syncing."
                                 .to_string(),
                         );
                     }

@@ -2,7 +2,7 @@ use crate::error::AppError;
 use std::path::Path;
 
 /// Delete a wallet by renaming the wallet database folder.
-/// This is the safest approach since hsd doesn't support wallet deletion via API.
+/// This is the safest approach since hsrd doesn't support wallet deletion via API.
 /// Returns the backup path.
 pub fn delete_wallet_folder(wallet_db_path: &Path) -> Result<std::path::PathBuf, AppError> {
     if !wallet_db_path.exists() {
@@ -21,7 +21,7 @@ pub fn delete_wallet_folder(wallet_db_path: &Path) -> Result<std::path::PathBuf,
     Ok(backup_path)
 }
 
-/// Get the wallet database path based on hsd prefix
-pub fn get_wallet_db_path(hsd_prefix: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(hsd_prefix).join("wallet")
+/// Get the wallet database path based on hsrd prefix
+pub fn get_wallet_db_path(hsrd_data_dir: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(hsrd_data_dir).join("wallet")
 }

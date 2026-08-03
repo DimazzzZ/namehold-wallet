@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
 
-/** Status of the hsd node. `connected` (RPC answers) is the authoritative signal. */
+/** Status of the hsrd node. `connected` (RPC answers) is the authoritative signal. */
 export interface NodeStatus {
   binary: string;
   binary_found: boolean;
@@ -20,13 +20,13 @@ export interface NodeStatus {
   headers: number | null;
   /** Why the last start failed (with log tail), when the RPC isn't answering. */
   last_error: string | null;
-  /** The failure is a chain/index mismatch hsd can't fix in place → offer re-sync. */
+  /** The failure is a chain/index mismatch hsrd can't fix in place → offer re-sync. */
   index_mismatch: boolean;
   /** Current read source: "local" (node synced) or "explorer" (fallback). */
   read_source: "local" | "explorer";
 }
 
-/** Poll the hsd node status (binary, data dir, connected, height). */
+/** Poll the hsrd node status (binary, data dir, connected, height). */
 export function useNodeStatus() {
   return useQuery<NodeStatus>({
     queryKey: ["node-status"],
@@ -55,33 +55,33 @@ function invalidateNode(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["wallet"] });
 }
 
-/** Start hsd against the configured data directory. */
-export function useStartHsd() {
+/** Start hsrd against the configured data directory. */
+export function useStartChain() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => invoke<NodeStatus & { message?: string }>("start_hsd"),
+    mutationFn: () => invoke<NodeStatus & { message?: string }>("start_hsrd"),
     onSuccess: () => invalidateNode(qc),
   });
 }
 
-/** Stop the app-managed hsd node. */
-export function useStopHsd() {
+/** Stop the app-managed hsrd node. */
+export function useStopChain() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => invoke("stop_hsd"),
+    mutationFn: () => invoke("stop_hsrd"),
     onSuccess: () => invalidateNode(qc),
   });
 }
 
 /**
  * One-click recovery when the existing chain's indexes don't match what the
- * wallet needs (hsd can't change them in place): moves the old chain to a
+ * wallet needs (hsrd can't change them in place): moves the old chain to a
  * timestamped backup and re-syncs with the required indexes.
  */
-export function useResyncHsd() {
+export function useResyncChain() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => invoke("resync_hsd_chain"),
+    mutationFn: () => invoke("resync_hsrd_chain"),
     onSuccess: () => invalidateNode(qc),
   });
 }

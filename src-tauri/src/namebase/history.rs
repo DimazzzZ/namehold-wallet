@@ -3,7 +3,7 @@
 //!
 //! The export is a one-shot historical artifact: Namebase stopped recording
 //! account activity on 2026-06-12. Its unique, unreconstructable value is the
-//! off-chain data the app cannot derive from the hsd node:
+//! off-chain data the app cannot derive from the hsrd node:
 //!   - Namebase platform fees per action (feeCharged / prepaidFee / hnsFee /
 //!     totalFee).
 //!   - USD proceeds from subdomain / marketplace sales.

@@ -13,7 +13,7 @@ interface BlockInfoModalProps {
 }
 
 /**
- * Read-only modal displaying on-chain block details from the local hsd node.
+ * Read-only modal displaying on-chain block details from the local hsrd node.
  * Shows: height, hash, timestamp, tx count, miner reward, difficulty.
  * Gracefully degrades when the node is unavailable (shows a "requires synced
  * node" hint rather than erroring).

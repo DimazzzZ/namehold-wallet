@@ -6,7 +6,7 @@ import { useState } from "react";
 import { DnsRecordsEditor } from "../DnsRecordsEditor";
 import { rowToRecord, type DnsRow } from "../../../lib/dnsRecords";
 
-// Task 2: real hsd record-type set (DS/NS/GLUE4/GLUE6/SYNTH4/SYNTH6/TXT) with
+// Task 2: real hsrd record-type set (DS/NS/GLUE4/GLUE6/SYNTH4/SYNTH6/TXT) with
 // multi-field inputs for DS (4 fields) and GLUE4/GLUE6 (2 fields).
 
 function Harness({ initial }: { initial: DnsRow[] }) {
@@ -29,7 +29,7 @@ function Harness({ initial }: { initial: DnsRow[] }) {
   );
 }
 
-describe("DnsRecordsEditor — hsd record-type fields (Task 2)", () => {
+describe("DnsRecordsEditor — hsrd record-type fields (Task 2)", () => {
   it("selecting DS shows 4 inputs and produces a correct DS record", () => {
     render(<Harness initial={[{ type: "TXT", value: "" }]} />);
 
@@ -85,7 +85,7 @@ describe("DnsRecordsEditor — hsd record-type fields (Task 2)", () => {
     expect(screen.queryByLabelText("key tag")).not.toBeInTheDocument();
   });
 
-  it("dropdown lists the real hsd type set and excludes A/AAAA/CNAME", () => {
+  it("dropdown lists the real hsrd type set and excludes A/AAAA/CNAME", () => {
     render(<Harness initial={[{ type: "TXT", value: "" }]} />);
     const select = screen.getByLabelText("record type") as HTMLSelectElement;
     const optionValues = Array.from(select.options).map((o) => o.value);

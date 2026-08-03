@@ -572,7 +572,7 @@ pub fn get_known_wallet_addresses(
 }
 
 /// Replace the cached address set for a specific wallet. Called after a sync
-/// against a (local or remote) hsd, so external read-only mode can resolve the
+/// against a (local or remote) hsrd, so external read-only mode can resolve the
 /// selected wallet's full balance/assets without manual watch addresses.
 pub fn replace_wallet_addresses(
     conn: &rusqlite::Connection,
@@ -1524,7 +1524,7 @@ pub fn get_draft_status_by_txid(
 // --- Cache-backed read model (non-custodial) ------------------------------
 
 /// Balance for a profile from the local UTXO cache, shaped like the frontend
-/// `HsdBalance` ({confirmed, unconfirmed, locked_confirmed, locked_unconfirmed}).
+/// `ChainBalance` ({confirmed, unconfirmed, locked_confirmed, locked_unconfirmed}).
 /// Liquid coins map to `confirmed`; name-bound value (control + lockup) maps to
 /// `locked_confirmed`. We don't yet split a mempool/unconfirmed bucket.
 pub fn read_cached_balance(
@@ -1541,7 +1541,7 @@ pub fn read_cached_balance(
 }
 
 /// Wallet-owned names from `tracked_name_states`, shaped like the frontend
-/// `HsdName`. "Owned" = the name's owner outpoint matches an unspent tracked
+/// `ChainName`. "Owned" = the name's owner outpoint matches an unspent tracked
 /// UTXO for this profile.
 pub fn read_cached_names(
     conn: &rusqlite::Connection,
@@ -1550,7 +1550,7 @@ pub fn read_cached_names(
     // COV_REGISTER = 6. The owner UTXO's covenant type determines if the name
     // is already registered (covenant >= 6) or just won (covenant < 6, e.g.
     // REVEAL=4). We derive `registered` from the covenant type rather than
-    // relying on `raw_json` because the node RPC response (getnameinfo) never
+    // relying on `raw_json` because the node name projection never
     // includes a `registered` field — only the explorer API provides it.
     let mut stmt = conn.prepare(
         "SELECT n.name, n.state, n.height, n.renewal_height, n.owner_txid, n.owner_vout,
@@ -1610,7 +1610,7 @@ pub fn read_cached_names(
 pub fn upsert_owned_name(
     conn: &rusqlite::Connection,
     profile_id: &str,
-    name: &crate::hsd::types::HsdName,
+    name: &crate::chain::types::ChainName,
     owner_txid: &str,
     owner_vout: u32,
     owner_address: &str,
@@ -1647,7 +1647,7 @@ pub fn upsert_owned_name(
 }
 
 /// Explorer-discovered owned names for a profile, shaped like the frontend
-/// `HsdName`. Unlike [`read_cached_names`] this is NOT gated on `tracked_utxos`
+/// `ChainName`. Unlike [`read_cached_names`] this is NOT gated on `tracked_utxos`
 /// (which only a node sync fills) — it returns the names whose current owner
 /// outpoint was recorded by node-free discovery (`owner_txid IS NOT NULL`).
 ///
@@ -1677,7 +1677,7 @@ pub fn read_owned_names_explorer(
             .map(|hash| serde_json::json!({ "hash": hash, "index": owner_vout.unwrap_or(0) }));
 
         // Extract registered/expired from the persisted raw JSON.
-        // The node RPC (getnameinfo) never includes `registered` — only the explorer.
+        // The node name projection never includes `registered` — only the explorer.
         // When raw_json has `registered: null` but the name is CLOSED with an
         // owner_txid and a set renewal (far in the future from height), we can safely
         // derive `registered: true`. The name is clearly already owned and registered.
@@ -1750,7 +1750,7 @@ pub struct TrackedNameRow {
     pub state: Option<String>,
     pub owner_address: Option<String>,
     pub raw_json: Option<String>,
-    /// Chain renewal height (`getnameinfo().info.renewal` / explorer
+    /// Chain renewal height (verified evidence `info.renewal` / explorer
     /// `renewal`), when sync has recorded one. Used by the
     /// `get_name_action_capabilities` node-unreachable fallback to derive
     /// `days_until_expire` the same way `read_renewals` does (renewal height +
@@ -1789,7 +1789,7 @@ pub fn get_tracked_name_state(
 /// frontend `normalizeTransaction` understands ({hash, value, direction,
 /// address, confirmed, height, time}).
 ///
-/// Direction/amount are derived from each cached `getrawtransaction` body by
+/// Direction/amount are derived from each cached transaction-evidence body by
 /// comparing outputs against the profile's derived addresses (receives) and
 /// inputs against its tracked UTXOs (spends). Parsing is best-effort: a tx whose
 /// shape we don't recognize is reported as direction "other" with amount 0.
@@ -2125,7 +2125,7 @@ pub fn find_unspent_covenant_utxos_by_name_hash(
 /// caller resolves each nameHash → name via `getnamebyhash`, falling back to
 /// `raw_name_hex` when the node can't resolve the hash (or the wrapper isn't
 /// available). Duplicates are collapsed — the wallet may hold several coins for
-/// the same name (OPEN + BID + REVEAL + owner), but only one `getnameinfo` per
+/// the same name (OPEN + BID + REVEAL + owner), but only one evidence read per
 /// name is worth doing per sync pass.
 #[derive(Debug, Clone)]
 pub struct WalletNameHash {
@@ -3170,7 +3170,7 @@ mod noncustodial_query_tests {
         let conn = db();
         seed_profile(&conn, "p1");
 
-        let name = crate::hsd::types::HsdName {
+        let name = crate::chain::types::ChainName {
             name: "testname".into(),
             name_hash: Some("aabb".into()),
             state: Some("CLOSED".into()),
@@ -3195,7 +3195,7 @@ mod noncustodial_query_tests {
         assert_eq!(names[0]["owner_address"], "rs1qaddr1");
 
         // Upsert again (update path).
-        let name2 = crate::hsd::types::HsdName {
+        let name2 = crate::chain::types::ChainName {
             name: "testname".into(),
             name_hash: Some("ccdd".into()),
             state: Some("REVOKED".into()),
@@ -3222,7 +3222,7 @@ mod noncustodial_query_tests {
         let conn = db();
         seed_profile(&conn, "p1");
 
-        let name = crate::hsd::types::HsdName {
+        let name = crate::chain::types::ChainName {
             name: "conflictname".into(),
             name_hash: Some("aabb".into()),
             state: Some("CLOSED".into()),

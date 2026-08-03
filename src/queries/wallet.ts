@@ -294,7 +294,7 @@ function isWalletLockedError(e: unknown): boolean {
 }
 
 /**
- * Sign an arbitrary message with the wallet key that owns a name (hsd
+ * Sign an arbitrary message with the wallet key that owns a name (hsrd
  * `signmessagewithname` parity — see `sign_name_message`), for domain-claim
  * verification flows such as Namebase's. Not a spend: no draft, no broadcast.
  *

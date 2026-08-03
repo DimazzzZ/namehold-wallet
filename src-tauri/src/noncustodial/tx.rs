@@ -1,41 +1,23 @@
-//! Raw Handshake transaction construction, signing, and serialization.
+//! Namehold's local transaction-signing facade.
 //!
-//! Every byte-level detail in this module is verified against canonical hsd
-//! 8.0.0 source:
-//!   - `lib/primitives/tx.js` `signatureHash(index, prev, value, type)` — the
-//!     sighash preimage and the use of a SINGLE Blake2b-256 digest (NOT
-//!     double-SHA256 like Bitcoin BIP143).
-//!   - `lib/primitives/tx.js` `write(bw)` — the witness serialization layout
-//!     (`version || varint(nin) || inputs || varint(nout) || outputs ||
-//!     locktime || witnesses`). Handshake has no segwit marker/flag byte; the
-//!     witness is always appended after locktime.
-//!   - `lib/primitives/input.js` `write` — `prevout || sequence(u32)` (no
-//!     scriptSig; Handshake is witness-only).
-//!   - `lib/primitives/outpoint.js` `write` — `hash(32) || index(u32)`.
-//!   - `lib/primitives/output.js` `write` — `value(u64) || address || covenant`.
-//!   - `lib/primitives/address.js` `write` — `version(u8) || len(u8) || hash`.
-//!   - `lib/primitives/covenant.js` `write` — `type(u8) || varint(count) ||
-//!     varbytes(item)*`. An empty covenant for a plain send is `00 00`.
-//!   - `lib/script/witness.js` `write` — `varint(nitems) || varbytes(item)*`.
-//!   - `lib/script/script.js` `fromPubkeyhash(hash)` — the script code used as
-//!     `prev` when signing a P2WPKH input:
-//!     `OP_DUP(0x76) OP_BLAKE160(0xc0) <push20:0x14> <hash160>
-//!      OP_EQUALVERIFY(0x88) OP_CHECKSIG(0xac)` (25 bytes).
-//!   - hsd signs with bcrypto `secp256k1.sign` which returns a 64-byte COMPACT
-//!     (R||S, low-S) ECDSA signature; `signature()` appends a 1-byte sighash
-//!     type → 65-byte witness signature.
-//!   - `lib/script/common.js` hashType: ALL=1, NONE=2, SINGLE=3,
-//!     SINGLEREVERSE=4, NOINPUT=0x40, ANYONECANPAY=0x80.
+//! Namehold owns key selection and signatures. Canonical transaction,
+//! covenant, and signature-hash behavior is delegated to the pinned `hns-rs`
+//! crates so the application does not carry a second protocol implementation.
 
 use crate::error::AppError;
 use crate::noncustodial::address;
 use crate::noncustodial::network::Network;
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
+pub use hns_covenants::Covenant;
+use hns_primitives::{Dollarydoos, Outpoint as CanonicalOutpoint, TransactionHash};
+use hns_transaction::{
+    Address as CanonicalAddress, Input as CanonicalInput, Output as CanonicalOutput,
+    Transaction as CanonicalTransaction, Witness as CanonicalWitness,
+};
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
-/// Blake2b with a 32-byte (256-bit) output, matching hsd's `blake2b.digest`
-/// default (output length 32, no key, no personalization).
+/// Blake2b with a 32-byte (256-bit) output.
 type Blake2b256 = Blake2b<U32>;
 
 /// Compute the 32-byte Blake2b-256 digest used throughout Handshake's
@@ -49,112 +31,45 @@ pub fn blake2b256(data: &[u8]) -> [u8; 32] {
     hash
 }
 
-/// A 32-byte all-zero hash (hsd `consensus.ZERO_HASH`), used when a sighash
-/// flag suppresses a sub-digest.
-const ZERO_HASH: [u8; 32] = [0u8; 32];
-
-/// Handshake sighash types (`lib/script/common.js` hashType).
+/// Canonical Handshake signature-hash types.
 pub mod sighash {
-    pub const ALL: u32 = 1;
-    pub const NONE: u32 = 2;
-    pub const SINGLE: u32 = 3;
-    pub const SINGLEREVERSE: u32 = 4;
-    pub const NOINPUT: u32 = 0x40;
-    pub const ANYONECANPAY: u32 = 0x80;
-    /// Mask for the base type (low 5 bits), matching hsd's `type & 0x1f`.
-    pub const MASK: u32 = 0x1f;
+    pub use hns_script::SIGHASH_ALL as ALL;
+    pub use hns_script::SIGHASH_ANYONE_CAN_PAY as ANYONECANPAY;
+    pub use hns_script::SIGHASH_BASE_MASK as MASK;
+    pub use hns_script::SIGHASH_NOINPUT as NOINPUT;
+    pub use hns_script::SIGHASH_NONE as NONE;
+    pub use hns_script::SIGHASH_SINGLE as SINGLE;
+    pub use hns_script::SIGHASH_SINGLE_REVERSE as SINGLEREVERSE;
 }
-
-// --- opcodes used in the P2WPKH script code (lib/script/common.js) ---
-const OP_DUP: u8 = 0x76;
-const OP_BLAKE160: u8 = 0xc0;
-const OP_EQUALVERIFY: u8 = 0x88;
-const OP_CHECKSIG: u8 = 0xac;
 
 /// Build the P2WPKH script code (`prev`) used when signing a P2WPKH input.
-///
-/// hsd `Script.fromPubkeyhash(hash)`:
-/// `OP_DUP OP_BLAKE160 <push20> <hash160> OP_EQUALVERIFY OP_CHECKSIG` (25 bytes).
 pub fn p2wpkh_script_code(hash160: &[u8; 20]) -> Vec<u8> {
     let mut code = Vec::with_capacity(25);
-    code.push(OP_DUP);
-    code.push(OP_BLAKE160);
+    code.push(hns_script::OP_DUP);
+    code.push(hns_script::OP_BLAKE160);
     code.push(0x14); // push 20 bytes
     code.extend_from_slice(hash160);
-    code.push(OP_EQUALVERIFY);
-    code.push(OP_CHECKSIG);
+    code.push(hns_script::OP_EQUALVERIFY);
+    code.push(hns_script::OP_CHECKSIG);
     code
-}
-
-/// A minimal little-endian byte writer mirroring hsd's `bufio` semantics for
-/// the subset of operations transaction serialization needs.
-#[derive(Default)]
-struct Writer {
-    buf: Vec<u8>,
-}
-
-impl Writer {
-    fn new() -> Self {
-        Writer { buf: Vec::new() }
-    }
-
-    fn write_u8(&mut self, v: u8) {
-        self.buf.push(v);
-    }
-
-    fn write_u32(&mut self, v: u32) {
-        self.buf.extend_from_slice(&v.to_le_bytes());
-    }
-
-    fn write_u64(&mut self, v: u64) {
-        self.buf.extend_from_slice(&v.to_le_bytes());
-    }
-
-    fn write_bytes(&mut self, v: &[u8]) {
-        self.buf.extend_from_slice(v);
-    }
-
-    /// Bitcoin/Handshake CompactSize varint (hsd `writeVarint`).
-    fn write_varint(&mut self, n: u64) {
-        if n < 0xfd {
-            self.buf.push(n as u8);
-        } else if n <= 0xffff {
-            self.buf.push(0xfd);
-            self.buf.extend_from_slice(&(n as u16).to_le_bytes());
-        } else if n <= 0xffff_ffff {
-            self.buf.push(0xfe);
-            self.buf.extend_from_slice(&(n as u32).to_le_bytes());
-        } else {
-            self.buf.push(0xff);
-            self.buf.extend_from_slice(&n.to_le_bytes());
-        }
-    }
-
-    /// varint length prefix followed by the bytes (hsd `writeVarBytes`).
-    fn write_var_bytes(&mut self, v: &[u8]) {
-        self.write_varint(v.len() as u64);
-        self.write_bytes(v);
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        self.buf
-    }
 }
 
 /// A transaction outpoint (previous output reference).
 #[derive(Clone, Debug)]
 pub struct Outpoint {
     /// 32-byte transaction hash of the funding tx, in the same natural byte
-    /// order hsd uses everywhere (no Bitcoin-style reversal). This is exactly
+    /// order hsrd uses everywhere (no Bitcoin-style reversal). This is exactly
     /// the hex string the node reports for the coin.
     pub hash: [u8; 32],
     pub index: u32,
 }
 
 impl Outpoint {
-    fn write(&self, w: &mut Writer) {
-        w.write_bytes(&self.hash);
-        w.write_u32(self.index);
+    fn canonical(&self) -> CanonicalOutpoint {
+        CanonicalOutpoint {
+            transaction_hash: TransactionHash::new(self.hash),
+            index: self.index,
+        }
     }
 }
 
@@ -179,45 +94,14 @@ impl Input {
         }
     }
 
-    /// Serialize the non-witness portion: `prevout || sequence`.
-    fn write(&self, w: &mut Writer) {
-        self.prevout.write(w);
-        w.write_u32(self.sequence);
-    }
-
-    /// Serialize the witness stack: `varint(nitems) || varbytes(item)*`.
-    fn write_witness(&self, w: &mut Writer) {
-        w.write_varint(self.witness.len() as u64);
-        for item in &self.witness {
-            w.write_var_bytes(item);
+    fn canonical(&self) -> CanonicalInput {
+        CanonicalInput {
+            previous_output: self.prevout.canonical(),
+            sequence: self.sequence,
+            witness: CanonicalWitness {
+                items: self.witness.clone(),
+            },
         }
-    }
-}
-
-/// A covenant attached to an output. A plain HNS send carries an empty covenant
-/// (`type 0`, no items), which serializes as `00 00`.
-#[derive(Clone, Debug, Default)]
-pub struct Covenant {
-    pub covenant_type: u8,
-    pub items: Vec<Vec<u8>>,
-}
-
-impl Covenant {
-    fn write(&self, w: &mut Writer) {
-        w.write_u8(self.covenant_type);
-        w.write_varint(self.items.len() as u64);
-        for item in &self.items {
-            w.write_var_bytes(item);
-        }
-    }
-
-    /// Serialize this covenant on its own: `type(u8) || varint(count) ||
-    /// varbytes(item)*`. Matches hsd `Covenant.encode()` byte-for-byte and is
-    /// used by the hsd-parity tests to compare covenant encodings.
-    pub fn to_raw(&self) -> Vec<u8> {
-        let mut w = Writer::new();
-        self.write(&mut w);
-        w.into_bytes()
     }
 }
 
@@ -226,14 +110,6 @@ impl Covenant {
 pub struct OutputAddress {
     pub version: u8,
     pub hash: Vec<u8>,
-}
-
-impl OutputAddress {
-    fn write(&self, w: &mut Writer) {
-        w.write_u8(self.version);
-        w.write_u8(self.hash.len() as u8);
-        w.write_bytes(&self.hash);
-    }
 }
 
 /// A transaction output: `value(u64) || address || covenant`.
@@ -245,16 +121,23 @@ pub struct Output {
 }
 
 impl Output {
-    fn write(&self, w: &mut Writer) {
-        w.write_u64(self.value);
-        self.address.write(w);
-        self.covenant.write(w);
+    fn canonical(&self) -> Result<CanonicalOutput, AppError> {
+        Ok(CanonicalOutput {
+            value: Dollarydoos::new(self.value),
+            address: CanonicalAddress::new(self.address.version, self.address.hash.clone())
+                .map_err(|e| AppError::InvalidInput(e.to_string()))?,
+            covenant: self.covenant.clone(),
+        })
     }
 
     fn encode(&self) -> Vec<u8> {
-        let mut w = Writer::new();
-        self.write(&mut w);
-        w.into_bytes()
+        self.canonical()
+            .and_then(|output| {
+                output
+                    .encode()
+                    .map_err(|e| AppError::InvalidInput(e.to_string()))
+            })
+            .expect("Namehold constructs bounded transaction outputs")
     }
 
     /// The exact serialized size of this output in bytes: `value(8) +
@@ -287,7 +170,7 @@ impl Default for Transaction {
 }
 
 impl Transaction {
-    /// New empty transaction (version 0, locktime 0 — hsd defaults).
+    /// New empty transaction (version 0, locktime 0 — hsrd defaults).
     pub fn new() -> Self {
         Transaction {
             version: 0,
@@ -297,40 +180,23 @@ impl Transaction {
         }
     }
 
-    /// Blake2b-256 of all serialized prevouts (`hashPrevouts`).
-    fn hash_prevouts(&self) -> [u8; 32] {
-        let mut w = Writer::new();
-        for input in &self.inputs {
-            input.prevout.write(&mut w);
-        }
-        blake2b256(&w.into_bytes())
-    }
-
-    /// Blake2b-256 of all input sequences (`hashSequence`).
-    fn hash_sequence(&self) -> [u8; 32] {
-        let mut w = Writer::new();
-        for input in &self.inputs {
-            w.write_u32(input.sequence);
-        }
-        blake2b256(&w.into_bytes())
-    }
-
-    /// Blake2b-256 of all serialized outputs (`hashOutputs`).
-    fn hash_outputs(&self) -> [u8; 32] {
-        let mut w = Writer::new();
-        for output in &self.outputs {
-            output.write(&mut w);
-        }
-        blake2b256(&w.into_bytes())
+    fn canonical(&self) -> Result<CanonicalTransaction, AppError> {
+        let outputs = self
+            .outputs
+            .iter()
+            .map(Output::canonical)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(CanonicalTransaction {
+            version: self.version,
+            inputs: self.inputs.iter().map(Input::canonical).collect(),
+            outputs,
+            locktime: self.locktime,
+        })
     }
 
     /// Compute the Handshake signature hash for input `index`, spending an
     /// output with script code `prev` and amount `value`, under sighash `type`.
     ///
-    /// Mirrors hsd `tx.js` `signatureHash` exactly. The result is a single
-    /// Blake2b-256 digest of the preimage:
-    /// `version || hashPrevouts || hashSequence || prevHash || prevIndex ||
-    ///  varbytes(prev) || value || sequence || hashOutputs || locktime || type`.
     pub fn signature_hash(
         &self,
         index: usize,
@@ -338,79 +204,8 @@ impl Transaction {
         value: u64,
         hash_type: u32,
     ) -> Result<[u8; 32], AppError> {
-        if index >= self.inputs.len() {
-            return Err(AppError::InvalidInput(format!(
-                "signature_hash: input index {index} out of range ({})",
-                self.inputs.len()
-            )));
-        }
-
-        // hsd: NOINPUT replaces `input` with a fresh empty Input for the
-        // per-input fields (prevout + sequence) only.
-        let use_empty_input = (hash_type & sighash::NOINPUT) != 0;
-        let input = &self.inputs[index];
-
-        let base = hash_type & sighash::MASK;
-
-        let prevouts = if (hash_type & sighash::ANYONECANPAY) == 0 {
-            self.hash_prevouts()
-        } else {
-            ZERO_HASH
-        };
-
-        let sequences = if (hash_type & sighash::ANYONECANPAY) == 0
-            && base != sighash::SINGLE
-            && base != sighash::SINGLEREVERSE
-            && base != sighash::NONE
-        {
-            self.hash_sequence()
-        } else {
-            ZERO_HASH
-        };
-
-        let outputs =
-            if base != sighash::SINGLE && base != sighash::SINGLEREVERSE && base != sighash::NONE {
-                self.hash_outputs()
-            } else if base == sighash::SINGLE {
-                if index < self.outputs.len() {
-                    blake2b256(&self.outputs[index].encode())
-                } else {
-                    ZERO_HASH
-                }
-            } else if base == sighash::SINGLEREVERSE {
-                if index < self.outputs.len() {
-                    let i = self.outputs.len() - 1 - index;
-                    blake2b256(&self.outputs[i].encode())
-                } else {
-                    ZERO_HASH
-                }
-            } else {
-                // NONE
-                ZERO_HASH
-            };
-
-        // Per-input fields: zeroed under NOINPUT (empty Input has
-        // hash=ZERO_HASH, index=0, sequence=0).
-        let (prev_hash, prev_index, sequence): ([u8; 32], u32, u32) = if use_empty_input {
-            (ZERO_HASH, 0, 0)
-        } else {
-            (input.prevout.hash, input.prevout.index, input.sequence)
-        };
-
-        let mut w = Writer::new();
-        w.write_u32(self.version);
-        w.write_bytes(&prevouts);
-        w.write_bytes(&sequences);
-        w.write_bytes(&prev_hash);
-        w.write_u32(prev_index);
-        w.write_var_bytes(prev);
-        w.write_u64(value);
-        w.write_u32(sequence);
-        w.write_bytes(&outputs);
-        w.write_u32(self.locktime);
-        w.write_u32(hash_type);
-
-        Ok(blake2b256(&w.into_bytes()))
+        hns_script::signature_hash(&self.canonical()?, index, prev, value, hash_type)
+            .map_err(|e| AppError::InvalidInput(e.to_string()))
     }
 
     /// Sign input `index` as a P2WPKH spend with `key`, setting the witness to
@@ -420,7 +215,7 @@ impl Transaction {
     /// program of the P2WPKH output being spent). `value` is that output's
     /// amount in dollarydoos. `hash_type` is normally `sighash::ALL`.
     ///
-    /// hsd produces a 64-byte compact (low-S) ECDSA signature and appends the
+    /// hsrd produces a 64-byte compact (low-S) ECDSA signature and appends the
     /// 1-byte sighash type. `secp256k1`'s `serialize_compact` returns R||S with
     /// low-S already enforced (the crate normalizes on signing).
     pub fn sign_p2wpkh_input(
@@ -443,9 +238,7 @@ impl Transaction {
         // 64-byte compact (R||S), low-S normalized by the crate on signing.
         let compact = sig.serialize_compact();
 
-        // hsd witness signature: 64-byte compact + 1-byte sighash type.
-        // The sighash type byte is the low byte of the (u32) type, matching
-        // hsd `signature()` which does `bw.writeU8(type)`.
+        // Compact low-S signature followed by the canonical hash-type byte.
         let mut sig_bytes = Vec::with_capacity(65);
         sig_bytes.extend_from_slice(&compact);
         sig_bytes.push((hash_type & 0xff) as u8);
@@ -455,52 +248,33 @@ impl Transaction {
         Ok(())
     }
 
-    /// Serialize the base (no-witness) form used for txid computation:
-    /// `version || varint(nin) || inputs || varint(nout) || outputs || locktime`.
-    fn write_base(&self, w: &mut Writer) {
-        w.write_u32(self.version);
-        w.write_varint(self.inputs.len() as u64);
-        for input in &self.inputs {
-            input.write(w);
-        }
-        w.write_varint(self.outputs.len() as u64);
-        for output in &self.outputs {
-            output.write(w);
-        }
-        w.write_u32(self.locktime);
-    }
-
     /// The Handshake txid: Blake2b-256 of the NON-witness serialization, hex
-    /// -encoded in natural (internal) byte order.
-    ///
-    /// Unlike Bitcoin, Handshake does NOT byte-reverse hashes for display: hsd
-    /// `tx.txid()` is `this.hash().toString('hex')` with no `revHex`, and the
-    /// same natural-order bytes are written into spending inputs' prevout hash
-    /// (`Outpoint`). Reversing here would make our txid disagree with the node /
-    /// explorer and — worse — make spends reference the wrong outpoint.
+    /// -encoded in canonical natural byte order.
     pub fn txid(&self) -> String {
-        let mut w = Writer::new();
-        self.write_base(&mut w);
-        hex::encode(blake2b256(&w.into_bytes()))
+        self.canonical()
+            .and_then(|transaction| {
+                transaction
+                    .transaction_hash()
+                    .map_err(|e| AppError::InvalidInput(e.to_string()))
+            })
+            .expect("Namehold constructs bounded transactions")
+            .to_string()
     }
 
     /// Serialize the transaction with witnesses for broadcast.
     ///
-    /// hsd `tx.js` `write`: `version || varint(nin) || inputs ||
-    /// varint(nout) || outputs || locktime || witnesses`. There is no segwit
-    /// marker/flag byte; the witness stacks are appended after locktime in
-    /// input order.
     pub fn serialize(&self) -> Vec<u8> {
-        let mut w = Writer::new();
-        self.write_base(&mut w);
-        for input in &self.inputs {
-            input.write_witness(&mut w);
-        }
-        w.into_bytes()
+        self.canonical()
+            .and_then(|transaction| {
+                transaction
+                    .encode()
+                    .map_err(|e| AppError::InvalidInput(e.to_string()))
+            })
+            .expect("Namehold constructs bounded transactions")
     }
 
     /// Serialize and hex-encode the transaction for broadcast over the node
-    /// RPC `sendrawtransaction`.
+    /// authenticated sidecar RPC.
     pub fn to_hex(&self) -> String {
         hex::encode(self.serialize())
     }
@@ -546,31 +320,7 @@ mod tests {
     #[test]
     fn empty_covenant_serializes_to_two_zero_bytes() {
         let cov = Covenant::default();
-        let mut w = Writer::new();
-        cov.write(&mut w);
-        assert_eq!(w.into_bytes(), vec![0x00, 0x00]);
-    }
-
-    #[test]
-    fn varint_encoding_matches_compactsize() {
-        let mut w = Writer::new();
-        w.write_varint(0xfc);
-        assert_eq!(w.into_bytes(), vec![0xfc]);
-
-        let mut w = Writer::new();
-        w.write_varint(0xfd);
-        assert_eq!(w.into_bytes(), vec![0xfd, 0xfd, 0x00]);
-
-        let mut w = Writer::new();
-        w.write_varint(0x1_0000);
-        assert_eq!(w.into_bytes(), vec![0xfe, 0x00, 0x00, 0x01, 0x00]);
-
-        let mut w = Writer::new();
-        w.write_varint(0x1_0000_0000);
-        assert_eq!(
-            w.into_bytes(),
-            vec![0xff, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]
-        );
+        assert_eq!(cov.encode().unwrap(), vec![0x00, 0x00]);
     }
 
     #[test]
@@ -621,7 +371,7 @@ mod tests {
         };
         let plain = mk(Covenant::default());
         let with_cov = mk(Covenant {
-            covenant_type: 2, // OPEN
+            kind: hns_covenants::CovenantKind::Open,
             items: vec![vec![1u8; 32], vec![0, 0, 0, 0], b"abc".to_vec()],
         });
         assert_ne!(plain, with_cov);
@@ -769,7 +519,7 @@ mod tests {
         // Tamper: change output's covenant.
         let mut t3 = base.clone();
         t3.outputs[1].covenant = Covenant {
-            covenant_type: 7,
+            kind: hns_covenants::CovenantKind::Update,
             items: vec![vec![1u8; 32]],
         };
         assert_ne!(
@@ -821,7 +571,7 @@ mod tests {
                 value,
                 address: OutputAddress { version, hash },
                 covenant: Covenant {
-                    covenant_type: ctype,
+                    kind: hns_covenants::CovenantKind::from_u8(ctype),
                     items,
                 },
             });

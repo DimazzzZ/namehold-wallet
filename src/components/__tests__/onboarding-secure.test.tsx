@@ -47,7 +47,7 @@ describe("Onboarding (secure, non-custodial)", () => {
         expect.objectContaining({ network: expect.any(String) }),
       ),
     );
-    // The legacy hsd wallet command must never be used.
+    // The legacy hsrd wallet command must never be used.
     expect(invokeMock).not.toHaveBeenCalledWith("create_wallet", expect.anything());
   });
 

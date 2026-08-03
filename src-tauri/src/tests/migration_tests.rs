@@ -50,15 +50,16 @@ fn test_schema_version_tracking() {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
         .unwrap();
-    // 001..009, 010 (drop legacy settings), 011 (re-add hsd data dir),
+    // 001..009, 010 (drop legacy settings), 011 (re-add hsrd data dir),
     // 012 (tx-draft confirmation tracking), 013 (owner address column),
     // 014 (bid reveal-end-height estimate), 015 (coin reservation, I3),
     // 016 (last_explorer_sync_at, Task 11 review Finding 2),
     // 017 (backfill bid_commitments.bid_txid/reveal_txid for pre-fix rows),
     // 018 (name_bid_index for chain_scan_cursor for the chain scanner),
-    // 020 (namebase_history: imported Namebase account-history events).
-    // 021 (sync_locks: cross-process sync coordination for background daemon).
-    assert_eq!(count, 21);
+    // 020 (namebase_history: imported Namebase account-history events),
+    // 021 (sync_locks: cross-process sync coordination for background daemon),
+    // 022 (authenticated sidecar backend settings migration).
+    assert_eq!(count, 22);
 }
 
 #[test]
@@ -69,20 +70,15 @@ fn test_default_settings_seeded() {
     // Non-custodial settings survive; the node RPC URL is seeded by 009.
     let node_url: String = conn
         .query_row(
-            "SELECT value FROM settings WHERE key = 'node_rpc_url'",
+            "SELECT value FROM settings WHERE key = 'hsrd_rpc_url'",
             [],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(node_url, "http://127.0.0.1:12037");
 
-    // Legacy keys are removed by migration 010.
-    for key in [
-        "hsd_wallet_api_url",
-        "connection_mode",
-        "write_mode",
-        "chain_source",
-    ] {
+    // Superseded connection-mode settings are removed by migration 010.
+    for key in ["connection_mode", "write_mode"] {
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM settings WHERE key = ?1",
@@ -93,18 +89,27 @@ fn test_default_settings_seeded() {
         assert_eq!(n, 0, "legacy setting '{key}' should be deleted");
     }
 
-    // The hsd data directory is re-added by migration 011 (010 drops it, 011
-    // brings it back), so the app can start hsd against a custom prefix.
-    let hsd_prefix: String = conn
+    let chain_source: String = conn
         .query_row(
-            "SELECT value FROM settings WHERE key = 'hsd_prefix'",
+            "SELECT value FROM settings WHERE key = 'chain_source'",
             [],
             |row| row.get(0),
         )
-        .expect("hsd_prefix should exist after the full migration chain");
+        .unwrap();
+    assert_eq!(chain_source, "managed_sidecar");
+
+    // The hsrd data directory is re-added by migration 011 (010 drops it, 011
+    // brings it back), so the app can start hsrd against a custom prefix.
+    let hsrd_data_dir: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'hsrd_data_dir'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("hsrd_data_dir should exist after the full migration chain");
     assert_eq!(
-        hsd_prefix, "",
-        "hsd_prefix defaults to empty (= hsd's own ~/.hsd)"
+        hsrd_data_dir, "",
+        "hsrd_data_dir defaults to empty (= hsrd's own ~/.hsrd)"
     );
 }
 

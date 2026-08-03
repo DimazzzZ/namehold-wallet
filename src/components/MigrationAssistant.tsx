@@ -96,7 +96,7 @@ export function MigrationAssistant() {
           : "Once transfers confirm, reconcile against your inventory in Sync & Verify.",
         state: verifyState,
         hint: !writeReady
-          ? "Finalizing on-chain requires write mode (a local hsd node)."
+          ? "Finalizing on-chain requires write mode (a local hsrd node)."
           : undefined,
       },
     ];

@@ -42,12 +42,12 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 - A typed **DNS-record editor** (TXT/A/AAAA/NS/CNAME…) for register/update, with a
   raw-JSON fallback.
 
-### Node-free reads
-- Reads are **node-free by default** via the HNSFans explorer — no node required
-  just to view your wallet. When your local hsd is synced, the app automatically
-  switches to **node-authoritative** reads (owned names, balances, bid history)
-  for faster, more reliable data. A local node is needed **only to send or
-  perform name actions**.
+### Authenticated chain reads
+- A local or remote **hsrd sidecar** restores wallet history and UTXOs, reconciles
+  mempool activity, supplies strict name-proof evidence, quotes fees, admits
+  signed transactions, and relays them to peers through wallet RPC v1.
+- Namehold retains custody: encrypted seed storage, BIP39/BIP44 derivation, and
+  transaction signing remain entirely inside the wallet process.
 
 ### Move from Namebase (one feature, not the core)
 - Connect with your Namebase session cookie to **list custodial domains**, see
@@ -69,26 +69,29 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 
 - Namehold can keep your wallet data fresh even when the app is closed. A
   lightweight background daemon (`namehold-syncd`) wakes every 60 seconds and
-  syncs all wallet profiles (UTXOs, name states, transactions) from the local
-  hsd node into the shared SQLite database.
+  restores all wallet profiles from authenticated hsrd wallet RPC v1 into the
+  shared SQLite database.
 - Controlled by a Settings checkbox **"Sync in background"** (default ON).
-- When enabled, hsd stays running after you close the app so the daemon can
+- When enabled, hsrd stays running after you close the app so the daemon can
   query it; the next app launch adopts the running node (no duplicate spawned).
 - Crash recovery: if the daemon dies, the app respawns it on startup.
 - The daemon is **read-only** — it never signs transactions or broadcasts.
 
 ## How it works
 
-- **Reads are node-free.** Balances and names come from the explorer and are cached
-  locally per wallet.
-- **Sending needs a node.** Broadcasting and coin/owner discovery use a local
-  **hsd** node over RPC. The app can start/stop hsd for you (Settings → Connections).
+- **hsrd supplies evidence, not custody.** Chain tip, wallet restoration, name
+  proofs, mempool reconciliation, transaction admission/relay, fee quotes, and
+  swap-contract activity come from authenticated wallet RPC v1.
+- **hns-rs supplies canonical formats.** Transaction, covenant, script/signature
+  hash, swap, and marketplace protocol types come from one pinned hns-rs revision.
+- **Namehold signs.** Seed encryption, BIP39/BIP44 derivation, transaction planning,
+  and local signatures stay in Namehold. The sidecar never receives private keys.
 - **Secrets stay in a secure window.** Your mnemonic/passphrase is only ever typed
   into — and your backup phrase only ever shown in — a small **Rust-owned window**;
   it never passes through the web UI. At rest it's an **encrypted vault**
   (Argon2id + AES-256-GCM) inside the local database.
 - **Write-capability gating.** Spend/name actions are enabled only when the signer
-  is unlocked **and** the node is reachable, synced, and address-indexed — with a
+  is unlocked **and** the sidecar is reachable, synced, and wallet-indexed — with a
   precise reason shown when any condition isn't met.
 - **Background sync daemon.** When "Sync in background" is enabled (Settings →
   Connections, default ON), a separate Rust binary syncs all profiles every 60s.
@@ -104,10 +107,9 @@ For a detailed threat model, attack surfaces, and mitigations, see [SECURITY.md]
 - **Non-custodial** — your keys live on your device, encrypted; nothing is custodied.
 - **Secrets never reach the web layer** — entry/display happen in the secure window,
   and signing happens in Rust.
-- **Local-first** — keys and secrets stay on your device (encrypted at rest). By
-  default, balance and name lookups query the public HNSFans explorer, which sees
-  your wallet addresses and tracked names. Run your own hsd node (Settings) to keep
-  all lookups fully local. No cloud, no telemetry.
+- **Local-first** — keys and secrets stay on your device (encrypted at rest). A
+  managed loopback hsrd sidecar keeps wallet restoration and chain evidence local.
+  Remote sidecars require HTTPS when Authorization is configured. No telemetry.
 - **Auto-lock** — the unlocked signer times out after a configurable idle period.
 - **Namebase migration** — optional in-app helper for transferring domains from
   Namebase. The session cookie is encrypted at rest and never exposed to the web
@@ -120,8 +122,8 @@ For a detailed threat model, attack surfaces, and mitigations, see [SECURITY.md]
 - [pnpm](https://pnpm.io/) 11+ (CI pins `11.17.0` via the `packageManager`
   field; run `corepack enable` to match it locally)
 - [Rust](https://www.rust-lang.org/tools/install) (stable, edition 2021)
-- [hsd](https://github.com/handshake-org/hsd) — **only needed for sending / name
-  actions** (reads work without it). Run it with `--index-address`.
+- [hsrd](https://github.com/handshake-rs/hns-node-rs) 0.3.4+ — authenticated
+  chain sidecar, built with `cargo build --release -p hns-node --bin hsrd`.
 
 ## Quick start
 
@@ -132,25 +134,28 @@ pnpm install
 pnpm tauri dev
 ```
 
-## Running a node (only to send)
+## Running the sidecar
 
-Reads need no node. To send HNS or perform name actions, run an **address-indexed**
-hsd node:
+For wallet restoration, chain evidence, and broadcast, run hsrd with wallet RPC
+v1 enabled:
 
 ```bash
-hsd --index-address --index-tx --api-key=<your-key>
-# mainnet node RPC: http://127.0.0.1:12037
+hsrd --network mainnet --data-dir ~/.hsrd \
+  --rpc-bind 127.0.0.1:12037 \
+  --rpc-authorization-header-file ~/.hsrd/namehold-wallet.authorization \
+  --native-sync --p2p-discovery --wallet-index --storage-mode archive \
+  --mining-engine --transaction-relay \
+  --acknowledge-incomplete-consensus
 ```
 
-- `--index-address` is **required** (the wallet finds your coins by address);
-  `--index-tx` backs transaction history + confirmation tracking.
-- The app can manage hsd for you — set the **data directory** and (if needed) the
-  **hsd binary path** in **Settings → Connections**, then click **Start hsd**.
-- **hsd can't add an index to an already-synced chain.** If your existing chain
-  was synced without these indexes, the app detects it and offers a **one-click
-  re-sync** (it moves the old chain to a backup and re-syncs with the right indexes).
+- `--wallet-index`, `--native-sync`, and an exact Authorization-header file are
+  required for the versioned wallet boundary.
+- The app can manage hsrd for you — set the **data directory** and (if needed) the
+  **hsrd binary path** in **Settings → Connections**, then click **Start hsrd**.
+- Re-sync creates a timestamped backup before starting a fresh wallet-indexed
+  data directory.
 
-| Network | Node RPC port |
+| Network | Suggested RPC port |
 |---------|---------------|
 | Mainnet | 12037         |
 | Testnet | 13037         |
@@ -224,7 +229,7 @@ Then open the app normally.
 
 ## Data location
 
-All app data lives in one SQLite file in your home folder (pairs with hsd's `~/.hsd`),
+All app data lives in one SQLite file in your home folder (pairs with hsrd's `~/.hsrd`),
 on every platform:
 
 - `~/.namehold/portfolio.db`
@@ -243,6 +248,7 @@ used) the Portfolio inventory/batches/audit log.
 - **Zustand** — client state
 - **Zod** — validation
 - **SQLite (rusqlite)** — local database
-- **reqwest** — HTTP client (explorer + hsd RPC)
+- **hns-rs** — canonical Handshake transactions, covenants, scripts, swaps, and marketplace protocol
+- **reqwest** — authenticated hsrd wallet RPC and optional public-data HTTP client
 - **secp256k1 · bip39 · argon2 · aes-gcm · zeroize** — keys, mnemonics, vault crypto
 - **Tailwind CSS** — styling

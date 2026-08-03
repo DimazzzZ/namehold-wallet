@@ -78,10 +78,10 @@ CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id);
 
 INSERT OR IGNORE INTO settings (key, value) VALUES
-    ('hsd_wallet_api_url', 'http://127.0.0.1:12039'),
-    ('hsd_node_api_url',   'http://127.0.0.1:12037'),
-    ('hsd_api_key',        ''),
-    ('hsd_wallet_id',      'primary'),
-    ('hsd_network',        'mainnet'),
-    ('hsd_prefix',         ''),
+    ('hsrd_rpc_url',       'http://127.0.0.1:12037'),
+    ('hsrd_authorization', ''),
+    ('hsrd_network',       'main'),
+    ('hsrd_data_dir',      ''),
+    ('hsrd_path',          ''),
+    ('autostart_hsrd',     'true'),
     ('write_mode',         'false');

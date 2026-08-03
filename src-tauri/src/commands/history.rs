@@ -1,24 +1,19 @@
-//! Full wallet action history from the local hsd node.
+//! Full wallet action history from the local hsrd node.
 //!
-//! Uses the node REST route `GET /tx/address/:addr` (requires `--index-tx`
-//! and `--index-address`, both enabled for app-managed nodes at `node.rs:394`
-//! -395) to fetch every transaction touching each of the wallet's derived
-//! addresses, dedupes by txid, and classifies each transaction into an
+//! Uses authenticated wallet RPC v1 restoration/history evidence to fetch
+//! every transaction touching each derived script, dedupes by txid, and
+//! classifies each transaction into an
 //! `ActionRow` — plain Send / Receive plus every name-covenant action
 //! (OPEN / BID / REVEAL / REDEEM / REGISTER / UPDATE / RENEW / TRANSFER /
 //! FINALIZE / REVOKE).
 //!
 //! Attribution math (which outputs / inputs belong to the wallet) mirrors the
-//! existing send-vs-receive logic in `read_cached_transactions`
-//! (`db/queries.rs:1820-1875`). The critical simplification vs. block scanning
-//! is that `/tx/address` returns fully-decoded inputs with a resolved
-//! `coin { value, address, covenant }` (see hsd api-docs), so spend attribution
-//! needs no extra `getrawtransaction` roundtrips.
+//! existing send-vs-receive logic in `read_cached_transactions`. Evidence
+//! includes resolved input coins, so spend attribution needs no extra chain
+//! lookups.
 //!
-//! Covenant constants come from `noncustodial::sync` (verified against hsd
-//! `lib/covenants/rules.js`). We rely on the numeric `covenant.type`, NOT the
-//! symbolic `action` string, because the `POST /tx/address` bulk route omits
-//! the string (and we may add bulk later); the numeric type is always present.
+//! Covenant constants come from `noncustodial::sync`; transaction bytes are
+//! decoded canonically before this projection is classified.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -28,7 +23,7 @@ use tauri::State;
 use crate::commands::read::resolve_profile;
 use crate::db::queries;
 use crate::error::AppError;
-use crate::noncustodial::rpc::NodeRpcClient;
+use crate::noncustodial::hsrd::HsrdClient;
 use crate::noncustodial::sync::{
     COV_BID, COV_CLAIM, COV_FINALIZE, COV_NONE, COV_OPEN, COV_REDEEM, COV_REGISTER, COV_RENEW,
     COV_REVEAL, COV_REVOKE, COV_TRANSFER, COV_UPDATE,
@@ -67,7 +62,7 @@ pub struct ActionRow {
     /// One of: `receive`, `send`, `internal` (name actions carry `internal`
     /// when only the wallet's own coins move).
     pub direction: String,
-    /// Confirming block height, or `None` when unconfirmed (hsd returns -1).
+    /// Confirming block height, or `None` when unconfirmed (hsrd returns -1).
     pub height: Option<i64>,
     /// Unix time (seconds) of the confirming block; `None` when unconfirmed.
     pub time: Option<i64>,
@@ -79,13 +74,13 @@ pub struct ActionRow {
     pub counterparty: Option<String>,
 }
 
-/// Classify one decoded hsd tx (as returned by `/tx/address`) against the
+/// Classify one decoded hsrd tx (as returned by `/tx/address`) against the
 /// wallet's own-address set. Pure function — the whole point of splitting it
 /// out is testability without a running node.
 pub fn classify_tx(tx: &serde_json::Value, our_addrs: &HashSet<String>) -> Option<ActionRow> {
     let txid = tx.get("hash").and_then(|v| v.as_str())?.to_string();
 
-    // Height: hsd emits -1 for mempool; treat that as unconfirmed. `block` is
+    // Height: hsrd emits -1 for mempool; treat that as unconfirmed. `block` is
     // null in that case, too.
     let raw_height = tx.get("height").and_then(|v| v.as_i64()).unwrap_or(-1);
     let (height, confirmed) = if raw_height >= 0 {
@@ -181,7 +176,7 @@ pub fn classify_tx(tx: &serde_json::Value, our_addrs: &HashSet<String>) -> Optio
         }
     }
 
-    // Drop txs that don't actually touch this wallet. hsd returns everything
+    // Drop txs that don't actually touch this wallet. hsrd returns everything
     // linked to the address — that's already filtered by the caller — but this
     // guards against stale addresses being reused.
     if !spends_ours && received_by_us == 0 && !name_cov_addr_is_ours {
@@ -278,12 +273,10 @@ fn load_wallet_addresses(
     Ok(out)
 }
 
-/// Full wallet action history from the local hsd node.
+/// Full wallet action history from the local hsrd node.
 ///
-/// - Requires `--index-tx` + `--index-address` on the node (surfaces a specific
-///   error otherwise; the UI can gate on this to show the "enable address
-///   index" banner).
-/// - Iterates each derived address, calls `/tx/address` per address, dedupes
+/// - Requires hsrd's authenticated wallet index to be caught up.
+/// - Iterates each derived address, requests bound history pages, and dedupes
 ///   by txid.
 /// - Classifies each tx via [`classify_tx`] using the wallet's own-address set.
 /// - Returns rows sorted newest-first (unconfirmed first, then by height desc).
@@ -309,7 +302,7 @@ pub async fn read_action_history(
     }
 
     let our: HashSet<String> = addresses.iter().cloned().collect();
-    let node = NodeRpcClient::from_settings(&settings);
+    let node = HsrdClient::from_settings(&settings);
 
     // Dedupe by txid. Preserve one representative decoded tx per txid.
     let mut by_txid: BTreeMap<String, serde_json::Value> = BTreeMap::new();

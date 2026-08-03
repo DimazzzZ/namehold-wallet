@@ -23,7 +23,7 @@ describe("Settings Store Logic", () => {
       settings: Record<string, string> | null;
       updateField: (key: string, value: string) => void;
     }>()((set, get) => ({
-      settings: { network: "mainnet", prefix: "~/.hsd" },
+      settings: { network: "mainnet", prefix: "~/.hsrd" },
       updateField: (key, value) => {
         const current = get().settings;
         if (current) set({ settings: { ...current, [key]: value } });
@@ -31,7 +31,7 @@ describe("Settings Store Logic", () => {
     }));
     store.getState().updateField("network", "testnet");
     expect(store.getState().settings?.network).toBe("testnet");
-    expect(store.getState().settings?.prefix).toBe("~/.hsd");
+    expect(store.getState().settings?.prefix).toBe("~/.hsrd");
   });
 
   it("manages passphrase", () => {

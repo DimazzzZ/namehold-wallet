@@ -274,7 +274,7 @@ async fn test_get_name_info_optional_errors_on_unrecognized_200_shape() {
 
 #[tokio::test]
 async fn test_get_name_info_optional_returns_some_for_known_name() {
-    // A normal name with valid data should return Some(HsdName), not None.
+    // A normal name with valid data should return Some(ChainName), not None.
     let mut server = Server::new_async().await;
     let mock = server
         .mock("GET", "/api/names/knownname")

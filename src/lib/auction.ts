@@ -1,12 +1,12 @@
 // Vickrey-auction phase derivation + countdown helpers.
 //
-// hsd `getnameinfo` reports a `state` (OPENING / BIDDING / REVEAL / CLOSED …)
-// and, in `stats`, the block/time distance to the next phase. We turn those into
+// hsrd's verified name-state projection reports a `state` (OPENING / BIDDING /
+// REVEAL / CLOSED …) and phase distances in `stats`. We turn those into
 // a UI badge + a human countdown and a recommended next action. All inputs are
 // optional/nullable — the explorer path may omit the auction stats entirely, so
 // every function degrades to "unknown" rather than throwing.
 
-import type { HsdNameStats, AuctionTaskState, NameActionCapabilities } from "../types";
+import type { ChainNameStats, AuctionTaskState, NameActionCapabilities } from "../types";
 
 export type AuctionPhase =
   | "AVAILABLE"
@@ -24,7 +24,7 @@ export interface PhaseBadge {
   variant: "default" | "success" | "warning" | "error" | "info";
 }
 
-/** Map a raw hsd `state` string to a phase + display badge. */
+/** Map a raw hsrd `state` string to a phase + display badge. */
 export function auctionPhase(state: string | null | undefined): PhaseBadge {
   switch ((state ?? "").toUpperCase()) {
     case "OPENING":
@@ -61,7 +61,7 @@ export interface PhaseCountdown {
  */
 export function nextTransition(
   state: string | null | undefined,
-  stats: HsdNameStats | null | undefined,
+  stats: ChainNameStats | null | undefined,
 ): PhaseCountdown | null {
   if (!stats) return null;
   const { phase } = auctionPhase(state);
@@ -199,7 +199,7 @@ export interface AuctionGuidance {
  */
 export function auctionGuidance(
   state: string | null | undefined,
-  stats: HsdNameStats | null | undefined,
+  stats: ChainNameStats | null | undefined,
 ): AuctionGuidance | null {
   const badge = auctionPhase(state);
   const guide = AUCTION_PHASE_GUIDE[badge.phase];

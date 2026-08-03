@@ -486,7 +486,7 @@ export function NameActionsModal({
               <span>
                 <span className="font-semibold">Name actions unavailable.</span>{" "}
                 {writeCap?.reason ??
-                  "Connect a fully-synced, address-indexed node and unlock your signer to manage names."}
+                  "Connect a fully-synced hsrd wallet index and unlock your signer to manage names."}
               </span>
               <UnlockButton size="sm" variant="primary" />
             </div>
