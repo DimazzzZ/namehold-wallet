@@ -8,7 +8,7 @@
 //
 // The bash equivalent (`build-sidecar.sh`) is kept for direct manual use.
 import { execSync } from "node:child_process";
-import { copyFileSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,26 +31,36 @@ function hostTriple() {
 const triple = hostTriple();
 const isWin = process.platform === "win32";
 const ext = isWin ? ".exe" : "";
+const debug = process.argv.includes("--debug");
+const profile = debug ? "debug" : "release";
 
-// Skip if the sidecar is already staged (non-empty). This avoids a redundant
-// rebuild when the release workflow stages both architectures before tauri-action
-// invokes `beforeBuildCommand`.
+// Release jobs can pre-stage architecture-specific binaries. Development mode
+// always runs Cargo's incremental build so source changes cannot leave a stale
+// or empty placeholder beside the app executable.
 const destDir = resolve("binaries");
 mkdirSync(destDir, { recursive: true });
 const dest = resolve(destDir, `namehold-syncd-${triple}${ext}`);
-try {
-  const st = statSync(dest);
-  if (st.size > 0) {
-    console.log(`Sidecar already staged: ${dest} (${st.size} bytes) — skipping build`);
-    process.exit(0);
+if (!debug) {
+  try {
+    const st = statSync(dest);
+    if (st.size > 0) {
+      console.log(`Sidecar already staged: ${dest} (${st.size} bytes) — skipping build`);
+      process.exit(0);
+    }
+  } catch {
+    // File doesn't exist — proceed with build.
   }
-} catch {
-  // File doesn't exist — proceed with build.
 }
 
-console.log(`Building namehold-syncd (release, target=${triple})`);
-execSync("cargo build --release --bin namehold-syncd", { stdio: "inherit" });
+console.log(`Building namehold-syncd (${profile}, target=${triple})`);
+execSync(`cargo build ${debug ? "" : "--release "}--bin namehold-syncd`, {
+  stdio: "inherit",
+});
 
-const src = resolve("target", "release", `namehold-syncd${ext}`);
+const metadata = JSON.parse(
+  execSync("cargo metadata --no-deps --format-version 1", { encoding: "utf8" }),
+);
+const src = resolve(metadata.target_directory, profile, `namehold-syncd${ext}`);
 copyFileSync(src, dest);
+if (!isWin) chmodSync(dest, 0o755);
 console.log(`Staged: ${dest}`);

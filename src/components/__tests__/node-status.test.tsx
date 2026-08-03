@@ -260,14 +260,20 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(screen.queryByRole("button", { name: /Manage wallets/i })).toBeNull();
   });
 
-  it("offers Stop hsrd for a connected node even if the app didn't spawn it", async () => {
-    // External/adopted node: connected via RPC but no child handle (process_alive
-    // false). The app must still let the user stop it.
+  it("presents an adopted node as externally managed without local path warnings", async () => {
+    // External/Docker node: connected via RPC but no child handle. Namehold
+    // must not claim its default data dir or missing host binary controls it.
     invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: false, height: 500 })),
+      route(nodeStatus({ connected: true, process_alive: false, height: 500, binary_found: false })),
     );
     render(<Settings />, { wrapper: wrapper() });
-    expect(await screen.findByRole("button", { name: /Stop hsrd/i })).toBeInTheDocument();
+    expect(await screen.findByText(/Managed externally/i)).toBeInTheDocument();
+    expect(screen.getByText(/External authenticated sidecar/i)).toHaveTextContent(
+      "http://127.0.0.1:12037",
+    );
+    expect(screen.queryByText(/hsrd binary not found/i)).toBeNull();
+    expect(screen.queryByText(/Data dir:/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Stop hsrd/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Start hsrd/i })).toBeNull();
   });
 

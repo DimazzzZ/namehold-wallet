@@ -301,7 +301,11 @@ export function Settings() {
             duplicate is spawned.
           </div>
 
-          <NodeControl dirty={dirty} hsrdPathConfigured={!!settings.hsrd_path?.trim()} />
+          <NodeControl
+            dirty={dirty}
+            hsrdPathConfigured={!!form.hsrd_path?.trim()}
+            rpcUrl={form.hsrd_rpc_url || "http://127.0.0.1:12037"}
+          />
         </div>
       </div>
 
@@ -391,7 +395,15 @@ export function Settings() {
  * with the configured data directory; `dirty` warns that an unsaved directory
  * change won't apply until settings are saved.
  */
-function NodeControl({ dirty, hsrdPathConfigured }: { dirty: boolean; hsrdPathConfigured: boolean }) {
+function NodeControl({
+  dirty,
+  hsrdPathConfigured,
+  rpcUrl,
+}: {
+  dirty: boolean;
+  hsrdPathConfigured: boolean;
+  rpcUrl: string;
+}) {
   const { data: status } = useNodeStatus();
   const start = useStartChain();
   const stop = useStopChain();
@@ -400,6 +412,7 @@ function NodeControl({ dirty, hsrdPathConfigured }: { dirty: boolean; hsrdPathCo
 
   const connected = status?.connected ?? false;
   const processAlive = status?.process_alive ?? false;
+  const externallyManaged = connected && !processAlive;
   // "Synced" = chain tip reached (applied blocks caught up to best header).
   // verificationProgress can plateau just under 1.0 (e.g. ~0.9997 on regtest), so
   // it's only a fallback when the node doesn't report headers.
@@ -426,7 +439,7 @@ function NodeControl({ dirty, hsrdPathConfigured }: { dirty: boolean; hsrdPathCo
   const label = connected
     ? synced
       ? `Connected · block ${status?.height ?? "?"}${processAlive ? "" : " (external node)"}`
-      : `Syncing · ${pct}%`
+      : `Syncing · ${pct}%${externallyManaged ? " (external node)" : ""}`
     : processAlive
       ? "Starting…"
       : "Sidecar stopped";
@@ -476,10 +489,12 @@ function NodeControl({ dirty, hsrdPathConfigured }: { dirty: boolean; hsrdPathCo
           <span className={`inline-block w-2 h-2 rounded-full ${dotClass}`} />
           <span className="font-medium">{label}</span>
         </div>
-        {processAlive || connected ? (
+        {processAlive ? (
           <Button size="sm" variant="secondary" onClick={onStop} disabled={stop.isPending}>
             {stop.isPending ? "Stopping…" : "Stop hsrd"}
           </Button>
+        ) : externallyManaged ? (
+          <span className="text-xs font-medium text-gray-500">Managed externally</span>
         ) : (
           <Button
             size="sm"
@@ -516,24 +531,39 @@ function NodeControl({ dirty, hsrdPathConfigured }: { dirty: boolean; hsrdPathCo
           </div>
         </div>
       )}
-        <div className="text-xs text-gray-500 space-y-0.5">
+      <div className="text-xs text-gray-500 space-y-0.5">
         <div>
-          Read source: <span className="font-medium">{status?.read_source === "local" ? "Authenticated sidecar" : "Local cache / auxiliary provider"}</span>
+          Read source:{" "}
+          <span className="font-medium">
+            {status?.read_source === "local"
+              ? "Authenticated sidecar"
+              : "Local cache / auxiliary provider"}
+          </span>
         </div>
-        <div>
-          Data dir: <code>{status?.data_dir ?? "…"}</code>
-        </div>
-        <div>
-          {status?.binary_found ? (
-            <>
-              hsrd {status.version} · {status.network}
-            </>
-          ) : (
-            <span className="text-red-600">
-              hsrd binary not found — build <code>hns-node</code> with Cargo or select its path above.
-            </span>
-          )}
-        </div>
+        {externallyManaged ? (
+          <div>
+            External authenticated sidecar: <code>{rpcUrl}</code>. Start, stop, and
+            storage are managed by Docker or its host process.
+          </div>
+        ) : (
+          <div>
+            Data dir: <code>{status?.data_dir ?? "…"}</code>
+          </div>
+        )}
+        {!externallyManaged && (
+          <div>
+            {status?.binary_found ? (
+              <>
+                hsrd {status.version} · {status.network}
+              </>
+            ) : (
+              <span className="text-red-600">
+                hsrd binary not found — build <code>hns-node</code> with Cargo or select its path
+                above.
+              </span>
+            )}
+          </div>
+        )}
         {dirty && (
           <div className="text-amber-600">
             Save settings to apply a new data directory before starting.

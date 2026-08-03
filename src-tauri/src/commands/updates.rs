@@ -32,10 +32,28 @@ pub mod app_updates {
     /// command errors).
     #[derive(Debug, thiserror::Error)]
     pub enum Error {
-        #[error(transparent)]
-        Updater(#[from] tauri_plugin_updater::Error),
+        #[error("{0}")]
+        Updater(String),
         #[error("no pending update — call check_for_update first")]
         NoPendingUpdate,
+    }
+
+    impl From<tauri_plugin_updater::Error> for Error {
+        fn from(error: tauri_plugin_updater::Error) -> Self {
+            Self::Updater(friendly_updater_error(&error.to_string()))
+        }
+    }
+
+    fn friendly_updater_error(raw: &str) -> String {
+        let normalized = raw.to_ascii_lowercase();
+        if normalized.contains("fallback platforms") && normalized.contains("platforms") {
+            return format!(
+                "Automatic update unavailable: the latest release manifest does not include a signed {}-{} package. This build supports the platform; keep using it or install a matching release manually.",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+        }
+        raw.to_string()
     }
 
     impl Serialize for Error {
@@ -151,6 +169,16 @@ pub mod app_updates {
             // user/dev at the required check_for_update call.
             let msg = Error::NoPendingUpdate.to_string();
             assert!(msg.contains("check_for_update"), "got: {msg}");
+        }
+
+        #[test]
+        fn missing_platform_error_does_not_claim_arm64_is_unsupported() {
+            let msg = friendly_updater_error(
+                "None of the fallback platforms `[\"linux-aarch64\"]` were found in the response `platforms` object",
+            );
+            assert!(msg.contains("latest release manifest"), "got: {msg}");
+            assert!(msg.contains("supports the platform"), "got: {msg}");
+            assert!(!msg.contains("unsupported"), "got: {msg}");
         }
 
         #[test]

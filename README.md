@@ -122,8 +122,8 @@ For a detailed threat model, attack surfaces, and mitigations, see [SECURITY.md]
 - [pnpm](https://pnpm.io/) 11+ (CI pins `11.17.0` via the `packageManager`
   field; run `corepack enable` to match it locally)
 - [Rust](https://www.rust-lang.org/tools/install) (stable, edition 2021)
-- [hsrd](https://github.com/handshake-rs/hns-node-rs) 0.3.4+ — authenticated
-  chain sidecar, built with `cargo build --release -p hns-node --bin hsrd`.
+- [hsrd](https://github.com/handshake-rs/hns-node-rs) 0.3.4+ — run the
+  multi-platform Docker image (Linux x86_64/ARM64) or build the native binary.
 
 ## Quick start
 
@@ -134,26 +134,36 @@ pnpm install
 pnpm tauri dev
 ```
 
-## Running the sidecar
-
-For wallet restoration, chain evidence, and broadcast, run hsrd with wallet RPC
-v1 enabled:
+The dev command now builds and stages the `namehold-syncd` helper before Tauri
+starts. On Linux ARM64 systems where WebKitGTK renders black lines, use:
 
 ```bash
-hsrd --network mainnet --data-dir ~/.hsrd \
-  --rpc-bind 127.0.0.1:12037 \
-  --rpc-authorization-header-file ~/.hsrd/namehold-wallet.authorization \
-  --native-sync --p2p-discovery --wallet-index --storage-mode archive \
-  --mining-engine --transaction-relay \
-  --acknowledge-incomplete-consensus
+WEBKIT_DISABLE_DMABUF_RENDERER=1 pnpm tauri dev
 ```
 
-- `--wallet-index`, `--native-sync`, and an exact Authorization-header file are
-  required for the versioned wallet boundary.
-- The app can manage hsrd for you — set the **data directory** and (if needed) the
-  **hsrd binary path** in **Settings → Connections**, then click **Start hsrd**.
-- Re-sync creates a timestamped backup before starting a fresh wallet-indexed
-  data directory.
+## Running the sidecar
+
+The recommended setup is the authenticated Docker sidecar. It publishes wallet
+RPC only on host loopback, stores an unpruned archive in a bind-mounted host
+directory, supports Linux x86_64 and ARM64, and restarts independently of the
+desktop app:
+
+```bash
+docker pull ghcr.io/handshake-rs/hns-node-rs:canary-v0.3.4
+```
+
+Follow the copy/paste guide in [`docs/NODE_SETUP.md`](docs/NODE_SETUP.md) to:
+
+1. create the shared private Authorization file,
+2. start hsrd with native sync, wallet indexing, archive storage, admission, and
+   relay enabled,
+3. enter the loopback URL and exact Authorization value in Namehold, and
+4. verify compact `/api/v1/sync` progress without the full diagnostic noise.
+
+When connected, Settings shows `Syncing · N% (external node)` and hides native
+binary/data-directory controls that do not apply to Docker. Sending becomes
+available after the first full sync. A host-native managed sidecar remains
+supported and is documented in the same guide.
 
 | Network | Suggested RPC port |
 |---------|---------------|
@@ -161,8 +171,7 @@ hsrd --network mainnet --data-dir ~/.hsrd \
 | Testnet | 13037         |
 | Regtest | 14037         |
 
-See [`docs/NODE_SETUP.md`](docs/NODE_SETUP.md) and
-[`docs/REGTEST_TESTING.md`](docs/REGTEST_TESTING.md) for details.
+See [`docs/REGTEST_TESTING.md`](docs/REGTEST_TESTING.md) for local regtest.
 
 ## Move from Namebase
 

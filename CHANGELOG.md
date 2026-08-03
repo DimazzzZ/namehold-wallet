@@ -24,6 +24,26 @@
 - **New DB migration `021_sync_locks.sql`** — creates the `sync_locks` table for
   cross-process sync coordination.
 
+### Changed
+- **Docker-first hsrd setup** — the node guide now provides a copy/paste
+  full-archive Docker configuration, exact Authorization setup, Namehold GUI
+  connection fields, compact sync diagnostics, and lifecycle commands for
+  x86_64 and ARM64.
+- **Linux ARM64 releases** — the release matrix now builds and signs a native
+  Linux ARM64 bundle and refuses to publish `latest.json` unless all supported
+  updater platforms are present.
+
+### Fixed
+- Keep transient native active-state commit contention from flashing an adopted
+  Docker/manual sidecar as stopped, and present external lifecycle/storage
+  ownership without irrelevant host-binary or data-directory warnings.
+- Align the backend read-source values with the frontend contract so a fully
+  synced authenticated sidecar actually becomes the authoritative local source.
+- Build and stage the real `namehold-syncd` executable before `tauri dev`
+  instead of copying an empty placeholder that fails with `Permission denied`.
+- Replace the updater's raw missing-manifest-platform JSON error with an
+  accurate message while older releases still lack a Linux ARM64 artifact.
+
 ## [0.3.0] - 2026-07-29
 
 ### Changed

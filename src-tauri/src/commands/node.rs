@@ -12,7 +12,7 @@ use crate::noncustodial::hsrd::{resolve_authorization, HsrdClient};
 use crate::noncustodial::network::Network;
 use crate::AppState;
 use tauri::State;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration};
 
 pub(crate) const HSRD_MIN_VERSION: (u32, u32, u32) = (0, 3, 4);
 const DEFAULT_RPC_BIND: &str = "127.0.0.1:12037";
@@ -196,15 +196,24 @@ async fn probe_node(state: &AppState) -> Option<NodeProbe> {
         let db = state.db.lock().ok()?;
         db::queries::get_settings(&db).ok()?
     };
-    HsrdClient::from_settings(&settings)
-        .get_blockchain_info()
-        .await
-        .ok()
-        .map(|info| NodeProbe {
-            height: info.blocks,
-            verification_progress: info.verification_progress,
-            headers: info.headers,
-        })
+    let client = HsrdClient::from_settings(&settings);
+
+    // The native writer can briefly make wallet `chain_tip` retryable while it
+    // commits an active-state slice. `/api/v1/sync` stays available from hsrd's
+    // coherent diagnostic snapshot, so use it strictly as a status/liveness
+    // fallback. Wallet operations still require their own wallet RPC calls.
+    let info = match timeout(Duration::from_secs(2), client.get_blockchain_info()).await {
+        Ok(Ok(info)) => info,
+        _ => match timeout(Duration::from_secs(2), client.get_sync_info()).await {
+            Ok(Ok(info)) => info,
+            _ => return None,
+        },
+    };
+    Some(NodeProbe {
+        height: info.blocks,
+        verification_progress: info.verification_progress,
+        headers: info.headers,
+    })
 }
 
 #[tauri::command]
@@ -237,7 +246,10 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         "headers": probe.as_ref().and_then(|value| value.headers),
         "last_error": error,
         "index_mismatch": error.as_deref().is_some_and(|message| message.contains("wallet index")),
-        "read_source": if synced { "sidecar" } else { "unavailable" }
+        // Keep the wire values aligned with the TypeScript NodeStatus contract.
+        // "local" means the authenticated sidecar is authoritative; the
+        // explorer/cache remains the read fallback until initial sync finishes.
+        "read_source": if synced { "local" } else { "explorer" }
     }))
 }
 

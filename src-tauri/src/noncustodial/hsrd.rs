@@ -278,6 +278,31 @@ impl HsrdClient {
         })
     }
 
+    /// Authenticated diagnostic fallback for liveness/sync presentation.
+    ///
+    /// The wallet `chain_tip` call remains the authority boundary for wallet
+    /// operations. During a native active-state commit it can briefly return a
+    /// retryable contention error, while `/api/v1/sync` deliberately remains
+    /// available from a cached coherent snapshot. Node lifecycle/status uses
+    /// this fallback so one commit cannot look like a stopped external node.
+    pub async fn get_sync_info(&self) -> Result<BlockchainInfo, AppError> {
+        let sync = self.diagnostic("/api/v1/sync").await?;
+        let active = sync
+            .pointer("/active_tip/height")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| AppError::Rpc("sidecar sync diagnostic has no active tip".into()))?;
+        let target = sync.get("target_height").and_then(Value::as_i64);
+        let progress = target
+            .filter(|height| *height > 0)
+            .map(|height| (active as f64 / height as f64).clamp(0.0, 1.0));
+        Ok(BlockchainInfo {
+            blocks: active,
+            headers: target,
+            verification_progress: progress,
+            bestblockhash: None,
+        })
+    }
+
     pub async fn get_info(&self) -> Result<Value, AppError> {
         self.diagnostic("/api/v1/status").await
     }

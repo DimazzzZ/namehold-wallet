@@ -5,7 +5,7 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "node src-tauri/build-sidecar.mjs --debug && pnpm dev",
     "beforeBuildCommand": "pnpm build && node src-tauri/build-sidecar.mjs"
   },
   "app": {

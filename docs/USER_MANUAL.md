@@ -55,9 +55,10 @@ entered and displayed only inside a small **Rust-owned secure window**.
 ### Prerequisites
 
 - The Namehold desktop app (macOS `.dmg`, Windows `.msi`, or Linux `.AppImage`/`.deb`).
-- To **send HNS or perform name actions**, you also need [hsrd](https://github.com/handshake-org/hsrd)
-  — the app can start it for you (see [Node control](#11-node-control)). Reads
-  work without hsrd.
+- To **send HNS or perform name actions**, you also need
+  [hsrd](https://github.com/handshake-rs/hns-node-rs) 0.3.4 or newer. Run it
+  with Docker or let the app start a native binary (see
+  [Node control](#11-node-control)). Reads work without hsrd.
 
 ### First launch — Onboarding
 
@@ -336,11 +337,11 @@ All node settings live under **Settings → Connections**.
 | Field | Default | Notes |
 |-------|---------|-------|
 | **Explorer base URL (reads)** | `https://e.hnsfans.com` | For node-free reads. |
-| **Node RPC URL (sending)** | `http://127.0.0.1:12037` | Mainnet. Testnet 13037, regtest 14037. |
-| **Node RPC API key** | (empty) | Match hsrd's `--api-key`. |
-| **Node data directory (`hsrd --prefix`)** | (system default) | Use **Browse…** to pick. |
+| **hsrd RPC base URL** | `http://127.0.0.1:12037` | Mainnet. Testnet 13037, regtest 14037. Wallet RPC v1 is under `/api/v1/wallet`. |
+| **Exact Authorization header** | (generated/stored) | The complete value expected by hsrd, such as `Bearer <token>`; it is redacted after saving. |
+| **Sidecar data directory (`hsrd --data-dir`)** | `~/.hsrd` | Used only when Namehold manages the native process. Docker owns its mounted data path. |
 | **hsrd binary path** | (auto) | Only needed if hsrd isn't on PATH. |
-| **Autostart HSRD when the app launches** | **on** | Toggle off to keep hsrd manual. |
+| **Autostart HSRD when the app launches** | **on** | Leave on for a native managed node; turn off when Docker manages hsrd. |
 | **Sync in background** | **on** | When enabled, a background daemon syncs your wallet every 60 seconds, even when the app is closed. When disabled, only manual Sync (or the app's auto-sync while running) refreshes your data. |
 
 ### Background sync
@@ -362,11 +363,23 @@ data fresh without the app being open.
   from hsrd and writes sync data to the local database. Your keys stay locked in the
   encrypted vault.
 
+Docker's `--restart unless-stopped` keeps the chain node syncing independently.
+The Namehold checkbox controls the separate read-only wallet-cache daemon; it
+does not start or stop an externally managed Docker container.
+
+### Recommended Docker connection
+
+The Docker image supports Linux x86_64 and ARM64. Use a private mounted
+Authorization file, publish RPC only at `127.0.0.1:12037`, enable
+`--native-sync`, `--wallet-index`, and `--storage-mode archive`, then paste the
+same exact Authorization value into Namehold. The complete copy/paste command
+and compact sync-status filter are in [Connect Namehold to hsrd](NODE_SETUP.md).
+
 ### Start, stop, status
 
 Below the settings, the **NodeControl** panel shows a live status dot
-(Connected · Starting · Stopped · Syncing %), the read source (**Local** or
-**Explorer**), the data directory and hsrd version. Buttons:
+(Connected · Starting · Stopped · Syncing %), the read source, and the
+applicable lifecycle information.
 
 - **Start hsrd** — spawns hsrd with native sync, P2P discovery, transaction
   relay, and its durable wallet index. If hsrd is already running, it adopts
@@ -376,6 +389,10 @@ Below the settings, the **NodeControl** panel shows a live status dot
   existing data set. It moves the entire data directory to a timestamped,
   recoverable backup and starts a clean wallet-indexed sync. Expect this to
   take hours the first time.
+
+An adopted Docker/manual node instead shows **Managed externally** and its RPC
+URL. Namehold hides the host-binary and managed-data-directory warnings because
+they do not apply; use Docker or the external process manager to start/stop it.
 
 ### Ports
 
@@ -392,14 +409,14 @@ dot is Connected). Restart the app — it respawns the daemon on startup when
 "Sync in background" is ON. The daemon writes its process ID to
 `~/.namehold/syncd.pid` while alive.
 
-**hsrd is still running after I closed the app.** This is expected when "Sync in
-background" is enabled — the daemon keeps hsrd alive so it can sync in the
-background. To stop hsrd, either disable "Sync in background" (hsrd is then stopped
-on the next app close) or click **Stop hsrd** in Settings → Connections.
+**hsrd is still running after I closed the app.** This is expected for a managed
+node when "Sync in background" is enabled. It is also always expected for the
+recommended Docker setup: Docker owns that lifecycle. Use
+`docker stop namehold-hsrd` to stop the container without deleting its archive.
 
-**I want to stop background sync.** Uncheck **Settings → Connections → "Sync in
-background"**. The daemon exits immediately, and hsrd is stopped the next time you
-close the app.
+**I want to stop background wallet refresh.** Uncheck **Settings → Connections
+→ "Sync in background"**. The Namehold daemon exits immediately. A Docker hsrd
+continues syncing its chain until you stop the container separately.
 
 ---
 

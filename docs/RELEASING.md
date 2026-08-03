@@ -42,14 +42,16 @@ This creates:
    ```
 3. The `release.yml` workflow:
    - Creates a **draft** GitHub Release.
-   - Builds on macOS (universal), Linux, Windows.
+   - Builds on macOS (universal), Linux x86_64, Linux ARM64, and Windows.
    - Runs `beforeBuildCommand` to build the `namehold-syncd` sidecar binary
-     per-platform (macOS universal, Linux, Windows) and stages it for bundling.
+     per-platform (macOS universal, both Linux architectures, Windows) and
+     stages it for bundling.
    - `tauri-action` produces the bundles **+ `.sig` files + `latest.json`**
      (because `createUpdaterArtifacts: true` and the signing key is set).
    - The sidecar binary is bundled into each app bundle via the `externalBin`
      configuration in `tauri.conf.json`.
-   - Verifies `latest.json` is present on the release.
+   - Verifies `latest.json` contains signed updater entries for macOS x86_64 /
+     ARM64, Linux x86_64 / ARM64, and Windows x86_64.
    - Un-drafts the release (makes it public + "latest").
 4. Existing installs auto-detect the new version within ~30 s of their next
    launch (or immediately when the user clicks "Check for updates" in Settings).

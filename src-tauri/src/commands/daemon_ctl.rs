@@ -168,7 +168,7 @@ fn find_daemon_binary() -> Result<PathBuf, AppError> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let candidate = dir.join(&bin_name);
-            if candidate.exists() {
+            if is_usable_daemon(&candidate) {
                 return Ok(candidate);
             }
         }
@@ -178,8 +178,9 @@ fn find_daemon_binary() -> Result<PathBuf, AppError> {
     if let Ok(output) = std::process::Command::new("which").arg(&bin_name).output() {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
+            let candidate = PathBuf::from(path);
+            if is_usable_daemon(&candidate) {
+                return Ok(candidate);
             }
         }
     }
@@ -197,7 +198,7 @@ fn find_daemon_binary() -> Result<PathBuf, AppError> {
                 "resources",       // generic resources subdir
             ] {
                 let candidate = dir.join(rel).join(&bin_name);
-                if candidate.exists() {
+                if is_usable_daemon(&candidate) {
                     return Ok(candidate);
                 }
             }
@@ -205,8 +206,25 @@ fn find_daemon_binary() -> Result<PathBuf, AppError> {
     }
 
     Err(AppError::Other(format!(
-        "cannot find daemon binary '{bin_name}' — ensure it's built and in the app bundle"
+        "cannot find an executable daemon binary '{bin_name}' — ensure it's built and in the app bundle"
     )))
+}
+
+fn is_usable_daemon(path: &std::path::Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return false;
+        }
+    }
+    true
 }
 
 /// Spawn a detached process that outlives the parent.
@@ -304,6 +322,48 @@ fn send_terminate(pid: u32) {
 fn send_kill(pid: u32) {
     unsafe {
         libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_usable_daemon;
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    fn test_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "namehold-daemon-{label}-{}-{}",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[test]
+    fn rejects_empty_daemon_placeholder() {
+        let path = test_path("empty");
+        fs::write(&path, []).expect("write placeholder");
+        assert!(!is_usable_daemon(&path));
+        fs::remove_file(path).expect("remove placeholder");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn requires_executable_daemon_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = test_path("executable");
+        fs::write(&path, b"daemon").expect("write daemon fixture");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+            .expect("make fixture non-executable");
+        assert!(!is_usable_daemon(&path));
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+            .expect("make fixture executable");
+        assert!(is_usable_daemon(&path));
+        fs::remove_file(path).expect("remove daemon fixture");
     }
 }
 
