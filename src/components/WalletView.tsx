@@ -23,6 +23,7 @@ import {
   useActionHistory,
 } from "../queries/read";
 import { useStartFullSync, useSyncStatus, useCancelFullSync } from "../queries/sync";
+import { useNodeLive } from "../queries/node";
 import { useSyncTriggerStore } from "../stores/syncTrigger";
 import { auctionPhase, formatCountdown } from "../lib/auction";
 import { displayName } from "../lib/idn";
@@ -102,6 +103,7 @@ export function WalletView() {
   const syncStatus = useSyncStatus();
   const manualSync = useSyncTriggerStore((s) => s.manualSync);
   const setManualSync = useSyncTriggerStore((s) => s.setManualSync);
+  const nodeLive = useNodeLive();
   const unlock = useUnlockSigner();
   const lock = useLockSigner();
   const setActive = useSetActiveProfile();
@@ -596,8 +598,10 @@ export function WalletView() {
           capabilities query silently renders nothing while loading (the
           transient window is short and self-healing per Task 12's review),
           but a PERSISTENT failure (isError) must not look identical to "no
-          urgent tasks" — it means we genuinely can't tell. */}
-      {!isWatchOnly && nameCapsError && (
+          urgent tasks" — it means we genuinely can't tell.
+          Only show when the node is NOT live — when the node is live, the
+          query self-heals on the next 30s poll, so the error is transient. */}
+      {!isWatchOnly && nameCapsError && !nodeLive && (
         <div
           className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
           data-testid="urgent-tasks-degraded"
