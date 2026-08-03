@@ -35,6 +35,9 @@ pub enum ChainSource {
     RemoteNode,
     /// A read-only block explorer. Broadcast is disabled in this mode.
     Explorer,
+    /// An SPV (Simplified Payment Verification) node. Can broadcast but
+    /// cannot serve full-chain queries (no --index-address/--index-tx).
+    SpvNode,
 }
 
 impl ChainSource {
@@ -47,9 +50,25 @@ impl ChainSource {
         }
     }
 
+    /// Build the chain source considering both chain_source and node_mode settings.
+    pub fn from_settings(settings: &std::collections::HashMap<String, String>) -> Self {
+        let chain_source = settings.get("chain_source").map(|s| s.as_str()).unwrap_or("local_node");
+        let node_mode = settings.get("node_mode").map(|s| s.as_str()).unwrap_or("full");
+        match (chain_source, node_mode) {
+            ("remote_node", "spv") => ChainSource::SpvNode,
+            ("remote_node", _) => ChainSource::RemoteNode,
+            ("explorer", _) => ChainSource::Explorer,
+            (_, "spv") => ChainSource::SpvNode,
+            _ => ChainSource::LocalNode,
+        }
+    }
+
     /// Whether this source can broadcast transactions via node RPC.
     pub fn can_broadcast(self) -> bool {
-        matches!(self, ChainSource::LocalNode | ChainSource::RemoteNode)
+        matches!(
+            self,
+            ChainSource::LocalNode | ChainSource::RemoteNode | ChainSource::SpvNode
+        )
     }
 }
 
@@ -209,12 +228,7 @@ impl NodeRpcClient {
             .map(|s| s.as_str())
             .unwrap_or("http://127.0.0.1:12037");
         let key = resolve_node_api_key(settings);
-        let source = ChainSource::from_setting(
-            settings
-                .get("chain_source")
-                .map(|s| s.as_str())
-                .unwrap_or("local_node"),
-        );
+        let source = ChainSource::from_settings(settings);
         Self::new(url, &key, source)
     }
 

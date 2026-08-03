@@ -15,6 +15,7 @@ pub mod secure_prompt;
 pub mod secure_wallet;
 pub mod settings;
 pub mod sync;
+pub mod sync_spv;
 pub mod tx;
 #[cfg(desktop)]
 pub mod updates;

@@ -60,7 +60,9 @@ export function Settings() {
         hsd_path: settings.hsd_path,
         autostart_hsd: settings.autostart_hsd,
         background_sync_enabled: settings.background_sync_enabled,
+        node_mode: settings.node_mode,
         explorer_api_url: settings.explorer_api_url,
+        explorer_fallback_url: settings.explorer_fallback_url,
         address_gap_limit: settings.address_gap_limit,
         signer_session_timeout_seconds: settings.signer_session_timeout_seconds,
         advanced_mode: settings.advanced_mode,
@@ -191,6 +193,16 @@ export function Settings() {
               the local node cache instead. Takes effect on the next Sync/read.
             </div>
           )}
+          <Input
+            label="Explorer fallback URL (optional)"
+            value={form.explorer_fallback_url ?? ""}
+            onChange={(e) => updateField("explorer_fallback_url", e.target.value)}
+            placeholder="https://shakeshift.com"
+            data-testid="explorer-fallback-url-input"
+          />
+          <div className="text-xs text-gray-500">
+            Used when the primary explorer is unreachable. Leave empty to disable failover.
+          </div>
         </div>
 
         <div className="space-y-2 pt-2 border-t border-gray-100">
@@ -246,6 +258,24 @@ export function Settings() {
           <div className="text-xs text-gray-500">
             Leave empty to auto-detect. Set this if the app can't find your hsd
             install (e.g. <code>$(which hsd)</code>). Save settings to apply.
+          </div>
+
+          <div className="space-y-2 pt-2 border-t border-gray-100">
+            <label className="text-sm font-medium">Node mode</label>
+            <select
+              value={form.node_mode ?? "full"}
+              onChange={(e) => updateField("node_mode", e.target.value)}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              data-testid="node-mode-select"
+            >
+              <option value="full">Full node (requires ~15GB, indexes all addresses)</option>
+              <option value="spv">Lightweight SPV (faster sync, uses explorer for data)</option>
+            </select>
+            <div className="text-xs text-gray-500">
+              SPV mode downloads only block headers. Faster initial sync, less disk space.
+              Balance and name data come from the explorer. Requires hsd restart to apply.
+              If switching causes issues, use "Re-sync node data" below.
+            </div>
           </div>
 
           <label className="flex items-center gap-2 text-sm pt-2">

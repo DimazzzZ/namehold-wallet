@@ -231,6 +231,12 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     let data_dir = resolve_data_dir(&state)?;
     let process_alive = is_running(&state)?;
     let probe = probe_node(&state).await;
+    // Read node_mode setting to determine SPV vs full node behavior.
+    let node_mode = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let settings = db::queries::get_settings(&db)?;
+        settings.get("node_mode").cloned().unwrap_or_else(|| "full".to_string())
+    };
     // When the RPC isn't answering, surface WHY the last start failed (the hsd log
     // persists past `start_hsd`'s short watch window), so a failed start never
     // shows as a silent "Starting…/Stopped".
@@ -245,23 +251,32 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     };
     // Determine the current read source: "local" when the node is connected and
     // synced, "explorer" otherwise. The frontend uses this to show which data
-    // source is active.
-    let node_synced = probe
-        .as_ref()
-        .map(|p| {
-            // When verification_progress is available, it is the most reliable signal.
-            // A node can report height == headers while still only ~8% verified if it
-            // is far behind the real chain tip. Always gate on progress when present.
-            if let Some(progress) = p.verification_progress {
-                progress >= 0.9999
-            } else if let Some(headers) = p.headers {
-                headers > 0 && p.height >= headers
-            } else {
-                true
-            }
-        })
-        .unwrap_or(false);
-    let read_source = if probe.is_some() && node_synced {
+    // source is active. In SPV mode, always use explorer (SPV nodes don't have
+    // full-chain indexes).
+    let node_synced = if node_mode == "spv" {
+        // SPV node: synced when connected (header sync is fast).
+        probe.is_some()
+    } else {
+        probe
+            .as_ref()
+            .map(|p| {
+                // When verification_progress is available, it is the most reliable signal.
+                // A node can report height == headers while still only ~8% verified if it
+                // is far behind the real chain tip. Always gate on progress when present.
+                if let Some(progress) = p.verification_progress {
+                    progress >= 0.9999
+                } else if let Some(headers) = p.headers {
+                    headers > 0 && p.height >= headers
+                } else {
+                    true
+                }
+            })
+            .unwrap_or(false)
+    };
+    let read_source = if node_mode == "spv" {
+        // SPV mode always uses explorer for data reads (no --index-address).
+        "explorer"
+    } else if probe.is_some() && node_synced {
         "local"
     } else {
         "explorer"
@@ -284,6 +299,8 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         "index_mismatch": index_mismatch,
         // Current read source: "local" (node synced) or "explorer" (fallback).
         "read_source": read_source,
+        // Node operating mode: "full" or "spv".
+        "node_mode": node_mode,
     }))
 }
 
@@ -337,10 +354,12 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     let data_dir = resolve_data_dir(&state)?;
     // Use the same effective api-key the RPC client uses (explicit setting, else
     // the data dir's hsd.conf), so the node we start and the node we talk to agree.
-    let api_key = {
+    let (api_key, node_mode) = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&db)?;
-        crate::noncustodial::rpc::resolve_node_api_key(&settings)
+        let api_key = crate::noncustodial::rpc::resolve_node_api_key(&settings);
+        let node_mode = settings.get("node_mode").cloned().unwrap_or_else(|| "full".to_string());
+        (api_key, node_mode)
     };
     let network = active_profile_network(&state);
 
@@ -391,8 +410,14 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // chain (chaindb.js `verifyFlags` throws "Cannot retroactively enable …
     // indexing"). A chain synced without these must be re-synced from genesis with
     // them — there is no in-place reindex.
-    cmd.arg("--index-address");
-    cmd.arg("--index-tx");
+    if node_mode == "spv" {
+        // SPV mode: download only block headers, no address/tx indexing.
+        // Faster sync, less disk usage. Data reads fall back to explorer.
+        cmd.arg("--spv");
+    } else {
+        cmd.arg("--index-address");
+        cmd.arg("--index-tx");
+    }
     match network {
         Network::Testnet => {
             cmd.arg("--testnet");

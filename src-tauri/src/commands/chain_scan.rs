@@ -56,6 +56,14 @@ pub async fn run_chain_scanner(db_path: String) {
         };
 
         // Only scan when the node is authoritative.
+        // In SPV mode, the node doesn't have full blocks, so the chain scanner
+        // cannot walk transactions. Skip scanning and wait.
+        let node_mode = settings.get("node_mode").map(|s| s.as_str()).unwrap_or("full");
+        if node_mode == "spv" {
+            sleep(NOT_READY_SLEEP).await;
+            continue;
+        }
+
         let tip =
             match crate::commands::read::node_tip_height_if_synced_from_settings(&settings).await {
                 Some(h) => h,

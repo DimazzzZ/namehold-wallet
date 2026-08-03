@@ -1146,12 +1146,7 @@ pub async fn get_write_capability(
     let (source, allow_remote, settings, probe_addr) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
-        let source = ChainSource::from_setting(
-            settings
-                .get("chain_source")
-                .map(|s| s.as_str())
-                .unwrap_or("local_node"),
-        );
+        let source = ChainSource::from_settings(&settings);
         let allow_remote =
             settings.get("allow_remote_broadcast").map(|s| s.as_str()) == Some("true");
         // One address to probe the node's address index (if a profile exists).

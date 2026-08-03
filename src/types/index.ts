@@ -287,6 +287,15 @@ export interface Settings {
    * daemon has a node to talk to.
    */
   background_sync_enabled: string;
+  /**
+   * "full" | "spv" — hsd node operating mode. Default "full".
+   * - "full": full node with --index-address --index-tx (current behavior)
+   * - "spv": SPV mode with --spv (faster sync, less disk, explorer-dependent)
+   * Only relevant when chain_source is "local_node" or "remote_node".
+   */
+  node_mode: string;
+  /** Fallback explorer URL used when primary explorer_api_url is unreachable. */
+  explorer_fallback_url: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ pub const DEFAULT_EXPLORER_URL: &str = "https://e.hnsfans.com";
 pub struct HnsFansClient {
     http: Client,
     base_url: String,
+    fallback_url: Option<String>,
 }
 
 impl HnsFansClient {
@@ -41,6 +42,72 @@ impl HnsFansClient {
                 .build()
                 .expect("failed to build HTTP client"),
             base_url: base,
+            fallback_url: None,
+        }
+    }
+
+    /// Create a client with a fallback URL for failover.
+    pub fn with_fallback(base_url: &str, fallback_url: &str) -> Self {
+        let mut client = Self::new(base_url);
+        let trimmed = fallback_url.trim();
+        if !trimmed.is_empty() {
+            client.fallback_url = Some(trimmed.trim_end_matches('/').to_string());
+        }
+        client
+    }
+
+    /// Fetch a URL with automatic failover to the fallback explorer.
+    ///
+    /// Tries the primary base_url first. If the request fails (transport error
+    /// or non-2xx status) and a fallback URL is configured, retries with the fallback.
+    async fn get_with_fallback(&self, path: &str) -> Result<reqwest::Response, AppError> {
+        let primary_url = format!("{}{}", self.base_url, path);
+        match self.http.get(&primary_url).send().await {
+            Ok(resp) if resp.status().is_success() => Ok(resp),
+            Ok(resp) => {
+                // Primary returned non-2xx; try fallback if available.
+                if let Some(ref fallback) = self.fallback_url {
+                    let fallback_url = format!("{}{}", fallback, path);
+                    match self.http.get(&fallback_url).send().await {
+                        Ok(fb_resp) if fb_resp.status().is_success() => Ok(fb_resp),
+                        Ok(fb_resp) => Err(AppError::Other(format!(
+                            "Explorer failover failed: primary {} returned {}, fallback {} returned {}",
+                            primary_url, resp.status(), fallback_url, fb_resp.status()
+                        ))),
+                        Err(e) => Err(AppError::Other(format!(
+                            "Explorer failover failed: primary {} returned {}, fallback {}: {}",
+                            primary_url, resp.status(), fallback_url, e
+                        ))),
+                    }
+                } else {
+                    Err(AppError::Other(format!(
+                        "Explorer request failed: {} returned {}",
+                        primary_url, resp.status()
+                    )))
+                }
+            }
+            Err(e) => {
+                // Primary transport error; try fallback if available.
+                if let Some(ref fallback) = self.fallback_url {
+                    let fallback_url = format!("{}{}", fallback, path);
+                    match self.http.get(&fallback_url).send().await {
+                        Ok(fb_resp) if fb_resp.status().is_success() => Ok(fb_resp),
+                        Ok(fb_resp) => Err(AppError::Other(format!(
+                            "Explorer failover failed: primary {}: {}, fallback {} returned {}",
+                            primary_url, e, fallback_url, fb_resp.status()
+                        ))),
+                        Err(fb_err) => Err(AppError::Other(format!(
+                            "Explorer failover failed: primary {}: {}, fallback {}: {}",
+                            primary_url, e, fallback_url, fb_err
+                        ))),
+                    }
+                } else {
+                    Err(AppError::Other(format!(
+                        "Explorer request failed: {}: {}",
+                        primary_url, e
+                    )))
+                }
+            }
         }
     }
 
@@ -90,18 +157,14 @@ impl HnsFansClient {
                 continue;
             }
             attempted += 1;
-            let url = format!("{}/api/addresses/{}", self.base_url, addr);
-            let resp = match self.http.get(&url).send().await {
+            let path = format!("/api/addresses/{}", addr);
+            let resp = match self.get_with_fallback(&path).await {
                 Ok(r) => r,
                 Err(e) => {
-                    last_error = Some(format!("{}: transport error: {}", addr, e));
+                    last_error = Some(format!("{}: {}", addr, e));
                     continue;
                 }
             };
-            if !resp.status().is_success() {
-                last_error = Some(format!("{}: HTTP {}", addr, resp.status()));
-                continue;
-            }
             let body: serde_json::Value = match resp.json().await {
                 Ok(b) => b,
                 Err(e) => {

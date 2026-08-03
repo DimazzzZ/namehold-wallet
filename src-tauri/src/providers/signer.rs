@@ -136,6 +136,7 @@ impl WriteCapability {
             ChainSource::LocalNode => true,
             ChainSource::RemoteNode => allow_remote,
             ChainSource::Explorer => false,
+            ChainSource::SpvNode => true, // SPV nodes can relay transactions.
         };
         let reason = if !signer_unlocked && !broadcaster_available {
             Some("Unlock your wallet and configure a node that can broadcast.".to_string())
@@ -149,7 +150,7 @@ impl WriteCapability {
                 ChainSource::RemoteNode => {
                     "Remote broadcast is disabled (enable allow_remote_broadcast).".to_string()
                 }
-                ChainSource::LocalNode => unreachable!(),
+                ChainSource::LocalNode | ChainSource::SpvNode => unreachable!(),
             })
         } else {
             None
