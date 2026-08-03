@@ -60,7 +60,10 @@ impl HnsFansClient {
     ///
     /// Tries the primary base_url first. If the request fails (transport error
     /// or non-2xx status) and a fallback URL is configured, retries with the fallback.
-    async fn get_with_fallback(&self, path: &str) -> Result<reqwest::Response, AppError> {
+    ///
+    /// This is the single entry point for all explorer HTTP requests — ensures
+    /// every method benefits from failover when a fallback URL is configured.
+    pub async fn get_with_fallback(&self, path: &str) -> Result<reqwest::Response, AppError> {
         let primary_url = format!("{}{}", self.base_url, path);
         match self.http.get(&primary_url).send().await {
             Ok(resp) if resp.status().is_success() => Ok(resp),
@@ -120,19 +123,9 @@ impl HnsFansClient {
     /// failure (DNS, connection refused, timeout) is treated as unhealthy.
     pub async fn health(&self) -> Result<(), AppError> {
         // Probe a lightweight, known route on the explorer API.
-        let probe_url = format!("{}/api/txs?limit=1", self.base_url);
-        if self.http.get(&probe_url).send().await.is_ok() {
-            return Ok(());
-        }
-        // Fall back to the base URL. A reachable host (even a 4xx/5xx) means the
-        // explorer is online; only a transport error is a real failure.
-        match self.http.get(&self.base_url).send().await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(AppError::Other(format!(
-                "HNSFans is unreachable at {}: {}",
-                self.base_url, e
-            ))),
-        }
+        // Uses get_with_fallback so health check works with failover.
+        let _ = self.get_with_fallback("/api/txs?limit=1").await?;
+        Ok(())
     }
 
     /// Fetch the aggregate balance across a set of watch addresses.
@@ -230,15 +223,8 @@ impl HnsFansClient {
 
     /// Fetch detail for a single name via `/api/names/:name`.
     pub async fn get_name_info(&self, name: &str) -> Result<HsdName, AppError> {
-        let url = format!("{}/api/names/{}", self.base_url, name.trim());
-        let resp = self.http.get(&url).send().await?;
-        if !resp.status().is_success() {
-            return Err(AppError::Other(format!(
-                "HNSFans name lookup failed for {}: status {}",
-                name,
-                resp.status()
-            )));
-        }
+        let path = format!("/api/names/{}", name.trim());
+        let resp = self.get_with_fallback(&path).await?;
         let body: serde_json::Value = resp.json().await?;
         normalize_name(&body).ok_or_else(|| {
             AppError::ExplorerFormat(format!(
@@ -253,8 +239,8 @@ impl HnsFansClient {
     /// treating it as an error.  Real transport failures (DNS, timeout, 5xx)
     /// still propagate as `Err`.
     pub async fn get_name_info_optional(&self, name: &str) -> Result<Option<HsdName>, AppError> {
-        let url = format!("{}/api/names/{}", self.base_url, name.trim());
-        let resp = self.http.get(&url).send().await?;
+        let path = format!("/api/names/{}", name.trim());
+        let resp = self.get_with_fallback(&path).await?;
         // 404 → name unknown to the explorer (untouched / never opened).
         if resp.status().as_u16() == 404 {
             return Ok(None);
@@ -324,21 +310,13 @@ impl HnsFansClient {
         limit: u32,
         offset: u32,
     ) -> Result<(Vec<String>, u64), AppError> {
-        let url = format!(
-            "{}/api/txs?address={}&limit={}&offset={}",
-            self.base_url,
+        let path = format!(
+            "/api/txs?address={}&limit={}&offset={}",
             address.trim(),
             limit,
             offset
         );
-        let resp = self.http.get(&url).send().await?;
-        if !resp.status().is_success() {
-            return Err(AppError::Other(format!(
-                "HNSFans txs lookup failed for {}: status {}",
-                address,
-                resp.status()
-            )));
-        }
+        let resp = self.get_with_fallback(&path).await?;
         let body: serde_json::Value = resp.json().await?;
         // The recognized shape always carries a `result` array (empty when the
         // address has no txs). Its total absence on a 200 means the explorer's
@@ -370,15 +348,8 @@ impl HnsFansClient {
     /// `action`, the resolved `name`, the owning `address`, and its output
     /// `index` (position in the full output list).
     pub async fn get_tx_named_outputs(&self, hash: &str) -> Result<Vec<NamedOutput>, AppError> {
-        let url = format!("{}/api/txs/{}", self.base_url, hash.trim());
-        let resp = self.http.get(&url).send().await?;
-        if !resp.status().is_success() {
-            return Err(AppError::Other(format!(
-                "HNSFans tx detail failed for {}: status {}",
-                hash,
-                resp.status()
-            )));
-        }
+        let path = format!("/api/txs/{}", hash.trim());
+        let resp = self.get_with_fallback(&path).await?;
         let body: serde_json::Value = resp.json().await?;
         // The recognized shape always carries an `outputs` array (empty for a
         // tx with no name-bearing outputs). Its total absence on a 200 means
@@ -401,15 +372,8 @@ impl HnsFansClient {
         &self,
         name: &str,
     ) -> Result<Option<(String, u32)>, AppError> {
-        let url = format!("{}/api/names/{}/history", self.base_url, name.trim());
-        let resp = self.http.get(&url).send().await?;
-        if !resp.status().is_success() {
-            return Err(AppError::Other(format!(
-                "HNSFans history failed for {}: status {}",
-                name,
-                resp.status()
-            )));
-        }
+        let path = format!("/api/names/{}/history", name.trim());
+        let resp = self.get_with_fallback(&path).await?;
         let body: serde_json::Value = resp.json().await?;
         // Recognized shapes: `{ "result": [...] }` (possibly empty) or a bare
         // `[...]` array. Anything else on a 200 is a format drift — loud
