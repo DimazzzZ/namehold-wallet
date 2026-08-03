@@ -26,6 +26,15 @@
 - **SPV-aware write capability** — SPV mode shows a clear "SPV mode cannot send
   transactions" message instead of the generic "node not address-indexed" error.
 
+### Fixed
+- **Sync UI view jumping** — automatic sync (every 60s) no longer expands the
+  full sync status panel. Auto-sync shows "Syncing…" on the button with a
+  spinner; the full progress panel only appears for manual Sync.
+- **Stale-data banner suppressed when node is live** — the "Couldn't verify
+  urgent auction tasks — data may be stale." banner no longer appears during
+  transient query hiccups while the node is synced; it only shows when the
+  node is actually offline.
+
 ## [0.3.0] - 2026-07-29
 
 ### Changed
