@@ -15,6 +15,43 @@ use std::time::Duration;
 use crate::error::AppError;
 use crate::hsd::types::{HsdBalance, HsdBid, HsdName, HsdNameStats, HsdOwner};
 
+/// Error type for explorer requests — distinguishes transport errors (network
+/// down) from HTTP errors (server returned non-2xx). This allows callers to
+/// handle each case differently without fragile string matching.
+#[derive(Debug)]
+pub enum ExplorerError {
+    /// Network-level failure (DNS, timeout, connection refused).
+    Transport(reqwest::Error),
+    /// Server returned a non-2xx HTTP status code.
+    Http(u16),
+}
+
+impl std::fmt::Display for ExplorerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExplorerError::Transport(e) => write!(f, "Explorer transport error: {e}"),
+            ExplorerError::Http(status) => write!(f, "Explorer HTTP error: {status}"),
+        }
+    }
+}
+
+impl From<reqwest::Error> for ExplorerError {
+    fn from(e: reqwest::Error) -> Self {
+        ExplorerError::Transport(e)
+    }
+}
+
+impl From<ExplorerError> for AppError {
+    fn from(e: ExplorerError) -> Self {
+        match e {
+            ExplorerError::Transport(e) => AppError::Http(e),
+            ExplorerError::Http(status) => {
+                AppError::Other(format!("Explorer request failed: HTTP {status}"))
+            }
+        }
+    }
+}
+
 /// The default explorer API host, serving the documented `/api/addresses`,
 /// `/api/names`, and `/api/txs` routes. This is now the SOLE hard-coded
 /// occurrence of the URL in the app (Task 11 / S1) — every construction site
@@ -65,63 +102,52 @@ impl HnsFansClient {
     ///
     /// This is the single entry point for all explorer HTTP requests — ensures
     /// every method benefits from failover when a fallback URL is configured.
-    pub async fn get_with_fallback(&self, path: &str) -> Result<reqwest::Response, AppError> {
+    /// Low-level fetch with structural error discrimination.
+    ///
+    /// Returns `ExplorerError::Transport` for network failures,
+    /// `ExplorerError::Http(status)` for non-2xx responses.
+    /// Callers can match on the variant instead of parsing error strings.
+    pub async fn get_with_fallback_explorer(&self, path: &str) -> Result<reqwest::Response, ExplorerError> {
         let primary_url = format!("{}{}", self.base_url, path);
         match self.http.get(&primary_url).send().await {
             Ok(resp) => {
                 let status = resp.status();
-                if status.is_success() {
-                    // 2xx: success
-                    Ok(resp)
-                } else if status.is_client_error() {
-                    // 4xx (404, 403, etc.): valid response, caller handles it
+                if status.is_success() || status.is_client_error() {
                     Ok(resp)
                 } else {
-                    // 5xx (server error): try fallback
+                    // 5xx: try fallback
                     if let Some(ref fallback) = self.fallback_url {
                         let fallback_url = format!("{}{}", fallback, path);
                         match self.http.get(&fallback_url).send().await {
                             Ok(fb_resp) if fb_resp.status().is_success() => Ok(fb_resp),
-                            Ok(fb_resp) => Err(AppError::Other(format!(
-                                "Explorer failover failed: primary {} returned {}, fallback {} returned {}",
-                                primary_url, status, fallback_url, fb_resp.status()
-                            ))),
-                            Err(e) => Err(AppError::Other(format!(
-                                "Explorer failover failed: primary {} returned {}, fallback {}: {}",
-                                primary_url, status, fallback_url, e
-                            ))),
+                            Ok(fb_resp) => Err(ExplorerError::Http(fb_resp.status().as_u16())),
+                            Err(e) => Err(ExplorerError::Transport(e)),
                         }
                     } else {
-                        Err(AppError::Other(format!(
-                            "Explorer request failed: {} returned {}",
-                            primary_url, status
-                        )))
+                        Err(ExplorerError::Http(status.as_u16()))
                     }
                 }
             }
             Err(e) => {
-                // Primary transport error; try fallback if available.
+                // Transport error; try fallback
                 if let Some(ref fallback) = self.fallback_url {
                     let fallback_url = format!("{}{}", fallback, path);
                     match self.http.get(&fallback_url).send().await {
                         Ok(fb_resp) if fb_resp.status().is_success() => Ok(fb_resp),
-                        Ok(fb_resp) => Err(AppError::Other(format!(
-                            "Explorer failover failed: primary {}: {}, fallback {} returned {}",
-                            primary_url, e, fallback_url, fb_resp.status()
-                        ))),
-                        Err(fb_err) => Err(AppError::Other(format!(
-                            "Explorer failover failed: primary {}: {}, fallback {}: {}",
-                            primary_url, e, fallback_url, fb_err
-                        ))),
+                        Ok(fb_resp) => Err(ExplorerError::Http(fb_resp.status().as_u16())),
+                        Err(fb_err) => Err(ExplorerError::Transport(fb_err)),
                     }
                 } else {
-                    Err(AppError::Other(format!(
-                        "Explorer request failed: {}: {}",
-                        primary_url, e
-                    )))
+                    Err(ExplorerError::Transport(e))
                 }
             }
         }
+    }
+
+    /// Convenience wrapper that converts `ExplorerError` to `AppError`.
+    /// All existing callers use this — no behavior change.
+    pub async fn get_with_fallback(&self, path: &str) -> Result<reqwest::Response, AppError> {
+        self.get_with_fallback_explorer(path).await.map_err(Into::into)
     }
 
     /// Lightweight health probe. Returns Ok(()) if the explorer host is
@@ -131,27 +157,21 @@ impl HnsFansClient {
     /// long as the host answers *any* HTTP response on a known endpoint. We do
     /// not require a 2xx because deployments differ — only a transport-level
     /// failure (DNS, connection refused, timeout) is treated as unhealthy.
+    /// Lightweight health probe. Returns Ok(()) if the explorer host is
+    /// reachable.
+    ///
+    /// Uses structural error discrimination: transport errors (DNS, timeout)
+    /// mean "unreachable" → return Err. HTTP errors (5xx) mean "reachable
+    /// but unhealthy" → return Ok. This avoids fragile string matching.
     pub async fn health(&self) -> Result<(), AppError> {
-        // Probe a lightweight, known route on the explorer API.
-        // Uses get_with_fallback so health check works with failover.
-        // Note: get_with_fallback returns Ok for 4xx (client errors),
-        // but returns Err for 5xx (server errors) and transport errors.
-        // For health check, we want to accept ANY HTTP response (even 5xx)
-        // as "reachable" — only transport errors mean "unreachable".
-        match self.get_with_fallback("/api/txs?limit=1").await {
+        match self.get_with_fallback_explorer("/api/txs?limit=1").await {
             Ok(_) => Ok(()),
-            Err(e) => {
-                // If it's a transport error, explorer is unreachable.
-                // If it's a 5xx error, explorer is reachable but having issues.
-                // For health check, we consider 5xx as "reachable" (just unhealthy).
-                // The error message will indicate if it's transport or 5xx.
-                if e.to_string().contains("returned") {
-                    // 5xx error — explorer is reachable but unhealthy.
-                    Ok(())
-                } else {
-                    // Transport error — explorer is unreachable.
-                    Err(e)
-                }
+            Err(ExplorerError::Transport(_)) => Err(AppError::Other(
+                "Explorer is unreachable (transport error)".to_string(),
+            )),
+            Err(ExplorerError::Http(_)) => {
+                // Server returned an error status — reachable but unhealthy.
+                Ok(())
             }
         }
     }
