@@ -58,35 +58,45 @@ impl HnsFansClient {
 
     /// Fetch a URL with automatic failover to the fallback explorer.
     ///
-    /// Tries the primary base_url first. If the request fails (transport error
-    /// or non-2xx status) and a fallback URL is configured, retries with the fallback.
+    /// Tries the primary base_url first. Failover behavior:
+    /// - Transport errors (DNS, timeout, connection refused): try fallback
+    /// - 4xx (client errors like 404): return the response (don't failover)
+    /// - 5xx (server errors): try fallback
     ///
     /// This is the single entry point for all explorer HTTP requests — ensures
     /// every method benefits from failover when a fallback URL is configured.
     pub async fn get_with_fallback(&self, path: &str) -> Result<reqwest::Response, AppError> {
         let primary_url = format!("{}{}", self.base_url, path);
         match self.http.get(&primary_url).send().await {
-            Ok(resp) if resp.status().is_success() => Ok(resp),
             Ok(resp) => {
-                // Primary returned non-2xx; try fallback if available.
-                if let Some(ref fallback) = self.fallback_url {
-                    let fallback_url = format!("{}{}", fallback, path);
-                    match self.http.get(&fallback_url).send().await {
-                        Ok(fb_resp) if fb_resp.status().is_success() => Ok(fb_resp),
-                        Ok(fb_resp) => Err(AppError::Other(format!(
-                            "Explorer failover failed: primary {} returned {}, fallback {} returned {}",
-                            primary_url, resp.status(), fallback_url, fb_resp.status()
-                        ))),
-                        Err(e) => Err(AppError::Other(format!(
-                            "Explorer failover failed: primary {} returned {}, fallback {}: {}",
-                            primary_url, resp.status(), fallback_url, e
-                        ))),
-                    }
+                let status = resp.status();
+                if status.is_success() {
+                    // 2xx: success
+                    Ok(resp)
+                } else if status.is_client_error() {
+                    // 4xx (404, 403, etc.): valid response, caller handles it
+                    Ok(resp)
                 } else {
-                    Err(AppError::Other(format!(
-                        "Explorer request failed: {} returned {}",
-                        primary_url, resp.status()
-                    )))
+                    // 5xx (server error): try fallback
+                    if let Some(ref fallback) = self.fallback_url {
+                        let fallback_url = format!("{}{}", fallback, path);
+                        match self.http.get(&fallback_url).send().await {
+                            Ok(fb_resp) if fb_resp.status().is_success() => Ok(fb_resp),
+                            Ok(fb_resp) => Err(AppError::Other(format!(
+                                "Explorer failover failed: primary {} returned {}, fallback {} returned {}",
+                                primary_url, status, fallback_url, fb_resp.status()
+                            ))),
+                            Err(e) => Err(AppError::Other(format!(
+                                "Explorer failover failed: primary {} returned {}, fallback {}: {}",
+                                primary_url, status, fallback_url, e
+                            ))),
+                        }
+                    } else {
+                        Err(AppError::Other(format!(
+                            "Explorer request failed: {} returned {}",
+                            primary_url, status
+                        )))
+                    }
                 }
             }
             Err(e) => {
@@ -124,8 +134,26 @@ impl HnsFansClient {
     pub async fn health(&self) -> Result<(), AppError> {
         // Probe a lightweight, known route on the explorer API.
         // Uses get_with_fallback so health check works with failover.
-        let _ = self.get_with_fallback("/api/txs?limit=1").await?;
-        Ok(())
+        // Note: get_with_fallback returns Ok for 4xx (client errors),
+        // but returns Err for 5xx (server errors) and transport errors.
+        // For health check, we want to accept ANY HTTP response (even 5xx)
+        // as "reachable" — only transport errors mean "unreachable".
+        match self.get_with_fallback("/api/txs?limit=1").await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // If it's a transport error, explorer is unreachable.
+                // If it's a 5xx error, explorer is reachable but having issues.
+                // For health check, we consider 5xx as "reachable" (just unhealthy).
+                // The error message will indicate if it's transport or 5xx.
+                if e.to_string().contains("returned") {
+                    // 5xx error — explorer is reachable but unhealthy.
+                    Ok(())
+                } else {
+                    // Transport error — explorer is unreachable.
+                    Err(e)
+                }
+            }
+        }
     }
 
     /// Fetch the aggregate balance across a set of watch addresses.
