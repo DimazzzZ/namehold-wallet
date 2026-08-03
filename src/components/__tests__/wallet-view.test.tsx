@@ -25,6 +25,7 @@ vi.mock("../../lib/clipboard", () => ({
 
 import { WalletView } from "../WalletView";
 import type { SyncStatus } from "../../queries/sync";
+import { useSyncTriggerStore } from "../../stores/syncTrigger";
 
 const baseProfile = {
   id: "p1",
@@ -160,6 +161,8 @@ function wrapper() {
 beforeEach(() => {
   invokeMock.mockReset();
   clipboardWriteMock.mockClear();
+  // Reset the sync trigger store to default state before each test.
+  useSyncTriggerStore.setState({ manualSync: false });
 });
 
 describe("WalletView (non-custodial)", () => {
@@ -604,6 +607,10 @@ describe("WalletView — sync Stop button + honest progress", () => {
       if (cmd === "cancel_full_sync") return Promise.resolve(null);
       return base(cmd);
     });
+
+    // Simulate manual sync by setting manualSync = true in the store.
+    useSyncTriggerStore.setState({ manualSync: true });
+
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");
@@ -625,6 +632,31 @@ describe("WalletView — sync Stop button + honest progress", () => {
     expect(screen.queryByRole("button", { name: /^Stop$/i })).toBeNull();
   });
 
+  it("shows 'Syncing…' (not Stop) when auto-sync is running", async () => {
+    const base = routeInvoke({ unlocked: true, canWrite: true });
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_sync_status") {
+        return Promise.resolve(
+          baseSyncStatus({ running: true, step: "node", progressLabel: "Syncing with local node…" }),
+        );
+      }
+      return base(cmd);
+    });
+
+    // Ensure manualSync is false (default — simulates auto-sync).
+    useSyncTriggerStore.setState({ manualSync: false });
+
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    // Auto-sync: button shows "Syncing…" (disabled, with spinner), NOT "Stop".
+    const syncingBtn = await screen.findByRole("button", { name: /Syncing…/i });
+    expect(syncingBtn).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /^Stop$/i })).toBeNull();
+    // No sync-status panel (only shown for manual sync).
+    expect(screen.queryByTestId("sync-status")).toBeNull();
+  });
+
   it("renders honest Checked/Owned/Remaining repair progress from the new fields", async () => {
     const base = routeInvoke({ unlocked: true, canWrite: true });
     invokeMock.mockImplementation((cmd: string) => {
@@ -642,6 +674,10 @@ describe("WalletView — sync Stop button + honest progress", () => {
       }
       return base(cmd);
     });
+
+    // Simulate manual sync by setting manualSync = true in the store.
+    useSyncTriggerStore.setState({ manualSync: true });
+
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");

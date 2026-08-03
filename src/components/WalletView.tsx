@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -23,6 +23,7 @@ import {
   useActionHistory,
 } from "../queries/read";
 import { useStartFullSync, useSyncStatus, useCancelFullSync } from "../queries/sync";
+import { useSyncTriggerStore } from "../stores/syncTrigger";
 import { auctionPhase, formatCountdown } from "../lib/auction";
 import { displayName } from "../lib/idn";
 import { NameActionsModal } from "./NameActionsModal";
@@ -99,6 +100,8 @@ export function WalletView() {
   const startSync = useStartFullSync();
   const cancelSync = useCancelFullSync();
   const syncStatus = useSyncStatus();
+  const manualSync = useSyncTriggerStore((s) => s.manualSync);
+  const setManualSync = useSyncTriggerStore((s) => s.setManualSync);
   const unlock = useUnlockSigner();
   const lock = useLockSigner();
   const setActive = useSetActiveProfile();
@@ -140,6 +143,18 @@ export function WalletView() {
   const explorerBalance = readBalance?.confirmed ?? 0;
   const needsNodeSync = explorerBalance > 0 && spendable === 0;
 
+  const isRunning = syncStatus.data?.running ?? false;
+
+  // Reset manualSync flag when sync finishes (running transitions true → false).
+  // Uses a ref to detect the transition edge, not the initial state.
+  const wasRunningRef = useRef(false);
+  useEffect(() => {
+    if (wasRunningRef.current && !isRunning && manualSync) {
+      setManualSync(false);
+    }
+    wasRunningRef.current = isRunning;
+  }, [isRunning, manualSync, setManualSync]);
+
   const resetSend = () => {
     setSendOpen(false);
     setSendAddress("");
@@ -153,9 +168,11 @@ export function WalletView() {
   // The frontend polls status via useSyncStatus (persistent across navigation).
   const handleSync = async () => {
     try {
+      setManualSync(true);
       await startSync.mutateAsync();
       showToast("Sync started in background", "info");
     } catch (e) {
+      setManualSync(false);
       showToast(mapError(e), "error");
     }
   };
@@ -293,15 +310,23 @@ export function WalletView() {
         }
         actions={
           syncStatus.data?.running
-            ? [
-                {
-                  label: syncStatus.data.cancelRequested ? "Stopping…" : "Stop",
-                  variant: "danger",
-                  disabled: syncStatus.data.cancelRequested,
-                  loading: cancelSync.isPending,
-                  onClick: handleCancelSync,
-                },
-              ]
+            ? manualSync
+              ? [
+                  {
+                    label: syncStatus.data.cancelRequested ? "Stopping…" : "Stop",
+                    variant: "danger",
+                    disabled: syncStatus.data.cancelRequested,
+                    loading: cancelSync.isPending,
+                    onClick: handleCancelSync,
+                  },
+                ]
+              : [
+                  {
+                    label: "Syncing…",
+                    loading: true,
+                    disabled: true,
+                  },
+                ]
             : [
                 {
                   label: "Sync",
@@ -311,7 +336,7 @@ export function WalletView() {
         }
       />
 
-      {syncStatus.data?.running && (
+      {syncStatus.data?.running && manualSync && (
         <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm text-blue-800" data-testid="sync-status">
           <div className="font-medium">{syncStatus.data.progressLabel}</div>
           <div className="text-xs mt-1 space-y-0.5">
