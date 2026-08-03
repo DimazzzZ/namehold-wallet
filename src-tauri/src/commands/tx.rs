@@ -1202,7 +1202,16 @@ pub async fn get_write_capability(
                         "Your local node is still syncing ({pct}%). On-chain sends and transfers need a fully-synced node."
                     ));
                 } else if let Some(addr) = &probe_addr {
-                    if client.get_coins_by_address(addr).await.is_err() {
+                    // SPV mode: node is synced but can't index addresses.
+                    // Show a clear message instead of the generic "not address-indexed".
+                    let node_mode = settings.get("node_mode").map(|s| s.as_str()).unwrap_or("full");
+                    if node_mode == "spv" {
+                        cap.can_write = false;
+                        cap.reason = Some(
+                            "SPV mode cannot send transactions. Switch to Full node mode in Settings → Connections to enable sending."
+                                .to_string(),
+                        );
+                    } else if client.get_coins_by_address(addr).await.is_err() {
                         cap.can_write = false;
                         cap.reason = Some(
                             "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start hsd) and let it finish syncing."
