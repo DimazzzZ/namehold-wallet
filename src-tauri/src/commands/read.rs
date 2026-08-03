@@ -61,7 +61,24 @@ pub(crate) fn resolve_profile(
 /// Check if the local hsd node is connected AND fully synced, making local
 /// cached data the preferred read source. Returns `true` when the node RPC
 /// answers and the chain is caught up (height ≥ headers, or progress ≥ 0.9999).
+///
+/// In SPV mode, always returns `false` — SPV nodes don't have `--index-address`
+/// and can't serve UTXO queries, so all reads must go through the explorer.
 pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -> bool {
+    // SPV mode: node is never authoritative for reads.
+    let node_mode = {
+        let db = match state.db.lock() {
+            Ok(db) => db,
+            Err(_) => return false,
+        };
+        match crate::db::queries::get_settings(&db) {
+            Ok(settings) => settings.get("node_mode").cloned().unwrap_or_else(|| "full".to_string()),
+            Err(_) => "full".to_string(),
+        }
+    };
+    if node_mode == "spv" {
+        return false;
+    }
     node_tip_height_if_synced(state).await.is_some()
 }
 
