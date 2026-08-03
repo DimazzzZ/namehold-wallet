@@ -24,6 +24,8 @@ export interface NodeStatus {
   index_mismatch: boolean;
   /** Current read source: "local" (node synced) or "explorer" (fallback). */
   read_source: "local" | "explorer";
+  /** Node operating mode: "full" or "spv". */
+  node_mode: string;
 }
 
 /** Poll the hsd node status (binary, data dir, connected, height). */
