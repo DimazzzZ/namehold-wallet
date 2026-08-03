@@ -14,14 +14,16 @@
 
 use crate::db::queries;
 use crate::noncustodial::rpc::NodeRpcClient;
+use crate::providers::explorer_client_from_settings;
 
 use super::sync::open_conn;
 
 /// SPV-specific sync step.
 ///
 /// In SPV mode, the explorer is the primary data source for UTXOs and names.
-/// This step confirms the SPV node is reachable and updates the sync cursor,
-/// but does NOT populate the UTXO cache (explorer doesn't expose individual UTXOs).
+/// This step confirms the SPV node is reachable, checks explorer health,
+/// and updates the sync cursor. Does NOT populate the UTXO cache (explorer
+/// doesn't expose individual UTXOs).
 ///
 /// Steps 2+3 (repair + discover) use the explorer path, which is the default
 /// when `node_authoritative == false` in `run_sync_steps`.
@@ -47,6 +49,15 @@ pub async fn sync_spv_step(db_path: &str, profile_id: &str) -> bool {
             return false;
         }
     };
+
+    // Check explorer health (non-blocking, just logs warnings).
+    // This helps diagnose explorer connectivity issues early.
+    let explorer = explorer_client_from_settings(&settings);
+    if let Err(e) = explorer.health().await {
+        eprintln!("sync_spv_step: explorer health check failed: {e}");
+        // Continue anyway — explorer might be temporarily down, and
+        // the repair/discover steps will handle individual request failures.
+    }
 
     // Update the sync cursor to the current height.
     // We don't populate UTXOs (explorer handles balance display),
