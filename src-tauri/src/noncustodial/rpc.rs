@@ -735,6 +735,41 @@ mod tests {
         assert!(ChainSource::LocalNode.can_broadcast());
         assert!(ChainSource::RemoteNode.can_broadcast());
         assert!(!ChainSource::Explorer.can_broadcast());
+        // SPV mode is read-only in Namehold — no UTXO tracking, no sending.
+        assert!(ChainSource::SpvNode.can_broadcast());
+    }
+
+    #[test]
+    fn node_mode_from_setting() {
+        assert_eq!(NodeMode::from_setting("spv"), NodeMode::Spv);
+        assert_eq!(NodeMode::from_setting("full"), NodeMode::Full);
+        // Unknown values default to Full.
+        assert_eq!(NodeMode::from_setting("bogus"), NodeMode::Full);
+        assert_eq!(NodeMode::from_setting(""), NodeMode::Full);
+    }
+
+    #[test]
+    fn node_mode_is_spv() {
+        assert!(NodeMode::Spv.is_spv());
+        assert!(!NodeMode::Full.is_spv());
+    }
+
+    #[test]
+    fn node_mode_as_str() {
+        assert_eq!(NodeMode::Spv.as_str(), "spv");
+        assert_eq!(NodeMode::Full.as_str(), "full");
+    }
+
+    #[test]
+    fn resolve_node_mode_from_settings() {
+        let mut settings = HashMap::new();
+        assert_eq!(resolve_node_mode(&settings), NodeMode::Full); // default
+
+        settings.insert("node_mode".to_string(), "spv".to_string());
+        assert_eq!(resolve_node_mode(&settings), NodeMode::Spv);
+
+        settings.insert("node_mode".to_string(), "full".to_string());
+        assert_eq!(resolve_node_mode(&settings), NodeMode::Full);
     }
 
     #[test]
@@ -759,6 +794,25 @@ mod tests {
         assert_eq!(client.node_url, "https://10.0.0.5:13037");
         assert_eq!(client.api_key, "secret");
         assert_eq!(client.source, ChainSource::RemoteNode);
+    }
+
+    #[test]
+    fn from_settings_spv_mode() {
+        let mut settings = HashMap::new();
+        settings.insert("node_mode".to_string(), "spv".to_string());
+        // Default chain_source (local_node) + spv mode → SpvNode
+        let client = NodeRpcClient::from_settings(&settings);
+        assert_eq!(client.source, ChainSource::SpvNode);
+
+        // Remote node + spv mode → SpvNode
+        settings.insert("chain_source".to_string(), "remote_node".to_string());
+        let client = NodeRpcClient::from_settings(&settings);
+        assert_eq!(client.source, ChainSource::SpvNode);
+
+        // Explorer + spv mode → Explorer (explorer overrides)
+        settings.insert("chain_source".to_string(), "explorer".to_string());
+        let client = NodeRpcClient::from_settings(&settings);
+        assert_eq!(client.source, ChainSource::Explorer);
     }
 
     #[test]

@@ -1159,6 +1159,20 @@ pub async fn get_write_capability(
     let mut cap =
         crate::providers::WriteCapability::evaluate(signer_unlocked, source, allow_remote);
 
+    // SPV mode is explicitly read-only — override whatever the signer evaluated
+    // with a clear SPV-specific message. This must run before the generic
+    // "broadcaster_available" check so the SPV-specific reason is shown.
+    let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
+    if node_mode.is_spv() {
+        cap.broadcaster_available = false;
+        cap.can_write = false;
+        cap.reason = Some(
+            "SPV mode cannot send transactions. Switch to Full node mode in Settings → Connections to enable sending."
+                .to_string(),
+        );
+        return Ok(cap);
+    }
+
     // Writes also need the node reachable, fully synced, AND address-indexed (the
     // wallet learns its spendable + name-owner coins via getcoinsbyaddress). If
     // any is missing, downgrade to read-only with a precise, actionable reason.
@@ -1202,16 +1216,7 @@ pub async fn get_write_capability(
                         "Your local node is still syncing ({pct}%). On-chain sends and transfers need a fully-synced node."
                     ));
                 } else if let Some(addr) = &probe_addr {
-                    // SPV mode: node is synced but can't index addresses.
-                    // Show a clear message instead of the generic "not address-indexed".
-                    let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
-                    if node_mode.is_spv() {
-                        cap.can_write = false;
-                        cap.reason = Some(
-                            "SPV mode cannot send transactions. Switch to Full node mode in Settings → Connections to enable sending."
-                                .to_string(),
-                        );
-                    } else if client.get_coins_by_address(addr).await.is_err() {
+                    if client.get_coins_by_address(addr).await.is_err() {
                         cap.can_write = false;
                         cap.reason = Some(
                             "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start hsd) and let it finish syncing."
