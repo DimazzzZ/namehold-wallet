@@ -94,7 +94,10 @@ impl HnsFansClient {
     /// Returns `ExplorerError::Transport` for network failures,
     /// `ExplorerError::Http(status)` for non-2xx responses.
     /// Callers can match on the variant instead of parsing error strings.
-    pub async fn get_with_fallback_explorer(&self, path: &str) -> Result<reqwest::Response, ExplorerError> {
+    pub async fn get_with_fallback_explorer(
+        &self,
+        path: &str,
+    ) -> Result<reqwest::Response, ExplorerError> {
         let primary_url = format!("{}{}", self.base_url, path);
         match self.http.get(&primary_url).send().await {
             Ok(resp) => {
@@ -134,7 +137,9 @@ impl HnsFansClient {
     /// Convenience wrapper that converts `ExplorerError` to `AppError`.
     /// All existing callers use this — no behavior change.
     pub async fn get_with_fallback(&self, path: &str) -> Result<reqwest::Response, AppError> {
-        self.get_with_fallback_explorer(path).await.map_err(Into::into)
+        self.get_with_fallback_explorer(path)
+            .await
+            .map_err(Into::into)
     }
 
     /// Lightweight health probe. Returns Ok(()) if the explorer host is

@@ -52,8 +52,14 @@ impl ChainSource {
 
     /// Build the chain source considering both chain_source and node_mode settings.
     pub fn from_settings(settings: &std::collections::HashMap<String, String>) -> Self {
-        let chain_source = settings.get("chain_source").map(|s| s.as_str()).unwrap_or("local_node");
-        let node_mode = settings.get("node_mode").map(|s| s.as_str()).unwrap_or("full");
+        let chain_source = settings
+            .get("chain_source")
+            .map(|s| s.as_str())
+            .unwrap_or("local_node");
+        let node_mode = settings
+            .get("node_mode")
+            .map(|s| s.as_str())
+            .unwrap_or("full");
         match (chain_source, node_mode) {
             ("remote_node", "spv") => ChainSource::SpvNode,
             ("remote_node", _) => ChainSource::RemoteNode,
@@ -104,7 +110,10 @@ impl NodeMode {
 /// Resolve node_mode from settings map.
 pub fn resolve_node_mode(settings: &std::collections::HashMap<String, String>) -> NodeMode {
     NodeMode::from_setting(
-        settings.get("node_mode").map(|s| s.as_str()).unwrap_or("full"),
+        settings
+            .get("node_mode")
+            .map(|s| s.as_str())
+            .unwrap_or("full"),
     )
 }
 
