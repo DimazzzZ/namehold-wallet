@@ -140,13 +140,6 @@ impl HnsFansClient {
     /// Lightweight health probe. Returns Ok(()) if the explorer host is
     /// reachable.
     ///
-    /// The probe is intentionally lenient: the explorer is considered "up" as
-    /// long as the host answers *any* HTTP response on a known endpoint. We do
-    /// not require a 2xx because deployments differ — only a transport-level
-    /// failure (DNS, connection refused, timeout) is treated as unhealthy.
-    /// Lightweight health probe. Returns Ok(()) if the explorer host is
-    /// reachable.
-    ///
     /// Uses structural error discrimination: transport errors (DNS, timeout)
     /// mean "unreachable" → return Err. HTTP errors (5xx) mean "reachable
     /// but unhealthy" → return Ok. This avoids fragile string matching.
