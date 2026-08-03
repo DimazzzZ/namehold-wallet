@@ -1,16 +1,19 @@
 //! SPV-mode sync step.
 //!
 //! In SPV mode, hsd runs with `--spv` (no `--index-address`), so the
-//! `GET /coin/address/:addr` endpoint is unavailable. Instead:
+//! `GET /coin/address/:addr` endpoint is unavailable. SPV mode is **read-only**:
+//! balance, names, and DNS records come from the explorer; sending is blocked
+//! by the write-capability check (see `get_write_capability` in `tx.rs`).
 //!
-//! - Balance and name data come from the explorer (HNSFans/Shakeshift).
-//! - UTXO cache is NOT populated (no individual UTXOs from explorer).
-//! - Name discovery and repair use the explorer path (same as when node
-//!   is not authoritative in full-node mode).
+//! **Important limitation**: The explorer does NOT expose individual UTXOs —
+//! only aggregate balance. Therefore, this step does NOT populate the UTXO
+//! cache. This is by design: since sending is blocked in SPV mode, individual
+//! UTXOs are not needed. The explorer provides balance display directly.
+//!
+//! Steps 2+3 (repair + discover) use the explorer path, which is the default
+//! when `node_authoritative == false` in `run_sync_steps`.
 //!
 //! This is the SPV counterpart to `sync_node_step` in `sync.rs`.
-//! In practice, SPV mode relies entirely on explorer-based sync steps
-//! (repair_step + discover_step), so this function is intentionally minimal.
 
 use crate::db::queries;
 use crate::noncustodial::rpc::NodeRpcClient;
@@ -20,10 +23,13 @@ use super::sync::open_conn;
 
 /// SPV-specific sync step.
 ///
-/// In SPV mode, the explorer is the primary data source for UTXOs and names.
+/// In SPV mode, the explorer is the primary data source for balance and names.
 /// This step confirms the SPV node is reachable, checks explorer health,
-/// and updates the sync cursor. Does NOT populate the UTXO cache (explorer
-/// doesn't expose individual UTXOs).
+/// and updates the sync cursor. Does NOT populate the UTXO cache because
+/// the explorer doesn't expose individual UTXOs (only aggregate balance).
+///
+/// Since sending is blocked in SPV mode (write-capability check), individual
+/// UTXOs are not needed — the explorer provides balance display directly.
 ///
 /// Steps 2+3 (repair + discover) use the explorer path, which is the default
 /// when `node_authoritative == false` in `run_sync_steps`.
@@ -41,6 +47,8 @@ pub async fn sync_spv_step(db_path: &str, profile_id: &str) -> bool {
     drop(conn);
 
     // Verify the SPV node is reachable.
+    // Note: SPV mode is read-only. Sending is blocked by write-capability check.
+    // Individual UTXOs are not tracked (explorer provides balance display).
     let client = NodeRpcClient::from_settings(&settings);
     let height = match client.get_blockchain_info().await {
         Ok(info) => info.blocks,
