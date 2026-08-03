@@ -29,6 +29,9 @@ const BATCH_YIELD: Duration = Duration::from_millis(100);
 
 /// Sleep when the node is not ready (disconnected or syncing) before rechecking.
 const NOT_READY_SLEEP: Duration = Duration::from_secs(30);
+/// Sleep duration when in SPV mode (chain scanner is disabled, no full blocks).
+/// Longer than NOT_READY_SLEEP to reduce resource waste.
+const SPV_SLEEP: Duration = Duration::from_secs(300);
 
 /// Sleep when the scanner is caught up to the tip before polling for new blocks.
 const CAUGHT_UP_SLEEP: Duration = Duration::from_secs(10);
@@ -57,10 +60,11 @@ pub async fn run_chain_scanner(db_path: String) {
 
         // Only scan when the node is authoritative.
         // In SPV mode, the node doesn't have full blocks, so the chain scanner
-        // cannot walk transactions. Skip scanning and wait.
+        // cannot walk transactions. Skip scanning and sleep longer (5 minutes)
+        // to reduce resource waste.
         let node_mode = settings.get("node_mode").map(|s| s.as_str()).unwrap_or("full");
         if node_mode == "spv" {
-            sleep(NOT_READY_SLEEP).await;
+            sleep(SPV_SLEEP).await;
             continue;
         }
 
