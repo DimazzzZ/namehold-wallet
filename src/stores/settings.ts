@@ -28,6 +28,7 @@ const DEFAULT_SETTINGS: Settings = {
   background_sync_enabled: "1",
   node_mode: "full",
   explorer_fallback_url: "",
+  chain_source: "local_node",
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

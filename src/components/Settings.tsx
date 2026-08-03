@@ -63,6 +63,7 @@ export function Settings() {
         node_mode: settings.node_mode,
         explorer_api_url: settings.explorer_api_url,
         explorer_fallback_url: settings.explorer_fallback_url,
+        chain_source: settings.chain_source,
         address_gap_limit: settings.address_gap_limit,
         signer_session_timeout_seconds: settings.signer_session_timeout_seconds,
         advanced_mode: settings.advanced_mode,
@@ -260,23 +261,27 @@ export function Settings() {
             install (e.g. <code>$(which hsd)</code>). Save settings to apply.
           </div>
 
-          <div className="space-y-2 pt-2 border-t border-gray-100">
-            <label className="text-sm font-medium">Node mode</label>
-            <select
-              value={form.node_mode ?? "full"}
-              onChange={(e) => updateField("node_mode", e.target.value)}
-              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
-              data-testid="node-mode-select"
-            >
-              <option value="full">Full node (requires ~15GB, indexes all addresses)</option>
-              <option value="spv">Lightweight SPV (faster sync, uses explorer for data)</option>
-            </select>
-            <div className="text-xs text-gray-500">
-              SPV mode downloads only block headers. Faster initial sync, less disk space.
-              Balance and name data come from the explorer. Requires hsd restart to apply.
-              If switching causes issues, use "Re-sync node data" below.
+          {/* Node mode dropdown: only visible when using a local or remote node.
+              When chain_source is "explorer", the node mode is irrelevant. */}
+          {(form.chain_source ?? "local_node") !== "explorer" && (
+            <div className="space-y-2 pt-2 border-t border-gray-100">
+              <label className="text-sm font-medium">Node mode</label>
+              <select
+                value={form.node_mode ?? "full"}
+                onChange={(e) => updateField("node_mode", e.target.value)}
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+                data-testid="node-mode-select"
+              >
+                <option value="full">Full node (requires ~15GB, indexes all addresses)</option>
+                <option value="spv">Lightweight SPV (faster sync, uses explorer for data)</option>
+              </select>
+              <div className="text-xs text-gray-500">
+                SPV mode downloads only block headers. Faster initial sync, less disk space.
+                Balance and name data come from the explorer. Requires hsd restart to apply.
+                If switching causes issues, use "Re-sync node data" below.
+              </div>
             </div>
-          </div>
+          )}
 
           <label className="flex items-center gap-2 text-sm pt-2">
             <input

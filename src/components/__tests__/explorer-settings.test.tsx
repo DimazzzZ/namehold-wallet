@@ -93,6 +93,7 @@ function loadSettings(over: Partial<Record<string, string>> = {}) {
       background_sync_enabled: "1",
       node_mode: "full",
       explorer_fallback_url: "",
+      chain_source: "local_node",
       ...over,
     },
   });

@@ -299,6 +299,11 @@ export interface Settings {
   node_mode: NodeMode;
   /** Fallback explorer URL used when primary explorer_api_url is unreachable. */
   explorer_fallback_url: string;
+  /**
+   * "local_node" | "remote_node" | "explorer" — which data source to use.
+   * Determines whether node_mode dropdown is visible.
+   */
+  chain_source: string;
 }
 
 // ---------------------------------------------------------------------------

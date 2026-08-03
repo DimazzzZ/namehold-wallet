@@ -357,6 +357,7 @@ const handlers: Record<string, Handler> = {
     background_sync_enabled: "1",
     node_mode: "full",
     explorer_fallback_url: "",
+    chain_source: "local_node",
   }),
 
   update_setting: () => null,
