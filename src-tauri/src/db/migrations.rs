@@ -34,6 +34,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
     ("020", include_str!("../sql/020_namebase_history.sql")),
     ("021", include_str!("../sql/021_sync_locks.sql")),
+    ("022", include_str!("../sql/022_watchlist.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {

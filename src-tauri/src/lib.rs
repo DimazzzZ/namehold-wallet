@@ -310,6 +310,10 @@ pub fn run() {
             commands::names::get_names_action_capabilities,
             commands::bids::recover_bid_commitment,
             commands::bids::export_bid_commitments,
+            commands::watchlist::add_to_watchlist,
+            commands::watchlist::remove_from_watchlist,
+            commands::watchlist::list_watchlist,
+            commands::watchlist::is_watched,
             commands::deadlines::scan_deadline_notifications,
             #[cfg(desktop)]
             commands::updates::app_updates::check_for_update,

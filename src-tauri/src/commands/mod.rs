@@ -17,5 +17,6 @@ pub mod settings;
 pub mod sync;
 pub mod sync_spv;
 pub mod tx;
+pub mod watchlist;
 #[cfg(desktop)]
 pub mod updates;

@@ -8,6 +8,7 @@ import { MigrationWorkspace } from "./components/MigrationWorkspace";
 import { WalletView } from "./components/WalletView";
 import { AuctionsView } from "./components/AuctionsView";
 import { ActivityView } from "./components/ActivityView";
+import { Watchlist } from "./components/Watchlist";
 import { Settings } from "./components/Settings";
 import { Onboarding } from "./components/Onboarding";
 import { useSettingsStore } from "./stores/settings";
@@ -51,6 +52,7 @@ function AppRoutes() {
         <Route path="/" element={<WalletView />} />
         <Route path="/activity" element={<ActivityView />} />
         <Route path="/auctions" element={<AuctionsView />} />
+        <Route path="/watchlist" element={<Watchlist />} />
         <Route path="/migration" element={<MigrationWorkspace />} />
         <Route path="/portfolio" element={<PortfolioWorkspace />} />
         <Route path="/settings" element={<Settings />} />

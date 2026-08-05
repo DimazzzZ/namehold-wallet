@@ -989,6 +989,12 @@ const handlers: Record<string, Handler> = {
     createdAt: new Date().toISOString(),
   }),
 
+  // ── Watchlist ─────────────────────────────────────────────────────────
+  add_to_watchlist: () => null,
+  remove_from_watchlist: () => null,
+  list_watchlist: () => [],
+  is_watched: () => false,
+
   // ── DNS resource ──────────────────────────────────────────────────────
   get_resource: () => ({
     records: [{ type: "NS", ns: "ns1.example." }],
