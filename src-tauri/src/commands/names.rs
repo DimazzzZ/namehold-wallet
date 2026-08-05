@@ -1862,3 +1862,68 @@ pub async fn build_revoke_draft(
     )?;
     persist(&state, &ctx.profile_id, "revoke", &name, None, &res)
 }
+
+// ---------------------------------------------------------------------------
+// Batch operations — build a single tx with multiple covenant outputs.
+// ---------------------------------------------------------------------------
+
+/// Max names per batch operation (matches hsd's `MAX_BLOCK_RENEWALS` / 6
+/// conservative estimate; hsd will reject a batch that exceeds consensus limits).
+pub const MAX_BATCH_SIZE: usize = 100;
+
+#[tauri::command]
+pub async fn build_batch_renew_draft(
+    state: State<'_, AppState>,
+    names: Vec<String>,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    if names.is_empty() {
+        return Err(AppError::InvalidInput("no names provided".into()));
+    }
+    if names.len() > MAX_BATCH_SIZE {
+        return Err(AppError::InvalidInput(format!(
+            "batch too large: {} names (max {})",
+            names.len(),
+            MAX_BATCH_SIZE
+        )));
+    }
+    let ctx = load_ctx(&state)?;
+    let rate = self::fee_rate(&ctx, fee_rate);
+    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let rblock = renewal_block(&client, ctx.network).await?;
+
+    let mut primaries = Vec::new();
+    let mut name_inputs = Vec::new();
+    let mut batch_names = Vec::new();
+
+    for name in &names {
+        let nh = names::hash_name(name)?;
+        let (coin, ns) = owner_coin_and_state(&state, &ctx, name).await?;
+        let addr = coin.address.clone();
+        let value = coin.value;
+        name_inputs.push(name_input_from(coin));
+        primaries.push(PrimaryOutput {
+            value,
+            address: addr,
+            covenant: covenants::renew(&nh, ns.height, &rblock),
+        });
+        batch_names.push(name.clone());
+    }
+
+    let res = actions::build_batch_plan(
+        ctx.network,
+        ctx.account,
+        &name_inputs,
+        &primaries,
+        &ctx.funding,
+        &ctx.change_address,
+        rate,
+    )?;
+    // Persist with first name as primary; the draft plan contains all names.
+    let display_name = if batch_names.len() == 1 {
+        batch_names[0].clone()
+    } else {
+        format!("{} + {} more", batch_names[0], batch_names.len() - 1)
+    };
+    persist(&state, &ctx.profile_id, "batch-renew", &display_name, None, &res)
+}

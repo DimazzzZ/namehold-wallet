@@ -303,6 +303,7 @@ pub fn run() {
             commands::names::build_finalize_draft,
             commands::names::build_cancel_draft,
             commands::names::build_revoke_draft,
+            commands::names::build_batch_renew_draft,
             commands::names::get_name_action_capabilities,
             commands::names::get_names_action_capabilities,
             commands::bids::recover_bid_commitment,

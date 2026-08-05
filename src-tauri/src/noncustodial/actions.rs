@@ -215,6 +215,142 @@ pub fn build_plan(
     })
 }
 
+/// Build a batch covenant tx: multiple covenant outputs (e.g. several renewals
+/// or reveals) in a single transaction, funded with liquid coins + change.
+///
+/// This is the batch counterpart to [`build_plan`]. Each entry in `primaries`
+/// represents one covenant output (one name action). All covenant outputs share
+/// the same funding coins and change address.
+///
+/// Coin selection is largest-first; change below dust is folded into the fee.
+pub fn build_batch_plan(
+    network: Network,
+    account: u32,
+    name_inputs: &[NameInputSpec],
+    primaries: &[PrimaryOutput],
+    funding: &[SpendableCoin],
+    change_address: &str,
+    rate: u64,
+) -> Result<PlanResult, AppError> {
+    if primaries.is_empty() {
+        return Err(AppError::InvalidInput(
+            "batch plan requires at least one output".into(),
+        ));
+    }
+
+    let base_in = name_inputs.len() as u64;
+    let name_value: u64 = name_inputs.iter().map(|n| n.value).sum();
+
+    // Total value across all covenant outputs.
+    let total_output_value: u64 = primaries.iter().map(|p| p.value).sum();
+
+    // Total vbytes for all covenant outputs (used for fee estimation).
+    let total_primary_vbytes: u64 = primaries
+        .iter()
+        .map(|p| {
+            let addr = output_address_from_string(network, &p.address)?;
+            Ok::<u64, AppError>(Output {
+                value: 0,
+                address: addr,
+                covenant: p.covenant.clone(),
+            }
+            .encoded_len() as u64)
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .sum();
+
+    let mut taken = 0usize;
+    let (fee, change) = loop {
+        let funded: u64 = funding[..taken].iter().map(|c| c.value).sum();
+        let total_in = name_value + funded;
+        let n_in = base_in + taken as u64;
+
+        if n_in >= 1 {
+            let fee_wc = estimate_fee_with_primary(n_in, total_primary_vbytes, 1, rate);
+            let fee_nc = estimate_fee_with_primary(n_in, total_primary_vbytes, 0, rate);
+            if total_in >= total_output_value + fee_wc {
+                let ch = total_in - total_output_value - fee_wc;
+                if ch >= DUST_THRESHOLD {
+                    break (fee_wc, ch);
+                }
+                break (total_in - total_output_value, 0);
+            }
+            if total_in >= total_output_value + fee_nc {
+                break (total_in - total_output_value, 0);
+            }
+        }
+        if taken >= funding.len() {
+            return Err(AppError::InvalidInput(
+                "insufficient funds to cover outputs and fee".into(),
+            ));
+        }
+        taken += 1;
+    };
+
+    let mut plan_inputs = Vec::new();
+    for n in name_inputs {
+        plan_inputs.push(PlanInput {
+            txid: n.txid.clone(),
+            vout: n.vout,
+            value: n.value,
+            branch: n.branch,
+            child_index: n.child_index,
+            sighash_type: n.sighash_type,
+        });
+    }
+    for c in &funding[..taken] {
+        plan_inputs.push(PlanInput {
+            txid: c.txid.clone(),
+            vout: c.vout,
+            value: c.value,
+            branch: c.branch,
+            child_index: c.child_index,
+            sighash_type: sighash::ALL,
+        });
+    }
+
+    // Outputs: one covenant output per name action, then change (plain).
+    let mut plan_outputs = Vec::new();
+    for primary in primaries {
+        plan_outputs.push(PlanOutput {
+            value: primary.value,
+            address: primary.address.clone(),
+            covenant_type: primary.covenant.covenant_type,
+            covenant_items_hex: primary.covenant.items.iter().map(hex::encode).collect(),
+        });
+    }
+    if change > 0 {
+        plan_outputs.push(PlanOutput {
+            value: change,
+            address: change_address.to_string(),
+            covenant_type: 0,
+            covenant_items_hex: Vec::new(),
+        });
+    }
+
+    let plan = DraftPlan {
+        version: 0,
+        locktime: 0,
+        account,
+        network: network.as_str().to_string(),
+        inputs: plan_inputs,
+        outputs: plan_outputs,
+    };
+    let tx = rebuild_unsigned(&plan, network)?;
+    let unsigned_tx_hex = tx.to_hex();
+    let funded_total: u64 = funding[..taken].iter().map(|c| c.value).sum();
+    let input_total = name_value + funded_total;
+    Ok(PlanResult {
+        unsigned_tx_hex,
+        txid: tx.txid(),
+        plan,
+        fee,
+        change,
+        input_total,
+    })
+}
+
 /// Reconstruct the unsigned [`Transaction`] from a plan (no witnesses).
 fn rebuild_unsigned(plan: &DraftPlan, network: Network) -> Result<Transaction, AppError> {
     let mut tx = Transaction::new();
