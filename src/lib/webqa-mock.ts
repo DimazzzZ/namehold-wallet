@@ -965,6 +965,30 @@ const handlers: Record<string, Handler> = {
     createdAt: new Date().toISOString(),
   }),
 
+  build_batch_reveal_draft: () => ({
+    id: "draft-batch-reveal-001",
+    walletProfileId: "webqa-profile",
+    action: "batch-reveal",
+    status: "draft",
+    summary: null,
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    createdAt: new Date().toISOString(),
+  }),
+
+  build_batch_redeem_draft: () => ({
+    id: "draft-batch-redeem-001",
+    walletProfileId: "webqa-profile",
+    action: "batch-redeem",
+    status: "draft",
+    summary: null,
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    createdAt: new Date().toISOString(),
+  }),
+
   // ── DNS resource ──────────────────────────────────────────────────────
   get_resource: () => ({
     records: [{ type: "NS", ns: "ns1.example." }],

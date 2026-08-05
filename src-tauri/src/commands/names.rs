@@ -1927,3 +1927,149 @@ pub async fn build_batch_renew_draft(
     };
     persist(&state, &ctx.profile_id, "batch-renew", &display_name, None, &res)
 }
+
+#[tauri::command]
+pub async fn build_batch_reveal_draft(
+    state: State<'_, AppState>,
+    names: Vec<String>,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    if names.is_empty() {
+        return Err(AppError::InvalidInput("no names provided".into()));
+    }
+    if names.len() > MAX_BATCH_SIZE {
+        return Err(AppError::InvalidInput(format!(
+            "batch too large: {} names (max {})",
+            names.len(),
+            MAX_BATCH_SIZE
+        )));
+    }
+    let ctx = load_ctx(&state)?;
+    let rate = self::fee_rate(&ctx, fee_rate);
+    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let mut primaries = Vec::new();
+    let mut name_inputs = Vec::new();
+    let mut batch_names = Vec::new();
+
+    for name in &names {
+        let nh = names::hash_name(name)?;
+        // DB reads — lock is held only briefly, dropped before any await.
+        let (bid, bid_coin) = {
+            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+            let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, name)?
+                .ok_or_else(|| AppError::NotFound(format!("no bid commitment for '{}'", name)))?;
+            let coin = queries::find_unspent_covenant_utxo(
+                &conn,
+                &ctx.profile_id,
+                &bid.address,
+                sync::COV_BID as i64,
+                name,
+                &hex::encode(nh),
+            )?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("no unspent bid coin for '{}' (sync first?)", name))
+            })?;
+            (bid, coin)
+        };
+        let mut nonce = [0u8; 32];
+        let nb = hex::decode(&bid.nonce_hex).map_err(|e| AppError::Crypto(format!("nonce: {e}")))?;
+        if nb.len() != 32 {
+            return Err(AppError::Crypto(format!("stored nonce for '{}' not 32 bytes", name)));
+        }
+        nonce.copy_from_slice(&nb);
+        // Async RPC — no DB lock held here.
+        let ns = fetch_name_state(&client, name).await?;
+        let cov = covenants::reveal(&nh, ns.height, &nonce);
+        name_inputs.push(name_input_from(bid_coin.clone()));
+        primaries.push(PrimaryOutput {
+            value: bid.bid_value_doos as u64,
+            address: bid_coin.address.clone(),
+            covenant: cov,
+        });
+        batch_names.push(name.clone());
+    }
+
+    let res = actions::build_batch_plan(
+        ctx.network,
+        ctx.account,
+        &name_inputs,
+        &primaries,
+        &ctx.funding,
+        &ctx.change_address,
+        rate,
+    )?;
+    let display_name = if batch_names.len() == 1 {
+        batch_names[0].clone()
+    } else {
+        format!("{} + {} more", batch_names[0], batch_names.len() - 1)
+    };
+    persist(&state, &ctx.profile_id, "batch-reveal", &display_name, None, &res)
+}
+
+#[tauri::command]
+pub async fn build_batch_redeem_draft(
+    state: State<'_, AppState>,
+    names: Vec<String>,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    if names.is_empty() {
+        return Err(AppError::InvalidInput("no names provided".into()));
+    }
+    if names.len() > MAX_BATCH_SIZE {
+        return Err(AppError::InvalidInput(format!(
+            "batch too large: {} names (max {})",
+            names.len(),
+            MAX_BATCH_SIZE
+        )));
+    }
+    let ctx = load_ctx(&state)?;
+    let rate = self::fee_rate(&ctx, fee_rate);
+    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let mut primaries = Vec::new();
+    let mut name_inputs = Vec::new();
+    let mut batch_names = Vec::new();
+
+    for name in &names {
+        let nh = names::hash_name(name)?;
+        let ns = fetch_name_state(&client, name).await?;
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, name)?
+            .ok_or_else(|| AppError::NotFound(format!("no bid for '{}'", name)))?;
+        let coin = queries::find_unspent_covenant_utxo(
+            &conn,
+            &ctx.profile_id,
+            &bid.address,
+            sync::COV_REVEAL as i64,
+            name,
+            &hex::encode(nh),
+        )?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("no unspent losing reveal coin for '{}' (sync first?)", name))
+        })?;
+        drop(conn);
+        let cov = covenants::redeem(&nh, ns.height);
+        name_inputs.push(name_input_from(coin.clone()));
+        primaries.push(PrimaryOutput {
+            value: coin.value,
+            address: coin.address.clone(),
+            covenant: cov,
+        });
+        batch_names.push(name.clone());
+    }
+
+    let res = actions::build_batch_plan(
+        ctx.network,
+        ctx.account,
+        &name_inputs,
+        &primaries,
+        &ctx.funding,
+        &ctx.change_address,
+        rate,
+    )?;
+    let display_name = if batch_names.len() == 1 {
+        batch_names[0].clone()
+    } else {
+        format!("{} + {} more", batch_names[0], batch_names.len() - 1)
+    };
+    persist(&state, &ctx.profile_id, "batch-redeem", &display_name, None, &res)
+}
