@@ -25,6 +25,15 @@
   explain why reads come from the explorer.
 - **SPV-aware write capability** — SPV mode shows a clear "SPV mode cannot send
   transactions" message instead of the generic "node not address-indexed" error.
+- **Batch name operations** — renew, reveal, or redeem multiple names in a single
+  transaction. Multi-select checkboxes on the Owned Names table with a batch
+  action bar. Uses hsd's `createbatch` RPC under the hood.
+- **Name watchlist** — track names you don't own for monitoring. New "Watchlist"
+  page in the sidebar with add/remove, state display, and CSV export. Database
+  migration `022_watchlist.sql`.
+- **Paid name swaps (atomic finalizeWithPayment)** — buy or sell a name in a
+  single transaction that finalizes the TRANSFER and pays the seller atomically.
+  "Buy with payment" button on names in TRANSFER state.
 
 ### Fixed
 - **Sync UI view jumping** — automatic sync (every 60s) no longer expands the

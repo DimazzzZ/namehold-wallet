@@ -322,8 +322,47 @@ In the Name Actions modal for an owned name, click **Show all actions**:
 | **Finalize** | Complete a transfer after the lockup period (mainnet: ~2 days). |
 | **Cancel** | Revert a pending transfer before it's finalized. |
 | **Revoke** | Permanently burn the name (irreversible). |
+| **Buy with payment** | Finalize a transfer AND pay the seller in a single transaction (atomic swap). |
 
 All of these need the signer unlocked and a synced node.
+
+### Batch operations
+
+Select multiple names in the Owned Names table using the checkboxes (or the
+header checkbox to select all). A batch action bar appears at the bottom:
+
+- **Renew Selected** — renew all selected names in a single transaction.
+- **Reveal All** / **Redeem All** — bulk reveal or redeem bids (coming soon).
+
+Batch operations use hsd's `createbatch` RPC, which handles consensus limits
+automatically (chunking to stay under block-size limits).
+
+### Paid name swaps
+
+To sell a name for HNS:
+1. **Transfer** the name to the buyer's address (name enters TRANSFER state).
+2. Tell the buyer your price and address.
+3. Buyer sees "Buy with payment" on the name → enters your address + amount → signs + broadcasts.
+4. Once confirmed, you've been paid atomically — no intermediate steps.
+
+To buy a name:
+1. Wait for the seller to transfer the name to your address (name shows TRANSFER state).
+2. Click **Buy with payment** → enter seller's address + amount.
+3. Review the draft → sign → broadcast.
+4. The name is finalized and the seller is paid in the same transaction.
+
+---
+
+## 10b. Name watchlist
+
+The **Watchlist** page (sidebar) lets you track names you don't own:
+
+- **Add a name** — enter the name in the input field and click "Add".
+- **Watch state** — the table shows the current auction state (Opening, Bidding, Reveal, Closed, etc.) fetched from the explorer.
+- **Remove** — click the "Remove" button to stop tracking a name.
+- **CSV export** — export your watchlist for external use.
+
+The watchlist is stored in the local SQLite database (`watched_names` table).
 
 ---
 
