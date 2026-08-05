@@ -70,6 +70,7 @@ pub struct PrimaryOutput {
 }
 
 /// Result of planning: the plan plus a preview (unsigned hex, txid, fee/change).
+#[derive(Debug)]
 pub struct PlanResult {
     pub plan: DraftPlan,
     pub unsigned_tx_hex: String,
@@ -814,5 +815,176 @@ mod tests {
             res.fee, actual_len,
             "fee should exactly equal the actual signed size at rate=1"
         );
+    }
+
+    // --- build_finalize_with_payment_plan tests ---
+
+    #[test]
+    fn finalize_with_payment_basic_success() {
+        let nh = [0xaa; 32];
+        let finalize_cov = covenants::finalize(&nh, 100, &[], 0, 0, 0, &[0xbb; 32]);
+        let name = NameInputSpec {
+            txid: hex::encode([0xcc; 32]),
+            vout: 0,
+            value: 5_000_000,
+            branch: 0,
+            child_index: 0,
+            sighash_type: sighash::ALL,
+        };
+        let funding = vec![coin(1, 2_000_000, 1)];
+        let res = build_finalize_with_payment_plan(
+            Network::Main,
+            0,
+            name,
+            PrimaryOutput {
+                value: 5_000_000,
+                address: ADDR.into(),
+                covenant: finalize_cov,
+            },
+            ADDR.into(),
+            1_000_000,
+            &funding,
+            ADDR,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(res.plan.outputs.len(), 3); // finalize + payment + change
+        let total_out: u64 = res.plan.outputs.iter().map(|o| o.value).sum();
+        assert_eq!(res.input_total, total_out + res.fee);
+        assert_eq!(res.plan.inputs.len(), 2);
+    }
+
+    #[test]
+    fn finalize_with_payment_with_change() {
+        let nh = [0xaa; 32];
+        let finalize_cov = covenants::finalize(&nh, 100, &[], 0, 0, 0, &[0xbb; 32]);
+        let name = NameInputSpec {
+            txid: hex::encode([0xcc; 32]),
+            vout: 0,
+            value: 5_000_000,
+            branch: 0,
+            child_index: 0,
+            sighash_type: sighash::ALL,
+        };
+        let funding = vec![coin(1, 5_000_000, 1)];
+        let res = build_finalize_with_payment_plan(
+            Network::Main,
+            0,
+            name,
+            PrimaryOutput {
+                value: 5_000_000,
+                address: ADDR.into(),
+                covenant: finalize_cov,
+            },
+            ADDR.into(),
+            1_000_000,
+            &funding,
+            ADDR,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(res.plan.outputs.len(), 3);
+        assert!(res.change > 0);
+        assert_eq!(res.input_total, 10_000_000);
+        assert_eq!(res.input_total, 5_000_000 + 1_000_000 + res.change + res.fee);
+    }
+
+    #[test]
+    fn finalize_with_payment_zero_value_errors() {
+        let nh = [0xaa; 32];
+        let finalize_cov = covenants::finalize(&nh, 100, &[], 0, 0, 0, &[0xbb; 32]);
+        let name = NameInputSpec {
+            txid: hex::encode([0xcc; 32]),
+            vout: 0,
+            value: 5_000_000,
+            branch: 0,
+            child_index: 0,
+            sighash_type: sighash::ALL,
+        };
+        let res = build_finalize_with_payment_plan(
+            Network::Main,
+            0,
+            name,
+            PrimaryOutput {
+                value: 5_000_000,
+                address: ADDR.into(),
+                covenant: finalize_cov,
+            },
+            ADDR.into(),
+            0,
+            &[],
+            ADDR,
+            1,
+        );
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("non-zero"));
+    }
+
+    #[test]
+    fn finalize_with_payment_insufficient_funds() {
+        let nh = [0xaa; 32];
+        let finalize_cov = covenants::finalize(&nh, 100, &[], 0, 0, 0, &[0xbb; 32]);
+        let name = NameInputSpec {
+            txid: hex::encode([0xcc; 32]),
+            vout: 0,
+            value: 100,
+            branch: 0,
+            child_index: 0,
+            sighash_type: sighash::ALL,
+        };
+        let res = build_finalize_with_payment_plan(
+            Network::Main,
+            0,
+            name,
+            PrimaryOutput {
+                value: 100,
+                address: ADDR.into(),
+                covenant: finalize_cov,
+            },
+            ADDR.into(),
+            1_000_000,
+            &[],
+            ADDR,
+            1,
+        );
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("insufficient"));
+    }
+
+    #[test]
+    fn finalize_with_payment_fee_conservation() {
+        let nh = [0xaa; 32];
+        let finalize_cov = covenants::finalize(&nh, 100, &[], 0, 0, 0, &[0xbb; 32]);
+        let name = NameInputSpec {
+            txid: hex::encode([0xcc; 32]),
+            vout: 0,
+            value: 2_000_000,
+            branch: 0,
+            child_index: 0,
+            sighash_type: sighash::ALL,
+        };
+        let funding = vec![coin(1, 3_000_000, 1)];
+        let res = build_finalize_with_payment_plan(
+            Network::Main,
+            0,
+            name,
+            PrimaryOutput {
+                value: 2_000_000,
+                address: ADDR.into(),
+                covenant: finalize_cov,
+            },
+            ADDR.into(),
+            500_000,
+            &funding,
+            ADDR,
+            1,
+        )
+        .unwrap();
+
+        let total_out: u64 = res.plan.outputs.iter().map(|o| o.value).sum();
+        assert_eq!(res.input_total, total_out + res.fee);
+        assert_eq!(res.input_total, 5_000_000);
     }
 }
