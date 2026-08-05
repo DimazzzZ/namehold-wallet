@@ -431,11 +431,6 @@ export function validateBidInputs(bidHns: string, lockupHns: string): BidInputVa
   };
 }
 
-/** Convert HNS (human-readable) to doos (integer base unit). */
-export function hnsToDoos(hns: number): number {
-  return Math.round(hns * 1_000_000);
-}
-
 /** Convert doos to HNS for display. */
 export function doosToHns(doos: number): number {
   return doos / 1_000_000;

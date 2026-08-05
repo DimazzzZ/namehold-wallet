@@ -23,20 +23,22 @@ import { GuidedAction } from "./name-actions/GuidedAction";
 import { NameBidsPanel } from "./name-actions/NameBidsPanel";
 import { NameSignMessage } from "./name-actions/NameSignMessage";
 import { OwnershipActions } from "./name-actions/OwnershipActions";
+import { PaidSwapClaim } from "./name-actions/PaidSwapClaim";
 import { useUiStore } from "../stores/ui";
 import { mapError, stageOf, unwrapStaged } from "../lib/errors";
 import { formatHns } from "../lib/utils";
 import { displayName } from "../lib/idn";
+import { WatchlistToggle } from "./WatchlistToggle";
 import { explorerNameUrl, openExternal } from "../lib/openExternal";
 import {
   auctionPhase,
   nextTransition,
   formatCountdown,
   AUCTION_PHASE_GUIDE,
-  hnsToDoos,
   taskSummaryFromCapabilities,
   validateBidInputs,
 } from "../lib/auction";
+import { hnsToDollarydoos } from "../lib/utils";
 import { rowsToRecords, recordsToRows, type DnsRow } from "../lib/dnsRecords";
 import type { NameActionCapability } from "../types";
 
@@ -90,6 +92,8 @@ export function NameActionsModal({
     finalize: useNameAction("build_finalize_draft"),
     cancel: useNameAction("build_cancel_draft"),
     revoke: useNameAction("build_revoke_draft"),
+    finalizeWithPayment: useNameAction("build_finalize_with_payment_draft"),
+    sellWithPayment: useNameAction("create_paid_swap_offer"),
   };
 
   // Bid inputs in HNS (human-readable), converted to doos on submit.
@@ -337,7 +341,7 @@ export function NameActionsModal({
       await recoverBid.mutateAsync({
         walletProfileId: profile?.id ?? null,
         name,
-        bidValueDoos: hnsToDoos(Number(recoverHns)),
+        bidValueDoos: hnsToDollarydoos(Number(recoverHns)),
       });
       showToast("Bid commitment recovered — you can reveal now.", "success");
       setRecoverHns("");
@@ -387,8 +391,8 @@ export function NameActionsModal({
     run("BID", () =>
       build.bid.mutateAsync({
         name,
-        bidValue: hnsToDoos(bidNum),
-        lockup: hnsToDoos(lockupNum),
+        bidValue: hnsToDollarydoos(bidNum),
+        lockup: hnsToDollarydoos(lockupNum),
       }),
     );
 
@@ -408,15 +412,18 @@ export function NameActionsModal({
       }
       >
       <div className="space-y-4 text-sm">
-        {/* Explorer link */}
-        <button
-          type="button"
-          className="text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer inline-flex items-center gap-1"
-          onClick={() => openExternal(explorerNameUrl(name))}
-          data-testid="name-explorer-link"
-        >
-          View on explorer ↗
-        </button>
+        {/* Explorer link + watchlist toggle */}
+        <div className="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            className="text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer inline-flex items-center gap-1"
+            onClick={() => openExternal(explorerNameUrl(name))}
+            data-testid="name-explorer-link"
+          >
+            View on explorer ↗
+          </button>
+          <WatchlistToggle name={name} />
+        </div>
 
         {/* Loading state */}
         {isLoading && (
@@ -739,8 +746,29 @@ export function NameActionsModal({
                 onCancelTransfer={() => run("CANCEL", () => build.cancel.mutateAsync({ name }))}
                 onRenew={() => run("RENEW", () => build.renew.mutateAsync({ name }))}
                 onRevoke={() => run("REVOKE", () => build.revoke.mutateAsync({ name }))}
+                onBuyWithPayment={(paymentAddress, paymentValue) =>
+                  run("FINALIZE_WITH_PAYMENT", () =>
+                    build.finalizeWithPayment.mutateAsync({ name, paymentAddress, paymentValue })
+                  )
+                }
+                onSellWithPayment={(buyerAddress, priceValue) =>
+                  run("SELL_WITH_PAYMENT", async () => {
+                    // 1. Record the offer for later claim verification.
+                    await build.sellWithPayment.mutateAsync({
+                      name,
+                      buyerAddress,
+                      priceDoos: priceValue,
+                    });
+                    // 2. Build the transfer draft to the buyer (normal TRANSFER
+                    //    covenant — the payment happens in the buyer's finalize).
+                    return build.transfer.mutateAsync({ name, recipient: buyerAddress });
+                  })
+                }
               />
             )}
+
+            {/* Paid swap claim: shown when a paid_swap_offer exists for this name */}
+            <PaidSwapClaim name={name} />
 
             {/* Sign message (Task 3) — Namebase-style domain-claim verification,
                 owned names only; the component itself gates on caps.ownsName. */}

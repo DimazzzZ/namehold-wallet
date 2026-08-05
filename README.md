@@ -41,6 +41,15 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   and a **"Locked in Auctions"** balance for in-flight bids.
 - A typed **DNS-record editor** (TXT/A/AAAA/NS/CNAME…) for register/update, with a
   raw-JSON fallback.
+- **Batch operations** — renew, reveal, redeem, or finalize multiple names in a
+  single transaction. Multi-select checkboxes on the Owned Names table with a
+  batch action bar and a confirmation modal showing estimated fee + name list.
+- **Name watchlist** — track names you don't own for monitoring. Watchlist page
+  in the sidebar with add/remove, tags, CSV import/export, and "Add to
+  Watchlist" buttons in name modals.
+- **Paid name swaps** — atomic buyer-seller name transfer with payment. The buyer
+  finalizes a TRANSFER and pays the seller in a single transaction
+  (finalizeWithPayment), so neither party can renege after the lockup expires.
 
 ### Node-free reads
 - Reads are **node-free by default** via the HNSFans explorer — no node required

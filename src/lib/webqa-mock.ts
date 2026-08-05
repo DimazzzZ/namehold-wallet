@@ -953,6 +953,86 @@ const handlers: Record<string, Handler> = {
     createdAt: new Date().toISOString(),
   }),
 
+  build_batch_renew_draft: () => ({
+    id: "draft-batch-renew-001",
+    walletProfileId: "webqa-profile",
+    action: "batch-renew",
+    status: "draft",
+    summary: null,
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    createdAt: new Date().toISOString(),
+  }),
+
+  build_batch_reveal_draft: () => ({
+    id: "draft-batch-reveal-001",
+    walletProfileId: "webqa-profile",
+    action: "batch-reveal",
+    status: "draft",
+    summary: null,
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    createdAt: new Date().toISOString(),
+  }),
+
+  build_batch_redeem_draft: () => ({
+    id: "draft-batch-redeem-001",
+    walletProfileId: "webqa-profile",
+    action: "batch-redeem",
+    status: "draft",
+    summary: null,
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    createdAt: new Date().toISOString(),
+  }),
+
+  build_batch_finalize_draft: () => ({
+    id: "draft-batch-finalize-001",
+    walletProfileId: "webqa-profile",
+    action: "batch-finalize",
+    status: "draft",
+    summary: null,
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    createdAt: new Date().toISOString(),
+  }),
+
+  build_finalize_with_payment_draft: () => ({
+    id: "draft-finalize-payment-001",
+    walletProfileId: "webqa-profile",
+    action: "finalize-with-payment",
+    status: "draft",
+    summary: null,
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    createdAt: new Date().toISOString(),
+  }),
+
+  // ── Watchlist ─────────────────────────────────────────────────────────
+  add_to_watchlist: () => null,
+  remove_from_watchlist: () => null,
+  list_watchlist: () => [],
+  is_watched: () => false,
+  get_watchlist_status: () => [],
+  update_watchlist_tags: () => null,
+  export_watchlist_csv: () => 0,
+  import_watchlist_csv: () => ({ imported: 0, skipped: 0, errors: [] }),
+
+  // ── Paid swap offers (seller-side tracking) ─────────────────────────
+  create_paid_swap_offer: () => null,
+  get_paid_swap_offer: () => null,
+  remove_paid_swap_offer: () => null,
+  claim_paid_transfer: () => ({
+    verified: true,
+    paidDoos: 1_000_000,
+    confirmations: 1,
+  }),
+
   // ── DNS resource ──────────────────────────────────────────────────────
   get_resource: () => ({
     records: [{ type: "NS", ns: "ns1.example." }],

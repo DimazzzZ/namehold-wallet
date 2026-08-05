@@ -322,8 +322,68 @@ In the Name Actions modal for an owned name, click **Show all actions**:
 | **Finalize** | Complete a transfer after the lockup period (mainnet: ~2 days). |
 | **Cancel** | Revert a pending transfer before it's finalized. |
 | **Revoke** | Permanently burn the name (irreversible). |
+| **Buy with payment** | Finalize a transfer AND pay the seller in a single transaction (atomic swap). |
 
 All of these need the signer unlocked and a synced node.
+
+### Batch operations
+
+Select multiple names in the Owned Names table using the checkboxes (or the
+header checkbox to select all). A batch action bar appears at the bottom:
+
+- **Renew Selected** — renew all selected names in a single transaction.
+- **Reveal Selected** — bulk reveal all selected names' bids (enabled when
+  every selected name is in REVEAL phase).
+- **Redeem Selected** — bulk sweep losing-bid coins from selected names.
+- **Finalize Selected** — bulk finalize outgoing TRANSFERs whose lockup has
+  expired.
+
+Each batch action opens a **confirmation modal** showing the count, estimated
+fee, and a collapsible list of the selected names. Cancel closes without
+broadcasting; Confirm signs + broadcasts the draft in one step.
+
+Batch operations use hsd's `createbatch` RPC, which handles consensus limits
+automatically (chunking to stay under block-size limits).
+
+### Paid name swaps
+
+To sell a name for HNS (**Sell with payment** flow):
+1. Open the name in **Manage** → **Sell with payment** section.
+2. Enter the buyer's address, your price (HNS), and confirm. This transfers
+   the name to the buyer with a lockup period recorded as a saved offer.
+3. Wait for the buyer to broadcast their finalize-with-payment tx.
+4. Once the buyer's tx confirms, the app verifies it (checks the payment
+   output matches your offer) and marks the offer paid — HNS lands in your
+   wallet atomically.
+
+To buy a name:
+1. Wait for the seller to transfer the name to your address (name shows TRANSFER state).
+2. Click **Buy with payment** → enter seller's address + amount.
+3. Review the draft → sign → broadcast.
+4. The name is finalized and the seller is paid in the same transaction.
+
+---
+
+## 10b. Name watchlist
+
+The **Watchlist** page (sidebar) lets you track names you don't own:
+
+- **Add a name** — enter the name in the input field and click "Add".
+- **From name modals** — the Manage and Info modals now show an
+  **Add to Watchlist** / **Remove from Watchlist** toggle in the header, so
+  you can start tracking a name straight from any auction view.
+- **Watch state** — the table shows the current auction state (Opening, Bidding, Reveal, Closed, etc.) fetched from the explorer.
+- **Tags** — click any tag cell to edit a comma-separated list of tags (e.g.
+  `auctions, expiring-soon, competitors`). Tags are stored per name and
+  round-trip through CSV export/import.
+- **Remove** — click the "Remove" button to stop tracking a name.
+- **CSV export / import** — export your watchlist to
+  `name,tags,notes,added_at,state,expiry` CSV, and re-import into any wallet.
+  Import is additive (existing rows are preserved).
+
+The watchlist is stored in the local SQLite database (`watched_names` table).
+Bulk state lookups use `get_watchlist_status`, which reads cached state when
+available and falls back to the explorer/node otherwise.
 
 ---
 

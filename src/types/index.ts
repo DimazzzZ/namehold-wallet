@@ -436,7 +436,8 @@ export type AppRouteKey =
   | "wallet"
   | "auctions"
   | "activity"
-  | "settings";
+  | "settings"
+  | "watchlist";
 
 export type PortfolioSectionKey = "inventory" | "batches" | "renewals" | "dns";
 
