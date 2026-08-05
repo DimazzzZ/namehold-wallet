@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -36,6 +36,7 @@ import { ActivityRow } from "./ActivityView";
 import { WalletManager } from "./WalletManager";
 import { AddWalletForm } from "./AddWalletForm";
 import { UnlockButton } from "./UnlockButton";
+import { BatchConfirmModal } from "./BatchConfirmModal";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
@@ -81,6 +82,10 @@ export function WalletView() {
   const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
   // Batch renew mutation: calls build_batch_renew_draft, then signs + broadcasts.
   const batchRenewMutation = useNameAction("build_batch_renew_draft");
+  // Batch reveal / redeem / finalize mutations (same generic pattern).
+  const batchRevealMutation = useNameAction("build_batch_reveal_draft");
+  const batchRedeemMutation = useNameAction("build_batch_redeem_draft");
+  const batchFinalizeMutation = useNameAction("build_batch_finalize_draft");
   // Substring filter for the Owned Names list. Matches on BOTH the raw ACE
   // name (as stored on-chain) and its decoded displayName, so a unicode
   // substring (e.g. from a `.козёл`-style label) still finds the underlying
@@ -134,6 +139,14 @@ export function WalletView() {
   const [infoName, setInfoName] = useState<string | null>(null);
   const [infoBlock, setInfoBlock] = useState<number | null>(null);
   const [infoTx, setInfoTx] = useState<string | null>(null);
+  // Batch confirmation modal state.
+  const [batchModal, setBatchModal] = useState<{
+    open: boolean;
+    action: "renew" | "reveal" | "redeem" | "finalize";
+    names: string[];
+    feeDoos: number;
+    draftId: string;
+  } | null>(null);
   // Wallets manager modal (add / switch / delete). `addMode` opens it straight
   // to the add-wallet form.
   const [walletManagerOpen, setWalletManagerOpen] = useState(false);
@@ -181,20 +194,144 @@ export function WalletView() {
     });
   const clearSelection = () => setSelectedNames(new Set());
 
+  // Per-selection eligibility for batch actions. `nameCaps` is pinned to the
+  // active profile via useNamesActionCapabilities and updates when phases move.
+  // A batch action is "eligible" only when *every* selected name currently
+  // supports it (canX.allowed = true). Empty selection ⇒ false.
+  const batchEligibility = useMemo(() => {
+    if (selectedNames.size === 0 || nameCaps.length === 0) {
+      return { canReveal: false, canRedeem: false, canFinalize: false };
+    }
+    const capsByName = new Map(nameCaps.map((c) => [c.name, c]));
+    let canReveal = true;
+    let canRedeem = true;
+    let canFinalize = true;
+    for (const n of selectedNames) {
+      const c = capsByName.get(n);
+      if (!c) {
+        canReveal = false;
+        canRedeem = false;
+        canFinalize = false;
+        break;
+      }
+      if (!c.canReveal.allowed) canReveal = false;
+      if (!c.canRedeem.allowed) canRedeem = false;
+      if (!c.canFinalize.allowed) canFinalize = false;
+    }
+    return { canReveal, canRedeem, canFinalize };
+  }, [selectedNames, nameCaps]);
+
   // Batch renew: build a single tx with multiple renewal covenants, sign, broadcast.
   const handleBatchRenew = async () => {
     const names = Array.from(selectedNames);
     if (names.length === 0) return;
     try {
-      showToast(`Renewing ${names.length} name(s)…`, "info");
-      await batchRenewMutation.mutateAsync({ names });
-      clearSelection();
-      showToast(`Draft created for ${names.length} name(s). Review and sign to complete.`, "success");
-      // Open NameActionsModal for the first name to show the draft.
-      setManageName(names[0] ?? null);
+      showToast(`Building batch renew draft…`, "info");
+      const draft = await batchRenewMutation.mutateAsync({ names });
+      const feeDoos = draft.summary?.feeDoos ?? 0;
+      setBatchModal({
+        open: true,
+        action: "renew",
+        names,
+        feeDoos,
+        draftId: draft.id,
+      });
     } catch (e) {
       showToast(`Batch renew failed: ${e}`, "error");
     }
+  };
+
+  // Batch reveal: build a single tx with multiple REVEAL covenants.
+  const handleBatchReveal = async () => {
+    const names = Array.from(selectedNames);
+    if (names.length === 0) return;
+    try {
+      showToast(`Building batch reveal draft…`, "info");
+      const draft = await batchRevealMutation.mutateAsync({ names });
+      const feeDoos = draft.summary?.feeDoos ?? 0;
+      setBatchModal({
+        open: true,
+        action: "reveal",
+        names,
+        feeDoos,
+        draftId: draft.id,
+      });
+    } catch (e) {
+      showToast(`Batch reveal failed: ${e}`, "error");
+    }
+  };
+
+  // Batch redeem: build a single tx to sweep losing-bid coins.
+  const handleBatchRedeem = async () => {
+    const names = Array.from(selectedNames);
+    if (names.length === 0) return;
+    try {
+      showToast(`Building batch redeem draft…`, "info");
+      const draft = await batchRedeemMutation.mutateAsync({ names });
+      const feeDoos = draft.summary?.feeDoos ?? 0;
+      setBatchModal({
+        open: true,
+        action: "redeem",
+        names,
+        feeDoos,
+        draftId: draft.id,
+      });
+    } catch (e) {
+      showToast(`Batch redeem failed: ${e}`, "error");
+    }
+  };
+
+  // Batch finalize: build a single tx with multiple FINALIZE covenants.
+  const handleBatchFinalize = async () => {
+    const names = Array.from(selectedNames);
+    if (names.length === 0) return;
+    try {
+      showToast(`Building batch finalize draft…`, "info");
+      const draft = await batchFinalizeMutation.mutateAsync({ names });
+      const feeDoos = draft.summary?.feeDoos ?? 0;
+      setBatchModal({
+        open: true,
+        action: "finalize",
+        names,
+        feeDoos,
+        draftId: draft.id,
+      });
+    } catch (e) {
+      showToast(`Batch finalize failed: ${e}`, "error");
+    }
+  };
+
+  // Confirm a pending batch draft: unlock (if needed) → sign → broadcast.
+  const handleBatchConfirm = async () => {
+    if (!batchModal || !profile) return;
+    const { draftId, names, action } = batchModal;
+    try {
+      if (!unlocked) {
+        await unlock.mutateAsync(profile.id);
+      }
+      await signDraft.mutateAsync(draftId);
+      const result = await broadcast.mutateAsync(draftId);
+      showToast(
+        `Batch ${action} broadcast ${result.txid.slice(0, 12)}… (${names.length} name(s))`,
+        "success",
+      );
+      setBatchModal(null);
+      clearSelection();
+      qc.invalidateQueries({ queryKey: ["wallet"] });
+    } catch (e) {
+      showToast(`Batch ${action} failed: ${mapError(e)}`, "error");
+      // Keep the modal open so the user can retry or cancel.
+      throw e;
+    }
+  };
+
+  // Cancel a pending batch draft: discard the draft (frees reserved coins).
+  const handleBatchCancel = () => {
+    // Just close the modal. The draft row remains in the DB but its coin
+    // reservations don't block anything — they'll be freed when the draft is
+    // eventually replaced or the user builds another draft that supersedes
+    // this one. Keeping the draft also lets the user replay it from Drafts.
+    setBatchModal(null);
   };
 
   // Sync runs all reconciliation in a background thread.
@@ -942,6 +1079,48 @@ export function WalletView() {
                 <Button size="sm" variant="primary" onClick={handleBatchRenew}>
                   Renew Selected
                 </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={handleBatchReveal}
+                  disabled={!batchEligibility.canReveal}
+                  title={
+                    batchEligibility.canReveal
+                      ? undefined
+                      : "All selected names must be in the REVEAL phase"
+                  }
+                  data-testid="batch-reveal-btn"
+                >
+                  Reveal Selected
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={handleBatchRedeem}
+                  disabled={!batchEligibility.canRedeem}
+                  title={
+                    batchEligibility.canRedeem
+                      ? undefined
+                      : "All selected names must have redeemable losing bids"
+                  }
+                  data-testid="batch-redeem-btn"
+                >
+                  Redeem Selected
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={handleBatchFinalize}
+                  disabled={!batchEligibility.canFinalize}
+                  title={
+                    batchEligibility.canFinalize
+                      ? undefined
+                      : "All selected names must have a transfer ready to finalize"
+                  }
+                  data-testid="batch-finalize-btn"
+                >
+                  Finalize Selected
+                </Button>
                 <Button size="sm" variant="ghost" onClick={clearSelection}>
                   Clear
                 </Button>
@@ -1021,6 +1200,17 @@ export function WalletView() {
           {truncateMiddle(profile.accountXpub)}
         </div>
       </Disclosure>
+
+      {batchModal && (
+        <BatchConfirmModal
+          open={batchModal.open}
+          action={batchModal.action}
+          names={batchModal.names}
+          estimatedFeeDoos={batchModal.feeDoos}
+          onConfirm={handleBatchConfirm}
+          onCancel={handleBatchCancel}
+        />
+      )}
 
       {manageName && (
         <NameActionsModal

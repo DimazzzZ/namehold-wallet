@@ -6,6 +6,7 @@ import { Badge } from "./ui/Badge";
 import { formatHns } from "../lib/utils";
 import { displayName } from "../lib/idn";
 import { explorerNameUrl, openExternal } from "../lib/openExternal";
+import { WatchlistToggle } from "./WatchlistToggle";
 import { auctionPhase, nextTransition, formatCountdown } from "../lib/auction";
 import type { NameBid } from "../types";
 
@@ -103,15 +104,18 @@ export function NameInfoModal({ name, open, onClose }: NameInfoModalProps) {
       }
     >
       <div className="space-y-4 text-sm max-h-[70vh] overflow-y-auto">
-        {/* Explorer link */}
-        <button
-          type="button"
-          className="text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer inline-flex items-center gap-1"
-          onClick={() => openExternal(explorerNameUrl(name))}
-          data-testid="name-explorer-link"
-        >
-          View on explorer ↗
-        </button>
+        {/* Explorer link + watchlist toggle */}
+        <div className="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            className="text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer inline-flex items-center gap-1"
+            onClick={() => openExternal(explorerNameUrl(name))}
+            data-testid="name-explorer-link"
+          >
+            View on explorer ↗
+          </button>
+          <WatchlistToggle name={name} />
+        </div>
 
         {/* Loading state */}
         {isLoading && (

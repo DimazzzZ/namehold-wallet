@@ -1867,8 +1867,10 @@ pub async fn build_revoke_draft(
 // Batch operations — build a single tx with multiple covenant outputs.
 // ---------------------------------------------------------------------------
 
-/// Max names per batch operation (matches hsd's `MAX_BLOCK_RENEWALS` / 6
-/// conservative estimate; hsd will reject a batch that exceeds consensus limits).
+/// Max names per batch operation. Conservative cap that stays well under
+/// block-size limits under any covenant mix. hsd itself enforces per-covenant-type
+/// block limits (MAX_BLOCK_RENEWALS, MAX_BLOCK_OPENS, …); this batch cap is a
+/// client-side safety net to prevent building a tx that the node would reject.
 pub const MAX_BATCH_SIZE: usize = 100;
 
 #[tauri::command]
@@ -1925,7 +1927,14 @@ pub async fn build_batch_renew_draft(
     } else {
         format!("{} + {} more", batch_names[0], batch_names.len() - 1)
     };
-    persist(&state, &ctx.profile_id, "batch-renew", &display_name, None, &res)
+    persist(
+        &state,
+        &ctx.profile_id,
+        "batch-renew",
+        &display_name,
+        None,
+        &res,
+    )
 }
 
 #[tauri::command]
@@ -1972,9 +1981,13 @@ pub async fn build_batch_reveal_draft(
             (bid, coin)
         };
         let mut nonce = [0u8; 32];
-        let nb = hex::decode(&bid.nonce_hex).map_err(|e| AppError::Crypto(format!("nonce: {e}")))?;
+        let nb =
+            hex::decode(&bid.nonce_hex).map_err(|e| AppError::Crypto(format!("nonce: {e}")))?;
         if nb.len() != 32 {
-            return Err(AppError::Crypto(format!("stored nonce for '{}' not 32 bytes", name)));
+            return Err(AppError::Crypto(format!(
+                "stored nonce for '{}' not 32 bytes",
+                name
+            )));
         }
         nonce.copy_from_slice(&nb);
         // Async RPC — no DB lock held here.
@@ -2003,7 +2016,14 @@ pub async fn build_batch_reveal_draft(
     } else {
         format!("{} + {} more", batch_names[0], batch_names.len() - 1)
     };
-    persist(&state, &ctx.profile_id, "batch-reveal", &display_name, None, &res)
+    persist(
+        &state,
+        &ctx.profile_id,
+        "batch-reveal",
+        &display_name,
+        None,
+        &res,
+    )
 }
 
 #[tauri::command]
@@ -2044,7 +2064,10 @@ pub async fn build_batch_redeem_draft(
             &hex::encode(nh),
         )?
         .ok_or_else(|| {
-            AppError::NotFound(format!("no unspent losing reveal coin for '{}' (sync first?)", name))
+            AppError::NotFound(format!(
+                "no unspent losing reveal coin for '{}' (sync first?)",
+                name
+            ))
         })?;
         drop(conn);
         let cov = covenants::redeem(&nh, ns.height);
@@ -2071,7 +2094,118 @@ pub async fn build_batch_redeem_draft(
     } else {
         format!("{} + {} more", batch_names[0], batch_names.len() - 1)
     };
-    persist(&state, &ctx.profile_id, "batch-redeem", &display_name, None, &res)
+    persist(
+        &state,
+        &ctx.profile_id,
+        "batch-redeem",
+        &display_name,
+        None,
+        &res,
+    )
+}
+
+#[tauri::command]
+pub async fn build_batch_finalize_draft(
+    state: State<'_, AppState>,
+    names: Vec<String>,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    if names.is_empty() {
+        return Err(AppError::InvalidInput("no names provided".into()));
+    }
+    if names.len() > MAX_BATCH_SIZE {
+        return Err(AppError::InvalidInput(format!(
+            "batch too large: {} names (max {})",
+            names.len(),
+            MAX_BATCH_SIZE
+        )));
+    }
+    let ctx = load_ctx(&state)?;
+    let rate = self::fee_rate(&ctx, fee_rate);
+    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let rblock = renewal_block(&client, ctx.network).await?;
+    let mut primaries = Vec::new();
+    let mut name_inputs = Vec::new();
+    let mut batch_names = Vec::new();
+
+    for name in &names {
+        let nh = names::hash_name(name)?;
+        let raw = names::raw_name(name)?;
+        let (coin, ns) = owner_coin_and_state(&state, &ctx, name).await?;
+
+        // Extract TRANSFER target from the owner coin's covenant.
+        let cov_json = coin.covenant_json.as_deref().ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "'{}' is not in transfer; nothing to finalize",
+                name
+            ))
+        })?;
+        let cov: serde_json::Value = serde_json::from_str(cov_json)?;
+        let items = cov.get("items").and_then(|i| i.as_array()).ok_or_else(|| {
+            AppError::InvalidInput(format!("'{}' owner coin has no covenant items", name))
+        })?;
+        if items.len() < 4 {
+            return Err(AppError::InvalidInput(format!(
+                "'{}' owner coin is not a TRANSFER",
+                name
+            )));
+        }
+        let ver_hex = items[2].as_str().unwrap_or("00");
+        let hash_hex = items[3].as_str().unwrap_or("");
+        let version = u8::from_str_radix(ver_hex, 16).unwrap_or(0);
+        let target_hash = hex::decode(hash_hex)
+            .map_err(|e| AppError::InvalidInput(format!("'{}' bad transfer target: {e}", name)))?;
+        if version != 0 || target_hash.len() != 20 {
+            return Err(AppError::InvalidInput(format!(
+                "'{}' finalize target must be p2wpkh",
+                name
+            )));
+        }
+        let mut h160 = [0u8; 20];
+        h160.copy_from_slice(&target_hash);
+        let target_address = address::encode_p2wpkh(ctx.network, &h160)?;
+
+        let flags: u8 = if ns.weak { 1 } else { 0 };
+        let cov = covenants::finalize(
+            &nh,
+            ns.height,
+            &raw,
+            flags,
+            ns.claimed,
+            ns.renewals,
+            &rblock,
+        );
+        name_inputs.push(name_input_from(coin.clone()));
+        primaries.push(PrimaryOutput {
+            value: coin.value,
+            address: target_address,
+            covenant: cov,
+        });
+        batch_names.push(name.clone());
+    }
+
+    let res = actions::build_batch_plan(
+        ctx.network,
+        ctx.account,
+        &name_inputs,
+        &primaries,
+        &ctx.funding,
+        &ctx.change_address,
+        rate,
+    )?;
+    let display_name = if batch_names.len() == 1 {
+        batch_names[0].clone()
+    } else {
+        format!("{} + {} more", batch_names[0], batch_names.len() - 1)
+    };
+    persist(
+        &state,
+        &ctx.profile_id,
+        "batch-finalize",
+        &display_name,
+        None,
+        &res,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2099,7 +2233,9 @@ pub async fn build_finalize_with_payment_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     if payment_value == 0 {
-        return Err(AppError::InvalidInput("payment value must be non-zero".into()));
+        return Err(AppError::InvalidInput(
+            "payment value must be non-zero".into(),
+        ));
     }
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
@@ -2119,7 +2255,9 @@ pub async fn build_finalize_with_payment_draft(
         .and_then(|i| i.as_array())
         .ok_or_else(|| AppError::InvalidInput("owner coin has no covenant items".into()))?;
     if items.len() < 4 {
-        return Err(AppError::InvalidInput("owner coin is not a TRANSFER".into()));
+        return Err(AppError::InvalidInput(
+            "owner coin is not a TRANSFER".into(),
+        ));
     }
     let ver_hex = items[2].as_str().unwrap_or("00");
     let hash_hex = items[3].as_str().unwrap_or("");
@@ -2127,7 +2265,9 @@ pub async fn build_finalize_with_payment_draft(
     let target_hash = hex::decode(hash_hex)
         .map_err(|e| AppError::InvalidInput(format!("bad transfer target: {e}")))?;
     if version != 0 || target_hash.len() != 20 {
-        return Err(AppError::InvalidInput("finalize target must be p2wpkh".into()));
+        return Err(AppError::InvalidInput(
+            "finalize target must be p2wpkh".into(),
+        ));
     }
     let mut h160 = [0u8; 20];
     h160.copy_from_slice(&target_hash);

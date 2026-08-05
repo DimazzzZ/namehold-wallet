@@ -989,6 +989,18 @@ const handlers: Record<string, Handler> = {
     createdAt: new Date().toISOString(),
   }),
 
+  build_batch_finalize_draft: () => ({
+    id: "draft-batch-finalize-001",
+    walletProfileId: "webqa-profile",
+    action: "batch-finalize",
+    status: "draft",
+    summary: null,
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    createdAt: new Date().toISOString(),
+  }),
+
   build_finalize_with_payment_draft: () => ({
     id: "draft-finalize-payment-001",
     walletProfileId: "webqa-profile",
@@ -1006,6 +1018,10 @@ const handlers: Record<string, Handler> = {
   remove_from_watchlist: () => null,
   list_watchlist: () => [],
   is_watched: () => false,
+  get_watchlist_status: () => [],
+  update_watchlist_tags: () => null,
+  export_watchlist_csv: () => 0,
+  import_watchlist_csv: () => ({ imported: 0, skipped: 0, errors: [] }),
 
   // ── Paid swap offers (seller-side tracking) ─────────────────────────
   create_paid_swap_offer: () => null,

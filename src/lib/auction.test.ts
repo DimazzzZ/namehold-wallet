@@ -5,7 +5,6 @@ import {
   formatCountdown,
   recommendedAction,
   auctionGuidance,
-  hnsToDoos,
   doosToHns,
   taskStateLabel,
   taskStateBadgeVariant,
@@ -13,6 +12,7 @@ import {
   taskStateUrgencyRank,
   validateBidInputs,
 } from "./auction";
+import { hnsToDollarydoos } from "./utils";
 import type { HsdNameStats } from "../types";
 
 describe("auctionPhase", () => {
@@ -127,11 +127,11 @@ describe("task-state helpers: expiringSoon (Task 3 / C3)", () => {
   });
 });
 
-describe("hnsToDoos / doosToHns", () => {
+describe("hnsToDollarydoos / doosToHns", () => {
   it("converts HNS to doos (integer)", () => {
-    expect(hnsToDoos(1)).toBe(1_000_000);
-    expect(hnsToDoos(0.5)).toBe(500_000);
-    expect(hnsToDoos(100)).toBe(100_000_000);
+    expect(hnsToDollarydoos(1)).toBe(1_000_000);
+    expect(hnsToDollarydoos(0.5)).toBe(500_000);
+    expect(hnsToDollarydoos(100)).toBe(100_000_000);
   });
 
   it("converts doos to HNS", () => {
@@ -142,7 +142,7 @@ describe("hnsToDoos / doosToHns", () => {
 
   it("round-trips correctly", () => {
     const hns = 12.345678;
-    expect(doosToHns(hnsToDoos(hns))).toBeCloseTo(hns, 5);
+    expect(doosToHns(hnsToDollarydoos(hns))).toBeCloseTo(hns, 5);
   });
 });
 

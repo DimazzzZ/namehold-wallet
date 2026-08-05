@@ -1,8 +1,8 @@
 //! Paid swap offer commands: seller-side tracking for atomic finalizeWithPayment.
 
+use crate::db::queries;
 use crate::error::AppError;
 use crate::noncustodial::rpc::NodeRpcClient;
-use crate::db::queries;
 use crate::AppState;
 use rusqlite::params;
 use serde::Serialize;
@@ -34,12 +34,12 @@ pub fn create_paid_swap_offer(
         return Err(AppError::InvalidInput("name cannot be empty".into()));
     }
     if buyer_address.trim().is_empty() {
-        return Err(AppError::InvalidInput("buyer_address cannot be empty".into()));
+        return Err(AppError::InvalidInput(
+            "buyer_address cannot be empty".into(),
+        ));
     }
     if price_doos <= 0 {
-        return Err(AppError::InvalidInput(
-            "price_doos must be positive".into(),
-        ));
+        return Err(AppError::InvalidInput("price_doos must be positive".into()));
     }
 
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;

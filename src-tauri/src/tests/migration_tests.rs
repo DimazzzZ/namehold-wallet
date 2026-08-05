@@ -58,7 +58,10 @@ fn test_schema_version_tracking() {
     // 018 (name_bid_index for chain_scan_cursor for the chain scanner),
     // 020 (namebase_history: imported Namebase account-history events).
     // 021 (sync_locks: cross-process sync coordination for background daemon).
-    assert_eq!(count, 21);
+    // 022 (watchlist: track names you don't own).
+    // 023 (paid_swap_offers: seller-side tracking for atomic finalizeWithPayment).
+    // 024 (watchlist_tags: comma-separated tags per watched name).
+    assert_eq!(count, 24);
 }
 
 #[test]

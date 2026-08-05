@@ -25,15 +25,26 @@
   explain why reads come from the explorer.
 - **SPV-aware write capability** — SPV mode shows a clear "SPV mode cannot send
   transactions" message instead of the generic "node not address-indexed" error.
-- **Batch name operations** — renew, reveal, or redeem multiple names in a single
-  transaction. Multi-select checkboxes on the Owned Names table with a batch
-  action bar. Uses hsd's `createbatch` RPC under the hood.
-- **Name watchlist** — track names you don't own for monitoring. New "Watchlist"
-  page in the sidebar with add/remove, state display, and CSV export. Database
-  migration `022_watchlist.sql`.
-- **Paid name swaps (atomic finalizeWithPayment)** — buy or sell a name in a
-  single transaction that finalizes the TRANSFER and pays the seller atomically.
-  "Buy with payment" button on names in TRANSFER state.
+- **TLD Management P1 — Batch operations** — renew, reveal, redeem, or finalize
+  multiple names in one transaction. Multi-select checkboxes on the Owned Names
+  table with a batch action bar ("Renew Selected" / "Reveal Selected" /
+  "Redeem Selected" / "Finalize Selected"). Each action opens a
+  `BatchConfirmModal` showing the count and estimated fee with a collapsible
+  name list before signing + broadcasting.
+- **TLD Management P2 — Watchlist** — track names you don't own for monitoring.
+  New "Watchlist" page in the sidebar with add/remove, tags (comma-separated),
+  bulk state fetch via `get_watchlist_status`, CSV import/export (`name,tags,
+  notes,added_at,state,expiry`), and an "Add to Watchlist" toggle in both
+  `NameActionsModal` and `NameInfoModal`. Database migrations
+  `022_watchlist.sql` (base table) and `024_watchlist_tags.sql` (adds `tags`
+  column).
+- **TLD Management P3 — Atomic paid name swaps** — atomic finalize-with-payment
+  covenant: the buyer finalizes a TRANSFER and pays the seller in the same
+  transaction, so no party can renege after the lockup expires. Buyer side:
+  "Buy with payment" button on names in TRANSFER state. Seller side: "Sell
+  with payment" flow with saved offer tracking (`023_paid_swap_offers.sql`)
+  and a verify-only `claim_paid_transfer` command that inspects the
+  broadcast tx before marking an offer paid.
 
 ### Fixed
 - **Sync UI view jumping** — automatic sync (every 60s) no longer expands the

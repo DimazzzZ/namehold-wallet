@@ -43,8 +43,9 @@ export function formatCount(value: number): string {
   return addThousandSeparators(String(value));
 }
 
-export function hnsToDollarydoos(hns: string): number {
-  return Math.round(parseFloat(hns) * 1_000_000);
+export function hnsToDollarydoos(hns: string | number): number {
+  const n = typeof hns === "number" ? hns : parseFloat(hns);
+  return Math.round(n * 1_000_000);
 }
 
 /** The bech32 HRP+separator an HNS address starts with on a given network. */

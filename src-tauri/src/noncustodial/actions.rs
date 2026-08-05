@@ -93,6 +93,51 @@ fn outpoint_hash(txid: &str) -> Result<[u8; 32], AppError> {
     Ok(h)
 }
 
+/// Coin selection helper: given the total output value, total vbytes of all
+/// covenant outputs, base input count, name value, and funding coins, select
+/// the minimum number of funding coins needed to cover outputs + fee, and
+/// return (taken, fee, change).
+///
+/// Coin selection is largest-first (coins are already sorted). Change below
+/// dust is folded into the fee.
+fn select_funding(
+    total_output_value: u64,
+    total_primary_vbytes: u64,
+    base_in: u64,
+    name_value: u64,
+    funding: &[SpendableCoin],
+    rate: u64,
+) -> Result<(usize, u64, u64), AppError> {
+    let mut taken = 0usize;
+    let (fee, change) = loop {
+        let funded: u64 = funding[..taken].iter().map(|c| c.value).sum();
+        let total_in = name_value + funded;
+        let n_in = base_in + taken as u64;
+
+        if n_in >= 1 {
+            let fee_wc = estimate_fee_with_primary(n_in, total_primary_vbytes, 1, rate);
+            let fee_nc = estimate_fee_with_primary(n_in, total_primary_vbytes, 0, rate);
+            if total_in >= total_output_value + fee_wc {
+                let ch = total_in - total_output_value - fee_wc;
+                if ch >= DUST_THRESHOLD {
+                    break (fee_wc, ch);
+                }
+                break (total_in - total_output_value, 0);
+            }
+            if total_in >= total_output_value + fee_nc {
+                break (total_in - total_output_value, 0);
+            }
+        }
+        if taken >= funding.len() {
+            return Err(AppError::InvalidInput(
+                "insufficient funds to cover outputs and fee".into(),
+            ));
+        }
+        taken += 1;
+    };
+    Ok((taken, fee, change))
+}
+
 /// Build a covenant tx: an optional required name input, the covenant output,
 /// funded with extra liquid coins to cover `primary.value + fee`, with change.
 ///
@@ -123,35 +168,14 @@ pub fn build_plan(
     }
     .encoded_len() as u64;
 
-    let mut taken = 0usize; // funding coins used
-    let (fee, change) = loop {
-        let funded: u64 = funding[..taken].iter().map(|c| c.value).sum();
-        let total_in = name_value + funded;
-        let n_in = base_in + taken as u64;
-
-        if n_in >= 1 {
-            // 1 plain output = the change output when one is produced; 0 when
-            // the primary is the only output.
-            let fee_wc = estimate_fee_with_primary(n_in, primary_vbytes, 1, rate);
-            let fee_nc = estimate_fee_with_primary(n_in, primary_vbytes, 0, rate);
-            if total_in >= primary.value + fee_wc {
-                let change = total_in - primary.value - fee_wc;
-                if change >= DUST_THRESHOLD {
-                    break (fee_wc, change);
-                }
-                break (total_in - primary.value, 0); // fold dust into fee
-            }
-            if total_in >= primary.value + fee_nc {
-                break (total_in - primary.value, 0);
-            }
-        }
-        if taken >= funding.len() {
-            return Err(AppError::InvalidInput(
-                "insufficient funds to cover output and fee".into(),
-            ));
-        }
-        taken += 1;
-    };
+    let (taken, fee, change) = select_funding(
+        primary.value,
+        primary_vbytes,
+        base_in,
+        name_value,
+        funding,
+        rate,
+    )?;
 
     // Assemble plan inputs: name input first, then funding coins.
     let mut plan_inputs = Vec::new();
@@ -250,44 +274,27 @@ pub fn build_batch_plan(
         .iter()
         .map(|p| {
             let addr = output_address_from_string(network, &p.address)?;
-            Ok::<u64, AppError>(Output {
-                value: 0,
-                address: addr,
-                covenant: p.covenant.clone(),
-            }
-            .encoded_len() as u64)
+            Ok::<u64, AppError>(
+                Output {
+                    value: 0,
+                    address: addr,
+                    covenant: p.covenant.clone(),
+                }
+                .encoded_len() as u64,
+            )
         })
         .collect::<Result<Vec<_>, _>>()?
         .iter()
         .sum();
 
-    let mut taken = 0usize;
-    let (fee, change) = loop {
-        let funded: u64 = funding[..taken].iter().map(|c| c.value).sum();
-        let total_in = name_value + funded;
-        let n_in = base_in + taken as u64;
-
-        if n_in >= 1 {
-            let fee_wc = estimate_fee_with_primary(n_in, total_primary_vbytes, 1, rate);
-            let fee_nc = estimate_fee_with_primary(n_in, total_primary_vbytes, 0, rate);
-            if total_in >= total_output_value + fee_wc {
-                let ch = total_in - total_output_value - fee_wc;
-                if ch >= DUST_THRESHOLD {
-                    break (fee_wc, ch);
-                }
-                break (total_in - total_output_value, 0);
-            }
-            if total_in >= total_output_value + fee_nc {
-                break (total_in - total_output_value, 0);
-            }
-        }
-        if taken >= funding.len() {
-            return Err(AppError::InvalidInput(
-                "insufficient funds to cover outputs and fee".into(),
-            ));
-        }
-        taken += 1;
-    };
+    let (taken, fee, change) = select_funding(
+        total_output_value,
+        total_primary_vbytes,
+        base_in,
+        name_value,
+        funding,
+        rate,
+    )?;
 
     let mut plan_inputs = Vec::new();
     for n in name_inputs {
@@ -359,6 +366,10 @@ pub fn build_batch_plan(
 /// Used for atomic name swaps: the buyer finalizes a TRANSFER and pays the
 /// seller in a single transaction. Both outputs and the fee are covered by
 /// the buyer's funding coins.
+// The plan builders take a wide but flat set of primitive tx parameters
+// (network, account, inputs, outputs, funding, change, rate); grouping them
+// into a struct would add indirection without improving clarity.
+#[allow(clippy::too_many_arguments)]
 pub fn build_finalize_with_payment_plan(
     network: Network,
     account: u32,
@@ -394,34 +405,14 @@ pub fn build_finalize_with_payment_plan(
     let total_primary_vbytes = finalize_vbytes + payment_vbytes;
     let total_output_value = finalize.value + payment_value;
 
-    let mut taken = 0usize;
-    let (fee, change) = loop {
-        let funded: u64 = funding[..taken].iter().map(|c| c.value).sum();
-        let total_in = name_value + funded;
-        let n_in = 1u64 + taken as u64; // name input + funding inputs
-
-        if n_in >= 1 {
-            // 1 plain output = the change output when one is produced.
-            let fee_wc = estimate_fee_with_primary(n_in, total_primary_vbytes, 1, rate);
-            let fee_nc = estimate_fee_with_primary(n_in, total_primary_vbytes, 0, rate);
-            if total_in >= total_output_value + fee_wc {
-                let ch = total_in - total_output_value - fee_wc;
-                if ch >= DUST_THRESHOLD {
-                    break (fee_wc, ch);
-                }
-                break (total_in - total_output_value, 0);
-            }
-            if total_in >= total_output_value + fee_nc {
-                break (total_in - total_output_value, 0);
-            }
-        }
-        if taken >= funding.len() {
-            return Err(AppError::InvalidInput(
-                "insufficient funds to cover finalize + payment + fee".into(),
-            ));
-        }
-        taken += 1;
-    };
+    let (taken, fee, change) = select_funding(
+        total_output_value,
+        total_primary_vbytes,
+        1, // base_in: the name input (TRANSFER coin)
+        name_value,
+        funding,
+        rate,
+    )?;
 
     // Inputs: name input (TRANSFER coin) + funding coins.
     let mut plan_inputs = vec![PlanInput {
@@ -888,7 +879,10 @@ mod tests {
         assert_eq!(res.plan.outputs.len(), 3);
         assert!(res.change > 0);
         assert_eq!(res.input_total, 10_000_000);
-        assert_eq!(res.input_total, 5_000_000 + 1_000_000 + res.change + res.fee);
+        assert_eq!(
+            res.input_total,
+            5_000_000 + 1_000_000 + res.change + res.fee
+        );
     }
 
     #[test]
@@ -986,5 +980,117 @@ mod tests {
         let total_out: u64 = res.plan.outputs.iter().map(|o| o.value).sum();
         assert_eq!(res.input_total, total_out + res.fee);
         assert_eq!(res.input_total, 5_000_000);
+    }
+
+    // --- batch finalize tests (build_batch_finalize_draft wraps build_batch_plan
+    // with FINALIZE covenants; these exercise the plan-building path) ---
+
+    #[test]
+    fn batch_finalize_two_names_success() {
+        let nh1 = [0x11; 32];
+        let nh2 = [0x22; 32];
+        // Two TRANSFER coins (owned by this wallet after lockup) → FINALIZE.
+        let name_inputs = vec![
+            NameInputSpec {
+                txid: hex::encode([0xa1; 32]),
+                vout: 0,
+                value: 2_000_000,
+                branch: 0,
+                child_index: 0,
+                sighash_type: sighash::ALL,
+            },
+            NameInputSpec {
+                txid: hex::encode([0xa2; 32]),
+                vout: 0,
+                value: 3_000_000,
+                branch: 0,
+                child_index: 1,
+                sighash_type: sighash::ALL,
+            },
+        ];
+        let primaries = vec![
+            PrimaryOutput {
+                value: 2_000_000,
+                address: ADDR.into(),
+                covenant: covenants::finalize(&nh1, 100, &[], 0, 0, 0, &[0xbb; 32]),
+            },
+            PrimaryOutput {
+                value: 3_000_000,
+                address: ADDR.into(),
+                covenant: covenants::finalize(&nh2, 100, &[], 0, 0, 0, &[0xbb; 32]),
+            },
+        ];
+        // A small funding coin covers the fee (name values are conserved).
+        let funding = vec![coin(1, 1_000_000, 2)];
+        let res = build_batch_plan(
+            Network::Main,
+            0,
+            &name_inputs,
+            &primaries,
+            &funding,
+            ADDR,
+            1,
+        )
+        .unwrap();
+        // 2 finalize outputs (+ change when funding leftover exceeds dust).
+        assert!(res.plan.outputs.len() >= 2);
+        assert!(res.fee > 0);
+        let total_out: u64 = res.plan.outputs.iter().map(|o| o.value).sum();
+        assert_eq!(res.input_total, total_out + res.fee);
+    }
+
+    #[test]
+    fn batch_finalize_insufficient_funds_errors() {
+        let nh = [0x11; 32];
+        let name_inputs = vec![NameInputSpec {
+            txid: hex::encode([0xa1; 32]),
+            vout: 0,
+            value: 2_000_000,
+            branch: 0,
+            child_index: 0,
+            sighash_type: sighash::ALL,
+        }];
+        let primaries = vec![PrimaryOutput {
+            value: 2_000_000,
+            address: ADDR.into(),
+            covenant: covenants::finalize(&nh, 100, &[], 0, 0, 0, &[0xbb; 32]),
+        }];
+        // No funding at all → cannot cover the fee on top of the conserved
+        // name value.
+        let funding: Vec<SpendableCoin> = vec![];
+        let err = build_batch_plan(
+            Network::Main,
+            0,
+            &name_inputs,
+            &primaries,
+            &funding,
+            ADDR,
+            1,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)));
+    }
+
+    // --- select_funding direct tests ---
+
+    #[test]
+    fn select_funding_change_below_dust_folded_into_fee() {
+        // Scenario: total_output_value = 900_000, name_value = 0, one funding
+        // coin of 900_200. After fee (~200 vbytes at rate 1 = ~200 doos), the
+        // leftover is below DUST_THRESHOLD → folded into fee (change = 0).
+        let funding = vec![coin(1, 900_200, 0)];
+        let (taken, fee, change) = select_funding(
+            900_000, // total_output_value
+            34,      // total_primary_vbytes (minimal p2wpkh output)
+            0,       // base_in (no name input)
+            0,       // name_value
+            &funding, 1, // rate
+        )
+        .unwrap();
+        assert_eq!(taken, 1);
+        // Change should be 0 (folded into fee) because 200 < DUST_THRESHOLD.
+        assert_eq!(change, 0);
+        // Fee absorbs the entire leftover.
+        assert_eq!(fee, 200);
     }
 }

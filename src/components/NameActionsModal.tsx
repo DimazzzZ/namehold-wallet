@@ -28,16 +28,17 @@ import { useUiStore } from "../stores/ui";
 import { mapError, stageOf, unwrapStaged } from "../lib/errors";
 import { formatHns } from "../lib/utils";
 import { displayName } from "../lib/idn";
+import { WatchlistToggle } from "./WatchlistToggle";
 import { explorerNameUrl, openExternal } from "../lib/openExternal";
 import {
   auctionPhase,
   nextTransition,
   formatCountdown,
   AUCTION_PHASE_GUIDE,
-  hnsToDoos,
   taskSummaryFromCapabilities,
   validateBidInputs,
 } from "../lib/auction";
+import { hnsToDollarydoos } from "../lib/utils";
 import { rowsToRecords, recordsToRows, type DnsRow } from "../lib/dnsRecords";
 import type { NameActionCapability } from "../types";
 
@@ -340,7 +341,7 @@ export function NameActionsModal({
       await recoverBid.mutateAsync({
         walletProfileId: profile?.id ?? null,
         name,
-        bidValueDoos: hnsToDoos(Number(recoverHns)),
+        bidValueDoos: hnsToDollarydoos(Number(recoverHns)),
       });
       showToast("Bid commitment recovered — you can reveal now.", "success");
       setRecoverHns("");
@@ -390,8 +391,8 @@ export function NameActionsModal({
     run("BID", () =>
       build.bid.mutateAsync({
         name,
-        bidValue: hnsToDoos(bidNum),
-        lockup: hnsToDoos(lockupNum),
+        bidValue: hnsToDollarydoos(bidNum),
+        lockup: hnsToDollarydoos(lockupNum),
       }),
     );
 
@@ -411,15 +412,18 @@ export function NameActionsModal({
       }
       >
       <div className="space-y-4 text-sm">
-        {/* Explorer link */}
-        <button
-          type="button"
-          className="text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer inline-flex items-center gap-1"
-          onClick={() => openExternal(explorerNameUrl(name))}
-          data-testid="name-explorer-link"
-        >
-          View on explorer ↗
-        </button>
+        {/* Explorer link + watchlist toggle */}
+        <div className="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            className="text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer inline-flex items-center gap-1"
+            onClick={() => openExternal(explorerNameUrl(name))}
+            data-testid="name-explorer-link"
+          >
+            View on explorer ↗
+          </button>
+          <WatchlistToggle name={name} />
+        </div>
 
         {/* Loading state */}
         {isLoading && (
