@@ -2073,3 +2073,106 @@ pub async fn build_batch_redeem_draft(
     };
     persist(&state, &ctx.profile_id, "batch-redeem", &display_name, None, &res)
 }
+
+// ---------------------------------------------------------------------------
+// Paid name swaps (atomic finalize-with-payment)
+// ---------------------------------------------------------------------------
+
+/// Build a tx that finalizes a TRANSFER and pays the seller in the same tx.
+///
+/// Atomic name swap protocol:
+/// 1. Seller transfers name to buyer's address (TRANSFER covenant, lockup period)
+/// 2. Lockup expires → TRANSFER coin is now owned by buyer's address
+/// 3. Buyer builds this tx:
+///    - Spends TRANSFER coin (buyer owns it)
+///    - Output 1: FINALIZE covenant (ownership transfers to buyer)
+///    - Output 2: Payment to seller's address (buyer pays)
+///    - Output 3: Change (if any)
+///
+/// The buyer's wallet funds the payment output from regular HNS coins.
+#[tauri::command]
+pub async fn build_finalize_with_payment_draft(
+    state: State<'_, AppState>,
+    name: String,
+    payment_address: String,
+    payment_value: u64,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    if payment_value == 0 {
+        return Err(AppError::InvalidInput("payment value must be non-zero".into()));
+    }
+    let ctx = load_ctx(&state)?;
+    let rate = self::fee_rate(&ctx, fee_rate);
+    let nh = names::hash_name(&name)?;
+    let raw = names::raw_name(&name)?;
+    let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
+    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let rblock = renewal_block(&client, ctx.network).await?;
+
+    // Parse the TRANSFER covenant to extract the finalize target address.
+    let cov_json = coin.covenant_json.as_deref().ok_or_else(|| {
+        AppError::InvalidInput("name is not in transfer; nothing to finalize".into())
+    })?;
+    let cov: serde_json::Value = serde_json::from_str(cov_json)?;
+    let items = cov
+        .get("items")
+        .and_then(|i| i.as_array())
+        .ok_or_else(|| AppError::InvalidInput("owner coin has no covenant items".into()))?;
+    if items.len() < 4 {
+        return Err(AppError::InvalidInput("owner coin is not a TRANSFER".into()));
+    }
+    let ver_hex = items[2].as_str().unwrap_or("00");
+    let hash_hex = items[3].as_str().unwrap_or("");
+    let version = u8::from_str_radix(ver_hex, 16).unwrap_or(0);
+    let target_hash = hex::decode(hash_hex)
+        .map_err(|e| AppError::InvalidInput(format!("bad transfer target: {e}")))?;
+    if version != 0 || target_hash.len() != 20 {
+        return Err(AppError::InvalidInput("finalize target must be p2wpkh".into()));
+    }
+    let mut h160 = [0u8; 20];
+    h160.copy_from_slice(&target_hash);
+    let target_address = address::encode_p2wpkh(ctx.network, &h160)?;
+
+    // Validate the payment address is valid for this network.
+    let (_, pay_program) = address::decode(ctx.network, &payment_address)?;
+    if pay_program.is_empty() {
+        return Err(AppError::InvalidInput(
+            "invalid payment address for this network".into(),
+        ));
+    }
+
+    let flags: u8 = if ns.weak { 1 } else { 0 };
+    let finalize_cov = covenants::finalize(
+        &nh,
+        ns.height,
+        &raw,
+        flags,
+        ns.claimed,
+        ns.renewals,
+        &rblock,
+    );
+
+    let res = actions::build_finalize_with_payment_plan(
+        ctx.network,
+        ctx.account,
+        name_input_from(coin.clone()),
+        PrimaryOutput {
+            value: coin.value,
+            address: target_address.clone(),
+            covenant: finalize_cov,
+        },
+        payment_address.clone(),
+        payment_value,
+        &ctx.funding,
+        &ctx.change_address,
+        rate,
+    )?;
+    persist(
+        &state,
+        &ctx.profile_id,
+        "finalize-with-payment",
+        &name,
+        Some(&payment_address),
+        &res,
+    )
+}

@@ -989,6 +989,18 @@ const handlers: Record<string, Handler> = {
     createdAt: new Date().toISOString(),
   }),
 
+  build_finalize_with_payment_draft: () => ({
+    id: "draft-finalize-payment-001",
+    walletProfileId: "webqa-profile",
+    action: "finalize-with-payment",
+    status: "draft",
+    summary: null,
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    createdAt: new Date().toISOString(),
+  }),
+
   // ── Watchlist ─────────────────────────────────────────────────────────
   add_to_watchlist: () => null,
   remove_from_watchlist: () => null,

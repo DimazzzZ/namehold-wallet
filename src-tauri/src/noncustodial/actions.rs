@@ -351,6 +351,143 @@ pub fn build_batch_plan(
     })
 }
 
+/// Build a finalize-with-payment tx: a covenant finalize output (transfers name
+/// ownership) plus a plain payment output (buyer pays seller), funded from
+/// liquid coins with change.
+///
+/// Used for atomic name swaps: the buyer finalizes a TRANSFER and pays the
+/// seller in a single transaction. Both outputs and the fee are covered by
+/// the buyer's funding coins.
+pub fn build_finalize_with_payment_plan(
+    network: Network,
+    account: u32,
+    name_input: NameInputSpec,
+    finalize: PrimaryOutput,
+    payment_address: String,
+    payment_value: u64,
+    funding: &[SpendableCoin],
+    change_address: &str,
+    rate: u64,
+) -> Result<PlanResult, AppError> {
+    if payment_value == 0 {
+        return Err(AppError::InvalidInput(
+            "payment value must be non-zero for finalize-with-payment".into(),
+        ));
+    }
+
+    let name_value = name_input.value;
+    let finalize_addr = output_address_from_string(network, &finalize.address)?;
+    let finalize_vbytes = Output {
+        value: 0,
+        address: finalize_addr,
+        covenant: finalize.covenant.clone(),
+    }
+    .encoded_len() as u64;
+    let payment_addr = output_address_from_string(network, &payment_address)?;
+    let payment_vbytes = Output {
+        value: 0,
+        address: payment_addr.clone(),
+        covenant: Covenant::default(),
+    }
+    .encoded_len() as u64;
+    let total_primary_vbytes = finalize_vbytes + payment_vbytes;
+    let total_output_value = finalize.value + payment_value;
+
+    let mut taken = 0usize;
+    let (fee, change) = loop {
+        let funded: u64 = funding[..taken].iter().map(|c| c.value).sum();
+        let total_in = name_value + funded;
+        let n_in = 1u64 + taken as u64; // name input + funding inputs
+
+        if n_in >= 1 {
+            // 1 plain output = the change output when one is produced.
+            let fee_wc = estimate_fee_with_primary(n_in, total_primary_vbytes, 1, rate);
+            let fee_nc = estimate_fee_with_primary(n_in, total_primary_vbytes, 0, rate);
+            if total_in >= total_output_value + fee_wc {
+                let ch = total_in - total_output_value - fee_wc;
+                if ch >= DUST_THRESHOLD {
+                    break (fee_wc, ch);
+                }
+                break (total_in - total_output_value, 0);
+            }
+            if total_in >= total_output_value + fee_nc {
+                break (total_in - total_output_value, 0);
+            }
+        }
+        if taken >= funding.len() {
+            return Err(AppError::InvalidInput(
+                "insufficient funds to cover finalize + payment + fee".into(),
+            ));
+        }
+        taken += 1;
+    };
+
+    // Inputs: name input (TRANSFER coin) + funding coins.
+    let mut plan_inputs = vec![PlanInput {
+        txid: name_input.txid.clone(),
+        vout: name_input.vout,
+        value: name_input.value,
+        branch: name_input.branch,
+        child_index: name_input.child_index,
+        sighash_type: name_input.sighash_type,
+    }];
+    for c in &funding[..taken] {
+        plan_inputs.push(PlanInput {
+            txid: c.txid.clone(),
+            vout: c.vout,
+            value: c.value,
+            branch: c.branch,
+            child_index: c.child_index,
+            sighash_type: sighash::ALL,
+        });
+    }
+
+    // Outputs: finalize covenant, payment, then change.
+    let mut plan_outputs = vec![
+        PlanOutput {
+            value: finalize.value,
+            address: finalize.address.clone(),
+            covenant_type: finalize.covenant.covenant_type,
+            covenant_items_hex: finalize.covenant.items.iter().map(hex::encode).collect(),
+        },
+        PlanOutput {
+            value: payment_value,
+            address: payment_address,
+            covenant_type: 0, // plain P2WPKH
+            covenant_items_hex: Vec::new(),
+        },
+    ];
+    if change > 0 {
+        plan_outputs.push(PlanOutput {
+            value: change,
+            address: change_address.to_string(),
+            covenant_type: 0,
+            covenant_items_hex: Vec::new(),
+        });
+    }
+
+    let plan = DraftPlan {
+        version: 0,
+        locktime: 0,
+        account,
+        network: network.as_str().to_string(),
+        inputs: plan_inputs,
+        outputs: plan_outputs,
+    };
+    let tx = rebuild_unsigned(&plan, network)?;
+    let unsigned_tx_hex = tx.to_hex();
+    let funded_total: u64 = funding[..taken].iter().map(|c| c.value).sum();
+    let input_total = name_value + funded_total;
+    Ok(PlanResult {
+        unsigned_tx_hex,
+        txid: tx.txid(),
+        plan,
+        fee,
+        change,
+        input_total,
+    })
+}
+
 /// Reconstruct the unsigned [`Transaction`] from a plan (no witnesses).
 fn rebuild_unsigned(plan: &DraftPlan, network: Network) -> Result<Transaction, AppError> {
     let mut tx = Transaction::new();

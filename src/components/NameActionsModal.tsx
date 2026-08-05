@@ -90,6 +90,7 @@ export function NameActionsModal({
     finalize: useNameAction("build_finalize_draft"),
     cancel: useNameAction("build_cancel_draft"),
     revoke: useNameAction("build_revoke_draft"),
+    finalizeWithPayment: useNameAction("build_finalize_with_payment_draft"),
   };
 
   // Bid inputs in HNS (human-readable), converted to doos on submit.
@@ -739,6 +740,11 @@ export function NameActionsModal({
                 onCancelTransfer={() => run("CANCEL", () => build.cancel.mutateAsync({ name }))}
                 onRenew={() => run("RENEW", () => build.renew.mutateAsync({ name }))}
                 onRevoke={() => run("REVOKE", () => build.revoke.mutateAsync({ name }))}
+                onBuyWithPayment={(paymentAddress, paymentValue) =>
+                  run("FINALIZE_WITH_PAYMENT", () =>
+                    build.finalizeWithPayment.mutateAsync({ name, paymentAddress, paymentValue })
+                  )
+                }
               />
             )}
 
