@@ -14,6 +14,7 @@ import {
   useBuildSendDraft,
   useSignTxDraft,
   useBroadcastTxDraft,
+  useNameAction,
 } from "../queries/wallet";
 import {
   useReadNames,
@@ -76,6 +77,10 @@ export function WalletView() {
   const { data: names = [] } = useReadNames();
   const { data: history = [] } = useActionHistory();
   const [nameQuery, setNameQuery] = useState("");
+  // Batch selection: names the user has checked for bulk operations.
+  const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
+  // Batch renew mutation: calls build_batch_renew_draft, then signs + broadcasts.
+  const batchRenewMutation = useNameAction("build_batch_renew_draft");
   // Substring filter for the Owned Names list. Matches on BOTH the raw ACE
   // name (as stored on-chain) and its decoded displayName, so a unicode
   // substring (e.g. from a `.козёл`-style label) still finds the underlying
@@ -164,6 +169,32 @@ export function WalletView() {
     setDraft(null);
     setSubmitting(false);
     setSendError(null);
+  };
+
+  // Batch selection helpers.
+  const toggleName = (name: string) =>
+    setSelectedNames((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  const clearSelection = () => setSelectedNames(new Set());
+
+  // Batch renew: build a single tx with multiple renewal covenants, sign, broadcast.
+  const handleBatchRenew = async () => {
+    const names = Array.from(selectedNames);
+    if (names.length === 0) return;
+    try {
+      showToast(`Renewing ${names.length} name(s)…`, "info");
+      await batchRenewMutation.mutateAsync({ names });
+      clearSelection();
+      showToast(`Draft created for ${names.length} name(s). Review and sign to complete.`, "success");
+      // Open NameActionsModal for the first name to show the draft.
+      setManageName(names[0] ?? null);
+    } catch (e) {
+      showToast(`Batch renew failed: ${e}`, "error");
+    }
   };
 
   // Sync runs all reconciliation in a background thread.
@@ -801,10 +832,25 @@ export function WalletView() {
         </div>
         {names.length > 0 ? (
           filteredNames.length > 0 ? (
+          <>
             <div className="max-h-60 overflow-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-gray-500 border-b">
+                    <th className="py-1 pr-4 w-8">
+                      <input
+                        type="checkbox"
+                        checked={selectedNames.size > 0 && selectedNames.size === filteredNames.length}
+                        ref={(el) => {
+                          if (el) el.indeterminate = selectedNames.size > 0 && selectedNames.size < filteredNames.length;
+                        }}
+                        onChange={(e) => {
+                          if (e.target.checked) setSelectedNames(new Set(filteredNames.map((n) => n.name)));
+                          else setSelectedNames(new Set());
+                        }}
+                        aria-label="Select all names"
+                      />
+                    </th>
                     <th className="py-1 pr-4">Name</th>
                     <th className="py-1 pr-4">State</th>
                     <th className="py-1 pr-4">Height</th>
@@ -815,6 +861,14 @@ export function WalletView() {
                 <tbody>
                   {filteredNames.map((n) => (
                     <tr key={n.name} className="border-t border-gray-100 hover:bg-gray-50">
+                      <td className="py-1 pr-4">
+                        <input
+                          type="checkbox"
+                          checked={selectedNames.has(n.name)}
+                          onChange={() => toggleName(n.name)}
+                          aria-label={`Select ${displayName(n.name)}`}
+                        />
+                      </td>
                       <td className="py-1 pr-4 text-xs font-mono">
                         <button
                           type="button"
@@ -877,6 +931,23 @@ export function WalletView() {
                 </tbody>
               </table>
             </div>
+            {selectedNames.size > 0 && !isWatchOnly && (
+              <div
+                className="flex items-center gap-3 mt-3 p-2 bg-blue-50 border border-blue-200 rounded text-sm"
+                data-testid="batch-action-bar"
+              >
+                <span className="text-blue-800 font-medium">
+                  {selectedNames.size} selected
+                </span>
+                <Button size="sm" variant="primary" onClick={handleBatchRenew}>
+                  Renew Selected
+                </Button>
+                <Button size="sm" variant="ghost" onClick={clearSelection}>
+                  Clear
+                </Button>
+              </div>
+            )}
+          </>
           ) : (
             <div className="text-gray-400 text-sm py-4 text-center">
               No names match &quot;{nameQuery.trim()}&quot;
