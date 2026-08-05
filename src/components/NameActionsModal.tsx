@@ -23,6 +23,7 @@ import { GuidedAction } from "./name-actions/GuidedAction";
 import { NameBidsPanel } from "./name-actions/NameBidsPanel";
 import { NameSignMessage } from "./name-actions/NameSignMessage";
 import { OwnershipActions } from "./name-actions/OwnershipActions";
+import { PaidSwapClaim } from "./name-actions/PaidSwapClaim";
 import { useUiStore } from "../stores/ui";
 import { mapError, stageOf, unwrapStaged } from "../lib/errors";
 import { formatHns } from "../lib/utils";
@@ -91,6 +92,7 @@ export function NameActionsModal({
     cancel: useNameAction("build_cancel_draft"),
     revoke: useNameAction("build_revoke_draft"),
     finalizeWithPayment: useNameAction("build_finalize_with_payment_draft"),
+    sellWithPayment: useNameAction("create_paid_swap_offer"),
   };
 
   // Bid inputs in HNS (human-readable), converted to doos on submit.
@@ -745,8 +747,24 @@ export function NameActionsModal({
                     build.finalizeWithPayment.mutateAsync({ name, paymentAddress, paymentValue })
                   )
                 }
+                onSellWithPayment={(buyerAddress, priceValue) =>
+                  run("SELL_WITH_PAYMENT", async () => {
+                    // 1. Record the offer for later claim verification.
+                    await build.sellWithPayment.mutateAsync({
+                      name,
+                      buyerAddress,
+                      priceDoos: priceValue,
+                    });
+                    // 2. Build the transfer draft to the buyer (normal TRANSFER
+                    //    covenant — the payment happens in the buyer's finalize).
+                    return build.transfer.mutateAsync({ name, recipient: buyerAddress });
+                  })
+                }
               />
             )}
+
+            {/* Paid swap claim: shown when a paid_swap_offer exists for this name */}
+            <PaidSwapClaim name={name} />
 
             {/* Sign message (Task 3) — Namebase-style domain-claim verification,
                 owned names only; the component itself gates on caps.ownsName. */}

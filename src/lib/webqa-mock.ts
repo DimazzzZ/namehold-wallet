@@ -1007,6 +1007,16 @@ const handlers: Record<string, Handler> = {
   list_watchlist: () => [],
   is_watched: () => false,
 
+  // ── Paid swap offers (seller-side tracking) ─────────────────────────
+  create_paid_swap_offer: () => null,
+  get_paid_swap_offer: () => null,
+  remove_paid_swap_offer: () => null,
+  claim_paid_transfer: () => ({
+    verified: true,
+    paidDoos: 1_000_000,
+    confirmations: 1,
+  }),
+
   // ── DNS resource ──────────────────────────────────────────────────────
   get_resource: () => ({
     records: [{ type: "NS", ns: "ns1.example." }],

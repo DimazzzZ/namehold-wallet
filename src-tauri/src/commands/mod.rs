@@ -10,6 +10,7 @@ pub mod namebase;
 pub mod namebase_history;
 pub mod names;
 pub mod node;
+pub mod paid_swaps;
 pub mod read;
 pub mod secure_prompt;
 pub mod secure_wallet;

@@ -315,6 +315,10 @@ pub fn run() {
             commands::watchlist::remove_from_watchlist,
             commands::watchlist::list_watchlist,
             commands::watchlist::is_watched,
+            commands::paid_swaps::create_paid_swap_offer,
+            commands::paid_swaps::get_paid_swap_offer,
+            commands::paid_swaps::claim_paid_transfer,
+            commands::paid_swaps::remove_paid_swap_offer,
             commands::deadlines::scan_deadline_notifications,
             #[cfg(desktop)]
             commands::updates::app_updates::check_for_update,

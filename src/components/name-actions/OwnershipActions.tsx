@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
+import { hnsToDollarydoos } from "../../lib/utils";
 import type { NameActionCapabilities, NameActionCapability } from "../../types";
 
 /**
@@ -26,6 +27,12 @@ export interface OwnershipActionsProps {
   onRenew: () => void;
   onRevoke: () => void;
   onBuyWithPayment?: (paymentAddress: string, paymentValue: number) => void;
+  /**
+   * The paid-swap SELL flow: seller records an offer (buyer address + price)
+   * so they can later claim the payment once the buyer's finalize-with-payment
+   * tx confirms. Only shown when the name is owned (canTransfer).
+   */
+  onSellWithPayment?: (buyerAddress: string, priceValue: number) => void;
 }
 
 export function OwnershipActions({
@@ -41,6 +48,7 @@ export function OwnershipActions({
   onRenew,
   onRevoke,
   onBuyWithPayment,
+  onSellWithPayment,
 }: OwnershipActionsProps) {
   // Paid swap: show "Buy with payment" button + payment address input when
   // the name is in TRANSFER state (transferPendingFinalize).
@@ -48,16 +56,30 @@ export function OwnershipActions({
   const [showPayForm, setShowPayForm] = useState(false);
   const [payAddr, setPayAddr] = useState("");
   const [payAmount, setPayAmount] = useState("");
+  // Paid swap SELL: seller records an offer for a name they own.
+  const [showSellForm, setShowSellForm] = useState(false);
+  const [sellBuyerAddr, setSellBuyerAddr] = useState("");
+  const [sellAmount, setSellAmount] = useState("");
 
   const handleBuy = () => {
     const amount = parseFloat(payAmount);
     if (!payAddr.trim() || isNaN(amount) || amount <= 0) return;
-    // Convert HNS to dollarydoos (1 HNS = 1,000,000 dollarydoos)
-    const doos = Math.round(amount * 1_000_000);
+    // Convert HNS to dollarydoos via the shared helper (1 HNS = 1,000,000 doos).
+    const doos = hnsToDollarydoos(payAmount);
     onBuyWithPayment?.(payAddr.trim(), doos);
     setShowPayForm(false);
     setPayAddr("");
     setPayAmount("");
+  };
+
+  const handleSell = () => {
+    const amount = parseFloat(sellAmount);
+    if (!sellBuyerAddr.trim() || isNaN(amount) || amount <= 0) return;
+    const doos = hnsToDollarydoos(sellAmount);
+    onSellWithPayment?.(sellBuyerAddr.trim(), doos);
+    setShowSellForm(false);
+    setSellBuyerAddr("");
+    setSellAmount("");
   };
 
   return (
@@ -147,6 +169,53 @@ export function OwnershipActions({
               size="sm"
               variant="ghost"
               onClick={() => setShowPayForm(false)}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      {/* Sell with payment: seller records offer (buyer address + price) */}
+      {caps?.canTransfer && !actionDisabled("TRANSFER", caps?.canTransfer) && onSellWithPayment && (
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={busy === "SELL_WITH_PAYMENT"}
+          onClick={() => setShowSellForm((v) => !v)}
+        >
+          {busy === "SELL_WITH_PAYMENT" ? "…" : "Sell with payment"}
+        </Button>
+      )}
+      {showSellForm && (
+        <div className="space-y-2 pt-2 border-t border-gray-100">
+          <Input
+            label="Buyer's address (who will receive the name)"
+            value={sellBuyerAddr}
+            onChange={(e) => setSellBuyerAddr(e.target.value)}
+            placeholder="hs1q… / rs1q…"
+          />
+          <Input
+            label="Price (HNS)"
+            value={sellAmount}
+            onChange={(e) => setSellAmount(e.target.value)}
+            placeholder="0.00"
+            type="number"
+            step="0.000001"
+            min="0"
+          />
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={!sellBuyerAddr.trim() || !sellAmount || parseFloat(sellAmount) <= 0}
+              onClick={handleSell}
+            >
+              Create offer & transfer
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setShowSellForm(false)}
             >
               Cancel
             </Button>
