@@ -65,6 +65,34 @@
   name state. Currently backend-only (no frontend consumer after the DNS page
   removal in a later commit).
 
+- **Watchlist v2 — richer columns + background alerts.** The Watchlist table
+  now shows three additional columns pulled from the live name info: a
+  **Countdown** to the next phase transition (e.g. "Bidding closes in 42
+  blocks (~7h)"), the **Highest bid** so far, and **Expires** (days-until-
+  expire, colour-graded like the Renewals view). Names owned by the active
+  wallet profile get an inline **Owned** badge next to the name. Combined
+  with a new opt-in **Watchlist notifications** section in Settings, the
+  background sync daemon (`namehold-syncd`) polls each watched name every
+  60s, diffs against the last-seen snapshot in a new `watched_name_states`
+  cache table, and fires OS notifications on: entry into **BIDDING**, a
+  previously CLOSED name becoming **available again**, **bidding-soon** lead
+  time (default 144 blocks / ~1 day), and a configurable **global
+  highest-bid threshold** crossing (in HNS). Adaptive polling skips names
+  whose next transition is > 300 blocks out when the state was refreshed
+  within the last 5 minutes. The daemon is the sole notifier — the in-app
+  scanner still owns reveal/renewal deadlines for names you've bid on or own,
+  so there's no double-fire. Alerts fire even when the Namehold app is closed
+  (as long as background sync is enabled). macOS caveat: the daemon binary
+  runs unbundled, so its notifications may show a generic sender rather than
+  the Namehold app icon; the alert text is unaffected. New Tauri command:
+  `get_watched_states` (read-only, hydrates the columns without RPC on first
+  page open — currently unwired on the frontend; columns hydrate via
+  `read_name_info`). New settings keys: `watchlist_notify_enabled`,
+  `watchlist_notify_bidding_soon_lead_blocks`,
+  `watchlist_notify_highest_bid_threshold_hns`. New DB migration:
+  `025_watched_name_states.sql`. New crate: `notify-rust` (cross-platform
+  OS notifications, no Tauri AppHandle required).
+
 - **Unified input/button sizing.** `Input` and `Select` now accept an
   `inputSize` prop (`"sm" | "md"`, default `"md"`) that shares the exact
   padding + text-size tokens with `Button`'s `size` prop, so a control and the

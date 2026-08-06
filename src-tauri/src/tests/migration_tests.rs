@@ -61,7 +61,8 @@ fn test_schema_version_tracking() {
     // 022 (watchlist: track names you don't own).
     // 023 (paid_swap_offers: seller-side tracking for atomic finalizeWithPayment).
     // 024 (watchlist_tags: comma-separated tags per watched name).
-    assert_eq!(count, 24);
+    // 025 (watched_name_states: daemon-written cache for watchlist columns + notifications).
+    assert_eq!(count, 25);
 }
 
 #[test]

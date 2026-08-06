@@ -43,6 +43,10 @@ dirs = "6"
 # but declared as a normal dep so it's built with the main workspace.
 ctrlc = "3"
 libc = "0.2"
+# OS notifications from the headless `namehold-syncd` daemon (which has no
+# Tauri AppHandle, so it can't use tauri-plugin-notification). Cross-platform:
+# macOS (mac-notification-sys), Linux (libnotify/D-Bus), Windows (winrt toast).
+notify-rust = "4"
 
 # --- Non-custodial signing engine ---
 # secp256k1 for ECDSA signing on the Handshake curve.

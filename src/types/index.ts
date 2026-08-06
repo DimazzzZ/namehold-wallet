@@ -284,6 +284,20 @@ export interface Settings {
   /** Float string, days of lead time before a renewal is due. */
   deadline_notify_renewal_lead_days: string;
   /**
+   * "true" | "false" — OS notifications for WATCHED (non-owned) names,
+   * emitted by the background daemon (namehold-syncd) on phase transitions
+   * (→BIDDING), name re-open/availability, bidding-soon lead-time, and a
+   * global highest-bid threshold crossing. Opt-in; default off.
+   */
+  watchlist_notify_enabled: string;
+  /** Integer string, blocks of lead time before BIDDING opens (~144/day). */
+  watchlist_notify_bidding_soon_lead_blocks: string;
+  /**
+   * Decimal HNS string; empty = disabled. Alert when a watched name's highest
+   * bid crosses this value upward.
+   */
+  watchlist_notify_highest_bid_threshold_hns: string;
+  /**
    * "1" | "0" — run the background sync daemon (`namehold-syncd`) so wallet
    * state keeps updating even when the app is closed. Default "1" (on). When
    * enabled, hsd is left running on app exit instead of being killed, so the

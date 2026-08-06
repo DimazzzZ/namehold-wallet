@@ -20,4 +20,5 @@ pub mod sync_spv;
 pub mod tx;
 #[cfg(desktop)]
 pub mod updates;
+pub mod watched_states;
 pub mod watchlist;

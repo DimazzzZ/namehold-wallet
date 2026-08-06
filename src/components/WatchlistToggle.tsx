@@ -27,7 +27,11 @@ export function WatchlistToggle({ name, size = "sm" }: WatchlistToggleProps) {
   const showToast = useUiStore((s) => s.showToast);
 
   const { data: status } = useQuery<WatchlistStatus | undefined>({
-    queryKey: ["watchlist", "status", name],
+    // Distinct from Watchlist's bulk `["watchlist","status", <joined names>]`
+    // key — same shape but the queryFn here returns a single row (`rows[0]`),
+    // so sharing the key with the bulk query would corrupt the cached shape
+    // when a user watches exactly one name and opens its info modal.
+    queryKey: ["watchlist", "toggle", name],
     queryFn: async () => {
       const rows = await invoke<WatchlistStatus[]>("get_watchlist_status", {
         names: [name],
