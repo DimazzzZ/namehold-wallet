@@ -46,6 +46,20 @@ jobs:
   rust:
     name: Rust (fmt · clippy · test)
     runs-on: ubuntu-latest
+    # sccache + mold + trimmed debuginfo. sccache caches compiled objects keyed
+    # by input hash, so even a Swatinem miss (or any clippy/test residual
+    # duplicate compile) hits sccache instead of paying full rustc time.
+    # mold is a much faster linker than the default ld; noticeable on Tauri's
+    # heavy dep graph where many crates re-link. line-tables-only debuginfo
+    # trims ~hundreds of MB from target/ (faster codegen, smaller cache).
+    # CARGO_INCREMENTAL is already 0 (Swatinem sets it) — required for sccache.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+      RUSTFLAGS: -C link-arg=-fuse-ld=mold
     steps:
       - uses: actions/checkout@v4
 
@@ -72,6 +86,7 @@ jobs:
             patchelf
             build-essential
             libssl-dev
+            mold
           # v2: v1 cached a half-installed set from a run where a stale-index
           # 404 dropped the gstreamer deps, breaking the GTK/webkit link. Bump
           # busts that poisoned cache; the apt refresh above prevents recurrence.
@@ -81,16 +96,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - uses: mozilla/sccache-action@v0.0.7
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
           shared-key: rust-ci
 
-      # Style + lint gates (required). The crate is formatted (`cargo fmt`) and
-      # clean under `-- -D warnings`; scoped `#[allow(clippy::...)]` attributes
-      # document the few structural lints (too_many_arguments on Tauri commands,
-      # doc_overindented_list_items on prose-heavy module docs). Any regression
-      # here fails CI.
       - name: Format check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
@@ -103,6 +115,10 @@ jobs:
       # stays fast and offline.
       - name: Test
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
 
   audit:
     name: Dependency audit (cargo audit · pnpm audit)
