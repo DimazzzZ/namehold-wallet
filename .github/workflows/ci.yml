@@ -44,7 +44,7 @@ jobs:
         run: pnpm lint:secure-imports
 
   rust:
-    name: Rust (cargo test · fmt · clippy)
+    name: Rust (fmt · clippy · test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,11 +84,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-
-      # Required gate. The env-gated live-node integration tests skip automatically
-      # (no HNS_IT_NODE_URL set), so this stays fast and offline.
-      - name: Test
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+          shared-key: rust-ci
 
       # Style + lint gates (required). The crate is formatted (`cargo fmt`) and
       # clean under `-- -D warnings`; scoped `#[allow(clippy::...)]` attributes
@@ -100,6 +96,13 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      # Required gate. Runs AFTER clippy so the dep-check artifacts are reused
+      # and only the test-binary codegen is new. The env-gated live-node
+      # integration tests skip automatically (no HNS_IT_NODE_URL set), so this
+      # stays fast and offline.
+      - name: Test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
   audit:
     name: Dependency audit (cargo audit · pnpm audit)
@@ -140,6 +143,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          shared-key: audit
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
