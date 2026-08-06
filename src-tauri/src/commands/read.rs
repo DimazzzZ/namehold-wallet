@@ -956,9 +956,77 @@ pub(crate) fn records_from_resource(resource: &serde_json::Value) -> Vec<serde_j
         .unwrap_or_default()
 }
 
+/// Combined name info + DNS resource for the DnsRecords page. Returns:
+/// `{ name, state, height, renewal, stats: { daysUntilExpire, blocksUntilExpire },
+///    data: { records: [...] } }`
+///
+/// Fetches name info (from explorer or node) and resource records (from node
+/// only — explorer doesn't serve resources). Degrades gracefully: if node is
+/// unavailable, `data.records` will be empty but name info still populates.
+#[tauri::command]
+pub async fn get_resource(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<serde_json::Value, AppError> {
+    // 1. Fetch name info (state, height, stats) — reuses read_name_info logic.
+    let (explorer, settings) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let s = queries::get_settings(&conn)?;
+        (explorer_client(&s), s)
+    };
+    let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+    let node_ready = is_node_ready_for_local_reads(&state).await;
+
+    // Name info: try node first, then explorer.
+    let info: serde_json::Value = if node_ready {
+        if let Ok(raw) = node.get_name_info(&name).await {
+            if let Some(info) = raw.get("info").filter(|v| !v.is_null()) {
+                crate::providers::hnsfans::normalize_name(info)
+                    .map(|n| serde_json::to_value(&n).unwrap_or_default())
+                    .unwrap_or_default()
+            } else {
+                serde_json::json!({ "name": name, "state": "AVAILABLE" })
+            }
+        } else {
+            serde_json::json!({})
+        }
+    } else {
+        match explorer.get_name_info_optional(&name).await {
+            Ok(Some(i)) => serde_json::to_value(&i).unwrap_or_default(),
+            Ok(None) => serde_json::json!({ "name": name, "state": "AVAILABLE" }),
+            Err(_) => serde_json::json!({}),
+        }
+    };
+
+    // 2. Fetch resource records (node only).
+    let records: Vec<serde_json::Value> = if node_ready {
+        match node.get_name_resource(&name).await {
+            Ok(res) if !res.is_null() => records_from_resource(&res),
+            _ => vec![],
+        }
+    } else {
+        vec![]
+    };
+
+    // 3. Assemble the shape the frontend expects.
+    let state_str = info.get("state").and_then(|v| v.as_str()).unwrap_or("");
+    let height = info.get("height").and_then(|v| v.as_u64());
+    let renewal = info.get("renewal").and_then(|v| v.as_u64());
+    let stats = info.get("stats").cloned();
+
+    Ok(serde_json::json!({
+        "name": name,
+        "state": state_str,
+        "height": height,
+        "renewal": renewal,
+        "stats": stats,
+        "data": {
+            "records": records,
+        }
+    }))
+}
+
 /// Current DNS *resource* for a name, read from the local hsd node
-/// (`getnameresource`). Node-only: the HNSFans explorer does not return
-/// resource records, and UPDATE requires a synced node anyway.
 ///
 /// Returns the FULL resource object (`{ records: [...], ttl?, serial?, ... }`)
 /// so callers that only care about DNS rows (the editor) AND callers that want
