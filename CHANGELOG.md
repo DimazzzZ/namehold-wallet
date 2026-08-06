@@ -47,6 +47,8 @@
   broadcast tx before marking an offer paid.
 
 ### Changed
+- **MIT LICENSE** — repo now carries an explicit MIT license file.
+
 - **Unified input/button sizing.** `Input` and `Select` now accept an
   `inputSize` prop (`"sm" | "md"`, default `"md"`) that shares the exact
   padding + text-size tokens with `Button`'s `size` prop, so a control and the
