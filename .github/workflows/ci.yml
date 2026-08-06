@@ -43,16 +43,9 @@ jobs:
       - name: Lint secure window imports
         run: pnpm lint:secure-imports
 
-  rust:
-    name: Rust (fmt · clippy · test)
+  rust-lint:
+    name: Rust lint (fmt · clippy)
     runs-on: ubuntu-latest
-    # sccache + mold + trimmed debuginfo. sccache caches compiled objects keyed
-    # by input hash, so even a Swatinem miss (or any clippy/test residual
-    # duplicate compile) hits sccache instead of paying full rustc time.
-    # mold is a much faster linker than the default ld; noticeable on Tauri's
-    # heavy dep graph where many crates re-link. line-tables-only debuginfo
-    # trims ~hundreds of MB from target/ (faster codegen, smaller cache).
-    # CARGO_INCREMENTAL is already 0 (Swatinem sets it) — required for sccache.
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
@@ -63,16 +56,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Tauri v2 links webkit2gtk on Linux, so the crate must compile against the
-      # system GUI libraries even just to run `cargo test`.
-      # Cached via `awalsh128/cache-apt-pkgs-action` — a warm cache restores the
-      # resolved .deb closure with dpkg (no mirror fetch), so a slow apt mirror
-      # can't stall CI. Bump `version` below to bust the cache after editing the
-      # package list.
-      # Refresh the apt index first: the runner image ships a pre-seeded index
-      # that the action treats as "fresh" and won't refresh, so on a cache MISS
-      # it can try to fetch a superseded .deb version and 404. An explicit update
-      # keeps the index in sync with the mirror pool; it's a no-op cost on a hit.
       - name: Refresh apt package index
         run: sudo apt-get update
       - name: Install Tauri system dependencies
@@ -87,9 +70,6 @@ jobs:
             build-essential
             libssl-dev
             mold
-          # v2: v1 cached a half-installed set from a run where a stale-index
-          # 404 dropped the gstreamer deps, breaking the GTK/webkit link. Bump
-          # busts that poisoned cache; the apt refresh above prevents recurrence.
           version: "2"
 
       - uses: dtolnay/rust-toolchain@stable
@@ -109,12 +89,58 @@ jobs:
       - name: Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
-      # Required gate. Runs AFTER clippy so the dep-check artifacts are reused
-      # and only the test-binary codegen is new. The env-gated live-node
-      # integration tests skip automatically (no HNS_IT_NODE_URL set), so this
-      # stays fast and offline.
-      - name: Test
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  rust-test:
+    name: Rust tests (926 tests via nextest)
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+      RUSTFLAGS: -C link-arg=-fuse-ld=mold
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refresh apt package index
+        run: sudo apt-get update
+      - name: Install Tauri system dependencies
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9  # v1.6.3
+        with:
+          packages: >-
+            libwebkit2gtk-4.1-dev
+            libappindicator3-dev
+            librsvg2-dev
+            libsecret-1-dev
+            patchelf
+            build-essential
+            libssl-dev
+            mold
+          version: "2"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: mozilla/sccache-action@v0.0.7
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: rust-ci
+
+      - uses: taiki-e/install-action@nextest
+
+      # Required gate. Runs tests in parallel across all cores (ubuntu-latest = 4 vCPU).
+      # The env-gated live-node integration tests skip automatically (no HNS_IT_NODE_URL set),
+      # so this stays fast and offline. nextest parallelizes the 926 tests and typically
+      # cuts ~82s serial down to ~35-45s.
+      - name: Test (nextest)
+        run: cargo nextest run --manifest-path src-tauri/Cargo.toml --locked
 
       - name: sccache stats
         if: always()
