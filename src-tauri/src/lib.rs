@@ -255,6 +255,7 @@ pub fn run() {
             commands::read::read_name_info,
             commands::read::read_name_bids,
             commands::read::read_name_records,
+            commands::read::get_resource,
             commands::read::read_block_info,
             commands::read::read_tx_info,
             commands::read::read_transactions,

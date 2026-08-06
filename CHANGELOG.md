@@ -49,6 +49,11 @@
 ### Changed
 - **MIT LICENSE** — repo now carries an explicit MIT license file.
 
+- **`get_resource` Tauri command** — returns combined name info + DNS resource
+  records from the local hsd node with graceful degradation to the explorer for
+  name state. Currently backend-only (no frontend consumer after the DNS page
+  removal in a later commit).
+
 - **Unified input/button sizing.** `Input` and `Select` now accept an
   `inputSize` prop (`"sm" | "md"`, default `"md"`) that shares the exact
   padding + text-size tokens with `Button`'s `size` prop, so a control and the

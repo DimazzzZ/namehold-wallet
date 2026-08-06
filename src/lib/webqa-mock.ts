@@ -1035,7 +1035,14 @@ const handlers: Record<string, Handler> = {
 
   // ── DNS resource ──────────────────────────────────────────────────────
   get_resource: () => ({
-    records: [{ type: "NS", ns: "ns1.example." }],
+    name: "example",
+    state: "CLOSED",
+    height: 100000,
+    renewal: 100000,
+    stats: { daysUntilExpire: 300, blocksUntilExpire: 43200 },
+    data: {
+      records: [{ type: "NS", ns: "ns1.example." }],
+    },
   }),
 
   // ── Assets / Batches (portfolio) ──────────────────────────────────────
