@@ -4,6 +4,7 @@ import {
   type DnsRecordType,
   type DnsRow,
 } from "../../lib/dnsRecords";
+import { inputSizes } from "../ui/Input";
 
 /**
  * The typed DNS rows editor (type dropdown + per-type field inputs + add/remove)
@@ -25,7 +26,7 @@ export interface DnsRecordsEditorProps {
   onRemoveRow: (index: number) => void;
 }
 
-const inputClass = "flex-1 border border-gray-300 rounded px-2 py-1 text-xs font-mono min-w-0";
+const inputClass = `flex-1 border border-gray-300 rounded font-mono min-w-0 ${inputSizes.sm}`;
 
 function RowFields({
   row,

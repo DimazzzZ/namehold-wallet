@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
-import { Input } from "../ui/Input";
+import { Input, inputSizes } from "../ui/Input";
+import { Select } from "../ui/Select";
 import { Dialog } from "../ui/Dialog";
 import { StatusBadge } from "../ui/StatusBadge";
 import type { MigrationStatus } from "../../types";
@@ -74,6 +75,83 @@ describe("Input", () => {
     render(<Input type="password" label="Pass" />);
     const input = screen.getByLabelText("Pass") as HTMLInputElement;
     expect(input.type).toBe("password");
+  });
+
+  it("applies the sm size tokens", () => {
+    render(<Input inputSize="sm" placeholder="Small" />);
+    const el = screen.getByPlaceholderText("Small");
+    // sm → px-2.5 py-1 text-xs (matches Button sm)
+    expect(el.className).toContain("px-2.5");
+    expect(el.className).toContain("py-1");
+    expect(el.className).toContain("text-xs");
+  });
+
+  it("applies the md size tokens by default", () => {
+    render(<Input placeholder="Medium" />);
+    const el = screen.getByPlaceholderText("Medium");
+    // md → px-3 py-1.5 text-sm
+    expect(el.className).toContain("px-3");
+    expect(el.className).toContain("py-1.5");
+    expect(el.className).toContain("text-sm");
+  });
+});
+
+describe("Control height alignment (Input / Select / Button share size tokens)", () => {
+  // The whole point of the sizing system: a control and its adjacent button
+  // at the same `size` must carry the SAME vertical-padding + text-size
+  // tokens, so they render at identical heights. Button also gets a
+  // (transparent) border at every variant so the border box matches too.
+  it("Input md and Button md share py + text tokens", () => {
+    render(
+      <>
+        <Input placeholder="field" />
+        <Button size="md">Go</Button>
+      </>,
+    );
+    const input = screen.getByPlaceholderText("field");
+    const button = screen.getByText("Go");
+    // Both md: py-1.5 + text-sm.
+    expect(input.className).toContain("py-1.5");
+    expect(input.className).toContain("text-sm");
+    expect(button.className).toContain("py-1.5");
+    expect(button.className).toContain("text-sm");
+  });
+
+  it("Input sm and Button sm share py + text tokens", () => {
+    render(
+      <>
+        <Input inputSize="sm" placeholder="field" />
+        <Button size="sm">Go</Button>
+      </>,
+    );
+    const input = screen.getByPlaceholderText("field");
+    const button = screen.getByText("Go");
+    expect(input.className).toContain("py-1");
+    expect(input.className).toContain("text-xs");
+    expect(button.className).toContain("py-1");
+    expect(button.className).toContain("text-xs");
+  });
+
+  it("Select shares the same size tokens as Input", () => {
+    render(<Select options={[{ value: "a", label: "A" }]} label="Pick" />);
+    const select = screen.getByLabelText("Pick");
+    expect(select.className).toContain(inputSizes.md.split(" ")[0]); // px-3
+    expect(select.className).toContain("py-1.5");
+    expect(select.className).toContain("text-sm");
+  });
+
+  it("all Button variants carry a border so heights match bordered inputs", () => {
+    render(
+      <>
+        <Button variant="primary">P</Button>
+        <Button variant="secondary">S</Button>
+        <Button variant="danger">D</Button>
+        <Button variant="ghost">G</Button>
+      </>,
+    );
+    for (const label of ["P", "S", "D", "G"]) {
+      expect(screen.getByText(label).className).toContain("border");
+    }
   });
 });
 

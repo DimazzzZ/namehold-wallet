@@ -46,6 +46,18 @@
   and a verify-only `claim_paid_transfer` command that inspects the
   broadcast tx before marking an offer paid.
 
+### Changed
+- **Unified input/button sizing.** `Input` and `Select` now accept an
+  `inputSize` prop (`"sm" | "md"`, default `"md"`) that shares the exact
+  padding + text-size tokens with `Button`'s `size` prop, so a control and the
+  button beside it render at identical heights. All `Button` variants now carry
+  a (transparent) 1px border so bordered inputs and borderless buttons line up
+  to the pixel. Replaced ad-hoc raw `<input>`/`<select>` elements across the
+  Auctions, Activity, Namebase dashboard/import, wallet name filter, DNS
+  records editor, and the DataTable search box with the shared `Input`/
+  `Select` components. Fixes the visible ~10px height gap between the
+  add-name/look-up inputs and their adjacent buttons.
+
 ### Fixed
 - **Sync UI view jumping** — automatic sync (every 60s) no longer expands the
   full sync status panel. Auto-sync shows "Syncing…" on the button with a

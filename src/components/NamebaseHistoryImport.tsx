@@ -11,6 +11,8 @@ import {
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
 import { EmptyState } from "./ui/EmptyState";
+import { Input } from "./ui/Input";
+import { Select } from "./ui/Select";
 import { useUiStore } from "../stores/ui";
 import { mapError } from "../lib/errors";
 import { formatHns, formatDate } from "../lib/utils";
@@ -181,26 +183,28 @@ export function NamebaseHistoryImport() {
           {showTable && (
             <div className="space-y-2">
               <div className="flex flex-wrap gap-2">
-                <input
-                  type="text"
+                <Input
+                  inputSize="sm"
+                  className="w-40 border-gray-200"
                   placeholder="Filter by name…"
-                  className="border border-gray-200 rounded px-2 py-1 text-xs w-40"
                   value={nameFilter}
                   onChange={(e) => setNameFilter(e.target.value)}
                 />
-                <select
-                  className="border border-gray-200 rounded px-2 py-1 text-xs"
+                <Select
+                  inputSize="sm"
+                  className="border-gray-200"
+                  options={[
+                    { value: "", label: "All families" },
+                    { value: "auctions", label: "Auctions" },
+                    { value: "subdomains", label: "Subdomains" },
+                    { value: "marketplace", label: "Marketplace" },
+                    { value: "wallet", label: "Wallet" },
+                    { value: "misc", label: "Misc" },
+                    { value: "matching-engine", label: "Exchange" },
+                  ]}
                   value={familyFilter}
                   onChange={(e) => setFamilyFilter(e.target.value)}
-                >
-                  <option value="">All families</option>
-                  <option value="auctions">Auctions</option>
-                  <option value="subdomains">Subdomains</option>
-                  <option value="marketplace">Marketplace</option>
-                  <option value="wallet">Wallet</option>
-                  <option value="misc">Misc</option>
-                  <option value="matching-engine">Exchange</option>
-                </select>
+                />
                 <span className="text-xs text-gray-500 self-center">
                   {rows.length.toLocaleString()} rows
                 </span>

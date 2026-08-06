@@ -4,6 +4,8 @@ import { useActionHistory } from "../queries/read";
 import { useActiveProfile, useTxDrafts } from "../queries/wallet";
 import { PageHeader } from "./ui/PageHeader";
 import { Badge } from "./ui/Badge";
+import { Input } from "./ui/Input";
+import { Select } from "./ui/Select";
 import { formatHns, formatDate, amountTone } from "../lib/utils";
 import { displayName, nameMatches } from "../lib/idn";
 import { useQueryClient } from "@tanstack/react-query";
@@ -134,32 +136,37 @@ export function ActivityView() {
 
       {/* Toolbar: search + action chips + status filter */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
-        <input
-          type="text"
+        <Input
+          inputSize="sm"
+          className="w-48 border-gray-200"
           placeholder="Search by name..."
-          className="border border-gray-200 rounded px-2 py-1 text-sm w-48"
           value={searchParams.get("q") ?? ""}
           onChange={(e) => setFilter("q", e.target.value)}
         />
-        <select
-          className="border border-gray-200 rounded px-2 py-1 text-sm"
+        <Select
+          inputSize="sm"
+          className="border-gray-200"
+          options={[
+            { value: "all", label: "All actions" },
+            ...ALL_ACTIONS.map((a) => ({
+              value: a,
+              label: ACTION_META[a]?.label ?? a,
+            })),
+          ]}
           value={filterAction}
           onChange={(e) => setFilter("action", e.target.value)}
-        >
-          <option value="all">All actions</option>
-          {ALL_ACTIONS.map((a) => (
-            <option key={a} value={a}>{ACTION_META[a]?.label ?? a}</option>
-          ))}
-        </select>
-        <select
-          className="border border-gray-200 rounded px-2 py-1 text-sm"
+        />
+        <Select
+          inputSize="sm"
+          className="border-gray-200"
+          options={[
+            { value: "all", label: "All statuses" },
+            { value: "confirmed", label: "Confirmed" },
+            { value: "pending", label: "Pending" },
+          ]}
           value={filterStatus}
           onChange={(e) => setFilter("status", e.target.value)}
-        >
-          <option value="all">All statuses</option>
-          <option value="confirmed">Confirmed</option>
-          <option value="pending">Pending</option>
-        </select>
+        />
       </div>
 
       {/* Error states */}

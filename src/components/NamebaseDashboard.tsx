@@ -847,10 +847,10 @@ function RecentActivity() {
         <div className="text-sm font-semibold text-gray-700">
           Recent activity ({domainTransfers.length})
         </div>
-        <input
-          type="text"
+        <Input
+          inputSize="md"
+          className="w-64 border-gray-200"
           placeholder="Search by name or address…"
-          className="border border-gray-200 rounded px-2 py-1 text-sm w-64"
           value={search}
           onChange={(e) => {
             setSearch(e.target.value);
