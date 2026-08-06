@@ -352,7 +352,6 @@ const handlers: Record<string, Handler> = {
     explorer_api_url: "https://e.hnsfans.com",
     address_gap_limit: "20",
     signer_session_timeout_seconds: "900",
-    advanced_mode: "false",
     onboarding_complete: "true",
     background_sync_enabled: "1",
     node_mode: "full",

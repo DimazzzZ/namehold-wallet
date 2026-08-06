@@ -90,7 +90,6 @@ function loadSettings(over: Partial<Record<string, string>> = {}) {
       explorer_api_url: "https://e.hnsfans.com",
       address_gap_limit: "20",
       signer_session_timeout_seconds: "900",
-      advanced_mode: "false",
       onboarding_complete: "true",
       deadline_notify_enabled: "false",
       deadline_notify_reveal_lead_blocks: "144",

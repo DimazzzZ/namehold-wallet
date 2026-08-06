@@ -66,7 +66,6 @@ export function Settings() {
         chain_source: settings.chain_source,
         address_gap_limit: settings.address_gap_limit,
         signer_session_timeout_seconds: settings.signer_session_timeout_seconds,
-        advanced_mode: settings.advanced_mode,
         deadline_notify_enabled: settings.deadline_notify_enabled,
         deadline_notify_reveal_lead_blocks: settings.deadline_notify_reveal_lead_blocks,
         deadline_notify_renewal_lead_days: settings.deadline_notify_renewal_lead_days,
@@ -418,14 +417,6 @@ export function Settings() {
             onChange={(e) => updateField("signer_session_timeout_seconds", e.target.value)}
             placeholder="900"
           />
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.advanced_mode === "true"}
-              onChange={(e) => updateField("advanced_mode", e.target.checked ? "true" : "false")}
-            />
-            Show Portfolio in the sidebar
-          </label>
         </div>
       </details>
 

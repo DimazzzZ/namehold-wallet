@@ -67,10 +67,6 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   which are **expiring soon**, **transfer names out** to your wallet, **withdraw
   HNS**, and **compare** your inventory against what Namebase still holds.
 
-### Portfolio (optional — enable "Advanced mode" in Settings)
-- A migration-inventory workspace: **CSV import/export**, tags/filters, **batches**,
-  **renewals** tracking, and per-name **migration-status** tracking.
-
 ### Auto-update (since v0.2.0)
 - Namehold checks for updates automatically ~30 seconds after launch. When a
   new version is available, a banner appears at the top of the window offering
