@@ -67,6 +67,8 @@ zeroize = { version = "1", features = ["derive"] }
 # base64 encoding for hsd-compatible signed-message output (signmessagewithname parity).
 base64 = "0.22"
 url = "2.5.8"
+# Parallel iterator for brute-force bid-value recovery (Tier-2 full sweep).
+rayon = "1.10"
 
 # OS keyring for the Namebase-cookie data-encryption key. v3 ships no backend
 # by default — pick the native store per OS. Linux uses the Secret Service

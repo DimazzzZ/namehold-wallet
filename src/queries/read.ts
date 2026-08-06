@@ -369,6 +369,35 @@ export function useRecoverBidCommitment() {
   });
 }
 
+/**
+ * Brute-force bid-commitment recovery — no value input needed.
+ *
+ * Iterates candidate bid values (Tier 1: round increments; Tier 2: full
+ * integer sweep up to the coin's lockup) and matches against the on-chain
+ * blind. Recovers bids made in ANY hsd-compatible wallet (Bob, hsd-cli, etc.)
+ * because the derivation is the hsd standard.
+ *
+ * This is a blocking call — for typical bids (< 100 HNS lockup) it finishes
+ * in seconds. Larger lockups return an error asking for the known value.
+ */
+export function useBruteForceRecoverBid() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      walletProfileId: string | null;
+      name: string;
+    }) =>
+      invoke<import("../types").BruteForcedBidCommitment>(
+        "brute_force_recover_bid",
+        args as Record<string, unknown>,
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["read"] });
+      qc.invalidateQueries({ queryKey: ["wallet"] });
+    },
+  });
+}
+
 /** Provider-aware, normalized transaction history, pinned to the active wallet. */
 export function useReadTransactions(): UseQueryResult<WalletTransactionRow[]> {
   const profileId = useActiveProfile().data?.id ?? null;

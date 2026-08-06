@@ -616,3 +616,9 @@ export interface RecoveredBidCommitment {
   bidValueDoos: number;
   lockupValueDoos: number;
 }
+
+/** Result of a successful `brute_force_recover_bid` call. */
+export interface BruteForcedBidCommitment extends RecoveredBidCommitment {
+  /** "round" (Tier-1) or "sweep" (Tier-2 full scan). */
+  tier: string;
+}

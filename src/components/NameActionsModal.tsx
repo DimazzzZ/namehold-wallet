@@ -11,6 +11,7 @@ import {
   useReadNameInfo,
   useNameActionCapabilities,
   useRecoverBidCommitment,
+  useBruteForceRecoverBid,
   useNameRecords,
 } from "../queries/read";
 import { Button } from "./ui/Button";
@@ -75,6 +76,7 @@ export function NameActionsModal({
   );
   const exec = useExecuteDraft();
   const recoverBid = useRecoverBidCommitment();
+  const bruteForceRecover = useBruteForceRecoverBid();
 
   // Display-only: the decoded Unicode form of `name`, if it's an IDN. Every
   // backend call in this component keeps using the raw `name` prop.
@@ -352,6 +354,28 @@ export function NameActionsModal({
     }
   };
 
+  // Auto-recover a lost bid_commitments row WITHOUT the user remembering the
+  // amount (see `brute_force_recover_bid`). Brute-forces the bid value against
+  // the on-chain blind; works for bids made in any hsd-compatible wallet.
+  const handleBruteForceRecover = async () => {
+    setBusy("RECOVER");
+    try {
+      const res = await bruteForceRecover.mutateAsync({
+        walletProfileId: profile?.id ?? null,
+        name,
+      });
+      showToast(
+        `Bid recovered (${(res.bidValueDoos / 1_000_000).toString()} HNS) — you can reveal now.`,
+        "success",
+      );
+      setRecoverHns("");
+    } catch (e) {
+      showToast(mapError(e), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   // Records for submit: typed rows by default, raw-JSON array in Advanced mode.
   const recordsForSubmit = (): Record<string, unknown>[] | null => {
     if (advanced) {
@@ -534,6 +558,7 @@ export function NameActionsModal({
                 recoverHns={recoverHns}
                 onRecoverHnsChange={setRecoverHns}
                 onRecoverBid={handleRecoverBid}
+                onBruteForceRecover={handleBruteForceRecover}
                 revealConfirming={revealConfirming}
                 onRevealConfirmStart={() => setRevealConfirming(true)}
                 onRevealConfirmCancel={() => setRevealConfirming(false)}

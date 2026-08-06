@@ -349,3 +349,162 @@ async fn export_empty_for_profile_with_no_commitments() {
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(v.as_array().unwrap().len(), 0);
 }
+
+// --- brute-force recovery ---------------------------------------------------
+
+#[tokio::test]
+async fn brute_force_finds_round_value() {
+    // Bid with value = 5.5 HNS (5_500_000 doos) — a "round" value that Tier 1
+    // should find instantly (step 0.1 HNS = 100_000 doos hits it).
+    let state = create_full_test_state();
+    let name = "brutetest";
+    let value: u64 = 5_500_000;
+    let lockup: u64 = 10_000_000; // 10 HNS
+
+    let (profile_id, addr) = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        let addr = first_derived_address(&conn, &id);
+        (id, addr)
+    };
+
+    let xpub = account_xpub_for_test_profile(Network::Regtest);
+    let nh = crate::noncustodial::names::hash_name(name).unwrap();
+    let ah = addr_hash160(&addr);
+    let nonce = compute_nonce(&xpub, &nh, &ah, value).unwrap();
+    let blind = compute_blind(value, &nonce);
+    let cov = bid_covenant_json(name, &hex::encode(blind));
+
+    {
+        let conn = state.db.lock().unwrap();
+        seed_unspent_bid_coin(
+            &conn,
+            &profile_id,
+            &"cc".repeat(32),
+            &addr,
+            lockup as i64,
+            &cov,
+        );
+    }
+
+    let app = mock_app_with(state);
+    let result = bids::brute_force_recover_bid(app.state(), Some(profile_id.clone()), name.into())
+        .await
+        .unwrap();
+
+    assert_eq!(result.bid_value_doos, value as i64);
+    assert_eq!(result.lockup_value_doos, lockup as i64);
+    assert_eq!(result.tier, "round");
+    assert_eq!(result.name, name);
+
+    // Verify the commitment was persisted.
+    let app_state = app.state::<crate::AppState>();
+    let conn = app_state.db.lock().unwrap();
+    let row = db::queries::get_bid_commitment(&conn, &profile_id, name)
+        .unwrap()
+        .expect("commitment should exist");
+    assert_eq!(row.bid_value_doos, value as i64);
+}
+
+#[tokio::test]
+async fn brute_force_finds_non_round_value_via_sweep() {
+    // Bid with value = 3_141_592 doos (3.141592 HNS) — NOT a round value.
+    // Tier 1 won't find it; Tier 2 (full sweep) should.
+    let state = create_full_test_state();
+    let name = "sweeptest";
+    let value: u64 = 3_141_592;
+    let lockup: u64 = 5_000_000; // 5 HNS — small enough for fast sweep
+
+    let (profile_id, addr) = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        let addr = first_derived_address(&conn, &id);
+        (id, addr)
+    };
+
+    let xpub = account_xpub_for_test_profile(Network::Regtest);
+    let nh = crate::noncustodial::names::hash_name(name).unwrap();
+    let ah = addr_hash160(&addr);
+    let nonce = compute_nonce(&xpub, &nh, &ah, value).unwrap();
+    let blind = compute_blind(value, &nonce);
+    let cov = bid_covenant_json(name, &hex::encode(blind));
+
+    {
+        let conn = state.db.lock().unwrap();
+        seed_unspent_bid_coin(
+            &conn,
+            &profile_id,
+            &"dd".repeat(32),
+            &addr,
+            lockup as i64,
+            &cov,
+        );
+    }
+
+    let app = mock_app_with(state);
+    let result = bids::brute_force_recover_bid(app.state(), Some(profile_id.clone()), name.into())
+        .await
+        .unwrap();
+
+    assert_eq!(result.bid_value_doos, value as i64);
+    assert_eq!(result.tier, "sweep");
+}
+
+#[tokio::test]
+async fn brute_force_errors_when_no_bid_coin_exists() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let result = bids::brute_force_recover_bid(app.state(), None, "nosuchname".into()).await;
+    assert!(result.is_err());
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("no unspent bid coin"));
+}
+
+#[tokio::test]
+async fn brute_force_is_idempotent() {
+    // Running brute-force twice on the same bid should succeed both times
+    // without duplicating the commitment row.
+    let state = create_full_test_state();
+    let name = "idempotent";
+    let value: u64 = 2_000_000;
+    let lockup: u64 = 3_000_000;
+
+    let (profile_id, addr) = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        let addr = first_derived_address(&conn, &id);
+        (id, addr)
+    };
+
+    let xpub = account_xpub_for_test_profile(Network::Regtest);
+    let nh = crate::noncustodial::names::hash_name(name).unwrap();
+    let ah = addr_hash160(&addr);
+    let nonce = compute_nonce(&xpub, &nh, &ah, value).unwrap();
+    let blind = compute_blind(value, &nonce);
+    let cov = bid_covenant_json(name, &hex::encode(blind));
+
+    {
+        let conn = state.db.lock().unwrap();
+        seed_unspent_bid_coin(
+            &conn,
+            &profile_id,
+            &"ee".repeat(32),
+            &addr,
+            lockup as i64,
+            &cov,
+        );
+    }
+
+    let app = mock_app_with(state);
+    let r1 = bids::brute_force_recover_bid(app.state(), Some(profile_id.clone()), name.into())
+        .await
+        .unwrap();
+    let r2 = bids::brute_force_recover_bid(app.state(), Some(profile_id.clone()), name.into())
+        .await
+        .unwrap();
+    assert_eq!(r1.bid_value_doos, r2.bid_value_doos);
+}

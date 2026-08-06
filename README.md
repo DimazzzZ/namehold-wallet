@@ -50,6 +50,10 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 - **Paid name swaps** — atomic buyer-seller name transfer with payment. The buyer
   finalizes a TRANSFER and pays the seller in a single transaction
   (finalizeWithPayment), so neither party can renege after the lockup expires.
+- **Recover lost bids** — if you lose your local bid data (reinstall, seed-
+  restore, import from another wallet), Namehold can brute-force the bid value
+  from your seed and reveal it before the window closes. See
+  [`docs/RECOVER_LOST_BIDS.md`](docs/RECOVER_LOST_BIDS.md).
 
 ### Node-free reads
 - Reads are **node-free by default** via the HNSFans explorer — no node required
