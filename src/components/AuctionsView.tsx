@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useWriteCapability, useActiveProfile } from "../queries/wallet";
+import { useActiveProfile } from "../queries/wallet";
 import { useReadNames, useNamesActionCapabilities, useAuctionPositions } from "../queries/read";
 import {
   auctionPhase,
@@ -10,9 +10,9 @@ import {
 } from "../lib/auction";
 import { NameActionsModal } from "./NameActionsModal";
 import { NameInfoModal } from "./NameInfoModal";
-import { UnlockButton } from "./UnlockButton";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
+import { Input } from "./ui/Input";
 import { PageHeader } from "./ui/PageHeader";
 import { normalizeNameInputAce } from "../lib/utils";
 import { displayName } from "../lib/idn";
@@ -50,7 +50,6 @@ const ACTIVE_POSITION_TASK_STATES = new Set<AuctionTaskState>([
  *     can track progress and act (reveal, register, redeem) without leaving.
  */
 export function AuctionsView() {
-  const { data: writeCap } = useWriteCapability();
   const { data: names = [] } = useReadNames();
   // Resolve the active wallet once here (not inside the inline TaskRow, which
   // remounts every render and would trigger a profile-refetch storm) so every
@@ -58,8 +57,6 @@ export function AuctionsView() {
   const activeProfile = useActiveProfile().data ?? null;
   const activeProfileId = activeProfile?.id ?? null;
   const { data: positionNames = [] } = useAuctionPositions(activeProfileId);
-
-  const canWrite = writeCap?.canWrite ?? false;
 
   const [lookupName, setLookupName] = useState("");
   const [manageName, setManageName] = useState<string | null>(null);
@@ -241,8 +238,9 @@ export function AuctionsView() {
         <div className="flex items-center gap-2">
           <div className="flex items-center">
             <span className="text-gray-400 text-sm mr-1">.</span>
-            <input
-              className="border border-gray-300 rounded px-2 py-1.5 text-sm w-48"
+            <Input
+              inputSize="md"
+              className="w-48"
               value={lookupName}
               onChange={(e) => setLookupName(e.target.value)}
               placeholder="example"
@@ -252,7 +250,7 @@ export function AuctionsView() {
             />
           </div>
           <Button
-            size="sm"
+            size="md"
             variant="primary"
             disabled={!lookupName.trim()}
             onClick={handleLookup}
@@ -260,15 +258,6 @@ export function AuctionsView() {
             Look up
           </Button>
         </div>
-        {!canWrite && (
-          <div className="flex items-center gap-2 text-xs text-amber-600">
-            <span>
-              {writeCap?.reason ??
-                "Connect a node in Settings, Refresh to sync your coins, then unlock to bid."}
-            </span>
-            <UnlockButton size="sm" variant="primary" label="Unlock" />
-          </div>
-        )}
       </div>
 
       {/* Actionable auction tasks */}

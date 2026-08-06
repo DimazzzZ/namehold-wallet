@@ -960,8 +960,9 @@ export function WalletView() {
             Owned Names ({filteredNames.length}
             {filteredNames.length !== names.length ? ` of ${names.length}` : ""})
           </div>
-          <input
-            className="border border-gray-300 rounded px-2 py-1.5 text-sm w-48"
+          <Input
+            inputSize="md"
+            className="w-48"
             value={nameQuery}
             onChange={(e) => setNameQuery(e.target.value)}
             placeholder="Filter…"

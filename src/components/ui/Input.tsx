@@ -1,10 +1,16 @@
 import { cn } from "../../lib/utils";
 
+export const inputSizes = {
+  sm: "px-2.5 py-1 text-xs",
+  md: "px-3 py-1.5 text-sm",
+};
+
 interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string;
+  inputSize?: "sm" | "md";
 }
 
-export function Input({ label, className, id, ...props }: InputProps) {
+export function Input({ label, inputSize = "md", className, id, ...props }: InputProps) {
   const inputId = id || label?.toLowerCase().replace(/\s+/g, "-");
   return (
     <div className="flex flex-col gap-1">
@@ -16,7 +22,8 @@ export function Input({ label, className, id, ...props }: InputProps) {
       <input
         id={inputId}
         className={cn(
-          "border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent",
+          "border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent",
+          inputSizes[inputSize],
           className,
         )}
         {...props}

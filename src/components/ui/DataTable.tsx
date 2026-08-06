@@ -12,6 +12,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useState, useRef, useMemo } from "react";
 import { cn } from "../../lib/utils";
 import { nameMatches } from "../../lib/idn";
+import { Input } from "./Input";
 
 /**
  * Global filter that matches BOTH the raw string form and the
@@ -127,8 +128,9 @@ export function DataTable<T extends { id: number }>({
 
   return (
     <div className="flex flex-col gap-2">
-      <input
-        className="border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-full max-w-sm"
+      <Input
+        inputSize="md"
+        className="w-full max-w-sm"
         placeholder={searchPlaceholder}
         value={globalFilter}
         onChange={(e) => setGlobalFilter(e.target.value)}
