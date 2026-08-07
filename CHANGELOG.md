@@ -3,6 +3,17 @@
 ## [Unreleased]
 
 ### Added
+- **Recover lost bids from any hsd wallet** — if you reinstall, seed-restore,
+  or import a bid from another hsd-compatible wallet, Namehold can recover the
+  bid value without you remembering the exact amount. The Name Actions modal
+  shows a **Recover bid** panel during the REVEAL phase with two options:
+  enter the amount if you remember it, or click **Auto-recover (brute-force)**
+  to sweep candidate values. Recovery uses only the account xpub (public) —
+  never needs your passphrase — and works because the nonce derivation is the
+  hsd standard, not Namehold-specific. Typical bids under 100 HNS recover in
+  seconds. See [docs/RECOVER_LOST_BIDS.md](docs/RECOVER_LOST_BIDS.md) for the
+  full guide.
+
 - **Background HSD Sync Daemon** — a separate Rust binary (`namehold-syncd`) that
   syncs wallet profiles (UTXOs, name states, transactions) from the local hsd node
   every 60 seconds, even when the app is closed. Controlled by a Settings checkbox

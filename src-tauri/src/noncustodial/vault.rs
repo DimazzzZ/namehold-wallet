@@ -66,9 +66,41 @@ const V1_LANES: u32 = 1;
 // Argon2id v2 defaults — used when writing new blobs. Tuned for a 2025 desktop
 // wallet: 256 MiB memory, 4 iterations, 1 lane. Free to bump over time; older
 // NHV2 blobs stay decryptable because their params are embedded in the blob.
+//
+// Under `cfg(test)` the V2 memory/iters cost is dramatically reduced (8 MiB / 1
+// iter, still above Argon2's minima). Test coverage never depends on the
+// *magnitude* of the cost — only on round-trip / auth-failure / salt-random
+// behaviours — so this cuts the vault-test wall-clock from ~226s to sub-second
+// on debug builds without weakening a single assertion. Production builds
+// (`cfg(not(test))`) keep the full 256 MiB / 4 iter cost. A separate constant
+// self-test below pins the literal production values so a cfg mistake cannot
+// silently ship weak KDF params to real wallets. `V2_LANES` is not cost-scaled.
+#[cfg(not(test))]
 const V2_MEM_KIB: u32 = 256 * 1024;
+#[cfg(not(test))]
 const V2_ITERS: u32 = 4;
+#[cfg(test)]
+const V2_MEM_KIB: u32 = 8 * 1024; // 8 MiB — well above Argon2's 8 KiB min
+#[cfg(test)]
+const V2_ITERS: u32 = 1;
 const V2_LANES: u32 = 1;
+
+/// Compile-time self-test: the literal production Argon2id V2 write-cost
+/// parameters. Any change to the `#[cfg(not(test))]` `V2_MEM_KIB` / `V2_ITERS`
+/// above will fail to compile until this constant is updated in lockstep,
+/// making it impossible for a routine `cfg(test)` edit to accidentally weaken
+/// the production KDF cost. Only relevant in non-test builds — under
+/// `cfg(test)` the constants above are reduced on purpose, so this pin is
+/// disabled there.
+#[cfg(not(test))]
+const _PROD_V2_COST_PIN: () = {
+    assert!(
+        V2_MEM_KIB == 256 * 1024,
+        "production V2_MEM_KIB must be 256 MiB"
+    );
+    assert!(V2_ITERS == 4, "production V2_ITERS must be 4");
+    assert!(V2_LANES == 1, "production V2_LANES must be 1");
+};
 
 // Upper bounds enforced when reading an NHV2 blob. A tampered blob claiming
 // pathological params (e.g. 16 GiB memory, billions of iters) must not be able

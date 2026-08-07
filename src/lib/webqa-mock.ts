@@ -699,6 +699,13 @@ const handlers: Record<string, Handler> = {
   recover_bid_commitment: () => {
     throw new Error("bid value doesn't match any unspent bid coin for this name");
   },
+  brute_force_recover_bid: () => ({
+    name: "example",
+    address: "rs1q...",
+    bidValueDoos: 5_000_000,
+    lockupValueDoos: 10_000_000,
+    tier: "round",
+  }),
   export_bid_commitments: () => "[]",
 
   build_send_hns_draft: (_args) => ({

@@ -266,6 +266,32 @@ here.
 A yellow banner appears on the Wallet page any time you have bids in the
 Reveal phase, with a countdown. **If you don't reveal, you lose your lockup.**
 
+### Recovering a lost bid commitment
+
+Handshake bids need a local "commitment" row (nonce + true value) to reveal.
+Namehold stores this automatically when you bid, but if you lose the file
+(reinstall without a backup, seed-restore into a fresh install, or import a
+bid you made in another hsd-compatible wallet like Bob), the Name Actions
+modal shows a **Recover bid** panel during the REVEAL phase.
+
+You have two options:
+
+1. **Enter the amount** — if you remember what you bid, type the exact HNS
+   value and click **Recover bid**. Reconstruction is instant.
+2. **Auto-recover** — if you don't remember, click **Auto-recover
+   (brute-force)**. Namehold tries "round" values first (whole HNS, 0.1, 0.01
+   increments) which almost always wins, then falls back to a full integer
+   sweep up to the coin's lockup value. Typical bids under 100 HNS finish in
+   seconds. Very large lockups (>1000 HNS) return an error asking for the
+   known value instead.
+
+Recovery uses only the account xpub (public) — it never needs your passphrase.
+It works for bids made in **any** hsd-compatible wallet, not just Namehold,
+because the derivation is the hsd standard.
+
+For the full guide — including recovering bids placed in other hsd-compatible
+wallets — see [RECOVER_LOST_BIDS.md](RECOVER_LOST_BIDS.md).
+
 ### Advanced actions
 
 Click **Show all actions** at the bottom of the Name Actions modal to reveal
@@ -372,7 +398,20 @@ The **Watchlist** page (sidebar) lets you track names you don't own:
 - **From name modals** — the Manage and Info modals now show an
   **Add to Watchlist** / **Remove from Watchlist** toggle in the header, so
   you can start tracking a name straight from any auction view.
-- **Watch state** — the table shows the current auction state (Opening, Bidding, Reveal, Closed, etc.) fetched from the explorer.
+- **Columns** — the table shows:
+  - **Name** — clickable (opens the name info modal). An **Owned** badge
+    appears next to names owned by the active wallet profile.
+  - **State** — current auction phase badge (Opening, Bidding, Reveal, Closed,
+    etc.) fetched live from the node or explorer.
+  - **Countdown** — time until the next phase transition, e.g. "Bidding opens
+    in 42 blocks (~7h)" or "Expires in 2400 blocks". Uses the same helpers as
+    the Auctions view.
+  - **Highest bid** — the highest revealed bid so far (HNS). Visible during
+    Reveal and Closed phases.
+  - **Expires** — days until the name expires (colour-graded: green > 90d,
+    yellow 30–90d, red ≤ 30d). Matches the Renewals view thresholds.
+  - **Tags** — inline-editable comma-separated tags.
+  - **Added** — date the name was added to the watchlist.
 - **Tags** — click any tag cell to edit a comma-separated list of tags (e.g.
   `auctions, expiring-soon, competitors`). Tags are stored per name and
   round-trip through CSV export/import.
@@ -382,8 +421,36 @@ The **Watchlist** page (sidebar) lets you track names you don't own:
   Import is additive (existing rows are preserved).
 
 The watchlist is stored in the local SQLite database (`watched_names` table).
-Bulk state lookups use `get_watchlist_status`, which reads cached state when
-available and falls back to the explorer/node otherwise.
+A daemon-written cache (`watched_name_states`) provides instant column data on
+first page open; live RPC refreshes every 30 seconds while the page is visible.
+
+### Watchlist notifications (background alerts)
+
+Enable in **Settings → Watchlist notifications**. When on, the background sync
+daemon (`namehold-syncd`) polls each watched name every ~60 seconds and fires
+OS notifications when:
+
+- A name **enters BIDDING** (you can now bid).
+- A previously CLOSED name **becomes available again** (re-opened for auction).
+- A name in OPENING is **about to start bidding** within the configured lead
+  time (default 144 blocks ≈ 1 day).
+- The **highest bid** on a name crosses a global threshold you set (in HNS).
+
+Alerts fire even when the Namehold app is closed (as long as background sync
+is enabled). Each event fires only once per auction episode; re-auctions on the
+same name are treated as fresh episodes.
+
+**Settings fields:**
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| Enable watchlist notifications | Off | Opt-in; triggers OS permission prompt on first enable |
+| Bidding-soon lead time (blocks) | 144 | ~1 day before BIDDING opens |
+| Highest-bid alert threshold (HNS) | (blank = off) | Alert when any watched name's highest bid crosses this value upward |
+
+**macOS note:** The daemon binary runs unbundled, so notifications may show a
+generic sender icon rather than the Namehold app icon. The alert text is
+unaffected.
 
 ---
 

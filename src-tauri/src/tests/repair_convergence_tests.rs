@@ -46,7 +46,10 @@ impl Drop for TempDb {
 
 fn seeded_db(explorer_url: &str) -> TempDb {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let path = std::env::temp_dir().join(format!("namehold_repair_conv_test_{n}.db"));
+    // PID keeps the path unique across nextest's per-test processes (the
+    // COUNTER alone resets to 0 in each process → collisions → readonly DB).
+    let pid = std::process::id();
+    let path = std::env::temp_dir().join(format!("namehold_repair_conv_test_{pid}_{n}.db"));
     let _ = std::fs::remove_file(&path);
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();

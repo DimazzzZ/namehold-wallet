@@ -50,6 +50,7 @@ export interface GuidedActionProps {
   recoverHns: string;
   onRecoverHnsChange: (value: string) => void;
   onRecoverBid: () => void;
+  onBruteForceRecover: () => void;
   // Reveal confirm-panel + pending-card wiring (this PR).
   /** True while the user has clicked Reveal but not yet confirmed — shows the
    *  confirm panel (with the bid amount) instead of the Reveal button. */
@@ -95,6 +96,7 @@ export function GuidedAction({
   recoverHns,
   onRecoverHnsChange,
   onRecoverBid,
+  onBruteForceRecover,
   revealConfirming,
   onRevealConfirmStart,
   onRevealConfirmCancel,
@@ -327,6 +329,18 @@ export function GuidedAction({
                     {busy === "RECOVER" ? "Recovering…" : "Recover bid"}
                   </Button>
                 </div>
+                <div className="text-xs text-gray-600 pt-1 border-t border-gray-200">
+                  Don't remember the amount? We can search for it automatically.
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy === "RECOVER"}
+                  onClick={onBruteForceRecover}
+                  className="w-full"
+                >
+                  {busy === "RECOVER" ? "Searching…" : "Auto-recover (brute-force)"}
+                </Button>
               </div>
             )}
             <div className="flex gap-2">
