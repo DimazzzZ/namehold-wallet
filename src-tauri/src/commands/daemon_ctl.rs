@@ -269,13 +269,12 @@ fn is_process_alive(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn is_process_alive(pid: u32) -> bool {
-    use std::ptr;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle == ptr::null_mut() {
+        if handle == 0 {
             return false;
         }
         CloseHandle(handle);
@@ -309,13 +308,12 @@ fn send_kill(pid: u32) {
 
 #[cfg(windows)]
 fn send_kill(pid: u32) {
-    use std::ptr;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
 
     unsafe {
         let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-        if handle != ptr::null_mut() {
+        if handle != 0 {
             TerminateProcess(handle, 1);
             CloseHandle(handle);
         }
