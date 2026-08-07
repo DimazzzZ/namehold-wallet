@@ -105,6 +105,9 @@
   add-name/look-up inputs and their adjacent buttons.
 
 ### Fixed
+- **Layout badge color inversion** — the wallet capability badge now renders
+  CAN SEND in green (safe) and READ-ONLY in neutral gray, matching intuitive
+  traffic-light semantics (previously CAN SEND was red).
 - **Sync UI view jumping** — automatic sync (every 60s) no longer expands the
   full sync status panel. Auto-sync shows "Syncing…" on the button with a
   spinner; the full progress panel only appears for manual Sync.
