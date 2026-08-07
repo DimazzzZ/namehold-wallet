@@ -266,6 +266,36 @@ describe("WalletView (non-custodial)", () => {
     expect(screen.getByRole("button", { name: /Send HNS/i })).toBeDisabled();
   });
 
+  it("needs-node-sync callout has a Start node button that calls start_hsd", async () => {
+    invokeMock.mockImplementation(
+      routeInvoke({ unlocked: true, canWrite: true, spendableDoos: 0, confirmedDoos: 1_400_000 }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    const btn = await screen.findByTestId("needs-node-sync-start");
+    expect(btn).toBeInTheDocument();
+    expect(btn).toHaveTextContent(/Start node/i);
+
+    fireEvent.click(btn);
+    await waitFor(() => {
+      expect(invokeMock.mock.calls.map((c) => c[0])).toContain("start_hsd");
+    });
+  });
+
+  it("needs-node-sync callout shows Open Settings link when start_hsd fails", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "start_hsd") return Promise.reject(new Error("binary not found"));
+      return routeInvoke({ unlocked: true, canWrite: true, spendableDoos: 0, confirmedDoos: 1_400_000 })(cmd);
+    });
+    render(<WalletView />, { wrapper: wrapper() });
+
+    const btn = await screen.findByTestId("needs-node-sync-start");
+    fireEvent.click(btn);
+
+    // After the error, the "Open Settings" escape hatch should appear.
+    expect(await screen.findByTestId("needs-node-sync-settings")).toBeInTheDocument();
+  });
+
   it("renders Owned Names from the cache-backed read_names command", async () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
     render(<WalletView />, { wrapper: wrapper() });

@@ -2,8 +2,16 @@ import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import { useActiveProfile, useSignerSession, useWriteCapability } from "../../queries/wallet";
-import { useNodeStatus } from "../../queries/node";
+import {
+  useNodeStatus,
+  useStartHsd,
+  useStopHsd,
+  useResyncHsd,
+} from "../../queries/node";
 import type { ShellStatusItem, StatusTone } from "../../types";
+import { Popover, PopoverItem } from "./Popover";
+import { useUiStore } from "../../stores/ui";
+import { mapError } from "../../lib/errors";
 
 const TONE_DOT: Record<StatusTone, string> = {
   default: "bg-gray-400",
@@ -34,6 +42,28 @@ export function StatusStrip({ className }: { className?: string }) {
   const { data: signer } = useSignerSession();
   const { data: writeCap } = useWriteCapability();
   const { data: node } = useNodeStatus();
+  const showToast = useUiStore((s) => s.showToast);
+  const startHsd = useStartHsd();
+  const stopHsd = useStopHsd();
+  const resyncHsd = useResyncHsd();
+
+  const nodeConnected = node?.connected ?? false;
+  const nodeStarting = node?.process_alive ?? false;
+  const nodeBusy = startHsd.isPending || stopHsd.isPending || resyncHsd.isPending;
+
+  const runNodeAction = async (
+    fn: () => Promise<unknown>,
+    successMsg: string,
+    close: () => void,
+  ) => {
+    close();
+    try {
+      await fn();
+      showToast(successMsg, "info");
+    } catch (e) {
+      showToast(mapError(e), "error");
+    }
+  };
 
   const items = useMemo<ShellStatusItem[]>(() => {
     const result: ShellStatusItem[] = [];
@@ -59,8 +89,8 @@ export function StatusStrip({ className }: { className?: string }) {
 
       // Node connectivity — the authoritative RPC-answers signal, so the app
       // explicitly says whether a node is connected (not just "can send").
-      const nodeConnected = node?.connected ?? false;
-      const nodeStarting = node?.process_alive ?? false;
+      // The pill renders as a popover menu (see below), not a plain nav link,
+      // so `route` is omitted here. Detail/value still describe the state.
       result.push({
         key: "node",
         label: "Node",
@@ -68,8 +98,7 @@ export function StatusStrip({ className }: { className?: string }) {
         tone: nodeConnected ? "success" : nodeStarting ? "warning" : "default",
         detail: nodeConnected
           ? `block ${node?.height ?? "?"}`
-          : "Start a node in Settings",
-        route: "/settings",
+          : "Open menu to start a node",
       });
 
       const canWrite = writeCap?.canWrite ?? false;
@@ -102,28 +131,134 @@ export function StatusStrip({ className }: { className?: string }) {
     }
 
     return result;
-  }, [profile, signer, writeCap, node]);
+  }, [profile, signer, writeCap, node, nodeConnected, nodeStarting]);
+
+  const pillInner = (item: ShellStatusItem) => (
+    <>
+      <span
+        className={cn("inline-block h-2 w-2 rounded-full", TONE_DOT[item.tone])}
+        aria-hidden
+      />
+      <span className="text-gray-500">{item.label}:</span>
+      <span className={cn("font-medium", TONE_TEXT[item.tone])}>{item.value}</span>
+    </>
+  );
+
+  const pillClasses =
+    "flex items-center gap-1.5 text-xs hover:opacity-80 transition-opacity";
 
   return (
     <div className={cn("flex items-center gap-4", className)}>
-      {items.map((item) => (
-        <button
-          key={item.key}
-          type="button"
-          title={item.detail}
-          onClick={() => item.route && navigate(item.route)}
-          className="flex items-center gap-1.5 text-xs hover:opacity-80 transition-opacity"
-        >
-          <span
-            className={cn("inline-block h-2 w-2 rounded-full", TONE_DOT[item.tone])}
-            aria-hidden
-          />
-          <span className="text-gray-500">{item.label}:</span>
-          <span className={cn("font-medium", TONE_TEXT[item.tone])}>
-            {item.value}
-          </span>
-        </button>
-      ))}
+      {items.map((item) => {
+        if (item.key === "node") {
+          // Node pill acts in-place: Start / Stop / Re-sync menu items call
+          // the corresponding hsd mutations directly. "Open Settings" stays
+          // as a secondary escape hatch.
+          return (
+            <Popover
+              key={item.key}
+              trigger={({ toggle }) => (
+                <button
+                  type="button"
+                  title={item.detail}
+                  onClick={toggle}
+                  className={pillClasses}
+                  data-testid="status-strip-node"
+                >
+                  {pillInner(item)}
+                </button>
+              )}
+            >
+              {({ close }) => (
+                <>
+                  {!nodeConnected && !nodeStarting && (
+                    <PopoverItem
+                      data-testid="status-strip-node-start"
+                      disabled={nodeBusy}
+                      onClick={() =>
+                        void runNodeAction(
+                          () => startHsd.mutateAsync(),
+                          "Starting node…",
+                          close,
+                        )
+                      }
+                    >
+                      Start node
+                    </PopoverItem>
+                  )}
+                  {nodeStarting && !nodeConnected && (
+                    <PopoverItem
+                      data-testid="status-strip-node-cancel"
+                      disabled={nodeBusy}
+                      onClick={() =>
+                        void runNodeAction(
+                          () => stopHsd.mutateAsync(),
+                          "Stopping node…",
+                          close,
+                        )
+                      }
+                    >
+                      Cancel start
+                    </PopoverItem>
+                  )}
+                  {nodeConnected && (
+                    <>
+                      <PopoverItem
+                        data-testid="status-strip-node-stop"
+                        disabled={nodeBusy}
+                        onClick={() =>
+                          void runNodeAction(
+                            () => stopHsd.mutateAsync(),
+                            "Stopping node…",
+                            close,
+                          )
+                        }
+                      >
+                        Stop node
+                      </PopoverItem>
+                      <PopoverItem
+                        data-testid="status-strip-node-resync"
+                        disabled={nodeBusy}
+                        onClick={() =>
+                          void runNodeAction(
+                            () => resyncHsd.mutateAsync(),
+                            "Re-syncing chain — this may take a while",
+                            close,
+                          )
+                        }
+                      >
+                        Re-sync chain
+                      </PopoverItem>
+                    </>
+                  )}
+                  <div className="my-1 border-t border-gray-100" />
+                  <PopoverItem
+                    data-testid="status-strip-node-settings"
+                    onClick={() => {
+                      close();
+                      navigate("/settings");
+                    }}
+                  >
+                    Open Settings
+                  </PopoverItem>
+                </>
+              )}
+            </Popover>
+          );
+        }
+
+        return (
+          <button
+            key={item.key}
+            type="button"
+            title={item.detail}
+            onClick={() => item.route && navigate(item.route)}
+            className={pillClasses}
+          >
+            {pillInner(item)}
+          </button>
+        );
+      })}
     </div>
   );
 }
