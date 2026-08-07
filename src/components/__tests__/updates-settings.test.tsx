@@ -60,19 +60,19 @@ beforeEach(() => {
 describe("Settings — Updates card", () => {
   it("renders the current version", async () => {
     invokeMock.mockImplementation((cmd: string) => {
-      if (cmd === "current_version") return Promise.resolve("0.3.0");
+      if (cmd === "current_version") return Promise.resolve("0.4.0");
       return Promise.resolve(null);
     });
     render(<UpdatesSettings />, { wrapper: wrapper() });
     // Wait for the useCurrentVersion query to resolve, then read the label.
     await waitFor(() =>
-      expect(screen.getByTestId("current-version")).toHaveTextContent("v0.3.0"),
+      expect(screen.getByTestId("current-version")).toHaveTextContent("v0.4.0"),
     );
   });
 
   it("idle → checking → up-to-date when the endpoint reports no update", async () => {
     invokeMock.mockImplementation((cmd: string) => {
-      if (cmd === "current_version") return Promise.resolve("0.3.0");
+      if (cmd === "current_version") return Promise.resolve("0.4.0");
       if (cmd === "check_for_update") return Promise.resolve(null);
       return Promise.resolve(null);
     });
@@ -86,11 +86,11 @@ describe("Settings — Updates card", () => {
 
   it("shows the Install button and progress bar when an update is available", async () => {
     invokeMock.mockImplementation((cmd: string) => {
-      if (cmd === "current_version") return Promise.resolve("0.3.0");
+      if (cmd === "current_version") return Promise.resolve("0.4.0");
       if (cmd === "check_for_update") {
         return Promise.resolve({
-          version: "0.4.0",
-          currentVersion: "0.3.0",
+          version: "0.5.0",
+          currentVersion: "0.4.0",
           notes: "New features",
           date: null,
         });
@@ -109,7 +109,7 @@ describe("Settings — Updates card", () => {
     fireEvent.click(await screen.findByTestId("check-for-updates"));
 
     const installBtn = await screen.findByTestId("install-update");
-    expect(screen.getByText(/0\.4\.0 is available/i)).toBeInTheDocument();
+    expect(screen.getByText(/0\.5\.0 is available/i)).toBeInTheDocument();
     expect(screen.getByText(/New features/)).toBeInTheDocument();
 
     fireEvent.click(installBtn);
@@ -123,7 +123,7 @@ describe("Settings — Updates card", () => {
 
   it("shows an error + Retry when the check throws", async () => {
     invokeMock.mockImplementation((cmd: string) => {
-      if (cmd === "current_version") return Promise.resolve("0.3.0");
+      if (cmd === "current_version") return Promise.resolve("0.4.0");
       if (cmd === "check_for_update") return Promise.reject(new Error("network"));
       return Promise.resolve(null);
     });

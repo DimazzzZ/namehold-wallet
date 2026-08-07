@@ -355,7 +355,7 @@ export function Watchlist() {
                         )}
                       </td>
                       <td className="py-1 pr-4 text-xs text-gray-500">
-                        {w.addedAt ? new Date(w.addedAt).toLocaleDateString() : "\u2014"}
+                        {w.addedAt ? new Date(w.addedAt).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }) : "\u2014"}
                       </td>
                       <td className="py-1 text-right">
                         <Button

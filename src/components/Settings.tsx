@@ -974,7 +974,7 @@ function WatchlistNotificationSettings({
               data-testid="watchlist-notify-bidding-lead-input"
             />
             <Input
-              label="Highest-bid alert threshold (HNS, blank = off)"
+              label="Highest-bid threshold (HNS)"
               type="number"
               step="0.01"
               value={form.watchlist_notify_highest_bid_threshold_hns ?? ""}

@@ -199,27 +199,6 @@ Namebase**, paste your Namebase session cookie to connect, then:
 On-chain finalization of transfers uses the same node-backed write path as the
 rest of the wallet.
 
-## Advanced: Portfolio inventory
-
-Enable **Advanced mode** in Settings to show the **Portfolio** workspace for
-tracking a larger migration.
-
-**CSV import** columns:
-
-```csv
-Name,Staked,Category,Tags,Notes
-crypto,true,Premium,"high_value,operational",High-value TLD
-wallet,false,Finance,"medium_value",Finance TLD
-```
-
-- **Name** (required; leading dots stripped) · **Staked** (`true`/`1`/`yes` ⇒ staked)
-  · **Category** · **Tags** (comma-separated) · **Notes**.
-- Staked names are set to `do_not_touch_staked` so they're never migrated.
-
-Per-name **migration status**: `not_started` → `namebase_transfer_requested` →
-`waiting_transfer_tx` → `transfer_seen_on_chain` → `waiting_finalize` →
-`finalized_owned`, plus `failed_or_stuck` and `do_not_touch_staked`.
-
 ## Build for production
 
 ```bash

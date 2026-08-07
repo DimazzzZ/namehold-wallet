@@ -132,7 +132,7 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 
 ### A. Shell & navigation
 - [ ] App loads without console errors
-- [ ] All sidebar routes render: Wallet, Auctions, Move from Namebase, Settings, Portfolio (if advanced mode)
+- [ ] All sidebar routes render: Wallet, Auctions, Watchlist, Move from Namebase, Settings
 - [ ] Status strip shows correct wallet/network/signer/node/source badges
 - [ ] Beta warning banner visible
 
@@ -196,6 +196,48 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] Namebase connection flow
 - [ ] Domain import from Namebase
 - [ ] Renewals view
+
+### G. System tray
+- [ ] Tray icon appears in menu bar / notification area
+- [ ] Tray icon reflects node state (normal / syncing / stopped)
+- [ ] "Close to tray" (default ON): closing window hides to tray, does not quit
+- [ ] Click tray icon restores the window
+- [ ] Tray menu: Open Namehold, node status with Start/Stop toggle, Sync in background checkbox, Quit
+- [ ] "Launch at login" toggle registers/unregisters OS autostart
+- [ ] Quit from tray menu fully exits the app
+
+### H. Watchlist
+- [ ] Watchlist page visible in sidebar
+- [ ] Add a name to the watchlist from NameActionsModal or NameInfoModal
+- [ ] Remove a name from the watchlist
+- [ ] Watchlist table shows Countdown, Highest bid, Expires columns
+- [ ] Owned names get an inline Owned badge
+- [ ] CSV export downloads a valid file
+- [ ] CSV import loads names with tags
+- [ ] Tag management (comma-separated tags per name)
+- [ ] Watchlist notifications toggle in Settings
+- [ ] OS notification fires when a watched name enters BIDDING
+
+### I. Batch operations
+- [ ] Multi-select checkboxes appear on the Owned Names table
+- [ ] Selecting 2+ names shows the batch action bar
+- [ ] "Renew Selected" opens BatchConfirmModal with count + estimated fee + name list
+- [ ] Confirming broadcasts a single batch transaction
+- [ ] "Reveal Selected" / "Redeem Selected" / "Finalize Selected" work similarly
+- [ ] Deselecting all hides the batch action bar
+
+### J. Paid name swaps
+- [ ] Names in TRANSFER state show "Buy with payment" button (buyer side)
+- [ ] "Sell with payment" flow available for owned names in TRANSFER
+- [ ] Saved offers list shows pending offers
+- [ ] claim_paid_transfer verifies the broadcast tx before marking paid
+
+### K. Bid recovery
+- [ ] REVEAL-phase name with no local bid data shows "Recover bid" panel
+- [ ] Manual entry: enter bid amount and recover
+- [ ] Auto-recover (brute-force): sweeps candidate values, shows recovered amount
+- [ ] Recovery uses only xpub (no passphrase needed)
+- [ ] Recovery works after seed restore or wallet import
 
 ---
 

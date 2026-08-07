@@ -23,7 +23,7 @@ non-custodially, with your keys encrypted on your own machine.
 10. [Managing names you own](#10-managing-names-you-own)
 11. [Node control](#11-node-control)
 12. [Move from Namebase](#12-move-from-namebase)
-13. [Portfolio (Advanced mode)](#13-portfolio-advanced-mode)
+13. [System Tray](#13-system-tray)
 14. [Data location and macOS quarantine](#14-data-location-and-macos-quarantine)
 15. [Security](#15-security)
 16. [Troubleshooting](#16-troubleshooting)
@@ -93,14 +93,13 @@ details.
 
 ## 3. Sidebar and header
 
-The sidebar has five top-level sections (Portfolio is Advanced-only):
+The sidebar has four top-level sections:
 
 | Section | Purpose |
 |---------|---------|
 | **Wallet** | Balance, receive, send, recent transactions, owned names. Default page. |
 | **Auctions** | Look up a name, place bids, reveal, register, see active auctions. |
 | **Move from Namebase** | Guided migration off the custodial Namebase service. |
-| **Portfolio** (Advanced) | Inventory · Batches · Renewals · DNS — for larger migrations. |
 | **Settings** | Connections, node control, backups, notifications, advanced options. |
 
 The header shows two badges:
@@ -303,7 +302,7 @@ names you already own.
 ## 9. DNS records editor
 
 The DNS editor lives inside the Name Actions modal (Register and Update
-actions) and, in Advanced mode, on **Portfolio → DNS** for owned names.
+actions) for owned names.
 
 ### Prefilled from the chain
 
@@ -576,36 +575,32 @@ as the rest of the wallet (Signer unlock → sign → broadcast).
 
 ---
 
-## 13. Portfolio (Advanced mode)
+## 13. System Tray
 
-Enable **Settings → Advanced → "Show Portfolio in the sidebar"** to reveal the
-**Portfolio** section with four sub-tabs: **Inventory · Batches · Renewals · DNS**.
-Intended for managing a larger migration.
+Starting with v0.4.0, Namehold places an icon in your system tray (menu bar on
+macOS, notification area on Windows/Linux). This keeps the app, hsd node, and
+background sync daemon running even after you close the main window.
 
-### CSV import
+### Close to tray
 
-```csv
-Name,Staked,Category,Tags,Notes
-crypto,true,Premium,"high_value,operational",High-value TLD
-wallet,false,Finance,"medium_value",Finance TLD
-```
+Enabled by default (**Settings → System Tray → "Close to tray"**). Clicking the
+window's close button hides Namehold to the tray instead of quitting. Click the
+tray icon or choose **Open Namehold** from the tray menu to restore the window.
+Use **Quit** from the tray menu to fully exit.
 
-- **Name** (required; leading dots stripped)
-- **Staked** — `true`, `1`, `yes`, or `staked` → the row is marked
-  `do_not_touch_staked` so it's never migrated.
-- **Category**, **Tags** (comma-separated), **Notes** — free text.
+### Launch at login
 
-### Migration statuses
+**Settings → System Tray → "Launch at login"** registers Namehold to start
+automatically when you log in (LaunchAgent on macOS, Run key on Windows,
+`.desktop` on Linux). Pairs well with "Close to tray" for an always-available
+menu-bar experience.
 
-`not_started` → `namebase_transfer_requested` → `waiting_transfer_tx` →
-`transfer_seen_on_chain` → `waiting_finalize` → `finalized_owned`, plus
-`failed_or_stuck` and `do_not_touch_staked`.
+### Tray menu
 
-### Batches, Renewals, DNS
-
-- **Batches** — group names into migration batches ("Test batch 1", "High value").
-- **Renewals** — TLDs with known expiration, colour-coded by days remaining.
-- **DNS** — records for owned names (same editor as the modal).
+Right-click the tray icon for: **Open Namehold**, live **node status** with a
+Start/Stop toggle, a **Sync in background** checkbox, and **Quit**. The tray
+icon reflects node state (normal / syncing / stopped) and adapts to light/dark
+menu bars on macOS.
 
 ---
 
@@ -621,7 +616,7 @@ All app data lives in one SQLite file in your home folder (pairs with hsd's
 ```
 
 It holds your wallet profiles, the encrypted vault, the local chain cache, and
-the Portfolio inventory / batches / audit log.
+sync state.
 
 When background sync is running, the daemon also writes its process ID to
 `~/.namehold/syncd.pid` (removed when the daemon stops).
@@ -642,7 +637,7 @@ Then open the app normally.
 
 ---
 
-## 15. Security
+## 14. Security
 
 - **Non-custodial.** Your keys live on your device, encrypted at rest with
   Argon2id + AES-256-GCM. Nothing is custodied.
@@ -668,7 +663,7 @@ Then open the app normally.
 
 ---
 
-## 16. Troubleshooting
+## 15. Troubleshooting
 
 ### Header shows "READ-ONLY" and Send is disabled
 
@@ -716,7 +711,7 @@ spaces, and duplicate rows are OK (they're updated, not errors).
 
 ---
 
-## 17. Auto-update
+## 16. Auto-update
 
 Starting with **v0.2.0**, Namehold checks for its own updates automatically.
 You don't need to visit a website or run a package manager; new signed
