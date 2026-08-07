@@ -3,7 +3,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Layout } from "./components/Layout";
 import { AboutPage } from "./components/AboutPage";
-import { PortfolioWorkspace } from "./components/PortfolioWorkspace";
 import { MigrationWorkspace } from "./components/MigrationWorkspace";
 import { WalletView } from "./components/WalletView";
 import { AuctionsView } from "./components/AuctionsView";
@@ -54,7 +53,6 @@ function AppRoutes() {
         <Route path="/auctions" element={<AuctionsView />} />
         <Route path="/watchlist" element={<Watchlist />} />
         <Route path="/migration" element={<MigrationWorkspace />} />
-        <Route path="/portfolio" element={<PortfolioWorkspace />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/about" element={<AboutPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

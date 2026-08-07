@@ -78,11 +78,11 @@ async fn get_settings_redacts_node_rpc_api_key_and_marks_presence() {
 #[tokio::test]
 async fn get_settings_passes_through_non_sensitive_keys() {
     let conn = migrated_conn();
-    db::queries::set_setting(&conn, "advanced_mode", "true").unwrap();
+    db::queries::set_setting(&conn, "hsd_prefix", "true").unwrap();
     let app = app_with(conn);
 
     let out = get_settings(app.state()).await.unwrap();
-    assert_eq!(out["advanced_mode"], "true");
+    assert_eq!(out["hsd_prefix"], "true");
 }
 
 #[tokio::test]
@@ -140,10 +140,10 @@ async fn update_setting_allows_non_denylisted_keys() {
     let conn = migrated_conn();
     let app = app_with(conn);
 
-    update_setting(app.state(), "advanced_mode".to_string(), "true".to_string())
+    update_setting(app.state(), "hsd_prefix".to_string(), "true".to_string())
         .await
         .unwrap();
-    assert_eq!(raw_setting(&app, "advanced_mode").as_deref(), Some("true"));
+    assert_eq!(raw_setting(&app, "hsd_prefix").as_deref(), Some("true"));
 }
 
 // --- update_setting audit redaction ----------------------------------------
@@ -177,13 +177,13 @@ async fn update_setting_writes_raw_value_for_non_sensitive_key() {
     let conn = migrated_conn();
     let app = app_with(conn);
 
-    update_setting(app.state(), "advanced_mode".to_string(), "true".to_string())
+    update_setting(app.state(), "hsd_prefix".to_string(), "true".to_string())
         .await
         .unwrap();
 
     let log = get_audit_log(app.state(), Some(10)).await.unwrap();
     let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
-    assert!(detail.contains("advanced_mode"));
+    assert!(detail.contains("hsd_prefix"));
     assert!(detail.contains("true"));
 }
 
@@ -217,14 +217,14 @@ async fn get_audit_log_leaves_non_sensitive_details_untouched() {
     let conn = migrated_conn();
     conn.execute(
         "INSERT INTO audit_log (action, detail) VALUES ('setting_change', ?1)",
-        [serde_json::json!({"key": "advanced_mode", "value": "true"}).to_string()],
+        [serde_json::json!({"key": "hsd_prefix", "value": "true"}).to_string()],
     )
     .unwrap();
     let app = app_with(conn);
 
     let log = get_audit_log(app.state(), Some(10)).await.unwrap();
     let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
-    assert!(detail.contains("advanced_mode"));
+    assert!(detail.contains("hsd_prefix"));
     assert!(detail.contains("true"));
 }
 

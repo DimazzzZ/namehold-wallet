@@ -270,8 +270,6 @@ export interface Settings {
   address_gap_limit: string;
   /** Integer string seconds, default "900". */
   signer_session_timeout_seconds: string;
-  /** "true" | "false" — reveals advanced nav items and settings sections. */
-  advanced_mode: string;
   /** "true" | "false" — marks first-run onboarding as complete. */
   onboarding_complete: string;
   /**
@@ -445,15 +443,12 @@ export interface WalletReadModel {
 // ---------------------------------------------------------------------------
 
 export type AppRouteKey =
-  | "portfolio"
   | "migration"
   | "wallet"
   | "auctions"
   | "activity"
   | "settings"
   | "watchlist";
-
-export type PortfolioSectionKey = "inventory" | "batches" | "renewals" | "dns";
 
 export type MigrationSectionKey = "namebase" | "sync";
 

@@ -4,11 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { Settings } from "../Settings";
 import { SyncVerification } from "../SyncVerification";
-import { Renewals } from "../Renewals";
-import { DnsRecords } from "../DnsRecords";
-import { Batches } from "../Batches";
 import { WalletView } from "../WalletView";
-import { TldInventory } from "../TldInventory";
 import { Layout } from "../Layout";
 import { Onboarding } from "../Onboarding";
 
@@ -32,28 +28,8 @@ describe("Page Components - Smoke Tests", () => {
     expect(container).toBeTruthy();
   });
 
-  it("Renewals renders", () => {
-    const { container } = renderWithProviders(<Renewals />);
-    expect(container).toBeTruthy();
-  });
-
-  it("DnsRecords renders", () => {
-    const { container } = renderWithProviders(<DnsRecords />);
-    expect(container).toBeTruthy();
-  });
-
-  it("Batches renders", () => {
-    const { container } = renderWithProviders(<Batches />);
-    expect(container).toBeTruthy();
-  });
-
   it("WalletView renders", () => {
     const { container } = renderWithProviders(<WalletView />);
-    expect(container).toBeTruthy();
-  });
-
-  it("TldInventory renders", () => {
-    const { container } = renderWithProviders(<TldInventory />);
     expect(container).toBeTruthy();
   });
 

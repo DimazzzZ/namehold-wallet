@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PortfolioSectionKey, MigrationSectionKey } from "../types";
+import type { MigrationSectionKey } from "../types";
 
 export type ToastType = "info" | "error" | "success";
 
@@ -17,8 +17,6 @@ interface UiState {
   clearSelection: () => void;
   selectAll: (ids: number[]) => void;
   // Workspace tab state
-  activePortfolioTab: PortfolioSectionKey;
-  setActivePortfolioTab: (tab: PortfolioSectionKey) => void;
   activeMigrationTab: MigrationSectionKey;
   setActiveMigrationTab: (tab: MigrationSectionKey) => void;
   // Toast queue
@@ -54,8 +52,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   clearSelection: () => set({ selectedAssetIds: new Set() }),
   selectAll: (ids) => set({ selectedAssetIds: new Set(ids) }),
 
-  activePortfolioTab: "inventory",
-  setActivePortfolioTab: (tab) => set({ activePortfolioTab: tab }),
   activeMigrationTab: "namebase",
   setActiveMigrationTab: (tab) => set({ activeMigrationTab: tab }),
 

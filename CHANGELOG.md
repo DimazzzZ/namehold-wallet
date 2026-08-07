@@ -58,6 +58,12 @@
   broadcast tx before marking an offer paid.
 
 ### Changed
+- **Removed the Portfolio page and the "Show Portfolio in the sidebar"
+  setting.** The hidden `advanced_mode`-gated Portfolio workspace (Inventory,
+  Batches, Renewals, DNS tabs) and its `/portfolio` route have been removed
+  entirely, along with the `advanced_mode` setting key. The sidebar no longer
+  has any advanced-mode gating.
+
 - **MIT LICENSE** — repo now carries an explicit MIT license file.
 
 - **`get_resource` Tauri command** — returns combined name info + DNS resource
@@ -105,6 +111,11 @@
   add-name/look-up inputs and their adjacent buttons.
 
 ### Fixed
+- **TldInventory bulk Transfer/Finalize** — bulk actions on N selected names
+  now actually operate on all N, not just the first. Transfer loops N single
+  transactions (per-name recipient safety); Finalize uses the batch draft
+  command for a single atomic transaction. (Historical: the Portfolio/
+  TldInventory workspace this fixed is removed in this same release.)
 - **Layout badge color inversion** — the wallet capability badge now renders
   CAN SEND in green (safe) and READ-ONLY in neutral gray, matching intuitive
   traffic-light semantics (previously CAN SEND was red).

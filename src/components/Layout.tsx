@@ -1,5 +1,4 @@
 import { Link, NavLink, Outlet } from "react-router-dom";
-import { useSettingsStore } from "../stores/settings";
 import { useActiveProfile, useWriteCapability } from "../queries/wallet";
 import { Toast } from "./ui/Toast";
 import { StatusStrip } from "./ui/StatusStrip";
@@ -9,8 +8,6 @@ import { cn } from "../lib/utils";
 import { isTauri } from "../lib/runtime";
 
 export function Layout() {
-  const settings = useSettingsStore((s) => s.settings);
-  const advancedMode = settings?.advanced_mode === "true";
   const { data: profile } = useActiveProfile();
   const { data: writeCap } = useWriteCapability();
 
@@ -39,7 +36,7 @@ export function Layout() {
           </div>
         </div>
         <nav className="flex-1 py-2">
-          {PRIMARY_ROUTES.filter((item) => !item.advanced || advancedMode).map((item) => (
+          {PRIMARY_ROUTES.map((item) => (
             <NavLink
               key={item.key}
               to={item.to}

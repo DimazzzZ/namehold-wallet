@@ -40,7 +40,7 @@ mod tests {
         assert!(is_sensitive_key("namebase_cookie_v1"));
         assert!(is_sensitive_key("node_rpc_api_key"));
         assert!(is_sensitive_key("hsd_api_key"));
-        assert!(!is_sensitive_key("advanced_mode"));
+        assert!(!is_sensitive_key("hsd_prefix"));
         assert!(!is_sensitive_key("__has_namebase_cookie"));
     }
 
