@@ -4,7 +4,10 @@ static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn temp_db_path() -> std::path::PathBuf {
     let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    std::env::temp_dir().join(format!("namehold_test_{}.db", n))
+    // PID keeps the path unique across nextest's per-test processes (the
+    // TEST_COUNTER alone resets to 0 in each process → collisions → readonly DB).
+    let pid = std::process::id();
+    std::env::temp_dir().join(format!("namehold_test_{pid}_{n}.db"))
 }
 
 #[test]

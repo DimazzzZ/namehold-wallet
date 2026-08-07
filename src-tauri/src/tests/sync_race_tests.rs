@@ -56,7 +56,10 @@ fn seeded_db() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let path = std::env::temp_dir().join(format!("namehold_sync_race_test_{n}.db"));
+    // PID keeps the path unique across nextest's per-test processes (the
+    // COUNTER alone resets to 0 in each process → collisions → readonly DB).
+    let pid = std::process::id();
+    let path = std::env::temp_dir().join(format!("namehold_sync_race_test_{pid}_{n}.db"));
     let _ = std::fs::remove_file(&path);
 
     let conn = rusqlite::Connection::open(&path).unwrap();
@@ -321,7 +324,9 @@ mod profile_scope_guard {
 
     fn seeded_db(explorer_url: &str) -> TempDb {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = std::env::temp_dir().join(format!("namehold_sync_scope_repair_test_{n}.db"));
+        let pid = std::process::id();
+        let path = std::env::temp_dir()
+            .join(format!("namehold_sync_scope_repair_test_{pid}_{n}.db"));
         let _ = std::fs::remove_file(&path);
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
