@@ -332,8 +332,7 @@ mod discover_step_tests {
         // same temp file and one hits "attempt to write a readonly database".
         // Mix in the PID to guarantee a unique path per process.
         let pid = std::process::id();
-        let path =
-            std::env::temp_dir().join(format!("namehold_discover_step_test_{pid}_{n}.db"));
+        let path = std::env::temp_dir().join(format!("namehold_discover_step_test_{pid}_{n}.db"));
         let _ = std::fs::remove_file(&path);
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
