@@ -327,7 +327,7 @@ fn collect_deadlines(
 /// crash the app; the outcome's `delivery_error` communicates it to the UI
 /// instead.
 #[cfg(not(test))]
-fn send_os_notification<R: tauri::Runtime>(
+pub(crate) fn send_os_notification<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     n: &PendingNotification,
 ) -> Option<String> {

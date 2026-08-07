@@ -570,8 +570,32 @@ fn parse_getnameinfo(name: &str, raw: &serde_json::Value) -> Option<HsdName> {
 
 // -------- Notification emission (notify-rust) -----------------------------
 
+/// Claim "Namehold" as this process's OS-notification sender identity.
+///
+/// The daemon binary (`namehold-syncd`) loads no Tauri plugin, so nothing
+/// calls `notify_rust::set_application` for us — without this the macOS
+/// notification center defaults to Finder (or whatever process launched us,
+/// e.g. Terminal). `Once`-guarded because `set_application` locks the
+/// process's identity permanently and must only run once.
+///
+/// Note: the sender NAME always resolves; the ICON resolves only when the
+/// bundled `.app` is registered with Launch Services. In practice: end users
+/// see the Namehold icon after installing/opening the `.app` once; during
+/// dev with no built bundle, the icon may stay generic but the text is
+/// correct.
+#[cfg(all(target_os = "macos", not(test)))]
+fn ensure_notify_identity() {
+    use std::sync::Once;
+    static SET_APP_ONCE: Once = Once::new();
+    SET_APP_ONCE.call_once(|| {
+        let _ = notify_rust::set_application("org.zhavoronkov.nameholdwallet");
+    });
+}
+
 #[cfg(not(test))]
 fn emit_os_notification(summary: &str, body: &str) {
+    #[cfg(target_os = "macos")]
+    ensure_notify_identity();
     // notify-rust is cross-platform (macOS via mac-notification-sys, Linux via
     // libnotify/D-Bus, Windows via tauri-winrt-notification). Fire-and-forget:
     // if the OS notification center is unavailable we just log and move on.
@@ -587,6 +611,27 @@ fn emit_os_notification(summary: &str, body: &str) {
 #[cfg(test)]
 fn emit_os_notification(_summary: &str, _body: &str) {
     // No-op in tests: the pure scanner is tested directly; the shell is not.
+}
+
+/// Debug-only accessor around the real `notify-rust` dispatch, so the
+/// in-app `simulate_notification` command can exercise the exact same
+/// path the headless daemon uses. Returns `Some(err_string)` on failure
+/// (mirroring `send_os_notification` in `commands/deadlines.rs`) so the
+/// UI can surface an honest delivery error instead of silently doing
+/// nothing. Gated with `debug_assertions` so it is compiled out of
+/// release builds entirely.
+#[cfg(all(debug_assertions, not(test)))]
+pub(crate) fn emit_watchlist_os(summary: &str, body: &str) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    ensure_notify_identity();
+    match notify_rust::Notification::new()
+        .summary(summary)
+        .body(body)
+        .show()
+    {
+        Ok(_) => None,
+        Err(e) => Some(e.to_string()),
+    }
 }
 
 // -------- Tests: the pure scanner ----------------------------------------
