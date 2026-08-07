@@ -129,7 +129,7 @@ jobs:
             args: ""
             rust_targets: ""
           - platform: windows-latest
-            args: ""
+            args: "--bundles nsis,updater"
             rust_targets: ""
     runs-on: ${{ matrix.platform }}
     steps:
@@ -210,9 +210,12 @@ jobs:
           mkdir -p binaries
           cargo build --release --bin namehold-syncd --target aarch64-apple-darwin
           cargo build --release --bin namehold-syncd --target x86_64-apple-darwin
-          # Tauri universal build expects both target-triple variants.
+          # Tauri universal build expects both per-arch variants AND the universal one.
           cp target/aarch64-apple-darwin/release/namehold-syncd binaries/namehold-syncd-aarch64-apple-darwin
           cp target/x86_64-apple-darwin/release/namehold-syncd binaries/namehold-syncd-x86_64-apple-darwin
+          lipo -create -output binaries/namehold-syncd-universal-apple-darwin \
+            target/aarch64-apple-darwin/release/namehold-syncd \
+            target/x86_64-apple-darwin/release/namehold-syncd
 
       - name: Build sidecar (Linux/Windows)
         if: matrix.platform != 'macos-latest'
