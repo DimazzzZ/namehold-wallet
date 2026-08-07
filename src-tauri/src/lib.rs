@@ -322,6 +322,7 @@ pub fn run() {
             commands::watchlist::update_watchlist_tags,
             commands::watchlist::export_watchlist_csv,
             commands::watchlist::import_watchlist_csv,
+            commands::watched_states::get_watched_states,
             commands::paid_swaps::create_paid_swap_offer,
             commands::paid_swaps::get_paid_swap_offer,
             commands::paid_swaps::claim_paid_transfer,

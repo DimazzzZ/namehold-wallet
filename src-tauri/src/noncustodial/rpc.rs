@@ -118,6 +118,7 @@ pub fn resolve_node_mode(settings: &std::collections::HashMap<String, String>) -
 }
 
 /// A node-only JSON-RPC client.
+#[derive(Clone)]
 pub struct NodeRpcClient {
     http: Client,
     node_url: String,

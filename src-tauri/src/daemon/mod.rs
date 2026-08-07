@@ -12,6 +12,8 @@ use crate::db::sync_lock::{self, LockOwnerType};
 use crate::error::AppError;
 use tokio::sync::Mutex as AsyncMutex;
 
+pub mod watched_names;
+
 /// How often the daemon runs a full sync cycle.
 pub const SYNC_INTERVAL_SECS: u64 = 60;
 
@@ -40,6 +42,11 @@ pub fn run(db_path: &str) -> Result<(), AppError> {
         if let Err(e) = rt.block_on(sync_all_profiles(db_path)) {
             eprintln!("namehold-syncd: sync error: {e}");
         }
+
+        // After syncing owned profiles, poll watched (non-owned) names and
+        // emit OS notifications on phase transitions / re-opens / bidding-soon
+        // / highest-bid threshold. No-op unless the user opted in via Settings.
+        rt.block_on(watched_names::run_watched_scan(db_path));
 
         // Sleep 60 seconds before the next sync cycle.
         std::thread::sleep(Duration::from_secs(SYNC_INTERVAL_SECS));

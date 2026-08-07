@@ -1,11 +1,10 @@
 /**
- * Settings — Background sync daemon checkbox.
+ * Settings — Watchlist notifications section.
  *
- * The toggle is applied IMMEDIATELY (no Save button) because flipping it has
- * side effects the user should see right away: it spawns or stops the
- * `namehold-syncd` daemon process. The specialized `set_background_sync_enabled`
- * command persists the setting AND performs the spawn/stop — unlike other
- * settings that go through the generic `update_setting` on Save.
+ * Verifies the three keys (`watchlist_notify_enabled`,
+ * `watchlist_notify_bidding_soon_lead_blocks`,
+ * `watchlist_notify_highest_bid_threshold_hns`) round-trip through the
+ * Settings form and the underlying `update_setting` command.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
@@ -24,7 +23,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
 }));
 vi.mock("@tauri-apps/plugin-notification", () => ({
   isPermissionGranted: vi.fn().mockResolvedValue(false),
-  requestPermission: vi.fn().mockResolvedValue("default"),
+  requestPermission: vi.fn().mockResolvedValue("granted"),
 }));
 
 import { Settings } from "../Settings";
@@ -60,7 +59,6 @@ function route(cmd: string) {
         reason: null,
       });
     case "update_setting":
-    case "set_background_sync_enabled":
       return Promise.resolve(null);
     default:
       return Promise.resolve(null);
@@ -113,55 +111,55 @@ beforeEach(() => {
   loadSettings();
 });
 
-describe("Settings — Background sync checkbox", () => {
-  it("renders the checkbox checked by default (DEFAULT_SETTINGS.background_sync_enabled = '1')", async () => {
+describe("Settings — Watchlist notifications", () => {
+  it("renders the enable toggle unchecked by default", async () => {
     render(<Settings />, { wrapper: wrapper() });
-    const box = await screen.findByTestId("background-sync-checkbox");
-    expect(box).toBeChecked();
-    expect(
-      screen.getByText(/Sync in background/i),
-    ).toBeInTheDocument();
-  });
-
-  it("renders unchecked when the setting is '0'", async () => {
-    loadSettings({ background_sync_enabled: "0" });
-    render(<Settings />, { wrapper: wrapper() });
-    const box = await screen.findByTestId("background-sync-checkbox");
+    const box = await screen.findByTestId("watchlist-notify-toggle");
     expect(box).not.toBeChecked();
   });
 
-  it("toggles OFF via set_background_sync_enabled immediately (no Save button needed)", async () => {
+  it("shows the lead-time and threshold inputs only when enabled", async () => {
+    loadSettings({ watchlist_notify_enabled: "true" });
     render(<Settings />, { wrapper: wrapper() });
-    const box = await screen.findByTestId("background-sync-checkbox");
-    // Starts checked (default).
-    expect(box).toBeChecked();
-
-    fireEvent.click(box);
-    expect(box).not.toBeChecked();
-
-    // The specialized command is invoked directly — no Save button click needed.
-    await waitFor(() => {
-      const call = invokeMock.mock.calls.find(
-        (c) => c[0] === "set_background_sync_enabled",
-      );
-      expect(call?.[1]).toEqual({ enabled: false });
-    });
+    expect(await screen.findByTestId("watchlist-notify-bidding-lead-input")).toBeInTheDocument();
+    expect(await screen.findByTestId("watchlist-notify-highbid-input")).toBeInTheDocument();
   });
 
-  it("toggles ON via set_background_sync_enabled immediately", async () => {
-    loadSettings({ background_sync_enabled: "0" });
+  it("persists all three keys via update_setting when Save is clicked", async () => {
     render(<Settings />, { wrapper: wrapper() });
-    const box = await screen.findByTestId("background-sync-checkbox");
-    expect(box).not.toBeChecked();
 
-    fireEvent.click(box);
-    expect(box).toBeChecked();
+    // Enable
+    const toggle = await screen.findByTestId("watchlist-notify-toggle");
+    fireEvent.click(toggle);
+
+    // Change the two numeric fields.
+    const leadInput = await screen.findByTestId("watchlist-notify-bidding-lead-input");
+    fireEvent.change(leadInput, { target: { value: "72" } });
+    const highbidInput = await screen.findByTestId("watchlist-notify-highbid-input");
+    fireEvent.change(highbidInput, { target: { value: "250" } });
+
+    const save = await screen.findByRole("button", { name: /Save settings/i });
+    fireEvent.click(save);
 
     await waitFor(() => {
-      const call = invokeMock.mock.calls.find(
-        (c) => c[0] === "set_background_sync_enabled",
-      );
-      expect(call?.[1]).toEqual({ enabled: true });
+      const findCall = (key: string) =>
+        invokeMock.mock.calls.find(
+          (c) =>
+            c[0] === "update_setting" &&
+            (c[1] as { key?: string })?.key === key,
+        );
+      expect(findCall("watchlist_notify_enabled")?.[1]).toEqual({
+        key: "watchlist_notify_enabled",
+        value: "true",
+      });
+      expect(findCall("watchlist_notify_bidding_soon_lead_blocks")?.[1]).toEqual({
+        key: "watchlist_notify_bidding_soon_lead_blocks",
+        value: "72",
+      });
+      expect(findCall("watchlist_notify_highest_bid_threshold_hns")?.[1]).toEqual({
+        key: "watchlist_notify_highest_bid_threshold_hns",
+        value: "250",
+      });
     });
   });
 });

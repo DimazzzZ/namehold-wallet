@@ -70,6 +70,11 @@ export function Settings() {
         deadline_notify_enabled: settings.deadline_notify_enabled,
         deadline_notify_reveal_lead_blocks: settings.deadline_notify_reveal_lead_blocks,
         deadline_notify_renewal_lead_days: settings.deadline_notify_renewal_lead_days,
+        watchlist_notify_enabled: settings.watchlist_notify_enabled,
+        watchlist_notify_bidding_soon_lead_blocks:
+          settings.watchlist_notify_bidding_soon_lead_blocks,
+        watchlist_notify_highest_bid_threshold_hns:
+          settings.watchlist_notify_highest_bid_threshold_hns,
       });
     }
   }, [settings]);
@@ -372,6 +377,20 @@ export function Settings() {
           Checked on app start and every ~10 minutes.
         </div>
         <NotificationSettings form={form} updateField={updateField} />
+      </div>
+
+      {/* Watchlist notifications: opt-in OS alerts about WATCHED (non-owned)
+          names. Emitted by the background daemon (namehold-syncd), so they
+          fire even when the app is closed (requires background sync on). */}
+      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-700">Watchlist notifications</h3>
+        <div className="text-xs text-gray-500">
+          Get an OS notification when a name on your watchlist enters bidding,
+          becomes available again, is about to open for bidding, or when its
+          highest bid crosses a threshold. Handled by the background sync
+          daemon, so alerts fire even when the app is closed.
+        </div>
+        <WatchlistNotificationSettings form={form} updateField={updateField} />
       </div>
 
       {/* Updates: shows the running version and drives the check-for-updates
@@ -683,6 +702,95 @@ function NotificationSettings({
               value={form.deadline_notify_renewal_lead_days ?? ""}
               onChange={(e) => updateField("deadline_notify_renewal_lead_days", e.target.value)}
               placeholder="30"
+            />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function WatchlistNotificationSettings({
+  form,
+  updateField,
+}: {
+  form: Record<string, string>;
+  updateField: (key: string, value: string) => void;
+}) {
+  const [permission, setPermission] = useState<PermissionStatus | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const enabled = form.watchlist_notify_enabled === "true";
+
+  useEffect(() => {
+    checkNotificationPermission().then(setPermission);
+  }, []);
+
+  const onToggle = async (checked: boolean) => {
+    updateField("watchlist_notify_enabled", checked ? "true" : "false");
+    if (!checked) return;
+    setRequesting(true);
+    try {
+      const status = await requestNotificationPermission();
+      setPermission(status);
+    } finally {
+      setRequesting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => onToggle(e.target.checked)}
+          data-testid="watchlist-notify-toggle"
+        />
+        Enable watchlist notifications
+      </label>
+
+      {enabled && (
+        <>
+          {permission === "denied" && (
+            <div
+              className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2"
+              data-testid="watchlist-notification-permission-denied"
+            >
+              OS notifications are blocked for this app. Enable them in your
+              system notification settings — otherwise watchlist alerts
+              won&apos;t reach you.
+            </div>
+          )}
+          {permission === "unsupported" && (
+            <div className="text-xs text-gray-500">
+              OS notifications aren&apos;t available outside the desktop app.
+            </div>
+          )}
+          {requesting && (
+            <div className="text-xs text-gray-500">Requesting permission…</div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <Input
+              label="Bidding-soon lead time (blocks)"
+              type="number"
+              value={form.watchlist_notify_bidding_soon_lead_blocks ?? ""}
+              onChange={(e) =>
+                updateField("watchlist_notify_bidding_soon_lead_blocks", e.target.value)
+              }
+              placeholder="144"
+              data-testid="watchlist-notify-bidding-lead-input"
+            />
+            <Input
+              label="Highest-bid alert threshold (HNS, blank = off)"
+              type="number"
+              step="0.01"
+              value={form.watchlist_notify_highest_bid_threshold_hns ?? ""}
+              onChange={(e) =>
+                updateField("watchlist_notify_highest_bid_threshold_hns", e.target.value)
+              }
+              placeholder="e.g. 100"
+              data-testid="watchlist-notify-highbid-input"
             />
           </div>
         </>

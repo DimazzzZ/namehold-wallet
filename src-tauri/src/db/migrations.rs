@@ -37,6 +37,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("022", include_str!("../sql/022_watchlist.sql")),
     ("023", include_str!("../sql/023_paid_swap_offers.sql")),
     ("024", include_str!("../sql/024_watchlist_tags.sql")),
+    ("025", include_str!("../sql/025_watched_name_states.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -78,7 +79,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 24, "expected 24 migrations, got {count}");
+        assert_eq!(count, 25, "expected 25 migrations, got {count}");
     }
 
     #[test]
@@ -89,7 +90,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 24);
+        assert_eq!(count, 25);
     }
 
     #[test]
