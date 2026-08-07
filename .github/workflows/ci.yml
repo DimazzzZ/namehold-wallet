@@ -49,6 +49,10 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # Post-startup ghac IO errors fall back to a direct compile instead of
+      # aborting the build. Does NOT cover startup-time backend outages — the
+      # "Verify sccache backend" step below handles that (see sccache#1751).
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
@@ -77,6 +81,21 @@ jobs:
           components: rustfmt, clippy
 
       - uses: mozilla/sccache-action@v0.0.7
+
+      # If the GitHub Actions Cache backend is unavailable, sccache's server
+      # fails to start and — because it's RUSTC_WRAPPER — hard-fails the whole
+      # job before any crate compiles (observed on run 31117601637: ghac
+      # returned HTTP 400). Probe startup here; if it fails, unset the wrapper
+      # so cargo compiles directly. mold + Swatinem still apply, so the run
+      # stays fast and, crucially, green. This does NOT mask clippy/test
+      # failures — those steps keep their normal non-zero-exit gating.
+      - name: Verify sccache backend (degrade gracefully if ghac is down)
+        run: |
+          if ! sccache --start-server 2>/tmp/sccache_start.log; then
+            echo "::warning::sccache failed to start (ghac backend likely unavailable) — disabling compiler cache for this run"
+            cat /tmp/sccache_start.log || true
+            echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+          fi
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -99,6 +118,10 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # Post-startup ghac IO errors fall back to a direct compile instead of
+      # aborting the build. Does NOT cover startup-time backend outages — the
+      # "Verify sccache backend" step below handles that (see sccache#1751).
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
@@ -127,6 +150,21 @@ jobs:
           components: rustfmt, clippy
 
       - uses: mozilla/sccache-action@v0.0.7
+
+      # If the GitHub Actions Cache backend is unavailable, sccache's server
+      # fails to start and — because it's RUSTC_WRAPPER — hard-fails the whole
+      # job before any crate compiles (observed on run 31117601637: ghac
+      # returned HTTP 400). Probe startup here; if it fails, unset the wrapper
+      # so cargo compiles directly. mold + Swatinem still apply, so the run
+      # stays fast and, crucially, green. This does NOT mask clippy/test
+      # failures — those steps keep their normal non-zero-exit gating.
+      - name: Verify sccache backend (degrade gracefully if ghac is down)
+        run: |
+          if ! sccache --start-server 2>/tmp/sccache_start.log; then
+            echo "::warning::sccache failed to start (ghac backend likely unavailable) — disabling compiler cache for this run"
+            cat /tmp/sccache_start.log || true
+            echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+          fi
 
       - uses: Swatinem/rust-cache@v2
         with:
