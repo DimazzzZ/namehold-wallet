@@ -1,19 +1,19 @@
 //! Tests for `commands::read` — covers `read_balance`, `read_names`,
-//! `read_transactions`, `discover_owned_names`, and `compare_inventory_with_provider`.
+//! and `read_transactions`, `discover_owned_names`.
 //!
 //! The existing `read_profile_isolation_tests` already validates per-profile
 //! isolation for `read_balance` and `read_names`.  This module focuses on
 //! additional code paths: no-profile guard, cached-balance fallback, empty
-//! addresses, transaction reads, and the inventory comparison shape.
+//! addresses, and transaction reads.
 
 use rusqlite::params;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 use crate::commands::read::{
-    compare_inventory_with_provider, discover_owned_names, empty_name_bids_response,
-    merge_name_bids, read_auction_position_names, read_balance, read_name_bids, read_name_info,
-    read_name_records, read_names, read_transactions, records_from_resource,
+    discover_owned_names, empty_name_bids_response, merge_name_bids, read_auction_position_names,
+    read_balance, read_name_bids, read_name_info, read_name_records, read_names, read_transactions,
+    records_from_resource,
 };
 use crate::db;
 use crate::hsd::types::{HsdBid, HsdName};
@@ -301,18 +301,6 @@ async fn read_name_info_exercises_code_path() {
 }
 
 // ---------------------------------------------------------------------------
-// compare_inventory_with_provider — no Namebase credentials → error
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn compare_inventory_no_namebase_credentials_errors() {
-    let app = app_with(empty_db());
-    let result = compare_inventory_with_provider(app.state()).await;
-    // Without Namebase API key/secret, the client construction should fail.
-    assert!(result.is_err(), "expected error for missing credentials");
-}
-
-// ---------------------------------------------------------------------------
 // read_balance — multiple UTXOs sum correctly
 // ---------------------------------------------------------------------------
 
@@ -449,70 +437,6 @@ async fn read_balance_whitespace_profile_falls_back_to_active() {
     let app = app_with(conn);
     let val = read_balance(app.state(), Some("   ".into())).await.unwrap();
     assert_eq!(val["confirmed"], serde_json::json!(200_000));
-}
-
-// ---------------------------------------------------------------------------
-// compare_inventory_with_provider — with mock Namebase
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn compare_inventory_with_provider_matches_and_extras() {
-    let mut server = mockito::Server::new_async().await;
-    let _m = server
-        .mock("GET", "/api/domains")
-        .with_status(200)
-        .with_body(r#"{"domains":[{"name":"alpha"},{"name":"bravo"},{"name":"charlie"}]}"#)
-        .create_async()
-        .await;
-
-    let conn = empty_db();
-    db::queries::set_setting(&conn, "namebase_cookie", "testcookie").unwrap();
-    db::queries::set_setting(&conn, "namebase_base_url", &server.url()).unwrap();
-    conn.execute(
-        "INSERT INTO assets (tld, status) VALUES ('alpha', 'not_started'), ('bravo', 'not_started'), ('delta', 'not_started')",
-        [],
-    ).unwrap();
-
-    let app = app_with(conn);
-    let result = compare_inventory_with_provider(app.state()).await.unwrap();
-    assert!(result.matched_transferable.contains(&"alpha".to_string()));
-    assert!(result.matched_transferable.contains(&"bravo".to_string()));
-    assert!(result.missing_at_provider.contains(&"delta".to_string()));
-    assert!(result.extra_at_provider.contains(&"charlie".to_string()));
-    assert_eq!(result.provider_kind, "namebase");
-    assert_eq!(result.provider_label, "Namebase");
-}
-
-#[tokio::test]
-async fn compare_inventory_with_provider_empty_inventory() {
-    let mut server = mockito::Server::new_async().await;
-    let _m = server
-        .mock("GET", "/api/domains")
-        .with_status(200)
-        .with_body(r#"{"domains":[{"name":"alpha"}]}"#)
-        .create_async()
-        .await;
-
-    let conn = empty_db();
-    db::queries::set_setting(&conn, "namebase_cookie", "testcookie").unwrap();
-    db::queries::set_setting(&conn, "namebase_base_url", &server.url()).unwrap();
-    let app = app_with(conn);
-    let result = compare_inventory_with_provider(app.state()).await.unwrap();
-    assert!(result.matched_transferable.is_empty());
-    assert!(result.missing_at_provider.is_empty());
-    assert_eq!(result.extra_at_provider, vec!["alpha".to_string()]);
-}
-
-#[tokio::test]
-async fn compare_inventory_with_provider_namebase_unreachable() {
-    let conn = empty_db();
-    db::queries::set_setting(&conn, "namebase_cookie", "testcookie").unwrap();
-    db::queries::set_setting(&conn, "namebase_base_url", "http://127.0.0.1:1").unwrap();
-    let app = app_with(conn);
-    let result = compare_inventory_with_provider(app.state()).await;
-    assert!(result.is_err());
-    let err_msg = format!("{}", result.unwrap_err());
-    assert!(err_msg.contains("Couldn't reach Namebase"));
 }
 
 // ---------------------------------------------------------------------------

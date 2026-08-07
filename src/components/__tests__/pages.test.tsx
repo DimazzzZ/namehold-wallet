@@ -3,7 +3,6 @@ import { render } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { Settings } from "../Settings";
-import { SyncVerification } from "../SyncVerification";
 import { WalletView } from "../WalletView";
 import { Layout } from "../Layout";
 import { Onboarding } from "../Onboarding";
@@ -20,11 +19,6 @@ function renderWithProviders(ui: React.ReactElement) {
 describe("Page Components - Smoke Tests", () => {
   it("Settings renders", () => {
     const { container } = renderWithProviders(<Settings />);
-    expect(container).toBeTruthy();
-  });
-
-  it("SyncVerification renders", () => {
-    const { container } = renderWithProviders(<SyncVerification />);
     expect(container).toBeTruthy();
   });
 

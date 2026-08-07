@@ -1071,11 +1071,6 @@ const handlers: Record<string, Handler> = {
 
   // ── Audit / Sync ──────────────────────────────────────────────────────
   get_audit_log: () => [],
-  compare_inventory_with_provider: () => ({
-    matched: [],
-    missing: [],
-    extra: [],
-  }),
 
   // ── Namebase (stubs) ──────────────────────────────────────────────────
   get_namebase_status: () => ({ connected: false, has_cookie: false }),
