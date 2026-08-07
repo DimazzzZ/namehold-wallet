@@ -26,6 +26,7 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   isPermissionGranted: vi.fn().mockResolvedValue(false),
   requestPermission: vi.fn().mockResolvedValue("default"),
 }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
 
 import { Settings } from "../Settings";
 import { useSettingsStore } from "../../stores/settings";
@@ -102,6 +103,8 @@ function loadWithStoredKey() {
       node_mode: "full",
       explorer_fallback_url: "",
       chain_source: "local_node",
+      close_to_tray: "1",
+      launch_at_login: "0",
       // The presence marker the redacted `get_settings` emits when a key is
       // stored server-side. Not part of the Settings type — cast at read time.
       __has_node_rpc_api_key: "true",
@@ -132,6 +135,8 @@ function loadWithoutStoredKey() {
       node_mode: "full",
       explorer_fallback_url: "",
       chain_source: "local_node",
+      close_to_tray: "1",
+      launch_at_login: "0",
     },
   });
 }

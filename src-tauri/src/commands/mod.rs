@@ -5,6 +5,8 @@ pub mod chain_scan;
 pub mod csv;
 pub mod daemon_ctl;
 pub mod deadlines;
+#[cfg(all(debug_assertions, not(test)))]
+pub mod debug_notify;
 pub mod history;
 pub mod namebase;
 pub mod namebase_history;
@@ -17,6 +19,7 @@ pub mod secure_wallet;
 pub mod settings;
 pub mod sync;
 pub mod sync_spv;
+pub mod tray;
 pub mod tx;
 #[cfg(desktop)]
 pub mod updates;

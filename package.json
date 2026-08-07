@@ -17,6 +17,7 @@
     "@tanstack/react-table": "^8.0.0",
     "@tanstack/react-virtual": "^3.0.0",
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-fs": "^2.0.0",

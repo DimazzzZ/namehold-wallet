@@ -31,6 +31,8 @@ const DEFAULT_SETTINGS: Settings = {
   node_mode: "full",
   explorer_fallback_url: "",
   chain_source: "local_node",
+  close_to_tray: "1",
+  launch_at_login: "0",
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

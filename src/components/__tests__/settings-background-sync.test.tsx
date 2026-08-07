@@ -26,6 +26,7 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   isPermissionGranted: vi.fn().mockResolvedValue(false),
   requestPermission: vi.fn().mockResolvedValue("default"),
 }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
 
 import { Settings } from "../Settings";
 import { useSettingsStore } from "../../stores/settings";
@@ -101,6 +102,8 @@ function loadSettings(over: Partial<Record<string, string>> = {}) {
       node_mode: "full",
       explorer_fallback_url: "",
       chain_source: "local_node",
+      close_to_tray: "1",
+      launch_at_login: "0",
       ...over,
     },
   });

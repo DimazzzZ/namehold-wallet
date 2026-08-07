@@ -17,12 +17,26 @@ mod wallet_delete;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{Manager, WindowEvent};
 
 use crate::commands::secure_prompt::PendingPrompt;
 use crate::commands::sync::SyncStatus;
 use crate::noncustodial::session::SignerSession;
 use tokio::sync::Mutex as AsyncMutex;
+
+/// Bring the main window back to the foreground: unminimize, show (in case it
+/// was hidden to tray), and focus. Used by the tray "Open" menu item and by a
+/// left-click on the tray icon. Errors are logged, not propagated — a failed
+/// focus should never crash the event loop.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
 
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
@@ -42,8 +56,30 @@ pub struct AppState {
     pub sync_status: Arc<AsyncMutex<SyncStatus>>,
 }
 
+/// macOS notification sender bundle identifier. Must match `identifier` in
+/// `tauri.conf.json` so the OS attributes notifications to Namehold (name +
+/// icon) instead of the launching process (e.g. Terminal in dev).
+#[cfg(target_os = "macos")]
+const NOTIFY_BUNDLE_ID: &str = "org.zhavoronkov.nameholdwallet";
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // macOS: claim the notification sender identity as Namehold BEFORE the
+    // notification plugin initializes. `notify_rust::set_application` is
+    // `Once`-guarded, so the first caller wins for the whole process. This
+    // pre-empts `tauri-plugin-notification`'s dev-mode fallback, which
+    // otherwise calls `set_application("com.apple.Terminal")` when
+    // `tauri::is_dev()` is true (see the plugin's `desktop.rs`), making both
+    // this app AND the standalone `notify-rust` calls show "Terminal".
+    //
+    // The sender NAME always resolves; the ICON resolves only when the
+    // bundled `.app` is registered with Launch Services (i.e. a built `.app`
+    // has been opened at least once). Release installs register on first
+    // open, so end users always see the Namehold name + icon. Harmless
+    // no-op otherwise — the notification text is always correct.
+    #[cfg(target_os = "macos")]
+    let _ = notify_rust::set_application(NOTIFY_BUNDLE_ID);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -53,6 +89,14 @@ pub fn run() {
         // browser. Without this the Tauri webview silently blocks
         // `window.open` / anchor clicks to external hosts.
         .plugin(tauri_plugin_opener::init())
+        // "Launch at login" toggle in Settings. Uses each OS's native
+        // mechanism: LaunchAgent plist on macOS, HKCU\...\Run on Windows,
+        // .desktop autostart entry on Linux. `None` = no extra args on
+        // autostart (the app starts normally).
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             // Auto-updater (desktop only). The plugin verifies Ed25519
             // signatures against `plugins.updater.pubkey` before installing;
@@ -110,6 +154,163 @@ pub fn run() {
                 hsd_child: Mutex::new(None),
                 sync_status: Arc::new(AsyncMutex::new(SyncStatus::default())),
             });
+
+            // -----------------------------------------------------------------
+            // System tray (menu bar on macOS). Lets the user close the window
+            // while the app keeps running (hsd + background daemon stay alive),
+            // and reopen it, control the node, and quit — all from the tray.
+            // -----------------------------------------------------------------
+            {
+                let open = MenuItem::with_id(app, "open", "Open Namehold", true, None::<&str>)?;
+                // Disabled status label — informational only.
+                let status = MenuItem::with_id(app, "status", "Node: …", false, None::<&str>)?;
+                let toggle =
+                    MenuItem::with_id(app, "toggle_node", "Start Node", true, None::<&str>)?;
+                let bgsync = CheckMenuItem::with_id(
+                    app,
+                    "bgsync",
+                    "Background sync",
+                    true,
+                    false,
+                    None::<&str>,
+                )?;
+                let sep = PredefinedMenuItem::separator(app)?;
+                let quit = MenuItem::with_id(app, "quit", "Quit Namehold", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&open, &status, &toggle, &bgsync, &sep, &quit])?;
+
+                let tray = TrayIconBuilder::with_id("main-tray")
+                    .icon(tauri::include_image!("icons/tray-normal.png"))
+                    // On macOS, treat the icon as a template image so it
+                    // adapts to light/dark menu bar. On other platforms this
+                    // is a no-op. State is conveyed via glyph variants
+                    // (filled / outline / badge) rather than color.
+                    .icon_as_template(true)
+                    .menu(&menu)
+                    // Show the menu on BOTH left and right click. This
+                    // matches every other macOS menu-bar app (Slack, Docker,
+                    // 1Password, etc.) and avoids relying on AppKit to
+                    // deliver a MouseButton::Left / Up event to our handler
+                    // — that event does not reliably fire when a menu is
+                    // attached to the NSStatusItem. "Open Namehold" is the
+                    // first menu item so activating the window is one click
+                    // away.
+                    .show_menu_on_left_click(true)
+                    .on_menu_event(|app, event| {
+                        let app = app.clone();
+                        match event.id().as_ref() {
+                            "open" => show_main_window(&app),
+                            "toggle_node" => {
+                                // Start or stop hsd depending on current state,
+                                // then refresh the tray. Runs on the async
+                                // runtime so we don't block the menu callback.
+                                tauri::async_runtime::spawn(async move {
+                                    let running = {
+                                        let state = app.state::<AppState>();
+                                        state
+                                            .hsd_child
+                                            .lock()
+                                            .ok()
+                                            .map(|g| g.is_some())
+                                            .unwrap_or(false)
+                                    };
+                                    let result = if running {
+                                        commands::node::stop_hsd(app.state::<AppState>())
+                                            .await
+                                            .map(|_| ())
+                                    } else {
+                                        commands::node::start_hsd(app.state::<AppState>())
+                                            .await
+                                            .map(|_| ())
+                                    };
+                                    if let Err(e) = result {
+                                        eprintln!("tray: toggle node failed: {e}");
+                                    }
+                                    commands::tray::refresh_tray(&app);
+                                });
+                            }
+                            "bgsync" => {
+                                tauri::async_runtime::spawn(async move {
+                                    // Flip based on the current persisted value.
+                                    let currently_on = {
+                                        let state = app.state::<AppState>();
+                                        commands::daemon_ctl::is_background_sync_enabled(state)
+                                            .await
+                                            .unwrap_or(true)
+                                    };
+                                    if let Err(e) =
+                                        commands::daemon_ctl::set_background_sync_enabled(
+                                            app.state::<AppState>(),
+                                            !currently_on,
+                                        )
+                                        .await
+                                    {
+                                        eprintln!("tray: toggle background sync failed: {e}");
+                                    }
+                                    commands::tray::refresh_tray(&app);
+                                });
+                            }
+                            "quit" => {
+                                commands::tray::REALLY_QUITTING
+                                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                                app.exit(0);
+                            }
+                            _ => {}
+                        }
+                    })
+                    .build(app)?;
+
+                app.manage(commands::tray::TrayState {
+                    tray,
+                    status,
+                    toggle,
+                    bgsync,
+                });
+
+                // Intercept the MAIN window's close button. When "close to
+                // tray" is on (default) and we're not in a real quit, hide the
+                // window instead of closing it — hsd and the daemon keep
+                // running, and the tray icon brings the window back. When the
+                // setting is off, exit explicitly so `RunEvent::Exit` fires and
+                // the hsd-reap path runs (on macOS, closing the last window
+                // does NOT terminate the process on its own).
+                if let Some(win) = app.get_webview_window("main") {
+                    let handle = app.handle().clone();
+                    win.on_window_event(move |event| {
+                        if let WindowEvent::CloseRequested { api, .. } = event {
+                            if commands::tray::REALLY_QUITTING
+                                .load(std::sync::atomic::Ordering::SeqCst)
+                            {
+                                return; // Real quit in progress — let it close.
+                            }
+                            if commands::tray::read_close_to_tray_setting(&handle) {
+                                api.prevent_close();
+                                if let Some(w) = handle.get_webview_window("main") {
+                                    let _ = w.hide();
+                                }
+                            } else {
+                                handle.exit(0);
+                            }
+                        }
+                    });
+                }
+
+                // Initial paint, then a light ticker. The ticker is the
+                // reconciliation path for tray state that changes WITHOUT going
+                // through a tray menu action: the frontend calling
+                // `start_hsd`/`stop_hsd`/`set_background_sync_enabled` via
+                // invoke, hsd autostart at launch, and passive sync-progress
+                // transitions. Tray-initiated actions refresh eagerly in their
+                // own handlers, so this only needs to be "reasonably fresh".
+                let handle = app.handle().clone();
+                commands::tray::refresh_tray(&handle);
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
+                    loop {
+                        interval.tick().await;
+                        commands::tray::refresh_tray(&handle);
+                    }
+                });
+            }
 
             // Deadline scanner (I1): on start + every ~10 minutes, look for
             // reveal windows / renewals closing soon and fire an OS
@@ -268,6 +469,8 @@ pub fn run() {
             commands::daemon_ctl::is_background_sync_enabled,
             commands::daemon_ctl::set_background_sync_enabled,
             commands::daemon_ctl::is_daemon_alive,
+            commands::tray::is_close_to_tray_enabled,
+            commands::tray::set_close_to_tray_enabled,
             commands::secure_prompt::secure_prompt_fetch,
             commands::secure_prompt::secure_prompt_submit,
             commands::secure_wallet::secure_create_wallet,
@@ -327,6 +530,8 @@ pub fn run() {
             commands::paid_swaps::claim_paid_transfer,
             commands::paid_swaps::remove_paid_swap_offer,
             commands::deadlines::scan_deadline_notifications,
+            #[cfg(all(debug_assertions, not(test)))]
+            commands::debug_notify::simulate_notification,
             #[cfg(desktop)]
             commands::updates::app_updates::check_for_update,
             #[cfg(desktop)]

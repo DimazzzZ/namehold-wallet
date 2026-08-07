@@ -3,6 +3,22 @@
 ## [Unreleased]
 
 ### Added
+- **System tray / menu-bar presence** — Namehold now lives in the system tray
+  so it keeps running (local hsd node + background sync daemon alive) when the
+  main window is closed. The tray menu offers **Open Namehold**, a live node
+  status label with a **Start/Stop node** toggle, a **Sync in background**
+  checkbox, and **Quit**. A new **System Tray** section in Settings adds two
+  toggles: **Close to tray** (default ON — closing the window hides it instead
+  of quitting; click the tray icon or use Open to restore) and **Launch at
+  login** (registers the app to auto-start, via `tauri-plugin-autostart`:
+  LaunchAgent on macOS, Run key on Windows, `.desktop` on Linux). The tray
+  icon reflects node state with three variants (normal / syncing / stopped),
+  rendered as a macOS template image so it adapts to light/dark menu bars. A
+  3-second reconciliation ticker keeps the tray in sync with changes made
+  outside it (frontend actions, hsd autostart, sync transitions). New Tauri
+  commands: `is_close_to_tray_enabled`, `set_close_to_tray_enabled`. New
+  settings keys: `close_to_tray`, `launch_at_login`.
+
 - **Recover lost bids from any hsd wallet** — if you reinstall, seed-restore,
   or import a bid from another hsd-compatible wallet, Namehold can recover the
   bid value without you remembering the exact amount. The Name Actions modal
@@ -88,9 +104,7 @@
   within the last 5 minutes. The daemon is the sole notifier — the in-app
   scanner still owns reveal/renewal deadlines for names you've bid on or own,
   so there's no double-fire. Alerts fire even when the Namehold app is closed
-  (as long as background sync is enabled). macOS caveat: the daemon binary
-  runs unbundled, so its notifications may show a generic sender rather than
-  the Namehold app icon; the alert text is unaffected. New Tauri command:
+  (as long as background sync is enabled). New Tauri command:
   `get_watched_states` (read-only, hydrates the columns without RPC on first
   page open — currently unwired on the frontend; columns hydrate via
   `read_name_info`). New settings keys: `watchlist_notify_enabled`,
@@ -111,6 +125,15 @@
   add-name/look-up inputs and their adjacent buttons.
 
 ### Fixed
+- **macOS notification sender identity** — OS notifications from the
+  background sync daemon (`namehold-syncd`) now attribute to **Namehold**
+  instead of "Terminal" / Finder / a generic sender. Because the daemon runs
+  unbundled (no Tauri `AppHandle`), it now claims the Namehold bundle ID via a
+  `Once`-guarded `ensure_notify_identity()` before emitting; the Tauri app
+  pre-empts the same identity before the notification plugin initializes. A
+  new **Debug Notifications** panel in Settings (debug builds only) fires each
+  notification path on demand for verification, backed by the
+  `#[cfg(debug_assertions)]` `simulate_notification` Tauri command.
 - **TldInventory bulk Transfer/Finalize** — bulk actions on N selected names
   now actually operate on all N, not just the first. Transfer loops N single
   transactions (per-name recipient safety); Finalize uses the batch draft

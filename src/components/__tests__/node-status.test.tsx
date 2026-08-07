@@ -13,6 +13,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn(),
   readText: vi.fn().mockResolvedValue(""),
 }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
 
 import { Settings } from "../Settings";
 import { StatusStrip } from "../ui/StatusStrip";
@@ -115,6 +116,8 @@ function loadSettings(over: Partial<Record<string, string>> = {}) {
       node_mode: "full",
       explorer_fallback_url: "",
       chain_source: "local_node",
+      close_to_tray: "1",
+      launch_at_login: "0",
       ...over,
     },
   });

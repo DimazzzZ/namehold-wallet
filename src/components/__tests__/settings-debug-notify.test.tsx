@@ -1,12 +1,12 @@
 /**
- * Settings — Watchlist notifications section.
+ * Settings — dev-only Debug notifications panel.
  *
- * Verifies the three keys (`watchlist_notify_enabled`,
- * `watchlist_notify_bidding_soon_lead_blocks`,
- * `watchlist_notify_highest_bid_threshold_hns`) round-trip through the
- * Settings form and the underlying `update_setting` command.
+ * Verifies the panel renders under a Tauri runtime in dev, and that clicking
+ * a kind button invokes the `simulate_notification` command with the right
+ * `kind`. The underlying Rust command is `#[cfg(all(debug_assertions,
+ * not(test)))]`-gated; this test only exercises the frontend wiring.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import "@testing-library/jest-dom";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -22,10 +22,14 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   readText: vi.fn().mockResolvedValue(""),
 }));
 vi.mock("@tauri-apps/plugin-notification", () => ({
-  isPermissionGranted: vi.fn().mockResolvedValue(false),
+  isPermissionGranted: vi.fn().mockResolvedValue(true),
   requestPermission: vi.fn().mockResolvedValue("granted"),
 }));
-vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({
+  enable: vi.fn().mockResolvedValue(undefined),
+  disable: vi.fn().mockResolvedValue(undefined),
+  isEnabled: vi.fn().mockResolvedValue(false),
+}));
 
 import { Settings } from "../Settings";
 import { useSettingsStore } from "../../stores/settings";
@@ -59,6 +63,8 @@ function route(cmd: string) {
         canWrite: false,
         reason: null,
       });
+    case "simulate_notification":
+      return Promise.resolve(null);
     case "update_setting":
       return Promise.resolve(null);
     default:
@@ -111,57 +117,31 @@ beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockImplementation(route);
   loadSettings();
+  // The panel gates on isTauri(): pretend we're inside a Tauri shell.
+  (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
 });
 
-describe("Settings — Watchlist notifications", () => {
-  it("renders the enable toggle unchecked by default", async () => {
+afterEach(() => {
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+});
+
+describe("Settings — Debug notifications panel", () => {
+  it("renders the dev-only panel with a button per kind", async () => {
     render(<Settings />, { wrapper: wrapper() });
-    const box = await screen.findByTestId("watchlist-notify-toggle");
-    expect(box).not.toBeChecked();
+    expect(await screen.findByTestId("debug-notifications-panel")).toBeInTheDocument();
+    for (const kind of ["reveal", "renewal", "bidding", "reopened", "bidding_soon", "highbid"]) {
+      expect(screen.getByTestId(`sim-notify-${kind}`)).toBeInTheDocument();
+    }
   });
 
-  it("shows the lead-time and threshold inputs only when enabled", async () => {
-    loadSettings({ watchlist_notify_enabled: "true" });
+  it("invokes simulate_notification with the clicked kind", async () => {
     render(<Settings />, { wrapper: wrapper() });
-    expect(await screen.findByTestId("watchlist-notify-bidding-lead-input")).toBeInTheDocument();
-    expect(await screen.findByTestId("watchlist-notify-highbid-input")).toBeInTheDocument();
-  });
-
-  it("persists all three keys via update_setting when Save is clicked", async () => {
-    render(<Settings />, { wrapper: wrapper() });
-
-    // Enable
-    const toggle = await screen.findByTestId("watchlist-notify-toggle");
-    fireEvent.click(toggle);
-
-    // Change the two numeric fields.
-    const leadInput = await screen.findByTestId("watchlist-notify-bidding-lead-input");
-    fireEvent.change(leadInput, { target: { value: "72" } });
-    const highbidInput = await screen.findByTestId("watchlist-notify-highbid-input");
-    fireEvent.change(highbidInput, { target: { value: "250" } });
-
-    const save = await screen.findByRole("button", { name: /Save settings/i });
-    fireEvent.click(save);
-
+    const btn = await screen.findByTestId("sim-notify-bidding");
+    fireEvent.click(btn);
     await waitFor(() => {
-      const findCall = (key: string) =>
-        invokeMock.mock.calls.find(
-          (c) =>
-            c[0] === "update_setting" &&
-            (c[1] as { key?: string })?.key === key,
-        );
-      expect(findCall("watchlist_notify_enabled")?.[1]).toEqual({
-        key: "watchlist_notify_enabled",
-        value: "true",
-      });
-      expect(findCall("watchlist_notify_bidding_soon_lead_blocks")?.[1]).toEqual({
-        key: "watchlist_notify_bidding_soon_lead_blocks",
-        value: "72",
-      });
-      expect(findCall("watchlist_notify_highest_bid_threshold_hns")?.[1]).toEqual({
-        key: "watchlist_notify_highest_bid_threshold_hns",
-        value: "250",
-      });
+      const call = invokeMock.mock.calls.find((c) => c[0] === "simulate_notification");
+      expect(call?.[1]).toEqual({ kind: "bidding" });
     });
+    expect(await screen.findByTestId("debug-notify-status")).toHaveTextContent(/Fired: bidding/i);
   });
-});
+})
