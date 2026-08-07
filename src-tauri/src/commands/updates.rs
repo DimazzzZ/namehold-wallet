@@ -177,14 +177,14 @@ pub mod app_updates {
         fn update_metadata_serializes_camel_case() {
             // Guard the wire shape the TS `UpdateMetadata` type depends on.
             let meta = UpdateMetadata {
-                version: "0.4.0".into(),
-                current_version: "0.3.0".into(),
+                version: "0.5.0".into(),
+                current_version: "0.4.0".into(),
                 notes: Some("fixes".into()),
                 date: None,
             };
             let v = serde_json::to_value(&meta).unwrap();
-            assert_eq!(v["version"], "0.4.0");
-            assert_eq!(v["currentVersion"], "0.3.0");
+            assert_eq!(v["version"], "0.5.0");
+            assert_eq!(v["currentVersion"], "0.4.0");
             assert_eq!(v["notes"], "fixes");
             assert!(v["date"].is_null());
         }

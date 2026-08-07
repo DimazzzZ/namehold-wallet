@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+(No changes yet.)
+
+## [0.4.0] - 2026-08-07
+
 ### Added
 - **System tray / menu-bar presence** — Namehold now lives in the system tray
   so it keeps running (local hsd node + background sync daemon alive) when the
@@ -124,6 +128,14 @@
   `Select` components. Fixes the visible ~10px height gap between the
   add-name/look-up inputs and their adjacent buttons.
 
+- **Inline node lifecycle actions.** The StatusStrip node pill now opens a
+  popover menu with **Start node** / **Stop node** / **Re-sync chain** actions
+  (plus an "Open Settings" escape hatch), replacing the old Settings link. The
+  WalletView "needs node sync" callout has an inline **Start node** button
+  with an "Open Settings" fallback on failure. The update-installed banner
+  shows a **Relaunch now** button instead of directing users to Settings.
+  New reusable `Popover` component (`src/components/ui/Popover.tsx`).
+
 ### Fixed
 - **macOS notification sender identity** — OS notifications from the
   background sync daemon (`namehold-syncd`) now attribute to **Namehold**
@@ -149,12 +161,32 @@
   urgent auction tasks — data may be stale." banner no longer appears during
   transient query hiccups while the node is synced; it only shows when the
   node is actually offline.
+- **Unicode/IDN name lookup** — the "Get a TLD" input now accepts Unicode
+  characters (e.g. `сбер`, `münchen`) and encodes them to ACE (Punycode) at
+  lookup time, instead of silently stripping non-ASCII input. Added `tr46`
+  UTS-46 processing library and `src/lib/idnEncode.ts` module.
 
 ### Removed
 - **Dead migration UI** — `SyncVerification` and `MigrationAssistant`
   components (plus their test) and the `compare_inventory_with_provider`
   backend command have been removed. These were scaffolding for a one-time
   Namebase migration flow that is no longer needed.
+
+### CI / tooling
+- **sccache + mold linker + debuginfo thinning** — CI cold-compile speedup
+  via distributed compilation caching (`sccache`), the `mold` linker for
+  faster linking, and stripped debuginfo in CI builds.
+- **Parallel rust-lint + rust-test jobs, nextest adoption** — lint and test
+  run concurrently; `cargo-nextest` replaces `cargo test` for per-test
+  parallelism and structured output.
+- **Fast/full lane split** — PR pushes run a fast lane (subset of tests);
+  pushes to `main` run the full suite. Configured via `nextest.toml`.
+- **sccache resilience** — graceful degradation when the GHA cache backend
+  is unreachable; CI continues uncached rather than failing.
+- **Argon2id test-mode cost reduction** — `cfg(test)` drops KDF from 256 MiB
+  to 8 MiB, cutting vault-related tests from ~50s to <0.25s each.
+- **Per-process temp DB paths** — fixes nextest parallelism flakes where
+  concurrent test processes collided on the same SQLite file.
 
 ## [0.3.0] - 2026-07-29
 

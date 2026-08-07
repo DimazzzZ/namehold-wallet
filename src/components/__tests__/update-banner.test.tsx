@@ -47,8 +47,8 @@ describe("UpdateBanner — 'What's new?' button", () => {
     useAppUpdate.setState({
       phase: "available",
       available: {
-        version: "0.4.0",
-        currentVersion: "0.3.0",
+        version: "0.5.0",
+        currentVersion: "0.4.0",
         notes: null,
         date: null,
       },
@@ -61,8 +61,8 @@ describe("UpdateBanner — 'What's new?' button", () => {
     useAppUpdate.setState({
       phase: "available",
       available: {
-        version: "0.4.0",
-        currentVersion: "0.3.0",
+        version: "0.5.0",
+        currentVersion: "0.4.0",
         notes: "## What's Changed\n- Fixed X\n- Added Y",
         date: "2026-07-27",
       },
@@ -75,8 +75,8 @@ describe("UpdateBanner — 'What's new?' button", () => {
     useAppUpdate.setState({
       phase: "available",
       available: {
-        version: "0.4.0",
-        currentVersion: "0.3.0",
+        version: "0.5.0",
+        currentVersion: "0.4.0",
         notes: "## What's Changed\n- Fixed X",
         date: "2026-07-27",
       },
@@ -85,15 +85,15 @@ describe("UpdateBanner — 'What's new?' button", () => {
     expect(screen.queryByTestId("whats-new-modal")).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId("update-banner-whats-new"));
     expect(screen.getByTestId("whats-new-modal")).toBeInTheDocument();
-    expect(screen.getByText(/What's new in v0\.4\.0/)).toBeInTheDocument();
+    expect(screen.getByText(/What's new in v0\.5\.0/)).toBeInTheDocument();
   });
 
   it("closes the modal when the X button is clicked", () => {
     useAppUpdate.setState({
       phase: "available",
       available: {
-        version: "0.4.0",
-        currentVersion: "0.3.0",
+        version: "0.5.0",
+        currentVersion: "0.4.0",
         notes: "## What's Changed\n- Fixed X",
         date: "2026-07-27",
       },
@@ -113,8 +113,8 @@ describe("UpdateBanner — installed phase Relaunch", () => {
     useAppUpdate.setState({
       phase: "installed",
       available: {
-        version: "0.4.0",
-        currentVersion: "0.3.0",
+        version: "0.5.0",
+        currentVersion: "0.4.0",
         notes: null,
         date: null,
       },
