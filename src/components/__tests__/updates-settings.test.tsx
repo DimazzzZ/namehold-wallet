@@ -32,6 +32,7 @@ vi.mock("../../lib/runtime", () => ({
   isTauri: () => true,
   isBrowser: () => false,
 }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
 
 import { UpdatesSettings } from "../UpdatesSettings";
 import { useAppUpdate } from "../../hooks/useAppUpdate";

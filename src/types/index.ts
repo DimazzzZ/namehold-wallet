@@ -316,6 +316,20 @@ export interface Settings {
    * Determines whether node_mode dropdown is visible.
    */
   chain_source: string;
+  /**
+   * "1" | "0" — closing the main window hides it to the system tray (menu bar
+   * on macOS) instead of quitting the app. Default "1" (on). Turn off to get
+   * classic "close = quit" behavior. Applies immediately (no restart needed).
+   */
+  close_to_tray: string;
+  /**
+   * "1" | "0" — start Namehold automatically when you log in to your OS.
+   * Default "0" (off). Persisted through `tauri-plugin-autostart`, which uses
+   * the OS's native mechanism: LaunchAgent plist (macOS), HKCU Run key
+   * (Windows), or .desktop entry (Linux). Independent of `close_to_tray`; the
+   * usual pairing is both on for a "always-there menu-bar app" experience.
+   */
+  launch_at_login: string;
 }
 
 // ---------------------------------------------------------------------------

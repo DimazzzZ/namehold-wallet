@@ -15,6 +15,11 @@ import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
 import { useUiStore } from "../stores/ui";
 import { UpdatesSettings } from "./UpdatesSettings";
+import {
+  enable as enableAutostart,
+  disable as disableAutostart,
+  isEnabled as isAutostartEnabled,
+} from "@tauri-apps/plugin-autostart";
 
 /**
  * Validate the explorer base URL field (Task 11 / S1). Empty is allowed —
@@ -74,9 +79,36 @@ export function Settings() {
           settings.watchlist_notify_bidding_soon_lead_blocks,
         watchlist_notify_highest_bid_threshold_hns:
           settings.watchlist_notify_highest_bid_threshold_hns,
+        close_to_tray: settings.close_to_tray,
+        launch_at_login: settings.launch_at_login,
       });
     }
   }, [settings]);
+
+  // On mount, check the OS autostart state and reconcile with our DB.
+  // If they differ, the OS state is authoritative (the user may have toggled
+  // it via System Preferences), so update our DB to match.
+  useEffect(() => {
+    if (!isTauri()) return; // Skip on web.
+    const syncAutostart = async () => {
+      try {
+        const osEnabled = await isAutostartEnabled();
+        const dbEnabled = form.launch_at_login === "1";
+        if (osEnabled !== dbEnabled) {
+          // Reconcile: update our DB to match the OS state.
+          await invoke("update_setting", {
+            key: "launch_at_login",
+            value: osEnabled ? "1" : "0",
+          });
+          updateField("launch_at_login", osEnabled ? "1" : "0");
+        }
+      } catch (err) {
+        // Autostart plugin may not be available on all platforms or in dev.
+        // Silent no-op — the checkbox reflects the DB value, which is safe.
+      }
+    };
+    syncAutostart();
+  }, []); // Run once on mount.
 
   if (!loaded || !settings) {
     return <div className="text-gray-500">Loading settings...</div>;
@@ -344,6 +376,69 @@ export function Settings() {
         </div>
       </div>
 
+      {/* System tray: close-to-tray + launch-at-login. Both toggles apply
+          immediately (no Save button) because they have side effects the user
+          should see right away. */}
+      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-700">System Tray</h3>
+
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={form.close_to_tray === "1"}
+            onChange={async (e) => {
+              const enabled = e.target.checked;
+              updateField("close_to_tray", enabled ? "1" : "0");
+              try {
+                await invoke("set_close_to_tray_enabled", { enabled });
+              } catch (err) {
+                updateField("close_to_tray", enabled ? "0" : "1");
+                showToast(`Failed to toggle close-to-tray: ${err}`, "error");
+              }
+            }}
+            data-testid="close-to-tray-checkbox"
+          />
+          Close to tray (keep running in background)
+        </label>
+        <div className="text-xs text-gray-500">
+          When enabled, closing the window hides Namehold to the menu bar
+          instead of quitting. The node and background sync keep running.
+          Click the tray icon to reopen, or use Quit from the tray menu.
+        </div>
+
+        <label className="flex items-center gap-2 text-sm pt-2">
+          <input
+            type="checkbox"
+            checked={form.launch_at_login === "1"}
+            onChange={async (e) => {
+              const enabled = e.target.checked;
+              updateField("launch_at_login", enabled ? "1" : "0");
+              try {
+                if (enabled) {
+                  await enableAutostart();
+                } else {
+                  await disableAutostart();
+                }
+                // Persist in our settings DB so the checkbox reflects reality
+                // on next load (the OS mechanism is the source of truth for
+                // whether it actually launches, but we need a local record for
+                // the checkbox state).
+                await invoke("update_setting", { key: "launch_at_login", value: enabled ? "1" : "0" });
+              } catch (err) {
+                updateField("launch_at_login", enabled ? "0" : "1");
+                showToast(`Failed to toggle launch at login: ${err}`, "error");
+              }
+            }}
+            data-testid="launch-at-login-checkbox"
+          />
+          Launch at login
+        </label>
+        <div className="text-xs text-gray-500">
+          Start Namehold automatically when you log in. Pairs well with
+          &quot;Close to tray&quot; for an always-available menu-bar experience.
+        </div>
+      </div>
+
       {/* Backup: bid commitments (value/blind/nonce) are the only off-chain
           copy — losing the DB row without a backup can make an in-flight
           lockup unrecoverable. */}
@@ -392,6 +487,29 @@ export function Settings() {
         <WatchlistNotificationSettings form={form} updateField={updateField} />
       </div>
 
+      {/* Debug notifications: dev-only. Fires the app's real OS notifications
+          on demand so both dispatch backends (Tauri plugin for deadlines,
+          notify-rust for watchlist) can be verified visually. Compiled out
+          of production bundles via `import.meta.env.DEV`; the underlying
+          `simulate_notification` command is also debug-gated on the Rust
+          side (`#[cfg(debug_assertions)]`). */}
+      {import.meta.env.DEV && isTauri() && (
+        <div
+          className="bg-white rounded p-4 border border-gray-200 space-y-3"
+          data-testid="debug-notifications-panel"
+        >
+          <h3 className="text-sm font-semibold text-gray-700">
+            Debug notifications (dev only)
+          </h3>
+          <div className="text-xs text-gray-500">
+            Fires each real OS notification with a sample payload. Uses the
+            same code paths the deadline scanner and watchlist daemon use, so
+            what you see is what a real user would see.
+          </div>
+          <DebugNotificationsPanel />
+        </div>
+      )}
+
       {/* Updates: shows the running version and drives the check-for-updates
           flow (shared state with the global update banner). */}
       <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
@@ -426,6 +544,89 @@ export function Settings() {
             {saving ? "Saving…" : "Save settings"}
           </Button>
         </StickyFooter>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Dev-only debug panel: one button per real notification kind. Each button
+ * requests OS permission (must happen from this user gesture) and then
+ * calls the debug-gated Tauri command `simulate_notification`, which
+ * dispatches through the exact real backend the corresponding scanner uses
+ * (Tauri plugin for reveal/renewal, notify-rust for the four watchlist
+ * kinds). Any delivery error returned by the OS is surfaced inline —
+ * matching how the deadline scanner already reports `delivery_error`.
+ */
+type SimKind =
+  | "reveal"
+  | "renewal"
+  | "bidding"
+  | "reopened"
+  | "bidding_soon"
+  | "highbid";
+
+const SIM_KINDS: Array<{ kind: SimKind; label: string; family: "Deadline" | "Watchlist" }> = [
+  { kind: "reveal", label: "Reveal window closing", family: "Deadline" },
+  { kind: "renewal", label: "Renewal due soon", family: "Deadline" },
+  { kind: "bidding", label: "Bidding open", family: "Watchlist" },
+  { kind: "reopened", label: "Re-opened / available", family: "Watchlist" },
+  { kind: "bidding_soon", label: "Bidding opens soon", family: "Watchlist" },
+  { kind: "highbid", label: "Highest bid crossed", family: "Watchlist" },
+];
+
+function DebugNotificationsPanel() {
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState<SimKind | null>(null);
+
+  const fire = async (kind: SimKind) => {
+    setBusy(kind);
+    setStatus(null);
+    try {
+      // macOS requires the permission request to originate from a user
+      // gesture; the button click qualifies.
+      const perm = await requestNotificationPermission();
+      if (perm === "denied") {
+        setStatus(`Permission denied — enable OS notifications for this app.`);
+        return;
+      }
+      const deliveryError = await invoke<string | null>("simulate_notification", { kind });
+      if (deliveryError) {
+        setStatus(`Delivery error: ${deliveryError}`);
+      } else {
+        setStatus(`Fired: ${kind}`);
+      }
+    } catch (e) {
+      setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2">
+        {SIM_KINDS.map(({ kind, label, family }) => (
+          <Button
+            key={kind}
+            variant="secondary"
+            onClick={() => fire(kind)}
+            disabled={busy !== null}
+            data-testid={`sim-notify-${kind}`}
+          >
+            <span className="text-xs">
+              <span className="text-gray-400">[{family}]</span> {label}
+            </span>
+          </Button>
+        ))}
+      </div>
+      {status && (
+        <div
+          className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded p-2"
+          data-testid="debug-notify-status"
+        >
+          {status}
+        </div>
       )}
     </div>
   );
