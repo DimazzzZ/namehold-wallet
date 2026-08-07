@@ -49,7 +49,8 @@ impl Drop for TempDb {
 
 fn seeded_db() -> TempDb {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let path = std::env::temp_dir().join(format!("namehold_expsync_test_{n}.db"));
+    let pid = std::process::id();
+    let path = std::env::temp_dir().join(format!("namehold_expsync_test_{pid}_{n}.db"));
     let _ = std::fs::remove_file(&path);
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
