@@ -268,7 +268,6 @@ pub fn run() {
             commands::daemon_ctl::is_background_sync_enabled,
             commands::daemon_ctl::set_background_sync_enabled,
             commands::daemon_ctl::is_daemon_alive,
-            commands::read::compare_inventory_with_provider,
             commands::secure_prompt::secure_prompt_fetch,
             commands::secure_prompt::secure_prompt_submit,
             commands::secure_wallet::secure_create_wallet,

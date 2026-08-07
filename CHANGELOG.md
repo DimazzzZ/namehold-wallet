@@ -127,6 +127,12 @@
   transient query hiccups while the node is synced; it only shows when the
   node is actually offline.
 
+### Removed
+- **Dead migration UI** — `SyncVerification` and `MigrationAssistant`
+  components (plus their test) and the `compare_inventory_with_provider`
+  backend command have been removed. These were scaffolding for a one-time
+  Namebase migration flow that is no longer needed.
+
 ## [0.3.0] - 2026-07-29
 
 ### Changed
