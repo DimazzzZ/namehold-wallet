@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { useAppUpdate } from "../hooks/useAppUpdate";
+import { useAppUpdate, relaunchApp } from "../hooks/useAppUpdate";
+import { useUiStore } from "../stores/ui";
+import { mapError } from "../lib/errors";
 import { isTauri } from "../lib/runtime";
 import { WhatsNewModal } from "./WhatsNewModal";
 
@@ -15,6 +17,23 @@ export function UpdateBanner() {
   const { phase, available, progress, dismissedVersion, check, install, dismiss } =
     useAppUpdate();
   const [showNotes, setShowNotes] = useState(false);
+  const [relaunching, setRelaunching] = useState(false);
+  const showToast = useUiStore((s) => s.showToast);
+
+  const handleRelaunch = async () => {
+    if (relaunching) return;
+    setRelaunching(true);
+    try {
+      await relaunchApp();
+      // Success = the process is being replaced; we won't get here in
+      // practice, but keep the flag set so the button stays disabled.
+    } catch (e) {
+      // relaunchApp only fails when the tauri IPC itself errors — surface
+      // the reason so the user isn't stuck staring at a dead button.
+      setRelaunching(false);
+      showToast(mapError(e), "error");
+    }
+  };
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -88,9 +107,26 @@ export function UpdateBanner() {
       )}
 
       {phase === "installed" && (
-        <span className="text-green-800">
-          Update installed — restart from Settings.
-        </span>
+        <>
+          <span className="text-green-800">Update installed.</span>
+          <button
+            type="button"
+            className="underline font-medium hover:no-underline"
+            onClick={() => void handleRelaunch()}
+            disabled={relaunching}
+            data-testid="update-banner-relaunch"
+          >
+            {relaunching ? "Relaunching…" : "Relaunch now"}
+          </button>
+          <button
+            type="button"
+            className="text-blue-800/70 hover:text-blue-900"
+            onClick={() => dismiss()}
+            data-testid="update-banner-installed-later"
+          >
+            Later
+          </button>
+        </>
       )}
       </div>
       <WhatsNewModal

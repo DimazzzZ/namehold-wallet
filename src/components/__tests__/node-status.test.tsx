@@ -429,3 +429,66 @@ describe("Settings — bid backup export (Task 2 / C2)", () => {
     expect(writeTextFile).not.toHaveBeenCalled();
   });
 });
+
+describe("StatusStrip Node pill menu", () => {
+  it("shows Start node when offline", async () => {
+    invokeMock.mockImplementation(route(nodeStatus()));
+    render(<StatusStrip />, { wrapper: wrapper() });
+
+    const pill = await screen.findByTestId("status-strip-node");
+    fireEvent.click(pill);
+
+    expect(await screen.findByTestId("status-strip-node-start")).toBeInTheDocument();
+    expect(screen.queryByTestId("status-strip-node-stop")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("status-strip-node-resync")).not.toBeInTheDocument();
+  });
+
+  it("shows Stop and Re-sync when connected", async () => {
+    invokeMock.mockImplementation(route(nodeStatus({ connected: true, process_alive: true, height: 100 })));
+    render(<StatusStrip />, { wrapper: wrapper() });
+
+    const pill = await screen.findByTestId("status-strip-node");
+    fireEvent.click(pill);
+
+    expect(await screen.findByTestId("status-strip-node-stop")).toBeInTheDocument();
+    expect(screen.getByTestId("status-strip-node-resync")).toBeInTheDocument();
+    expect(screen.queryByTestId("status-strip-node-start")).not.toBeInTheDocument();
+  });
+
+  it("Start node calls start_hsd", async () => {
+    invokeMock.mockImplementation(route(nodeStatus()));
+    render(<StatusStrip />, { wrapper: wrapper() });
+
+    const pill = await screen.findByTestId("status-strip-node");
+    fireEvent.click(pill);
+
+    const startBtn = await screen.findByTestId("status-strip-node-start");
+    fireEvent.click(startBtn);
+
+    await waitFor(() => {
+      expect(invokeMock.mock.calls.map((c) => c[0])).toContain("start_hsd");
+    });
+  });
+
+  it("always shows Open Settings as a secondary action", async () => {
+    invokeMock.mockImplementation(route(nodeStatus()));
+    render(<StatusStrip />, { wrapper: wrapper() });
+
+    const pill = await screen.findByTestId("status-strip-node");
+    fireEvent.click(pill);
+
+    expect(await screen.findByTestId("status-strip-node-settings")).toBeInTheDocument();
+  });
+
+  it("Sending pill still navigates to /settings (no menu)", async () => {
+    invokeMock.mockImplementation(route(nodeStatus({ connected: true, process_alive: true, height: 100 })));
+    render(<StatusStrip />, { wrapper: wrapper() });
+
+    // Sending pill should be a plain button, not a popover trigger.
+    const sendingPill = await screen.findByText("Sending:");
+    const sendingBtn = sendingPill.closest("button")!;
+    // Clicking it should NOT open a menu (no role=menu appears).
+    fireEvent.click(sendingBtn);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+});

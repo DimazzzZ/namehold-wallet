@@ -24,7 +24,7 @@ import {
   useActionHistory,
 } from "../queries/read";
 import { useStartFullSync, useSyncStatus, useCancelFullSync } from "../queries/sync";
-import { useNodeLive } from "../queries/node";
+import { useNodeLive, useStartHsd } from "../queries/node";
 import { useSyncTriggerStore } from "../stores/syncTrigger";
 import { auctionPhase, formatCountdown } from "../lib/auction";
 import { displayName } from "../lib/idn";
@@ -109,6 +109,7 @@ export function WalletView() {
   );
 
   const startSync = useStartFullSync();
+  const startHsd = useStartHsd();
   const cancelSync = useCancelFullSync();
   const syncStatus = useSyncStatus();
   const manualSync = useSyncTriggerStore((s) => s.manualSync);
@@ -134,6 +135,10 @@ export function WalletView() {
   // persistent in-dialog error (not just a transient toast) and keep the dialog
   // open so the user can see exactly what happened before deciding to retry.
   const [sendError, setSendError] = useState<string | null>(null);
+  // When the inline "Start node" in the needs-node-sync callout fails, we
+  // reveal an "Open Settings" escape hatch right in the callout (the happy
+  // path never navigates). Reset whenever the callout is re-attempted.
+  const [startNodeFailed, setStartNodeFailed] = useState(false);
   const navigate = useNavigate();
   const [manageName, setManageName] = useState<string | null>(null);
   const [infoName, setInfoName] = useState<string | null>(null);
@@ -352,6 +357,31 @@ export function WalletView() {
       await cancelSync.mutateAsync();
       showToast("Stopping sync…", "info");
     } catch (e) {
+      showToast(mapError(e), "error");
+    }
+  };
+
+  // "Start node" from the needs-node-sync callout. Fulfils the old copy's
+  // promise ("connect a node and Refresh") in one click: start hsd, then
+  // trigger a full sync (same signal path as the Refresh button). On
+  // failure, surface a toast and reveal an "Open Settings" link inline.
+  const handleStartNodeAndSync = async () => {
+    setStartNodeFailed(false);
+    try {
+      await startHsd.mutateAsync();
+    } catch (e) {
+      setStartNodeFailed(true);
+      showToast(mapError(e), "error");
+      return;
+    }
+    try {
+      setManualSync(true);
+      await startSync.mutateAsync();
+      showToast("Node started — syncing your coins", "info");
+    } catch (e) {
+      // Node started but sync failed to kick off. Not fatal — the user can
+      // hit Refresh manually; don't hide the callout behind a Settings link.
+      setManualSync(false);
       showToast(mapError(e), "error");
     }
   };
@@ -929,7 +959,9 @@ export function WalletView() {
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-amber-600">
                     {writeCap?.reason ??
-                      "Connect a node in Settings, Refresh to sync your coins, then unlock to send."}
+                      (needsNodeSync
+                        ? "Sync your coins below, then unlock to send."
+                        : "Connect a node, Refresh to sync your coins, then unlock to send.")}
                   </span>
                   <UnlockButton size="sm" variant="primary" label="Unlock" />
                 </div>
@@ -941,12 +973,34 @@ export function WalletView() {
             </div>
             {needsNodeSync && (
               <div
-                className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
+                className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 space-y-2"
                 data-testid="needs-node-sync"
               >
-                Your balance is read from the explorer, but spending requires a
-                synced node. Connect a node in <strong>Settings</strong> and
-                click <strong>Refresh</strong> to load your spendable coins.
+                <div>
+                  Your balance is read from the explorer, but spending requires a
+                  synced node. Start your node to load your spendable coins.
+                </div>
+                <div className="flex items-center gap-3">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => void handleStartNodeAndSync()}
+                    disabled={startHsd.isPending || startSync.isPending}
+                    data-testid="needs-node-sync-start"
+                  >
+                    {startHsd.isPending ? "Starting…" : "Start node"}
+                  </Button>
+                  {startNodeFailed && (
+                    <button
+                      type="button"
+                      className="text-amber-900 underline hover:no-underline"
+                      onClick={() => navigate("/settings")}
+                      data-testid="needs-node-sync-settings"
+                    >
+                      Open Settings
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </div>
