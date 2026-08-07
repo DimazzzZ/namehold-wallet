@@ -210,10 +210,14 @@ jobs:
           mkdir -p binaries
           cargo build --release --bin namehold-syncd --target aarch64-apple-darwin
           cargo build --release --bin namehold-syncd --target x86_64-apple-darwin
-          # Tauri universal build expects both per-arch variants AND the universal one.
+          # Stage per-arch binaries for externalBin validation + resource bundling.
           cp target/aarch64-apple-darwin/release/namehold-syncd binaries/namehold-syncd-aarch64-apple-darwin
           cp target/x86_64-apple-darwin/release/namehold-syncd binaries/namehold-syncd-x86_64-apple-darwin
-          lipo -create -output binaries/namehold-syncd-universal-apple-darwin \
+          # Tauri's universal bundler only lipos the main binary; additional [[bin]]
+          # targets must be manually lipo'd into the universal output directory,
+          # otherwise the .app bundling step fails to find `namehold-syncd` there.
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create -output target/universal-apple-darwin/release/namehold-syncd \
             target/aarch64-apple-darwin/release/namehold-syncd \
             target/x86_64-apple-darwin/release/namehold-syncd
 
