@@ -175,10 +175,29 @@ jobs:
 
       # Required gate. Runs tests in parallel across all cores (ubuntu-latest = 4 vCPU).
       # The env-gated live-node integration tests skip automatically (no HNS_IT_NODE_URL set),
-      # so this stays fast and offline. nextest parallelizes the 926 tests and typically
-      # cuts ~82s serial down to ~35-45s.
-      - name: Test (nextest)
-        run: cargo nextest run --manifest-path src-tauri/Cargo.toml --locked
+      # so this stays fast and offline.
+      #
+      # Two-lane split (see src-tauri/.config/nextest.toml for the rationale):
+      #   - pull_request → fast lane: skip any tests flagged in the `slow`
+      #     filter expression below. Currently empty (every test is fast after
+      #     the 2026-08 speed pass), but the machinery is ready to detach a
+      #     future irreducibly-slow test with a one-line change.
+      #   - push to main → full lane (`ci-full` profile): runs absolutely
+      #     everything, so any test detached from the fast lane still gates
+      #     merges. Aligns with our branch-protection model (main is the only
+      #     place a full-suite green is required to sign off a release).
+      - name: Test (nextest — fast lane, PRs)
+        if: github.event_name == 'pull_request'
+        # Keep the `-E` filter expression in sync with the `slow` filterset
+        # documented in .config/nextest.toml. `test(/^$/)` matches nothing, so
+        # today the fast lane runs everything; replace with a real filter (e.g.
+        # `test(/legacy_nhv1_blob_decrypts/) | test(/some_other_slow/)`) if a
+        # future test genuinely needs to be detached.
+        run: cargo nextest run --manifest-path src-tauri/Cargo.toml --locked -E 'not test(/^$/)'
+
+      - name: Test (nextest — full lane, main)
+        if: github.event_name != 'pull_request'
+        run: cargo nextest run --manifest-path src-tauri/Cargo.toml --locked --profile ci-full
 
       - name: sccache stats
         if: always()

@@ -20,7 +20,7 @@ use crate::error::AppError;
 use crate::noncustodial::network::Network;
 use bip39::Mnemonic;
 use hmac::{Hmac, Mac};
-use secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
+use secp256k1::{PublicKey, Scalar, SecretKey, SECP256K1};
 use sha2::Sha512;
 use zeroize::Zeroize;
 
@@ -65,7 +65,6 @@ impl ExtendedPrivKey {
     /// Derive a single child key at `index`. Indices >= HARDENED_OFFSET are
     /// hardened.
     pub fn derive_child(&self, index: u32) -> Result<Self, AppError> {
-        let secp = Secp256k1::new();
         let mut mac = HmacSha512::new_from_slice(&self.chain_code)
             .map_err(|e| AppError::Crypto(format!("hmac init: {e}")))?;
 
@@ -75,7 +74,7 @@ impl ExtendedPrivKey {
             mac.update(&self.secret.secret_bytes());
         } else {
             // Normal: serP(point(k_par)) || ser32(index)
-            let pubkey = PublicKey::from_secret_key(&secp, &self.secret);
+            let pubkey = PublicKey::from_secret_key(SECP256K1, &self.secret);
             mac.update(&pubkey.serialize());
         }
         mac.update(&index.to_be_bytes());
@@ -115,8 +114,7 @@ impl ExtendedPrivKey {
 
     /// The 33-byte compressed public key for this private key.
     pub fn compressed_pubkey(&self) -> [u8; 33] {
-        let secp = Secp256k1::new();
-        PublicKey::from_secret_key(&secp, &self.secret).serialize()
+        PublicKey::from_secret_key(SECP256K1, &self.secret).serialize()
     }
 }
 
@@ -138,9 +136,8 @@ impl ExtendedPubKey {
     /// Derive the account-level public key from a private key (e.g. to publish
     /// an `account_xpub` after computing the BIP44 account path privately).
     pub fn from_priv(xprv: &ExtendedPrivKey) -> Self {
-        let secp = Secp256k1::new();
         ExtendedPubKey {
-            public: PublicKey::from_secret_key(&secp, &xprv.secret),
+            public: PublicKey::from_secret_key(SECP256K1, &xprv.secret),
             chain_code: xprv.chain_code,
         }
     }
@@ -155,7 +152,6 @@ impl ExtendedPubKey {
                 "cannot derive hardened child from an extended public key".to_string(),
             ));
         }
-        let secp = Secp256k1::new();
         let mut mac = HmacSha512::new_from_slice(&self.chain_code)
             .map_err(|e| AppError::Crypto(format!("hmac init: {e}")))?;
         // Normal: serP(K_par) || ser32(index)
@@ -172,7 +168,7 @@ impl ExtendedPubKey {
         .map_err(|e| AppError::Crypto(format!("invalid tweak: {e}")))?;
         let child_public = self
             .public
-            .add_exp_tweak(&secp, &tweak)
+            .add_exp_tweak(SECP256K1, &tweak)
             .map_err(|e| AppError::Crypto(format!("public key derivation overflow: {e}")))?;
 
         let mut chain_code = [0u8; 32];

@@ -408,8 +408,10 @@ mod profile_scope_guard {
 
         // Switch the active profile to B WHILE the repair run (for A) is
         // still in flight. The run needs at least two explorer round trips
-        // plus its DISCOVERY_THROTTLE sleeps before it writes, so this has a
-        // real window to land before that write.
+        // before it writes (each a mock HTTP round trip), so this has a real
+        // window to land before that write. (Under `cfg(test)`
+        // DISCOVERY_THROTTLE is 0, so the window comes from the round trips
+        // themselves, not the throttle — still ample for the 30ms switch.)
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         {
             let switch_conn = rusqlite::Connection::open(&db.path).unwrap();

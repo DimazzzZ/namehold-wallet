@@ -408,12 +408,17 @@ async fn brute_force_finds_round_value() {
 
 #[tokio::test]
 async fn brute_force_finds_non_round_value_via_sweep() {
-    // Bid with value = 3_141_592 doos (3.141592 HNS) — NOT a round value.
-    // Tier 1 won't find it; Tier 2 (full sweep) should.
+    // Bid with value = 3_141 doos — NOT a round value. Tier 1's smallest step
+    // is 10_000 doos (0.01 HNS), so no Tier-1 candidate can ever equal 3_141;
+    // only Tier 2's exhaustive integer sweep can find it. That is exactly the
+    // path this test guards, and it depends only on the value being non-round,
+    // NOT on its magnitude. Keeping value+lockup small makes the sweep do a few
+    // thousand secp256k1 derivations instead of ~3.14 million — same coverage,
+    // ~1000x faster (the sweep was the single slowest test in the suite).
     let state = create_full_test_state();
     let name = "sweeptest";
-    let value: u64 = 3_141_592;
-    let lockup: u64 = 5_000_000; // 5 HNS — small enough for fast sweep
+    let value: u64 = 3_141;
+    let lockup: u64 = 5_000; // sweep upper bound — tiny, still > value
 
     let (profile_id, addr) = {
         let conn = state.db.lock().unwrap();

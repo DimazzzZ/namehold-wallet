@@ -1,0 +1,43 @@
+# cargo-nextest configuration.
+#
+# Resolved relative to the workspace root (src-tauri/, given CI's
+# `--manifest-path src-tauri/Cargo.toml`). Verify with:
+#   cargo nextest list --manifest-path src-tauri/Cargo.toml
+# and confirm the "nextest profile" line + config path in the run header.
+#
+# ---------------------------------------------------------------------------
+# Fast lane vs. full lane
+# ---------------------------------------------------------------------------
+# After the 2026-08 test-speed pass (Argon2 V2 cost, brute-force sweep space,
+# and sync throttle/backoff are all `#[cfg(test)]`-reduced) EVERY test runs in
+# a couple of seconds or less, so there is currently NOTHING that needs to be
+# detached to a merge-only lane. The machinery below is a ready-to-use safety
+# net: if a future test becomes irreducibly slow, add its name to the `slow`
+# filterset and CI's pull-request lane will skip it automatically while the
+# push-to-`main` lane keeps running the whole suite.
+#
+# CI wiring (see .github/workflows/ci.yml, "Test (nextest)" step):
+#   - pull_request → fast lane: `-E 'not (<slow filterset>)'`
+#   - push to main → full lane: no filter (runs everything, incl. slow)
+
+[profile.default]
+# Surface a test that unexpectedly regresses back into multi-second territory:
+# warn at 30s, and treat anything still running at 120s as a failure (a
+# genuine hang or a cost-param cfg mistake), rather than letting CI burn.
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+# The set of tests considered "slow" enough to exclude from the pull-request
+# fast lane. Kept EMPTY on purpose — every test is currently fast. To detach a
+# future slow test, replace the never-matching expression below with e.g.
+#   'test(/some_slow_test_name/)' | 'test(/another_one/)'
+# and mirror it in ci.yml's pull-request branch.
+#
+# nextest has no first-class "named filterset" concept in older versions, so we
+# document the expression here and reference it from CI. This profile just
+# inherits the default timeouts.
+
+[profile.ci-full]
+# Merge-to-main lane: identical to default today, but named so CI (and humans)
+# can reason about "the lane that runs absolutely everything" independently of
+# whatever the fast lane chooses to skip.
+slow-timeout = { period = "60s", terminate-after = 4 }

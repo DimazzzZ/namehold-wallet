@@ -17,7 +17,16 @@ use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 /// Delay between explorer requests during discovery/repair.
+///
+/// Under `cfg(test)` this collapses to zero: the throttle only exists to be a
+/// courteous client against a real explorer, and every test drives a local
+/// `mockito` server (or an unroutable address) where the delay is pure dead
+/// wall-clock. Zeroing it under test removes ~12s from a single 25-candidate
+/// discovery test with no loss of coverage (the crawl logic is unchanged).
+#[cfg(not(test))]
 const DISCOVERY_THROTTLE: Duration = Duration::from_millis(150);
+#[cfg(test)]
+const DISCOVERY_THROTTLE: Duration = Duration::from_millis(0);
 
 /// Test-only seam: when set, the background sync thread panics right after
 /// resolving `profile_id` (before Step 1), simulating "a panic in a sync
@@ -688,7 +697,17 @@ const REPAIR_MIN_AGE_HOURS: i64 = 12;
 /// from a rate-limited / briefly-unavailable explorer before retrying. Shared by
 /// both step functions (`repair_step_windowed` and `discover_step`) — the same
 /// backoff behaviour applies to any explorer HTTP call in the background sync.
+///
+/// Under `cfg(test)` this drops to 1ms: the abort-after-N-consecutive-errors
+/// tests (`all_transport_errors_abort_with_message`,
+/// `all_format_errors_abort_with_degraded_message`) assert the *count* and
+/// *degraded-status* outcome, not the wall-clock magnitude of the backoff. The
+/// production 2s spacing exists only to be gentle against a live explorer and
+/// has no place in an offline test loop.
+#[cfg(not(test))]
 const SYNC_ERROR_BACKOFF: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const SYNC_ERROR_BACKOFF: Duration = Duration::from_millis(1);
 /// Abort the current step after this many *consecutive* transport errors: the
 /// explorer is down or rate-limiting us, so a clear error is surfaced and the
 /// next Sync click resumes where this one left off (memoized via last_synced_at).
