@@ -18,6 +18,14 @@ on:
 permissions:
   contents: write
 
+# Prevent a re-tag (or force-push of a tag) from stacking parallel release
+# builds against the same ref. `cancel-in-progress: false` keeps a running
+# release safe from accidental cancellation — a second tag with the same name
+# just waits its turn instead of racing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Resolve the version (input > tag > tauri.conf.json), validate it, and open a
   # DRAFT release that the per-OS build jobs upload their bundles to.
@@ -132,6 +140,17 @@ jobs:
             args: "--bundles nsis,updater"
             rust_targets: ""
     runs-on: ${{ matrix.platform }}
+    env:
+      # Compiler-cache the release build (mirrors ci.yml). sccache stacks with
+      # Swatinem/rust-cache: rust-cache restores the target dir, sccache fills
+      # gaps (new/changed crates) — critical on macOS, which compiles the whole
+      # dependency graph twice (aarch64 + x86_64) for the universal bundle.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      # Post-startup ghac IO errors fall back to a direct compile instead of
+      # aborting the build (see sccache#1751). Startup-time backend outages are
+      # handled by the "Verify sccache backend" step below.
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -171,9 +190,37 @@ jobs:
         with:
           targets: ${{ matrix.rust_targets }}
 
+      # sccache (all platforms). Installed before Swatinem so the compiler
+      # wrapper is on PATH by the time cargo runs. `mozilla/sccache-action`
+      # handles per-OS binary install; the GHA backend is enabled via the
+      # job-level env block above.
+      - uses: mozilla/sccache-action@v0.0.7
+
+      # If the GitHub Actions Cache backend is unavailable, sccache's server
+      # fails to start and — because it's RUSTC_WRAPPER — hard-fails the whole
+      # job before any crate compiles (observed on ghac HTTP 400 outages).
+      # Probe startup here; if it fails, unset the wrapper so cargo compiles
+      # directly. Swatinem's target-dir cache still applies, so we stay green.
+      - name: Verify sccache backend (degrade gracefully if ghac is down)
+        shell: bash
+        run: |
+          if ! sccache --start-server 2>/tmp/sccache_start.log; then
+            echo "::warning::sccache failed to start (ghac backend likely unavailable) — disabling compiler cache for this run"
+            cat /tmp/sccache_start.log || true
+            echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+          fi
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # Stabilise the cache key against `Cargo.toml`/`Cargo.lock` version
+          # bumps (which fold into the default key hash). Every real release
+          # bumps `[package] version`, which would otherwise miss the cache
+          # each release — devastating on macOS (compiles both arches from
+          # scratch: ~13 min of dep compile). `shared-key` mirrors the
+          # `rust-ci` pattern in ci.yml. Per-OS keys are still separated by
+          # Swatinem's own OS/arch prefix.
+          shared-key: release
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -256,6 +303,14 @@ jobs:
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
           args: ${{ matrix.args }}
+
+      # Surface cache effectiveness in the job log (hit rate, compile requests).
+      # `if: always()` so we still see stats when the build fails. Skipped
+      # automatically when the wrapper was disabled by the degrade step above.
+      - name: sccache stats
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
 
   publish:
     name: Publish release
