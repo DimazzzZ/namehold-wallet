@@ -281,11 +281,7 @@ pub async fn fire_tray_hint_notification<R: tauri::Runtime>(
         .map_err(|e| crate::error::AppError::Lock(e.to_string()))?;
 
     let settings = crate::db::queries::get_settings(&db)?;
-    if settings
-        .get(SETTING_TRAY_HINT_SHOWN)
-        .map(|s| s.as_str())
-        == Some("1")
-    {
+    if settings.get(SETTING_TRAY_HINT_SHOWN).map(|s| s.as_str()) == Some("1") {
         return Ok(());
     }
 
@@ -353,8 +349,7 @@ mod tests {
     #[tokio::test]
     async fn fire_tray_hint_second_time_is_noop() {
         let conn = migrated_conn();
-        crate::db::queries::set_setting(&conn, SETTING_TRAY_HINT_SHOWN, "1")
-            .expect("pre-set flag");
+        crate::db::queries::set_setting(&conn, SETTING_TRAY_HINT_SHOWN, "1").expect("pre-set flag");
         let app = app_with(conn);
 
         fire_tray_hint_notification(app.handle())
