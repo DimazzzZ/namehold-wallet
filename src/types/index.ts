@@ -323,6 +323,14 @@ export interface Settings {
    */
   close_to_tray: string;
   /**
+   * "1" | "0" — whether the first-time "app is hidden in tray" notification
+   * has already been shown. Default "0" (not shown). Set to "1" the first
+   * time the user closes the main window while `close_to_tray` is on, so the
+   * hint fires once and never again. macOS-only in practice — non-macOS
+   * platforms don't hide the Dock icon and typically don't need the hint.
+   */
+  tray_hint_shown: string;
+  /**
    * "1" | "0" — start Namehold automatically when you log in to your OS.
    * Default "0" (off). Persisted through `tauri-plugin-autostart`, which uses
    * the OS's native mechanism: LaunchAgent plist (macOS), HKCU Run key

@@ -246,3 +246,123 @@ pub fn refresh_tray(app: &AppHandle) {
         eprintln!("tray: set_icon_as_template failed: {e}");
     }
 }
+
+pub const SETTING_TRAY_HINT_SHOWN: &str = "tray_hint_shown";
+
+/// Dispatch the actual OS notification. Compiled out under `#[cfg(test)]` so
+/// unit tests can exercise the DB read/conditional/write logic of
+/// [`fire_tray_hint_notification`] without a real notification backend (which
+/// isn't available under the mock runtime). Mirrors the pattern used by
+/// `deadlines::send_os_notification`.
+#[cfg(not(test))]
+fn fire_hint_os_notification<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(), crate::error::AppError> {
+    use tauri_plugin_notification::NotificationExt;
+    app.notification()
+        .builder()
+        .title("Namehold is running")
+        .body("Namehold is still running in the menu bar. Click the tray icon to reopen.")
+        .show()
+        .map_err(|e| crate::error::AppError::Other(e.to_string()))
+}
+
+/// Fire a native macOS notification on the first time the user closes the
+/// window to tray. Checks the `tray_hint_shown` setting; if already "1",
+/// returns early. Otherwise, shows the notification, persists the flag, and
+/// returns Ok.
+pub async fn fire_tray_hint_notification<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(), crate::error::AppError> {
+    let state = app.state::<crate::AppState>();
+    let db = state
+        .db
+        .lock()
+        .map_err(|e| crate::error::AppError::Lock(e.to_string()))?;
+
+    let settings = crate::db::queries::get_settings(&db)?;
+    if settings.get(SETTING_TRAY_HINT_SHOWN).map(|s| s.as_str()) == Some("1") {
+        return Ok(());
+    }
+
+    #[cfg(not(test))]
+    fire_hint_os_notification(app)?;
+
+    crate::db::queries::set_setting(&db, SETTING_TRAY_HINT_SHOWN, "1")?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::AppState;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    /// Fresh in-memory DB with all migrations applied.
+    fn migrated_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn
+    }
+
+    /// Mock Tauri app managing an `AppState` backed by the given connection.
+    fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> {
+        mock_builder()
+            .manage(AppState {
+                db: std::sync::Mutex::new(conn),
+                signer: std::sync::Mutex::new(None),
+                secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
+                hsd_child: std::sync::Mutex::new(None),
+                sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    crate::commands::sync::SyncStatus::default(),
+                )),
+            })
+            .build(mock_context(noop_assets()))
+            .expect("mock app")
+    }
+
+    /// First close-to-tray: the flag starts unset, so the function should run
+    /// its body (OS notification is compiled out under cfg(test)) and persist
+    /// `tray_hint_shown = "1"`.
+    #[tokio::test]
+    async fn fire_tray_hint_first_time_persists_flag() {
+        let app = app_with(migrated_conn());
+
+        fire_tray_hint_notification(app.handle())
+            .await
+            .expect("first call should succeed");
+
+        let state = app.state::<AppState>();
+        let db = state.db.lock().expect("db lock");
+        let settings = crate::db::queries::get_settings(&db).expect("get_settings");
+        assert_eq!(
+            settings.get(SETTING_TRAY_HINT_SHOWN).map(|s| s.as_str()),
+            Some("1"),
+            "tray_hint_shown should be set to '1' after the first close-to-tray"
+        );
+    }
+
+    /// Second (and later) close-to-tray: the flag is already "1", so the
+    /// function should short-circuit and return Ok without touching the DB.
+    #[tokio::test]
+    async fn fire_tray_hint_second_time_is_noop() {
+        let conn = migrated_conn();
+        crate::db::queries::set_setting(&conn, SETTING_TRAY_HINT_SHOWN, "1").expect("pre-set flag");
+        let app = app_with(conn);
+
+        fire_tray_hint_notification(app.handle())
+            .await
+            .expect("second call should return Ok (no-op)");
+
+        let state = app.state::<AppState>();
+        let db = state.db.lock().expect("db lock");
+        let settings = crate::db::queries::get_settings(&db).expect("get_settings");
+        assert_eq!(
+            settings.get(SETTING_TRAY_HINT_SHOWN).map(|s| s.as_str()),
+            Some("1"),
+            "tray_hint_shown should remain '1' on subsequent calls"
+        );
+    }
+}

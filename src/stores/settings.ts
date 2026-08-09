@@ -32,6 +32,7 @@ const DEFAULT_SETTINGS: Settings = {
   explorer_fallback_url: "",
   chain_source: "local_node",
   close_to_tray: "1",
+  tray_hint_shown: "0",
   launch_at_login: "0",
 };
 

@@ -31,6 +31,11 @@ use tokio::sync::Mutex as AsyncMutex;
 /// left-click on the tray icon. Errors are logged, not propagated — a failed
 /// focus should never crash the event loop.
 fn show_main_window(app: &tauri::AppHandle) {
+    // macOS: restore the Dock icon in case we hid it when the window was
+    // closed to tray. No-op on other platforms.
+    #[cfg(target_os = "macos")]
+    let _ = app.set_dock_visibility(true);
+
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.unminimize();
         let _ = win.show();
@@ -286,6 +291,23 @@ pub fn run() {
                                 api.prevent_close();
                                 if let Some(w) = handle.get_webview_window("main") {
                                     let _ = w.hide();
+
+                                    // macOS: hide from Dock when closing to tray.
+                                    #[cfg(target_os = "macos")]
+                                    let _ = handle.set_dock_visibility(false);
+
+                                    // Fire first-time tray notification (async, fire-and-forget).
+                                    tauri::async_runtime::spawn({
+                                        let handle = handle.clone();
+                                        async move {
+                                            if let Err(e) =
+                                                commands::tray::fire_tray_hint_notification(&handle)
+                                                    .await
+                                            {
+                                                eprintln!("tray hint notification failed: {e}");
+                                            }
+                                        }
+                                    });
                                 }
                             } else {
                                 handle.exit(0);
@@ -542,58 +564,71 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // `RunEvent::Exit` fires exactly once, right before the event loop
-            // stops, regardless of how the app is closing (last window closed,
-            // Cmd+Q, `AppHandle::exit`/`restart`, `ExitRequested` left
-            // unprevented, …) — so hooking only this one event is enough to
-            // reap the hsd child on every exit path. `ExitRequested` fires
-            // earlier and can be cancelled by a listener (`api.prevent_exit()`),
-            // so it's the wrong place to kill anything: it may not represent an
-            // actual exit at all.
-            if let tauri::RunEvent::Exit = event {
-                let state = app_handle.state::<AppState>();
+            match event {
+                // macOS: clicking the Dock icon of a running-but-hidden app
+                // fires `Reopen`. Bring the (possibly tray-hidden) window back
+                // and restore the Dock icon. Without this, a close-to-tray'd
+                // window can't be reopened from the Dock.
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => {
+                    show_main_window(&app_handle);
+                }
+                // `RunEvent::Exit` fires exactly once, right before the event
+                // loop stops, regardless of how the app is closing (last window
+                // closed, Cmd+Q, `AppHandle::exit`/`restart`, `ExitRequested`
+                // left unprevented, …) — so hooking only this one event is
+                // enough to reap the hsd child on every exit path.
+                // `ExitRequested` fires earlier and can be cancelled by a
+                // listener (`api.prevent_exit()`), so it's the wrong place to
+                // kill anything: it may not represent an actual exit at all.
+                tauri::RunEvent::Exit => {
+                    let state = app_handle.state::<AppState>();
 
-                // If background sync is enabled, SKIP killing hsd — the daemon
-                // needs it alive to continue syncing after the app closes. The
-                // hsd process becomes orphaned but alive; next app launch adopts
-                // it via RPC probe (see start_hsd's existing adoption path).
-                let background_sync_on = state
-                    .db
-                    .lock()
-                    .ok()
-                    .and_then(|db| crate::db::queries::get_settings(&db).ok())
-                    .map(|s| {
-                        s.get(commands::daemon_ctl::SETTING_BACKGROUND_SYNC)
-                            .unwrap_or(&commands::daemon_ctl::BACKGROUND_SYNC_DEFAULT.to_string())
-                            == "1"
-                    })
-                    .unwrap_or(false);
+                    // If background sync is enabled, SKIP killing hsd — the daemon
+                    // needs it alive to continue syncing after the app closes. The
+                    // hsd process becomes orphaned but alive; next app launch adopts
+                    // it via RPC probe (see start_hsd's existing adoption path).
+                    let background_sync_on = state
+                        .db
+                        .lock()
+                        .ok()
+                        .and_then(|db| crate::db::queries::get_settings(&db).ok())
+                        .map(|s| {
+                            s.get(commands::daemon_ctl::SETTING_BACKGROUND_SYNC)
+                                .unwrap_or(
+                                    &commands::daemon_ctl::BACKGROUND_SYNC_DEFAULT.to_string(),
+                                )
+                                == "1"
+                        })
+                        .unwrap_or(false);
 
-                let child = match state.hsd_child.lock() {
-                    Ok(mut guard) => guard.take(),
-                    Err(poisoned) => poisoned.into_inner().take(),
-                };
-                if let Some(mut child) = child {
-                    if background_sync_on {
-                        // Detach: drop the handle without killing. The child
-                        // process continues running as an orphan.
-                        eprintln!(
+                    let child = match state.hsd_child.lock() {
+                        Ok(mut guard) => guard.take(),
+                        Err(poisoned) => poisoned.into_inner().take(),
+                    };
+                    if let Some(mut child) = child {
+                        if background_sync_on {
+                            // Detach: drop the handle without killing. The child
+                            // process continues running as an orphan.
+                            eprintln!(
                             "hsd shutdown: background sync enabled — leaving hsd alive for daemon"
                         );
-                        drop(child);
-                    } else {
-                        // Best-effort: never let a stuck hsd block the app from
-                        // closing. `kill()` + `wait()` on an already-exited child
-                        // are harmless no-ops (kill fails silently, wait returns
-                        // immediately), so this is safe to run unconditionally.
-                        if let Err(e) = child.kill() {
-                            eprintln!("hsd shutdown: kill failed (may already be dead): {e}");
-                        }
-                        if let Err(e) = child.wait() {
-                            eprintln!("hsd shutdown: wait failed: {e}");
+                            drop(child);
+                        } else {
+                            // Best-effort: never let a stuck hsd block the app from
+                            // closing. `kill()` + `wait()` on an already-exited child
+                            // are harmless no-ops (kill fails silently, wait returns
+                            // immediately), so this is safe to run unconditionally.
+                            if let Err(e) = child.kill() {
+                                eprintln!("hsd shutdown: kill failed (may already be dead): {e}");
+                            }
+                            if let Err(e) = child.wait() {
+                                eprintln!("hsd shutdown: wait failed: {e}");
+                            }
                         }
                     }
                 }
+                _ => {}
             }
         });
 }
