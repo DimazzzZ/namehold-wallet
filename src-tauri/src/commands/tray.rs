@@ -246,3 +246,39 @@ pub fn refresh_tray(app: &AppHandle) {
         eprintln!("tray: set_icon_as_template failed: {e}");
     }
 }
+
+pub const SETTING_TRAY_HINT_SHOWN: &str = "tray_hint_shown";
+
+/// Fire a native macOS notification on the first time the user closes the
+/// window to tray. Checks the `tray_hint_shown` setting; if already "1",
+/// returns early. Otherwise, shows the notification, persists the flag, and
+/// returns Ok.
+pub async fn fire_tray_hint_notification(
+    app: &AppHandle,
+) -> Result<(), crate::error::AppError> {
+    let state = app.state::<crate::AppState>();
+    let db = state
+        .db
+        .lock()
+        .map_err(|e| crate::error::AppError::Lock(e.to_string()))?;
+
+    let settings = crate::db::queries::get_settings(&db)?;
+    if settings
+        .get(SETTING_TRAY_HINT_SHOWN)
+        .map(|s| s.as_str())
+        == Some("1")
+    {
+        return Ok(());
+    }
+
+    use tauri_plugin_notification::NotificationExt;
+    app.notification()
+        .builder()
+        .title("Namehold is running")
+        .body("Namehold is still running in the menu bar. Click the tray icon to reopen.")
+        .show()
+        .map_err(|e| crate::error::AppError::Other(e.to_string()))?;
+
+    crate::db::queries::set_setting(&db, SETTING_TRAY_HINT_SHOWN, "1")?;
+    Ok(())
+}

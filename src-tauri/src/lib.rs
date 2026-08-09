@@ -31,6 +31,11 @@ use tokio::sync::Mutex as AsyncMutex;
 /// left-click on the tray icon. Errors are logged, not propagated — a failed
 /// focus should never crash the event loop.
 fn show_main_window(app: &tauri::AppHandle) {
+    // macOS: restore the Dock icon in case we hid it when the window was
+    // closed to tray. No-op on other platforms.
+    #[cfg(target_os = "macos")]
+    let _ = app.set_dock_visibility(true);
+
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.unminimize();
         let _ = win.show();
@@ -286,6 +291,27 @@ pub fn run() {
                                 api.prevent_close();
                                 if let Some(w) = handle.get_webview_window("main") {
                                     let _ = w.hide();
+
+                                    // macOS: hide from Dock when closing to tray.
+                                    #[cfg(target_os = "macos")]
+                                    let _ = handle.set_dock_visibility(false);
+
+                                    // Fire first-time tray notification (async, fire-and-forget).
+                                    tauri::async_runtime::spawn({
+                                        let handle = handle.clone();
+                                        async move {
+                                            if let Err(e) =
+                                                commands::tray::fire_tray_hint_notification(
+                                                    &handle,
+                                                )
+                                                .await
+                                            {
+                                                eprintln!(
+                                                    "tray hint notification failed: {e}"
+                                                );
+                                            }
+                                        }
+                                    });
                                 }
                             } else {
                                 handle.exit(0);
@@ -542,15 +568,24 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // `RunEvent::Exit` fires exactly once, right before the event loop
-            // stops, regardless of how the app is closing (last window closed,
-            // Cmd+Q, `AppHandle::exit`/`restart`, `ExitRequested` left
-            // unprevented, …) — so hooking only this one event is enough to
-            // reap the hsd child on every exit path. `ExitRequested` fires
-            // earlier and can be cancelled by a listener (`api.prevent_exit()`),
-            // so it's the wrong place to kill anything: it may not represent an
-            // actual exit at all.
-            if let tauri::RunEvent::Exit = event {
+            match event {
+                // macOS: clicking the Dock icon of a running-but-hidden app
+                // fires `Reopen`. Bring the (possibly tray-hidden) window back
+                // and restore the Dock icon. Without this, a close-to-tray'd
+                // window can't be reopened from the Dock.
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => {
+                    show_main_window(&app_handle);
+                }
+                // `RunEvent::Exit` fires exactly once, right before the event
+                // loop stops, regardless of how the app is closing (last window
+                // closed, Cmd+Q, `AppHandle::exit`/`restart`, `ExitRequested`
+                // left unprevented, …) — so hooking only this one event is
+                // enough to reap the hsd child on every exit path.
+                // `ExitRequested` fires earlier and can be cancelled by a
+                // listener (`api.prevent_exit()`), so it's the wrong place to
+                // kill anything: it may not represent an actual exit at all.
+                tauri::RunEvent::Exit => {
                 let state = app_handle.state::<AppState>();
 
                 // If background sync is enabled, SKIP killing hsd — the daemon
@@ -594,6 +629,8 @@ pub fn run() {
                         }
                     }
                 }
+                }
+                _ => {}
             }
         });
 }
