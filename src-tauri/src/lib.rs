@@ -221,14 +221,15 @@ pub fn run() {
                                         // a child we spawned counts as running.
                                         // Fixes the adopted-node case where hsd
                                         // is up but hsd_child is None.
-                                        state.node_rpc_alive.load(
-                                            std::sync::atomic::Ordering::Relaxed,
-                                        ) || state
-                                            .hsd_child
-                                            .lock()
-                                            .ok()
-                                            .map(|g| g.is_some())
-                                            .unwrap_or(false)
+                                        state
+                                            .node_rpc_alive
+                                            .load(std::sync::atomic::Ordering::Relaxed)
+                                            || state
+                                                .hsd_child
+                                                .lock()
+                                                .ok()
+                                                .map(|g| g.is_some())
+                                                .unwrap_or(false)
                                     };
                                     let result = if running {
                                         commands::node::stop_hsd(app.state::<AppState>())
