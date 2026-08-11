@@ -140,7 +140,7 @@ describe("Settings — Updates card", () => {
 
   it("opens the What's new modal on click and closes it again", async () => {
     invokeMock.mockImplementation((cmd: string) => {
-      if (cmd === "current_version") return Promise.resolve("0.4.0");
+      if (cmd === "current_version") return Promise.resolve("0.4.1");
       return Promise.resolve(null);
     });
     render(<UpdatesSettings />, { wrapper: wrapper() });
@@ -151,7 +151,7 @@ describe("Settings — Updates card", () => {
         phase: "available",
         available: {
           version: "0.5.0",
-          currentVersion: "0.4.0",
+          currentVersion: "0.4.1",
           notes: "New features",
           date: null,
         },
@@ -174,9 +174,13 @@ describe("Settings — Updates card", () => {
     expect(screen.queryByTestId("whats-new-modal")).not.toBeInTheDocument();
   });
 
-  it("hides the What's new link when notes are empty", async () => {
+  // The dev-only `simulateUpdateFlow()` seeds this same shared store with
+  // "available" metadata; the Rust `fetch_latest_release_meta` command isn't
+  // exercised here (it does real network I/O). We assert the card renders the
+  // seeded state, proving the simulation surfaces through the normal UI.
+  it("renders the available card when the store is seeded by a simulation", async () => {
     invokeMock.mockImplementation((cmd: string) => {
-      if (cmd === "current_version") return Promise.resolve("0.4.0");
+      if (cmd === "current_version") return Promise.resolve("0.4.1");
       return Promise.resolve(null);
     });
     render(<UpdatesSettings />, { wrapper: wrapper() });
@@ -187,7 +191,33 @@ describe("Settings — Updates card", () => {
         phase: "available",
         available: {
           version: "0.5.0",
-          currentVersion: "0.4.0",
+          currentVersion: "0.4.1",
+          notes: "Simulated notes",
+          date: null,
+        },
+        progress: null,
+        error: null,
+      });
+    });
+
+    expect(screen.getByText(/0\.5\.0 is available/i)).toBeInTheDocument();
+    expect(screen.getByTestId("install-update")).toBeInTheDocument();
+  });
+
+  it("hides the What's new link when notes are empty", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "current_version") return Promise.resolve("0.4.1");
+      return Promise.resolve(null);
+    });
+    render(<UpdatesSettings />, { wrapper: wrapper() });
+    await screen.findByTestId("check-for-updates");
+
+    act(() => {
+      useAppUpdate.setState({
+        phase: "available",
+        available: {
+          version: "0.5.0",
+          currentVersion: "0.4.1",
           notes: null,
           date: null,
         },
