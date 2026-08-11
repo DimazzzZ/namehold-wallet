@@ -83,6 +83,7 @@ pub(crate) fn create_full_test_state() -> crate::AppState {
         signer: std::sync::Mutex::new(None),
         secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
         hsd_child: std::sync::Mutex::new(None),
+        node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
         sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
             crate::commands::sync::SyncStatus::default(),
         )),
