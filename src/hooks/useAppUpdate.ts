@@ -101,6 +101,11 @@ export const useAppUpdate = create<AppUpdateState>((set, get) => ({
   },
 
   dismiss: () => {
+    // Once an update is installed on disk, restart is the only sensible next
+    // step — and no re-check will resurface it. Never let a dismiss strip the
+    // restart affordance from the banner or the Settings card (both read this
+    // shared phase), so dismissing is a no-op in the installed phase.
+    if (get().phase === "installed") return;
     const v = get().available?.version;
     if (v) {
       try {

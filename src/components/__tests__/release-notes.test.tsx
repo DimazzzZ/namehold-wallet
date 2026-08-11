@@ -6,10 +6,16 @@ import "@testing-library/jest-dom";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ReleaseNotes } from "../ReleaseNotes";
 
-// Mock openExternal so we can verify it's called without actually opening URLs.
-vi.mock("../../lib/openExternal", () => ({
-  openExternal: vi.fn(),
-}));
+// Mock only openExternal so we can verify it's called without actually opening
+// URLs. The other exports (resolveReleaseNotesHref, constants) stay real so
+// relative-link resolution is tested end-to-end.
+vi.mock("../../lib/openExternal", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/openExternal")>();
+  return {
+    ...actual,
+    openExternal: vi.fn(),
+  };
+});
 
 import { openExternal } from "../../lib/openExternal";
 
@@ -69,6 +75,33 @@ describe("ReleaseNotes", () => {
     const code = screen.getByText("formatDate()");
     expect(code.tagName).toBe("CODE");
     expect(code).toHaveClass("rounded", "bg-gray-100");
+  });
+
+  it("rewrites relative doc-links to the repo's blob/<tag> URL when `version` is set", () => {
+    render(
+      <ReleaseNotes
+        version="0.6.0"
+        notes='See [docs/RECOVER_LOST_BIDS.md](docs/RECOVER_LOST_BIDS.md) for the full guide.'
+      />,
+    );
+    const link = screen.getByRole("link", { name: /RECOVER_LOST_BIDS/ });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://github.com/DimazzzZ/namehold-wallet/blob/v0.6.0/docs/RECOVER_LOST_BIDS.md",
+    );
+    fireEvent.click(link);
+    expect(openExternal).toHaveBeenCalledWith(
+      "https://github.com/DimazzzZ/namehold-wallet/blob/v0.6.0/docs/RECOVER_LOST_BIDS.md",
+    );
+  });
+
+  it("falls back to blob/HEAD when `version` is omitted", () => {
+    render(<ReleaseNotes notes='See [docs/x.md](docs/x.md).' />);
+    const link = screen.getByRole("link", { name: /docs\/x\.md/ });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://github.com/DimazzzZ/namehold-wallet/blob/HEAD/docs/x.md",
+    );
   });
 
   it("renders complex markdown with mixed content", () => {

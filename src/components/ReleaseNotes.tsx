@@ -1,5 +1,5 @@
 import ReactMarkdown, { type Components } from "react-markdown";
-import { openExternal } from "../lib/openExternal";
+import { openExternal, resolveReleaseNotesHref } from "../lib/openExternal";
 
 /**
  * Renders a release-notes Markdown string (the GitHub release body that
@@ -11,10 +11,17 @@ import { openExternal } from "../lib/openExternal";
  * Markdown. Links are intercepted and handed to the OS browser via
  * `openExternal`, because the notes contain PR/compare URLs that must never
  * drive the in-app react-router (which would break the SPA shell).
+ *
+ * Relative links in release bodies (e.g. `[docs/X.md](docs/X.md)`) are
+ * rewritten to `github.com/<repo>/blob/<tag>/<path>` — GitHub's own web UI
+ * does this at render time, but the raw API body we receive keeps the bare
+ * relative path, which the OS browser can't open. `version` is the release
+ * tag those relative links resolve against; when omitted, they resolve to
+ * `HEAD`.
  */
 
-// Styling overrides so we don't need @tailwindcss/typography.
-const components: Components = {
+function buildComponents(version: string | undefined): Components {
+  return {
   h1: ({ children }) => <h3 className="text-sm font-semibold mt-3 first:mt-0">{children}</h3>,
   h2: ({ children }) => <h3 className="text-sm font-semibold mt-3 first:mt-0">{children}</h3>,
   h3: ({ children }) => <h4 className="text-xs font-semibold mt-2 first:mt-0">{children}</h4>,
@@ -28,21 +35,31 @@ const components: Components = {
   pre: ({ children }) => (
     <pre className="rounded bg-gray-100 p-2 overflow-auto font-mono text-xs my-2">{children}</pre>
   ),
-  a: ({ href, children }) => (
-    <a
-      href={href}
-      className="text-blue-600 underline hover:no-underline"
-      onClick={(e) => {
-        e.preventDefault();
-        if (href) void openExternal(href);
-      }}
-    >
-      {children}
-    </a>
-  ),
-};
+  a: ({ href, children }) => {
+    const resolved = href ? resolveReleaseNotesHref(href, version ? `v${version}` : "HEAD") : undefined;
+    return (
+      <a
+        href={resolved}
+        className="text-blue-600 underline hover:no-underline cursor-pointer"
+        onClick={(e) => {
+          e.preventDefault();
+          if (resolved) void openExternal(resolved);
+        }}
+      >
+        {children}
+      </a>
+    );
+  },
+  };
+}
 
-export function ReleaseNotes({ notes }: { notes: string | null | undefined }) {
+export function ReleaseNotes({
+  notes,
+  version,
+}: {
+  notes: string | null | undefined;
+  version?: string;
+}) {
   const trimmed = (notes ?? "").trim();
   if (!trimmed) {
     return (
@@ -53,7 +70,7 @@ export function ReleaseNotes({ notes }: { notes: string | null | undefined }) {
   }
   return (
     <div className="text-sm text-gray-700 leading-relaxed" data-testid="release-notes">
-      <ReactMarkdown components={components}>{trimmed}</ReactMarkdown>
+      <ReactMarkdown components={buildComponents(version)}>{trimmed}</ReactMarkdown>
     </div>
   );
 }

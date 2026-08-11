@@ -24,7 +24,7 @@ export function WhatsNewModal({
       className="max-w-2xl"
     >
       <div className="space-y-2 text-sm max-h-[70vh] overflow-y-auto" data-testid="whats-new-modal">
-        <ReleaseNotes notes={notes} />
+        <ReleaseNotes notes={notes} version={version} />
       </div>
     </Dialog>
   );

@@ -1,7 +1,8 @@
+import { useState } from "react";
 import { useCurrentVersion } from "../queries/updates";
 import { useAppUpdate, relaunchApp } from "../hooks/useAppUpdate";
 import { Button } from "./ui/Button";
-import { ReleaseNotes } from "./ReleaseNotes";
+import { WhatsNewModal } from "./WhatsNewModal";
 
 /**
  * The "Updates" card in Settings: shows the running version and drives the
@@ -12,6 +13,11 @@ import { ReleaseNotes } from "./ReleaseNotes";
 export function UpdatesSettings() {
   const { data: version } = useCurrentVersion();
   const { phase, available, progress, error, check, install } = useAppUpdate();
+  // The full release-notes markdown can be long, so we keep it out of the
+  // Settings card and expose it through the shared `WhatsNewModal` instead —
+  // same UX the top banner uses. The link is hidden entirely when the release
+  // has no notes body.
+  const [showNotes, setShowNotes] = useState(false);
 
   const pct = progress != null ? Math.round(progress * 100) : null;
 
@@ -44,10 +50,21 @@ export function UpdatesSettings() {
       {(phase === "available" || phase === "installing" || phase === "installed") &&
         available && (
           <div className="rounded border border-blue-200 bg-blue-50 p-3 space-y-2">
-            <div className="text-sm font-medium text-blue-900">
-              Version {available.version} is available
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="text-sm font-medium text-blue-900">
+                Version {available.version} is available
+              </div>
+              {available.notes && (
+                <button
+                  type="button"
+                  className="text-xs text-blue-800/70 hover:text-blue-900 underline-offset-2 hover:underline cursor-pointer"
+                  onClick={() => setShowNotes(true)}
+                  data-testid="updates-settings-whats-new"
+                >
+                  What's new?
+                </button>
+              )}
             </div>
-            <ReleaseNotes notes={available.notes} />
 
             {phase === "available" && (
               <Button
@@ -94,6 +111,19 @@ export function UpdatesSettings() {
             Retry
           </Button>
         </div>
+      )}
+
+      {/* The modal lives outside the phase branches so that opening it during
+          `available` and then advancing to `installing`/`installed` doesn't
+          unmount it — a user reading the changelog while the download runs
+          shouldn't have it snap shut on them. */}
+      {available && (
+        <WhatsNewModal
+          open={showNotes}
+          onClose={() => setShowNotes(false)}
+          version={available.version}
+          notes={available.notes ?? ""}
+        />
       )}
     </div>
   );

@@ -130,4 +130,44 @@ describe("UpdateBanner — installed phase Relaunch", () => {
       expect(relaunchAppMock).toHaveBeenCalledTimes(1);
     });
   });
+
+  it("does not show a Later button in the installed phase", () => {
+    useAppUpdate.setState({
+      phase: "installed",
+      available: {
+        version: "0.5.0",
+        currentVersion: "0.4.0",
+        notes: null,
+        date: null,
+      },
+      progress: 1,
+    });
+    render(<UpdateBanner />);
+
+    expect(screen.queryByTestId("update-banner-installed-later")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Relaunch button visible even if dismiss is called during installed phase", () => {
+    useAppUpdate.setState({
+      phase: "installed",
+      available: {
+        version: "0.5.0",
+        currentVersion: "0.4.0",
+        notes: null,
+        date: null,
+      },
+      progress: 1,
+    });
+    const { rerender } = render(<UpdateBanner />);
+    expect(screen.getByTestId("update-banner-relaunch")).toBeInTheDocument();
+
+    // Call dismiss (which should be a no-op in installed phase)
+    useAppUpdate.getState().dismiss();
+    rerender(<UpdateBanner />);
+
+    // Button should still be there
+    expect(screen.getByTestId("update-banner-relaunch")).toBeInTheDocument();
+    // Phase should still be installed
+    expect(useAppUpdate.getState().phase).toBe("installed");
+  });
 });

@@ -7,6 +7,38 @@ import { isBrowser } from "./runtime";
  */
 export const SHAKESHIFT_BASE = "https://shakeshift.com";
 
+/** The GitHub repo this app is released from — the single source of truth for
+ *  human-facing repo links (issues, release-notes doc links, etc.). */
+export const GITHUB_REPO = "DimazzzZ/namehold-wallet";
+export const GITHUB_REPO_URL = `https://github.com/${GITHUB_REPO}`;
+
+/**
+ * Resolve a link href found inside GitHub release notes to something the OS
+ * browser can actually open.
+ *
+ * GitHub returns release bodies with **relative** links unchanged — e.g.
+ * `[docs/RECOVER_LOST_BIDS.md](docs/RECOVER_LOST_BIDS.md)`. GitHub's own web
+ * UI rewrites those to `…/blob/<ref>/<path>` at render time, but the raw API
+ * body (which we render) keeps the bare relative path, so the link looks
+ * clickable yet points nowhere useful. This rewrites a relative href to the
+ * repo's `blob/<ref>/<path>` URL so it opens the file on GitHub.
+ *
+ * Absolute URLs (`https:`, `mailto:`, `#anchor`, protocol-relative `//`) are
+ * returned unchanged. `ref` is the release tag (defaults to `HEAD` so a
+ * relative link still resolves when we don't know the tag).
+ */
+export function resolveReleaseNotesHref(href: string, ref = "HEAD"): string {
+  const h = (href ?? "").trim();
+  if (!h) return h;
+  // Absolute or non-path schemes: leave alone.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(h) || h.startsWith("//") || h.startsWith("#")) {
+    return h;
+  }
+  // Strip a single leading "./" and any leading "/", then join under blob/<ref>.
+  const clean = h.replace(/^\.?\//, "");
+  return `${GITHUB_REPO_URL}/blob/${encodeURIComponent(ref)}/${clean}`;
+}
+
 /**
  * Legacy alias for the tx page base. Retained so any out-of-tree callers keep
  * working; new code should use {@link explorerTxUrl}.
