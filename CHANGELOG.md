@@ -2,7 +2,24 @@
 
 ## [Unreleased]
 
-(No changes yet.)
+### Fixed
+- **Update UX polish — "What's new?" modal, relative links, cursors,
+  installed-phase dismiss.** The Settings → Updates card now opens release
+  notes in the same shared `WhatsNewModal` the top banner has always used,
+  instead of rendering them inline (the link hides when the release has no
+  notes body). Relative links inside release notes (e.g.
+  `[docs/RECOVER_LOST_BIDS.md](docs/RECOVER_LOST_BIDS.md)`) now open —
+  `resolveReleaseNotesHref()` in `src/lib/openExternal.ts` rewrites relative
+  hrefs to `github.com/DimazzzZ/namehold-wallet/blob/<tag>/<path>` (`vX.Y.Z`,
+  fallback `HEAD`), leaving absolute URLs / `mailto:` / `#anchor` /
+  protocol-relative URLs untouched. Every interactive control in the update
+  flow (the Settings "What's new?" link, all four banner buttons, the
+  release-notes markdown links, the shared `Dialog` `×` close) now shows a
+  pointer cursor; the Relaunch button also gets `disabled:cursor-not-allowed`.
+  `useAppUpdate.dismiss()` is a no-op in the `installed` phase, and the
+  banner's installed-phase "Later" button is removed — after install, restart
+  is the only sensible next step and no re-check will resurface the update,
+  so dismissing was stripping the Relaunch affordance with no way back.
 
 ## [0.4.0] - 2026-08-07
 

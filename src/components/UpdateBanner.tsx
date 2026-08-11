@@ -74,7 +74,7 @@ export function UpdateBanner() {
           {available.notes && (
             <button
               type="button"
-              className="text-blue-800/70 hover:text-blue-900"
+              className="text-blue-800/70 hover:text-blue-900 cursor-pointer"
               onClick={() => setShowNotes(true)}
               data-testid="update-banner-whats-new"
             >
@@ -83,7 +83,7 @@ export function UpdateBanner() {
           )}
           <button
             type="button"
-            className="underline font-medium hover:no-underline"
+            className="underline font-medium hover:no-underline cursor-pointer"
             onClick={() => void install()}
             data-testid="update-banner-install"
           >
@@ -91,7 +91,7 @@ export function UpdateBanner() {
           </button>
           <button
             type="button"
-            className="text-blue-800/70 hover:text-blue-900"
+            className="text-blue-800/70 hover:text-blue-900 cursor-pointer"
             onClick={() => dismiss()}
             data-testid="update-banner-later"
           >
@@ -111,20 +111,12 @@ export function UpdateBanner() {
           <span className="text-green-800">Update installed.</span>
           <button
             type="button"
-            className="underline font-medium hover:no-underline"
+            className="underline font-medium hover:no-underline cursor-pointer disabled:cursor-not-allowed"
             onClick={() => void handleRelaunch()}
             disabled={relaunching}
             data-testid="update-banner-relaunch"
           >
             {relaunching ? "Relaunching…" : "Relaunch now"}
-          </button>
-          <button
-            type="button"
-            className="text-blue-800/70 hover:text-blue-900"
-            onClick={() => dismiss()}
-            data-testid="update-banner-installed-later"
-          >
-            Later
           </button>
         </>
       )}

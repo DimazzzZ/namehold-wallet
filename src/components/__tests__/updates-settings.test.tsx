@@ -110,7 +110,9 @@ describe("Settings — Updates card", () => {
 
     const installBtn = await screen.findByTestId("install-update");
     expect(screen.getByText(/0\.5\.0 is available/i)).toBeInTheDocument();
-    expect(screen.getByText(/New features/)).toBeInTheDocument();
+    // Notes are no longer inline — they live behind the "What's new?" modal.
+    expect(screen.getByTestId("updates-settings-whats-new")).toBeInTheDocument();
+    expect(screen.queryByText(/New features/)).not.toBeInTheDocument();
 
     fireEvent.click(installBtn);
     await waitFor(() =>
@@ -134,5 +136,67 @@ describe("Settings — Updates card", () => {
     const err = await screen.findByTestId("update-error");
     expect(err).toHaveTextContent(/network/i);
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it("opens the What's new modal on click and closes it again", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "current_version") return Promise.resolve("0.4.0");
+      return Promise.resolve(null);
+    });
+    render(<UpdatesSettings />, { wrapper: wrapper() });
+    await screen.findByTestId("check-for-updates");
+
+    act(() => {
+      useAppUpdate.setState({
+        phase: "available",
+        available: {
+          version: "0.5.0",
+          currentVersion: "0.4.0",
+          notes: "New features",
+          date: null,
+        },
+        progress: null,
+        error: null,
+      });
+    });
+
+    // Notes are NOT inline.
+    expect(screen.queryByText(/New features/)).not.toBeInTheDocument();
+
+    // Click "What's new?" to open the modal.
+    fireEvent.click(screen.getByTestId("updates-settings-whats-new"));
+    expect(screen.getByTestId("whats-new-modal")).toBeInTheDocument();
+    expect(screen.getByText(/New features/)).toBeInTheDocument();
+    expect(screen.getByText(/What's new in v0\.5\.0/)).toBeInTheDocument();
+
+    // Close the modal.
+    fireEvent.click(screen.getByRole("button", { name: "×" }));
+    expect(screen.queryByTestId("whats-new-modal")).not.toBeInTheDocument();
+  });
+
+  it("hides the What's new link when notes are empty", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "current_version") return Promise.resolve("0.4.0");
+      return Promise.resolve(null);
+    });
+    render(<UpdatesSettings />, { wrapper: wrapper() });
+    await screen.findByTestId("check-for-updates");
+
+    act(() => {
+      useAppUpdate.setState({
+        phase: "available",
+        available: {
+          version: "0.5.0",
+          currentVersion: "0.4.0",
+          notes: null,
+          date: null,
+        },
+        progress: null,
+        error: null,
+      });
+    });
+
+    expect(screen.getByText(/0\.5\.0 is available/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("updates-settings-whats-new")).not.toBeInTheDocument();
   });
 });
