@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-11
+
+### Added
+- **macOS tray Dock integration** — closing the main window to tray now hides
+  the Dock icon (`AppHandle::set_dock_visibility(false)`) for a clean
+  menu-bar-only experience while the window is hidden; the Dock icon returns
+  when the window is shown again. Clicking the (now-hidden) Dock icon or
+  invoking Reopen through the app switcher now correctly reopens the window
+  via `RunEvent::Reopen`, which was previously unhandled. A one-time native
+  macOS notification fires the **first time** the user closes to tray —
+  "Namehold is still running in the menu bar. Click the tray icon to
+  reopen." — so users don't think the app quit. Tracked via a new
+  `tray_hint_shown` setting so it fires once and never again. Cmd+Tab is
+  preserved (unlike `NSApplication.setActivationPolicy(.accessory)`, the
+  Tauri 2.11 `set_dock_visibility` API only hides the Dock tile).
+
 ### Fixed
 - **Tray showed "Start Node" when an adopted hsd was actually running.** If
   hsd was already up when Namehold launched (a previous session left it
@@ -39,6 +55,29 @@
   banner's installed-phase "Later" button is removed — after install, restart
   is the only sensible next step and no re-check will resurface the update,
   so dismissing was stripping the Relaunch affordance with no way back.
+- **Launch-at-login ACL permission** — toggling "Launch at login" in Settings
+  failed with `Command plugin:autostart|enable not allowed by ACL`. The
+  `tauri-plugin-autostart` plugin was fully wired (registered in Rust,
+  imported in `Settings.tsx`, present in both `Cargo.toml` and
+  `package.json`), but `src-tauri/capabilities/default.json` never granted
+  `autostart:*`. Added `autostart:default` to the capability, which grants
+  the three commands Settings actually calls: `enable`, `disable`, and
+  `is_enabled`.
+- **Windows build: `HANDLE` comparison** — `windows-sys 0.48` defines
+  `HANDLE` as `isize`, not `*mut c_void`, and `OpenProcess` returns `0` on
+  failure rather than a null pointer. The failure check now uses `0isize`
+  instead of `ptr::null_mut()`, fixing the CI build on `windows-latest`.
+
+### CI / tooling
+- **Release build acceleration** — the release workflow now uses `sccache`
+  with a shared `rust-cache` key and adds concurrency to cut cold-compile
+  time on the macOS/Linux/Windows matrix.
+- **macOS universal + Windows WiX bundling fixes** — resolved
+  `externalBin` staging for the `namehold-syncd` sidecar on the macOS
+  universal target (the universal path wasn't being staged alongside the
+  per-arch paths) and cleared the Windows WiX bundling failures.
+  Also silences the Vite chunk-size warning surfaced during the macOS
+  bundle step.
 
 ## [0.4.0] - 2026-08-07
 
