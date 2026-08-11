@@ -2,43 +2,45 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-11
+
+A polish release focused on the tray, the auto-updater, and getting
+launch-at-login working on macOS.
+
+### Added
+- **Cleaner menu-bar mode on macOS.** Close Namehold to the tray and the
+  Dock icon disappears — you get a proper menu-bar-only experience while
+  the app keeps running in the background. Bring the window back and the
+  Dock icon returns. Clicking the Dock icon (or picking Namehold from the
+  app switcher) now reliably reopens the window, and Cmd+Tab still works
+  the whole time.
+- **First-time "still running" hint.** The first time you close Namehold
+  to the tray, a native notification lets you know the app is still alive
+  in the menu bar and how to get it back. Shown once, then never again.
+
 ### Fixed
-- **Tray showed "Start Node" when an adopted hsd was actually running.** If
-  hsd was already up when Namehold launched (a previous session left it
-  running because Sync in Background was ON, or the user started hsd
-  externally), the tray permanently showed "Node: Stopped" and "Start Node"
-  while the frontend correctly reported the node connected. Root cause: the
-  tray's `snapshot()` decided `node_running` solely from
-  `hsd_child.is_some()` — whether *this* app process spawned the child — so
-  the adoption code path in `start_hsd` (which returns success without
-  populating `hsd_child`) left the tray permanently wrong. The tray toggle
-  handler had the same blind spot, so clicking "Start Node" tried to start a
-  duplicate. Introduced `AppState.node_rpc_alive` (an `AtomicBool` reflecting
-  actual RPC reachability), fed by a lightweight backend probe loop that hits
-  `getblockchaininfo` every 5 seconds — independent of the frontend, so it
-  stays accurate even when the window is closed to tray (TanStack Query
-  pauses background refetches by default). `start_hsd` (both adoption and
-  poll-loop success branches), `stop_hsd`, and `node_status` update the flag
-  immediately so state flips right when the user acts. The tray `snapshot()`
-  and toggle handler now read `node_rpc_alive OR hsd_child.is_some()` (the
-  child-handle path covers the pre-first-probe window on cold launch).
-- **Update UX polish — "What's new?" modal, relative links, cursors,
-  installed-phase dismiss.** The Settings → Updates card now opens release
-  notes in the same shared `WhatsNewModal` the top banner has always used,
-  instead of rendering them inline (the link hides when the release has no
-  notes body). Relative links inside release notes (e.g.
-  `[docs/RECOVER_LOST_BIDS.md](docs/RECOVER_LOST_BIDS.md)`) now open —
-  `resolveReleaseNotesHref()` in `src/lib/openExternal.ts` rewrites relative
-  hrefs to `github.com/DimazzzZ/namehold-wallet/blob/<tag>/<path>` (`vX.Y.Z`,
-  fallback `HEAD`), leaving absolute URLs / `mailto:` / `#anchor` /
-  protocol-relative URLs untouched. Every interactive control in the update
-  flow (the Settings "What's new?" link, all four banner buttons, the
-  release-notes markdown links, the shared `Dialog` `×` close) now shows a
-  pointer cursor; the Relaunch button also gets `disabled:cursor-not-allowed`.
-  `useAppUpdate.dismiss()` is a no-op in the `installed` phase, and the
-  banner's installed-phase "Later" button is removed — after install, restart
-  is the only sensible next step and no re-check will resurface the update,
-  so dismissing was stripping the Relaunch affordance with no way back.
+- **Tray now shows the right node status.** If hsd was already running
+  when Namehold launched — say, a previous background-sync session left
+  it up, or you started it yourself — the tray used to be stuck on
+  "Node: Stopped / Start Node" even though the node was clearly working.
+  Clicking "Start Node" would then try to launch a duplicate. The tray
+  now watches the node's actual health and stays in sync with reality,
+  even when the main window is closed.
+- **"Launch at login" actually works now.** Toggling it in Settings used
+  to fail with a permissions error. Fixed — the app will now correctly
+  start with your Mac / Windows / Linux session when you enable it.
+- **Nicer update flow.** The "What's new?" link in Settings now opens the
+  same release-notes modal as the top banner (instead of dumping the
+  notes inline). Links inside release notes — including relative ones
+  like `docs/RECOVER_LOST_BIDS.md` — open in your browser correctly.
+  Every button, link, and close-icon in the update flow shows a pointer
+  cursor. And once an update is installed, "Restart now" can no longer
+  be dismissed away by accident — restart is the only thing left to do.
+
+### Under the hood
+- Faster release builds in CI, and fixes to the macOS universal build
+  and Windows installer so every release actually makes it out the door.
+- Windows build fix for a type-comparison error that was breaking CI.
 
 ## [0.4.0] - 2026-08-07
 

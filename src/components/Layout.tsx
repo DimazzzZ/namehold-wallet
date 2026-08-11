@@ -57,7 +57,7 @@ export function Layout() {
         <div className="px-4 py-2 border-t border-gray-200">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-[10px] text-gray-400 mt-0.5">v0.4.0</div>
+              <div className="text-[10px] text-gray-400 mt-0.5">v0.4.1</div>
             </div>
             <Link
               to="/about"
