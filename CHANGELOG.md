@@ -16,6 +16,14 @@
   free its reserved coins.
 - `draftId` field on merged activity rows — enables the UI to target specific
   drafts for sign/broadcast/discard without a lookup.
+- **DEV: Simulate update flow** — a dev-only "Simulate update available"
+  panel in Settings (gated behind `import.meta.env.DEV && isTauri()`) seeds
+  the shared `useAppUpdate` store from the latest GitHub release (or a
+  synthetic bumped version when offline) so the banner + Settings card show
+  the "available" notice without auto-installing. Clicking "Install now" then
+  runs a fake download loop (10 ticks × 120 ms → installed) via a `simulated`
+  flag on the store, so the full update UX can be exercised without a real
+  signed release. New Rust command: `fetch_latest_release_meta` (debug-gated).
 - Rust integration test: `build_batch_bid_draft` rejects batches containing
   any name not in BIDDING/OPENING phase and persists nothing (all-or-nothing
   atomicity guard).
