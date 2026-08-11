@@ -198,6 +198,17 @@ struct NodeProbe {
     headers: Option<i64>,
 }
 
+/// Probe hsd RPC and update the `node_rpc_alive` flag on AppState.
+/// Returns true if RPC answered, false otherwise. Used by the backend probe
+/// loop and by callers that already probe RPC (to avoid a duplicate probe).
+pub(crate) async fn probe_and_update(state: &AppState) -> bool {
+    let alive = probe_node(state).await.is_some();
+    state
+        .node_rpc_alive
+        .store(alive, std::sync::atomic::Ordering::Relaxed);
+    alive
+}
+
 /// The authoritative "is the node actually answering?" check: probe the node RPC
 /// (same `getblockchaininfo` call the sync + write-capability paths use). Returns
 /// `Some` only when the RPC answers — this is what `connected` is based on,
@@ -231,6 +242,11 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     let data_dir = resolve_data_dir(&state)?;
     let process_alive = is_running(&state)?;
     let probe = probe_node(&state).await;
+    // Keep the shared liveness flag in sync — the tray reads this to decide
+    // whether to show "Running" or "Stopped" without doing its own RPC probe.
+    state
+        .node_rpc_alive
+        .store(probe.is_some(), std::sync::atomic::Ordering::Relaxed);
     // Read node_mode setting to determine SPV vs full node behavior.
     let node_mode = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -344,6 +360,9 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // or the user's own). If its RPC already answers, adopt it — never spawn a
     // duplicate, which would only collide on the data-dir lock.
     if let Some(probe) = probe_node(&state).await {
+        state
+            .node_rpc_alive
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         return Ok(serde_json::json!({
             "connected": true,
             "process_alive": is_running(&state)?,
@@ -489,6 +508,9 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
             }
         }
         if let Some(probe) = probe_node(&state).await {
+            state
+                .node_rpc_alive
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             return Ok(serde_json::json!({
                 "connected": true,
                 "process_alive": true,
@@ -545,6 +567,11 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
         db::queries::get_settings(&db)?
     };
     let _ = NodeRpcClient::from_settings(&settings).stop().await;
+    // Mark the node as offline. The backend probe loop will confirm in ~5s,
+    // but we set it immediately so the tray + UI flip right away.
+    state
+        .node_rpc_alive
+        .store(false, std::sync::atomic::Ordering::Relaxed);
 
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db.execute(

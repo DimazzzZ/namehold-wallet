@@ -3,6 +3,25 @@
 ## [Unreleased]
 
 ### Fixed
+- **Tray showed "Start Node" when an adopted hsd was actually running.** If
+  hsd was already up when Namehold launched (a previous session left it
+  running because Sync in Background was ON, or the user started hsd
+  externally), the tray permanently showed "Node: Stopped" and "Start Node"
+  while the frontend correctly reported the node connected. Root cause: the
+  tray's `snapshot()` decided `node_running` solely from
+  `hsd_child.is_some()` — whether *this* app process spawned the child — so
+  the adoption code path in `start_hsd` (which returns success without
+  populating `hsd_child`) left the tray permanently wrong. The tray toggle
+  handler had the same blind spot, so clicking "Start Node" tried to start a
+  duplicate. Introduced `AppState.node_rpc_alive` (an `AtomicBool` reflecting
+  actual RPC reachability), fed by a lightweight backend probe loop that hits
+  `getblockchaininfo` every 5 seconds — independent of the frontend, so it
+  stays accurate even when the window is closed to tray (TanStack Query
+  pauses background refetches by default). `start_hsd` (both adoption and
+  poll-loop success branches), `stop_hsd`, and `node_status` update the flag
+  immediately so state flips right when the user acts. The tray `snapshot()`
+  and toggle handler now read `node_rpc_alive OR hsd_child.is_some()` (the
+  child-handle path covers the pre-first-probe window on cold launch).
 - **Update UX polish — "What's new?" modal, relative links, cursors,
   installed-phase dismiss.** The Settings → Updates card now opens release
   notes in the same shared `WhatsNewModal` the top banner has always used,

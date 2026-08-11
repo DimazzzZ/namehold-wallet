@@ -137,18 +137,19 @@ struct TraySnapshot {
 fn snapshot(app: &AppHandle) -> TraySnapshot {
     let state = app.state::<AppState>();
 
-    // Node running: whether we have a child handle OR an RPC probe answers.
-    // We use only the cheap "child handle present" check here — a full RPC
-    // probe on every tray refresh (every 5s from the ticker) would add
-    // needless RPC traffic. The tray menu handlers call `refresh_tray`
-    // explicitly right after they start/stop the node, so the tray reflects
-    // reality whenever the user clicked something; the ticker catches the rest.
+    // Node running: the backend probe loop updates `node_rpc_alive` every ~5s
+    // (and start/stop actions flip it immediately). We OR it with the child
+    // handle so a freshly-spawned node shows "Running" even before the first
+    // probe tick fires.
     let node_running = state
-        .hsd_child
-        .lock()
-        .ok()
-        .map(|g| g.is_some())
-        .unwrap_or(false);
+        .node_rpc_alive
+        .load(std::sync::atomic::Ordering::Relaxed)
+        || state
+            .hsd_child
+            .lock()
+            .ok()
+            .map(|g| g.is_some())
+            .unwrap_or(false);
 
     // "Syncing" state proxy: whether a wallet full-sync run is active. This is
     // the cheapest in-process signal (no RPC round-trip on every 5s tick).
@@ -315,6 +316,7 @@ mod tests {
                 signer: std::sync::Mutex::new(None),
                 secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
                 hsd_child: std::sync::Mutex::new(None),
+                node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
                 sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                     crate::commands::sync::SyncStatus::default(),
                 )),

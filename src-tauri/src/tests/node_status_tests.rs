@@ -16,6 +16,7 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
             signer: std::sync::Mutex::new(None),
             secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
             hsd_child: std::sync::Mutex::new(None),
+            node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
             sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::commands::sync::SyncStatus::default(),
             )),
@@ -318,5 +319,107 @@ fn chain_paths_are_network_scoped() {
     assert_eq!(
         chain_paths_for_network("/data", Network::Testnet),
         vec![std::path::PathBuf::from("/data/testnet")]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// node_rpc_alive: the tray reads this flag to decide "Running" vs "Stopped".
+// It must reflect the REAL RPC connection — not whether we spawned a child —
+// so an ADOPTED node (RPC up, hsd_child None) still shows as running. This is
+// the exact bug where the tray showed "Start Node" for a node that was up.
+// ---------------------------------------------------------------------------
+
+/// Adopted node: RPC answers `getblockchaininfo` but we never spawned a child
+/// (`hsd_child` is None). After a probe, `node_rpc_alive` must be true — this
+/// is what makes the tray show "Running"/"Stop Node" for an adopted node.
+#[tokio::test]
+async fn node_rpc_alive_true_for_adopted_node() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+
+    // Precondition: no child handle — this simulates the adoption path where
+    // start_hsd found a running node and returned without setting hsd_child.
+    assert!(
+        state.hsd_child.lock().unwrap().is_none(),
+        "adopted node must have no child handle"
+    );
+
+    // node_status probes RPC and updates the flag.
+    let v = node_status(app.state()).await.expect("node_status ok");
+    assert_eq!(
+        v["connected"],
+        serde_json::json!(true),
+        "RPC answered → connected"
+    );
+    assert!(
+        state
+            .node_rpc_alive
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "node_rpc_alive must be true when RPC answers, even with no child handle"
+    );
+}
+
+/// No reachable node: `node_rpc_alive` must be false so the tray shows
+/// "Stopped"/"Start Node".
+#[tokio::test]
+async fn node_rpc_alive_false_when_no_node() {
+    let app = app_with(seeded_conn());
+    let state = app.state::<AppState>();
+
+    let _ = node_status(app.state()).await.expect("node_status ok");
+    assert!(
+        !state
+            .node_rpc_alive
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "node_rpc_alive must be false when no node is reachable"
+    );
+}
+
+/// `probe_and_update` (used by the backend probe loop) sets the flag directly
+/// without going through the full `node_status` command.
+#[tokio::test]
+async fn probe_and_update_sets_flag_true_when_node_answers() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":42,"headers":42,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+
+    let alive = crate::commands::node::probe_and_update(&state).await;
+    assert!(alive, "probe_and_update returns true when RPC answers");
+    assert!(
+        state
+            .node_rpc_alive
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "probe_and_update stores true on the flag"
     );
 }

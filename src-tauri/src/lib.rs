@@ -57,6 +57,11 @@ pub struct AppState {
     /// Handle to the hsd node the app started this session, if any. Used to
     /// report running state and to stop the node. Not persisted across restarts.
     pub hsd_child: Mutex<Option<std::process::Child>>,
+    /// Whether the hsd RPC endpoint is currently reachable. Updated by the
+    /// backend probe loop (every ~5s) and immediately after start/stop actions.
+    /// Read by the tray to determine whether to show "Running" or "Stopped",
+    /// independent of whether we spawned the child (adoption case).
+    pub node_rpc_alive: std::sync::atomic::AtomicBool,
     /// Persistent sync session progress. Survives page navigation.
     pub sync_status: Arc<AsyncMutex<SyncStatus>>,
 }
@@ -157,6 +162,7 @@ pub fn run() {
                 signer: Mutex::new(None),
                 secure_prompts: Mutex::new(HashMap::new()),
                 hsd_child: Mutex::new(None),
+                node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
                 sync_status: Arc::new(AsyncMutex::new(SyncStatus::default())),
             });
 
@@ -211,12 +217,19 @@ pub fn run() {
                                 tauri::async_runtime::spawn(async move {
                                     let running = {
                                         let state = app.state::<AppState>();
+                                        // Match tray snapshot: reachable RPC OR
+                                        // a child we spawned counts as running.
+                                        // Fixes the adopted-node case where hsd
+                                        // is up but hsd_child is None.
                                         state
-                                            .hsd_child
-                                            .lock()
-                                            .ok()
-                                            .map(|g| g.is_some())
-                                            .unwrap_or(false)
+                                            .node_rpc_alive
+                                            .load(std::sync::atomic::Ordering::Relaxed)
+                                            || state
+                                                .hsd_child
+                                                .lock()
+                                                .ok()
+                                                .map(|g| g.is_some())
+                                                .unwrap_or(false)
                                     };
                                     let result = if running {
                                         commands::node::stop_hsd(app.state::<AppState>())
@@ -330,6 +343,22 @@ pub fn run() {
                     loop {
                         interval.tick().await;
                         commands::tray::refresh_tray(&handle);
+                    }
+                });
+
+                // Backend RPC probe loop: every ~5s, check if hsd is reachable
+                // and update the `node_rpc_alive` flag. This keeps the tray
+                // accurate even when the main window is closed to tray (the
+                // frontend's polling pauses when unfocused). The first tick
+                // fires immediately so the flag is fresh within a few hundred ms
+                // of app launch.
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                    loop {
+                        interval.tick().await;
+                        let state = handle.state::<AppState>();
+                        let _ = commands::node::probe_and_update(&state).await;
                     }
                 });
             }
