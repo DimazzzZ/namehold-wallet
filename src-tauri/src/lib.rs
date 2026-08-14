@@ -119,7 +119,8 @@ pub fn run() {
         ));
     }
 
-    builder.setup(|app| {
+    builder
+        .setup(|app| {
             // Auto-updater (desktop only). The plugin verifies Ed25519
             // signatures against `plugins.updater.pubkey` before installing;
             // `PendingUpdate` holds a checked update between the check and
@@ -612,7 +613,7 @@ pub fn run() {
                 // window can't be reopened from the Dock.
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen { .. } => {
-                    show_main_window(&app_handle);
+                    show_main_window(app_handle);
                 }
                 // `RunEvent::Exit` fires exactly once, right before the event
                 // loop stops, regardless of how the app is closing (last window
