@@ -410,6 +410,7 @@ export function Settings() {
           <input
             type="checkbox"
             checked={form.launch_at_login === "1"}
+            disabled={import.meta.env.DEV}
             onChange={async (e) => {
               const enabled = e.target.checked;
               updateField("launch_at_login", enabled ? "1" : "0");
@@ -434,8 +435,16 @@ export function Settings() {
           Launch at login
         </label>
         <div className="text-xs text-gray-500">
-          Start Namehold automatically when you log in. Pairs well with
+          {import.meta.env.DEV ? (
+            <span className="text-amber-600">
+              Unavailable in dev builds — autostart would register the debug
+              binary path, breaking login-launch for the installed app.
+            </span>
+          ) : (
+            <>Start Namehold automatically when you log in. Pairs well with
           &quot;Close to tray&quot; for an always-available menu-bar experience.
+            </>
+          )}
         </div>
       </div>
 
