@@ -338,6 +338,14 @@ export interface Settings {
    * usual pairing is both on for a "always-there menu-bar app" experience.
    */
   launch_at_login: string;
+  /**
+   * Integer string, dollarydoos per kvB (per 1000 vbytes) — the global fee
+   * rate applied when a `build_*_draft` command is called without an
+   * explicit `fee_rate` override. Matches hsd's `rate` convention and the
+   * backend `noncustodial::send::MIN_FEE_RATE_PER_BYTE` floor (== 1000
+   * doos/kvB). Empty / missing means "use backend default" (1 sat/byte).
+   */
+  fee_rate_doos_per_kvb: string;
 }
 
 // ---------------------------------------------------------------------------

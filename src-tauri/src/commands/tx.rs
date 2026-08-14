@@ -127,6 +127,8 @@ fn confirm_details_for_draft(draft: &db::queries::TxDraftRow) -> serde_json::Val
 }
 
 /// Resolve the fee rate (doos/byte): explicit override, else ask the node's
+/// `fee_rate_doos_per_kvb` setting (in doos per 1000 vbytes; divide by 1000
+/// to get doos/byte, floored at the relay-minimum), else the node's
 /// `estimatesmartfee`, else the fixed relay-floor default. Never errors.
 async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Option<u64>) -> u64 {
     if let Some(r) = fee_rate {
@@ -140,6 +142,16 @@ async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Option<u64>) ->
     };
     match settings {
         Some(s) => {
+            // 1) Explicit user setting wins: convert doos/kvB → doos/byte and
+            //    floor at the relay minimum. This mirrors names::fee_rate() so
+            //    the send flow and the covenant flows use the same knob.
+            if let Some(kvb) = s
+                .get("fee_rate_doos_per_kvb")
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                return (kvb / 1000).max(send::MIN_FEE_RATE_PER_BYTE);
+            }
+            // 2) Ask the node for an estimate — same behavior as before.
             let client = NodeRpcClient::from_settings(&s);
             client
                 .estimate_smart_fee(6)

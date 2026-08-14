@@ -38,6 +38,8 @@ import { AddWalletForm } from "./AddWalletForm";
 import { UnlockButton } from "./UnlockButton";
 import { BatchConfirmModal } from "./BatchConfirmModal";
 import { Button } from "./ui/Button";
+import { FeeRateOverride } from "./ui/FeeRateOverride";
+import { doosPerKvbToSatsPerByte, parseDoosPerKvb } from "../lib/feeRate";
 import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
 import { Dialog } from "./ui/Dialog";
@@ -125,6 +127,10 @@ export function WalletView() {
   const [sendOpen, setSendOpen] = useState(false);
   const [sendAddress, setSendAddress] = useState("");
   const [sendAmount, setSendAmount] = useState("");
+  // Per-transaction fee-rate override (doos/kvB, raw text). Empty = use the
+  // global setting default. Shared by the Send dialog and every batch action.
+  const [sendFeeRate, setSendFeeRate] = useState("");
+  const [batchFeeRate, setBatchFeeRate] = useState("");
   const [draft, setDraft] = useState<TxDraftSummary | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // Toggle the QR alongside the receive address. Off by default — the address
@@ -184,6 +190,7 @@ export function WalletView() {
     setSendOpen(false);
     setSendAddress("");
     setSendAmount("");
+    setSendFeeRate("");
     setDraft(null);
     setSubmitting(false);
     setSendError(null);
@@ -227,12 +234,15 @@ export function WalletView() {
   }, [selectedNames, nameCaps]);
 
   // Batch renew: build a single tx with multiple renewal covenants, sign, broadcast.
+  // Compute the fee-rate arg once for all batch handlers (null = use setting default).
+  const batchFeeRateArg = doosPerKvbToSatsPerByte(parseDoosPerKvb(batchFeeRate)) ?? undefined;
+
   const handleBatchRenew = async () => {
     const names = Array.from(selectedNames);
     if (names.length === 0) return;
     try {
       showToast(`Building batch renew draft…`, "info");
-      const draft = await batchRenewMutation.mutateAsync({ names });
+      const draft = await batchRenewMutation.mutateAsync({ names, feeRate: batchFeeRateArg });
       const feeDoos = draft.summary?.feeDoos ?? 0;
       setBatchModal({
         open: true,
@@ -252,7 +262,7 @@ export function WalletView() {
     if (names.length === 0) return;
     try {
       showToast(`Building batch reveal draft…`, "info");
-      const draft = await batchRevealMutation.mutateAsync({ names });
+      const draft = await batchRevealMutation.mutateAsync({ names, feeRate: batchFeeRateArg });
       const feeDoos = draft.summary?.feeDoos ?? 0;
       setBatchModal({
         open: true,
@@ -272,7 +282,7 @@ export function WalletView() {
     if (names.length === 0) return;
     try {
       showToast(`Building batch redeem draft…`, "info");
-      const draft = await batchRedeemMutation.mutateAsync({ names });
+      const draft = await batchRedeemMutation.mutateAsync({ names, feeRate: batchFeeRateArg });
       const feeDoos = draft.summary?.feeDoos ?? 0;
       setBatchModal({
         open: true,
@@ -292,7 +302,7 @@ export function WalletView() {
     if (names.length === 0) return;
     try {
       showToast(`Building batch finalize draft…`, "info");
-      const draft = await batchFinalizeMutation.mutateAsync({ names });
+      const draft = await batchFinalizeMutation.mutateAsync({ names, feeRate: batchFeeRateArg });
       const feeDoos = draft.summary?.feeDoos ?? 0;
       setBatchModal({
         open: true,
@@ -422,6 +432,7 @@ export function WalletView() {
         toAddress: sendAddress.trim(),
         valueDoos: doos,
         max,
+        feeRate: doosPerKvbToSatsPerByte(parseDoosPerKvb(sendFeeRate)) ?? undefined,
       });
       setDraft(d);
       // Reflect the swept amount in the field so "Max" is transparent.
@@ -1126,6 +1137,7 @@ export function WalletView() {
               </table>
             </div>
             {selectedNames.size > 0 && !isWatchOnly && (
+              <>
               <div
                 className="flex items-center gap-3 mt-3 p-2 bg-blue-50 border border-blue-200 rounded text-sm"
                 data-testid="batch-action-bar"
@@ -1182,6 +1194,14 @@ export function WalletView() {
                   Clear
                 </Button>
               </div>
+              <div className="mt-2">
+                <FeeRateOverride
+                  value={batchFeeRate}
+                  onChange={setBatchFeeRate}
+                  label="Fee rate override"
+                />
+              </div>
+              </>
             )}
           </>
           ) : (
@@ -1354,6 +1374,7 @@ export function WalletView() {
                 </div>
               )}
             </div>
+            <FeeRateOverride value={sendFeeRate} onChange={setSendFeeRate} />
             <div className="flex gap-2 justify-end">
               <Button variant="ghost" onClick={resetSend}>Cancel</Button>
               <Button
