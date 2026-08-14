@@ -63,6 +63,7 @@ pub struct NameInputSpec {
 }
 
 /// The covenant output an action creates.
+#[derive(Clone)]
 pub struct PrimaryOutput {
     pub value: u64,
     pub address: String,

@@ -5,13 +5,12 @@ import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
 import { validateBidInputs } from "../lib/auction";
 import { hnsToDollarydoos } from "../lib/utils";
+import { mapError } from "../lib/errors";
 import { useUiStore } from "../stores/ui";
 
 interface BatchBidModalProps {
   open: boolean;
   onClose: () => void;
-  /** Pre-fill names from multi-select (e.g. watchlist selection). */
-  initialNames?: string[];
 }
 
 /**
@@ -20,11 +19,11 @@ interface BatchBidModalProps {
  * backend allocates a fresh receive address per name, computes blinds,
  * persists commitments, and returns a draft for signing.
  */
-export function BatchBidModal({ open, onClose, initialNames }: BatchBidModalProps) {
+export function BatchBidModal({ open, onClose }: BatchBidModalProps) {
   const batchBidMutation = useNameAction("build_batch_bid_draft");
   const showToast = useUiStore((s) => s.showToast);
 
-  const [namesText, setNamesText] = useState(initialNames?.join("\n") ?? "");
+  const [namesText, setNamesText] = useState("");
   const [bidHns, setBidHns] = useState("");
   const [lockupHns, setLockupHns] = useState("");
   const [feeRateOverride, setFeeRateOverride] = useState("");
@@ -57,7 +56,7 @@ export function BatchBidModal({ open, onClose, initialNames }: BatchBidModalProp
       setLockupHns("");
       setFeeRateOverride("");
     } catch (e: unknown) {
-      showToast(`Batch bid failed: ${e}`, "error");
+      showToast(mapError(e, "build"), "error");
     }
   };
 

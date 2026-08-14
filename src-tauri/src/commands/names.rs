@@ -157,6 +157,13 @@ struct ActionSummary<'a> {
     num_inputs: i64,
     recipient_address: Option<&'a str>,
     txid: Option<&'a str>,
+    /// Full list of names when this draft covers more than one (batch-bid,
+    /// batch-renew, etc.). Serialized as `nameList` in JSON so
+    /// `has_pending_*_draft_for_name` queries can enumerate the batch's
+    /// members and match any of them. `None` for single-name drafts keeps
+    /// their `summary_json` byte-identical to pre-batch-bid history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name_list: Option<&'a [&'a str]>,
 }
 
 /// Persist a planned covenant draft and return its summary.
@@ -166,10 +173,11 @@ fn persist(
     action: &str,
     name: &str,
     recipient: Option<&str>,
+    name_list: Option<&[&str]>,
     res: &actions::PlanResult,
 ) -> Result<TxDraftSummary, AppError> {
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    persist_with_conn(&conn, profile_id, action, name, recipient, res)
+    persist_with_conn(&conn, profile_id, action, name, recipient, name_list, res)
 }
 
 /// Same as [`persist`] but takes an already-held connection instead of
@@ -183,6 +191,7 @@ fn persist_with_conn(
     action: &str,
     name: &str,
     recipient: Option<&str>,
+    name_list: Option<&[&str]>,
     res: &actions::PlanResult,
 ) -> Result<TxDraftSummary, AppError> {
     let summary = ActionSummary {
@@ -195,6 +204,7 @@ fn persist_with_conn(
         num_inputs: res.plan.inputs.len() as i64,
         recipient_address: recipient,
         txid: Some(&res.txid),
+        name_list,
     };
     let id = random_id();
     // Reserve every input the plan spends (I3): the funding coins AND, when
@@ -1309,7 +1319,7 @@ pub async fn build_open_draft(
         )));
     }
 
-    persist_with_conn(&conn, &ctx.profile_id, "open", &name, None, &res)
+    persist_with_conn(&conn, &ctx.profile_id, "open", &name, None, None, &res)
 }
 
 // --- BID -------------------------------------------------------------------
@@ -1462,7 +1472,7 @@ pub async fn build_bid_draft(
         reveal_end_height,
     )?;
 
-    let summary = persist_with_conn(&conn, &ctx.profile_id, "bid", &name, None, &res)?;
+    let summary = persist_with_conn(&conn, &ctx.profile_id, "bid", &name, None, None, &res)?;
     // Task 1 fix: stamp the on-chain bid txid onto this commitment NOW, while
     // still under the same held `conn` lock as the multiplicity guard and the
     // commitment/draft writes above — no unlock/relock, guard untouched.
@@ -1474,6 +1484,26 @@ pub async fn build_bid_draft(
     queries::set_bid_txid(&conn, &ctx.profile_id, &hex::encode(blind), &res.txid)?;
     Ok(summary)
 }
+
+/// One name's pre-fetched auction state, gathered before the batch-bid
+/// critical section so all network/hash errors surface before any DB write.
+struct NameSpec {
+    name: String,
+    nh: [u8; 32],
+    nh_hex: String,
+    raw: Vec<u8>,
+    ns: NameState,
+}
+
+/// One name's bid result inside a batch: the plan output plus the blind hex
+/// needed to stamp the txid after the draft is persisted. Bundling these keeps
+/// the two index-coupled — no risk of a `primaries[i]` / `blind_hexes[i]`
+/// mismatch.
+struct BidOutcome {
+    primary: PrimaryOutput,
+    blind_hex: String,
+}
+
 /// Batch-bid on multiple names in a single transaction. All names share the
 /// same bid value and lockup; each gets its own receive address, nonce, blind,
 /// and bid commitment row. Atomic: if any name fails the multiplicity guard or
@@ -1508,13 +1538,19 @@ pub async fn build_batch_bid_draft(
 
     // Pre-fetch all name states and hashes to validate phase + catch errors
     // early, before any writes.
-    let mut name_specs = Vec::new();
+    let mut name_specs: Vec<NameSpec> = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         let nh_hex = hex::encode(nh);
         let raw = names::raw_name(name)?;
         let ns = fetch_name_state(&client, name).await?;
-        name_specs.push((name.clone(), nh, nh_hex, raw, ns));
+        name_specs.push(NameSpec {
+            name: name.clone(),
+            nh,
+            nh_hex,
+            raw,
+            ns,
+        });
     }
 
     // --- Atomic section: multiplicity guard + all commitment/draft writes.
@@ -1524,36 +1560,47 @@ pub async fn build_batch_bid_draft(
 
     // Guard: check that NO name in the batch already has an unspent bid coin
     // or pending bid draft.
-    for (name, _nh, nh_hex, _raw, _ns) in &name_specs {
+    for spec in &name_specs {
         let existing_bid_coins = queries::find_unspent_covenant_utxos_by_name_hash(
             &conn,
             &ctx.profile_id,
             sync::COV_BID as i64,
-            nh_hex,
+            &spec.nh_hex,
         )?;
         if !existing_bid_coins.is_empty() {
             return Err(AppError::InvalidInput(format!(
                 "wallet already has an unspent bid for '{}' — one bid per wallet per name",
-                name
+                spec.name
             )));
         }
-        if queries::has_pending_bid_draft_for_name(&conn, &ctx.profile_id, name)? {
+        if queries::has_pending_bid_draft_for_name(&conn, &ctx.profile_id, &spec.name)? {
             return Err(AppError::InvalidInput(format!(
                 "a bid draft for '{}' is already pending — one bid per wallet per name",
-                name
+                spec.name
             )));
         }
     }
 
     // All guards passed. Now derive addresses, compute nonces/blinds, and
-    // persist commitments for all names. Collect blinds so we can stamp txids
-    // on all of them after the draft is persisted.
-    let mut primaries = Vec::new();
-    let mut blind_hexes = Vec::new();
+    // persist commitments for all names. Collect one `BidOutcome` per name so
+    // the plan-output list and the blind-hex list stay index-coupled by
+    // construction (no risk of a `primaries[i]` / `blind_hexes[i]` mismatch).
+    let mut outcomes: Vec<BidOutcome> = Vec::with_capacity(name_specs.len());
     let params = ctx.network.name_params();
 
-    for (name, nh, nh_hex, raw, ns) in name_specs {
+    for spec in name_specs {
         // Derive next unused receive address for this bid.
+        //
+        // NOTE — divergence from `build_bid_draft`: the single-bid path
+        // derives its address in a SEPARATE short-lived lock scope BEFORE
+        // the critical section, then re-acquires the lock. We derive
+        // INSIDE the held lock instead: for a batch of N names, each
+        // iteration's `next_unused_receive_address` must see the previous
+        // iteration's write to `derived_addresses` so it advances the
+        // index — deriving them concurrently (or split across
+        // lock/unlock/relock) would hand two names the same address. The
+        // longer critical section is the price of that per-batch
+        // atomicity.
         let bid_addr = crate::noncustodial::derivation::next_unused_receive_address(
             &conn,
             &ctx.profile_id,
@@ -1568,17 +1615,17 @@ pub async fn build_batch_bid_draft(
         }
         addr_hash.copy_from_slice(&program);
 
-        let nonce = bids::compute_nonce(&ctx.account_xpub, &nh, &addr_hash, bid_value as u64)?;
+        let nonce = bids::compute_nonce(&ctx.account_xpub, &spec.nh, &addr_hash, bid_value as u64)?;
         let blind = bids::compute_blind(bid_value as u64, &nonce);
         let blind_hex = hex::encode(blind);
-        let cov = covenants::bid(&nh, ns.height, &raw, &blind);
+        let cov = covenants::bid(&spec.nh, spec.ns.height, &spec.raw, &blind);
 
         // Persist commitment before adding to the batch plan.
         queries::insert_bid_commitment(
             &conn,
             &ctx.profile_id,
-            &name,
-            &nh_hex,
+            &spec.name,
+            &spec.nh_hex,
             &bid_addr.address,
             bid_addr.branch as i64,
             bid_addr.child_index as i64,
@@ -1589,22 +1636,25 @@ pub async fn build_batch_bid_draft(
         )?;
 
         // Estimate reveal-end height and stamp it.
-        let reveal_end_height = ns.height as i64
+        let reveal_end_height = spec.ns.height as i64
             + (params.tree_interval as i64 + 1)
             + params.bidding_period as i64
             + params.reveal_period as i64;
         queries::set_reveal_end_height(&conn, &ctx.profile_id, &blind_hex, reveal_end_height)?;
 
-        blind_hexes.push(blind_hex);
-        primaries.push(PrimaryOutput {
-            value: lockup as u64,
-            address: bid_addr.address.clone(),
-            covenant: cov,
+        outcomes.push(BidOutcome {
+            primary: PrimaryOutput {
+                value: lockup as u64,
+                address: bid_addr.address.clone(),
+                covenant: cov,
+            },
+            blind_hex,
         });
     }
 
     // Build the batch plan with all bid outputs (no name inputs — bids are
     // fresh outputs, not name coin spends).
+    let primaries: Vec<PrimaryOutput> = outcomes.iter().map(|o| o.primary.clone()).collect();
     let res = actions::build_batch_plan(
         ctx.network,
         ctx.account,
@@ -1619,11 +1669,25 @@ pub async fn build_batch_bid_draft(
 
     // Persist the draft. Note: the schema stores one name per draft; for a
     // batch we use the first name as the draft label (a limitation).
-    let summary = persist_with_conn(&conn, &ctx.profile_id, "bid", &names[0], None, &res)?;
+    let display_name = if names.len() == 1 {
+        names[0].clone()
+    } else {
+        format!("{} + {} more", names[0], names.len() - 1)
+    };
+    let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let summary = persist_with_conn(
+        &conn,
+        &ctx.profile_id,
+        "batch-bid",
+        &display_name,
+        None,
+        Some(&name_refs),
+        &res,
+    )?;
 
     // Stamp the pre-signing txid onto each commitment (same as single-bid).
-    for blind_hex in blind_hexes {
-        queries::set_bid_txid(&conn, &ctx.profile_id, &blind_hex, &res.txid)?;
+    for outcome in &outcomes {
+        queries::set_bid_txid(&conn, &ctx.profile_id, &outcome.blind_hex, &res.txid)?;
     }
 
     Ok(summary)
@@ -1684,7 +1748,7 @@ pub async fn build_reveal_draft(
         &ctx.change_address,
         rate,
     )?;
-    let summary = persist(&state, &ctx.profile_id, "reveal", &name, None, &res)?;
+    let summary = persist(&state, &ctx.profile_id, "reveal", &name, None, None, &res)?;
     // Task 1 fix (companion to build_bid_draft): stamp the reveal txid onto
     // the SAME commitment row (keyed by name — `set_bid_reveal_txid`), so the
     // reveal-deadline scanner (which reads `reveal_txid`) can see this bid as
@@ -1744,7 +1808,7 @@ pub async fn build_redeem_draft(
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "redeem", &name, None, &res)
+    persist(&state, &ctx.profile_id, "redeem", &name, None, None, &res)
 }
 
 // --- owner actions (spend the name's owner UTXO) ---------------------------
@@ -1796,7 +1860,7 @@ pub async fn build_register_draft(
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "register", &name, None, &res)
+    persist(&state, &ctx.profile_id, "register", &name, None, None, &res)
 }
 
 #[tauri::command]
@@ -1824,7 +1888,7 @@ pub async fn build_update_draft(
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "update", &name, None, &res)
+    persist(&state, &ctx.profile_id, "update", &name, None, None, &res)
 }
 
 #[tauri::command]
@@ -1852,7 +1916,7 @@ pub async fn build_renew_draft(
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "renew", &name, None, &res)
+    persist(&state, &ctx.profile_id, "renew", &name, None, None, &res)
 }
 
 #[tauri::command]
@@ -1886,6 +1950,7 @@ pub async fn build_transfer_draft(
         "transfer",
         &name,
         Some(&recipient),
+        None,
         &res,
     )
 }
@@ -1961,6 +2026,7 @@ pub async fn build_finalize_draft(
         "finalize",
         &name,
         Some(&target_address),
+        None,
         &res,
     )
 }
@@ -1988,7 +2054,7 @@ pub async fn build_cancel_draft(
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "cancel", &name, None, &res)
+    persist(&state, &ctx.profile_id, "cancel", &name, None, None, &res)
 }
 
 #[tauri::command]
@@ -2014,7 +2080,7 @@ pub async fn build_revoke_draft(
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "revoke", &name, None, &res)
+    persist(&state, &ctx.profile_id, "revoke", &name, None, None, &res)
 }
 
 // ---------------------------------------------------------------------------
@@ -2081,12 +2147,14 @@ pub async fn build_batch_renew_draft(
     } else {
         format!("{} + {} more", batch_names[0], batch_names.len() - 1)
     };
+    let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist(
         &state,
         &ctx.profile_id,
         "batch-renew",
         &display_name,
         None,
+        Some(&name_refs),
         &res,
     )
 }
@@ -2170,12 +2238,14 @@ pub async fn build_batch_reveal_draft(
     } else {
         format!("{} + {} more", batch_names[0], batch_names.len() - 1)
     };
+    let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist(
         &state,
         &ctx.profile_id,
         "batch-reveal",
         &display_name,
         None,
+        Some(&name_refs),
         &res,
     )
 }
@@ -2248,12 +2318,14 @@ pub async fn build_batch_redeem_draft(
     } else {
         format!("{} + {} more", batch_names[0], batch_names.len() - 1)
     };
+    let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist(
         &state,
         &ctx.profile_id,
         "batch-redeem",
         &display_name,
         None,
+        Some(&name_refs),
         &res,
     )
 }
@@ -2352,12 +2424,14 @@ pub async fn build_batch_finalize_draft(
     } else {
         format!("{} + {} more", batch_names[0], batch_names.len() - 1)
     };
+    let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist(
         &state,
         &ctx.profile_id,
         "batch-finalize",
         &display_name,
         None,
+        Some(&name_refs),
         &res,
     )
 }
@@ -2467,6 +2541,7 @@ pub async fn build_finalize_with_payment_draft(
         "finalize-with-payment",
         &name,
         Some(&payment_address),
+        None,
         &res,
     )
 }

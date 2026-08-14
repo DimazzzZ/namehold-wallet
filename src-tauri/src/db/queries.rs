@@ -1481,25 +1481,42 @@ pub fn has_pending_draft_for_name(
     let rows = stmt.query_map(params![profile_id, action], row_to_draft)?;
     for r in rows {
         let row = r?;
-        let matches_name = serde_json::from_str::<serde_json::Value>(&row.summary_json)
-            .ok()
-            .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s == name))
-            .unwrap_or(false);
-        if matches_name {
+        if draft_summary_covers_name(&row.summary_json, name) {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
-/// Thin `action = "bid"` wrapper over [`has_pending_draft_for_name`] — kept so
-/// `build_bid_draft`'s call site (and its existing tests) are untouched.
+/// True when a draft's `summary_json` names `name` — either as its single
+/// `name` field OR as a member of its `nameList` array (batch drafts persist
+/// one row covering many names). Single-name drafts have no `nameList`, so
+/// this stays equivalent to the old `name`-only match for them.
+fn draft_summary_covers_name(summary_json: &str, name: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(summary_json) else {
+        return false;
+    };
+    if v.get("name").and_then(|n| n.as_str()) == Some(name) {
+        return true;
+    }
+    v.get("nameList")
+        .and_then(|l| l.as_array())
+        .map(|arr| arr.iter().any(|e| e.as_str() == Some(name)))
+        .unwrap_or(false)
+}
+
+/// True when a pending bid draft (single `"bid"` OR `"batch-bid"`) already
+/// covers `name`. Batch-bid persists ONE draft row with all names in its
+/// `nameList`, so we must scan both action verbs and both the `name` field and
+/// the `nameList` array — otherwise a follow-up single bid on a name that is
+/// mid-batch would slip past the multiplicity guard.
 pub fn has_pending_bid_draft_for_name(
     conn: &rusqlite::Connection,
     profile_id: &str,
     name: &str,
 ) -> Result<bool, AppError> {
-    has_pending_draft_for_name(conn, profile_id, "bid", name)
+    Ok(has_pending_draft_for_name(conn, profile_id, "bid", name)?
+        || has_pending_draft_for_name(conn, profile_id, "batch-bid", name)?)
 }
 
 /// Look up the status of a tx draft by its broadcast txid. Returns `None` if
@@ -3133,6 +3150,51 @@ mod noncustodial_query_tests {
         )
         .unwrap();
         assert!(!has_pending_bid_draft_for_name(&conn, "p1", "gamma").unwrap());
+    }
+
+    #[test]
+    fn has_pending_bid_draft_for_name_matches_batch_bid_namelist() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // A batch-bid draft covers many names via `nameList` (display `name`
+        // is just "alpha + 1 more"). The guard must recognise EVERY member,
+        // not only the first — otherwise a follow-up single bid on "beta"
+        // would slip past while the batch is still in flight.
+        insert_tx_draft(
+            &conn,
+            "db1",
+            "p1",
+            "batch-bid",
+            "",
+            "{}",
+            r#"{"action":"batch-bid","name":"alpha + 1 more","nameList":["alpha","beta"]}"#,
+        )
+        .unwrap();
+
+        assert!(has_pending_bid_draft_for_name(&conn, "p1", "alpha").unwrap());
+        assert!(has_pending_bid_draft_for_name(&conn, "p1", "beta").unwrap());
+        // A name NOT in the batch is unaffected.
+        assert!(!has_pending_bid_draft_for_name(&conn, "p1", "gamma").unwrap());
+
+        // Dropping the batch draft frees all its names for a retry.
+        update_tx_draft_status(&conn, "db1", "dropped", None, None).unwrap();
+        assert!(!has_pending_bid_draft_for_name(&conn, "p1", "alpha").unwrap());
+        assert!(!has_pending_bid_draft_for_name(&conn, "p1", "beta").unwrap());
+
+        // Backward compat: a legacy single-name "bid" draft (no nameList) is
+        // still matched via its `name` field.
+        insert_tx_draft(
+            &conn,
+            "db2",
+            "p1",
+            "bid",
+            "",
+            "{}",
+            r#"{"action":"bid","name":"delta"}"#,
+        )
+        .unwrap();
+        assert!(has_pending_bid_draft_for_name(&conn, "p1", "delta").unwrap());
     }
 
     /// The generic [`has_pending_draft_for_name`] behind the bid wrapper works

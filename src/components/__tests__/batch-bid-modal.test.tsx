@@ -9,11 +9,9 @@ vi.mock("../../queries/wallet", () => ({
   useActiveProfile: vi.fn(),
 }));
 
+const showToast = vi.fn();
 vi.mock("../../stores/ui", () => ({
-  useUiStore: vi.fn((selector) => {
-    const store = { showToast: vi.fn() };
-    return selector(store);
-  }),
+  useUiStore: vi.fn((selector) => selector({ showToast })),
 }));
 
 describe("BatchBidModal", () => {
@@ -81,5 +79,36 @@ describe("BatchBidModal", () => {
     await waitFor(() => {
       expect(onClose).toHaveBeenCalled();
     });
+  });
+
+  it("shows a mapped (humanized) error toast when the mutation rejects", async () => {
+    // A raw AppError string containing a known ERROR_MAP pattern; mapError
+    // should convert it to the friendly copy rather than interpolating the
+    // raw object.
+    mutateAsync.mockRejectedValue(new Error("insufficient funds"));
+    render(<BatchBidModal open={true} onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByTestId("batch-bid-names-input"), {
+      target: { value: "name1" },
+    });
+    fireEvent.change(screen.getByTestId("batch-bid-value-input"), {
+      target: { value: "1" },
+    });
+    fireEvent.change(screen.getByTestId("batch-bid-lockup-input"), {
+      target: { value: "2" },
+    });
+    fireEvent.click(screen.getByTestId("batch-bid-submit-btn"));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        "Build failed: Insufficient HNS balance for this transaction.",
+        "error",
+      );
+    });
+    // And never the raw interpolated form.
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.stringContaining("[object Object]"),
+      "error",
+    );
   });
 });
