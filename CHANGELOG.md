@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+- **"Launch at login" no longer starts the wrong build.** If you'd ever
+  enabled launch-at-login from a development build, macOS would keep
+  starting that stale dev binary at login instead of the installed
+  Namehold app — showing a blank window and the wrong Dock icon.
+  Autostart is now registered only in release builds, and the
+  "Launch at login" toggle is disabled in dev builds, so a development
+  session can no longer hijack your login item. (If you hit this, delete
+  `~/Library/LaunchAgents/Namehold.plist`, then re-toggle "Launch at
+  login" from the installed app to re-register it correctly.)
+
 ## [0.4.1] - 2026-08-11
 
 A polish release focused on the tray, the auto-updater, and getting
