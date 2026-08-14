@@ -90,7 +90,10 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let _ = notify_rust::set_application(NOTIFY_BUNDLE_ID);
 
-    tauri::Builder::default()
+    // `mut` is only used in release builds (the autostart plugin is added
+    // conditionally below); allow the unused-mut warning in debug builds.
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_fs::init())
@@ -98,15 +101,25 @@ pub fn run() {
         // Opens external URLs (explorer tx links, etc.) in the system
         // browser. Without this the Tauri webview silently blocks
         // `window.open` / anchor clicks to external hosts.
-        .plugin(tauri_plugin_opener::init())
-        // "Launch at login" toggle in Settings. Uses each OS's native
-        // mechanism: LaunchAgent plist on macOS, HKCU\...\Run on Windows,
-        // .desktop autostart entry on Linux. `None` = no extra args on
-        // autostart (the app starts normally).
-        .plugin(tauri_plugin_autostart::init(
+        .plugin(tauri_plugin_opener::init());
+
+    // "Launch at login" toggle in Settings. Uses each OS's native
+    // mechanism: LaunchAgent plist on macOS, HKCU\...\Run on Windows,
+    // .desktop autostart entry on Linux. `None` = no extra args on
+    // autostart (the app starts normally).
+    //
+    // Disabled in debug builds: dev binaries live under target/debug/ and
+    // writing a LaunchAgent pointing there breaks login-launch when the
+    // user also has a release .app installed.
+    #[cfg(not(debug_assertions))]
+    {
+        builder = builder.plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
-        ))
+        ));
+    }
+
+    builder
         .setup(|app| {
             // Auto-updater (desktop only). The plugin verifies Ed25519
             // signatures against `plugins.updater.pubkey` before installing;
@@ -600,7 +613,7 @@ pub fn run() {
                 // window can't be reopened from the Dock.
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen { .. } => {
-                    show_main_window(&app_handle);
+                    show_main_window(app_handle);
                 }
                 // `RunEvent::Exit` fires exactly once, right before the event
                 // loop stops, regardless of how the app is closing (last window
