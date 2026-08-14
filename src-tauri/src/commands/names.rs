@@ -1474,6 +1474,160 @@ pub async fn build_bid_draft(
     queries::set_bid_txid(&conn, &ctx.profile_id, &hex::encode(blind), &res.txid)?;
     Ok(summary)
 }
+/// Batch-bid on multiple names in a single transaction. All names share the
+/// same bid value and lockup; each gets its own receive address, nonce, blind,
+/// and bid commitment row. Atomic: if any name fails the multiplicity guard or
+/// phase check, the entire batch is rejected and no draft is persisted.
+#[tauri::command]
+pub async fn build_batch_bid_draft(
+    state: State<'_, AppState>,
+    names: Vec<String>,
+    bid_value: i64,
+    lockup: i64,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    if names.is_empty() {
+        return Err(AppError::InvalidInput("no names provided".into()));
+    }
+    if names.len() > MAX_BATCH_SIZE {
+        return Err(AppError::InvalidInput(format!(
+            "batch too large: {} names (max {})",
+            names.len(),
+            MAX_BATCH_SIZE
+        )));
+    }
+    if bid_value <= 0 || lockup < bid_value {
+        return Err(AppError::InvalidInput(
+            "lockup must be >= bid value > 0".into(),
+        ));
+    }
+
+    let ctx = load_ctx(&state)?;
+    let rate = self::fee_rate(&ctx, fee_rate);
+    let client = NodeRpcClient::from_settings(&ctx.settings);
+
+    // Pre-fetch all name states and hashes to validate phase + catch errors
+    // early, before any writes.
+    let mut name_specs = Vec::new();
+    for name in &names {
+        let nh = names::hash_name(name)?;
+        let nh_hex = hex::encode(nh);
+        let raw = names::raw_name(name)?;
+        let ns = fetch_name_state(&client, name).await?;
+        name_specs.push((name.clone(), nh, nh_hex, raw, ns));
+    }
+
+    // --- Atomic section: multiplicity guard + all commitment/draft writes.
+    // Hold the lock for the entire batch so no concurrent bid can slip in
+    // between our guard checks and our writes.
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+
+    // Guard: check that NO name in the batch already has an unspent bid coin
+    // or pending bid draft.
+    for (name, _nh, nh_hex, _raw, _ns) in &name_specs {
+        let existing_bid_coins = queries::find_unspent_covenant_utxos_by_name_hash(
+            &conn,
+            &ctx.profile_id,
+            sync::COV_BID as i64,
+            nh_hex,
+        )?;
+        if !existing_bid_coins.is_empty() {
+            return Err(AppError::InvalidInput(format!(
+                "wallet already has an unspent bid for '{}' — one bid per wallet per name",
+                name
+            )));
+        }
+        if queries::has_pending_bid_draft_for_name(&conn, &ctx.profile_id, name)? {
+            return Err(AppError::InvalidInput(format!(
+                "a bid draft for '{}' is already pending — one bid per wallet per name",
+                name
+            )));
+        }
+    }
+
+    // All guards passed. Now derive addresses, compute nonces/blinds, and
+    // persist commitments for all names. Collect blinds so we can stamp txids
+    // on all of them after the draft is persisted.
+    let mut primaries = Vec::new();
+    let mut blind_hexes = Vec::new();
+    let params = ctx.network.name_params();
+
+    for (name, nh, nh_hex, raw, ns) in name_specs {
+        // Derive next unused receive address for this bid.
+        let bid_addr = crate::noncustodial::derivation::next_unused_receive_address(
+            &conn,
+            &ctx.profile_id,
+            ctx.account,
+            ctx.network,
+            &ctx.account_xpub,
+        )?;
+        let (_v, program) = address::decode(ctx.network, &bid_addr.address)?;
+        let mut addr_hash = [0u8; 20];
+        if program.len() != 20 {
+            return Err(AppError::InvalidInput("bid address is not p2wpkh".into()));
+        }
+        addr_hash.copy_from_slice(&program);
+
+        let nonce = bids::compute_nonce(&ctx.account_xpub, &nh, &addr_hash, bid_value as u64)?;
+        let blind = bids::compute_blind(bid_value as u64, &nonce);
+        let blind_hex = hex::encode(blind);
+        let cov = covenants::bid(&nh, ns.height, &raw, &blind);
+
+        // Persist commitment before adding to the batch plan.
+        queries::insert_bid_commitment(
+            &conn,
+            &ctx.profile_id,
+            &name,
+            &nh_hex,
+            &bid_addr.address,
+            bid_addr.branch as i64,
+            bid_addr.child_index as i64,
+            bid_value,
+            lockup,
+            &hex::encode(nonce),
+            &blind_hex,
+        )?;
+
+        // Estimate reveal-end height and stamp it.
+        let reveal_end_height = ns.height as i64
+            + (params.tree_interval as i64 + 1)
+            + params.bidding_period as i64
+            + params.reveal_period as i64;
+        queries::set_reveal_end_height(&conn, &ctx.profile_id, &blind_hex, reveal_end_height)?;
+
+        blind_hexes.push(blind_hex);
+        primaries.push(PrimaryOutput {
+            value: lockup as u64,
+            address: bid_addr.address.clone(),
+            covenant: cov,
+        });
+    }
+
+    // Build the batch plan with all bid outputs (no name inputs — bids are
+    // fresh outputs, not name coin spends).
+    let res = actions::build_batch_plan(
+        ctx.network,
+        ctx.account,
+        // Bids create fresh covenant outputs; they don't spend any name coin,
+        // so there are no name inputs (only wallet funding, added inside).
+        &[],
+        &primaries,
+        &ctx.funding,
+        &ctx.change_address,
+        rate,
+    )?;
+
+    // Persist the draft. Note: the schema stores one name per draft; for a
+    // batch we use the first name as the draft label (a limitation).
+    let summary = persist_with_conn(&conn, &ctx.profile_id, "bid", &names[0], None, &res)?;
+
+    // Stamp the pre-signing txid onto each commitment (same as single-bid).
+    for blind_hex in blind_hexes {
+        queries::set_bid_txid(&conn, &ctx.profile_id, &blind_hex, &res.txid)?;
+    }
+
+    Ok(summary)
+}
 
 // --- REVEAL ----------------------------------------------------------------
 

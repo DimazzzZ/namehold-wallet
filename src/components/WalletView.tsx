@@ -62,6 +62,7 @@ import {
 } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
+import { BatchBidModal } from "./BatchBidModal";
 import type { NameActionCapabilities, TxDraftSummary } from "../types";
 
 export function WalletView() {
@@ -152,6 +153,8 @@ export function WalletView() {
     feeDoos: number;
     draftId: string;
   } | null>(null);
+  // Standalone batch-bid modal (paste names + shared bid/lockup).
+  const [batchBidOpen, setBatchBidOpen] = useState(false);
   // Wallets manager modal (add / switch / delete). `addMode` opens it straight
   // to the add-wallet form.
   const [walletManagerOpen, setWalletManagerOpen] = useState(false);
@@ -1014,13 +1017,25 @@ export function WalletView() {
             Owned Names ({filteredNames.length}
             {filteredNames.length !== names.length ? ` of ${names.length}` : ""})
           </div>
-          <Input
-            inputSize="md"
-            className="w-48"
-            value={nameQuery}
-            onChange={(e) => setNameQuery(e.target.value)}
-            placeholder="Filter…"
-          />
+          <div className="flex items-center gap-2">
+            {!isWatchOnly && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setBatchBidOpen(true)}
+                data-testid="open-batch-bid-btn"
+              >
+                Batch bid…
+              </Button>
+            )}
+            <Input
+              inputSize="md"
+              className="w-48"
+              value={nameQuery}
+              onChange={(e) => setNameQuery(e.target.value)}
+              placeholder="Filter…"
+            />
+          </div>
         </div>
         {names.length > 0 ? (
           filteredNames.length > 0 ? (
@@ -1432,6 +1447,7 @@ export function WalletView() {
           </div>
         )}
       </Dialog>
+      <BatchBidModal open={batchBidOpen} onClose={() => setBatchBidOpen(false)} />
     </div>
   );
 }
