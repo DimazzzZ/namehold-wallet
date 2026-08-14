@@ -64,6 +64,7 @@ import {
 } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
+import { ReceiveAddressList } from "./ReceiveAddressList";
 import type { NameActionCapabilities, TxDraftSummary } from "../types";
 import { subscribeAction } from "../lib/actionBus";
 
@@ -787,6 +788,18 @@ export function WalletView() {
             </>
           ) : (
             <div className="text-gray-400">No address derived yet. Try syncing.</div>
+          )}
+
+          {address && (
+            <Disclosure
+              summary={
+                <span className="flex items-center gap-2">
+                  <span>View all addresses</span>
+                </span>
+              }
+            >
+              <ReceiveAddressList />
+            </Disclosure>
           )}
 
           <Disclosure

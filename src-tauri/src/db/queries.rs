@@ -1428,6 +1428,61 @@ pub fn get_profile_addresses(
     Ok(out)
 }
 
+/// One receive-branch address row for the "all addresses" list UI.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceiveAddressRow {
+    /// BIP44 child index within the receive branch (branch = 0).
+    pub index: u32,
+    pub address: String,
+    /// True when the address is referenced by any tracked UTXO or bid
+    /// commitment. Mirrors the "used" test in
+    /// `derivation::next_unused_receive_address`, so what the list marks as
+    /// used is exactly what address allocation skips over.
+    pub used: bool,
+}
+
+/// List every derived RECEIVE-branch address for a profile, oldest index
+/// first, each tagged with whether it has been used (seen in a tracked UTXO
+/// or a bid commitment). Change-branch addresses are intentionally excluded —
+/// they are wallet-internal and never handed out.
+pub fn list_receive_addresses(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    account_index: u32,
+) -> Result<Vec<ReceiveAddressRow>, AppError> {
+    // BRANCH_RECEIVE = 0 (see noncustodial::derivation). Kept inline to avoid a
+    // cross-module constant dependency in the query layer.
+    const BRANCH_RECEIVE: i64 = 0;
+    let mut stmt = conn.prepare(
+        "SELECT d.child_index, d.address,
+                (EXISTS (SELECT 1 FROM tracked_utxos u
+                         WHERE u.wallet_profile_id = d.wallet_profile_id
+                           AND u.address = d.address)
+                 OR EXISTS (SELECT 1 FROM bid_commitments b
+                            WHERE b.wallet_profile_id = d.wallet_profile_id
+                              AND b.address = d.address)) AS used
+         FROM derived_addresses d
+         WHERE d.wallet_profile_id = ?1 AND d.account_index = ?2 AND d.branch = ?3
+         ORDER BY d.child_index",
+    )?;
+    let rows = stmt.query_map(
+        params![profile_id, account_index as i64, BRANCH_RECEIVE],
+        |row| {
+            Ok(ReceiveAddressRow {
+                index: row.get::<_, i64>(0)? as u32,
+                address: row.get::<_, String>(1)?,
+                used: row.get::<_, i64>(2)? != 0,
+            })
+        },
+    )?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 /// List drafts for a profile, newest first.
 pub fn list_tx_drafts(
     conn: &rusqlite::Connection,
@@ -2707,6 +2762,80 @@ mod noncustodial_query_tests {
             addrs,
             vec!["rs1qrecv".to_string(), "rs1qchange".to_string()]
         );
+    }
+
+    #[test]
+    fn list_receive_addresses_returns_receive_only_with_used_flag() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        // Two receive addresses (idx 0 and 1) and one change address (must
+        // be excluded). idx 0 is referenced by a tracked UTXO → used=true.
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1',0,0,0,'rs1qrecv0','0014','02'),
+                    ('p1',0,0,1,'rs1qrecv1','0014','02'),
+                    ('p1',0,1,0,'rs1qchange','0014','02')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, spend_class)
+             VALUES ('aa',0,'p1','rs1qrecv0','0014',1000,0,'liquid_hns')",
+            [],
+        )
+        .unwrap();
+
+        let rows = list_receive_addresses(&conn, "p1", 0).unwrap();
+        // Change branch excluded; receive rows ordered by child_index.
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].index, 0);
+        assert_eq!(rows[0].address, "rs1qrecv0");
+        assert!(rows[0].used, "recv0 has a UTXO");
+        assert_eq!(rows[1].index, 1);
+        assert_eq!(rows[1].address, "rs1qrecv1");
+        assert!(!rows[1].used, "recv1 has no UTXO or bid");
+    }
+
+    #[test]
+    fn list_receive_addresses_marks_bid_commitment_as_used() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1',0,0,0,'rs1qbidder','0014','02')",
+            [],
+        )
+        .unwrap();
+        // Seed a bid commitment referencing that address.
+        conn.execute(
+            "INSERT INTO bid_commitments
+                (wallet_profile_id, name, name_hash_hex, address,
+                 branch, child_index,
+                 bid_value_doos, lockup_value_doos, nonce_hex, blind_hex)
+             VALUES ('p1','name','aa','rs1qbidder',0,0,
+                     1000,2000,'00','bb')",
+            [],
+        )
+        .unwrap();
+
+        let rows = list_receive_addresses(&conn, "p1", 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].used, "bid commitment counts as used");
+    }
+
+    #[test]
+    fn list_receive_addresses_empty_for_unknown_profile() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        assert!(list_receive_addresses(&conn, "does-not-exist", 0)
+            .unwrap()
+            .is_empty());
     }
 
     fn insert_utxo(conn: &Connection, txid: &str, vout: i64, value: i64, class: &str, cov: i64) {

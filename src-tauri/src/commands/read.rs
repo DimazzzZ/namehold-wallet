@@ -1825,3 +1825,58 @@ pub async fn repair_owned_names(state: State<'_, AppState>) -> Result<serde_json
         "candidates": candidates.len(),
     }))
 }
+
+/// List every derived receive-branch address for a wallet, each tagged with
+/// whether it has been used (referenced by a tracked UTXO or bid commitment).
+///
+/// Used purely for the "all addresses" list in the Receive card. Returns an
+/// empty list when no profile is resolved or no addresses have been derived
+/// yet (a fresh wallet before its first sync/provision).
+///
+/// `wallet_profile_id` pins the read to a specific wallet (defaults to active).
+#[tauri::command]
+pub async fn list_receive_addresses(
+    state: State<'_, AppState>,
+    wallet_profile_id: Option<String>,
+) -> Result<Vec<queries::ReceiveAddressRow>, AppError> {
+    let id = match resolve_profile(&state, wallet_profile_id)? {
+        Some(id) => id,
+        None => return Ok(Vec::new()),
+    };
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let account_index = match queries::get_wallet_profile(&conn, &id)? {
+        Some(p) => p.account_index as u32,
+        None => return Ok(Vec::new()),
+    };
+    queries::list_receive_addresses(&conn, &id, account_index)
+}
+
+/// Allocate the next unused receive-branch address and persist it, returning
+/// the derived address string. Because the new address is written to
+/// `derived_addresses`, the next sync scan picks it up automatically (no
+/// separate re-derivation needed).
+///
+/// Watch-only profiles can still derive from their account xpub, so this is
+/// allowed for every profile kind. `wallet_profile_id` pins the write to a
+/// specific wallet (defaults to active).
+#[tauri::command]
+pub async fn derive_next_receive_address(
+    state: State<'_, AppState>,
+    wallet_profile_id: Option<String>,
+) -> Result<String, AppError> {
+    let id = resolve_profile(&state, wallet_profile_id)?
+        .ok_or_else(|| AppError::InvalidInput("no active wallet profile".into()))?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let profile = queries::get_wallet_profile(&conn, &id)?
+        .ok_or_else(|| AppError::InvalidInput("wallet profile not found".into()))?;
+    let network = crate::noncustodial::derivation::network_from_profile(&profile.network)?;
+    let xpub = crate::noncustodial::hd::ExtendedPubKey::from_xpub(network, &profile.account_xpub)?;
+    let derived = crate::noncustodial::derivation::next_unused_receive_address(
+        &conn,
+        &id,
+        profile.account_index as u32,
+        network,
+        &xpub,
+    )?;
+    Ok(derived.address)
+}

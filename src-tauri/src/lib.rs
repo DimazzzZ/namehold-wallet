@@ -527,6 +527,8 @@ pub fn run() {
             commands::read::read_renewals,
             commands::history::read_action_history,
             commands::read::repair_owned_names,
+            commands::read::list_receive_addresses,
+            commands::read::derive_next_receive_address,
             commands::sync::start_full_sync,
             commands::sync::get_sync_status,
             commands::sync::cancel_full_sync,

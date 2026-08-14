@@ -58,6 +58,19 @@ export interface HsdBalance {
   locked_confirmed: number | null;
 }
 
+/**
+ * One row in the receive-address list. `used` is computed dynamically by the
+ * backend (JOIN over tracked_utxos + bid_commitments), so it matches exactly
+ * what address allocation skips over.
+ */
+export interface ReceiveAddressRow {
+  /** BIP44 child index within the receive branch (branch = 0). */
+  index: number;
+  address: string;
+  /** True when a tracked UTXO or bid commitment references this address. */
+  used: boolean;
+}
+
 export interface HsdName {
   name: string;
   /**
