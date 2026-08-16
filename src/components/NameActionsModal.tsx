@@ -27,7 +27,7 @@ import { OwnershipActions } from "./name-actions/OwnershipActions";
 import { PaidSwapClaim } from "./name-actions/PaidSwapClaim";
 import { useUiStore } from "../stores/ui";
 import { FeeRateOverride } from "./ui/FeeRateOverride";
-import { doosPerKvbToSatsPerByte, parseDoosPerKvb } from "../lib/feeRate";
+import { parseFeeRateArg } from "../lib/feeRate";
 import { mapError, stageOf, unwrapStaged } from "../lib/errors";
 import { formatHns } from "../lib/utils";
 import { displayName } from "../lib/idn";
@@ -425,7 +425,7 @@ export function NameActionsModal({
         name,
         bidValue: hnsToDollarydoos(bidNum),
         lockup: hnsToDollarydoos(lockupNum),
-        feeRate: doosPerKvbToSatsPerByte(parseDoosPerKvb(bidFeeRate)) ?? undefined,
+        feeRate: parseFeeRateArg(bidFeeRate) ?? undefined,
       }),
     );
 
@@ -672,13 +672,6 @@ export function NameActionsModal({
                 busyLabel="…"
                 submitTitle={actionReason(caps?.canBid) ?? ""}
               />
-              <div className="mt-2">
-                <FeeRateOverride
-                  value={bidFeeRate}
-                  onChange={setBidFeeRate}
-                  label="Fee rate override"
-                />
-              </div>
             </section>
 
             {/* DNS records (REGISTER / UPDATE) - only show for owned names */}

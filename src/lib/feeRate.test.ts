@@ -5,6 +5,7 @@ import {
   doosPerKvbToSatsPerByte,
   formatDoosPerKvb,
   parseDoosPerKvb,
+  parseFeeRateArg,
 } from "./feeRate";
 
 describe("parseDoosPerKvb", () => {
@@ -62,5 +63,29 @@ describe("formatDoosPerKvb", () => {
 describe("defaults match the backend", () => {
   it("DEFAULT_FEE_RATE_DOOS_PER_KVB converts to Rust's DEFAULT_FEE_RATE_PER_BYTE (1)", () => {
     expect(doosPerKvbToSatsPerByte(DEFAULT_FEE_RATE_DOOS_PER_KVB)).toBe(1);
+  });
+});
+
+describe("parseFeeRateArg", () => {
+  it("returns null for empty input (no override)", () => {
+    expect(parseFeeRateArg("")).toBeNull();
+    expect(parseFeeRateArg("  ")).toBeNull();
+  });
+
+  it("parses and converts valid doos/kvB to sats/byte in one step", () => {
+    expect(parseFeeRateArg("1000")).toBe(1);
+    expect(parseFeeRateArg("2000")).toBe(2);
+    expect(parseFeeRateArg("42000")).toBe(42);
+  });
+
+  it("floors sub-1000 values to 1 sat/byte", () => {
+    expect(parseFeeRateArg("500")).toBe(1);
+    expect(parseFeeRateArg("999")).toBe(1);
+  });
+
+  it("returns null for invalid input", () => {
+    expect(parseFeeRateArg("abc")).toBeNull();
+    expect(parseFeeRateArg("1.5")).toBeNull();
+    expect(parseFeeRateArg("-100")).toBeNull();
   });
 });

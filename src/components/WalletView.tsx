@@ -39,7 +39,7 @@ import { UnlockButton } from "./UnlockButton";
 import { BatchConfirmModal } from "./BatchConfirmModal";
 import { Button } from "./ui/Button";
 import { FeeRateOverride } from "./ui/FeeRateOverride";
-import { doosPerKvbToSatsPerByte, parseDoosPerKvb } from "../lib/feeRate";
+import { parseFeeRateArg } from "../lib/feeRate";
 import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
 import { Dialog } from "./ui/Dialog";
@@ -235,7 +235,7 @@ export function WalletView() {
 
   // Batch renew: build a single tx with multiple renewal covenants, sign, broadcast.
   // Compute the fee-rate arg once for all batch handlers (null = use setting default).
-  const batchFeeRateArg = doosPerKvbToSatsPerByte(parseDoosPerKvb(batchFeeRate)) ?? undefined;
+  const batchFeeRateArg = parseFeeRateArg(batchFeeRate) ?? undefined;
 
   const handleBatchRenew = async () => {
     const names = Array.from(selectedNames);
@@ -432,7 +432,7 @@ export function WalletView() {
         toAddress: sendAddress.trim(),
         valueDoos: doos,
         max,
-        feeRate: doosPerKvbToSatsPerByte(parseDoosPerKvb(sendFeeRate)) ?? undefined,
+        feeRate: parseFeeRateArg(sendFeeRate) ?? undefined,
       });
       setDraft(d);
       // Reflect the swept amount in the field so "Max" is transparent.

@@ -57,3 +57,14 @@ export function doosPerKvbToSatsPerByte(doosPerKvb: number | null): number | nul
 export function formatDoosPerKvb(doosPerKvb: number): string {
   return doosPerKvb.toLocaleString();
 }
+
+/**
+ * Parse a doos/kvB string and convert to sats/byte in one step, for use as a
+ * draft-builder's `feeRate` argument. Returns null when the input is empty or
+ * invalid, so callers can pass the result straight through as
+ * `feeRate: parseFeeRateArg(raw) ?? undefined` without extra branching.
+ */
+export function parseFeeRateArg(raw: string): number | null {
+  const parsed = parseDoosPerKvb(raw);
+  return parsed !== null ? doosPerKvbToSatsPerByte(parsed) : null;
+}

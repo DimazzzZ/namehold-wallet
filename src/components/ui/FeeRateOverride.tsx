@@ -50,7 +50,7 @@ export function FeeRateOverride({
     <div className="border border-gray-200 rounded">
       <button
         type="button"
-        className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center justify-between text-xs"
+        className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center justify-between text-xs cursor-pointer"
         onClick={() => setOpen((prev) => !prev)}
         data-testid="fee-rate-override-toggle"
       >
