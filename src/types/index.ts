@@ -69,6 +69,8 @@ export interface ReceiveAddressRow {
   address: string;
   /** True when a tracked UTXO or bid commitment references this address. */
   used: boolean;
+  /** ISO 8601 timestamp of when this address was first derived. */
+  firstSeenAt: string;
 }
 
 export interface HsdName {

@@ -1846,7 +1846,7 @@ pub async fn list_receive_addresses(
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let account_index = match queries::get_wallet_profile(&conn, &id)? {
         Some(p) => p.account_index as u32,
-        None => return Ok(Vec::new()),
+        None => return Err(AppError::InvalidInput("wallet profile not found".into())),
     };
     queries::list_receive_addresses(&conn, &id, account_index)
 }
@@ -1860,7 +1860,7 @@ pub async fn list_receive_addresses(
 /// allowed for every profile kind. `wallet_profile_id` pins the write to a
 /// specific wallet (defaults to active).
 #[tauri::command]
-pub async fn derive_next_receive_address(
+pub async fn reveal_next_receive_address(
     state: State<'_, AppState>,
     wallet_profile_id: Option<String>,
 ) -> Result<String, AppError> {

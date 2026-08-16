@@ -7,12 +7,14 @@ import { writeText } from "../lib/clipboard";
 import { truncateMiddle } from "../lib/utils";
 import { explorerAddressUrl } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
+import { mapError } from "../lib/errors";
+import { QRCodeSVG } from "qrcode.react";
 
 /**
  * Expandable list of all receive-branch addresses for the active wallet.
  * Each row shows the derivation index, truncated address, a used/unused badge,
- * and a copy button. A "Generate new address" button at the bottom allocates
- * the next unused index.
+ * a copy button, and a QR toggle. A "Generate new address" button at the
+ * bottom allocates the next unused index.
  */
 export function ReceiveAddressList() {
   const { data: addresses, isLoading } = useReceiveAddresses();
@@ -20,6 +22,7 @@ export function ReceiveAddressList() {
   const deriveNext = useDeriveNextReceiveAddress();
   const showToast = useUiStore((s) => s.showToast);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [qrIdx, setQrIdx] = useState<number | null>(null);
 
   const handleCopy = async (address: string, index: number) => {
     await writeText(address);
@@ -33,7 +36,7 @@ export function ReceiveAddressList() {
       await deriveNext.mutateAsync({ walletProfileId: profile?.id ?? null });
       showToast("New address generated", "success");
     } catch (e: unknown) {
-      showToast(`Failed to generate address: ${e}`, "error");
+      showToast(mapError(e, "build"), "error");
     }
   };
 
@@ -52,39 +55,57 @@ export function ReceiveAddressList() {
       ) : (
         <div className="max-h-64 overflow-auto border border-gray-200 rounded divide-y divide-gray-100">
           {rows.map((row) => (
-            <div
-              key={row.index}
-              className="flex items-center gap-2 px-3 py-2 text-xs"
-              data-testid={`addr-row-${row.index}`}
-            >
-              <span className="text-gray-400 w-6 text-right font-mono">
-                {row.index}
-              </span>
-              <span className="font-mono text-gray-700 flex-1 truncate" title={row.address}>
-                {truncateMiddle(row.address, 10, 8)}
-              </span>
-              <Badge variant={row.used ? "default" : "success"}>
-                {row.used ? "used" : "fresh"}
-              </Badge>
-              {profile?.network === "mainnet" && (
-                <a
-                  href={explorerAddressUrl(row.address)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-500 hover:underline"
-                  title="View on explorer"
-                >
-                  ↗
-                </a>
-              )}
-              <button
-                type="button"
-                className="text-blue-600 hover:underline"
-                onClick={() => handleCopy(row.address, row.index)}
-                data-testid={`copy-addr-${row.index}`}
+            <div key={row.index}>
+              <div
+                className="flex items-center gap-2 px-3 py-2 text-xs"
+                data-testid={`addr-row-${row.index}`}
               >
-                {copiedIdx === row.index ? "Copied" : "Copy"}
-              </button>
+                <span className="text-gray-400 w-6 text-right font-mono">
+                  {row.index}
+                </span>
+                <span className="font-mono text-gray-700 flex-1 truncate" title={row.address}>
+                  {truncateMiddle(row.address, 10, 8)}
+                </span>
+                <Badge variant={row.used ? "default" : "success"}>
+                  {row.used ? "used" : "fresh"}
+                </Badge>
+                {profile?.network === "mainnet" && (
+                  <a
+                    href={explorerAddressUrl(row.address)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-500 hover:underline"
+                    title="View on explorer"
+                  >
+                    ↗
+                  </a>
+                )}
+                <button
+                  type="button"
+                  className="text-blue-600 hover:underline"
+                  onClick={() => setQrIdx(qrIdx === row.index ? null : row.index)}
+                  data-testid={`qr-btn-${row.index}`}
+                  title="Show QR code"
+                >
+                  {qrIdx === row.index ? "Hide" : "QR"}
+                </button>
+                <button
+                  type="button"
+                  className="text-blue-600 hover:underline"
+                  onClick={() => handleCopy(row.address, row.index)}
+                  data-testid={`copy-addr-${row.index}`}
+                >
+                  {copiedIdx === row.index ? "Copied" : "Copy"}
+                </button>
+              </div>
+              {qrIdx === row.index && (
+                <div
+                  className="px-3 py-3 bg-gray-50 flex justify-center"
+                  data-testid={`qr-display-${row.index}`}
+                >
+                  <QRCodeSVG value={row.address} size={160} level="H" includeMargin />
+                </div>
+              )}
             </div>
           ))}
         </div>

@@ -1440,6 +1440,9 @@ pub struct ReceiveAddressRow {
     /// `derivation::next_unused_receive_address`, so what the list marks as
     /// used is exactly what address allocation skips over.
     pub used: bool,
+    /// ISO 8601 timestamp of when this address was first derived
+    /// (`derived_addresses.created_at`).
+    pub first_seen_at: String,
 }
 
 /// List every derived RECEIVE-branch address for a profile, oldest index
@@ -1451,11 +1454,11 @@ pub fn list_receive_addresses(
     profile_id: &str,
     account_index: u32,
 ) -> Result<Vec<ReceiveAddressRow>, AppError> {
-    // BRANCH_RECEIVE = 0 (see noncustodial::derivation). Kept inline to avoid a
-    // cross-module constant dependency in the query layer.
-    const BRANCH_RECEIVE: i64 = 0;
+    // Use the canonical branch constant so this query can never drift from the
+    // value address allocation uses (`next_unused_receive_address`).
+    use crate::noncustodial::derivation::BRANCH_RECEIVE;
     let mut stmt = conn.prepare(
-        "SELECT d.child_index, d.address,
+        "SELECT d.child_index, d.address, d.created_at,
                 (EXISTS (SELECT 1 FROM tracked_utxos u
                          WHERE u.wallet_profile_id = d.wallet_profile_id
                            AND u.address = d.address)
@@ -1467,12 +1470,13 @@ pub fn list_receive_addresses(
          ORDER BY d.child_index",
     )?;
     let rows = stmt.query_map(
-        params![profile_id, account_index as i64, BRANCH_RECEIVE],
+        params![profile_id, account_index as i64, BRANCH_RECEIVE as i64],
         |row| {
             Ok(ReceiveAddressRow {
                 index: row.get::<_, i64>(0)? as u32,
                 address: row.get::<_, String>(1)?,
-                used: row.get::<_, i64>(2)? != 0,
+                first_seen_at: row.get::<_, String>(2)?,
+                used: row.get::<_, i64>(3)? != 0,
             })
         },
     )?;
@@ -2773,10 +2777,10 @@ mod noncustodial_query_tests {
         conn.execute(
             "INSERT INTO derived_addresses
                 (wallet_profile_id, account_index, branch, child_index,
-                 address, script_pubkey_hex, public_key_hex)
-             VALUES ('p1',0,0,0,'rs1qrecv0','0014','02'),
-                    ('p1',0,0,1,'rs1qrecv1','0014','02'),
-                    ('p1',0,1,0,'rs1qchange','0014','02')",
+                 address, script_pubkey_hex, public_key_hex, created_at)
+             VALUES ('p1',0,0,0,'rs1qrecv0','0014','02','2026-01-01T10:00:00'),
+                    ('p1',0,0,1,'rs1qrecv1','0014','02','2026-01-01T10:01:00'),
+                    ('p1',0,1,0,'rs1qchange','0014','02','2026-01-01T10:02:00')",
             [],
         )
         .unwrap();
@@ -2795,9 +2799,11 @@ mod noncustodial_query_tests {
         assert_eq!(rows[0].index, 0);
         assert_eq!(rows[0].address, "rs1qrecv0");
         assert!(rows[0].used, "recv0 has a UTXO");
+        assert_eq!(rows[0].first_seen_at, "2026-01-01T10:00:00");
         assert_eq!(rows[1].index, 1);
         assert_eq!(rows[1].address, "rs1qrecv1");
         assert!(!rows[1].used, "recv1 has no UTXO or bid");
+        assert_eq!(rows[1].first_seen_at, "2026-01-01T10:01:00");
     }
 
     #[test]
@@ -2807,8 +2813,8 @@ mod noncustodial_query_tests {
         conn.execute(
             "INSERT INTO derived_addresses
                 (wallet_profile_id, account_index, branch, child_index,
-                 address, script_pubkey_hex, public_key_hex)
-             VALUES ('p1',0,0,0,'rs1qbidder','0014','02')",
+                 address, script_pubkey_hex, public_key_hex, created_at)
+             VALUES ('p1',0,0,0,'rs1qbidder','0014','02','2026-01-01T10:00:00')",
             [],
         )
         .unwrap();
@@ -2827,6 +2833,7 @@ mod noncustodial_query_tests {
         let rows = list_receive_addresses(&conn, "p1", 0).unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].used, "bid commitment counts as used");
+        assert_eq!(rows[0].first_seen_at, "2026-01-01T10:00:00");
     }
 
     #[test]
@@ -2836,6 +2843,64 @@ mod noncustodial_query_tests {
         assert!(list_receive_addresses(&conn, "does-not-exist", 0)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn next_unused_receive_address_returns_index_after_used() {
+        use crate::noncustodial::derivation::{derive_one, next_unused_receive_address, BRANCH_RECEIVE};
+        use crate::noncustodial::hd::{seed_from_mnemonic, ExtendedPrivKey, ExtendedPubKey};
+        use crate::noncustodial::network::Network;
+
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // Derive the test xpub (same as derivation tests).
+        let seed = seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+        let master = ExtendedPrivKey::from_seed(&seed).unwrap();
+        let xpub = ExtendedPubKey::from_priv(&master);
+
+        // Manually insert address at index 0 and mark it as used by a UTXO.
+        let addr0 = derive_one(Network::Main, &xpub, BRANCH_RECEIVE, 0).unwrap();
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1', 0, 0, 0, ?1, ?2, ?3)",
+            rusqlite::params![&addr0.address, &addr0.script_pubkey_hex, &addr0.public_key_hex],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, spend_class)
+             VALUES ('tx0', 0, 'p1', ?1, ?2, 1000, 0, 'liquid_hns')",
+            rusqlite::params![&addr0.address, &addr0.script_pubkey_hex],
+        )
+        .unwrap();
+
+        // With max(used) = 0, next_unused_receive_address should derive at index 1.
+        let next = next_unused_receive_address(
+            &conn, "p1", 0, Network::Main, &xpub,
+        )
+        .unwrap();
+        assert_eq!(next.child_index, 1, "should derive at max(used)+1 = 1");
+        assert_eq!(next.branch, BRANCH_RECEIVE);
+
+        // Verify the new address was persisted to derived_addresses (sync window
+        // is implicitly extended since get_profile_addresses reads this table).
+        let persisted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM derived_addresses
+                 WHERE wallet_profile_id = 'p1' AND child_index = 1 AND branch = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted, 1, "new address must be in derived_addresses for sync");
     }
 
     fn insert_utxo(conn: &Connection, txid: &str, vout: i64, value: i64, class: &str, cov: i64) {

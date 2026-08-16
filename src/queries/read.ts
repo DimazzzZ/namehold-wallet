@@ -450,12 +450,12 @@ export function useDeriveNextReceiveAddress() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (args: { walletProfileId: string | null }) =>
-      invoke<string>("derive_next_receive_address", args as Record<string, unknown>),
+      invoke<string>("reveal_next_receive_address", args as Record<string, unknown>),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["read", "receive_addresses"] });
-      // A freshly-derived address may become the wallet's new "primary"
-      // receive address on the next sync; nudge the wallet query to refresh.
-      qc.invalidateQueries({ queryKey: ["wallet"] });
+      // Deliberately NOT invalidating ["wallet"] — the spec pinned
+      // `profile.receiveAddress` as unchanged by this feature, so a broader
+      // wallet refetch would exceed the intended blast radius.
     },
   });
 }
