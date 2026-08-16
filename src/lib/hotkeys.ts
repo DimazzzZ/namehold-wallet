@@ -17,6 +17,6 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
   { keys: "4", label: "4", description: "Go to Watchlist", category: "nav" },
   { keys: "5", label: "5", description: "Go to Move from Namebase", category: "nav" },
   { keys: "6", label: "6", description: "Go to Settings", category: "nav" },
-  { keys: "?", label: "?", description: "Open keyboard shortcuts", category: "modal" },
+  { keys: "shift+?", label: "?", description: "Open keyboard shortcuts", category: "modal" },
   { keys: "escape", label: "Esc", description: "Close dialog / modal", category: "modal" },
 ];

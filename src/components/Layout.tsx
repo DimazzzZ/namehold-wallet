@@ -94,6 +94,15 @@ export function Layout() {
           single name or a small amount before transferring or sending everything.
         </div>
         <header className="flex items-center justify-end gap-4 px-6 py-2 border-b border-gray-200 bg-white">
+          <button
+            type="button"
+            onClick={() => setCheatsheetOpen(true)}
+            title="Keyboard shortcuts (Shift+?)"
+            aria-label="Keyboard shortcuts"
+            className="flex items-center justify-center w-6 h-6 rounded border border-gray-300 text-gray-500 hover:text-gray-800 hover:border-gray-400 text-sm font-medium cursor-pointer transition-colors"
+          >
+            ?
+          </button>
           <StatusStrip />
         </header>
         <div className="flex-1 overflow-auto p-6">

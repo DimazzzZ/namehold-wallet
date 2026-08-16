@@ -35,12 +35,14 @@ export function useAppHotkeys({ setCheatsheetOpen }: UseAppHotkeysOptions) {
   useHotkeys("5", () => goto(4), { preventDefault: true });
   useHotkeys("6", () => goto(5), { preventDefault: true });
 
-  // Cheatsheet: ? key. `useKey: true` matches `event.key` directly (which is
-  // "?" when the user presses shift+/ on US layouts, or the ? key on layouts
-  // that have a dedicated key). This is the react-hotkeys-hook canonical way
-  // to bind the ? shortcut across keyboard layouts — matching on `code`
-  // ("Slash") wouldn't work on non-US layouts where ? is on a different key.
-  useHotkeys("?", () => setCheatsheetOpen(true), {
+  // Cheatsheet: Shift+? key. The definition MUST include `shift+` because the
+  // browser emits `shiftKey: true` when the user types "?" (Shift+/ on US
+  // layouts), and react-hotkeys-hook enforces modifier parity — a bare "?"
+  // definition has shift:false and would be rejected against a shiftKey:true
+  // event, so the hotkey would never fire. `useKey: true` matches on
+  // `event.key` (the "?" character) rather than `event.code` ("Slash"), so it
+  // stays layout-robust across US and non-US keyboards.
+  useHotkeys("shift+?", () => setCheatsheetOpen(true), {
     preventDefault: true,
     useKey: true,
   });

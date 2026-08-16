@@ -109,19 +109,21 @@ describe("useAppHotkeys — behavior via real keydown events", () => {
     expect(screen.getByTestId("route").textContent).toBe(PRIMARY_ROUTES[5]?.to);
   });
 
-  it("pressing ? (shift+/) opens the cheatsheet", () => {
+  it("pressing Shift+? opens the cheatsheet", () => {
     renderHarness();
     expect(screen.getByTestId("cheatsheet").textContent).toBe("closed");
-    // useKey: true matches on e.key directly — don't set shiftKey flag
-    // (the library checks modifier parity and would reject if shift is set
-    // but the hotkey definition doesn't include "shift").
-    dispatchKey("?", "Slash");
+    // Reproduce the REAL browser event: pressing "?" on a US layout is
+    // Shift+/, so the browser emits key="?" AND shiftKey=true. The hotkey
+    // binding must be "shift+?" (not bare "?") to pass react-hotkeys-hook's
+    // modifier-parity check. This test dispatches shiftKey:true precisely so
+    // it catches the parity bug that a shiftKey:false event would miss.
+    dispatchKey("?", "Slash", { shiftKey: true });
     expect(screen.getByTestId("cheatsheet").textContent).toBe("open");
   });
 
   it("pressing Escape closes the cheatsheet", () => {
     renderHarness();
-    dispatchKey("?", "Slash"); // open first
+    dispatchKey("?", "Slash", { shiftKey: true }); // open first
     expect(screen.getByTestId("cheatsheet").textContent).toBe("open");
     dispatchKey("Escape", "Escape");
     expect(screen.getByTestId("cheatsheet").textContent).toBe("closed");
