@@ -8,11 +8,10 @@ interface CheatsheetProps {
 
 const CATEGORY_LABELS: Record<HotkeyBinding["category"], string> = {
   nav: "Navigation",
-  action: "Actions",
   modal: "Dialogs",
 };
 
-const CATEGORY_ORDER: HotkeyBinding["category"][] = ["nav", "action", "modal"];
+const CATEGORY_ORDER: HotkeyBinding["category"][] = ["nav", "modal"];
 
 /**
  * Keyboard-shortcut cheatsheet. Rendered from the shared HOTKEY_BINDINGS table

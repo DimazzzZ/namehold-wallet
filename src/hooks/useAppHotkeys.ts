@@ -26,6 +26,8 @@ export function useAppHotkeys({ setCheatsheetOpen }: UseAppHotkeysOptions) {
   };
 
   // Navigation: 1..N for each primary route.
+  // These must stay in sync with the nav entries in HOTKEY_BINDINGS (src/lib/hotkeys.ts).
+  // A test in useAppHotkeys.test.tsx asserts they match — if you add a route, add a binding too.
   useHotkeys("1", () => goto(0), { preventDefault: true });
   useHotkeys("2", () => goto(1), { preventDefault: true });
   useHotkeys("3", () => goto(2), { preventDefault: true });
@@ -33,8 +35,15 @@ export function useAppHotkeys({ setCheatsheetOpen }: UseAppHotkeysOptions) {
   useHotkeys("5", () => goto(4), { preventDefault: true });
   useHotkeys("6", () => goto(5), { preventDefault: true });
 
-  // Cheatsheet: ? (shift+/)
-  useHotkeys("shift+/", () => setCheatsheetOpen(true), { preventDefault: true });
+  // Cheatsheet: ? key. `useKey: true` matches `event.key` directly (which is
+  // "?" when the user presses shift+/ on US layouts, or the ? key on layouts
+  // that have a dedicated key). This is the react-hotkeys-hook canonical way
+  // to bind the ? shortcut across keyboard layouts — matching on `code`
+  // ("Slash") wouldn't work on non-US layouts where ? is on a different key.
+  useHotkeys("?", () => setCheatsheetOpen(true), {
+    preventDefault: true,
+    useKey: true,
+  });
 
   // Esc: close cheatsheet (Dialog.tsx also handles its own Esc for modals).
   useHotkeys("escape", () => setCheatsheetOpen(false));
