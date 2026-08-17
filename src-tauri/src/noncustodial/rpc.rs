@@ -666,6 +666,12 @@ pub struct BlockchainInfo {
     /// otherwise miss — so name it explicitly.
     #[serde(default, rename = "verificationprogress")]
     pub verification_progress: Option<f64>,
+    /// Network name reported by hsd: `"main"` / `"testnet"` / `"regtest"` /
+    /// `"simnet"`. Optional to stay tolerant of older node builds, but hsd
+    /// always populates it — used by the readiness gate to reject a node
+    /// that's on a different network from the active wallet profile.
+    #[serde(default)]
+    pub chain: Option<String>,
     /// Best block hash.
     #[serde(default)]
     pub bestblockhash: Option<String>,

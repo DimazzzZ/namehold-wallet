@@ -66,20 +66,50 @@ pub(crate) fn resolve_profile(
 /// and can't serve UTXO queries, so all reads must go through the explorer.
 pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -> bool {
     // SPV mode: node is never authoritative for reads.
-    let node_mode = {
+    let (node_mode, expected_network) = {
         let db = match state.db.lock() {
             Ok(db) => db,
             Err(_) => return false,
         };
-        match crate::db::queries::get_settings(&db) {
-            Ok(settings) => crate::noncustodial::rpc::resolve_node_mode(&settings),
-            Err(_) => crate::noncustodial::rpc::NodeMode::Full,
-        }
+        let settings = match crate::db::queries::get_settings(&db) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
+        // Resolve the active profile's network so we can reject a node on a
+        // different chain (e.g. regtest node vs mainnet wallet).
+        let net = crate::db::queries::get_active_profile_id(&db)
+            .ok()
+            .and_then(|id| {
+                if id.is_empty() {
+                    return None;
+                }
+                crate::db::queries::get_wallet_profile(&db, &id)
+                    .ok()
+                    .flatten()
+                    .map(|p| p.network)
+            });
+        (mode, net)
     };
     if node_mode.is_spv() {
         return false;
     }
-    node_tip_height_if_synced(state).await.is_some()
+    node_tip_height_if_synced_for_network(state, expected_network.as_deref()).await.is_some()
+}
+
+/// Like [`node_tip_height_if_synced`] but additionally rejects the node when
+/// its reported `chain` doesn't match the `expected_network` (e.g. a regtest
+/// node answering for a mainnet wallet). When `expected_network` is `None` the
+/// network check is skipped (backward-compat for callers without a profile).
+async fn node_tip_height_if_synced_for_network(
+    state: &State<'_, AppState>,
+    expected_network: Option<&str>,
+) -> Option<i64> {
+    let settings = {
+        let db = state.db.lock().ok()?;
+        crate::db::queries::get_settings(&db).ok()?
+    };
+    node_tip_height_if_synced_from_settings_with_network(&settings, expected_network).await
 }
 
 /// The live node tip height, but ONLY when the node is connected AND fully
@@ -101,8 +131,35 @@ pub(crate) async fn node_tip_height_if_synced(state: &State<'_, AppState>) -> Op
 pub(crate) async fn node_tip_height_if_synced_from_settings(
     settings: &std::collections::HashMap<String, String>,
 ) -> Option<i64> {
+    node_tip_height_if_synced_from_settings_with_network(settings, None).await
+}
+
+/// Same as [`node_tip_height_if_synced_from_settings`], but additionally
+/// rejects (returns `None`) when the node's reported `chain` disagrees with
+/// `expected_network`. Set `expected_network` to the active profile's stored
+/// network string (`"main"` / `"mainnet"` / `"testnet"` / `"regtest"` /
+/// `"simnet"`); leave it `None` to skip the network check.
+///
+/// This is the guard that prevents a regtest node from being treated as
+/// authoritative for a mainnet wallet (or any other cross-network mismatch).
+/// The comparison normalizes both sides through [`network_name_matches`] so
+/// `"mainnet"` (profile) and `"main"` (hsd) count as equal.
+pub(crate) async fn node_tip_height_if_synced_from_settings_with_network(
+    settings: &std::collections::HashMap<String, String>,
+    expected_network: Option<&str>,
+) -> Option<i64> {
     let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(settings);
     let info = client.get_blockchain_info().await.ok()?;
+    // Reject the node when its reported chain doesn't match the wallet's
+    // network. When the node doesn't report `chain` at all (older builds), we
+    // conservatively allow it — the SPV gate and other checks still apply.
+    if let Some(want) = expected_network {
+        if let Some(got) = info.chain.as_deref() {
+            if !network_name_matches(want, got) {
+                return None;
+            }
+        }
+    }
     // Connected — now check if synced.
     // When verification_progress is available it is the most reliable signal —
     // a node can report height == headers while still only ~8% verified if it
@@ -116,6 +173,19 @@ pub(crate) async fn node_tip_height_if_synced_from_settings(
         true
     };
     synced.then_some(info.blocks)
+}
+
+/// True when two network names refer to the same Handshake network, tolerating
+/// the `"main"` ↔ `"mainnet"` spelling difference between hsd
+/// (`getblockchaininfo.chain`) and the wallet profile schema.
+pub(crate) fn network_name_matches(profile_network: &str, node_chain: &str) -> bool {
+    fn canonical(s: &str) -> &str {
+        match s {
+            "mainnet" => "main",
+            other => other,
+        }
+    }
+    canonical(profile_network) == canonical(node_chain)
 }
 
 /// Settings-based readiness gate: `true` when the local node is connected AND
