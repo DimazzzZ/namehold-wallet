@@ -35,6 +35,12 @@ pub mod parse_mode;
 pub mod sign_mode;
 pub mod signing;
 
+#[cfg(any(test, feature = "mock-ledger"))]
+pub(crate) mod test_helpers;
+
+#[cfg(feature = "mock-ledger")]
+pub mod simulated_hid;
+
 use crate::error::AppError;
 use crate::noncustodial::hd::bip44_path;
 use crate::noncustodial::network::Network;
@@ -64,12 +70,75 @@ pub struct LedgerSigner<T: HidIo> {
     transport: Transport<T>,
 }
 
-impl LedgerSigner<RealHid> {
+/// The HID transport used by [`LedgerSigner::connect`].
+///
+/// In normal builds this is just [`RealHid`]. When the dev-only `mock-ledger`
+/// feature is enabled, it becomes an enum that can also carry a
+/// [`simulated_hid::SimulatedHid`], selected at runtime via the
+/// `NAMEHOLD_LEDGER_SIM` environment variable. The simulator lets you click
+/// through every Ledger UX path (reject, timeout, wrong app, disconnect, …)
+/// without a physical device. It is never compiled into release builds.
+#[cfg(not(feature = "mock-ledger"))]
+pub type AnyHid = RealHid;
+
+/// See [`AnyHid`] (mock-ledger build variant).
+#[cfg(feature = "mock-ledger")]
+pub enum AnyHid {
+    Real(RealHid),
+    Sim(simulated_hid::SimulatedHid),
+}
+
+#[cfg(feature = "mock-ledger")]
+impl HidIo for AnyHid {
+    fn write_packet(
+        &mut self,
+        packet: &[u8; hid_transport::PACKET_SIZE],
+    ) -> Result<(), AppError> {
+        match self {
+            Self::Real(r) => r.write_packet(packet),
+            Self::Sim(s) => s.write_packet(packet),
+        }
+    }
+    fn read_packet(&mut self) -> Result<[u8; hid_transport::PACKET_SIZE], AppError> {
+        match self {
+            Self::Real(r) => r.read_packet(),
+            Self::Sim(s) => s.read_packet(),
+        }
+    }
+}
+
+impl LedgerSigner<AnyHid> {
     /// Open the first connected Ledger device and wrap it. Does not yet talk to
     /// the device; call [`get_app_version`](Self::get_app_version) to confirm
     /// the Handshake app is open and reachable.
+    ///
+    /// When built with the dev-only `mock-ledger` feature and the
+    /// `NAMEHOLD_LEDGER_SIM` env var is set, this returns a simulated device
+    /// instead of touching real hardware. See [`AnyHid`].
     pub fn connect() -> Result<Self, AppError> {
-        let io = RealHid::open_first()?;
+        #[cfg(feature = "mock-ledger")]
+        {
+            if let Ok(mode_str) = std::env::var("NAMEHOLD_LEDGER_SIM") {
+                let mode = simulated_hid::SimMode::parse(&mode_str)?;
+                if matches!(mode, simulated_hid::SimMode::NoDevice) {
+                    return Err(AppError::Device(
+                        "no Ledger device found — plug it in, unlock it, and open the Handshake app"
+                            .into(),
+                    ));
+                }
+                eprintln!("[mock-ledger] simulating Ledger device in '{mode_str}' mode");
+                let io = AnyHid::Sim(simulated_hid::SimulatedHid::new(mode));
+                return Ok(Self {
+                    transport: Transport::new(io),
+                });
+            }
+        }
+
+        let real = RealHid::open_first()?;
+        #[cfg(feature = "mock-ledger")]
+        let io = AnyHid::Real(real);
+        #[cfg(not(feature = "mock-ledger"))]
+        let io = real;
         Ok(Self {
             transport: Transport::new(io),
         })

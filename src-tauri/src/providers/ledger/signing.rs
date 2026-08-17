@@ -191,6 +191,48 @@ mod tests {
                 responses,
             }
         }
+
+        /// Create a mock for multi-input transactions where each input's sign
+        /// blob fits in 1 APDU (common case). Every sign exchange returns a
+        /// signature.
+        fn multi_input(num_parse_exchanges: usize, num_inputs: usize) -> Self {
+            let mut responses = VecDeque::new();
+            for _ in 0..num_parse_exchanges {
+                responses.push_back(frame_response(&[], 0x9000));
+            }
+            // Each input produces exactly 1 sign exchange that returns a signature.
+            for _ in 0..num_inputs {
+                let mut sig = vec![0x30u8; 64];
+                sig.push(0x01);
+                responses.push_back(frame_response(&sig, 0x9000));
+            }
+            Self {
+                write_count: 0,
+                responses,
+            }
+        }
+
+        /// Create a mock that rejects on a specific exchange index (0-based).
+        fn rejecting_at(num_parse_exchanges: usize, num_inputs: usize, reject_at: usize) -> Self {
+            let mut responses = VecDeque::new();
+            for _ in 0..num_parse_exchanges {
+                responses.push_back(frame_response(&[], 0x9000));
+            }
+            for i in 0..num_inputs {
+                if i == reject_at {
+                    // User rejection: SW 0x6985
+                    responses.push_back(frame_response(&[], 0x6985));
+                } else {
+                    let mut sig = vec![0x30u8; 64];
+                    sig.push(0x01);
+                    responses.push_back(frame_response(&sig, 0x9000));
+                }
+            }
+            Self {
+                write_count: 0,
+                responses,
+            }
+        }
     }
 
     impl HidIo for AutoSignHid {
@@ -213,35 +255,7 @@ mod tests {
         }
     }
 
-    fn frame_response(body: &[u8], sw: u16) -> Vec<[u8; PACKET_SIZE]> {
-        let mut raw = body.to_vec();
-        raw.extend_from_slice(&sw.to_be_bytes());
-        let mut packets = Vec::new();
-        let mut offset = 0usize;
-        let mut seq: u16 = 0;
-        while offset < raw.len() || seq == 0 {
-            let mut pkt = [0u8; PACKET_SIZE];
-            pkt[0..2].copy_from_slice(&0x0101u16.to_be_bytes());
-            pkt[2] = 0x05;
-            pkt[3..5].copy_from_slice(&seq.to_be_bytes());
-            let header_len = if seq == 0 {
-                pkt[5..7].copy_from_slice(&(raw.len() as u16).to_be_bytes());
-                7
-            } else {
-                5
-            };
-            let space = PACKET_SIZE - header_len;
-            let end = (offset + space).min(raw.len());
-            pkt[header_len..header_len + (end - offset)].copy_from_slice(&raw[offset..end]);
-            packets.push(pkt);
-            offset = end;
-            seq += 1;
-            if raw.is_empty() {
-                break;
-            }
-        }
-        packets
-    }
+    use crate::providers::ledger::test_helpers::frame_response;
 
     #[test]
     fn sign_transaction_simple_send() {
@@ -295,5 +309,234 @@ mod tests {
         // The tx hex should be non-empty and the txid should be 64 hex chars.
         assert!(!hex.is_empty());
         assert_eq!(txid.len(), 64);
+    }
+
+    // ---- Test helpers for the richer scenarios below ----
+
+    /// Build a deterministic account xpub for tests.
+    fn test_account_xpub() -> ExtendedPubKey {
+        let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+        let master = ExtendedPrivKey::from_seed(&seed).unwrap();
+        let path = bip44_path(Network::Main, 0, 0, 0);
+        let account_priv = master.derive_path(&path[..3]).unwrap();
+        ExtendedPubKey::from_priv(&account_priv)
+    }
+
+    fn plan_input(child_index: u32, branch: u32) -> crate::noncustodial::actions::PlanInput {
+        crate::noncustodial::actions::PlanInput {
+            txid: "aa".repeat(32),
+            vout: child_index,
+            value: 100_000_000,
+            branch,
+            child_index,
+            sighash_type: 1,
+        }
+    }
+
+    fn plan_output_none(value: u64) -> crate::noncustodial::actions::PlanOutput {
+        crate::noncustodial::actions::PlanOutput {
+            value,
+            address: "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx".into(),
+            covenant_type: COV_NONE,
+            covenant_items_hex: vec![],
+        }
+    }
+
+    /// How many parse-mode APDUs a plan produces (so tests don't hardcode
+    /// fragile chunk counts).
+    fn parse_exchange_count(
+        plan: &DraftPlan,
+        change: Option<&ChangeInfo>,
+        names: &[OutputName],
+    ) -> usize {
+        build_parse_apdus(plan, Network::Main, change, names, network_flag(Network::Main))
+            .unwrap()
+            .len()
+    }
+
+    #[test]
+    fn sign_transaction_multi_input() {
+        // 3 inputs, 1 output. Verify all 3 inputs get signed + witnessed.
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "main".into(),
+            inputs: vec![plan_input(0, 0), plan_input(1, 0), plan_input(2, 0)],
+            outputs: vec![plan_output_none(290_000_000)],
+            change_output_index: None,
+        };
+
+        let parse_n = parse_exchange_count(&plan, None, &[]);
+        let hid = AutoSignHid::multi_input(parse_n, 3);
+        let mut signer = LedgerSigner::with_transport(Transport::new(hid));
+        let account_xpub = test_account_xpub();
+
+        let (hex, txid) =
+            sign_transaction(&mut signer, &plan, &account_xpub, Network::Main, None, &[]).unwrap();
+
+        assert!(!hex.is_empty());
+        assert_eq!(txid.len(), 64);
+    }
+
+    #[test]
+    fn sign_transaction_with_change() {
+        // 1 input, 2 outputs (recipient + change). ChangeInfo points at index 1.
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "main".into(),
+            inputs: vec![plan_input(0, 0)],
+            outputs: vec![plan_output_none(60_000_000), plan_output_none(39_000_000)],
+            change_output_index: Some(1),
+        };
+        let change = ChangeInfo {
+            output_index: 1,
+            address_version: 0,
+            path: bip44_path(Network::Main, 0, 1, 0).to_vec(),
+        };
+
+        let parse_n = parse_exchange_count(&plan, Some(&change), &[]);
+        let hid = AutoSignHid::multi_input(parse_n, 1);
+        let mut signer = LedgerSigner::with_transport(Transport::new(hid));
+        let account_xpub = test_account_xpub();
+
+        let (hex, txid) = sign_transaction(
+            &mut signer,
+            &plan,
+            &account_xpub,
+            Network::Main,
+            Some(&change),
+            &[],
+        )
+        .unwrap();
+
+        assert!(!hex.is_empty());
+        assert_eq!(txid.len(), 64);
+    }
+
+    #[test]
+    fn sign_transaction_name_covenant_reveal() {
+        // A REVEAL covenant carries a name marker. Verify the full signing flow
+        // succeeds and the name marker doesn't break parse-APDU assembly.
+        use crate::noncustodial::sync::COV_REVEAL;
+        // REVEAL items (hsd wire order): [nameHash, height, nonce]. The name is
+        // supplied out-of-band via the OutputName marker.
+        let name_hash = "bb".repeat(32);
+        let height = "00000000";
+        let nonce = "cc".repeat(32);
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "main".into(),
+            inputs: vec![plan_input(0, 0)],
+            outputs: vec![crate::noncustodial::actions::PlanOutput {
+                value: 50_000_000,
+                address: "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx".into(),
+                covenant_type: COV_REVEAL,
+                covenant_items_hex: vec![name_hash, height.into(), nonce],
+            }],
+            change_output_index: None,
+        };
+        let names = vec![OutputName {
+            output_index: 0,
+            name: "example".into(),
+        }];
+
+        let parse_n = parse_exchange_count(&plan, None, &names);
+        let hid = AutoSignHid::multi_input(parse_n, 1);
+        let mut signer = LedgerSigner::with_transport(Transport::new(hid));
+        let account_xpub = test_account_xpub();
+
+        let (hex, txid) = sign_transaction(
+            &mut signer,
+            &plan,
+            &account_xpub,
+            Network::Main,
+            None,
+            &names,
+        )
+        .unwrap();
+
+        assert!(!hex.is_empty());
+        assert_eq!(txid.len(), 64);
+    }
+
+    #[test]
+    fn sign_transaction_large_multi_apdu() {
+        // Many outputs push the parse blob over 255 bytes, forcing multiple
+        // parse APDUs. Verify the multi-APDU parse path works end-to-end.
+        let outputs: Vec<_> = (0..20).map(|_| plan_output_none(1_000_000)).collect();
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "main".into(),
+            inputs: vec![plan_input(0, 0)],
+            outputs,
+            change_output_index: None,
+        };
+
+        let parse_n = parse_exchange_count(&plan, None, &[]);
+        // Sanity: this really is a multi-APDU transaction.
+        assert!(parse_n > 1, "expected multi-APDU parse, got {parse_n}");
+
+        let hid = AutoSignHid::multi_input(parse_n, 1);
+        let mut signer = LedgerSigner::with_transport(Transport::new(hid));
+        let account_xpub = test_account_xpub();
+
+        let (hex, txid) =
+            sign_transaction(&mut signer, &plan, &account_xpub, Network::Main, None, &[]).unwrap();
+        assert!(!hex.is_empty());
+        assert_eq!(txid.len(), 64);
+    }
+
+    #[test]
+    fn sign_transaction_user_rejection_mid_signing() {
+        // 2 inputs; device rejects (0x6985) on the second input's signature.
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "main".into(),
+            inputs: vec![plan_input(0, 0), plan_input(1, 0)],
+            outputs: vec![plan_output_none(190_000_000)],
+            change_output_index: None,
+        };
+
+        let parse_n = parse_exchange_count(&plan, None, &[]);
+        // Reject on input index 1 (the second input).
+        let hid = AutoSignHid::rejecting_at(parse_n, 2, 1);
+        let mut signer = LedgerSigner::with_transport(Transport::new(hid));
+        let account_xpub = test_account_xpub();
+
+        let err = sign_transaction(&mut signer, &plan, &account_xpub, Network::Main, None, &[])
+            .unwrap_err();
+        // Should surface as a user-rejection error, not a panic or wrong txid.
+        assert!(
+            matches!(err, AppError::UserRejected),
+            "expected UserRejected, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn build_parse_blob_rejects_too_many_outputs() {
+        // >255 outputs must be rejected, not silently truncated.
+        let outputs: Vec<_> = (0..256).map(|_| plan_output_none(1)).collect();
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "main".into(),
+            inputs: vec![plan_input(0, 0)],
+            outputs,
+            change_output_index: None,
+        };
+        let err = build_parse_apdus(&plan, Network::Main, None, &[], network_flag(Network::Main))
+            .unwrap_err();
+        let msg = format!("{err:?}").to_lowercase();
+        assert!(msg.contains("too large"), "expected size error, got: {msg}");
     }
 }

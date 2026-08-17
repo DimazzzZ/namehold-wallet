@@ -265,38 +265,7 @@ mod tests {
         }
     }
 
-    /// Build the device-side framed packets for a given response body + SW.
-    fn frame_response(body: &[u8], sw: u16) -> Vec<[u8; PACKET_SIZE]> {
-        let mut raw = body.to_vec();
-        raw.extend_from_slice(&sw.to_be_bytes());
-        // Reuse the framing logic by faking an ApduCommand-less path: replicate
-        // the same framing the writer uses (identical for req/resp direction).
-        let mut packets = Vec::new();
-        let mut offset = 0usize;
-        let mut seq: u16 = 0;
-        while offset < raw.len() || seq == 0 {
-            let mut pkt = [0u8; PACKET_SIZE];
-            pkt[0..2].copy_from_slice(&CHANNEL_ID.to_be_bytes());
-            pkt[2] = TAG_APDU;
-            pkt[3..5].copy_from_slice(&seq.to_be_bytes());
-            let header_len = if seq == 0 {
-                pkt[5..7].copy_from_slice(&(raw.len() as u16).to_be_bytes());
-                7
-            } else {
-                5
-            };
-            let space = PACKET_SIZE - header_len;
-            let end = (offset + space).min(raw.len());
-            pkt[header_len..header_len + (end - offset)].copy_from_slice(&raw[offset..end]);
-            packets.push(pkt);
-            offset = end;
-            seq += 1;
-            if raw.is_empty() {
-                break;
-            }
-        }
-        packets
-    }
+    use crate::providers::ledger::test_helpers::frame_response;
 
     #[test]
     fn roundtrip_short_response() {

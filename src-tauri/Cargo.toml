@@ -105,6 +105,15 @@ mockito = "1"
 # the real #[tauri::command] functions with managed AppState.
 tauri = { version = "2", features = ["test"] }
 
+[features]
+# Dev-only: enables an in-process Ledger device simulator (see
+# `src/providers/ledger/simulated_hid.rs`). When compiled with this feature and
+# the NAMEHOLD_LEDGER_SIM env var is set, `LedgerSigner::connect()` returns a
+# scripted mock instead of touching real hardware — lets you click through every
+# Ledger UX path (reject, timeout, wrong app, disconnect, …) without a physical
+# device. Never enabled in release builds.
+mock-ledger = []
+
 # Release build hardening. Stripping symbols reduces the binary size and makes
 # reverse-engineering slightly harder; `panic = "abort"` avoids unwind tables
 # (also shrinks the binary); `lto = "thin"` gives cross-crate inlining without

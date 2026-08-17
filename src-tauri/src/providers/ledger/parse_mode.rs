@@ -97,6 +97,18 @@ pub fn build_parse_blob(
     change: Option<&ChangeInfo>,
     names: &[OutputName],
 ) -> Result<Vec<u8>, AppError> {
+    // Defensive bounds checks: Ledger expects u8 counts, so reject oversized txs.
+    if plan.inputs.len() > 255 {
+        return Err(AppError::Device(
+            "transaction too large for Ledger (>255 inputs)".into(),
+        ));
+    }
+    if plan.outputs.len() > 255 {
+        return Err(AppError::Device(
+            "transaction too large for Ledger (>255 outputs)".into(),
+        ));
+    }
+
     let mut buf = Vec::with_capacity(512);
 
     // Header
@@ -108,6 +120,11 @@ pub fn build_parse_blob(
     // Change flag + optional LedgerChange
     match change {
         Some(c) => {
+            if c.path.len() > 10 {
+                return Err(AppError::Device(
+                    "change path too deep for Ledger (max 10 levels)".into(),
+                ));
+            }
             buf.push(0x01);
             buf.push(c.output_index);
             buf.push(c.address_version);

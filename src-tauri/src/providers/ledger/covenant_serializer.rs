@@ -28,6 +28,7 @@ use crate::noncustodial::sync::{
     COV_REVOKE, COV_TRANSFER, COV_UPDATE,
 };
 
+#[cfg(test)]
 use super::apdu::{write_var_bytes, write_varint};
 
 /// Whether a covenant type requires an appended `LedgerCovenant` name marker in
@@ -62,7 +63,13 @@ pub fn is_supported(covenant_type: u8) -> bool {
 /// Serialize a covenant into hsd wire form: `type | varint(count) |
 /// varbytes(item)*`. `items` are the raw (already-decoded) covenant items in
 /// hsd order, exactly as stored in a plan's `covenant_items_hex`.
-pub fn write_covenant(out: &mut Vec<u8>, covenant_type: u8, items: &[Vec<u8>]) {
+///
+/// Currently test-only: production callers inline the equivalent bytes in
+/// [`build_parse_blob`](crate::providers::ledger::parse_mode::build_parse_blob).
+/// Kept as a reference implementation for the wire format and to guard against
+/// future drift; promote to `pub` when a real caller lands.
+#[cfg(test)]
+pub(crate) fn write_covenant(out: &mut Vec<u8>, covenant_type: u8, items: &[Vec<u8>]) {
     out.push(covenant_type);
     write_varint(out, items.len() as u64);
     for item in items {
