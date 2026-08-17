@@ -541,11 +541,18 @@ pub(crate) async fn sign_tx_draft_inner(
     state: &State<'_, AppState>,
     draft_id: &str,
 ) -> Result<TxDraftSummary, AppError> {
-    // 1. Load the draft + session ttl (send_hns also needs spendable coins).
-    let (draft, coins, ttl_ms) = {
+    // 1. Load the draft + profile kind + session ttl. Also load spendable coins
+    //    for the send path.
+    let (draft, profile_kind, account_xpub, coins, ttl_ms, covenant_names) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let draft = db::queries::get_tx_draft(&conn, draft_id)?
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
+        let profile = db::queries::get_wallet_profile(&conn, &draft.wallet_profile_id)?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("wallet profile {}", draft.wallet_profile_id))
+            })?;
+        let profile_kind = profile.kind.clone();
+        let account_xpub = profile.account_xpub.clone();
         let coins = if draft.action == "send_hns" {
             // Prefer the exact coin set this draft reserved at build time (I3):
             // re-selecting over the full pool could drift onto a larger coin
@@ -566,11 +573,78 @@ pub(crate) async fn sign_tx_draft_inner(
             Vec::new()
         };
         let settings = db::queries::get_settings(&conn)?;
-        (draft, coins, session_ttl_ms(&settings))
+        // For Ledger covenant actions, resolve names by hash from tracked_name_states.
+        let covenant_names = if profile_kind == "ledger_hardware" && draft.action != "send_hns" {
+            resolve_covenant_names(&conn, &draft, &profile.id)?
+        } else {
+            Vec::new()
+        };
+        (draft, profile_kind, account_xpub, coins, session_ttl_ms(&settings), covenant_names)
     };
 
-    // 2. Sign under the signer lock, dispatching by action.
-    let (signed_hex, summary_json) = {
+    // 2. Sign, dispatching by profile kind (ledger vs hot) and action.
+    let (signed_hex, summary_json) = if profile_kind == "ledger_hardware" {
+        sign_via_ledger(&draft, &account_xpub, &coins, &covenant_names).await?
+    } else {
+        sign_via_hot_session(state, &draft, &coins, ttl_ms)?
+    };
+
+    // 3. Persist the signed tx and status.
+    persist_signed_draft(state, draft_id, &signed_hex, &summary_json)?;
+
+    load_draft_summary(state, draft_id)
+}
+
+/// Persist the signed hex + summary and flip the draft's status to `signed`.
+fn persist_signed_draft(
+    state: &State<'_, AppState>,
+    draft_id: &str,
+    signed_hex: &str,
+    summary_json: &str,
+) -> Result<(), AppError> {
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    db::queries::update_tx_draft_signed(&conn, draft_id, signed_hex, summary_json)?;
+    Ok(())
+}
+
+/// Resolve human-readable names for covenant actions by looking up the nameHash
+/// (covenant item[0]) in tracked_name_states. Used by Ledger signing to populate
+/// on-device name markers.
+fn resolve_covenant_names(
+    conn: &rusqlite::Connection,
+    draft: &db::queries::TxDraftRow,
+    profile_id: &str,
+) -> Result<Vec<(usize, String)>, AppError> {
+    use crate::noncustodial::sync::{COV_REVEAL, COV_REDEEM, COV_REGISTER, COV_RENEW, COV_TRANSFER, COV_REVOKE, COV_UPDATE};
+    let plan: crate::noncustodial::actions::DraftPlan =
+        serde_json::from_str(&draft.signing_inputs_json)?;
+    let mut names = Vec::new();
+    for (i, out) in plan.outputs.iter().enumerate() {
+        // Only the 7 name-bearing types that require markers.
+        if matches!(
+            out.covenant_type,
+            COV_REVEAL | COV_REDEEM | COV_REGISTER | COV_RENEW | COV_TRANSFER | COV_REVOKE | COV_UPDATE
+        ) {
+            // nameHash is always covenant item[0].
+            if let Some(hash_hex) = out.covenant_items_hex.first() {
+                if let Ok(Some(name)) = db::queries::get_name_by_hash(conn, profile_id, hash_hex) {
+                    names.push((i, name));
+                }
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// The hot-wallet signing path — unchanged behaviour from before the Ledger
+/// integration. Locks the in-memory signer session and dispatches by action.
+fn sign_via_hot_session(
+    state: &State<'_, AppState>,
+    draft: &db::queries::TxDraftRow,
+    coins: &[send::SpendableCoin],
+    ttl_ms: u128,
+) -> Result<(String, String), AppError> {
+    {
         let mut slot = state
             .signer
             .lock()
@@ -595,7 +669,7 @@ pub(crate) async fn sign_tx_draft_inner(
                 session,
                 network,
                 params.account,
-                &coins,
+                coins,
                 &params.to_address,
                 params.amount_doos,
                 &params.change_address,
@@ -613,7 +687,7 @@ pub(crate) async fn sign_tx_draft_inner(
                 txid: Some(built.txid.clone()),
                 warnings: Vec::new(),
             };
-            (built.tx_hex, serde_json::to_string(&summary)?)
+            Ok((built.tx_hex, serde_json::to_string(&summary)?))
         } else {
             // Covenant action: sign the persisted plan; keep its build-time summary.
             let plan: crate::noncustodial::actions::DraftPlan =
@@ -628,18 +702,128 @@ pub(crate) async fn sign_tx_draft_inner(
                 Some(txid.as_str()),
                 "covenant draft summary txid diverged from the signed tx's txid"
             );
-            (hex, draft.summary_json.clone())
+            Ok((hex, draft.summary_json.clone()))
         }
+    }
+}
+
+/// The Ledger-hardware signing path. No in-memory signer session; instead
+/// connects to the physical device and drives the parse+sign APDU dance.
+/// Blocking HID I/O runs on a `spawn_blocking` task.
+async fn sign_via_ledger(
+    draft: &db::queries::TxDraftRow,
+    account_xpub_str: &str,
+    coins: &[send::SpendableCoin],
+    covenant_names: &[(usize, String)],
+) -> Result<(String, String), AppError> {
+    use crate::noncustodial::hd::ExtendedPubKey;
+    use crate::noncustodial::hd::bip44_path;
+    use crate::providers::ledger::{parse_mode::ChangeInfo, signing::sign_transaction, LedgerSigner};
+
+    // For send_hns, build a plan from the coin selection so both paths share
+    // the same signing entry point.
+    let (plan, summary_json, txid_expected) = if draft.action == "send_hns" {
+        let params: SendBuildParams = serde_json::from_str(&draft.signing_inputs_json)?;
+        let network = Network::from_str_opt(&params.network).ok_or_else(|| {
+            AppError::InvalidInput(format!("bad network '{}'", params.network))
+        })?;
+        let plan = send::build_send_plan(
+            network,
+            params.account,
+            coins,
+            &params.to_address,
+            params.amount_doos,
+            &params.change_address,
+            params.rate_per_byte,
+            params.max,
+        )?;
+        // Compute the expected summary + txid from the unsigned tx so the
+        // frontend sees the same fee/change it did at build time.
+        let unsigned = crate::noncustodial::actions::rebuild_unsigned(&plan, network)?;
+        let input_total: u64 = plan.inputs.iter().map(|i| i.value).sum();
+        let output_total: u64 = plan.outputs.iter().map(|o| o.value).sum();
+        let fee = input_total - output_total;
+        let change = if plan.outputs.len() > 1 { plan.outputs[1].value } else { 0 };
+        let summary = TxSummary {
+            action: "send_hns".to_string(),
+            send_total_doos: (output_total - change) as i64,
+            fee_doos: fee as i64,
+            change_doos: change as i64,
+            input_total_doos: input_total as i64,
+            num_inputs: plan.inputs.len() as i64,
+            recipient_address: Some(params.to_address.clone()),
+            txid: Some(unsigned.txid()),
+            warnings: Vec::new(),
+        };
+        (plan, serde_json::to_string(&summary)?, Some(unsigned.txid()))
+    } else {
+        // Covenant action: plan is already persisted.
+        let plan: crate::noncustodial::actions::DraftPlan =
+            serde_json::from_str(&draft.signing_inputs_json)?;
+        (plan, draft.summary_json.clone(), None)
     };
 
-    // 3. Persist the signed tx + summary.
-    {
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::update_tx_draft_signed(&conn, draft_id, &signed_hex, &summary_json)?;
-        db::queries::get_tx_draft(&conn, draft_id)?
-            .map(|d| d.to_summary())
-            .ok_or_else(|| AppError::Other("draft vanished after sign".to_string()))
+    let network = Network::from_str_opt(&plan.network)
+        .ok_or_else(|| AppError::InvalidInput(format!("bad network '{}'", plan.network)))?;
+
+    // Parse the stored xpub for local pubkey derivation.
+    let account_xpub = ExtendedPubKey::from_xpub(network, account_xpub_str)?;
+
+    // Build OutputName entries from the pre-resolved covenant names.
+    let names: Vec<crate::providers::ledger::parse_mode::OutputName> = covenant_names
+        .iter()
+        .map(|(idx, name)| crate::providers::ledger::parse_mode::OutputName {
+            output_index: *idx,
+            name: name.clone(),
+        })
+        .collect();
+
+    // Blocking HID I/O runs on the blocking thread pool.
+    let (hex, txid) = tokio::task::spawn_blocking(move || {
+        let mut signer = LedgerSigner::connect()?;
+        // Verify the app is present and reachable.
+        let _version = signer.get_app_version()?;
+        // Build ChangeInfo if the plan has a change output. The change address
+        // is always branch 1, index 0 (see change_address() helper above).
+        let change_info = plan.change_output_index.map(|idx| ChangeInfo {
+            output_index: idx as u8,
+            address_version: 0, // p2wpkh
+            path: bip44_path(network, plan.account, 1, 0).to_vec(),
+        });
+        sign_transaction(
+            &mut signer,
+            &plan,
+            &account_xpub,
+            network,
+            change_info.as_ref(),
+            &names,
+        )
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("ledger signing task failed: {e}")))??;
+
+    // Sanity: for send_hns the txid must match the pre-computed one (signatures
+    // don't affect the txid on Handshake).
+    if let Some(expected) = txid_expected {
+        if expected != txid {
+            return Err(AppError::Other(format!(
+                "ledger signed txid {txid} != expected {expected}"
+            )));
+        }
     }
+
+    Ok((hex, summary_json))
+}
+
+/// Load the summary of the just-signed draft for the return value.
+fn load_draft_summary(
+    state: &State<'_, AppState>,
+    draft_id: &str,
+) -> Result<TxDraftSummary, AppError> {
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let draft = db::queries::get_tx_draft(&conn, draft_id)?
+        .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
+    Ok(draft.to_summary())
 }
 
 /// Sign an arbitrary message with the wallet key that owns `name`, reproducing

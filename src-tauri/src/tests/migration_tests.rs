@@ -62,7 +62,8 @@ fn test_schema_version_tracking() {
     // 023 (paid_swap_offers: seller-side tracking for atomic finalizeWithPayment).
     // 024 (watchlist_tags: comma-separated tags per watched name).
     // 025 (watched_name_states: daemon-written cache for watchlist columns + notifications).
-    assert_eq!(count, 25);
+    // 026 (ledger_hardware_profiles: add 'ledger_hardware' kind to wallet_profiles CHECK).
+    assert_eq!(count, 26);
 }
 
 #[test]

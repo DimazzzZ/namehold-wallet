@@ -142,6 +142,19 @@ impl ExtendedPubKey {
         }
     }
 
+    /// Build an extended public key from a raw 33-byte compressed pubkey and a
+    /// 32-byte chain code. Used when the key material comes from an external
+    /// source that already computed the account node — e.g. a Ledger device's
+    /// `GET_PUBLIC_KEY` response (see [`crate::providers::ledger`]).
+    pub fn from_parts(pubkey: &[u8; 33], chain_code: &[u8; 32]) -> Result<Self, AppError> {
+        let public = PublicKey::from_slice(pubkey)
+            .map_err(|e| AppError::InvalidInput(format!("invalid compressed pubkey: {e}")))?;
+        Ok(ExtendedPubKey {
+            public,
+            chain_code: *chain_code,
+        })
+    }
+
     /// Derive a single NON-hardened child public key at `index`.
     ///
     /// Returns `InvalidInput` if a hardened index is requested, since BIP32

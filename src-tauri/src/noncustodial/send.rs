@@ -28,6 +28,7 @@ use crate::error::AppError;
 use crate::noncustodial::address;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::session::SignerSession;
+use crate::noncustodial::actions::{DraftPlan, PlanInput, PlanOutput};
 use crate::noncustodial::tx::{
     output_address_from_string, sighash, Covenant, Input, Outpoint, Output, Transaction,
 };
@@ -516,6 +517,83 @@ pub fn build_send(
         output_total,
         change: selection.change,
         num_inputs: selection.coins.len(),
+    })
+}
+
+/// Build a [`DraftPlan`] for a send transaction (unsigned, for Ledger or other
+/// external signers). Takes the same parameters as [`build_send`] but returns
+/// a plan instead of a signed transaction.
+///
+/// The plan can then be signed by an external signer (e.g. Ledger device via
+/// [`crate::providers::ledger::signing::sign_transaction`]) or by the local
+/// session via [`crate::noncustodial::actions::sign_plan`].
+#[allow(clippy::too_many_arguments)]
+pub fn build_send_plan(
+    network: Network,
+    account: u32,
+    available: &[SpendableCoin],
+    to_address: &str,
+    amount: u64,
+    change_address: &str,
+    rate_per_byte: u64,
+    max: bool,
+) -> Result<DraftPlan, AppError> {
+    // Validate both addresses so we fail fast on a bad plan.
+    let _ = output_address_from_string(network, to_address)?;
+    let _ = output_address_from_string(network, change_address)?;
+
+    // Coin selection (same as build_send).
+    let selection = if max {
+        select_all_coins(available, rate_per_byte)?
+    } else {
+        select_coins(available, amount, rate_per_byte)?
+    };
+    let recipient_amount = if max {
+        selection.input_total - selection.fee
+    } else {
+        amount
+    };
+
+    // Build inputs (one per selected coin).
+    let mut inputs = Vec::new();
+    for coin in &selection.coins {
+        inputs.push(PlanInput {
+            txid: coin.txid.clone(),
+            vout: coin.vout,
+            value: coin.value,
+            branch: coin.branch,
+            child_index: coin.child_index,
+            sighash_type: 1, // SIGHASH_ALL
+        });
+    }
+
+    // Build outputs (recipient + change if above dust).
+    let mut outputs = Vec::new();
+    outputs.push(PlanOutput {
+        value: recipient_amount,
+        address: to_address.to_string(),
+        covenant_type: 0, // NONE
+        covenant_items_hex: vec![],
+    });
+    if selection.change > 0 {
+        outputs.push(PlanOutput {
+            value: selection.change,
+            address: change_address.to_string(),
+            covenant_type: 0, // NONE
+            covenant_items_hex: vec![],
+        });
+    }
+
+    let change_output_index = if selection.change > 0 { Some(1) } else { None };
+
+    Ok(DraftPlan {
+        version: 0,
+        locktime: 0,
+        account,
+        network: network.as_str().to_string(),
+        inputs,
+        outputs,
+        change_output_index,
     })
 }
 

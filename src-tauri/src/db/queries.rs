@@ -1879,6 +1879,26 @@ pub struct TrackedNameRow {
     pub renewal_height: Option<i64>,
 }
 
+/// Resolve the name for a given nameHash (hex) under a profile. Returns None if
+/// the name is not tracked by this wallet (e.g. a name being bid on by another
+/// party, or a name not yet tracked). Used by Ledger signing to populate
+/// on-device name markers for covenant actions.
+pub fn get_name_by_hash(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name_hash_hex: &str,
+) -> Result<Option<String>, AppError> {
+    let name = conn
+        .query_row(
+            "SELECT name FROM tracked_name_states
+             WHERE wallet_profile_id = ?1 AND name_hash_hex = ?2",
+            params![profile_id, name_hash_hex],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(name)
+}
+
 /// Fetch the tracked-name-state row for `name` under `profile_id`, if one exists.
 pub fn get_tracked_name_state(
     conn: &rusqlite::Connection,

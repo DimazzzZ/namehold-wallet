@@ -19,6 +19,7 @@ use crate::noncustodial::session::SignerSession;
 use crate::noncustodial::types::{SignerSessionSummary, WalletProfileSummary};
 use crate::noncustodial::{derivation, vault};
 use crate::AppState;
+use crate::providers::ledger::LedgerSigner;
 
 // --- small helpers ---------------------------------------------------------
 
@@ -355,6 +356,68 @@ pub async fn secure_import_wallet(
             )))
         }
     }
+
+    load_profile(&app, &id)
+}
+
+/// Import a Ledger Nano S/X hardware wallet profile.
+///
+/// Connects to the first plugged-in Ledger device, verifies the Handshake app
+/// is open, fetches the account-level extended public key from the device, and
+/// creates a `ledger_hardware` profile. The device's private keys never leave
+/// the device; this wallet can only sign via on-device APDU requests.
+///
+/// The device must have the official `handshake-org/ledger-app-hns` app
+/// installed and open (dev-mode sideload; not yet in Ledger Live).
+#[tauri::command]
+pub async fn import_ledger_profile(
+    app: AppHandle,
+    label: String,
+    network: String,
+) -> Result<WalletProfileSummary, AppError> {
+    let (network_str, net) = validate_network(&network)?;
+    let settings = read_settings(&app)?;
+    let gap = gap_limit(&settings);
+    let id = random_id();
+
+    // Connect to device and fetch account xpub. This is blocking HID I/O, so
+    // we run it in a blocking task to avoid stalling the async runtime.
+    let (pubkey, chain_code) = tokio::task::spawn_blocking(move || {
+        let mut signer = LedgerSigner::connect()?;
+        // Verify the app is running and reachable.
+        let version = signer.get_app_version()?;
+        if version.major != 1 || version.minor < 6 {
+            return Err(AppError::Device(format!(
+                "unsupported Ledger app version {version} (need 1.6+)"
+            )));
+        }
+        // Fetch the account-level pubkey + chain code (with user confirmation).
+        signer.get_account_pubkey(net, 0, /* confirm */ true)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("ledger task failed: {e}")))??;
+
+    // Build the account xpub from the device's pubkey + chain code.
+    let account_xpub = ExtendedPubKey::from_parts(&pubkey, &chain_code)?
+        .to_base58check(net);
+
+    // Create the profile (no secret, like watch-only).
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    db::queries::insert_wallet_profile(
+        &conn,
+        &id,
+        &label,
+        "ledger_hardware",
+        network_str,
+        &account_xpub,
+        0,
+        true, // watch_only=true (no secret stored)
+    )?;
+    let receive_addr = provision_addresses(&conn, &id, net, &account_xpub, gap)?;
+    db::queries::update_profile_receive(&conn, &id, &receive_addr, gap as i64)?;
+    db::queries::update_profile_change_depth(&conn, &id, gap as i64)?;
+    db::queries::set_active_profile(&conn, &id)?;
 
     load_profile(&app, &id)
 }

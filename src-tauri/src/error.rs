@@ -53,6 +53,14 @@ pub enum AppError {
     /// a format change degrade silently into "you own nothing" (Task 11 / S1).
     #[error("Explorer response format unrecognized: {0}")]
     ExplorerFormat(String),
+    /// A hardware wallet (Ledger) transport, protocol, or on-device error.
+    /// Kept distinct from `Other`/`Crypto` so the frontend can render
+    /// actionable device guidance (unplug/reconnect, unlock, open the HNS app,
+    /// approve the on-screen prompt) rather than a generic failure. The string
+    /// carries the specific cause (e.g. "device not found", "HNS app not open",
+    /// APDU status word `0x6985` = user rejected).
+    #[error("Ledger device error: {0}")]
+    Device(String),
     #[error("{0}")]
     Other(String),
 }

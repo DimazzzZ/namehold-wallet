@@ -1966,6 +1966,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hidapi"
+version = "2.6.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c78dadfc12f865bc3fcac3897e64533b930737ceb9ef245c8277de98d0b010e9"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "pkg-config",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "hkdf"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2759,6 +2772,7 @@ dependencies = [
  "ctrlc",
  "dirs 6.0.0",
  "hex",
+ "hidapi",
  "hmac",
  "keyring",
  "libc",

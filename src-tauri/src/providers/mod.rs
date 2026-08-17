@@ -12,6 +12,7 @@
 //! explorers never expose write capability.
 
 pub mod hnsfans;
+pub mod ledger;
 pub mod signer;
 
 #[allow(unused_imports)]
