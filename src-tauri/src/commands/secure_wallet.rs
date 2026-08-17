@@ -412,7 +412,7 @@ pub async fn import_ledger_profile(
         network_str,
         &account_xpub,
         0,
-        true, // watch_only=true (no secret stored)
+        false, // watch_only=false (can spend via device)
     )?;
     let receive_addr = provision_addresses(&conn, &id, net, &account_xpub, gap)?;
     db::queries::update_profile_receive(&conn, &id, &receive_addr, gap as i64)?;

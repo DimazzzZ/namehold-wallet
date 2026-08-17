@@ -165,7 +165,11 @@ export function WalletView() {
   const [walletManagerOpen, setWalletManagerOpen] = useState(false);
   const [walletManagerAddMode, setWalletManagerAddMode] = useState(false);
 
-  const unlocked = signer?.unlocked ?? false;
+  // Ledger wallets don't use the local signer session — the device signs on
+  // demand. Treat them as "unlocked" so the send/action flow doesn't try to
+  // prompt for a passphrase that doesn't exist.
+  const unlocked =
+    profile?.kind === "ledger_hardware" ? true : (signer?.unlocked ?? false);
   const canWrite = writeCap?.canWrite ?? false;
   const isWatchOnly = profile?.watchOnly ?? false;
   const address = profile?.receiveAddress ?? null;

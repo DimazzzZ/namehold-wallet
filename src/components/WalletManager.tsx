@@ -88,10 +88,14 @@ export function WalletManager({
                     {p.active && <Badge variant="success">Active</Badge>}
                   </div>
                   <div className="flex items-center gap-1.5 mt-0.5">
-                    <Badge>{p.network}</Badge>
-                    <Badge variant={p.watchOnly ? "warning" : "default"}>
-                      {p.watchOnly ? "Watch-only" : "Hot"}
-                    </Badge>
+                  <Badge>{p.network}</Badge>
+                  <Badge variant={p.watchOnly ? "warning" : "default"}>
+                    {p.kind === "ledger_hardware"
+                      ? "Ledger"
+                      : p.watchOnly
+                        ? "Watch-only"
+                        : "Hot"}
+                  </Badge>
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">

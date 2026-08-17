@@ -208,6 +208,12 @@ export function useSecureImportWallet() {
   );
 }
 
+export function useImportLedgerWallet() {
+  return useWalletMutation<{ label: string; network: string }>(
+    "import_ledger_profile",
+  );
+}
+
 export function useRevealBackupPhrase() {
   return useMutation({
     mutationFn: (walletProfileId: string) =>

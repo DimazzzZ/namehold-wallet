@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { useUiStore } from "../stores/ui";
-import { useSecureCreateWallet, useSecureImportWallet } from "../queries/wallet";
+import { useSecureCreateWallet, useSecureImportWallet, useImportLedgerWallet } from "../queries/wallet";
 import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
 import { mapError } from "../lib/errors";
 import type { WalletNetwork } from "../types";
 
-type Path = "choose" | "import" | "create" | "watch";
+type Path = "choose" | "import" | "create" | "watch" | "ledger";
 
 /**
  * Add a wallet (create / import / watch-only). Secrets never touch React: the
@@ -27,12 +27,13 @@ export function AddWalletForm({
   const showToast = useUiStore((s) => s.showToast);
   const createWallet = useSecureCreateWallet();
   const importWallet = useSecureImportWallet();
+  const importLedger = useImportLedgerWallet();
 
   const [path, setPath] = useState<Path>("choose");
   const [label, setLabel] = useState(defaultLabel);
   const [network, setNetwork] = useState<WalletNetwork>("mainnet");
 
-  const busy = createWallet.isPending || importWallet.isPending;
+  const busy = createWallet.isPending || importWallet.isPending || importLedger.isPending;
 
   const handleCreate = async () => {
     try {
@@ -67,6 +68,19 @@ export function AddWalletForm({
       });
       await onDone();
       showToast("Watch-only wallet added", "success");
+    } catch (e) {
+      showToast(mapError(e), "error");
+    }
+  };
+
+  const handleLedger = async () => {
+    try {
+      await importLedger.mutateAsync({
+        label: label.trim() || "Ledger",
+        network,
+      });
+      await onDone();
+      showToast("Ledger wallet imported", "success");
     } catch (e) {
       showToast(mapError(e), "error");
     }
@@ -109,6 +123,17 @@ export function AddWalletForm({
           <div className="font-medium text-gray-900">Watch-only (read-only)</div>
           <div className="text-sm text-gray-500">
             Track an account xpub without entering any secret. No spending.
+          </div>
+        </button>
+
+        <button
+          onClick={() => setPath("ledger")}
+          className="w-full text-left p-4 border border-gray-200 rounded-lg hover:border-blue-400 hover:bg-blue-50 transition"
+        >
+          <div className="font-medium text-gray-900">Connect a Ledger device</div>
+          <div className="text-sm text-gray-500">
+            Import a hardware wallet. Keys stay on the device; every spend is
+            confirmed on-device.
           </div>
         </button>
 
@@ -157,6 +182,26 @@ export function AddWalletForm({
           <Button variant="ghost" onClick={() => setPath("choose")}>Back</Button>
           <Button onClick={handleWatchOnly} disabled={busy}>
             {busy ? "Adding..." : "Add watch-only wallet"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (path === "ledger") {
+    return (
+      <div className="space-y-4">
+        <Input label="Wallet Name" value={label} onChange={(e) => setLabel(e.target.value)} />
+        {NetworkPicker}
+        <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800">
+          Make sure your Ledger is connected via USB, unlocked, and the Handshake
+          app is open. Confirm the export prompt on the device when it appears —
+          only the account xpub is exported (no keys ever leave the device).
+        </div>
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={() => setPath("choose")}>Back</Button>
+          <Button onClick={handleLedger} disabled={busy}>
+            {busy ? "Connecting to device..." : "Import from Ledger"}
           </Button>
         </div>
       </div>

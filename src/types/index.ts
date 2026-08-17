@@ -368,7 +368,11 @@ export interface Settings {
 // ---------------------------------------------------------------------------
 
 export type WalletNetwork = "mainnet" | "testnet" | "regtest";
-export type WalletProfileKind = "mnemonic_hot" | "xpriv_hot" | "watch_only_xpub";
+export type WalletProfileKind =
+  | "mnemonic_hot"
+  | "xpriv_hot"
+  | "watch_only_xpub"
+  | "ledger_hardware";
 
 export interface WalletProfileSummary {
   id: string;
