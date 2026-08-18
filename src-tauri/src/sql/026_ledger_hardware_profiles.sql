@@ -8,6 +8,26 @@
 --
 -- SQLite cannot ALTER a CHECK constraint in place, so wallet_profiles is
 -- recreated with the new kind added to the CHECK list.
+--
+-- SAFETY (FK): Foreign keys MUST be disabled around the DROP or ON DELETE
+-- CASCADE will wipe every child table (derived_addresses, tracked_utxos,
+-- tracked_name_states, wallet_secrets). `PRAGMA foreign_keys` is a no-op
+-- inside a transaction, so it must be toggled in autocommit mode, strictly
+-- outside the BEGIN/COMMIT below.
+--
+-- SAFETY (atomicity): the DROP/CREATE/RENAME dance below runs inside an
+-- explicit transaction so a crash or error partway through leaves either the
+-- old `wallet_profiles` intact or the new one fully in place — never neither.
+-- `DROP TABLE IF EXISTS wallet_profiles_new` makes a retry (after a crash
+-- that got far enough to create the scratch table but not commit) safe to
+-- run from scratch: DDL is transactional in SQLite, so an uncommitted CREATE
+-- TABLE is rolled back with the rest of the transaction on restart.
+
+PRAGMA foreign_keys = OFF;
+
+BEGIN;
+
+DROP TABLE IF EXISTS wallet_profiles_new;
 
 CREATE TABLE wallet_profiles_new (
     id                  TEXT    PRIMARY KEY,
@@ -43,3 +63,7 @@ DROP TABLE wallet_profiles;
 ALTER TABLE wallet_profiles_new RENAME TO wallet_profiles;
 
 CREATE INDEX IF NOT EXISTS idx_wallet_profiles_kind ON wallet_profiles(kind);
+
+COMMIT;
+
+PRAGMA foreign_keys = ON;
