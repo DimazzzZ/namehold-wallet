@@ -79,6 +79,16 @@ fn add_owned_name(conn: &rusqlite::Connection, profile: &str, name: &str, txid: 
         params![profile, name, txid],
     )
     .unwrap();
+    // Also seed a matching unspent `name_control` UTXO so the name passes the
+    // ownership gate in `read_owned_names_explorer`.
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+         VALUES (?1, 0, ?2, 'rs1qtest', '00', 1000, 6, NULL, 'name_control', NULL)",
+        params![txid, profile],
+    )
+    .unwrap();
 }
 
 fn add_cached_tx(

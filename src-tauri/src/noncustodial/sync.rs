@@ -342,6 +342,21 @@ pub fn upsert_name_state(
         .map(|s| s.to_string());
     let owner_vout = owner.and_then(|o| o.get("index")).and_then(|v| v.as_i64());
 
+    // Hardening: skip stamping owner fields when owner.hash is the all-zeros
+    // (hsd `consensus.ZERO_HASH`). That sentinel means "no owner", not a real
+    // owner outpoint, so recording it would falsely make the name look owned.
+    // Keeping owner_txid NULL here narrows the surface for owned-name leaks
+    // (the read side additionally requires a matching unspent name_control UTXO).
+    let is_zero_owner_hash = owner_txid
+        .as_deref()
+        .map(|h| h == "0000000000000000000000000000000000000000000000000000000000000000")
+        .unwrap_or(false);
+    let (owner_txid, owner_vout) = if is_zero_owner_hash {
+        (None, None)
+    } else {
+        (owner_txid, owner_vout)
+    };
+
     conn.execute(
         "INSERT INTO tracked_name_states
             (wallet_profile_id, name, name_hash_hex, state, owner_txid,
@@ -569,6 +584,63 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn upsert_name_state_skips_zero_hash_owner() {
+        let conn = mem_db();
+
+        // When the on-chain owner.hash is the all-zeros sentinel (hsd
+        // consensus.ZERO_HASH), upsert_name_state should NOT record it as
+        // owner_txid. This prevents names in OPENING/BIDDING (which have a
+        // zero owner) from falsely appearing as "owned".
+        let info = serde_json::json!({
+            "info": {
+                "name": "bidonly",
+                "nameHash": "deadbeef",
+                "state": "BIDDING",
+                "height": 1000,
+                "owner": {
+                    "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "index": 0
+                }
+            }
+        });
+        upsert_name_state(&conn, "p1", "bidonly", &info).unwrap();
+
+        let (owner_txid, owner_vout): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT owner_txid, owner_vout FROM tracked_name_states
+                 WHERE wallet_profile_id = 'p1' AND name = 'bidonly'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(owner_txid, None, "Zero-hash owner should not be recorded");
+        assert_eq!(owner_vout, None);
+
+        // A real (non-zero) owner hash should still be recorded.
+        let info_real = serde_json::json!({
+            "info": {
+                "name": "realowner",
+                "nameHash": "cafe1234",
+                "state": "CLOSED",
+                "height": 2000,
+                "owner": { "hash": "abc123", "index": 2 }
+            }
+        });
+        upsert_name_state(&conn, "p1", "realowner", &info_real).unwrap();
+
+        let (owner_txid, owner_vout): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT owner_txid, owner_vout FROM tracked_name_states
+                 WHERE wallet_profile_id = 'p1' AND name = 'realowner'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(owner_txid.as_deref(), Some("abc123"));
+        assert_eq!(owner_vout, Some(2));
     }
 
     #[test]

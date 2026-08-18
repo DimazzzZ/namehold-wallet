@@ -1663,10 +1663,23 @@ pub fn upsert_owned_name(
     Ok(())
 }
 
-/// Explorer-discovered owned names for a profile, shaped like the frontend
-/// `HsdName`. Unlike [`read_cached_names`] this is NOT gated on `tracked_utxos`
-/// (which only a node sync fills) — it returns the names whose current owner
-/// outpoint was recorded by node-free discovery (`owner_txid IS NOT NULL`).
+/// Owned names for a profile, shaped like the frontend `HsdName`, safe to
+/// serve whether or not a node sync has populated `tracked_utxos`.
+///
+/// Ownership is proved by EITHER of two signals:
+///
+/// * `owner_address IS NOT NULL` — the row was written by the
+///   explorer-verified path (`upsert_owned_name`), which is reached only after
+///   `resolve_owner_via_history` confirmed the outpoint pays a wallet address.
+/// * A matching UNSPENT wallet `name_control` UTXO exists in `tracked_utxos` —
+///   the same rule `read_cached_names` enforces for node-synced wallets.
+///
+/// The node-discovery path (`upsert_name_state`) also stamps `owner_txid`
+/// (from `getnameinfo`) for every name the wallet holds any covenant coin
+/// on, INCLUDING bid `name_lockup` coins whose covenant name hash matches a
+/// name someone else owns. Those rows have `owner_address = NULL` and no
+/// wallet `name_control` UTXO, so this gate correctly excludes them —
+/// closing the "bid-only names leak into Owned Names" bug.
 ///
 /// Also extracts `registered` and `expired` from the persisted `raw_json`
 /// when available, so the frontend has accurate registration-status metadata
@@ -1676,9 +1689,43 @@ pub fn read_owned_names_explorer(
     profile_id: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
     let mut stmt = conn.prepare(
+        // A name is "owned" only when its recorded owner outpoint is real AND
+        // provably belongs to the wallet. Two write paths populate owner_txid:
+        //
+        //   1. The explorer-verified path (`upsert_owned_name`) is reached only
+        //      after `resolve_owner_via_history` confirmed `owned_by_wallet`,
+        //      and it ALWAYS stores a non-null `owner_address`. Those rows are
+        //      trusted directly (a node sync may never have filled
+        //      `tracked_utxos`, which is the whole reason this explorer read
+        //      exists).
+        //
+        //   2. The node-discovery path (`upsert_name_state`) copies the
+        //      on-chain `owner.hash` from `getnameinfo` for EVERY name the
+        //      wallet holds any covenant coin on — including BID `name_lockup`
+        //      coins — WITHOUT checking wallet ownership, and leaves
+        //      `owner_address` NULL. A name the wallet only bid on therefore
+        //      leaks in through this path. For these rows we require a matching
+        //      UNSPENT wallet `name_control` UTXO (the actual owner coin, never
+        //      a bid lockup), mirroring `read_cached_names`.
+        //
+        // Either way we reject the empty / all-zeros (hsd ZERO_HASH) owner hash.
         "SELECT name, state, height, renewal_height, owner_txid, owner_vout, raw_json, owner_address
          FROM tracked_name_states
-         WHERE wallet_profile_id = ?1 AND owner_txid IS NOT NULL
+         WHERE wallet_profile_id = ?1
+           AND owner_txid IS NOT NULL
+           AND owner_txid <> ''
+           AND owner_txid <> '0000000000000000000000000000000000000000000000000000000000000000'
+           AND (
+               owner_address IS NOT NULL
+               OR EXISTS (
+                   SELECT 1 FROM tracked_utxos u
+                   WHERE u.wallet_profile_id = tracked_name_states.wallet_profile_id
+                     AND u.txid = tracked_name_states.owner_txid
+                     AND u.vout = tracked_name_states.owner_vout
+                     AND u.spent_by_txid IS NULL
+                     AND u.spend_class = 'name_control'
+               )
+           )
          ORDER BY name",
     )?;
     let rows = stmt.query_map(params![profile_id], |row| {
@@ -2519,6 +2566,25 @@ mod noncustodial_query_tests {
         .unwrap();
     }
 
+    /// Seed an unspent wallet `name_control` UTXO (the owner coin) at the given
+    /// outpoint, so `read_owned_names_explorer`'s ownership gate is satisfied.
+    fn seed_name_control_utxo(
+        conn: &Connection,
+        profile_id: &str,
+        txid: &str,
+        vout: i64,
+        address: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+             VALUES (?1, ?2, ?3, ?4, '00', 1000, 6, NULL, 'name_control', NULL)",
+            params![txid, vout, profile_id, address],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn profile_crud_and_active_selection() {
         let conn = db();
@@ -3249,6 +3315,9 @@ mod noncustodial_query_tests {
             bids: None,
         };
         upsert_owned_name(&conn, "p1", &name, "txid1", 0, "rs1qaddr1").unwrap();
+        // A name is considered owned only when the recorded owner outpoint is
+        // an unspent wallet `name_control` UTXO. Seed the matching coin.
+        seed_name_control_utxo(&conn, "p1", "txid1", 0, "rs1qaddr1");
 
         let names = read_owned_names_explorer(&conn, "p1").unwrap();
         assert_eq!(names.len(), 1);
@@ -3274,6 +3343,7 @@ mod noncustodial_query_tests {
             bids: None,
         };
         upsert_owned_name(&conn, "p1", &name2, "txid2", 1, "rs1qaddr2").unwrap();
+        seed_name_control_utxo(&conn, "p1", "txid2", 1, "rs1qaddr2");
         let names2 = read_owned_names_explorer(&conn, "p1").unwrap();
         assert_eq!(names2.len(), 1);
         assert_eq!(names2[0]["owner"]["hash"], "txid2");
@@ -3301,6 +3371,7 @@ mod noncustodial_query_tests {
             bids: None,
         };
         upsert_owned_name(&conn, "p1", &name, "txid1", 0, "rs1qoriginal").unwrap();
+        seed_name_control_utxo(&conn, "p1", "txid1", 0, "rs1qoriginal");
 
         let names = read_owned_names_explorer(&conn, "p1").unwrap();
         assert_eq!(names[0]["owner_address"], "rs1qoriginal");
@@ -3312,6 +3383,77 @@ mod noncustodial_query_tests {
         let names_after = read_owned_names_explorer(&conn, "p1").unwrap();
         assert_eq!(names_after.len(), 1);
         assert_eq!(names_after[0]["owner_address"], "rs1qupdated");
+    }
+
+    #[test]
+    fn read_owned_names_explorer_excludes_bid_only_names() {
+        // Regression test for the batch-bid owned-names leak:
+        // `read_owned_names_explorer` should only return names whose recorded
+        // owner outpoint is an unspent wallet `name_control` UTXO (the actual
+        // owner coin). A BID places funds in a `name_lockup` coin, and node
+        // discovery stamps the on-chain owner.hash (which is NOT the wallet's
+        // owner coin) into tracked_name_states.owner_txid. Without the
+        // ownership gate, a name the wallet only bid on leaks into "Owned Names".
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // Name A: actually owned. Insert a name_control UTXO at ("txid_owned", 0).
+        let name_a = crate::hsd::types::HsdName {
+            name: "owned.name".into(),
+            name_hash: Some("hash_a".into()),
+            state: Some("CLOSED".into()),
+            height: Some(100),
+            renewal: Some(200),
+            owner: None,
+            value: None,
+            highest: None,
+            registered: None,
+            expired: None,
+            stats: None,
+            transfer: None,
+            revoked: None,
+            bids: None,
+        };
+        upsert_owned_name(&conn, "p1", &name_a, "txid_owned", 0, "rs1qowned").unwrap();
+        seed_name_control_utxo(&conn, "p1", "txid_owned", 0, "rs1qowned");
+
+        // Name B: bid-only. Insert a name_lockup UTXO at ("txid_bid", 0)
+        // (the BID coin), then upsert the name with owner_txid = "txid_bid".
+        // This simulates what happens when node discovery processes a BID coin:
+        // the wallet holds the name_lockup UTXO, but the on-chain owner is
+        // someone else's outpoint (not in tracked_utxos).
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+             VALUES ('txid_bid', 0, 'p1', 'rs1qbidder', '00', 500, 3, NULL, 'name_lockup', NULL)",
+            [],
+        )
+        .unwrap();
+        // Simulate what upsert_name_state does: record the on-chain owner
+        // (which is NOT the wallet's owner coin, but some other address's coin).
+        let bid_name_info = serde_json::json!({
+            "info": {
+                "name": "bid.name",
+                "nameHash": "hash_b",
+                "state": "BIDDING",
+                "height": 100,
+                "owner": {
+                    "hash": "txid_other_owner",
+                    "index": 0
+                }
+            }
+        });
+        crate::noncustodial::sync::upsert_name_state(&conn, "p1", "bid.name", &bid_name_info)
+            .unwrap();
+
+        // Call read_owned_names_explorer: should return ONLY name_a (owned),
+        // NOT name_b (bid-only). The gate requires a matching unspent
+        // name_control UTXO, which bid.name doesn't have.
+        let names = read_owned_names_explorer(&conn, "p1").unwrap();
+        assert_eq!(names.len(), 1, "Should return only the actually-owned name");
+        assert_eq!(names[0]["name"], "owned.name");
+        assert_eq!(names[0]["owner"]["hash"], "txid_owned");
     }
 
     #[test]

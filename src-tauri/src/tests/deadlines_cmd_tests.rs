@@ -78,6 +78,16 @@ fn seed_owned_name_near_renewal(
         rusqlite::params![profile_id, name, renewal_height],
     )
     .unwrap();
+    // Seed a matching unspent `name_control` UTXO so the name passes the
+    // ownership gate in `read_owned_names_explorer`.
+    conn.execute(
+        "INSERT OR IGNORE INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+         VALUES ('deadbeef', 0, ?1, 'rs1qtest', '00', 1000, 6, NULL, 'name_control', NULL)",
+        rusqlite::params![profile_id],
+    )
+    .unwrap();
 }
 
 #[tokio::test]
