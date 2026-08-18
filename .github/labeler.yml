@@ -1,0 +1,102 @@
+# Path-based auto-labeling for pull requests.
+# Consumed by actions/labeler (see .github/workflows/labeler.yml).
+# Applies `domain:` labels based on which files a PR touches. Mirrors the
+# module -> domain mapping in .mimocode/docs/triage-labels.md.
+#
+# Note: `type:` / `priority:` / triage labels are NOT auto-applied — those are
+# judgement calls left to the author / triager.
+
+"domain: wallet":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src-tauri/src/commands/assets.rs"
+          - "src-tauri/src/commands/tx.rs"
+          - "src-tauri/src/noncustodial/{send,tx,hd,derivation,address}.rs"
+          - "src/components/{WalletManager,WalletView,AddWalletForm,UnlockButton}.tsx"
+          - "src/queries/{wallet,assets}.ts"
+
+"domain: names":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src-tauri/src/commands/{names,bids,batches,paid_swaps,watchlist,deadlines,watched_states}.rs"
+          - "src-tauri/src/noncustodial/{names,bids,covenants,actions}.rs"
+          - "src/components/{AuctionsView,NameActionsModal,NameInfoModal,BatchBidModal,BatchConfirmModal,Watchlist,WatchlistToggle}.tsx"
+          - "src/components/name-actions/**"
+          - "src/queries/batches.ts"
+          - "src/lib/auction.ts"
+
+"domain: dns":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src-tauri/src/noncustodial/resource.rs"
+          - "src/lib/dnsRecords.ts"
+          - "src/components/name-actions/DnsRecordsEditor.tsx"
+
+"domain: namebase":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src-tauri/src/namebase/**"
+          - "src-tauri/src/commands/{namebase,namebase_history}.rs"
+          - "src-tauri/src/noncustodial/cookie_vault.rs"
+          - "src-tauri/src/db/namebase_history.rs"
+          - "src/components/{MigrationWorkspace,NamebaseDashboard,NamebaseHistoryImport}.tsx"
+          - "src/queries/namebase.ts"
+          - "src/lib/namebase-to-action-row.ts"
+
+"domain: node":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src-tauri/src/hsd/**"
+          - "src-tauri/src/commands/{node,chain_scan,sync_spv}.rs"
+          - "src-tauri/src/noncustodial/{rpc,network}.rs"
+          - "src/queries/node.ts"
+
+"domain: sync":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src-tauri/src/daemon/**"
+          - "src-tauri/src/bin/namehold-syncd.rs"
+          - "src-tauri/src/commands/{sync,daemon_ctl,tray}.rs"
+          - "src-tauri/src/db/sync_lock.rs"
+          - "src-tauri/src/noncustodial/sync.rs"
+          - "src/queries/{sync,autoSync}.ts"
+          - "src/stores/syncTrigger.ts"
+
+"domain: security":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/secure/**"
+          - "secure.html"
+          - "src-tauri/src/noncustodial/{vault,session,message}.rs"
+          - "src-tauri/src/commands/{secure_prompt,secure_wallet}.rs"
+          - "src-tauri/src/security.rs"
+          - "src-tauri/capabilities/secure.json"
+          - "scripts/lint-secure-imports.mjs"
+
+"domain: ui":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/components/ui/**"
+          - "src/components/{Layout,Onboarding,Settings,AboutPage}.tsx"
+          - "src/stores/ui.ts"
+          - "src/hooks/**"
+          - "src/app.css"
+
+"domain: infra":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "src-tauri/build.rs"
+          - "src-tauri/build-sidecar.*"
+          - "src-tauri/sql/**"
+          - "src-tauri/src/commands/updates.rs"
+          - "src-tauri/src/db/migrations.rs"
+          - "package.json"
+          - "pnpm-lock.yaml"
+          - "src-tauri/Cargo.toml"
+          - "src-tauri/Cargo.lock"
+
+"type: docs":
+  - changed-files:
+      - all-globs-to-all-files:
+          - "**/*.md"
