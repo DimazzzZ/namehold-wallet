@@ -99,6 +99,11 @@ pub(crate) struct NameState {
     pub(crate) renewals: u32,
     pub(crate) claimed: u32,
     pub(crate) weak: bool,
+    /// On-chain auction phase (e.g. "BIDDING", "OPENING", "REVEAL", "CLOSED").
+    /// Populated from `getnameinfo.info.state`. Empty string when the node
+    /// returns null / no state field. Uppercased for case-insensitive matching
+    /// against consensus phase strings.
+    pub(crate) phase: String,
 }
 
 pub(crate) async fn fetch_name_state(
@@ -122,6 +127,11 @@ pub(crate) async fn fetch_name_state(
         renewals: geti("renewals").unwrap_or(0) as u32,
         claimed: geti("claimed").unwrap_or(0) as u32,
         weak: info.get("weak").and_then(|x| x.as_bool()).unwrap_or(false),
+        phase: info
+            .get("state")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_uppercase(),
     })
 }
 
@@ -1551,6 +1561,25 @@ pub async fn build_batch_bid_draft(
             raw,
             ns,
         });
+    }
+
+    // Phase check: consensus only accepts a `bid` covenant while the auction
+    // is in BIDDING (or the immediately-preceding OPENING window that the UI's
+    // `is_bidding_compatible` check also accepts — see `names.rs` `derive_...`
+    // capability logic). We enforce it here, BEFORE the DB critical section,
+    // so no bid_commitments row or draft is ever persisted for an un-biddable
+    // name — even when the UI is bypassed (the modal's own preflight is
+    // advisory). A single ineligible name aborts the entire batch: batch-bid
+    // is defined as all-or-nothing (see the fn doc-comment above).
+    for spec in &name_specs {
+        let phase = spec.ns.phase.as_str();
+        if phase != "BIDDING" && phase != "OPENING" {
+            let shown = if phase.is_empty() { "AVAILABLE" } else { phase };
+            return Err(AppError::InvalidInput(format!(
+                "'{}' is not open for bidding (phase: {})",
+                spec.name, shown
+            )));
+        }
     }
 
     // --- Atomic section: multiplicity guard + all commitment/draft writes.
