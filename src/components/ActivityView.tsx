@@ -301,6 +301,7 @@ export function ActivityRow({
   onBlockClick: (height: number) => void;
   onTxClick: (txid: string) => void;
 }) {
+  const [batchExpanded, setBatchExpanded] = useState(false);
   const meta = ACTION_META[row.action] ?? FALLBACK_META;
   const timeStr = row.sortTs > 0
     ? formatDate(new Date(row.sortTs * 1000).toISOString())
@@ -341,26 +342,34 @@ export function ActivityRow({
       </td>
       <td className="py-1 pr-4 text-xs font-mono">
         {row.nameList && row.nameList.length > 1 ? (
-          // Batch action: render composite label as plain text + list of real names
-          <div className="space-y-1">
-            <div className="text-gray-600 italic">
+          // Batch action: collapsed summary with expand-on-click
+          <div>
+            <button
+              type="button"
+              className="text-gray-600 hover:text-gray-900 hover:underline cursor-pointer text-left"
+              onClick={() => setBatchExpanded(!batchExpanded)}
+              title={batchExpanded ? "Collapse" : "Expand"}
+              data-testid="activity-batch-summary-toggle"
+            >
               .{displayName(row.name ?? "")}
-            </div>
-            <ul className="text-xs space-y-0.5">
-              {row.nameList.map((n) => (
-                <li key={n}>
-                  <button
-                    type="button"
-                    className={linkClass}
-                    onClick={() => onNameClick(n)}
-                    title="View name info"
-                    data-testid="activity-name-info-link"
-                  >
-                    .{displayName(n)}
-                  </button>
-                </li>
-              ))}
-            </ul>
+            </button>
+            {batchExpanded && (
+              <ul className="text-xs space-y-0.5 mt-1">
+                {row.nameList.map((n) => (
+                  <li key={n}>
+                    <button
+                      type="button"
+                      className={linkClass}
+                      onClick={() => onNameClick(n)}
+                      title="View name info"
+                      data-testid="activity-name-info-link"
+                    >
+                      .{displayName(n)}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         ) : row.name ? (
           <button

@@ -338,9 +338,8 @@ describe("ActivityView — canonical table design", () => {
   it("batch draft row: composite label is non-clickable; individual names are reachable via safe links", async () => {
     // A batch-bid draft with 2 names. Backend persists the synthetic label
     // "js + 1 more" as `name`, and the true list as `nameList`. The activity
-    // row MUST render the composite label as plain text (never a clickable
-    // name-info link that would open a broken NameInfoModal / explorer URL)
-    // and expose the individual names as real, working links instead.
+    // row shows the composite as a collapsed toggle; clicking expands into
+    // clickable individual names, and clicking one opens NameInfoModal.
     invokeMock.mockImplementation((cmd: string) => {
       switch (cmd) {
         case "list_wallet_profiles":
@@ -379,7 +378,22 @@ describe("ActivityView — canonical table design", () => {
     });
     render(<ActivityView />, { wrapper: wrapper() });
 
-    // Individual name links MUST be present as real buttons.
+    // Composite label renders as a toggle button (not a name-info link).
+    const summaryToggle = await screen.findByTestId("activity-batch-summary-toggle");
+    expect(summaryToggle.textContent).toContain("+ 1 more");
+
+    // Individual names MUST NOT be visible by default (collapsed).
+    expect(
+      screen.queryByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".js"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".c"),
+    ).not.toBeInTheDocument();
+
+    // Click the summary to expand.
+    fireEvent.click(summaryToggle);
+
+    // Individual name links MUST now be visible as real buttons.
     await waitFor(() =>
       expect(
         screen.getByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".js"),
@@ -389,12 +403,10 @@ describe("ActivityView — canonical table design", () => {
       screen.getByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".c"),
     ).toBeInTheDocument();
 
-    // The composite label MUST NOT be a clickable button. It's OK for the
-    // composite text to render (as italic plain text for context), but not
-    // as a clickable info link.
-    const compositeMatches = screen.queryAllByText(
-      (_, el) => el?.tagName === "BUTTON" && (el.textContent ?? "").includes("+ 1 more"),
-    );
-    expect(compositeMatches).toHaveLength(0);
+    // The composite toggle itself never routes through onNameClick — it
+    // has no data-testid="activity-name-info-link". Only the expanded
+    // per-name buttons do.
+    const infoLinks = screen.getAllByTestId("activity-name-info-link");
+    expect(infoLinks).toHaveLength(2);
   });
 });
