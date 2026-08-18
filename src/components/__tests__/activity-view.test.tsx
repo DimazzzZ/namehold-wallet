@@ -334,4 +334,67 @@ describe("ActivityView — canonical table design", () => {
     expect(tables.length).toBe(1);
     assertCanonicalTable(tables[0] as HTMLTableElement, { name: "Activity" });
   });
+
+  it("batch draft row: composite label is non-clickable; individual names are reachable via safe links", async () => {
+    // A batch-bid draft with 2 names. Backend persists the synthetic label
+    // "js + 1 more" as `name`, and the true list as `nameList`. The activity
+    // row MUST render the composite label as plain text (never a clickable
+    // name-info link that would open a broken NameInfoModal / explorer URL)
+    // and expose the individual names as real, working links instead.
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "read_action_history":
+          return Promise.resolve([]);
+        case "list_tx_drafts":
+          return Promise.resolve([
+            {
+              id: "draft-batch-1",
+              walletProfileId: "p1",
+              action: "batch-bid",
+              status: "draft",
+              summary: {
+                action: "batch-bid",
+                sendTotalDoos: 0,
+                feeDoos: 5_000,
+                changeDoos: 0,
+                inputTotalDoos: 0,
+                numInputs: 1,
+                recipientAddress: null,
+                txid: null,
+                warnings: [],
+                name: "js + 1 more",
+                nameList: ["js", "c"],
+              },
+              errorMessage: null,
+              txid: null,
+              confirmationHeight: null,
+              createdAt: "2026-08-14 12:00:00",
+            },
+          ]);
+        default:
+          return Promise.resolve(null);
+      }
+    });
+    render(<ActivityView />, { wrapper: wrapper() });
+
+    // Individual name links MUST be present as real buttons.
+    await waitFor(() =>
+      expect(
+        screen.getByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".js"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".c"),
+    ).toBeInTheDocument();
+
+    // The composite label MUST NOT be a clickable button. It's OK for the
+    // composite text to render (as italic plain text for context), but not
+    // as a clickable info link.
+    const compositeMatches = screen.queryAllByText(
+      (_, el) => el?.tagName === "BUTTON" && (el.textContent ?? "").includes("+ 1 more"),
+    );
+    expect(compositeMatches).toHaveLength(0);
+  });
 });

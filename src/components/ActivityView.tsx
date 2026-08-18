@@ -340,7 +340,29 @@ export function ActivityRow({
         <Badge variant={meta.variant}>{meta.label}</Badge>
       </td>
       <td className="py-1 pr-4 text-xs font-mono">
-        {row.name ? (
+        {row.nameList && row.nameList.length > 1 ? (
+          // Batch action: render composite label as plain text + list of real names
+          <div className="space-y-1">
+            <div className="text-gray-600 italic">
+              .{displayName(row.name ?? "")}
+            </div>
+            <ul className="text-xs space-y-0.5">
+              {row.nameList.map((n) => (
+                <li key={n}>
+                  <button
+                    type="button"
+                    className={linkClass}
+                    onClick={() => onNameClick(n)}
+                    title="View name info"
+                    data-testid="activity-name-info-link"
+                  >
+                    .{displayName(n)}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : row.name ? (
           <button
             type="button"
             className={linkClass}

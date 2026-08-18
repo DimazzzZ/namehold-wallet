@@ -24,6 +24,13 @@ export interface MergedRow {
   action: string;
   name: string | null;
   /**
+   * For batch actions (batch-bid, batch-renew, etc.), the real list of
+   * individual names. When non-null, `name` is a synthetic composite label
+   * (e.g. "js + 1 more") that MUST NOT be treated as a real name for
+   * info-modal or explorer-link purposes.
+   */
+  nameList: string[] | null;
+  /**
    * Net external flow in doos (signed: negative = outflow, positive = inflow).
    * Matches ActionRow.valueDoos sign convention. Self-homed covenants = 0.
    */
@@ -108,6 +115,7 @@ export function mergeActivity(
       txid: row.txid,
       action: row.action,
       name: row.name ?? null,
+      nameList: draft?.summary?.nameList ?? null,
       valueDoos: row.valueDoos,
       direction: row.direction,
       feeDoos: draft?.summary?.feeDoos ?? null,
@@ -151,6 +159,7 @@ function draftToMergedRow(d: TxDraftSummary): MergedRow {
     txid: d.txid ?? null,
     action: d.action,
     name: summary?.name ?? null,
+    nameList: summary?.nameList ?? null,
     // Negate: netSpendDoos is a positive magnitude; ActionRow convention is
     // negative for outflow.
     valueDoos: direction === "send" ? -spend : 0,

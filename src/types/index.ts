@@ -390,6 +390,11 @@ export interface TxSummary {
   /** The name a name-covenant action (open/bid/reveal/…) applies to. Written
    *  by the backend for name-action drafts; absent for plain sends. */
   name?: string | null;
+  /** Full list of names when this draft covers more than one (batch-bid,
+   *  batch-renew, etc.). Present only for batch actions; `name` in that
+   *  case is a composite display label like "alpha + 1 more" that the UI
+   *  MUST NOT treat as a real name — see `MergedRow.nameList`. */
+  nameList?: string[] | null;
 }
 
 export interface TxDraftSummary {

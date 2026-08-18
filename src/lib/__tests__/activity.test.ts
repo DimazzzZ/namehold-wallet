@@ -49,6 +49,7 @@ describe("mergeActivity", () => {
       txid: "aabbccdd",
       action: "send",
       name: null,
+      nameList: null,
       valueDoos: -100_000_000,
       nameValueDoos: null,
       direction: "send",
