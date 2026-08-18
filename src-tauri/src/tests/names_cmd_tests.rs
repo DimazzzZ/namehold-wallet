@@ -2848,3 +2848,88 @@ async fn capabilities_reflect_pending_open_disables_can_open_and_waits_for_biddi
         "task state should reuse WaitingForBidding for a pending open, per the Task 1 brief"
     );
 }
+
+/// Batch-bid phase validation: `build_batch_bid_draft` must reject any name
+/// whose phase is not BIDDING or OPENING, and MUST NOT persist any bid
+/// commitment or draft when the batch is rejected (all-or-nothing atomicity).
+#[tokio::test]
+async fn build_batch_bid_draft_rejects_non_biddable_phase() {
+    let mut server = mockito::Server::new_async().await;
+    // Mock two names: one BIDDING (biddable), one AVAILABLE (not biddable).
+    let _blockchain = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    let _biddable = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex(r#"getnameinfo.*biddable"#.into()))
+        .with_body(r#"{"result":{"info":{"name":"biddable","state":"BIDDING","stats":{}}},"error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    let _unbiddable = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex(r#"getnameinfo.*unbiddable"#.into()))
+        .with_body(r#"{"result":{"info":{"name":"unbiddable","state":"AVAILABLE","stats":{}}},"error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"11".repeat(32));
+        id
+    };
+    let app = mock_app_with(state);
+
+    // Attempt batch bid on one biddable + one non-biddable name.
+    let err = names::build_batch_bid_draft(
+        app.state(),
+        vec!["biddable".into(), "unbiddable".into()],
+        1000,
+        2000,
+        None,
+    )
+    .await
+    .expect_err("batch bid must be rejected when any name is not open for bidding");
+
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("not open for bidding") && msg.contains("AVAILABLE"),
+        "error should explain the phase rejection, got: {msg}"
+    );
+
+    // Verify NO bid commitments were persisted (all-or-nothing atomicity).
+    let state: tauri::State<crate::AppState> = app.state();
+    let conn = state.db.lock().unwrap();
+    let commitment_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM bid_commitments WHERE wallet_profile_id = ?1",
+            rusqlite::params![&profile_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    assert_eq!(
+        commitment_count, 0,
+        "no bid commitments should be persisted when the batch is rejected"
+    );
+
+    // Verify NO draft was persisted.
+    let draft_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM wallet_tx_drafts WHERE wallet_profile_id = ?1 AND action = 'batch-bid'",
+            rusqlite::params![&profile_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    assert_eq!(
+        draft_count, 0,
+        "no batch-bid draft should be persisted when the batch is rejected"
+    );
+}

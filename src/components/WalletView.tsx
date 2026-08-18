@@ -1222,7 +1222,8 @@ export function WalletView() {
                   <th className="py-1 pr-4 text-right">Fee</th>
                   <th className="py-1 pr-4">Status</th>
                   <th className="py-1 pr-4">Block</th>
-                  <th className="py-1">Txid</th>
+                  <th className="py-1 pr-4">Txid</th>
+                  <th className="py-1">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -1235,6 +1236,8 @@ export function WalletView() {
                       onNameClick={setInfoName}
                       onBlockClick={setInfoBlock}
                       onTxClick={setInfoTx}
+                      enableDraftActions
+                      profileId={profile?.id ?? null}
                     />
                   ))}
               </tbody>

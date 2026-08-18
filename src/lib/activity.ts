@@ -21,6 +21,8 @@ export interface MergedRow {
   /** Stable key: txid when known, else `draft:${id}`. */
   key: string;
   txid: string | null;
+  /** Draft ID when this row has a local draft record; null for node-only rows. */
+  draftId: string | null;
   action: string;
   name: string | null;
   /**
@@ -113,6 +115,7 @@ export function mergeActivity(
     merged.push({
       key: row.txid,
       txid: row.txid,
+      draftId: draft?.id ?? null,
       action: row.action,
       name: row.name ?? null,
       nameList: draft?.summary?.nameList ?? null,
@@ -157,6 +160,7 @@ function draftToMergedRow(d: TxDraftSummary): MergedRow {
   return {
     key: d.txid ?? `draft:${d.id}`,
     txid: d.txid ?? null,
+    draftId: d.id,
     action: d.action,
     name: summary?.name ?? null,
     nameList: summary?.nameList ?? null,

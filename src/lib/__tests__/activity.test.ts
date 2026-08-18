@@ -47,6 +47,7 @@ describe("mergeActivity", () => {
     expect(merged[0]!).toEqual({
       key: "aabbccdd",
       txid: "aabbccdd",
+      draftId: "draft1",
       action: "send",
       name: null,
       nameList: null,

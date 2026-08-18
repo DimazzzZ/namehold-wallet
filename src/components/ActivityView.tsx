@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useActionHistory } from "../queries/read";
-import { useActiveProfile, useTxDrafts } from "../queries/wallet";
+import {
+  useActiveProfile,
+  useTxDrafts,
+  useSignerSession,
+  useExecuteDraft,
+  useDeleteTxDraft,
+} from "../queries/wallet";
 import { PageHeader } from "./ui/PageHeader";
 import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
@@ -9,6 +15,8 @@ import { Select } from "./ui/Select";
 import { formatHns, formatDate, amountTone } from "../lib/utils";
 import { displayName, nameMatches } from "../lib/idn";
 import { useQueryClient } from "@tanstack/react-query";
+import { useUiStore } from "../stores/ui";
+import { mapError, StagedError } from "../lib/errors";
 import { NameInfoModal } from "./NameInfoModal";
 import { BlockInfoModal } from "./BlockInfoModal";
 import { TxInfoModal } from "./TxInfoModal";
@@ -205,7 +213,8 @@ export function ActivityView() {
                   <th className="py-1 pr-4 text-right">Fee</th>
                   <th className="py-1 pr-4">Status</th>
                   <th className="py-1 pr-4">Block</th>
-                  <th className="py-1">Txid</th>
+                  <th className="py-1 pr-4">Txid</th>
+                  <th className="py-1">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -216,6 +225,8 @@ export function ActivityView() {
                   onNameClick={setInfoName}
                   onBlockClick={setInfoBlock}
                   onTxClick={setInfoTx}
+                  enableDraftActions
+                  profileId={profile?.id ?? null}
                 />
               ))}
               </tbody>
@@ -286,8 +297,34 @@ function statusBadge(status: string): {
   if (status === "failed") {
     return { variant: "error", label: "Failed" };
   }
-  // draft, signed, etc.
+// draft, signed, etc.
   return { variant: "default", label: status };
+}
+
+/**
+ * Which inline actions a draft row offers, keyed by its lifecycle status.
+ * Returns an empty array for non-actionable statuses (onchain / broadcasted /
+ * broadcast_pending / confirmed) — the backend `delete_tx_draft` also refuses
+ * broadcasted/confirmed/broadcast_pending, so we never offer Discard there.
+ *
+ * - "execute" runs unlock → sign → broadcast (labelled per status).
+ * - "discard" deletes the draft, freeing reserved coins.
+ */
+export function draftActionsForStatus(
+  status: MergedRow["status"],
+): { execute: "Sign & broadcast" | "Broadcast" | "Retry" | null; discard: boolean } {
+  switch (status) {
+    case "draft":
+      return { execute: "Sign & broadcast", discard: true };
+    case "signed":
+      return { execute: "Broadcast", discard: true };
+    case "failed":
+    case "dropped":
+      return { execute: "Retry", discard: true };
+    default:
+      // onchain / broadcasted / broadcast_pending / confirmed
+      return { execute: null, discard: false };
+  }
 }
 
 export function ActivityRow({
@@ -295,13 +332,65 @@ export function ActivityRow({
   onNameClick,
   onBlockClick,
   onTxClick,
+  enableDraftActions = false,
+  profileId = null,
 }: {
   row: MergedRow;
   onNameClick: (name: string) => void;
   onBlockClick: (height: number) => void;
   onTxClick: (txid: string) => void;
+  /** When true, render inline Sign/Broadcast/Retry/Discard buttons for
+   *  actionable draft rows. Requires a real draftId on the row. */
+  enableDraftActions?: boolean;
+  /** Active wallet profile id — needed to unlock the signer before signing. */
+  profileId?: string | null;
 }) {
   const [batchExpanded, setBatchExpanded] = useState(false);
+  const { data: signer } = useSignerSession();
+  const execDraft = useExecuteDraft();
+  const deleteDraft = useDeleteTxDraft();
+  const showToast = useUiStore((s) => s.showToast);
+  const [actionBusy, setActionBusy] = useState(false);
+
+  const unlocked = signer?.unlocked ?? false;
+  const draftActions = draftActionsForStatus(row.status);
+  const canAct = enableDraftActions && row.draftId != null;
+
+  const handleExecute = async () => {
+    if (!row.draftId || !profileId) return;
+    setActionBusy(true);
+    try {
+      const result = await execDraft.run(row.draftId, profileId, unlocked);
+      showToast(`Broadcast ${result.txid.slice(0, 12)}…`, "success");
+    } catch (e) {
+      const stage = e instanceof StagedError ? e.stage : undefined;
+      const prefix = stage === "broadcast" ? "Broadcast failed" : "Signing failed";
+      showToast(`${prefix}: ${mapError(e)}`, "error");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleDiscard = async () => {
+    if (!row.draftId) return;
+    if (
+      !window.confirm(
+        "Discard this draft? Any coins it reserved will be freed. This cannot be undone.",
+      )
+    ) {
+      return;
+    }
+    setActionBusy(true);
+    try {
+      await deleteDraft.mutateAsync(row.draftId);
+      showToast("Draft discarded", "success");
+    } catch (e) {
+      showToast(mapError(e), "error");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const meta = ACTION_META[row.action] ?? FALLBACK_META;
   const timeStr = row.sortTs > 0
     ? formatDate(new Date(row.sortTs * 1000).toISOString())
@@ -426,17 +515,46 @@ export function ActivityRow({
           </button>
         )}
       </td>
-      <td className="py-1 text-xs font-mono text-gray-500" title={row.txid ?? undefined}>
-        <button
-          type="button"
-          className="inline-block max-w-[140px] truncate align-bottom text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-          onClick={() => row.txid && onTxClick(row.txid)}
-          title="View transaction info"
-          data-testid="activity-tx-info-link"
-          disabled={!row.txid}
-        >
-          {row.txid ? `${row.txid.slice(0, 10)}…` : "—"}
-        </button>
+      <td className="py-1 pr-4 text-xs font-mono text-gray-500" title={row.txid ?? undefined}>
+        {row.txid ? (
+          <button
+            type="button"
+            className="inline-block max-w-[140px] truncate align-bottom text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+            onClick={() => onTxClick(row.txid!)}
+            title="View transaction info"
+            data-testid="activity-tx-info-link"
+          >
+            {row.txid.slice(0, 10)}…
+          </button>
+        ) : (
+          <span className="text-gray-400">—</span>
+        )}
+      </td>
+      <td className="py-1 pr-2 text-xs whitespace-nowrap">
+        {canAct && draftActions.execute && (
+          <button
+            type="button"
+            className="px-2 py-0.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={handleExecute}
+            disabled={actionBusy || execDraft.pending}
+            title={draftActions.execute}
+            data-testid="activity-draft-execute"
+          >
+            {draftActions.execute}
+          </button>
+        )}
+        {canAct && draftActions.discard && (
+          <button
+            type="button"
+            className="ml-1 px-2 py-0.5 bg-red-50 text-red-600 hover:bg-red-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={handleDiscard}
+            disabled={actionBusy || deleteDraft.isPending}
+            title="Discard draft"
+            data-testid="activity-draft-discard"
+          >
+            Discard
+          </button>
+        )}
       </td>
     </tr>
   );

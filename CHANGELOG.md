@@ -3,6 +3,24 @@
 ## [Unreleased]
 
 ### Fixed
+- **Inline draft actions in Activity table.** Draft rows (unsigned, failed,
+  signed-but-unbroadcast) now show contextual "Sign & broadcast" / "Broadcast"
+  / "Retry" and "Discard" buttons directly in the row, so you can act on
+  pending drafts without navigating away. The Txid cell no longer renders a
+  disabled button when there's no txid — it shows a plain dash instead.
+- **Actions column stays single-line.** The new Actions cell uses
+  `whitespace-nowrap` so buttons never wrap to a second line.
+
+### Added
+- `useDeleteTxDraft` mutation hook — lets the frontend discard a draft and
+  free its reserved coins.
+- `draftId` field on merged activity rows — enables the UI to target specific
+  drafts for sign/broadcast/discard without a lookup.
+- Rust integration test: `build_batch_bid_draft` rejects batches containing
+  any name not in BIDDING/OPENING phase and persists nothing (all-or-nothing
+  atomicity guard).
+
+### Fixed
 - **"Launch at login" no longer starts the wrong build.** If you'd ever
   enabled launch-at-login from a development build, macOS would keep
   starting that stale dev binary at login instead of the installed
