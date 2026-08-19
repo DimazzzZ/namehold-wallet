@@ -67,14 +67,26 @@ jobs:
       # mirror on GitHub-hosted runners (observed on run 32168132022: this step
       # hung 24+ min while the sibling rust-test job on a healthy runner passed
       # in 4m9s). Bound it and retry — mirror blips are transient.
+      # Each attempt is capped at 90s via `timeout(1)` so a hung TCP fetch
+      # returns a non-zero exit (124) and the loop moves on, instead of letting
+      # apt sit on a half-open connection for the entire step budget. The
+      # step-level `timeout-minutes: 5` is a backstop for pathological cases.
       - name: Refresh apt package index
         timeout-minutes: 5
         run: |
+          set +e
+          ok=0
           for i in 1 2 3; do
-            sudo apt-get update && break
+            sudo timeout 90 apt-get update
+            rc=$?
+            if [ $rc -eq 0 ]; then ok=1; break; fi
             echo "::warning::apt-get update failed (attempt $i) — retrying in 10s"
             sleep 10
           done
+          if [ $ok -ne 1 ]; then
+            echo "::error::apt-get update failed after 3 attempts (last rc=$rc)"
+            exit 1
+          fi
       - name: Install Tauri system dependencies
         uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9  # v1.6.3
         with:
@@ -149,14 +161,26 @@ jobs:
       # mirror on GitHub-hosted runners (observed on run 32168132022: the
       # sibling rust-lint job hung 24+ min on this exact step). Bound it and
       # retry — mirror blips are transient.
+      # Each attempt is capped at 90s via `timeout(1)` so a hung TCP fetch
+      # returns a non-zero exit (124) and the loop moves on, instead of letting
+      # apt sit on a half-open connection for the entire step budget. The
+      # step-level `timeout-minutes: 5` is a backstop for pathological cases.
       - name: Refresh apt package index
         timeout-minutes: 5
         run: |
+          set +e
+          ok=0
           for i in 1 2 3; do
-            sudo apt-get update && break
+            sudo timeout 90 apt-get update
+            rc=$?
+            if [ $rc -eq 0 ]; then ok=1; break; fi
             echo "::warning::apt-get update failed (attempt $i) — retrying in 10s"
             sleep 10
           done
+          if [ $ok -ne 1 ]; then
+            echo "::error::apt-get update failed after 3 attempts (last rc=$rc)"
+            exit 1
+          fi
       - name: Install Tauri system dependencies
         uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9  # v1.6.3
         with:
