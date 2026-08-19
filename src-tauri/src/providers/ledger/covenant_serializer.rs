@@ -83,13 +83,13 @@ pub(crate) fn write_covenant(out: &mut Vec<u8>, covenant_type: u8, items: &[Vec<
 pub fn write_name_marker(out: &mut Vec<u8>, name: &str) -> Result<(), AppError> {
     let bytes = name.as_bytes();
     if bytes.len() > 255 {
-        return Err(AppError::Device(format!(
+        return Err(AppError::Protocol(format!(
             "name too long for Ledger marker: {} bytes",
             bytes.len()
         )));
     }
     if !bytes.iter().all(|b| b.is_ascii()) {
-        return Err(AppError::Device(format!(
+        return Err(AppError::Protocol(format!(
             "name is not ASCII, cannot render on Ledger: {name:?}"
         )));
     }
@@ -160,5 +160,133 @@ mod tests {
     fn claim_is_unsupported() {
         assert!(!is_supported(1)); // COV_CLAIM
         assert!(is_supported(COV_OPEN));
+    }
+
+    /// Table-driven wire-form test: verify the exact serialized bytes for every
+    /// supported covenant type against hsd's `output.write(buf)` format:
+    /// `type(u8) | varint(itemCount) | (varint(len) | bytes)*`
+    #[test]
+    fn wire_form_all_covenant_types() {
+        // Each entry: (covenant_type, items, expected_prefix_bytes)
+        // We verify: type byte, item count, first item's varint+length.
+        let name_hash = vec![0xAAu8; 32];
+        let height = 0x0000_0064u32.to_le_bytes().to_vec(); // 4 bytes
+        let name_bytes = b"example".to_vec();
+        let nonce = vec![0xCCu8; 32];
+        let blind = vec![0xBBu8; 32];
+        let data = vec![0xFFu8; 20];
+        let block_hash = vec![0xDDu8; 32];
+        let version = vec![0x00u8];
+        let addr = vec![0xEEu8; 20];
+        let flags = vec![0x00u8];
+        let claim_hash = vec![0x11u8; 32];
+        let renewal_count = 0x0000_0001u32.to_le_bytes().to_vec();
+
+        let cases: Vec<(u8, Vec<Vec<u8>>, usize)> = vec![
+            // (type, items, expected_item_count)
+            (
+                COV_OPEN,
+                vec![
+                    name_hash.clone(),
+                    height.clone(),
+                    name_bytes.clone(),
+                    nonce.clone(),
+                ],
+                4,
+            ),
+            (
+                COV_BID,
+                vec![
+                    name_hash.clone(),
+                    height.clone(),
+                    name_bytes.clone(),
+                    blind.clone(),
+                ],
+                4,
+            ),
+            (
+                COV_REVEAL,
+                vec![name_hash.clone(), height.clone(), nonce.clone()],
+                3,
+            ),
+            (COV_REDEEM, vec![name_hash.clone(), height.clone()], 2),
+            (
+                COV_REGISTER,
+                vec![name_hash.clone(), height.clone(), data.clone()],
+                3,
+            ),
+            (
+                COV_UPDATE,
+                vec![name_hash.clone(), height.clone(), data.clone()],
+                3,
+            ),
+            (
+                COV_RENEW,
+                vec![name_hash.clone(), height.clone(), block_hash.clone()],
+                3,
+            ),
+            (
+                COV_TRANSFER,
+                vec![
+                    name_hash.clone(),
+                    height.clone(),
+                    version.clone(),
+                    addr.clone(),
+                ],
+                4,
+            ),
+            (
+                COV_FINALIZE,
+                vec![
+                    name_hash.clone(),
+                    height.clone(),
+                    name_bytes.clone(),
+                    flags.clone(),
+                    claim_hash.clone(),
+                    renewal_count.clone(),
+                    block_hash.clone(),
+                ],
+                7,
+            ),
+            (COV_REVOKE, vec![name_hash.clone(), height.clone()], 2),
+        ];
+
+        for (cov_type, items, expected_count) in &cases {
+            let mut out = Vec::new();
+            write_covenant(&mut out, *cov_type, items);
+
+            // Byte 0: covenant type
+            assert_eq!(out[0], *cov_type, "type mismatch for covenant {cov_type}");
+            // Byte 1: varint item count (all ≤ 252 so single byte)
+            assert_eq!(
+                out[1], *expected_count as u8,
+                "item count mismatch for covenant {cov_type}"
+            );
+            // Byte 2: first item length varint (nameHash is always 32 → 0x20)
+            assert_eq!(
+                out[2], 32,
+                "first item length mismatch for covenant {cov_type}"
+            );
+            // Bytes 3..35: first item body (nameHash)
+            assert_eq!(
+                &out[3..35],
+                &name_hash[..],
+                "first item body mismatch for covenant {cov_type}"
+            );
+
+            // Verify total serialized length matches the sum of all items + their varints.
+            let expected_len: usize = 1 // type
+                + 1 // varint(count)
+                + items.iter().map(|item| {
+                    let mut tmp = Vec::new();
+                    write_var_bytes(&mut tmp, item);
+                    tmp.len()
+                }).sum::<usize>();
+            assert_eq!(
+                out.len(),
+                expected_len,
+                "total length mismatch for covenant {cov_type}"
+            );
+        }
     }
 }

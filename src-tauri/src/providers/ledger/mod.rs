@@ -90,10 +90,7 @@ pub enum AnyHid {
 
 #[cfg(feature = "mock-ledger")]
 impl HidIo for AnyHid {
-    fn write_packet(
-        &mut self,
-        packet: &[u8; hid_transport::PACKET_SIZE],
-    ) -> Result<(), AppError> {
+    fn write_packet(&mut self, packet: &[u8; hid_transport::PACKET_SIZE]) -> Result<(), AppError> {
         match self {
             Self::Real(r) => r.write_packet(packet),
             Self::Sim(s) => s.write_packet(packet),
@@ -192,9 +189,9 @@ impl<T: HidIo> LedgerSigner<T> {
         )?;
         let body = self.transport.exchange_ok(&cmd)?;
         let parsed = apdu::parse_public_key(&body)?;
-        let chain_code = parsed.chain_code.ok_or_else(|| {
-            AppError::Device("device did not return an xpub chain code".into())
-        })?;
+        let chain_code = parsed
+            .chain_code
+            .ok_or_else(|| AppError::Device("device did not return an xpub chain code".into()))?;
         Ok((parsed.public_key, chain_code))
     }
 
@@ -215,7 +212,8 @@ impl<T: HidIo> LedgerSigner<T> {
             confirm,
             network_flag(network),
             /* with_xpub */ false,
-            /* with_address */ confirm, // show the address on-device only when confirming
+            /* with_address */
+            confirm, // show the address on-device only when confirming
         )?;
         let body = self.transport.exchange_ok(&cmd)?;
         let parsed = apdu::parse_public_key(&body)?;
@@ -233,6 +231,55 @@ impl<T: HidIo> LedgerSigner<T> {
 pub fn account_path(network: Network, account: u32) -> [u32; 3] {
     let full = bip44_path(network, account, 0, 0);
     [full[0], full[1], full[2]]
+}
+
+/// Resolve human-readable names for a Ledger-signed covenant transaction.
+///
+/// The Ledger app requires an [`OutputName`](parse_mode::OutputName) marker
+/// for each of the 7 name-bearing covenant types (REVEAL/REDEEM/REGISTER/
+/// UPDATE/RENEW/TRANSFER/REVOKE) so it can display "example/" instead of a
+/// bare hash. We look up the human name by `nameHash` — always covenant
+/// item[0] — in the profile's `tracked_name_states` table.
+///
+/// # Error handling
+///
+/// - JSON parse errors surface as [`AppError::Json`] (caller is likely
+///   handing us a corrupted draft — refuse to sign rather than send a bogus
+///   plan to the device).
+/// - DB lookup errors surface as [`AppError::Db`]. Previously (H4 / M4)
+///   these were silently swallowed by `if let Ok(Some(..))`, which meant a
+///   transient sqlite hiccup would degrade into "device shows a bare hash"
+///   with no user warning. We now propagate them.
+/// - A name-bearing output whose nameHash is *not* in `tracked_name_states`
+///   is skipped (returns `Ok(None)` from `get_name_by_hash`) — this is
+///   legitimate: names get tracked on first sync, and a fresh import may
+///   temporarily lack an entry. The parse-mode builder will fail with a
+///   `Protocol` error when it needs a name it wasn't given, and that error
+///   is more informative than making this function fail.
+pub fn resolve_covenant_names(
+    conn: &rusqlite::Connection,
+    signing_inputs_json: &str,
+    profile_id: &str,
+) -> Result<Vec<(usize, String)>, AppError> {
+    use crate::providers::ledger::covenant_serializer::requires_name_marker;
+    let plan: crate::noncustodial::actions::DraftPlan =
+        serde_json::from_str(signing_inputs_json)?;
+    let mut names = Vec::new();
+    for (i, out) in plan.outputs.iter().enumerate() {
+        if !requires_name_marker(out.covenant_type) {
+            continue;
+        }
+        // nameHash is always covenant item[0].
+        let Some(hash_hex) = out.covenant_items_hex.first() else {
+            continue;
+        };
+        // Propagate DB errors — do not swallow. A missing row is fine
+        // (returns Ok(None)); a genuine failure surfaces as AppError::Db.
+        if let Some(name) = crate::db::queries::get_name_by_hash(conn, profile_id, hash_hex)? {
+            names.push((i, name));
+        }
+    }
+    Ok(names)
 }
 
 #[cfg(test)]
@@ -275,7 +322,14 @@ mod tests {
         };
         let mut signer = LedgerSigner::with_transport(Transport::new(hid));
         let v = signer.get_app_version().unwrap();
-        assert_eq!(v, AppVersion { major: 1, minor: 6, patch: 0 });
+        assert_eq!(
+            v,
+            AppVersion {
+                major: 1,
+                minor: 6,
+                patch: 0
+            }
+        );
         assert_eq!(v.to_string(), "1.6.0");
     }
 
@@ -285,5 +339,117 @@ mod tests {
         assert_eq!(p[0], 44 + 0x8000_0000);
         assert_eq!(p[1], 5353 + 0x8000_0000);
         assert_eq!(p[2], 0x8000_0000);
+    }
+
+    // --- M4: resolve_covenant_names behaviour ---
+
+    /// Minimal in-memory schema sufficient for `get_name_by_hash` — just the
+    /// one table it queries, without the FK to wallet_profiles (irrelevant to
+    /// the lookup path we're exercising).
+    fn name_states_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tracked_name_states (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 wallet_profile_id TEXT NOT NULL,
+                 name TEXT NOT NULL,
+                 name_hash_hex TEXT NOT NULL,
+                 state TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_name(conn: &rusqlite::Connection, profile: &str, hash_hex: &str, name: &str) {
+        conn.execute(
+            "INSERT INTO tracked_name_states (wallet_profile_id, name, name_hash_hex, state)
+             VALUES (?1, ?2, ?3, 'CLOSED')",
+            rusqlite::params![profile, name, hash_hex],
+        )
+        .unwrap();
+    }
+
+    /// Build a signing_inputs_json string for a plan with a single covenant
+    /// output of the given type, whose item[0] is `name_hash_hex`.
+    fn covenant_plan_json(covenant_type: u8, name_hash_hex: &str) -> String {
+        let plan = crate::noncustodial::actions::DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "main".into(),
+            inputs: vec![crate::noncustodial::actions::PlanInput {
+                txid: "aa".repeat(32),
+                vout: 0,
+                value: 100_000_000,
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+            }],
+            outputs: vec![crate::noncustodial::actions::PlanOutput {
+                value: 99_000_000,
+                address: "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx".into(),
+                covenant_type,
+                covenant_items_hex: vec![name_hash_hex.to_string()],
+            }],
+            change_output_index: None,
+        };
+        serde_json::to_string(&plan).unwrap()
+    }
+
+    #[test]
+    fn resolve_covenant_names_resolves_name_bearing_output() {
+        use crate::noncustodial::sync::COV_TRANSFER; // name-bearing
+        let conn = name_states_db();
+        let hash = "bb".repeat(32);
+        insert_name(&conn, "profile-1", &hash, "example");
+        let json = covenant_plan_json(COV_TRANSFER, &hash);
+
+        let names = resolve_covenant_names(&conn, &json, "profile-1").unwrap();
+        assert_eq!(names, vec![(0usize, "example".to_string())]);
+    }
+
+    #[test]
+    fn resolve_covenant_names_skips_non_name_bearing() {
+        // NONE is not a name-bearing covenant → no lookup, empty result.
+        let conn = name_states_db();
+        let json = covenant_plan_json(crate::noncustodial::sync::COV_NONE, &"bb".repeat(32));
+        let names = resolve_covenant_names(&conn, &json, "profile-1").unwrap();
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn resolve_covenant_names_skips_untracked_hash() {
+        // A name-bearing covenant whose hash isn't tracked yet → skipped, not
+        // an error (get_name_by_hash returns Ok(None)).
+        use crate::noncustodial::sync::COV_TRANSFER;
+        let conn = name_states_db();
+        let json = covenant_plan_json(COV_TRANSFER, &"cc".repeat(32));
+        let names = resolve_covenant_names(&conn, &json, "profile-1").unwrap();
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn resolve_covenant_names_propagates_json_error() {
+        let conn = name_states_db();
+        let err = resolve_covenant_names(&conn, "{ not valid json", "profile-1").unwrap_err();
+        assert!(
+            matches!(err, AppError::Json(_)),
+            "malformed draft JSON should surface as AppError::Json, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_covenant_names_propagates_db_error() {
+        // Drop the table so the query fails — the error must propagate (M4:
+        // previously an `if let Ok(..)` swallowed it into a silent skip).
+        let conn = name_states_db();
+        conn.execute_batch("DROP TABLE tracked_name_states;").unwrap();
+        let json = covenant_plan_json(crate::noncustodial::sync::COV_TRANSFER, &"bb".repeat(32));
+        let err = resolve_covenant_names(&conn, &json, "profile-1").unwrap_err();
+        assert!(
+            matches!(err, AppError::Db(_)),
+            "a DB failure must propagate as AppError::Db, got: {err:?}"
+        );
     }
 }

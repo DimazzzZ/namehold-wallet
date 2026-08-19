@@ -212,14 +212,18 @@ pub fn build_plan(
         covenant_type: primary.covenant.covenant_type,
         covenant_items_hex: primary.covenant.items.iter().map(hex::encode).collect(),
     }];
-    if change > 0 {
+    let change_output_index = if change > 0 {
+        let idx = plan_outputs.len();
         plan_outputs.push(PlanOutput {
             value: change,
             address: change_address.to_string(),
             covenant_type: 0,
             covenant_items_hex: Vec::new(),
         });
-    }
+        Some(idx)
+    } else {
+        None
+    };
 
     let plan = DraftPlan {
         version: 0,
@@ -228,7 +232,7 @@ pub fn build_plan(
         network: network.as_str().to_string(),
         inputs: plan_inputs,
         outputs: plan_outputs,
-        change_output_index: if change > 0 { Some(1) } else { None },
+        change_output_index,
     };
 
     // Materialize an unsigned tx for the preview hex + txid (txid is the
@@ -334,14 +338,18 @@ pub fn build_batch_plan(
             covenant_items_hex: primary.covenant.items.iter().map(hex::encode).collect(),
         });
     }
-    if change > 0 {
+    let change_output_index = if change > 0 {
+        let idx = plan_outputs.len();
         plan_outputs.push(PlanOutput {
             value: change,
             address: change_address.to_string(),
             covenant_type: 0,
             covenant_items_hex: Vec::new(),
         });
-    }
+        Some(idx)
+    } else {
+        None
+    };
 
     let plan = DraftPlan {
         version: 0,
@@ -350,7 +358,7 @@ pub fn build_batch_plan(
         network: network.as_str().to_string(),
         inputs: plan_inputs,
         outputs: plan_outputs,
-        change_output_index: if change > 0 { Some(1) } else { None },
+        change_output_index,
     };
     let tx = rebuild_unsigned(&plan, network)?;
     let unsigned_tx_hex = tx.to_hex();
@@ -456,14 +464,18 @@ pub fn build_finalize_with_payment_plan(
             covenant_items_hex: Vec::new(),
         },
     ];
-    if change > 0 {
+    let change_output_index = if change > 0 {
+        let idx = plan_outputs.len();
         plan_outputs.push(PlanOutput {
             value: change,
             address: change_address.to_string(),
             covenant_type: 0,
             covenant_items_hex: Vec::new(),
         });
-    }
+        Some(idx)
+    } else {
+        None
+    };
 
     let plan = DraftPlan {
         version: 0,
@@ -472,7 +484,7 @@ pub fn build_finalize_with_payment_plan(
         network: network.as_str().to_string(),
         inputs: plan_inputs,
         outputs: plan_outputs,
-        change_output_index: if change > 0 { Some(1) } else { None },
+        change_output_index,
     };
     let tx = rebuild_unsigned(&plan, network)?;
     let unsigned_tx_hex = tx.to_hex();

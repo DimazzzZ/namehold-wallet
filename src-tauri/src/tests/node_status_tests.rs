@@ -499,7 +499,10 @@ async fn synced_with_mismatched_network_returns_none() {
         Some("mainnet"),
     )
     .await;
-    assert_eq!(h, None, "regtest node must NOT be authoritative for mainnet wallet");
+    assert_eq!(
+        h, None,
+        "regtest node must NOT be authoritative for mainnet wallet"
+    );
 }
 
 #[tokio::test]
@@ -549,5 +552,9 @@ async fn synced_with_no_chain_in_response_skips_check() {
         Some("mainnet"),
     )
     .await;
-    assert_eq!(h, Some(100), "missing chain in response → conservatively allow");
+    assert_eq!(
+        h,
+        Some(100),
+        "missing chain in response → conservatively allow"
+    );
 }

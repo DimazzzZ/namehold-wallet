@@ -172,7 +172,12 @@ pub fn parse_public_key(body: &[u8]) -> Result<PublicKeyResponse, AppError> {
 
     let fp_len = cur.u8()? as usize;
     let parent_fingerprint = if fp_len == 4 {
-        Some(u32::from_be_bytes([cur.u8()?, cur.u8()?, cur.u8()?, cur.u8()?]))
+        Some(u32::from_be_bytes([
+            cur.u8()?,
+            cur.u8()?,
+            cur.u8()?,
+            cur.u8()?,
+        ]))
     } else {
         if fp_len != 0 {
             cur.take(fp_len)?;
@@ -263,6 +268,40 @@ pub fn write_var_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
+/// Split a payload into a sequence of [`ApduCommand`]s with the shared framing
+/// used by both parse-mode and sign-mode flows.
+///
+/// The chunker enforces the two invariants those flows agree on:
+///   1. Each APDU carries at most [`MAX_APDU_DATA`] bytes.
+///   2. Every APDU shares `cla`, `ins`, and `p2`; the only per-packet
+///      variation is `p1`, which the caller supplies via `first_p1` /
+///      `next_p1` (parse mode ORs a network flag into both; sign mode uses
+///      fixed 0x01 / 0x00).
+///
+/// Empty input intentionally produces zero APDUs — callers that need to send
+/// an empty payload must synthesize a single APDU themselves.
+pub fn chunk_apdus(
+    payload: &[u8],
+    cla: u8,
+    ins: u8,
+    first_p1: u8,
+    next_p1: u8,
+    p2: u8,
+) -> Vec<ApduCommand> {
+    let chunks: Vec<&[u8]> = payload.chunks(MAX_APDU_DATA).collect();
+    let mut cmds = Vec::with_capacity(chunks.len());
+    for (i, chunk) in chunks.iter().enumerate() {
+        cmds.push(ApduCommand {
+            cla,
+            ins,
+            p1: if i == 0 { first_p1 } else { next_p1 },
+            p2,
+            data: chunk.to_vec(),
+        });
+    }
+    cmds
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,19 +326,16 @@ mod tests {
 
         v.clear();
         write_varint(&mut v, 0x1_0000_0000);
-        assert_eq!(v, vec![0xFF, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]);
+        assert_eq!(
+            v,
+            vec![0xFF, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]
+        );
     }
 
     #[test]
     fn path_encoding_is_big_endian_with_depth_prefix() {
         // m/44'/5353'/0'/0/0
-        let path = [
-            44 + 0x8000_0000,
-            5353 + 0x8000_0000,
-            0x8000_0000,
-            0,
-            0,
-        ];
+        let path = [44 + 0x8000_0000, 5353 + 0x8000_0000, 0x8000_0000, 0, 0];
         let enc = encode_path(&path).unwrap();
         assert_eq!(enc[0], 5, "depth prefix");
         // 44' = 0x8000002C, big-endian
@@ -353,5 +389,49 @@ mod tests {
         assert!(parsed.chain_code.is_none());
         assert!(parsed.parent_fingerprint.is_none());
         assert!(parsed.address.is_none());
+    }
+
+    // --- M1: chunk_apdus shared helper tests ---
+
+    #[test]
+    fn chunk_apdus_empty_input_produces_no_commands() {
+        let cmds = chunk_apdus(&[], CLA_GENERAL, INS_GET_INPUT_SIGNATURE, 0x01, 0x00, 0x00);
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn chunk_apdus_single_chunk() {
+        let data = vec![0x42u8; 100]; // < 255
+        let cmds = chunk_apdus(&data, CLA_GENERAL, INS_GET_INPUT_SIGNATURE, 0x03, 0x02, 0x01);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].cla, CLA_GENERAL);
+        assert_eq!(cmds[0].ins, INS_GET_INPUT_SIGNATURE);
+        assert_eq!(cmds[0].p1, 0x03); // first_p1
+        assert_eq!(cmds[0].p2, 0x01);
+        assert_eq!(cmds[0].data.len(), 100);
+    }
+
+    #[test]
+    fn chunk_apdus_multi_chunk_p1_alternation() {
+        let data = vec![0xAB; 600]; // 3 chunks: 255 + 255 + 90
+        let cmds = chunk_apdus(&data, CLA_GENERAL, INS_GET_INPUT_SIGNATURE, 0x07, 0x04, 0x00);
+        assert_eq!(cmds.len(), 3);
+        // First chunk gets first_p1
+        assert_eq!(cmds[0].p1, 0x07);
+        assert_eq!(cmds[0].data.len(), MAX_APDU_DATA);
+        // Subsequent chunks get next_p1
+        assert_eq!(cmds[1].p1, 0x04);
+        assert_eq!(cmds[1].data.len(), MAX_APDU_DATA);
+        assert_eq!(cmds[2].p1, 0x04);
+        assert_eq!(cmds[2].data.len(), 90);
+    }
+
+    #[test]
+    fn chunk_apdus_exact_boundary() {
+        // Exactly MAX_APDU_DATA bytes → 1 chunk, not 2.
+        let data = vec![0x00; MAX_APDU_DATA];
+        let cmds = chunk_apdus(&data, CLA_GENERAL, INS_GET_INPUT_SIGNATURE, 0x01, 0x00, 0x00);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].data.len(), MAX_APDU_DATA);
     }
 }

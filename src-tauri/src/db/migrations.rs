@@ -470,7 +470,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(addr_count, 2, "should have 2 addresses before migration 026");
+        assert_eq!(
+            addr_count, 2,
+            "should have 2 addresses before migration 026"
+        );
 
         let utxo_count: i64 = conn
             .query_row(
@@ -488,7 +491,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(name_count, 1, "should have 1 name state before migration 026");
+        assert_eq!(
+            name_count, 1,
+            "should have 1 name state before migration 026"
+        );
 
         let secret_count: i64 = conn
             .query_row(
@@ -501,11 +507,8 @@ mod tests {
 
         // Run migration 026 (the one being tested).
         conn.execute_batch(MIGRATIONS[25].1).unwrap();
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (?1)",
-            ["026"],
-        )
-        .unwrap();
+        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", ["026"])
+            .unwrap();
 
         // Verify child rows SURVIVED the table rebuild.
         let addr_count_after: i64 = conn
@@ -560,7 +563,10 @@ mod tests {
         let fk_enabled: i64 = conn
             .pragma_query_value(None, "foreign_keys", |row| row.get(0))
             .unwrap();
-        assert_eq!(fk_enabled, 1, "foreign_keys pragma must be ON after migration");
+        assert_eq!(
+            fk_enabled, 1,
+            "foreign_keys pragma must be ON after migration"
+        );
 
         // Verify no FK violations exist.
         let violations: Vec<String> = conn

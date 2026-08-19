@@ -94,7 +94,9 @@ pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -
     if node_mode.is_spv() {
         return false;
     }
-    node_tip_height_if_synced_for_network(state, expected_network.as_deref()).await.is_some()
+    node_tip_height_if_synced_for_network(state, expected_network.as_deref())
+        .await
+        .is_some()
 }
 
 /// Like [`node_tip_height_if_synced`] but additionally rejects the node when

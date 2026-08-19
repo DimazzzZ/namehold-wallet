@@ -28,67 +28,46 @@ use crate::error::AppError;
 use crate::noncustodial::address::pubkey_to_hash160;
 use crate::noncustodial::hd::bip44_path;
 use crate::noncustodial::network::Network;
+use crate::noncustodial::tx::p2wpkh_script_code;
 
 use super::apdu::{
-    encode_path, write_var_bytes, ApduCommand, CLA_GENERAL, INS_GET_INPUT_SIGNATURE, MAX_APDU_DATA,
+    chunk_apdus, encode_path, write_var_bytes, ApduCommand, CLA_GENERAL, INS_GET_INPUT_SIGNATURE,
 };
+
+/// Signing parameters for a single input (replaces the 10-parameter signature).
+#[derive(Debug, Clone)]
+pub struct SignInput {
+    pub network: Network,
+    pub account: u32,
+    pub branch: u32,
+    pub child_index: u32,
+    pub sighash_type: u32,
+    pub prevout_hash: [u8; 32],
+    pub prevout_index: u32,
+    pub value: u64,
+    pub sequence: u32,
+    pub pubkey: [u8; 33],
+}
 
 /// Build the sign-mode APDU sequence for one input.
 ///
-/// * `network` / `account` / `branch` / `child_index` — locate the signing key.
-/// * `sighash_type` — typically `SIGHASH_ALL` (0x01).
-/// * `prevout_hash` — 32-byte txid of the coin being spent (no byte-reversal).
-/// * `prevout_index` — output index of the coin.
-/// * `value` — coin value in doos.
-/// * `sequence` — input sequence (0xFFFFFFFF for final).
-/// * `pubkey` — the compressed public key (33 bytes) of the signing key. Used
-///   to derive the HASH160 for the p2wpkh script code.
-///
 /// Returns the APDU sequence (may be >1 if the blob exceeds 255 bytes, though
 /// for standard p2wpkh inputs it's always a single APDU).
-#[allow(clippy::too_many_arguments)]
-pub fn build_sign_apdus(
-    network: Network,
-    account: u32,
-    branch: u32,
-    child_index: u32,
-    sighash_type: u32,
-    prevout_hash: &[u8; 32],
-    prevout_index: u32,
-    value: u64,
-    sequence: u32,
-    pubkey: &[u8; 33],
-) -> Result<Vec<ApduCommand>, AppError> {
-    let blob = build_sign_blob(
-        network,
-        account,
-        branch,
-        child_index,
-        sighash_type,
-        prevout_hash,
-        prevout_index,
-        value,
-        sequence,
-        pubkey,
-    )?;
-    Ok(split_sign_apdus(&blob))
+pub fn build_sign_apdus(input: &SignInput) -> Result<Vec<ApduCommand>, AppError> {
+    let blob = build_sign_blob(input)?;
+    Ok(chunk_apdus(
+        &blob,
+        CLA_GENERAL,
+        INS_GET_INPUT_SIGNATURE,
+        0x01,
+        0x00,
+        0x01, // P2 = sign mode
+    ))
 }
 
 /// Build the raw sign-mode blob.
-#[allow(clippy::too_many_arguments)]
-pub fn build_sign_blob(
-    network: Network,
-    account: u32,
-    branch: u32,
-    child_index: u32,
-    sighash_type: u32,
-    prevout_hash: &[u8; 32],
-    prevout_index: u32,
-    value: u64,
-    sequence: u32,
-    pubkey: &[u8; 33],
-) -> Result<Vec<u8>, AppError> {
-    let path = bip44_path(network, account, branch, child_index);
+pub fn build_sign_blob(input: &SignInput) -> Result<Vec<u8>, AppError> {
+    let path = bip44_path(input.network, input.account, input.branch, input.child_index);
     let mut buf = Vec::with_capacity(128);
 
     // Path (depth prefix + BE indices)
@@ -96,19 +75,21 @@ pub fn build_sign_blob(
     buf.extend_from_slice(&path_bytes);
 
     // Sighash type (u32LE)
-    buf.extend_from_slice(&sighash_type.to_le_bytes());
+    buf.extend_from_slice(&input.sighash_type.to_le_bytes());
 
     // Prevout
-    buf.extend_from_slice(prevout_hash);
-    buf.extend_from_slice(&prevout_index.to_le_bytes());
+    buf.extend_from_slice(&input.prevout_hash);
+    buf.extend_from_slice(&input.prevout_index.to_le_bytes());
 
     // Value + sequence
-    buf.extend_from_slice(&value.to_le_bytes());
-    buf.extend_from_slice(&sequence.to_le_bytes());
+    buf.extend_from_slice(&input.value.to_le_bytes());
+    buf.extend_from_slice(&input.sequence.to_le_bytes());
 
-    // Script code: p2wpkh → the classic 25-byte OP_DUP OP_HASH160 <hash160>
-    // OP_EQUALVERIFY OP_CHECKSIG (same as BIP143 for Bitcoin).
-    let hash160 = pubkey_to_hash160(pubkey);
+    // Script code: p2wpkh → hsd's `Script.fromPubkeyhash(hash)`
+    // (`OP_DUP OP_BLAKE160 <push20> <hash160> OP_EQUALVERIFY OP_CHECKSIG`).
+    // Shared with the non-Ledger signing path so the device signs the same
+    // digest consensus verifies — see `noncustodial::tx::p2wpkh_script_code`.
+    let hash160 = pubkey_to_hash160(&input.pubkey);
     let script = p2wpkh_script_code(&hash160);
     write_var_bytes(&mut buf, &script);
 
@@ -116,41 +97,6 @@ pub fn build_sign_blob(
     buf.push(0x00);
 
     Ok(buf)
-}
-
-/// The 25-byte p2pkh script used as the "script code" in BIP143-style sighash
-/// for p2wpkh inputs:
-/// `OP_DUP OP_HASH160 OP_PUSH20 <hash160> OP_EQUALVERIFY OP_CHECKSIG`
-pub fn p2wpkh_script_code(hash160: &[u8; 20]) -> [u8; 25] {
-    let mut s = [0u8; 25];
-    s[0] = 0x76; // OP_DUP
-    s[1] = 0xA9; // OP_HASH160
-    s[2] = 0x14; // push 20 bytes
-    s[3..23].copy_from_slice(hash160);
-    s[23] = 0x88; // OP_EQUALVERIFY
-    s[24] = 0xAC; // OP_CHECKSIG
-    s
-}
-
-/// Split the sign blob into APDUs.
-///
-/// * P2 = 0x01 (sign mode).
-/// * First APDU: P1 = 0x01.
-/// * Subsequent: P1 = 0x00.
-/// * **No network flag in sign-mode P1** (per hsd-ledger reference).
-fn split_sign_apdus(blob: &[u8]) -> Vec<ApduCommand> {
-    let chunks: Vec<&[u8]> = blob.chunks(MAX_APDU_DATA).collect();
-    let mut cmds = Vec::with_capacity(chunks.len());
-    for (i, chunk) in chunks.iter().enumerate() {
-        cmds.push(ApduCommand {
-            cla: CLA_GENERAL,
-            ins: INS_GET_INPUT_SIGNATURE,
-            p1: if i == 0 { 0x01 } else { 0x00 },
-            p2: 0x01,
-            data: chunk.to_vec(),
-        });
-    }
-    cmds
 }
 
 /// Parse the 65-byte signature returned by the device in sign mode.
@@ -182,18 +128,18 @@ mod tests {
         pubkey[1] = 0xAA;
         let prevout = [0xBB; 32];
 
-        let blob = build_sign_blob(
-            Network::Main,
-            0,
-            0,
-            7,
-            1, // SIGHASH_ALL
-            &prevout,
-            0,
-            50_000_000,
-            0xFFFF_FFFF,
-            &pubkey,
-        )
+        let blob = build_sign_blob(&SignInput {
+            network: Network::Main,
+            account: 0,
+            branch: 0,
+            child_index: 7,
+            sighash_type: 1, // SIGHASH_ALL
+            prevout_hash: prevout,
+            prevout_index: 0,
+            value: 50_000_000,
+            sequence: 0xFFFF_FFFF,
+            pubkey,
+        })
         .unwrap();
 
         // Path: depth=5, then 5 * u32BE
@@ -224,7 +170,7 @@ mod tests {
         // script code: varint(25) then 25 bytes starting with OP_DUP
         assert_eq!(blob[73], 25); // varint for 25
         assert_eq!(blob[74], 0x76); // OP_DUP
-        assert_eq!(blob[75], 0xA9); // OP_HASH160
+        assert_eq!(blob[75], 0xc0); // OP_BLAKE160 (not Bitcoin's OP_HASH160)
         assert_eq!(blob[76], 0x14); // push 20
 
         // Trailing: 0x00 (no single-output)
@@ -235,7 +181,7 @@ mod tests {
     #[test]
     fn sign_apdus_p1_p2_flags() {
         let blob = vec![0x42u8; 300]; // > 255, forces 2 APDUs
-        let apdus = split_sign_apdus(&blob);
+        let apdus = chunk_apdus(&blob, CLA_GENERAL, INS_GET_INPUT_SIGNATURE, 0x01, 0x00, 0x01);
         assert_eq!(apdus.len(), 2);
         assert_eq!(apdus[0].p1, 0x01);
         assert_eq!(apdus[0].p2, 0x01);
@@ -248,12 +194,12 @@ mod tests {
         let hash = [0x42u8; 20];
         let script = p2wpkh_script_code(&hash);
         assert_eq!(script.len(), 25);
-        assert_eq!(script[0], 0x76);
-        assert_eq!(script[1], 0xA9);
+        assert_eq!(script[0], 0x76); // OP_DUP
+        assert_eq!(script[1], 0xc0); // OP_BLAKE160 (not Bitcoin's OP_HASH160)
         assert_eq!(script[2], 0x14);
         assert_eq!(&script[3..23], &[0x42; 20]);
         assert_eq!(script[23], 0x88);
-        assert_eq!(script[24], 0xAC);
+        assert_eq!(script[24], 0xac);
     }
 
     #[test]

@@ -40,8 +40,7 @@ use crate::noncustodial::network::Network;
 use crate::noncustodial::tx::output_address_from_string;
 
 use super::apdu::{
-    write_var_bytes, write_varint, ApduCommand, CLA_GENERAL, INS_GET_INPUT_SIGNATURE,
-    MAX_APDU_DATA,
+    chunk_apdus, write_var_bytes, write_varint, ApduCommand, CLA_GENERAL, INS_GET_INPUT_SIGNATURE,
 };
 use super::covenant_serializer::{is_supported, requires_name_marker, write_name_marker};
 
@@ -75,7 +74,7 @@ pub struct OutputName {
 ///
 /// # Errors
 ///
-/// Returns `AppError::Device` if:
+/// Returns `AppError::Protocol` if:
 /// - An unsupported covenant type is encountered.
 /// - A name-bearing output lacks a corresponding entry in `names`.
 /// - An address string fails to decode.
@@ -87,7 +86,14 @@ pub fn build_parse_apdus(
     net_flag: u8,
 ) -> Result<Vec<ApduCommand>, AppError> {
     let blob = build_parse_blob(plan, network, change, names)?;
-    Ok(split_into_apdus(&blob, net_flag))
+    Ok(chunk_apdus(
+        &blob,
+        CLA_GENERAL,
+        INS_GET_INPUT_SIGNATURE,
+        net_flag | 0x01,
+        net_flag,
+        0x00, // P2 = parse mode
+    ))
 }
 
 /// Build the raw parse-mode blob (before APDU splitting).
@@ -99,12 +105,12 @@ pub fn build_parse_blob(
 ) -> Result<Vec<u8>, AppError> {
     // Defensive bounds checks: Ledger expects u8 counts, so reject oversized txs.
     if plan.inputs.len() > 255 {
-        return Err(AppError::Device(
+        return Err(AppError::Protocol(
             "transaction too large for Ledger (>255 inputs)".into(),
         ));
     }
     if plan.outputs.len() > 255 {
-        return Err(AppError::Device(
+        return Err(AppError::Protocol(
             "transaction too large for Ledger (>255 outputs)".into(),
         ));
     }
@@ -121,7 +127,7 @@ pub fn build_parse_blob(
     match change {
         Some(c) => {
             if c.path.len() > 10 {
-                return Err(AppError::Device(
+                return Err(AppError::Protocol(
                     "change path too deep for Ledger (max 10 levels)".into(),
                 ));
             }
@@ -139,9 +145,9 @@ pub fn build_parse_blob(
     // Inputs
     for inp in &plan.inputs {
         let hash = hex::decode(&inp.txid)
-            .map_err(|e| AppError::Device(format!("bad input txid hex: {e}")))?;
+            .map_err(|e| AppError::Protocol(format!("bad input txid hex: {e}")))?;
         if hash.len() != 32 {
-            return Err(AppError::Device(format!(
+            return Err(AppError::Protocol(format!(
                 "input txid must be 32 bytes, got {}",
                 hash.len()
             )));
@@ -155,7 +161,7 @@ pub fn build_parse_blob(
     // Outputs
     for (i, out) in plan.outputs.iter().enumerate() {
         if !is_supported(out.covenant_type) {
-            return Err(AppError::Device(format!(
+            return Err(AppError::Protocol(format!(
                 "unsupported covenant type {} on output #{i}",
                 out.covenant_type
             )));
@@ -180,15 +186,12 @@ pub fn build_parse_blob(
 
         // LedgerCovenant name marker (for the 7 name-bearing types)
         if requires_name_marker(out.covenant_type) {
-            let name = names
-                .iter()
-                .find(|n| n.output_index == i)
-                .ok_or_else(|| {
-                    AppError::Device(format!(
-                        "output #{i} has covenant type {} but no name was provided",
-                        out.covenant_type
-                    ))
-                })?;
+            let name = names.iter().find(|n| n.output_index == i).ok_or_else(|| {
+                AppError::Protocol(format!(
+                    "output #{i} has covenant type {} but no name was provided",
+                    out.covenant_type
+                ))
+            })?;
             write_name_marker(&mut buf, &name.name)?;
         }
     }
@@ -200,30 +203,12 @@ pub fn build_parse_blob(
 fn decode_covenant_items(hex_items: &[String]) -> Result<Vec<Vec<u8>>, AppError> {
     hex_items
         .iter()
-        .map(|h| hex::decode(h).map_err(|e| AppError::Device(format!("bad covenant item hex: {e}"))))
+        .map(|h| {
+            hex::decode(h).map_err(|e| AppError::Protocol(format!("bad covenant item hex: {e}")))
+        })
         .collect()
 }
 
-/// Split a blob into ≤255-byte APDUs with the correct P1/P2 flags for parse
-/// mode.
-///
-/// * P2 = 0x00 (parse mode).
-/// * First APDU: P1 = `net_flag | 0x01`.
-/// * Subsequent: P1 = `net_flag`.
-fn split_into_apdus(blob: &[u8], net_flag: u8) -> Vec<ApduCommand> {
-    let chunks: Vec<&[u8]> = blob.chunks(MAX_APDU_DATA).collect();
-    let mut cmds = Vec::with_capacity(chunks.len());
-    for (i, chunk) in chunks.iter().enumerate() {
-        cmds.push(ApduCommand {
-            cla: CLA_GENERAL,
-            ins: INS_GET_INPUT_SIGNATURE,
-            p1: if i == 0 { net_flag | 0x01 } else { net_flag },
-            p2: 0x00,
-            data: chunk.to_vec(),
-        });
-    }
-    cmds
-}
 
 #[cfg(test)]
 mod tests {
@@ -258,6 +243,15 @@ mod tests {
         }
     }
 
+    fn plan_output_none(value: u64) -> PlanOutput {
+        PlanOutput {
+            value,
+            address: "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx".into(),
+            covenant_type: COV_NONE,
+            covenant_items_hex: vec![],
+        }
+    }
+
     #[test]
     fn parse_blob_header_layout() {
         let plan = simple_send_plan();
@@ -285,10 +279,7 @@ mod tests {
         // prevout.hash = 0xAA * 32
         assert_eq!(&blob[input_start..input_start + 32], &[0xAA; 32]);
         // prevout.index = 0 (u32LE)
-        assert_eq!(
-            &blob[input_start + 32..input_start + 36],
-            &[0, 0, 0, 0]
-        );
+        assert_eq!(&blob[input_start + 32..input_start + 36], &[0, 0, 0, 0]);
         // sequence = 0xFFFFFFFF
         assert_eq!(
             &blob[input_start + 36..input_start + 40],
@@ -316,7 +307,7 @@ mod tests {
         // address: version=0, hashLen=20, hash=0x00*20
         assert_eq!(blob[out_start + 8], 0); // version
         assert_eq!(blob[out_start + 9], 20); // hashLen
-        // covenant: type=0 (NONE), count=0
+                                             // covenant: type=0 (NONE), count=0
         let cov_start = out_start + 10 + 20;
         assert_eq!(blob[cov_start], 0); // type NONE
         assert_eq!(blob[cov_start + 1], 0); // 0 items
@@ -325,7 +316,15 @@ mod tests {
     #[test]
     fn split_respects_max_apdu_data() {
         let blob = vec![0x42u8; 600]; // > 255
-        let apdus = split_into_apdus(&blob, 0x00);
+        // Parse-mode framing: first P1 = net_flag|0x01, subsequent = net_flag.
+        let apdus = chunk_apdus(
+            &blob,
+            CLA_GENERAL,
+            INS_GET_INPUT_SIGNATURE,
+            0x01,
+            0x00,
+            0x00,
+        );
         assert_eq!(apdus.len(), 3);
         assert_eq!(apdus[0].data.len(), 255);
         assert_eq!(apdus[1].data.len(), 255);
@@ -342,13 +341,7 @@ mod tests {
         let change = ChangeInfo {
             output_index: 1,
             address_version: 0,
-            path: vec![
-                44 + 0x8000_0000,
-                5353 + 0x8000_0000,
-                0x8000_0000,
-                1,
-                7,
-            ],
+            path: vec![44 + 0x8000_0000, 5353 + 0x8000_0000, 0x8000_0000, 1, 7],
         };
         let blob = build_parse_blob(&plan, Network::Main, Some(&change), &[]).unwrap();
 
@@ -362,5 +355,72 @@ mod tests {
         assert_eq!(blob[13], 5);
         // first path element: 44' = 0x8000002C, big-endian
         assert_eq!(&blob[14..18], &[0x80, 0x00, 0x00, 0x2C]);
+    }
+
+    // --- M5: Protocol error for pre-flight checks ---
+
+    #[test]
+    fn parse_blob_rejects_oversized_inputs() {
+        let mut plan = simple_send_plan();
+        // >255 inputs must fail with Protocol, not Device.
+        plan.inputs = (0..256)
+            .map(|i| crate::noncustodial::actions::PlanInput {
+                txid: "aa".repeat(32),
+                vout: i as u32,
+                value: 100_000_000,
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+            })
+            .collect();
+        let err = build_parse_blob(&plan, Network::Main, None, &[]).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("255 inputs")),
+            "oversized input count should be Protocol error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_blob_rejects_oversized_outputs() {
+        let mut plan = simple_send_plan();
+        // >255 outputs must fail with Protocol.
+        plan.outputs = (0..256).map(|_| plan_output_none(1)).collect();
+        let err = build_parse_blob(&plan, Network::Main, None, &[]).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("255 outputs")),
+            "oversized output count should be Protocol error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_blob_rejects_missing_name_for_name_bearing_covenant() {
+        use crate::noncustodial::sync::COV_TRANSFER;
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "main".into(),
+            inputs: vec![crate::noncustodial::actions::PlanInput {
+                txid: "aa".repeat(32),
+                vout: 0,
+                value: 100_000_000,
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+            }],
+            outputs: vec![crate::noncustodial::actions::PlanOutput {
+                value: 99_000_000,
+                address: "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx".into(),
+                covenant_type: COV_TRANSFER,
+                covenant_items_hex: vec!["bb".repeat(32)],
+            }],
+            change_output_index: None,
+        };
+        // No names provided, but output #0 requires a name marker.
+        let err = build_parse_blob(&plan, Network::Main, None, &[]).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("no name was provided")),
+            "missing name should be Protocol error, got: {err:?}"
+        );
     }
 }

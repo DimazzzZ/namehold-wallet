@@ -237,9 +237,9 @@ impl HidIo for SimulatedHid {
                     .into(),
             ));
         }
-        self.out_frames.pop_front().ok_or_else(|| {
-            AppError::Device("mock: no queued response (unexpected read)".into())
-        })
+        self.out_frames
+            .pop_front()
+            .ok_or_else(|| AppError::Device("mock: no queued response (unexpected read)".into()))
     }
 }
 
@@ -266,11 +266,7 @@ mod tests {
     fn happy_get_public_key() {
         let mut s = signer(SimMode::Happy);
         let (pk, cc) = s
-            .get_account_pubkey(
-                crate::noncustodial::network::Network::Main,
-                0,
-                false,
-            )
+            .get_account_pubkey(crate::noncustodial::network::Network::Main, 0, false)
             .unwrap();
         // Deterministic pubkey from the sim.
         assert_eq!(pk[0], 0x02);
@@ -283,7 +279,10 @@ mod tests {
         let mut s = signer(SimMode::WrongApp);
         let err = s.get_app_version().unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("6d00") || msg.contains("not supported"), "got: {msg}");
+        assert!(
+            msg.contains("6d00") || msg.contains("not supported"),
+            "got: {msg}"
+        );
     }
 
     #[test]

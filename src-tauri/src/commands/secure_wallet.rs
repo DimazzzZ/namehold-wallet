@@ -18,8 +18,8 @@ use crate::noncustodial::network::Network;
 use crate::noncustodial::session::SignerSession;
 use crate::noncustodial::types::{SignerSessionSummary, WalletProfileSummary};
 use crate::noncustodial::{derivation, vault};
-use crate::AppState;
 use crate::providers::ledger::LedgerSigner;
+use crate::AppState;
 
 // --- small helpers ---------------------------------------------------------
 
@@ -398,8 +398,7 @@ pub async fn import_ledger_profile(
     .map_err(|e| AppError::Other(format!("ledger task failed: {e}")))??;
 
     // Build the account xpub from the device's pubkey + chain code.
-    let account_xpub = ExtendedPubKey::from_parts(&pubkey, &chain_code)?
-        .to_base58check(net);
+    let account_xpub = ExtendedPubKey::from_parts(&pubkey, &chain_code)?.to_base58check(net);
 
     // Create the profile (no secret, like watch-only).
     let state = app.state::<AppState>();
@@ -469,17 +468,24 @@ pub async fn unlock_local_signer(
     let ttl_ms = session_ttl_ms(&settings);
 
     // Load profile network + encrypted blob + kdf marker (lock dropped before prompt).
-    let (network, secret) = {
+    let (network, secret, profile_kind) = {
         let state = app.state::<AppState>();
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let profile = db::queries::get_wallet_profile(&conn, &wallet_profile_id)?
             .ok_or_else(|| AppError::NotFound(format!("wallet profile {wallet_profile_id}")))?;
         let net = derivation::network_from_profile(&profile.network)?;
         let secret = db::queries::get_wallet_secret_meta(&conn, &wallet_profile_id)?;
-        (net, secret)
+        (net, secret, profile.kind.clone())
     };
     let (blob, kdf) = secret
-        .ok_or_else(|| AppError::InvalidInput("cannot unlock a watch-only profile".to_string()))?;
+        .ok_or_else(|| {
+            let msg = if profile_kind == "ledger_hardware" {
+                "Ledger profiles are always watch-only and do not require unlocking"
+            } else {
+                "cannot unlock a watch-only profile"
+            };
+            AppError::InvalidInput(msg.to_string())
+        })?;
 
     let passphrase = if kdf == "none" {
         NO_PASSPHRASE_KEY.to_string()

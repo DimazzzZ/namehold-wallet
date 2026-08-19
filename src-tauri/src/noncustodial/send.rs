@@ -25,10 +25,10 @@
 use rusqlite::{params, Connection};
 
 use crate::error::AppError;
+use crate::noncustodial::actions::{DraftPlan, PlanInput, PlanOutput};
 use crate::noncustodial::address;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::session::SignerSession;
-use crate::noncustodial::actions::{DraftPlan, PlanInput, PlanOutput};
 use crate::noncustodial::tx::{
     output_address_from_string, sighash, Covenant, Input, Outpoint, Output, Transaction,
 };
@@ -575,16 +575,18 @@ pub fn build_send_plan(
         covenant_type: 0, // NONE
         covenant_items_hex: vec![],
     });
-    if selection.change > 0 {
+    let change_output_index = if selection.change > 0 {
+        let idx = outputs.len();
         outputs.push(PlanOutput {
             value: selection.change,
             address: change_address.to_string(),
             covenant_type: 0, // NONE
             covenant_items_hex: vec![],
         });
-    }
-
-    let change_output_index = if selection.change > 0 { Some(1) } else { None };
+        Some(idx)
+    } else {
+        None
+    };
 
     Ok(DraftPlan {
         version: 0,

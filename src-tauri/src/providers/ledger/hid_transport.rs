@@ -123,9 +123,8 @@ impl<T: HidIo> Transport<T> {
                 5
             };
 
-            let want = total_len.ok_or_else(|| {
-                AppError::Device("HID response missing length header".into())
-            })?;
+            let want = total_len
+                .ok_or_else(|| AppError::Device("HID response missing length header".into()))?;
             let remaining = want.saturating_sub(buf.len());
             let avail = PACKET_SIZE - payload_start;
             let take = remaining.min(avail);
@@ -188,8 +187,8 @@ impl RealHid {
     /// Open the first connected Ledger device. Returns [`AppError::Device`]
     /// with actionable guidance when no device is found.
     pub fn open_first() -> Result<Self, AppError> {
-        let api = hidapi::HidApi::new()
-            .map_err(|e| AppError::Device(format!("HID init failed: {e}")))?;
+        let api =
+            hidapi::HidApi::new().map_err(|e| AppError::Device(format!("HID init failed: {e}")))?;
         let info = api
             .device_list()
             .find(|d| d.vendor_id() == LEDGER_VENDOR_ID && usable_interface(d))
