@@ -16,6 +16,7 @@ import { StickyFooter } from "./ui/StickyFooter";
 import { useUiStore } from "../stores/ui";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { useAppUpdate } from "../hooks/useAppUpdate";
+import { MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../lib/feeRate";
 import {
   enable as enableAutostart,
   disable as disableAutostart,
@@ -82,6 +83,7 @@ export function Settings() {
           settings.watchlist_notify_highest_bid_threshold_hns,
         close_to_tray: settings.close_to_tray,
         launch_at_login: settings.launch_at_login,
+        fee_rate_doos_per_kvb: settings.fee_rate_doos_per_kvb,
       });
     }
   }, [settings]);
@@ -125,6 +127,14 @@ export function Settings() {
   // must carry a scheme; empty is allowed (falls back to the backend
   // default). Returns null when valid.
   const explorerUrlError = validateExplorerUrl(form.explorer_api_url ?? "");
+  // Fee rate is optional (empty = use backend default). Non-empty must parse
+  // to a positive integer; parseDoosPerKvb floors to the minimum, so the only
+  // failure mode we surface is "you typed something that isn't a whole number".
+  const feeRateRaw = (form.fee_rate_doos_per_kvb ?? "").trim();
+  const feeRateError =
+    feeRateRaw && parseDoosPerKvb(feeRateRaw) === null
+      ? "Fee rate must be a whole number of doos/kvB"
+      : null;
 
   // Pick the hsd data directory with the native folder browser (Finder).
   const pickDataDir = async () => {
@@ -571,12 +581,34 @@ export function Settings() {
             onChange={(e) => updateField("signer_session_timeout_seconds", e.target.value)}
             placeholder="900"
           />
+          <div>
+            <Input
+              label="Fee rate (doos/kvB)"
+              value={form.fee_rate_doos_per_kvb ?? ""}
+              onChange={(e) => updateField("fee_rate_doos_per_kvb", e.target.value)}
+              placeholder={`empty = default (${MIN_FEE_RATE_DOOS_PER_KVB.toLocaleString()} = 1 sat/byte)`}
+              inputMode="numeric"
+              data-testid="settings-fee-rate"
+            />
+            {feeRateError ? (
+              <div className="text-xs text-red-600 mt-1">{feeRateError}</div>
+            ) : (
+              <div className="text-xs text-gray-500 mt-1">
+                Applied when a transaction is built without an explicit
+                Advanced &gt; Fee rate override. hsd&rsquo;s{" "}
+                <code>rate</code> convention: 1000 doos/kvB = 1 sat/byte.
+              </div>
+            )}
+          </div>
         </div>
       </details>
 
       {dirty && (
         <StickyFooter>
-          <Button onClick={handleSave} disabled={saving || !!explorerUrlError}>
+          <Button
+            onClick={handleSave}
+            disabled={saving || !!explorerUrlError || !!feeRateError}
+          >
             {saving ? "Saving…" : "Save settings"}
           </Button>
         </StickyFooter>

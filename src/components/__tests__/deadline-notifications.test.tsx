@@ -115,6 +115,7 @@ function loadSettings(over: Partial<Record<string, string>> = {}) {
       close_to_tray: "1",
       tray_hint_shown: "0",
       launch_at_login: "0",
+      fee_rate_doos_per_kvb: "",
       ...over,
     },
   });

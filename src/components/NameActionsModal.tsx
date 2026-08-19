@@ -26,6 +26,8 @@ import { NameSignMessage } from "./name-actions/NameSignMessage";
 import { OwnershipActions } from "./name-actions/OwnershipActions";
 import { PaidSwapClaim } from "./name-actions/PaidSwapClaim";
 import { useUiStore } from "../stores/ui";
+import { FeeRateOverride } from "./ui/FeeRateOverride";
+import { parseFeeRateArg } from "../lib/feeRate";
 import { mapError, stageOf, unwrapStaged } from "../lib/errors";
 import { formatHns } from "../lib/utils";
 import { displayName } from "../lib/idn";
@@ -101,6 +103,12 @@ export function NameActionsModal({
   // Bid inputs in HNS (human-readable), converted to doos on submit.
   const [bidHns, setBidHns] = useState("");
   const [lockupHns, setLockupHns] = useState("");
+  // Per-transaction fee-rate override for the BID (doos/kvB, raw text).
+  // Empty = use the global setting default. Scope decision: override lives on
+  // Send + Bid + bulk actions, so within this single-name modal only the bid
+  // path threads it (the other single-name ceremony actions rotate fast and
+  // intentionally don't expose the knob).
+  const [bidFeeRate, setBidFeeRate] = useState("");
   const [recoverHns, setRecoverHns] = useState("");
   const [recipient, setRecipient] = useState("");
   const [rows, setRows] = useState<DnsRow[]>([{ type: "TXT", value: "" }]);
@@ -417,6 +425,7 @@ export function NameActionsModal({
         name,
         bidValue: hnsToDollarydoos(bidNum),
         lockup: hnsToDollarydoos(lockupNum),
+        feeRate: parseFeeRateArg(bidFeeRate) ?? undefined,
       }),
     );
 
@@ -571,6 +580,15 @@ export function NameActionsModal({
                 onRemoveRow={removeRow}
                 isMainnet={profile?.network === "mainnet"}
               />
+              {badge.phase === "BIDDING" && caps?.canBid?.allowed ? (
+                <div className="mt-3">
+                  <FeeRateOverride
+                    value={bidFeeRate}
+                    onChange={setBidFeeRate}
+                    label="Fee rate override"
+                  />
+                </div>
+              ) : null}
             </div>
           ) : badge.phase === "CLOSED" ? (
             <div className="bg-blue-50 border border-blue-200 rounded p-3">
