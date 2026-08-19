@@ -40,6 +40,16 @@
   hijack typing. The cheatsheet groups bindings by category and filters
   action/list keys down to the ones that actually work on the current
   page, keeping the reference honest.
+- **Receive address list.** A "View all addresses" disclosure in the Receive
+  card expands a scrollable list of every derived receive-branch address.
+  Each row shows the derivation index, truncated address (with full-address
+  tooltip), a used/fresh badge, the first-seen date, a copy-to-clipboard
+  button, a QR-code toggle, and a mainnet explorer link. A "Generate new
+  address" button at the bottom allocates the next unused receive index.
+  Backend: new `list_receive_addresses` + `reveal_next_receive_address`
+  Tauri commands. The "used" predicate (UTXO OR bid_commitment) is defined
+  once (`derivation::ADDRESS_USED_PREDICATE`) and shared between address
+  allocation and the list query.
 - `useDeleteTxDraft` mutation hook — lets the frontend discard a draft and
   free its reserved coins.
 - `draftId` field on merged activity rows — enables the UI to target specific
@@ -65,6 +75,18 @@
 - Rust integration test: `build_batch_bid_draft` rejects batches containing
   any name not in BIDDING/OPENING phase and persists nothing (all-or-nothing
   atomicity guard).
+
+### CI / tooling
+- **Fix flaky apt-get update timeout in CI.** The `Refresh apt package index`
+  step was hard-failing when `apt-get update` timed out on a throttled Ubuntu
+  mirror (observed on run 32273872139: rust-lint hit the 90s cap on all 3
+  retries while rust-test fetched the same 11 MB index in 54s on a healthier
+  mirror). Made the step best-effort (no `exit 1`) so a slow mirror can't flake
+  the job on the common cache-hit path. Per-attempt timeout raised 90s → 120s.
+  Applied to both CI and release workflows.
+- **Upgrade actions/labeler v5 → v7.** Fixes the Node.js 20 deprecation warning
+  on GitHub-hosted runners (v7 targets Node.js 24 natively). No config changes
+  needed; labeler.yml format is stable across v5–v7.
 
 ### Fixed
 - **"Launch at login" no longer starts the wrong build.** If you'd ever

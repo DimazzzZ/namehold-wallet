@@ -158,7 +158,11 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         # Refresh the apt index first (see ci.yml): avoids a cache-miss 404 when
         # the runner's pre-seeded index points at a superseded .deb version.
-        run: sudo apt-get update
+        # Best-effort with a hard cap: on a throttled mirror the fetch has been
+        # observed to run >90s. If it fails, the cached-install step below still
+        # works on the cache-hit path; only a cache-miss + stale index actually
+        # 404s, and that surfaces at install time either way.
+        run: sudo timeout 120 apt-get update || echo "::warning::apt-get update failed — proceeding with stale index (cache-hit path is unaffected)"
       - name: Install Tauri system dependencies (Linux)
         if: matrix.platform == 'ubuntu-22.04'
         # Cached via `awalsh128/cache-apt-pkgs-action` (same as ci.yml) so a slow

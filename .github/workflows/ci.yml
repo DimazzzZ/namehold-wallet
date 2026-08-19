@@ -66,27 +66,31 @@ jobs:
       # `apt-get update` occasionally hangs on an unreachable/throttled Ubuntu
       # mirror on GitHub-hosted runners (observed on run 32168132022: this step
       # hung 24+ min while the sibling rust-test job on a healthy runner passed
-      # in 4m9s). Bound it and retry — mirror blips are transient.
-      # Each attempt is capped at 90s via `timeout(1)` so a hung TCP fetch
+      # in 4m9s; and run 32273872139: rust-lint timed out here while rust-test
+      # fetched the same 11 MB index in 54s on a healthier mirror). Bound it and
+      # retry — mirror blips are transient.
+      # Each attempt is capped at 120s via `timeout(1)` so a hung TCP fetch
       # returns a non-zero exit (124) and the loop moves on, instead of letting
       # apt sit on a half-open connection for the entire step budget. The
-      # step-level `timeout-minutes: 5` is a backstop for pathological cases.
+      # step-level `timeout-minutes: 3` is a backstop for pathological cases.
+      #
+      # Crucially, this step is BEST-EFFORT (no `exit 1`): its only purpose is
+      # to feed the cached-install step below. On a cache HIT (the common path)
+      # cache-apt-pkgs-action restores the fileset from the GHA cache and never
+      # touches an apt mirror, so a slow mirror here is irrelevant. On a cache
+      # MISS with a stale index, the install step surfaces the failure itself
+      # (a 404) — so continuing past a failed update costs nothing and stops a
+      # throttled mirror from flaking an otherwise-green job.
       - name: Refresh apt package index
-        timeout-minutes: 5
+        timeout-minutes: 3
         run: |
           set +e
-          ok=0
           for i in 1 2 3; do
-            sudo timeout 90 apt-get update
-            rc=$?
-            if [ $rc -eq 0 ]; then ok=1; break; fi
-            echo "::warning::apt-get update failed (attempt $i) — retrying in 10s"
-            sleep 10
+            sudo timeout 120 apt-get update && exit 0
+            echo "::warning::apt-get update failed (attempt $i) — retrying in 5s"
+            sleep 5
           done
-          if [ $ok -ne 1 ]; then
-            echo "::error::apt-get update failed after 3 attempts (last rc=$rc)"
-            exit 1
-          fi
+          echo "::warning::apt-get update failed after 3 attempts — proceeding with stale index (cache-hit path is unaffected)"
       - name: Install Tauri system dependencies
         uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9  # v1.6.3
         with:
@@ -161,26 +165,24 @@ jobs:
       # mirror on GitHub-hosted runners (observed on run 32168132022: the
       # sibling rust-lint job hung 24+ min on this exact step). Bound it and
       # retry — mirror blips are transient.
-      # Each attempt is capped at 90s via `timeout(1)` so a hung TCP fetch
+      # Each attempt is capped at 120s via `timeout(1)` so a hung TCP fetch
       # returns a non-zero exit (124) and the loop moves on, instead of letting
       # apt sit on a half-open connection for the entire step budget. The
-      # step-level `timeout-minutes: 5` is a backstop for pathological cases.
+      # step-level `timeout-minutes: 3` is a backstop for pathological cases.
+      #
+      # Best-effort by design (no `exit 1`): see rust-lint job above for the
+      # full rationale — the cached-install step is the actual gate, and it
+      # tolerates a stale index on the cache-hit path.
       - name: Refresh apt package index
-        timeout-minutes: 5
+        timeout-minutes: 3
         run: |
           set +e
-          ok=0
           for i in 1 2 3; do
-            sudo timeout 90 apt-get update
-            rc=$?
-            if [ $rc -eq 0 ]; then ok=1; break; fi
-            echo "::warning::apt-get update failed (attempt $i) — retrying in 10s"
-            sleep 10
+            sudo timeout 120 apt-get update && exit 0
+            echo "::warning::apt-get update failed (attempt $i) — retrying in 5s"
+            sleep 5
           done
-          if [ $ok -ne 1 ]; then
-            echo "::error::apt-get update failed after 3 attempts (last rc=$rc)"
-            exit 1
-          fi
+          echo "::warning::apt-get update failed after 3 attempts — proceeding with stale index (cache-hit path is unaffected)"
       - name: Install Tauri system dependencies
         uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9  # v1.6.3
         with:

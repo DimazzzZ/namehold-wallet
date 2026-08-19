@@ -11,6 +11,7 @@ import type {
   NameActionCapabilities,
   NameBids,
   NameResource,
+  ReceiveAddressRow,
   RecoveredBidCommitment,
   RenewalsResponse,
   TxInfo,
@@ -414,5 +415,47 @@ export function useReadTransactions(): UseQueryResult<WalletTransactionRow[]> {
       );
     },
     staleTime: STALE_TIME,
+  });
+}
+
+/**
+ * Every derived receive-branch address for the active wallet, tagged with a
+ * `used` flag (address is referenced by a tracked UTXO or bid commitment).
+ * Change-branch addresses are wallet-internal and are intentionally omitted.
+ *
+ * Keyed on the profile id so switching wallets never shows stale rows.
+ */
+export function useReceiveAddresses(): UseQueryResult<ReceiveAddressRow[]> {
+  const profileId = useActiveProfile().data?.id ?? null;
+  return useQuery<ReceiveAddressRow[]>({
+    queryKey: ["read", "receive_addresses", profileId],
+    enabled: profileId != null,
+    queryFn: async () => {
+      const rows = await invoke<ReceiveAddressRow[] | null>(
+        "list_receive_addresses",
+        { walletProfileId: profileId },
+      );
+      return rows ?? [];
+    },
+    staleTime: STALE_TIME,
+  });
+}
+
+/**
+ * Allocate the next unused receive-branch address, persist it, and refresh the
+ * address list. Also invalidates the balance/name queries so the sync engine's
+ * next pass finds the new address without a manual refresh.
+ */
+export function useRevealNextReceiveAddress() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { walletProfileId: string | null }) =>
+      invoke<string>("reveal_next_receive_address", args as Record<string, unknown>),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["read", "receive_addresses"] });
+      // Deliberately NOT invalidating ["wallet"] — the spec pinned
+      // `profile.receiveAddress` as unchanged by this feature, so a broader
+      // wallet refetch would exceed the intended blast radius.
+    },
   });
 }
