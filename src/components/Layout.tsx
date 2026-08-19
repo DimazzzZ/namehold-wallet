@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link, NavLink, Outlet } from "react-router-dom";
 import { useActiveProfile, useWriteCapability } from "../queries/wallet";
 import { Toast } from "./ui/Toast";
@@ -6,6 +7,9 @@ import { UpdateBanner } from "./UpdateBanner";
 import { PRIMARY_ROUTES } from "../lib/navigation";
 import { cn } from "../lib/utils";
 import { isTauri } from "../lib/runtime";
+import { useAppHotkeys } from "../hooks/useAppHotkeys";
+import { Cheatsheet } from "./Cheatsheet";
+import { CommandPalette } from "./CommandPalette";
 
 export function Layout() {
   const { data: profile } = useActiveProfile();
@@ -13,6 +17,10 @@ export function Layout() {
 
   const network = profile?.network ?? "no wallet";
   const canWrite = writeCap?.canWrite ?? false;
+
+  const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useAppHotkeys({ setCheatsheetOpen, setPaletteOpen });
 
   return (
     <div className="flex h-screen bg-gray-100">
@@ -59,13 +67,24 @@ export function Layout() {
             <div>
               <div className="text-[10px] text-gray-400 mt-0.5">v0.4.1</div>
             </div>
-            <Link
-              to="/about"
-              className="text-gray-400 hover:text-gray-600 transition-colors"
-              title="About"
-            >
-              ℹ️
-            </Link>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCheatsheetOpen(true)}
+                title="Keyboard shortcuts (Shift+?)"
+                aria-label="Keyboard shortcuts"
+                className="text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
+              >
+                ⌨️
+              </button>
+              <Link
+                to="/about"
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+                title="About"
+              >
+                ℹ️
+              </Link>
+            </div>
           </div>
         </div>
       </aside>
@@ -95,6 +114,8 @@ export function Layout() {
         </div>
       </main>
       <Toast />
+      <Cheatsheet open={cheatsheetOpen} onClose={() => setCheatsheetOpen(false)} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </div>
   );
 }

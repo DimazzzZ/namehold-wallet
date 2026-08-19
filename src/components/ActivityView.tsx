@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useActionHistory } from "../queries/read";
 import {
@@ -21,6 +21,7 @@ import { NameInfoModal } from "./NameInfoModal";
 import { BlockInfoModal } from "./BlockInfoModal";
 import { TxInfoModal } from "./TxInfoModal";
 import { mergeActivity, type MergedRow } from "../lib/activity";
+import { subscribeAction } from "../lib/actionBus";
 
 // Action label + badge variant mapping.
 export const ACTION_META: Record<string, { label: string; variant: "default" | "success" | "warning" | "error" | "info" }> = {
@@ -53,6 +54,19 @@ export function ActivityView() {
   const [infoName, setInfoName] = useState<string | null>(null);
   const [infoBlock, setInfoBlock] = useState<number | null>(null);
   const [infoTx, setInfoTx] = useState<string | null>(null);
+
+  // --- Keyboard shortcut subscriptions (action bus) ---
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const actionHandlerRef = useRef<(id: string) => void>(() => {});
+  actionHandlerRef.current = (actionId: string) => {
+    switch (actionId) {
+      case "activity:focusSearch":
+        searchInputRef.current?.focus();
+        break;
+    }
+  };
+  useEffect(() => subscribeAction((id) => actionHandlerRef.current(id)), []);
+
   const { data: rows = [], isLoading, isError, error } = useActionHistory();
   const { data: drafts = [] } = useTxDrafts();
   const { data: profile } = useActiveProfile();
@@ -145,11 +159,13 @@ export function ActivityView() {
       {/* Toolbar: search + action chips + status filter */}
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <Input
+          ref={searchInputRef}
           inputSize="sm"
           className="w-48 border-gray-200"
           placeholder="Search by name..."
           value={searchParams.get("q") ?? ""}
           onChange={(e) => setFilter("q", e.target.value)}
+          data-testid="activity-search-input"
         />
         <Select
           inputSize="sm"

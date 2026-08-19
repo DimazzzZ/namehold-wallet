@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useActiveProfile } from "../queries/wallet";
 import { useReadNames, useNamesActionCapabilities, useAuctionPositions } from "../queries/read";
 import {
@@ -18,6 +18,7 @@ import { PageHeader } from "./ui/PageHeader";
 import { normalizeNameInputAce } from "../lib/utils";
 import { displayName } from "../lib/idn";
 import type { HsdName, NameActionCapabilities, AuctionTaskState } from "../types";
+import { subscribeAction } from "../lib/actionBus";
 
 /**
  * Live task states that count as "still in the auction" for a position name
@@ -67,6 +68,21 @@ export function AuctionsView() {
   // Standalone batch-bid modal (paste names + shared bid/lockup). Lives here
   // on the Auctions page because bidding is a name-acquisition action.
   const [batchBidOpen, setBatchBidOpen] = useState(false);
+
+  // --- Keyboard shortcut subscriptions (action bus) ---
+  const lookupInputRef = useRef<HTMLInputElement>(null);
+  const actionHandlerRef = useRef<(id: string) => void>(() => {});
+  actionHandlerRef.current = (actionId: string) => {
+    switch (actionId) {
+      case "auctions:focusLookup":
+        lookupInputRef.current?.focus();
+        break;
+      case "auctions:batchBid":
+        if (!isWatchOnly) setBatchBidOpen(true);
+        break;
+    }
+  };
+  useEffect(() => subscribeAction((id) => actionHandlerRef.current(id)), []);
 
   // Names that are mid-auction or have actionable post-auction tasks.
   // We fetch capabilities for each name to determine the task state.
@@ -245,6 +261,7 @@ export function AuctionsView() {
           <div className="flex items-center">
             <span className="text-gray-400 text-sm mr-1">.</span>
             <Input
+              ref={lookupInputRef}
               inputSize="md"
               className="w-48"
               value={lookupName}
@@ -253,6 +270,7 @@ export function AuctionsView() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && lookupName.trim()) handleLookup();
               }}
+              data-testid="auctions-lookup-input"
             />
           </div>
           <Button

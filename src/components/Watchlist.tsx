@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/invoke";
 import { PageHeader } from "./ui/PageHeader";
@@ -12,6 +12,7 @@ import { formatHns } from "../lib/utils";
 import { useReadNames } from "../queries/read";
 import type { HsdName } from "../types";
 import { NameInfoModal } from "./NameInfoModal";
+import { subscribeAction } from "../lib/actionBus";
 
 interface WatchedName {
   name: string;
@@ -33,6 +34,7 @@ export function Watchlist() {
   const [editingTags, setEditingTags] = useState<string | null>(null);
   const [tagValue, setTagValue] = useState("");
   const [infoName, setInfoName] = useState<string | null>(null);
+  const addInputRef = useRef<HTMLInputElement>(null);
   const showToast = useUiStore((s) => s.showToast);
   const qc = useQueryClient();
 
@@ -170,6 +172,20 @@ export function Watchlist() {
     }
   };
 
+  // --- Keyboard shortcut subscriptions (action bus) ---
+  const actionHandlerRef = useRef<(id: string) => void>(() => {});
+  actionHandlerRef.current = (actionId: string) => {
+    switch (actionId) {
+      case "watchlist:focusAdd":
+        addInputRef.current?.focus();
+        break;
+      case "watchlist:exportCsv":
+        if (watched.length > 0) handleExportCsv();
+        break;
+    }
+  };
+  useEffect(() => subscribeAction((id) => actionHandlerRef.current(id)), []);
+
   const getState = (name: string): string | null => {
     const s = statuses.find((st) => st.name === name);
     if (s?.state) return s.state;
@@ -205,6 +221,7 @@ export function Watchlist() {
       {/* Add to watchlist + CSV buttons */}
       <div className="flex items-end gap-2 flex-wrap">
         <Input
+          ref={addInputRef}
           inputSize="md"
           className="w-56"
           value={addName}
