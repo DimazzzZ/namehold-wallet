@@ -15,6 +15,7 @@ import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
 import { useUiStore } from "../stores/ui";
 import { UpdatesSettings } from "./UpdatesSettings";
+import { useAppUpdate } from "../hooks/useAppUpdate";
 import {
   enable as enableAutostart,
   disable as disableAutostart,
@@ -526,6 +527,32 @@ export function Settings() {
         <UpdatesSettings />
       </div>
 
+      {/* Simulate updates: dev-only. Seeds the shared update store from the
+          last GitHub release (or a synthetic version when offline) so the
+          banner + Updates card show the "available" notice — WITHOUT
+          auto-installing. Clicking "Install now" then runs a fake download,
+          so the whole update UX can be verified without a real signed
+          release. Compiled out of production bundles via
+          `import.meta.env.DEV`; the backing `fetch_latest_release_meta`
+          command is also debug-gated on the Rust side. */}
+      {import.meta.env.DEV && isTauri() && (
+        <div
+          className="bg-white rounded p-4 border border-gray-200 space-y-3"
+          data-testid="debug-simulate-update-panel"
+        >
+          <h3 className="text-sm font-semibold text-gray-700">
+            Simulate updates (dev only)
+          </h3>
+          <div className="text-xs text-gray-500">
+            Shows the "update available" notice in the banner and Updates card
+            using the last GitHub release (or a synthetic version when
+            offline). It does not install automatically — click "Install now"
+            to run a fake download. No real download happens.
+          </div>
+          <SimulateUpdatePanel />
+        </div>
+      )}
+
       {/* Advanced (collapsed by default — rarely changed). */}
       <details className="bg-white rounded border border-gray-200 group">
         <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-gray-700">
@@ -637,6 +664,65 @@ function DebugNotificationsPanel() {
           {status}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Dev-only "simulate an update" panel. One button seeds the shared
+ * `useAppUpdate` store with the last GitHub release (or a synthetic bumped
+ * version when offline) so both the banner and the Updates card show the
+ * "available" notice. It does NOT auto-install — clicking "Install now" runs
+ * a fake download loop (see `install()` + the `simulated` flag). No real
+ * download happens — the real updater requires a signed artifact that dev
+ * builds don't produce.
+ *
+ * The panel is rendered behind `import.meta.env.DEV && isTauri()` in the
+ * Settings tree, so this component is tree-shaken from production bundles.
+ */
+function SimulateUpdatePanel() {
+  const { phase, progress, available, simulateUpdateFlow, reset } = useAppUpdate();
+
+  const pct = progress != null ? Math.round(progress * 100) : null;
+  // While a simulated install runs (triggered by clicking "Install now"),
+  // disable the seed button so a second click can't restart the flow mid-run.
+  const busy = phase === "installing";
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => simulateUpdateFlow()}
+          disabled={busy}
+          data-testid="sim-update-available"
+        >
+          {busy ? "Simulating…" : "Simulate update available"}
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => reset()}
+          disabled={phase === "idle"}
+          data-testid="sim-update-reset"
+        >
+          Reset
+        </Button>
+      </div>
+      <div
+        className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded p-2"
+        data-testid="sim-update-status"
+      >
+        Phase: <span className="font-mono">{phase}</span>
+        {available && (
+          <>
+            {" · v"}
+            <span className="font-mono">{available.version}</span>
+          </>
+        )}
+        {pct != null && phase === "installing" && <> · {pct}%</>}
+      </div>
     </div>
   );
 }

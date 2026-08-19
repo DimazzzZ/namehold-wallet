@@ -597,6 +597,8 @@ pub fn run() {
             commands::deadlines::scan_deadline_notifications,
             #[cfg(all(debug_assertions, not(test)))]
             commands::debug_notify::simulate_notification,
+            #[cfg(all(debug_assertions, not(test)))]
+            commands::dev_updates::fetch_latest_release_meta,
             #[cfg(desktop)]
             commands::updates::app_updates::check_for_update,
             #[cfg(desktop)]
