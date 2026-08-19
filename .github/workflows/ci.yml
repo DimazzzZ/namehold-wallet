@@ -46,6 +46,9 @@ jobs:
   rust-lint:
     name: Rust lint (fmt · clippy)
     runs-on: ubuntu-latest
+    # A single flaky apt mirror or a stuck runner step must not eat a 6-hour
+    # slot — bound the whole job so a hang fails fast and can be re-run.
+    timeout-minutes: 20
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
@@ -60,8 +63,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `apt-get update` occasionally hangs on an unreachable/throttled Ubuntu
+      # mirror on GitHub-hosted runners (observed on run 32168132022: this step
+      # hung 24+ min while the sibling rust-test job on a healthy runner passed
+      # in 4m9s). Bound it and retry — mirror blips are transient.
       - name: Refresh apt package index
-        run: sudo apt-get update
+        timeout-minutes: 5
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update && break
+            echo "::warning::apt-get update failed (attempt $i) — retrying in 10s"
+            sleep 10
+          done
       - name: Install Tauri system dependencies
         uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9  # v1.6.3
         with:
@@ -115,6 +128,9 @@ jobs:
   rust-test:
     name: Rust tests (926 tests via nextest)
     runs-on: ubuntu-latest
+    # A single flaky apt mirror or a stuck runner step must not eat a 6-hour
+    # slot — bound the whole job so a hang fails fast and can be re-run.
+    timeout-minutes: 20
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
@@ -129,8 +145,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `apt-get update` occasionally hangs on an unreachable/throttled Ubuntu
+      # mirror on GitHub-hosted runners (observed on run 32168132022: the
+      # sibling rust-lint job hung 24+ min on this exact step). Bound it and
+      # retry — mirror blips are transient.
       - name: Refresh apt package index
-        run: sudo apt-get update
+        timeout-minutes: 5
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update && break
+            echo "::warning::apt-get update failed (attempt $i) — retrying in 10s"
+            sleep 10
+          done
       - name: Install Tauri system dependencies
         uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9  # v1.6.3
         with:
