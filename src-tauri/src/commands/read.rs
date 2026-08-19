@@ -1867,16 +1867,6 @@ pub async fn reveal_next_receive_address(
     let id = resolve_profile(&state, wallet_profile_id)?
         .ok_or_else(|| AppError::InvalidInput("no active wallet profile".into()))?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    let profile = queries::get_wallet_profile(&conn, &id)?
-        .ok_or_else(|| AppError::InvalidInput("wallet profile not found".into()))?;
-    let network = crate::noncustodial::derivation::network_from_profile(&profile.network)?;
-    let xpub = crate::noncustodial::hd::ExtendedPubKey::from_xpub(network, &profile.account_xpub)?;
-    let derived = crate::noncustodial::derivation::next_unused_receive_address(
-        &conn,
-        &id,
-        profile.account_index as u32,
-        network,
-        &xpub,
-    )?;
+    let derived = crate::noncustodial::derivation::derive_next_for_profile(&conn, &id)?;
     Ok(derived.address)
 }

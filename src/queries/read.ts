@@ -446,7 +446,7 @@ export function useReceiveAddresses(): UseQueryResult<ReceiveAddressRow[]> {
  * address list. Also invalidates the balance/name queries so the sync engine's
  * next pass finds the new address without a manual refresh.
  */
-export function useDeriveNextReceiveAddress() {
+export function useRevealNextReceiveAddress() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (args: { walletProfileId: string | null }) =>

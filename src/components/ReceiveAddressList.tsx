@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { useReceiveAddresses, useDeriveNextReceiveAddress } from "../queries/read";
+import { useReceiveAddresses, useRevealNextReceiveAddress } from "../queries/read";
 import { useActiveProfile } from "../queries/wallet";
 import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { writeText } from "../lib/clipboard";
-import { truncateMiddle } from "../lib/utils";
+import { formatDate, truncateMiddle } from "../lib/utils";
 import { explorerAddressUrl } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { mapError } from "../lib/errors";
@@ -13,13 +13,13 @@ import { QRCodeSVG } from "qrcode.react";
 /**
  * Expandable list of all receive-branch addresses for the active wallet.
  * Each row shows the derivation index, truncated address, a used/unused badge,
- * a copy button, and a QR toggle. A "Generate new address" button at the
- * bottom allocates the next unused index.
+ * a copy button, a QR toggle, and the first-seen date. A "Generate new
+ * address" button at the bottom allocates the next unused index.
  */
 export function ReceiveAddressList() {
   const { data: addresses, isLoading } = useReceiveAddresses();
   const { data: profile } = useActiveProfile();
-  const deriveNext = useDeriveNextReceiveAddress();
+  const revealNext = useRevealNextReceiveAddress();
   const showToast = useUiStore((s) => s.showToast);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [qrIdx, setQrIdx] = useState<number | null>(null);
@@ -33,7 +33,7 @@ export function ReceiveAddressList() {
 
   const handleDerive = async () => {
     try {
-      await deriveNext.mutateAsync({ walletProfileId: profile?.id ?? null });
+      await revealNext.mutateAsync({ walletProfileId: profile?.id ?? null });
       showToast("New address generated", "success");
     } catch (e: unknown) {
       showToast(mapError(e, "build"), "error");
@@ -69,6 +69,13 @@ export function ReceiveAddressList() {
                 <Badge variant={row.used ? "default" : "success"}>
                   {row.used ? "used" : "fresh"}
                 </Badge>
+                <span
+                  className="text-gray-400 font-mono"
+                  data-testid={`first-seen-${row.index}`}
+                  title={`First derived ${row.firstSeenAt}`}
+                >
+                  {formatDate(row.firstSeenAt)}
+                </span>
                 {profile?.network === "mainnet" && (
                   <a
                     href={explorerAddressUrl(row.address)}
@@ -114,10 +121,10 @@ export function ReceiveAddressList() {
         size="sm"
         variant="ghost"
         onClick={handleDerive}
-        disabled={deriveNext.isPending}
+        disabled={revealNext.isPending}
         data-testid="derive-next-address-btn"
       >
-        {deriveNext.isPending ? "Generating…" : "+ Generate new address"}
+        {revealNext.isPending ? "Generating…" : "+ Generate new address"}
       </Button>
     </div>
   );

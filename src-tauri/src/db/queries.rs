@@ -1454,21 +1454,18 @@ pub fn list_receive_addresses(
     profile_id: &str,
     account_index: u32,
 ) -> Result<Vec<ReceiveAddressRow>, AppError> {
-    // Use the canonical branch constant so this query can never drift from the
-    // value address allocation uses (`next_unused_receive_address`).
-    use crate::noncustodial::derivation::BRANCH_RECEIVE;
-    let mut stmt = conn.prepare(
+    // Use the canonical branch constant + the shared `used` SQL fragment so
+    // this query can never drift from what address allocation
+    // (`next_unused_receive_address`) skips over.
+    use crate::noncustodial::derivation::{ADDRESS_USED_PREDICATE, BRANCH_RECEIVE};
+    let sql = format!(
         "SELECT d.child_index, d.address, d.created_at,
-                (EXISTS (SELECT 1 FROM tracked_utxos u
-                         WHERE u.wallet_profile_id = d.wallet_profile_id
-                           AND u.address = d.address)
-                 OR EXISTS (SELECT 1 FROM bid_commitments b
-                            WHERE b.wallet_profile_id = d.wallet_profile_id
-                              AND b.address = d.address)) AS used
+                {ADDRESS_USED_PREDICATE} AS used
          FROM derived_addresses d
          WHERE d.wallet_profile_id = ?1 AND d.account_index = ?2 AND d.branch = ?3
-         ORDER BY d.child_index",
-    )?;
+         ORDER BY d.child_index"
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
         params![profile_id, account_index as i64, BRANCH_RECEIVE as i64],
         |row| {
@@ -2847,7 +2844,9 @@ mod noncustodial_query_tests {
 
     #[test]
     fn next_unused_receive_address_returns_index_after_used() {
-        use crate::noncustodial::derivation::{derive_one, next_unused_receive_address, BRANCH_RECEIVE};
+        use crate::noncustodial::derivation::{
+            derive_one, next_unused_receive_address, BRANCH_RECEIVE,
+        };
         use crate::noncustodial::hd::{seed_from_mnemonic, ExtendedPrivKey, ExtendedPubKey};
         use crate::noncustodial::network::Network;
 
@@ -2870,7 +2869,11 @@ mod noncustodial_query_tests {
                 (wallet_profile_id, account_index, branch, child_index,
                  address, script_pubkey_hex, public_key_hex)
              VALUES ('p1', 0, 0, 0, ?1, ?2, ?3)",
-            rusqlite::params![&addr0.address, &addr0.script_pubkey_hex, &addr0.public_key_hex],
+            rusqlite::params![
+                &addr0.address,
+                &addr0.script_pubkey_hex,
+                &addr0.public_key_hex
+            ],
         )
         .unwrap();
         conn.execute(
@@ -2883,10 +2886,7 @@ mod noncustodial_query_tests {
         .unwrap();
 
         // With max(used) = 0, next_unused_receive_address should derive at index 1.
-        let next = next_unused_receive_address(
-            &conn, "p1", 0, Network::Main, &xpub,
-        )
-        .unwrap();
+        let next = next_unused_receive_address(&conn, "p1", 0, Network::Main, &xpub).unwrap();
         assert_eq!(next.child_index, 1, "should derive at max(used)+1 = 1");
         assert_eq!(next.branch, BRANCH_RECEIVE);
 
@@ -2900,7 +2900,10 @@ mod noncustodial_query_tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(persisted, 1, "new address must be in derived_addresses for sync");
+        assert_eq!(
+            persisted, 1,
+            "new address must be in derived_addresses for sync"
+        );
     }
 
     fn insert_utxo(conn: &Connection, txid: &str, vout: i64, value: i64, class: &str, cov: i64) {

@@ -27,6 +27,27 @@ pub const BRANCH_RECEIVE: u32 = 0;
 /// BIP44 internal (change) chain.
 pub const BRANCH_CHANGE: u32 = 1;
 
+/// Single source of truth for the "address is used" predicate.
+///
+/// A derived address is "used" when either (a) a tracked UTXO or (b) a bid
+/// commitment references it under the same wallet profile. Both allocation
+/// (`next_unused_receive_address`) and the receive-list UI query
+/// (`db::queries::list_receive_addresses`) must apply the identical test, or
+/// the list would mark different addresses as used than the ones allocation
+/// skips over.
+///
+/// The fragment is a correlated subexpression referencing the outer
+/// `derived_addresses` alias `d` — inline it into a query whose FROM clause
+/// aliases the table as `d`. It contains no bind parameters, so inlining it
+/// via `format!()` does not shift the positional-index numbering of the
+/// surrounding query.
+pub(crate) const ADDRESS_USED_PREDICATE: &str = "(EXISTS (SELECT 1 FROM tracked_utxos u \
+                    WHERE u.wallet_profile_id = d.wallet_profile_id \
+                      AND u.address = d.address) \
+          OR EXISTS (SELECT 1 FROM bid_commitments b \
+                    WHERE b.wallet_profile_id = d.wallet_profile_id \
+                      AND b.address = d.address))";
+
 /// A single derived address with everything the sync engine and UI need.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DerivedAddress {
@@ -182,14 +203,11 @@ pub fn next_unused_receive_address(
 ) -> Result<DerivedAddress, AppError> {
     let max_used: Option<i64> = conn
         .query_row(
-            "SELECT MAX(d.child_index) FROM derived_addresses d
-             WHERE d.wallet_profile_id = ?1 AND d.account_index = ?2 AND d.branch = ?3
-               AND (EXISTS (SELECT 1 FROM tracked_utxos u
-                            WHERE u.wallet_profile_id = d.wallet_profile_id
-                              AND u.address = d.address)
-                 OR EXISTS (SELECT 1 FROM bid_commitments b
-                            WHERE b.wallet_profile_id = d.wallet_profile_id
-                              AND b.address = d.address))",
+            &format!(
+                "SELECT MAX(d.child_index) FROM derived_addresses d
+                 WHERE d.wallet_profile_id = ?1 AND d.account_index = ?2 AND d.branch = ?3
+                   AND {ADDRESS_USED_PREDICATE}"
+            ),
             params![profile_id, account_index as i64, BRANCH_RECEIVE as i64],
             |row| row.get(0),
         )
@@ -204,6 +222,35 @@ pub fn next_unused_receive_address(
     let derived = derive_one(network, account_xpub, BRANCH_RECEIVE, next)?;
     persist_address(conn, profile_id, account_index, &derived)?;
     Ok(derived)
+}
+
+/// Resolve a profile's derivation context and allocate its next unused
+/// receive-branch address.
+///
+/// Wraps the network→xpub→derive dance so callers don't have to reach into
+/// `crate::noncustodial::hd` and `network_from_profile` themselves. Works for
+/// every profile kind, including watch-only (derivation is pure-public).
+///
+/// Errors:
+///   - `AppError::InvalidInput("wallet profile not found")` if `profile_id`
+///     isn't in `wallet_profiles`. Preserves the exact wording previously
+///     produced inline by `commands::read::reveal_next_receive_address`, so
+///     the frontend error contract is unchanged.
+pub fn derive_next_for_profile(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<DerivedAddress, AppError> {
+    let profile = crate::db::queries::get_wallet_profile(conn, profile_id)?
+        .ok_or_else(|| AppError::InvalidInput("wallet profile not found".into()))?;
+    let network = network_from_profile(&profile.network)?;
+    let xpub = ExtendedPubKey::from_xpub(network, &profile.account_xpub)?;
+    next_unused_receive_address(
+        conn,
+        profile_id,
+        profile.account_index as u32,
+        network,
+        &xpub,
+    )
 }
 
 #[cfg(test)]

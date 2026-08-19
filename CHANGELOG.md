@@ -40,6 +40,16 @@
   hijack typing. The cheatsheet groups bindings by category and filters
   action/list keys down to the ones that actually work on the current
   page, keeping the reference honest.
+- **Receive address list.** A "View all addresses" disclosure in the Receive
+  card expands a scrollable list of every derived receive-branch address.
+  Each row shows the derivation index, truncated address (with full-address
+  tooltip), a used/fresh badge, the first-seen date, a copy-to-clipboard
+  button, a QR-code toggle, and a mainnet explorer link. A "Generate new
+  address" button at the bottom allocates the next unused receive index.
+  Backend: new `list_receive_addresses` + `reveal_next_receive_address`
+  Tauri commands. The "used" predicate (UTXO OR bid_commitment) is defined
+  once (`derivation::ADDRESS_USED_PREDICATE`) and shared between address
+  allocation and the list query.
 - `useDeleteTxDraft` mutation hook — lets the frontend discard a draft and
   free its reserved coins.
 - `draftId` field on merged activity rows — enables the UI to target specific
