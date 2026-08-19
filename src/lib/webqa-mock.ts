@@ -766,6 +766,8 @@ const handlers: Record<string, Handler> = {
 
   refresh_tx_confirmations: () => null,
 
+  delete_tx_draft: () => null,
+
   // The signer session helpers behave as already-unlocked, so `useExecuteDraft`
   // skips its unlock leg and jumps straight to sign → broadcast in the mock.
   unlock_local_signer: () => ({

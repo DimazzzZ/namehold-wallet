@@ -1,0 +1,27 @@
+name: Labeler
+
+# Path-based auto-labeling for pull requests.
+# Applies `domain:` labels (and `type: docs` for pure-docs PRs) based on the
+# files a PR touches. Config: .github/labeler.yml. Reference doc:
+# .mimocode/docs/triage-labels.md (local, gitignored).
+#
+# `type:` (except docs), `priority:`, triage, and flag labels are intentionally
+# NOT auto-applied — those are judgement calls left to the author or triager.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    name: Apply domain labels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          sync-labels: true

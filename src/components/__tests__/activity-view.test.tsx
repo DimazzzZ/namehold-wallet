@@ -334,4 +334,227 @@ describe("ActivityView — canonical table design", () => {
     expect(tables.length).toBe(1);
     assertCanonicalTable(tables[0] as HTMLTableElement, { name: "Activity" });
   });
+
+  it("batch draft row: composite label is non-clickable; individual names are reachable via safe links", async () => {
+    // A batch-bid draft with 2 names. Backend persists the synthetic label
+    // "js + 1 more" as `name`, and the true list as `nameList`. The activity
+    // row shows the composite as a collapsed toggle; clicking expands into
+    // clickable individual names, and clicking one opens NameInfoModal.
+    invokeMock.mockImplementation((cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "read_action_history":
+          return Promise.resolve([]);
+        case "list_tx_drafts":
+          return Promise.resolve([
+            {
+              id: "draft-batch-1",
+              walletProfileId: "p1",
+              action: "batch-bid",
+              status: "draft",
+              summary: {
+                action: "batch-bid",
+                sendTotalDoos: 0,
+                feeDoos: 5_000,
+                changeDoos: 0,
+                inputTotalDoos: 0,
+                numInputs: 1,
+                recipientAddress: null,
+                txid: null,
+                warnings: [],
+                name: "js + 1 more",
+                nameList: ["js", "c"],
+              },
+              errorMessage: null,
+              txid: null,
+              confirmationHeight: null,
+              createdAt: "2026-08-14 12:00:00",
+            },
+          ]);
+        default:
+          return Promise.resolve(null);
+      }
+    });
+    render(<ActivityView />, { wrapper: wrapper() });
+
+    // Composite label renders as a toggle button (not a name-info link).
+    const summaryToggle = await screen.findByTestId("activity-batch-summary-toggle");
+    expect(summaryToggle.textContent).toContain("+ 1 more");
+
+    // Individual names MUST NOT be visible by default (collapsed).
+    expect(
+      screen.queryByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".js"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".c"),
+    ).not.toBeInTheDocument();
+
+    // Click the summary to expand.
+    fireEvent.click(summaryToggle);
+
+    // Individual name links MUST now be visible as real buttons.
+    await waitFor(() =>
+      expect(
+        screen.getByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".js"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText((_, el) => el?.tagName === "BUTTON" && el.textContent === ".c"),
+    ).toBeInTheDocument();
+
+    // The composite toggle itself never routes through onNameClick — it
+    // has no data-testid="activity-name-info-link". Only the expanded
+    // per-name buttons do.
+    const infoLinks = screen.getAllByTestId("activity-name-info-link");
+    expect(infoLinks).toHaveLength(2);
+  });
+});
+
+describe("ActivityView — inline draft actions", () => {
+  /** Build a single-draft `list_tx_drafts` payload with the given status. */
+  function draftPayload(status: string, overrides: Record<string, unknown> = {}) {
+    return [
+      {
+        id: "draft-act-1",
+        walletProfileId: "p1",
+        action: "send_hns",
+        status,
+        summary: {
+          action: "send_hns",
+          sendTotalDoos: 1_000_000,
+          feeDoos: 5_000,
+          changeDoos: 0,
+          inputTotalDoos: 1_005_000,
+          numInputs: 1,
+          recipientAddress: "rs1qrecipient",
+          txid: null,
+          warnings: [],
+          name: null,
+          nameList: null,
+        },
+        errorMessage: null,
+        txid: null,
+        confirmationHeight: null,
+        createdAt: "2026-08-14 12:00:00",
+        ...overrides,
+      },
+    ];
+  }
+
+  function routeDrafts(status: string, extra?: (cmd: string) => unknown) {
+    return (cmd: string) => {
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "read_action_history":
+          return Promise.resolve([]);
+        case "list_tx_drafts":
+          return Promise.resolve(draftPayload(status));
+        case "get_signer_session":
+          return Promise.resolve({
+            walletProfileId: "p1",
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 3_600_000,
+          });
+        default:
+          return extra ? Promise.resolve(extra(cmd)) : Promise.resolve(null);
+      }
+    };
+  }
+
+  it("draft row shows Sign & broadcast + Discard; broadcasted row shows neither", async () => {
+    invokeMock.mockImplementation(routeDrafts("draft"));
+    render(<ActivityView />, { wrapper: wrapper() });
+
+    const execBtn = await screen.findByTestId("activity-draft-execute");
+    expect(execBtn.textContent).toBe("Sign & broadcast");
+    expect(screen.getByTestId("activity-draft-discard")).toBeInTheDocument();
+  });
+
+  it("broadcasted row offers no draft actions", async () => {
+    invokeMock.mockImplementation(routeDrafts("broadcasted"));
+    render(<ActivityView />, { wrapper: wrapper() });
+    // Wait for the table to render (fee cell present).
+    await waitFor(() =>
+      expect(screen.getByText("Pending")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("activity-draft-execute")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("activity-draft-discard")).not.toBeInTheDocument();
+  });
+
+  it("failed row shows Retry + Discard", async () => {
+    invokeMock.mockImplementation(routeDrafts("failed"));
+    render(<ActivityView />, { wrapper: wrapper() });
+    const execBtn = await screen.findByTestId("activity-draft-execute");
+    expect(execBtn.textContent).toBe("Retry");
+    expect(screen.getByTestId("activity-draft-discard")).toBeInTheDocument();
+  });
+
+  it("clicking Sign & broadcast triggers sign_tx_draft then broadcast_tx_draft", async () => {
+    const calls: string[] = [];
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "sign_tx_draft" || cmd === "broadcast_tx_draft") calls.push(cmd);
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "read_action_history":
+          return Promise.resolve([]);
+        case "list_tx_drafts":
+          return Promise.resolve(draftPayload("draft"));
+        case "get_signer_session":
+          return Promise.resolve({ walletProfileId: "p1", unlocked: true, unlockedUntilEpochMs: Date.now() + 3_600_000 });
+        case "sign_tx_draft":
+          return Promise.resolve({ id: "draft-act-1", status: "signed" });
+        case "broadcast_tx_draft":
+          return Promise.resolve({ draftId: "draft-act-1", txid: "abcdef012345", status: "broadcasted" });
+        default:
+          return Promise.resolve(null);
+      }
+    });
+    render(<ActivityView />, { wrapper: wrapper() });
+    const execBtn = await screen.findByTestId("activity-draft-execute");
+    fireEvent.click(execBtn);
+    await waitFor(() => {
+      expect(calls).toEqual(["sign_tx_draft", "broadcast_tx_draft"]);
+    });
+  });
+
+  it("clicking Discard (confirmed) triggers delete_tx_draft", async () => {
+    const origConfirm = window.confirm;
+    window.confirm = vi.fn(() => true);
+    const calls: string[] = [];
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "delete_tx_draft") calls.push(cmd);
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "read_action_history":
+          return Promise.resolve([]);
+        case "list_tx_drafts":
+          return Promise.resolve(draftPayload("draft"));
+        case "get_signer_session":
+          return Promise.resolve({ walletProfileId: "p1", unlocked: true, unlockedUntilEpochMs: Date.now() + 3_600_000 });
+        case "delete_tx_draft":
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve(null);
+      }
+    });
+    render(<ActivityView />, { wrapper: wrapper() });
+    const discardBtn = await screen.findByTestId("activity-draft-discard");
+    fireEvent.click(discardBtn);
+    await waitFor(() => {
+      expect(calls).toEqual(["delete_tx_draft"]);
+    });
+    window.confirm = origConfirm;
+  });
+
+  it("Txid cell for a draft row renders a span, not a button (regression guard)", async () => {
+    invokeMock.mockImplementation(routeDrafts("draft"));
+    render(<ActivityView />, { wrapper: wrapper() });
+    await screen.findByTestId("activity-draft-execute");
+    // No tx-info-link button exists for a draft with null txid.
+    expect(screen.queryByTestId("activity-tx-info-link")).not.toBeInTheDocument();
+  });
 });

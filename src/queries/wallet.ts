@@ -285,6 +285,21 @@ export function useBroadcastTxDraft() {
   });
 }
 
+/**
+ * Discard a pending draft, freeing any coins it reserved. The backend
+ * (`delete_tx_draft`) refuses drafts already in a `broadcasted` /
+ * `confirmed` / `broadcast_pending` state — callers should only offer this
+ * for `draft` / `signed` / `failed` / `dropped` rows and surface the error
+ * otherwise.
+ */
+export function useDeleteTxDraft() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (draftId: string) => invoke<void>("delete_tx_draft", { draftId }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["wallet"] }),
+  });
+}
+
 /** True for the "Wallet locked" / "wallet is locked" `AppError` text (see
  *  `error.rs::AppError::WalletLocked` and its `sign_tx_draft`-style profile
  *  -mismatch message, which is deliberately NOT matched here — only the

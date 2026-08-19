@@ -561,6 +561,7 @@ pub fn run() {
             commands::tx::get_wallet_balances,
             commands::names::build_open_draft,
             commands::names::build_bid_draft,
+            commands::names::build_batch_bid_draft,
             commands::names::build_reveal_draft,
             commands::names::build_redeem_draft,
             commands::names::build_register_draft,

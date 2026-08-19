@@ -6,7 +6,7 @@ import { displayName } from "../lib/idn";
 
 export interface BatchConfirmModalProps {
   open: boolean;
-  action: "renew" | "reveal" | "redeem" | "finalize";
+  action: "bid" | "renew" | "reveal" | "redeem" | "finalize";
   names: string[];
   estimatedFeeDoos: number;
   onConfirm: () => void | Promise<void>;
@@ -30,6 +30,7 @@ export function BatchConfirmModal({
   const [confirming, setConfirming] = useState(false);
 
   const actionLabel = {
+    bid: "bid",
     renew: "renew",
     reveal: "reveal",
     redeem: "redeem",

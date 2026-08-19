@@ -10,6 +10,7 @@ import {
 } from "../lib/auction";
 import { NameActionsModal } from "./NameActionsModal";
 import { NameInfoModal } from "./NameInfoModal";
+import { BatchBidModal } from "./BatchBidModal";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
 import { Input } from "./ui/Input";
@@ -56,11 +57,16 @@ export function AuctionsView() {
   // capability fetch is pinned to this wallet.
   const activeProfile = useActiveProfile().data ?? null;
   const activeProfileId = activeProfile?.id ?? null;
+  // Watch-only wallets can't sign, so batch bidding is hidden for them.
+  const isWatchOnly = activeProfile?.watchOnly ?? false;
   const { data: positionNames = [] } = useAuctionPositions(activeProfileId);
 
   const [lookupName, setLookupName] = useState("");
   const [manageName, setManageName] = useState<string | null>(null);
   const [infoName, setInfoName] = useState<string | null>(null);
+  // Standalone batch-bid modal (paste names + shared bid/lockup). Lives here
+  // on the Auctions page because bidding is a name-acquisition action.
+  const [batchBidOpen, setBatchBidOpen] = useState(false);
 
   // Names that are mid-auction or have actionable post-auction tasks.
   // We fetch capabilities for each name to determine the task state.
@@ -257,6 +263,16 @@ export function AuctionsView() {
           >
             Look up
           </Button>
+          {!isWatchOnly && (
+            <Button
+              size="md"
+              variant="ghost"
+              onClick={() => setBatchBidOpen(true)}
+              data-testid="open-batch-bid-btn"
+            >
+              Batch bid…
+            </Button>
+          )}
         </div>
       </div>
 
@@ -308,6 +324,12 @@ export function AuctionsView() {
           onClose={() => setInfoName(null)}
         />
       )}
+
+      <BatchBidModal
+        open={batchBidOpen}
+        onClose={() => setBatchBidOpen(false)}
+        activeProfileId={activeProfileId}
+      />
     </div>
   );
 }

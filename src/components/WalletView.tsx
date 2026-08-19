@@ -1014,13 +1014,15 @@ export function WalletView() {
             Owned Names ({filteredNames.length}
             {filteredNames.length !== names.length ? ` of ${names.length}` : ""})
           </div>
-          <Input
-            inputSize="md"
-            className="w-48"
-            value={nameQuery}
-            onChange={(e) => setNameQuery(e.target.value)}
-            placeholder="Filter…"
-          />
+         <div className="flex items-center gap-2">
+            <Input
+              inputSize="md"
+              className="w-48"
+              value={nameQuery}
+              onChange={(e) => setNameQuery(e.target.value)}
+              placeholder="Filter…"
+            />
+          </div>
         </div>
         {names.length > 0 ? (
           filteredNames.length > 0 ? (
@@ -1220,7 +1222,8 @@ export function WalletView() {
                   <th className="py-1 pr-4 text-right">Fee</th>
                   <th className="py-1 pr-4">Status</th>
                   <th className="py-1 pr-4">Block</th>
-                  <th className="py-1">Txid</th>
+                  <th className="py-1 pr-4">Txid</th>
+                  <th className="py-1">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -1233,6 +1236,8 @@ export function WalletView() {
                       onNameClick={setInfoName}
                       onBlockClick={setInfoBlock}
                       onTxClick={setInfoTx}
+                      enableDraftActions
+                      profileId={profile?.id ?? null}
                     />
                   ))}
               </tbody>
