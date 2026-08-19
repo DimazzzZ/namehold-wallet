@@ -12,6 +12,28 @@
   `whitespace-nowrap` so buttons never wrap to a second line.
 
 ### Added
+- **Keyboard-first navigation.** A cheatsheet overlay (Shift+?) documents
+  every binding, and every panel now has route-scoped shortcuts so common
+  flows never need the mouse:
+  - **Command palette** (⌘K / Ctrl+K) — fuzzy-searchable list of the
+    navigation targets and view actions available on the current page.
+    Type to filter, ↑/↓ to move, Enter to run, Esc to close. Write-only
+    actions (Send, Batch Bid) are hidden on read-only wallets so you can't
+    open a dead-end flow.
+  - **Wallet (`/`)** — `s` open Send, `r` refresh (Sync), `u` toggle
+    lock/unlock, `q` toggle the receive QR, `/` focus the name filter, and
+    `j`/`k` + `Enter` to walk the Owned Names list and open the selected
+    row's Name Actions modal without touching the mouse.
+  - **Auctions (`/auctions`)** — `/` focus the lookup input, `b` open the
+    Batch Bid modal.
+  - **Activity (`/activity`)** — `/` focus the search input.
+  - **Watchlist (`/watchlist`)** — `a` focus the add-name input, `e`
+    export CSV.
+  All action keys are suppressed while an input is focused or a modal is
+  open (the palette itself layers above dialogs), so shortcuts never
+  hijack typing. The cheatsheet groups bindings by category and filters
+  action/list keys down to the ones that actually work on the current
+  page, keeping the reference honest.
 - `useDeleteTxDraft` mutation hook — lets the frontend discard a draft and
   free its reserved coins.
 - `draftId` field on merged activity rows — enables the UI to target specific

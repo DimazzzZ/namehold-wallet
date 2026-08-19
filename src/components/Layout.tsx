@@ -9,6 +9,7 @@ import { cn } from "../lib/utils";
 import { isTauri } from "../lib/runtime";
 import { useAppHotkeys } from "../hooks/useAppHotkeys";
 import { Cheatsheet } from "./Cheatsheet";
+import { CommandPalette } from "./CommandPalette";
 
 export function Layout() {
   const { data: profile } = useActiveProfile();
@@ -18,7 +19,8 @@ export function Layout() {
   const canWrite = writeCap?.canWrite ?? false;
 
   const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
-  useAppHotkeys({ setCheatsheetOpen });
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useAppHotkeys({ setCheatsheetOpen, setPaletteOpen });
 
   return (
     <div className="flex h-screen bg-gray-100">
@@ -113,6 +115,7 @@ export function Layout() {
       </main>
       <Toast />
       <Cheatsheet open={cheatsheetOpen} onClose={() => setCheatsheetOpen(false)} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </div>
   );
 }

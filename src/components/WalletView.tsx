@@ -65,6 +65,7 @@ import {
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
 import type { NameActionCapabilities, TxDraftSummary } from "../types";
+import { subscribeAction } from "../lib/actionBus";
 
 export function WalletView() {
   const qc = useQueryClient();
@@ -185,6 +186,62 @@ export function WalletView() {
     }
     wasRunningRef.current = isRunning;
   }, [isRunning, manualSync, setManualSync]);
+
+  // --- Keyboard shortcut subscriptions (action bus) ---
+  const filterInputRef = useRef<HTMLInputElement>(null);
+  const [selectedNameIndex, setSelectedNameIndex] = useState<number>(-1);
+  const selectedRowRef = useRef<HTMLTableRowElement>(null);
+
+  // Reset list selection when the filter changes (list content shifts).
+  useEffect(() => {
+    setSelectedNameIndex(-1);
+  }, [nameQuery]);
+
+  // Scroll the selected row into view.
+  useEffect(() => {
+    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [selectedNameIndex]);
+
+  // Ref-indirection for the action handler — avoids re-subscribing on every
+  // render while still capturing fresh closures.
+  const actionHandlerRef = useRef<(id: string) => void>(() => {});
+  actionHandlerRef.current = (actionId: string) => {
+    switch (actionId) {
+      case "wallet:send":
+        if (canWrite) setSendOpen(true);
+        break;
+      case "wallet:sync":
+        handleSync();
+        break;
+      case "wallet:toggleLock":
+        if (unlocked) handleLock();
+        else handleUnlock();
+        break;
+      case "wallet:toggleQr":
+        setShowQr((v) => !v);
+        break;
+      case "wallet:focusFilter":
+        filterInputRef.current?.focus();
+        break;
+      case "wallet:list:next":
+        setSelectedNameIndex((i) =>
+          Math.min(i + 1, filteredNames.length - 1),
+        );
+        break;
+      case "wallet:list:prev":
+        setSelectedNameIndex((i) => Math.max(i - 1, 0));
+        break;
+      case "wallet:list:open":
+        if (selectedNameIndex >= 0 && filteredNames[selectedNameIndex]) {
+          setManageName(filteredNames[selectedNameIndex]!.name);
+        }
+        break;
+      case "wallet:list:clear":
+        setSelectedNameIndex(-1);
+        break;
+    }
+  };
+  useEffect(() => subscribeAction((id) => actionHandlerRef.current(id)), []);
 
   const resetSend = () => {
     setSendOpen(false);
@@ -1027,11 +1084,13 @@ export function WalletView() {
           </div>
          <div className="flex items-center gap-2">
             <Input
+              ref={filterInputRef}
               inputSize="md"
               className="w-48"
               value={nameQuery}
               onChange={(e) => setNameQuery(e.target.value)}
               placeholder="Filter…"
+              data-testid="wallet-name-filter"
             />
           </div>
         </div>
@@ -1065,7 +1124,18 @@ export function WalletView() {
                 </thead>
                 <tbody>
                   {filteredNames.map((n) => (
-                    <tr key={n.name} className="border-t border-gray-100 hover:bg-gray-50">
+                    <tr
+                      key={n.name}
+                      ref={filteredNames.indexOf(n) === selectedNameIndex ? selectedRowRef : undefined}
+                      aria-selected={filteredNames.indexOf(n) === selectedNameIndex}
+                      tabIndex={filteredNames.indexOf(n) === selectedNameIndex ? 0 : -1}
+                      className={`border-t border-gray-100 hover:bg-gray-50 cursor-pointer ${
+                        filteredNames.indexOf(n) === selectedNameIndex
+                          ? "bg-blue-50 ring-1 ring-blue-300"
+                          : ""
+                      }`}
+                      onClick={() => setManageName(n.name)}
+                    >
                       <td className="py-1 pr-4">
                         <input
                           type="checkbox"
