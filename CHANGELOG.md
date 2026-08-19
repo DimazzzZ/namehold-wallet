@@ -16,6 +16,16 @@
   free its reserved coins.
 - `draftId` field on merged activity rows — enables the UI to target specific
   drafts for sign/broadcast/discard without a lookup.
+- **Fee-rate control** — a global default fee rate in Settings > Advanced
+  (`fee_rate_doos_per_kvb` setting, in doos per 1000 vbytes) plus a
+  per-transaction override widget (`FeeRateOverride`) shown in every
+  transaction flow: Send, Batch Renew/Reveal/Redeem/Finalize, single Bid
+  (Name Actions modal), and Batch Bid. The override is a collapsible
+  "Advanced" disclosure with validation, min-value clamping (1000 doos/kvB =
+  1 sat/byte), and inline help. The Rust backend's `resolve_fee_rate` now
+  reads the setting before falling through to `estimatesmartfee` or the
+  relay-floor default. New shared library: `src/lib/feeRate.ts`
+  (parseDoosPerKvb, doosPerKvbToSatsPerByte, parseFeeRateArg).
 - **DEV: Simulate update flow** — a dev-only "Simulate update available"
   panel in Settings (gated behind `import.meta.env.DEV && isTauri()`) seeds
   the shared `useAppUpdate` store from the latest GitHub release (or a
