@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Fixed
+- **`S` (and other write-gated) keyboard shortcuts now explain themselves.**
+  Pressing `S` on the Wallet page to open Send used to do nothing at all
+  when the wallet couldn't send yet (read-only wallet, locked signer, or
+  coins not synced) — no modal, no message. It now surfaces the same
+  guidance the disabled Send button shows (e.g. "Unlock your wallet to sign
+  transactions.") as a toast, so the key never silently no-ops.
 - **Inline draft actions in Activity table.** Draft rows (unsigned, failed,
   signed-but-unbroadcast) now show contextual "Sign & broadcast" / "Broadcast"
   / "Retry" and "Discard" buttons directly in the row, so you can act on

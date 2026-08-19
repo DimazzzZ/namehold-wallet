@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -1301,5 +1301,52 @@ describe("WalletView — Recent transactions Badge labels", () => {
     // Unknown action falls back to "Other" badge.
     const otherBadge = screen.getByText("Other");
     expect(otherBadge.tagName).toBe("SPAN");
+  });
+});
+
+describe("WalletView — keyboard S key (wallet:send)", () => {
+  it("shows a toast when canWrite is false (read-only / locked)", async () => {
+    // Import the stores/bus we need to inspect.
+    const { useUiStore } = await import("../../stores/ui");
+    const { dispatchAction } = await import("../../lib/actionBus");
+
+    invokeMock.mockImplementation(routeInvoke({ unlocked: false, canWrite: false }));
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+
+    // Clear any pre-existing toasts.
+    useUiStore.getState().clearToast();
+
+    // Dispatch the same action the hotkey hook would fire.
+    act(() => { dispatchAction("wallet:send"); });
+
+    // The handler should have enqueued a toast with the reason.
+    const queue = useUiStore.getState().toastQueue;
+    expect(queue.length).toBeGreaterThan(0);
+    expect(queue[0]!.message).toMatch(/unlock|sign|sync|connect/i);
+    expect(queue[0]!.type).toBe("info");
+
+    // And the Send modal should NOT be open.
+    expect(screen.queryByText(/Recipient address/i)).not.toBeInTheDocument();
+  });
+
+  it("opens the Send modal when canWrite is true", async () => {
+    const { useUiStore } = await import("../../stores/ui");
+    const { dispatchAction } = await import("../../lib/actionBus");
+
+    invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true }));
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText("Primary");
+
+    useUiStore.getState().clearToast();
+    act(() => { dispatchAction("wallet:send"); });
+
+    // The Send modal should open (it has a "Recipient address" placeholder).
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/rs1q/i)).toBeInTheDocument();
+    });
+
+    // No toast should have been shown.
+    expect(useUiStore.getState().toastQueue.length).toBe(0);
   });
 });

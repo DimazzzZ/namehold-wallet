@@ -208,7 +208,19 @@ export function WalletView() {
   actionHandlerRef.current = (actionId: string) => {
     switch (actionId) {
       case "wallet:send":
-        if (canWrite) setSendOpen(true);
+        if (canWrite) {
+          setSendOpen(true);
+        } else {
+          // Match the Send button's UX: the keyboard path must not silently
+          // no-op. Surface the same reason the disabled button shows.
+          showToast(
+            writeCap?.reason ??
+              (needsNodeSync
+                ? "Sync your coins below, then unlock to send."
+                : "Connect a node, Refresh to sync your coins, then unlock to send."),
+            "info",
+          );
+        }
         break;
       case "wallet:sync":
         handleSync();
