@@ -76,6 +76,18 @@
   any name not in BIDDING/OPENING phase and persists nothing (all-or-nothing
   atomicity guard).
 
+### CI / tooling
+- **Fix flaky apt-get update timeout in CI.** The `Refresh apt package index`
+  step was hard-failing when `apt-get update` timed out on a throttled Ubuntu
+  mirror (observed on run 32273872139: rust-lint hit the 90s cap on all 3
+  retries while rust-test fetched the same 11 MB index in 54s on a healthier
+  mirror). Made the step best-effort (no `exit 1`) so a slow mirror can't flake
+  the job on the common cache-hit path. Per-attempt timeout raised 90s → 120s.
+  Applied to both CI and release workflows.
+- **Upgrade actions/labeler v5 → v7.** Fixes the Node.js 20 deprecation warning
+  on GitHub-hosted runners (v7 targets Node.js 24 natively). No config changes
+  needed; labeler.yml format is stable across v5–v7.
+
 ### Fixed
 - **"Launch at login" no longer starts the wrong build.** If you'd ever
   enabled launch-at-login from a development build, macOS would keep
