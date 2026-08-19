@@ -16,6 +16,8 @@ import { validateBidInputs } from "../lib/auction";
 import { hnsToDollarydoos } from "../lib/utils";
 import { mapError } from "../lib/errors";
 import { useUiStore } from "../stores/ui";
+import { FeeRateOverride } from "./ui/FeeRateOverride";
+import { parseFeeRateArg } from "../lib/feeRate";
 
 interface BatchBidModalProps {
   open: boolean;
@@ -89,7 +91,7 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
         names: biddableNames,
         bidValue: hnsToDollarydoos(bidHns),
         lockup: hnsToDollarydoos(lockupHns),
-        feeRate: feeRateOverride ? parseInt(feeRateOverride, 10) : undefined,
+        feeRate: parseFeeRateArg(feeRateOverride) ?? undefined,
       });
       setPendingDraft({
         id: draft.id,
@@ -287,18 +289,11 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
           </div>
         </div>
 
-        <div>
-          <label className="block text-sm font-medium mb-1">
-            Fee rate override (doos/kvB, optional)
-          </label>
-          <Input
-            type="number"
-            value={feeRateOverride}
-            onChange={(e) => setFeeRateOverride(e.target.value)}
-            placeholder="Leave blank for auto"
-            data-testid="batch-bid-fee-rate-input"
-          />
-        </div>
+        <FeeRateOverride
+          value={feeRateOverride}
+          onChange={setFeeRateOverride}
+          label="Fee rate override"
+        />
 
         <div className="flex gap-2 justify-end pt-2">
           <Button variant="ghost" onClick={resetAndClose}>
