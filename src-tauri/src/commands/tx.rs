@@ -82,6 +82,49 @@ fn doos_to_hns_string(doos: i64) -> String {
     format!("{whole}.{frac:06} HNS")
 }
 
+/// Compute the TxSummary for a send_hns draft after signing.
+/// Extracted for testability and to ensure fee/change calculations are consistent.
+///
+/// * `plan` — the signed plan (contains inputs, outputs, change_output_index).
+/// * `unsigned_txid` — the txid of the unsigned tx (for display).
+/// * `to_address` — the recipient address (for display).
+///
+/// Returns the summary or an error if change_output_index is invalid.
+fn compute_send_summary(
+    plan: &crate::noncustodial::actions::DraftPlan,
+    unsigned_txid: String,
+    to_address: String,
+) -> Result<TxSummary, AppError> {
+    let input_total: u64 = plan.inputs.iter().map(|i| i.value).sum();
+    let output_total: u64 = plan.outputs.iter().map(|o| o.value).sum();
+
+    // M2: Use checked_sub to catch corrupted drafts with inverted amounts.
+    let fee = input_total.checked_sub(output_total).ok_or_else(|| {
+        AppError::Other(
+            "send plan: output_total exceeds input_total (corrupted draft?)".to_string(),
+        )
+    })?;
+
+    // M1: Use plan.change_output_index instead of hardcoded [1].
+    // This is critical for finalize-with-payment plans where change is at index 2.
+    let change = plan
+        .change_output_index
+        .and_then(|idx| plan.outputs.get(idx).map(|o| o.value))
+        .unwrap_or(0);
+
+    Ok(TxSummary {
+        action: "send_hns".to_string(),
+        send_total_doos: (output_total - change) as i64,
+        fee_doos: fee as i64,
+        change_doos: change as i64,
+        input_total_doos: input_total as i64,
+        num_inputs: plan.inputs.len() as i64,
+        recipient_address: Some(to_address),
+        txid: Some(unsigned_txid),
+        warnings: Vec::new(),
+    })
+}
+
 /// Build the read-only detail rows shown in the secure confirmation window for
 /// a draft. Rows are `{ "label": ..., "value": ... }`; the window renders them
 /// verbatim so the user confirms the real on-chain intent, not whatever the
@@ -639,7 +682,6 @@ fn persist_signed_draft(
     Ok(())
 }
 
-
 /// The hot-wallet signing path — unchanged behaviour from before the Ledger
 /// integration. Locks the in-memory signer session and dispatches by action.
 fn sign_via_hot_session(
@@ -762,7 +804,8 @@ fn verify_ledger_device_identity(
 ) -> Result<(), AppError> {
     let device_xpub =
         crate::noncustodial::hd::ExtendedPubKey::from_parts(device_pubkey, device_chain_code)?;
-    if device_xpub.public != account_xpub.public || device_xpub.chain_code != account_xpub.chain_code
+    if device_xpub.public != account_xpub.public
+        || device_xpub.chain_code != account_xpub.chain_code
     {
         return Err(AppError::Other(
             "connected Ledger does not match this wallet profile's account xpub — wrong device plugged in? refusing to sign".to_string(),
@@ -790,7 +833,10 @@ mod ledger_signing_guards_tests {
         ExtendedPubKey::from_priv(&master)
     }
 
-    fn plan_with_outputs(outputs: Vec<PlanOutput>, change_output_index: Option<usize>) -> DraftPlan {
+    fn plan_with_outputs(
+        outputs: Vec<PlanOutput>,
+        change_output_index: Option<usize>,
+    ) -> DraftPlan {
         DraftPlan {
             version: 0,
             locktime: 0,
@@ -822,9 +868,10 @@ mod ledger_signing_guards_tests {
     #[test]
     fn change_output_accepted_when_address_matches_derived_change() {
         let xpub = test_xpub();
-        let change_addr = derivation::derive_one(Network::Main, &xpub, derivation::BRANCH_CHANGE, 0)
-            .unwrap()
-            .address;
+        let change_addr =
+            derivation::derive_one(Network::Main, &xpub, derivation::BRANCH_CHANGE, 0)
+                .unwrap()
+                .address;
         // Regression for the finalize-with-payment bug: change is NOT always
         // at index 1. Put it at index 2, behind a covenant output and a
         // third-party payment output, and confirm the guard follows the
@@ -850,9 +897,10 @@ mod ledger_signing_guards_tests {
         // outputs[1] is a payment to a third party, not our own change — the
         // guard must refuse to treat it as change.
         let xpub = test_xpub();
-        let change_addr = derivation::derive_one(Network::Main, &xpub, derivation::BRANCH_CHANGE, 0)
-            .unwrap()
-            .address;
+        let change_addr =
+            derivation::derive_one(Network::Main, &xpub, derivation::BRANCH_CHANGE, 0)
+                .unwrap()
+                .address;
         let plan = plan_with_outputs(
             vec![
                 plain_output(500, "hs1qcovenant"),
@@ -898,7 +946,8 @@ mod ledger_signing_guards_tests {
             "",
         )
         .unwrap();
-        let other_master = crate::noncustodial::hd::ExtendedPrivKey::from_seed(&other_seed).unwrap();
+        let other_master =
+            crate::noncustodial::hd::ExtendedPrivKey::from_seed(&other_seed).unwrap();
         let other_xpub = ExtendedPubKey::from_priv(&other_master);
         let pubkey = other_xpub.public.serialize();
         let chain_code = other_xpub.chain_code;
@@ -907,6 +956,159 @@ mod ledger_signing_guards_tests {
         assert!(
             matches!(err, AppError::Other(ref msg) if msg.contains("does not match this wallet profile")),
             "expected a device-mismatch refusal, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn compute_send_summary_with_change_at_index_1() {
+        // Standard send: recipient at [0], change at [1].
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "mainnet".to_string(),
+            inputs: vec![crate::noncustodial::actions::PlanInput {
+                txid: "aa".repeat(32),
+                vout: 0,
+                value: 100_000_000,
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+            }],
+            outputs: vec![
+                crate::noncustodial::actions::PlanOutput {
+                    value: 90_000_000,
+                    address: "hs1qrecipient".to_string(),
+                    covenant_type: 0,
+                    covenant_items_hex: Vec::new(),
+                },
+                crate::noncustodial::actions::PlanOutput {
+                    value: 9_500_000,
+                    address: "hs1qchange".to_string(),
+                    covenant_type: 0,
+                    covenant_items_hex: Vec::new(),
+                },
+            ],
+            change_output_index: Some(1),
+        };
+        let summary =
+            compute_send_summary(&plan, "abc123".to_string(), "hs1qrecipient".to_string()).unwrap();
+        assert_eq!(summary.send_total_doos, 90_000_000);
+        assert_eq!(summary.change_doos, 9_500_000);
+        assert_eq!(summary.fee_doos, 500_000);
+        assert_eq!(summary.input_total_doos, 100_000_000);
+    }
+
+    #[test]
+    fn compute_send_summary_with_change_at_index_2_finalize_with_payment() {
+        // Regression for M1: finalize-with-payment has covenant at [0],
+        // payment at [1], change at [2]. The old hardcoded [1] would
+        // misreport the payment as change.
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "mainnet".to_string(),
+            inputs: vec![crate::noncustodial::actions::PlanInput {
+                txid: "aa".repeat(32),
+                vout: 0,
+                value: 100_000_000,
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+            }],
+            outputs: vec![
+                crate::noncustodial::actions::PlanOutput {
+                    value: 1_000_000,
+                    address: "hs1qcovenant".to_string(),
+                    covenant_type: 2, // REVEAL
+                    covenant_items_hex: vec!["deadbeef".to_string()],
+                },
+                crate::noncustodial::actions::PlanOutput {
+                    value: 50_000_000,
+                    address: "hs1qpayment".to_string(),
+                    covenant_type: 0,
+                    covenant_items_hex: Vec::new(),
+                },
+                crate::noncustodial::actions::PlanOutput {
+                    value: 48_500_000,
+                    address: "hs1qchange".to_string(),
+                    covenant_type: 0,
+                    covenant_items_hex: Vec::new(),
+                },
+            ],
+            change_output_index: Some(2),
+        };
+        let summary =
+            compute_send_summary(&plan, "def456".to_string(), "hs1qpayment".to_string()).unwrap();
+        // send_total = everything leaving the wallet that is NOT change
+        // = covenant(1M) + payment(50M) = 51M. The key regression assertion
+        // is that change is correctly read from index 2 (48.5M), NOT the
+        // index-1 payment (50M) the old hardcoded code would have used.
+        assert_eq!(summary.send_total_doos, 51_000_000);
+        assert_eq!(summary.change_doos, 48_500_000);
+        assert_eq!(summary.fee_doos, 500_000);
+    }
+
+    #[test]
+    fn compute_send_summary_no_change() {
+        // Sweep: all inputs go to recipient, no change.
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "mainnet".to_string(),
+            inputs: vec![crate::noncustodial::actions::PlanInput {
+                txid: "aa".repeat(32),
+                vout: 0,
+                value: 100_000_000,
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+            }],
+            outputs: vec![crate::noncustodial::actions::PlanOutput {
+                value: 99_500_000,
+                address: "hs1qrecipient".to_string(),
+                covenant_type: 0,
+                covenant_items_hex: Vec::new(),
+            }],
+            change_output_index: None,
+        };
+        let summary =
+            compute_send_summary(&plan, "xyz789".to_string(), "hs1qrecipient".to_string()).unwrap();
+        assert_eq!(summary.send_total_doos, 99_500_000);
+        assert_eq!(summary.change_doos, 0);
+        assert_eq!(summary.fee_doos, 500_000);
+    }
+
+    #[test]
+    fn compute_send_summary_rejects_corrupted_inverted_amounts() {
+        // Regression for M2: output_total > input_total (corrupted draft).
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "mainnet".to_string(),
+            inputs: vec![crate::noncustodial::actions::PlanInput {
+                txid: "aa".repeat(32),
+                vout: 0,
+                value: 50_000_000, // small input
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+            }],
+            outputs: vec![crate::noncustodial::actions::PlanOutput {
+                value: 100_000_000, // output > input (impossible)
+                address: "hs1qrecipient".to_string(),
+                covenant_type: 0,
+                covenant_items_hex: Vec::new(),
+            }],
+            change_output_index: None,
+        };
+        let err = compute_send_summary(&plan, "bad".to_string(), "hs1q".to_string()).unwrap_err();
+        assert!(
+            matches!(err, AppError::Other(ref msg) if msg.contains("corrupted draft")),
+            "expected a 'corrupted draft' error, got {err:?}"
         );
     }
 }
@@ -942,25 +1144,7 @@ async fn sign_via_ledger(
         // Compute the expected summary + txid from the unsigned tx so the
         // frontend sees the same fee/change it did at build time.
         let unsigned = crate::noncustodial::actions::rebuild_unsigned(&plan, network)?;
-        let input_total: u64 = plan.inputs.iter().map(|i| i.value).sum();
-        let output_total: u64 = plan.outputs.iter().map(|o| o.value).sum();
-        let fee = input_total - output_total;
-        let change = if plan.outputs.len() > 1 {
-            plan.outputs[1].value
-        } else {
-            0
-        };
-        let summary = TxSummary {
-            action: "send_hns".to_string(),
-            send_total_doos: (output_total - change) as i64,
-            fee_doos: fee as i64,
-            change_doos: change as i64,
-            input_total_doos: input_total as i64,
-            num_inputs: plan.inputs.len() as i64,
-            recipient_address: Some(params.to_address.clone()),
-            txid: Some(unsigned.txid()),
-            warnings: Vec::new(),
-        };
+        let summary = compute_send_summary(&plan, unsigned.txid(), params.to_address.clone())?;
         // The expected txid must come from build_send_hns_draft's persisted
         // summary, not from this freshly-rebuilt plan: comparing the plan's
         // own txid against itself can never disagree, so it wouldn't catch a
@@ -1047,10 +1231,12 @@ fn output_names_from_pairs(
 ) -> Vec<crate::providers::ledger::parse_mode::OutputName> {
     pairs
         .iter()
-        .map(|(idx, name)| crate::providers::ledger::parse_mode::OutputName {
-            output_index: *idx,
-            name: name.clone(),
-        })
+        .map(
+            |(idx, name)| crate::providers::ledger::parse_mode::OutputName {
+                output_index: *idx,
+                name: name.clone(),
+            },
+        )
         .collect()
 }
 

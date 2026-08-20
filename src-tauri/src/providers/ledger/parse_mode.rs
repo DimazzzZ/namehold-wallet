@@ -209,7 +209,6 @@ fn decode_covenant_items(hex_items: &[String]) -> Result<Vec<Vec<u8>>, AppError>
         .collect()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,7 +315,7 @@ mod tests {
     #[test]
     fn split_respects_max_apdu_data() {
         let blob = vec![0x42u8; 600]; // > 255
-        // Parse-mode framing: first P1 = net_flag|0x01, subsequent = net_flag.
+                                      // Parse-mode framing: first P1 = net_flag|0x01, subsequent = net_flag.
         let apdus = chunk_apdus(
             &blob,
             CLA_GENERAL,

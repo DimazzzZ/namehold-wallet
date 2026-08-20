@@ -262,8 +262,7 @@ pub fn resolve_covenant_names(
     profile_id: &str,
 ) -> Result<Vec<(usize, String)>, AppError> {
     use crate::providers::ledger::covenant_serializer::requires_name_marker;
-    let plan: crate::noncustodial::actions::DraftPlan =
-        serde_json::from_str(signing_inputs_json)?;
+    let plan: crate::noncustodial::actions::DraftPlan = serde_json::from_str(signing_inputs_json)?;
     let mut names = Vec::new();
     for (i, out) in plan.outputs.iter().enumerate() {
         if !requires_name_marker(out.covenant_type) {
@@ -444,7 +443,8 @@ mod tests {
         // Drop the table so the query fails — the error must propagate (M4:
         // previously an `if let Ok(..)` swallowed it into a silent skip).
         let conn = name_states_db();
-        conn.execute_batch("DROP TABLE tracked_name_states;").unwrap();
+        conn.execute_batch("DROP TABLE tracked_name_states;")
+            .unwrap();
         let json = covenant_plan_json(crate::noncustodial::sync::COV_TRANSFER, &"bb".repeat(32));
         let err = resolve_covenant_names(&conn, &json, "profile-1").unwrap_err();
         assert!(

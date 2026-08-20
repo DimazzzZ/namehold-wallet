@@ -70,7 +70,7 @@ impl SimMode {
             "reject" | "rejected" => Ok(Self::Reject),
             "timeout" => Ok(Self::Timeout),
             "disconnect" | "unplug" => Ok(Self::Disconnect),
-            other => Err(AppError::Device(format!(
+            other => Err(AppError::Protocol(format!(
                 "unknown NAMEHOLD_LEDGER_SIM mode '{other}' (expected one of: \
                  happy, no_device, wrong_app, locked, reject, timeout, disconnect)"
             ))),

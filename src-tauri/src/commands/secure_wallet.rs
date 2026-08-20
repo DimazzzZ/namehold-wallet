@@ -477,15 +477,14 @@ pub async fn unlock_local_signer(
         let secret = db::queries::get_wallet_secret_meta(&conn, &wallet_profile_id)?;
         (net, secret, profile.kind.clone())
     };
-    let (blob, kdf) = secret
-        .ok_or_else(|| {
-            let msg = if profile_kind == "ledger_hardware" {
-                "Ledger profiles are always watch-only and do not require unlocking"
-            } else {
-                "cannot unlock a watch-only profile"
-            };
-            AppError::InvalidInput(msg.to_string())
-        })?;
+    let (blob, kdf) = secret.ok_or_else(|| {
+        let msg = if profile_kind == "ledger_hardware" {
+            "Ledger profiles are always watch-only and do not require unlocking"
+        } else {
+            "cannot unlock a watch-only profile"
+        };
+        AppError::InvalidInput(msg.to_string())
+    })?;
 
     let passphrase = if kdf == "none" {
         NO_PASSPHRASE_KEY.to_string()

@@ -67,7 +67,12 @@ pub fn build_sign_apdus(input: &SignInput) -> Result<Vec<ApduCommand>, AppError>
 
 /// Build the raw sign-mode blob.
 pub fn build_sign_blob(input: &SignInput) -> Result<Vec<u8>, AppError> {
-    let path = bip44_path(input.network, input.account, input.branch, input.child_index);
+    let path = bip44_path(
+        input.network,
+        input.account,
+        input.branch,
+        input.child_index,
+    );
     let mut buf = Vec::with_capacity(128);
 
     // Path (depth prefix + BE indices)
@@ -181,7 +186,14 @@ mod tests {
     #[test]
     fn sign_apdus_p1_p2_flags() {
         let blob = vec![0x42u8; 300]; // > 255, forces 2 APDUs
-        let apdus = chunk_apdus(&blob, CLA_GENERAL, INS_GET_INPUT_SIGNATURE, 0x01, 0x00, 0x01);
+        let apdus = chunk_apdus(
+            &blob,
+            CLA_GENERAL,
+            INS_GET_INPUT_SIGNATURE,
+            0x01,
+            0x00,
+            0x01,
+        );
         assert_eq!(apdus.len(), 2);
         assert_eq!(apdus[0].p1, 0x01);
         assert_eq!(apdus[0].p2, 0x01);

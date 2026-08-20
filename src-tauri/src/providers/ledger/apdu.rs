@@ -69,7 +69,7 @@ impl ApduCommand {
     /// `CLA | INS | P1 | P2 | Lc | data`. `data` must be <= 255 bytes.
     pub fn to_raw(&self) -> Result<Vec<u8>, AppError> {
         if self.data.len() > MAX_APDU_DATA {
-            return Err(AppError::Device(format!(
+            return Err(AppError::Protocol(format!(
                 "APDU data too long: {} > {}",
                 self.data.len(),
                 MAX_APDU_DATA
@@ -90,7 +90,7 @@ impl ApduCommand {
 /// `u8 depth | u32BE index * depth`. Hardened indices carry the high bit.
 pub fn encode_path(path: &[u32]) -> Result<Vec<u8>, AppError> {
     if path.len() > 10 {
-        return Err(AppError::Device(format!(
+        return Err(AppError::Protocol(format!(
             "derivation path too deep: {} levels (max 10)",
             path.len()
         )));
@@ -402,7 +402,14 @@ mod tests {
     #[test]
     fn chunk_apdus_single_chunk() {
         let data = vec![0x42u8; 100]; // < 255
-        let cmds = chunk_apdus(&data, CLA_GENERAL, INS_GET_INPUT_SIGNATURE, 0x03, 0x02, 0x01);
+        let cmds = chunk_apdus(
+            &data,
+            CLA_GENERAL,
+            INS_GET_INPUT_SIGNATURE,
+            0x03,
+            0x02,
+            0x01,
+        );
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].cla, CLA_GENERAL);
         assert_eq!(cmds[0].ins, INS_GET_INPUT_SIGNATURE);
@@ -414,7 +421,14 @@ mod tests {
     #[test]
     fn chunk_apdus_multi_chunk_p1_alternation() {
         let data = vec![0xAB; 600]; // 3 chunks: 255 + 255 + 90
-        let cmds = chunk_apdus(&data, CLA_GENERAL, INS_GET_INPUT_SIGNATURE, 0x07, 0x04, 0x00);
+        let cmds = chunk_apdus(
+            &data,
+            CLA_GENERAL,
+            INS_GET_INPUT_SIGNATURE,
+            0x07,
+            0x04,
+            0x00,
+        );
         assert_eq!(cmds.len(), 3);
         // First chunk gets first_p1
         assert_eq!(cmds[0].p1, 0x07);
@@ -430,7 +444,14 @@ mod tests {
     fn chunk_apdus_exact_boundary() {
         // Exactly MAX_APDU_DATA bytes → 1 chunk, not 2.
         let data = vec![0x00; MAX_APDU_DATA];
-        let cmds = chunk_apdus(&data, CLA_GENERAL, INS_GET_INPUT_SIGNATURE, 0x01, 0x00, 0x00);
+        let cmds = chunk_apdus(
+            &data,
+            CLA_GENERAL,
+            INS_GET_INPUT_SIGNATURE,
+            0x01,
+            0x00,
+            0x00,
+        );
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].data.len(), MAX_APDU_DATA);
     }
