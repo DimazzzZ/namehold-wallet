@@ -2,102 +2,42 @@
 
 ## [Unreleased]
 
-### Fixed
-- **`S` (and other write-gated) keyboard shortcuts now explain themselves.**
-  Pressing `S` on the Wallet page to open Send used to do nothing at all
-  when the wallet couldn't send yet (read-only wallet, locked signer, or
-  coins not synced) — no modal, no message. It now surfaces the same
-  guidance the disabled Send button shows (e.g. "Unlock your wallet to sign
-  transactions.") as a toast, so the key never silently no-ops.
-- **Inline draft actions in Activity table.** Draft rows (unsigned, failed,
-  signed-but-unbroadcast) now show contextual "Sign & broadcast" / "Broadcast"
-  / "Retry" and "Discard" buttons directly in the row, so you can act on
-  pending drafts without navigating away. The Txid cell no longer renders a
-  disabled button when there's no txid — it shows a plain dash instead.
-- **Actions column stays single-line.** The new Actions cell uses
-  `whitespace-nowrap` so buttons never wrap to a second line.
-
 ### Added
-- **Keyboard-first navigation.** A cheatsheet overlay (Shift+?) documents
-  every binding, and every panel now has route-scoped shortcuts so common
-  flows never need the mouse:
-  - **Command palette** (⌘K / Ctrl+K) — fuzzy-searchable list of the
-    navigation targets and view actions available on the current page.
-    Type to filter, ↑/↓ to move, Enter to run, Esc to close. Write-only
-    actions (Send, Batch Bid) are hidden on read-only wallets so you can't
-    open a dead-end flow.
-  - **Wallet (`/`)** — `s` open Send, `r` refresh (Sync), `u` toggle
-    lock/unlock, `q` toggle the receive QR, `/` focus the name filter, and
-    `j`/`k` + `Enter` to walk the Owned Names list and open the selected
-    row's Name Actions modal without touching the mouse.
-  - **Auctions (`/auctions`)** — `/` focus the lookup input, `b` open the
-    Batch Bid modal.
-  - **Activity (`/activity`)** — `/` focus the search input.
-  - **Watchlist (`/watchlist`)** — `a` focus the add-name input, `e`
-    export CSV.
-  All action keys are suppressed while an input is focused or a modal is
-  open (the palette itself layers above dialogs), so shortcuts never
-  hijack typing. The cheatsheet groups bindings by category and filters
-  action/list keys down to the ones that actually work on the current
-  page, keeping the reference honest.
-- **Receive address list.** A "View all addresses" disclosure in the Receive
-  card expands a scrollable list of every derived receive-branch address.
-  Each row shows the derivation index, truncated address (with full-address
-  tooltip), a used/fresh badge, the first-seen date, a copy-to-clipboard
-  button, a QR-code toggle, and a mainnet explorer link. A "Generate new
-  address" button at the bottom allocates the next unused receive index.
-  Backend: new `list_receive_addresses` + `reveal_next_receive_address`
-  Tauri commands. The "used" predicate (UTXO OR bid_commitment) is defined
-  once (`derivation::ADDRESS_USED_PREDICATE`) and shared between address
-  allocation and the list query.
-- `useDeleteTxDraft` mutation hook — lets the frontend discard a draft and
-  free its reserved coins.
-- `draftId` field on merged activity rows — enables the UI to target specific
-  drafts for sign/broadcast/discard without a lookup.
-- **Fee-rate control** — a global default fee rate in Settings > Advanced
-  (`fee_rate_doos_per_kvb` setting, in doos per 1000 vbytes) plus a
-  per-transaction override widget (`FeeRateOverride`) shown in every
-  transaction flow: Send, Batch Renew/Reveal/Redeem/Finalize, single Bid
-  (Name Actions modal), and Batch Bid. The override is a collapsible
-  "Advanced" disclosure with validation, min-value clamping (1000 doos/kvB =
-  1 sat/byte), and inline help. The Rust backend's `resolve_fee_rate` now
-  reads the setting before falling through to `estimatesmartfee` or the
-  relay-floor default. New shared library: `src/lib/feeRate.ts`
-  (parseDoosPerKvb, doosPerKvbToSatsPerByte, parseFeeRateArg).
-- **DEV: Simulate update flow** — a dev-only "Simulate update available"
-  panel in Settings (gated behind `import.meta.env.DEV && isTauri()`) seeds
-  the shared `useAppUpdate` store from the latest GitHub release (or a
-  synthetic bumped version when offline) so the banner + Settings card show
-  the "available" notice without auto-installing. Clicking "Install now" then
-  runs a fake download loop (10 ticks × 120 ms → installed) via a `simulated`
-  flag on the store, so the full update UX can be exercised without a real
-  signed release. New Rust command: `fetch_latest_release_meta` (debug-gated).
-- Rust integration test: `build_batch_bid_draft` rejects batches containing
-  any name not in BIDDING/OPENING phase and persists nothing (all-or-nothing
-  atomicity guard).
+
+### Fixed
+
+### Changed
 
 ### CI / tooling
-- **Fix flaky apt-get update timeout in CI.** The `Refresh apt package index`
-  step was hard-failing when `apt-get update` timed out on a throttled Ubuntu
-  mirror (observed on run 32273872139: rust-lint hit the 90s cap on all 3
-  retries while rust-test fetched the same 11 MB index in 54s on a healthier
-  mirror). Made the step best-effort (no `exit 1`) so a slow mirror can't flake
-  the job on the common cache-hit path. Per-attempt timeout raised 90s → 120s.
-  Applied to both CI and release workflows.
-- **Upgrade actions/labeler v5 → v7.** Fixes the Node.js 20 deprecation warning
-  on GitHub-hosted runners (v7 targets Node.js 24 natively). No config changes
-  needed; labeler.yml format is stable across v5–v7.
+
+## [0.5.0] - 2026-08-20
+
+> **Highlights:** Hardware wallet support (Ledger Nano S/S Plus/X), keyboard-first navigation with command palette, receive-address list, fee-rate control, and batch-bid operations.
+
+### Added
+- **Hardware wallet support — Ledger Nano S / S Plus / X** — connect a Ledger device and let it sign every transaction. Private keys never leave the device; you confirm each send, bid, or covenant action on-screen. Requires the official [`ledger-app-hns`](https://github.com/handshake-org/ledger-app-hns) firmware. Backend: new `providers/ledger/` module with APDU protocol, HID transport, multi-step signing, and device identity verification. Frontend: hardware wallet profile type in AddWalletForm, secure-window confirmation flow, and error mapping for disconnect/timeout scenarios. Database migration `026_ledger_hardware_profiles.sql`. See [docs/LEDGER.md](docs/LEDGER.md) for the full spec.
+- **Keyboard-first navigation.** A cheatsheet overlay (Shift+?) documents every binding, and every panel now has route-scoped shortcuts so common flows never need the mouse:
+  - **Command palette** (⌘K / Ctrl+K) — fuzzy-searchable list of the navigation targets and view actions available on the current page. Type to filter, ↑/↓ to move, Enter to run, Esc to close. Write-only actions (Send, Batch Bid) are hidden on read-only wallets so you can't open a dead-end flow.
+  - **Wallet (`/`)** — `s` open Send, `r` refresh (Sync), `u` toggle lock/unlock, `q` toggle the receive QR, `/` focus the name filter, and `j`/`k` + `Enter` to walk the Owned Names list and open the selected row's Name Actions modal without touching the mouse.
+  - **Auctions (`/auctions`)** — `/` focus the lookup input, `b` open the Batch Bid modal.
+  - **Activity (`/activity`)** — `/` focus the search input.
+  - **Watchlist (`/watchlist`)** — `a` focus the add-name input, `e` export CSV.
+  All action keys are suppressed while an input is focused or a modal is open (the palette itself layers above dialogs), so shortcuts never hijack typing. The cheatsheet groups bindings by category and filters action/list keys down to the ones that actually work on the current page, keeping the reference honest.
+- **Receive address list.** A "View all addresses" disclosure in the Receive card expands a scrollable list of every derived receive-branch address. Each row shows the derivation index, truncated address (with full-address tooltip), a used/fresh badge, the first-seen date, a copy-to-clipboard button, a QR-code toggle, and a mainnet explorer link. A "Generate new address" button at the bottom allocates the next unused receive index. Backend: new `list_receive_addresses` + `reveal_next_receive_address` Tauri commands. The "used" predicate (UTXO OR bid_commitment) is defined once (`derivation::ADDRESS_USED_PREDICATE`) and shared between address allocation and the list query.
+- **Fee-rate control** — a global default fee rate in Settings > Advanced (`fee_rate_doos_per_kvb` setting, in doos per 1000 vbytes) plus a per-transaction override widget (`FeeRateOverride`) shown in every transaction flow: Send, Batch Renew/Reveal/Redeem/Finalize, single Bid (Name Actions modal), and Batch Bid. The override is a collapsible "Advanced" disclosure with validation, min-value clamping (1000 doos/kvB = 1 sat/byte), and inline help. The Rust backend's `resolve_fee_rate` now reads the setting before falling through to `estimatesmartfee` or the relay-floor default. New shared library: `src/lib/feeRate.ts` (parseDoosPerKvb, doosPerKvbToSatsPerByte, parseFeeRateArg).
+- **Batch bid operations** — select multiple names on the Auctions page and open a batch-bid modal showing the count and estimated total fee with a collapsible name list before signing + broadcasting. Reduces friction for bidding on many names at once.
+- **DEV: Simulate update flow** — a dev-only "Simulate update available" panel in Settings (gated behind `import.meta.env.DEV && isTauri()`) seeds the shared `useAppUpdate` store from the latest GitHub release (or a synthetic bumped version when offline) so the banner + Settings card show the "available" notice without auto-installing. Clicking "Install now" then runs a fake download loop (10 ticks × 120 ms → installed) via a `simulated` flag on the store, so the full update UX can be exercised without a real signed release. New Rust command: `fetch_latest_release_meta` (debug-gated).
 
 ### Fixed
-- **"Launch at login" no longer starts the wrong build.** If you'd ever
-  enabled launch-at-login from a development build, macOS would keep
-  starting that stale dev binary at login instead of the installed
-  Namehold app — showing a blank window and the wrong Dock icon.
-  Autostart is now registered only in release builds, and the
-  "Launch at login" toggle is disabled in dev builds, so a development
-  session can no longer hijack your login item. (If you hit this, delete
-  `~/Library/LaunchAgents/Namehold.plist`, then re-toggle "Launch at
-  login" from the installed app to re-register it correctly.)
+- **`S` (and other write-gated) keyboard shortcuts now explain themselves.** Pressing `S` on the Wallet page to open Send used to do nothing at all when the wallet couldn't send yet (read-only wallet, locked signer, or coins not synced) — no modal, no message. It now surfaces the same guidance the disabled Send button shows (e.g. "Unlock your wallet to sign transactions.") as a toast, so the key never silently no-ops.
+- **Inline draft actions in Activity table.** Draft rows (unsigned, failed, signed-but-unbroadcast) now show contextual "Sign & broadcast" / "Broadcast" / "Retry" and "Discard" buttons directly in the row, so you can act on pending drafts without navigating away. The Txid cell no longer renders a disabled button when there's no txid — it shows a plain dash instead.
+- **Actions column stays single-line.** The new Actions cell uses `whitespace-nowrap` so buttons never wrap to a second line.
+- **"Launch at login" no longer starts the wrong build.** If you'd ever enabled launch-at-login from a development build, macOS would keep starting that stale dev binary at login instead of the installed Namehold app — showing a blank window and the wrong Dock icon. Autostart is now registered only in release builds, and the "Launch at login" toggle is disabled in dev builds, so a development session can no longer hijack your login item. (If you hit this, delete `~/Library/LaunchAgents/Namehold.plist`, then re-toggle "Launch at login" from the installed app to re-register it correctly.)
+
+### CI / tooling
+- **Fix flaky apt-get update timeout in CI.** The `Refresh apt package index` step was hard-failing when `apt-get update` timed out on a throttled Ubuntu mirror (observed on run 32273872139: rust-lint hit the 90s cap on all 3 retries while rust-test fetched the same 11 MB index in 54s on a healthier mirror). Made the step best-effort (no `exit 1`) so a slow mirror can't flake the job on the common cache-hit path. Per-attempt timeout raised 90s → 120s. Applied to both CI and release workflows.
+- **Add libudev-dev to CI for hidapi crate.** The `hidapi` crate (required for Ledger HID transport) needs `libudev` system headers to compile on Linux. Added `libudev-dev` to the apt install step in both rust-lint and rust-test jobs, with cache version bump to invalidate stale cached packages.
+- **Upgrade actions/labeler v5 → v7.** Fixes the Node.js 20 deprecation warning on GitHub-hosted runners (v7 targets Node.js 24 natively). No config changes needed; labeler.yml format is stable across v5–v7.
 
 ## [0.4.1] - 2026-08-11
 
