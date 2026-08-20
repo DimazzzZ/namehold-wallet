@@ -142,6 +142,19 @@ impl ExtendedPubKey {
         }
     }
 
+    /// Build an extended public key from a raw 33-byte compressed pubkey and a
+    /// 32-byte chain code. Used when the key material comes from an external
+    /// source that already computed the account node — e.g. a Ledger device's
+    /// `GET_PUBLIC_KEY` response (see [`crate::providers::ledger`]).
+    pub fn from_parts(pubkey: &[u8; 33], chain_code: &[u8; 32]) -> Result<Self, AppError> {
+        let public = PublicKey::from_slice(pubkey)
+            .map_err(|e| AppError::InvalidInput(format!("invalid compressed pubkey: {e}")))?;
+        Ok(ExtendedPubKey {
+            public,
+            chain_code: *chain_code,
+        })
+    }
+
     /// Derive a single NON-hardened child public key at `index`.
     ///
     /// Returns `InvalidInput` if a hardened index is requested, since BIP32
@@ -350,10 +363,16 @@ fn base58_decode(s: &str) -> Result<Vec<u8>, AppError> {
 
 /// Build a BIP44 path: m / 44' / coin' / account' / change / index.
 pub fn bip44_path(network: Network, account: u32, change: u32, index: u32) -> [u32; 5] {
+    // `account` is expected to already be a small, ordinary account number
+    // (< HARDENED_OFFSET). Saturate defensively so a corrupted or
+    // out-of-range value (e.g. from a widened i64 DB column) derives a
+    // deterministic path instead of silently wrapping past HARDENED_OFFSET
+    // into a different, still valid-looking one.
+    let account_hardened = account.min(HARDENED_OFFSET - 1) + HARDENED_OFFSET;
     [
         44 + HARDENED_OFFSET,
         network.coin_type() + HARDENED_OFFSET,
-        account + HARDENED_OFFSET,
+        account_hardened,
         change,
         index,
     ]

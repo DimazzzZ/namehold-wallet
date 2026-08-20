@@ -22,6 +22,10 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 ### Wallet (the core)
 - **Create or import** a wallet from a BIP39 mnemonic, or add a **watch-only**
   wallet from an account xpub.
+- **Hardware wallet support** — connect a **Ledger Nano S / S Plus / X** and let
+  the device sign every transaction. Private keys never leave the device; you
+  confirm each send, bid, or covenant action on-screen. Requires the official
+  [`ledger-app-hns`](https://github.com/handshake-org/ledger-app-hns) firmware.
 - **Multiple wallets** — switch between them and delete ones you no longer need.
 - **Receive** — your address with a QR code, one-click copy.
 - **Per-wallet balances** — each wallet shows its own balance; values persist and

@@ -120,16 +120,23 @@ export function NameActionsModal({
   const [revealConfirming, setRevealConfirming] = useState(false);
   const [optimisticRevealTxid, setOptimisticRevealTxid] = useState<string | null>(null);
   // Fine-grained substate label during the reveal build→sign→broadcast.
+  const isLedger = profile?.kind === "ledger_hardware";
+
   const revealSubstate: string | null =
     exec.unlock.isPending
       ? "Unlocking…"
       : exec.sign.isPending
-        ? "Signing…"
+        ? isLedger
+          ? "Confirm on your Ledger…"
+          : "Signing…"
         : exec.broadcast.isPending
           ? "Broadcasting…"
           : null;
 
-  const unlocked = signer?.unlocked ?? false;
+  // Ledger wallets don't use the local signer session — the device signs on
+  // demand. Treat them as "unlocked" so exec.run() skips the unlock step and
+  // goes straight to sign (which dispatches to the device).
+  const unlocked = isLedger ? true : (signer?.unlocked ?? false);
   const canWrite = writeCap?.canWrite ?? false;
   const lock = !!busy || !canWrite;
 

@@ -541,6 +541,7 @@ pub fn run() {
             commands::secure_prompt::secure_prompt_submit,
             commands::secure_wallet::secure_create_wallet,
             commands::secure_wallet::secure_import_wallet,
+            commands::secure_wallet::import_ledger_profile,
             commands::secure_wallet::secure_reveal_backup_phrase,
             commands::secure_wallet::unlock_local_signer,
             commands::secure_wallet::lock_local_signer,

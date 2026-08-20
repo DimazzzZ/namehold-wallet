@@ -38,6 +38,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("023", include_str!("../sql/023_paid_swap_offers.sql")),
     ("024", include_str!("../sql/024_watchlist_tags.sql")),
     ("025", include_str!("../sql/025_watched_name_states.sql")),
+    (
+        "026",
+        include_str!("../sql/026_ledger_hardware_profiles.sql"),
+    ),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -79,7 +83,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 25, "expected 25 migrations, got {count}");
+        assert_eq!(count, 26, "expected 26 migrations, got {count}");
     }
 
     #[test]
@@ -90,7 +94,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 25);
+        assert_eq!(count, 26);
     }
 
     #[test]
@@ -378,5 +382,351 @@ mod tests {
             None,
             "dropped/failed drafts must not be used as a backfill source"
         );
+    }
+
+    // -- 026 FK safety (ledger hardware profiles) ---------------------------
+
+    #[test]
+    fn migration_026_preserves_child_rows_during_wallet_profiles_rebuild() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Run migrations 001-025 (stop before 026).
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            ",
+        )
+        .unwrap();
+        for (version, sql) in MIGRATIONS.iter().take(25) {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [*version],
+            )
+            .unwrap();
+        }
+
+        // Seed a profile with child rows (addresses, UTXOs, secrets, name states).
+        conn.execute(
+            "INSERT INTO wallet_profiles
+                (id, label, kind, network, account_xpub, account_index, watch_only)
+             VALUES (?, ?, 'watch_only_xpub', 'mainnet', 'xpub-fake', 0, 1)",
+            rusqlite::params!["profile-1", "Test Profile"],
+        )
+        .unwrap();
+
+        // Seed derived addresses.
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index, address,
+                 script_pubkey_hex, public_key_hex)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params!["profile-1", 0, 0, 0, "hs1q1234", "0014aa", "02aa"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index, address,
+                 script_pubkey_hex, public_key_hex)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params!["profile-1", 0, 0, 1, "hs1q5678", "0014bb", "02bb"],
+        )
+        .unwrap();
+
+        // Seed tracked UTXOs.
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (wallet_profile_id, txid, vout, address, script_pubkey_hex, value_doos)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            rusqlite::params!["profile-1", "aabbcc", 0, "hs1q1234", "0014aa", 100000],
+        )
+        .unwrap();
+
+        // Seed tracked name states.
+        conn.execute(
+            "INSERT INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state, height)
+             VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params!["profile-1", "myname", "deadbeef", "CLOSED", 100],
+        )
+        .unwrap();
+
+        // Seed wallet_secrets (encrypted vault).
+        conn.execute(
+            "INSERT INTO wallet_secrets
+                (wallet_profile_id, kdf_salt_hex, nonce_hex, ciphertext_hex, public_fingerprint)
+             VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params!["profile-1", "salt00", "nonce00", "encrypted_blob", "fp00"],
+        )
+        .unwrap();
+
+        // Verify child rows exist before migration 026.
+        let addr_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM derived_addresses WHERE wallet_profile_id = ?",
+                ["profile-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            addr_count, 2,
+            "should have 2 addresses before migration 026"
+        );
+
+        let utxo_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tracked_utxos WHERE wallet_profile_id = ?",
+                ["profile-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(utxo_count, 1, "should have 1 UTXO before migration 026");
+
+        let name_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tracked_name_states WHERE wallet_profile_id = ?",
+                ["profile-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            name_count, 1,
+            "should have 1 name state before migration 026"
+        );
+
+        let secret_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wallet_secrets WHERE wallet_profile_id = ?",
+                ["profile-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(secret_count, 1, "should have 1 secret before migration 026");
+
+        // Run migration 026 (the one being tested).
+        conn.execute_batch(MIGRATIONS[25].1).unwrap();
+        conn.execute("INSERT INTO schema_version (version) VALUES (?1)", ["026"])
+            .unwrap();
+
+        // Verify child rows SURVIVED the table rebuild.
+        let addr_count_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM derived_addresses WHERE wallet_profile_id = ?",
+                ["profile-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            addr_count_after, 2,
+            "migration 026 must NOT cascade-delete derived_addresses"
+        );
+
+        let utxo_count_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tracked_utxos WHERE wallet_profile_id = ?",
+                ["profile-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            utxo_count_after, 1,
+            "migration 026 must NOT cascade-delete tracked_utxos"
+        );
+
+        let name_count_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tracked_name_states WHERE wallet_profile_id = ?",
+                ["profile-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            name_count_after, 1,
+            "migration 026 must NOT cascade-delete tracked_name_states"
+        );
+
+        let secret_count_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wallet_secrets WHERE wallet_profile_id = ?",
+                ["profile-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            secret_count_after, 1,
+            "migration 026 must NOT cascade-delete wallet_secrets"
+        );
+
+        // Verify FK constraints are still enforced after the migration.
+        let fk_enabled: i64 = conn
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            fk_enabled, 1,
+            "foreign_keys pragma must be ON after migration"
+        );
+
+        // Verify no FK violations exist.
+        let violations: Vec<String> = conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_row| Ok(String::new()))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            violations.is_empty(),
+            "migration 026 must not introduce FK violations"
+        );
+    }
+
+    fn apply_migrations_through_025(conn: &Connection) {
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            ",
+        )
+        .unwrap();
+        for (version, sql) in MIGRATIONS.iter().take(25) {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [*version],
+            )
+            .unwrap();
+        }
+    }
+
+    /// A retry after a crash mid-migration re-runs the same SQL from scratch
+    /// (schema_version's "026" row is only inserted once execute_batch
+    /// returns). The rename dance must tolerate being applied to a
+    /// wallet_profiles it already produced, without losing existing rows.
+    #[test]
+    fn migration_026_can_be_reapplied_directly_without_losing_data() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_migrations_through_025(&conn);
+
+        conn.execute_batch(MIGRATIONS[25].1).unwrap();
+
+        conn.execute(
+            "INSERT INTO wallet_profiles
+                (id, label, kind, network, account_xpub, account_index, watch_only)
+             VALUES (?, ?, 'ledger_hardware', 'mainnet', 'xpub-fake', 0, 1)",
+            rusqlite::params!["profile-1", "Ledger Profile"],
+        )
+        .unwrap();
+
+        // Re-run the exact same migration SQL a second time, as a retry
+        // would after a crash left schema_version without a "026" row.
+        conn.execute_batch(MIGRATIONS[25].1)
+            .expect("migration 026 must be safe to re-run directly");
+
+        let label: String = conn
+            .query_row(
+                "SELECT label FROM wallet_profiles WHERE id = ?",
+                ["profile-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            label, "Ledger Profile",
+            "re-running migration 026 must not lose existing wallet_profiles rows"
+        );
+
+        let kind_allows_ledger: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wallet_profiles WHERE kind = 'ledger_hardware'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind_allows_ledger, 1);
+    }
+
+    /// If the process is killed partway through migration 026 — after the
+    /// scratch table's `DROP TABLE wallet_profiles` but before `COMMIT` —
+    /// the wrapping transaction must roll the whole batch back, not leave
+    /// the database without a `wallet_profiles` table.
+    #[test]
+    fn migration_026_aborted_transaction_leaves_wallet_profiles_intact() {
+        let pid = std::process::id();
+        let path = std::env::temp_dir().join(format!(
+            "namehold_migration_026_abort_test_{pid}_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let conn = crate::db::connection::open(&path).unwrap();
+            apply_migrations_through_025(&conn);
+            conn.execute(
+                "INSERT INTO wallet_profiles
+                    (id, label, kind, network, account_xpub, account_index, watch_only)
+                 VALUES (?, ?, 'watch_only_xpub', 'mainnet', 'xpub-fake', 0, 1)",
+                rusqlite::params!["profile-1", "Pre-existing Profile"],
+            )
+            .unwrap();
+
+            // Replay migration 026's statements up to (but not including)
+            // COMMIT, simulating a crash right after the DROP — the moment
+            // the old, non-transactional SQL would have left no
+            // wallet_profiles table at all.
+            conn.execute_batch(
+                "
+                PRAGMA foreign_keys = OFF;
+                BEGIN;
+                DROP TABLE IF EXISTS wallet_profiles_new;
+                CREATE TABLE wallet_profiles_new (
+                    id TEXT PRIMARY KEY, label TEXT NOT NULL, kind TEXT NOT NULL,
+                    network TEXT NOT NULL, account_xpub TEXT NOT NULL,
+                    account_index INTEGER NOT NULL DEFAULT 0,
+                    receive_depth INTEGER NOT NULL DEFAULT 0,
+                    change_depth INTEGER NOT NULL DEFAULT 0,
+                    receive_address TEXT, last_synced_height INTEGER,
+                    last_synced_at TEXT, watch_only INTEGER NOT NULL DEFAULT 0,
+                    last_explorer_sync_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO wallet_profiles_new
+                    (id, label, kind, network, account_xpub, account_index, receive_depth,
+                     change_depth, receive_address, last_synced_height, last_synced_at,
+                     watch_only, last_explorer_sync_at, created_at, updated_at)
+                SELECT
+                    id, label, kind, network, account_xpub, account_index, receive_depth,
+                    change_depth, receive_address, last_synced_height, last_synced_at,
+                    watch_only, last_explorer_sync_at, created_at, updated_at
+                FROM wallet_profiles;
+                DROP TABLE wallet_profiles;
+                ",
+            )
+            .unwrap();
+            // Connection dropped here without COMMIT — the uncommitted
+            // transaction (including the DROP) must be discarded, not
+            // persisted, when the connection closes.
+        }
+
+        let conn = crate::db::connection::open(&path).unwrap();
+        let label: String = conn
+            .query_row(
+                "SELECT label FROM wallet_profiles WHERE id = ?",
+                ["profile-1"],
+                |row| row.get(0),
+            )
+            .expect(
+                "wallet_profiles must survive an aborted mid-migration transaction \
+                 (an uncommitted DROP TABLE must roll back, not persist)",
+            );
+        assert_eq!(label, "Pre-existing Profile");
+
+        let _ = std::fs::remove_file(&path);
     }
 }

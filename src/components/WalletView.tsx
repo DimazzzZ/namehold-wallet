@@ -165,7 +165,11 @@ export function WalletView() {
   const [walletManagerOpen, setWalletManagerOpen] = useState(false);
   const [walletManagerAddMode, setWalletManagerAddMode] = useState(false);
 
-  const unlocked = signer?.unlocked ?? false;
+  // Ledger wallets don't use the local signer session — the device signs on
+  // demand. Treat them as "unlocked" so the send/action flow doesn't try to
+  // prompt for a passphrase that doesn't exist.
+  const isLedger = profile?.kind === "ledger_hardware";
+  const unlocked = isLedger ? true : (signer?.unlocked ?? false);
   const canWrite = writeCap?.canWrite ?? false;
   const isWatchOnly = profile?.watchOnly ?? false;
   const address = profile?.receiveAddress ?? null;
@@ -1547,7 +1551,13 @@ export function WalletView() {
                 Back
               </Button>
               <Button variant="danger" onClick={handleConfirmSend} disabled={submitting}>
-                {submitting ? "Sending…" : sendError ? "Retry Sign & Broadcast" : "Sign & Broadcast"}
+                {submitting
+                  ? isLedger
+                    ? "Confirm on your Ledger…"
+                    : "Sending…"
+                  : sendError
+                    ? "Retry Sign & Broadcast"
+                    : "Sign & Broadcast"}
               </Button>
             </div>
           </div>

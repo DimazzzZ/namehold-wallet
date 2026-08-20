@@ -53,6 +53,30 @@ pub enum AppError {
     /// a format change degrade silently into "you own nothing" (Task 11 / S1).
     #[error("Explorer response format unrecognized: {0}")]
     ExplorerFormat(String),
+    /// A hardware wallet (Ledger) transport, protocol, or on-device error.
+    /// Kept distinct from `Other`/`Crypto` so the frontend can render
+    /// actionable device guidance (unplug/reconnect, unlock, open the HNS app,
+    /// approve the on-screen prompt) rather than a generic failure. The string
+    /// carries the specific cause (e.g. "device not found", "HNS app not open",
+    /// APDU status word `0x6985` = user rejected).
+    ///
+    /// Reserve `Device` for genuine transport / device-state / on-device
+    /// causes. Programmer errors detected pre-flight (oversized transactions,
+    /// bad hex we produced ourselves, missing pre-resolved names) belong in
+    /// [`AppError::Protocol`] — see the note there.
+    #[error("Ledger device error: {0}")]
+    Device(String),
+    /// A hardware-wallet protocol / wire-format precondition failure detected
+    /// *before* any bytes are sent to the device. These are effectively
+    /// programmer errors on the client side (oversized inputs/outputs counts,
+    /// bad hex we ourselves produced, missing pre-resolved covenant names,
+    /// out-of-range varints). Kept distinct from `Device` so:
+    ///   1. The frontend can surface "internal / please report" rather than
+    ///      the actionable "unplug and reconnect" guidance `Device` implies.
+    ///   2. Callers and tests can pattern-match programmer bugs without
+    ///      false-positive matches on transport hiccups.
+    #[error("Ledger protocol error: {0}")]
+    Protocol(String),
     #[error("{0}")]
     Other(String),
 }

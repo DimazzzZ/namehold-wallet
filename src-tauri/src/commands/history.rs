@@ -314,11 +314,19 @@ pub async fn read_action_history(
     // Dedupe by txid. Preserve one representative decoded tx per txid.
     let mut by_txid: BTreeMap<String, serde_json::Value> = BTreeMap::new();
     for addr in &addresses {
-        let txs = node.get_txs_by_address(addr).await?;
-        for tx in txs {
-            if let Some(hash) = tx.get("hash").and_then(|h| h.as_str()) {
-                by_txid.entry(hash.to_string()).or_insert(tx);
+        // Gracefully degrade when the node lacks `--index-tx` / `--index-address`
+        // or is on a different network: swallow per-address errors and return
+        // whatever we could fetch. If EVERY address fails, the result is simply
+        // empty — the UI shows "No activity yet" instead of an error toast.
+        match node.get_txs_by_address(addr).await {
+            Ok(txs) => {
+                for tx in txs {
+                    if let Some(hash) = tx.get("hash").and_then(|h| h.as_str()) {
+                        by_txid.entry(hash.to_string()).or_insert(tx);
+                    }
+                }
             }
+            Err(_) => continue,
         }
     }
 

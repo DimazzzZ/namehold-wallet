@@ -592,10 +592,27 @@ pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
     };
 
     let mut all_coins = Vec::new();
+    let mut any_success = false;
+    let mut any_error = false;
     for addr in &addresses {
-        if let Ok(mut coins) = client.get_coins_by_address(addr).await {
-            all_coins.append(&mut coins);
+        match client.get_coins_by_address(addr).await {
+            Ok(mut coins) => {
+                any_success = true;
+                all_coins.append(&mut coins);
+            }
+            Err(_) => any_error = true,
         }
+    }
+
+    // Guard against a false "everything spent" cascade: if the wallet HAS
+    // addresses but EVERY per-address coin query errored (e.g. the node lacks
+    // `--index-address`, or is momentarily unreachable), `all_coins` is empty
+    // NOT because the wallet holds nothing but because we couldn't ask. Applying
+    // that empty set would make `mark_missing_as_spent` mark every tracked UTXO
+    // as spent, wiping the wallet's balance and cached names. Bail instead so
+    // the next sync retries from the same cursor.
+    if !addresses.is_empty() && any_error && !any_success {
+        return false;
     }
 
     let mut conn = match open_conn(db_path) {
@@ -1491,5 +1508,113 @@ mod db_hardening_tests {
             crate::noncustodial::sync::get_sync_height(&conn, "p1").unwrap(),
             2
         );
+    }
+
+    /// When every per-address coin query errors (e.g. node lacks `--index-address`),
+    /// `sync_node_step` must bail out and NOT call `apply_node_sync_batch` with an
+    /// empty coin set — that would falsely mark every tracked UTXO as spent.
+    #[tokio::test]
+    async fn sync_node_step_bails_when_all_coin_queries_error() {
+        let mut server = mockito::Server::new_async().await;
+
+        // Mock getblockchaininfo → synced.
+        let _m_info = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_status(200)
+            .with_body(
+                serde_json::json!({
+                    "result": { "blocks": 100, "headers": 100, "verificationprogress": 1.0 },
+                    "error": null, "id": null
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        // Mock /coin/address/* → all error (simulating --index-address disabled).
+        let _m_coins = server
+            .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+            .with_status(400)
+            .with_body(
+                serde_json::json!({
+                    "error": { "message": "Address indexing not enabled" }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        // Seed a file-backed DB (sync_node_step re-opens by path).
+        let db_path = temp_db_path("empty_live_coins_guard");
+        let _ = std::fs::remove_file(&db_path);
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        crate::db::queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Test",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
+        )
+        .unwrap();
+        // Seed a derived address so `get_profile_addresses` is non-empty.
+        let addr = crate::noncustodial::derivation::DerivedAddress {
+            branch: 0,
+            child_index: 0,
+            address: "hs1qgoodaddr".to_string(),
+            script_pubkey_hex: "0014aabb".to_string(),
+            public_key_hex: "02aabbcc".to_string(),
+        };
+        crate::noncustodial::derivation::persist_address(&conn, "p1", 0, &addr).unwrap();
+        // Seed a pre-existing tracked UTXO.
+        crate::noncustodial::sync::upsert_utxo(
+            &conn,
+            "p1",
+            &coin("preexisting", 0, Some("hs1qgoodaddr")),
+        )
+        .unwrap();
+        // Initial cursor — must NOT move.
+        crate::noncustodial::sync::set_sync_cursor(&conn, "p1", 50).unwrap();
+        // Point settings at the mock server.
+        crate::db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+        crate::db::queries::set_setting(&conn, "node_rpc_api_key", "x").unwrap();
+        drop(conn);
+
+        // Run sync_node_step — must bail out because every coin query errored.
+        let success = sync_node_step(db_path.to_str().unwrap(), "p1").await;
+        assert!(
+            !success,
+            "sync_node_step must return false when all coin queries error"
+        );
+
+        // Verify the UTXO was NOT marked spent and the cursor did NOT move.
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let spent_by: Option<String> = conn
+            .query_row(
+                "SELECT spent_by_txid FROM tracked_utxos WHERE txid = 'preexisting' AND vout = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            spent_by.is_none(),
+            "pre-existing UTXO must NOT be marked spent when every coin query errored"
+        );
+        let cursor = crate::noncustodial::sync::get_sync_height(&conn, "p1").unwrap();
+        assert_eq!(
+            cursor, 50,
+            "cursor must NOT advance when sync_node_step bails out"
+        );
+        drop(conn);
+
+        // Cleanup.
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     }
 }

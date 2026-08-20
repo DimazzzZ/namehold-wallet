@@ -99,11 +99,12 @@ jobs:
             libappindicator3-dev
             librsvg2-dev
             libsecret-1-dev
+            libudev-dev
             patchelf
             build-essential
             libssl-dev
             mold
-          version: "2"
+          version: "3"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -191,11 +192,12 @@ jobs:
             libappindicator3-dev
             librsvg2-dev
             libsecret-1-dev
+            libudev-dev
             patchelf
             build-essential
             libssl-dev
             mold
-          version: "2"
+          version: "3"
 
       - uses: dtolnay/rust-toolchain@stable
         with:

@@ -77,6 +77,13 @@ url = "2.5.8"
 # Parallel iterator for brute-force bid-value recovery (Tier-2 full sweep).
 rayon = "1.10"
 
+# --- Ledger hardware wallet support ---
+# HID transport for Ledger Nano S/X (vendorId 0x2C97). Mature cross-platform
+# crate; we hand-roll the Ledger 0x0101/0x05 framing on top. Only the official
+# `handshake-org/ledger-app-hns` device firmware is supported (dev-mode
+# sideload). See src/providers/ledger/ for the APDU implementation.
+hidapi = "2"
+
 # OS keyring for the Namebase-cookie data-encryption key. v3 ships no backend
 # by default — pick the native store per OS. Linux uses the Secret Service
 # (org.freedesktop.secrets, e.g. gnome-keyring / KWallet) with the pure-Rust
@@ -97,6 +104,15 @@ mockito = "1"
 # Enables tauri::test (mock_builder/mock_context) so integration tests can drive
 # the real #[tauri::command] functions with managed AppState.
 tauri = { version = "2", features = ["test"] }
+
+[features]
+# Dev-only: enables an in-process Ledger device simulator (see
+# `src/providers/ledger/simulated_hid.rs`). When compiled with this feature and
+# the NAMEHOLD_LEDGER_SIM env var is set, `LedgerSigner::connect()` returns a
+# scripted mock instead of touching real hardware — lets you click through every
+# Ledger UX path (reject, timeout, wrong app, disconnect, …) without a physical
+# device. Never enabled in release builds.
+mock-ledger = []
 
 # Release build hardening. Stripping symbols reduces the binary size and makes
 # reverse-engineering slightly harder; `panic = "abort"` avoids unwind tables

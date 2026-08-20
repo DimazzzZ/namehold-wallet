@@ -82,6 +82,49 @@ fn doos_to_hns_string(doos: i64) -> String {
     format!("{whole}.{frac:06} HNS")
 }
 
+/// Compute the TxSummary for a send_hns draft after signing.
+/// Extracted for testability and to ensure fee/change calculations are consistent.
+///
+/// * `plan` — the signed plan (contains inputs, outputs, change_output_index).
+/// * `unsigned_txid` — the txid of the unsigned tx (for display).
+/// * `to_address` — the recipient address (for display).
+///
+/// Returns the summary or an error if change_output_index is invalid.
+fn compute_send_summary(
+    plan: &crate::noncustodial::actions::DraftPlan,
+    unsigned_txid: String,
+    to_address: String,
+) -> Result<TxSummary, AppError> {
+    let input_total: u64 = plan.inputs.iter().map(|i| i.value).sum();
+    let output_total: u64 = plan.outputs.iter().map(|o| o.value).sum();
+
+    // M2: Use checked_sub to catch corrupted drafts with inverted amounts.
+    let fee = input_total.checked_sub(output_total).ok_or_else(|| {
+        AppError::Other(
+            "send plan: output_total exceeds input_total (corrupted draft?)".to_string(),
+        )
+    })?;
+
+    // M1: Use plan.change_output_index instead of hardcoded [1].
+    // This is critical for finalize-with-payment plans where change is at index 2.
+    let change = plan
+        .change_output_index
+        .and_then(|idx| plan.outputs.get(idx).map(|o| o.value))
+        .unwrap_or(0);
+
+    Ok(TxSummary {
+        action: "send_hns".to_string(),
+        send_total_doos: (output_total - change) as i64,
+        fee_doos: fee as i64,
+        change_doos: change as i64,
+        input_total_doos: input_total as i64,
+        num_inputs: plan.inputs.len() as i64,
+        recipient_address: Some(to_address),
+        txid: Some(unsigned_txid),
+        warnings: Vec::new(),
+    })
+}
+
 /// Build the read-only detail rows shown in the secure confirmation window for
 /// a draft. Rows are `{ "label": ..., "value": ... }`; the window renders them
 /// verbatim so the user confirms the real on-chain intent, not whatever the
@@ -417,6 +460,27 @@ pub async fn build_send_hns_draft(
     };
     let change_addr = change_address(network, &profile.account_xpub)?;
 
+    // Materialize the plan now and record its txid in the build-time summary.
+    // Handshake txids hash only the non-witness serialization, so this txid is
+    // final regardless of signing method. Signing recomputes the plan fresh
+    // (coins may need re-fetching) — comparing its txid against this
+    // persisted, build-time value is what actually verifies the signed tx
+    // matches what the user previewed, instead of comparing a value against
+    // itself.
+    let build_time_txid = {
+        let plan = send::build_send_plan(
+            network,
+            profile.account_index as u32,
+            &coins,
+            &to_address,
+            amount,
+            &change_addr,
+            rate,
+            is_max,
+        )?;
+        crate::noncustodial::actions::rebuild_unsigned(&plan, network)?.txid()
+    };
+
     let summary = TxSummary {
         action: "send_hns".to_string(),
         send_total_doos: amount as i64,
@@ -425,7 +489,7 @@ pub async fn build_send_hns_draft(
         input_total_doos: selection.input_total as i64,
         num_inputs: selection.coins.len() as i64,
         recipient_address: Some(to_address.clone()),
-        txid: None,
+        txid: Some(build_time_txid),
         warnings: Vec::new(),
     };
     let params = SendBuildParams {
@@ -541,11 +605,18 @@ pub(crate) async fn sign_tx_draft_inner(
     state: &State<'_, AppState>,
     draft_id: &str,
 ) -> Result<TxDraftSummary, AppError> {
-    // 1. Load the draft + session ttl (send_hns also needs spendable coins).
-    let (draft, coins, ttl_ms) = {
+    // 1. Load the draft + profile kind + session ttl. Also load spendable coins
+    //    for the send path.
+    let (draft, profile_kind, account_xpub, coins, ttl_ms, covenant_names) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let draft = db::queries::get_tx_draft(&conn, draft_id)?
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
+        let profile = db::queries::get_wallet_profile(&conn, &draft.wallet_profile_id)?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("wallet profile {}", draft.wallet_profile_id))
+            })?;
+        let profile_kind = profile.kind.clone();
+        let account_xpub = profile.account_xpub.clone();
         let coins = if draft.action == "send_hns" {
             // Prefer the exact coin set this draft reserved at build time (I3):
             // re-selecting over the full pool could drift onto a larger coin
@@ -566,11 +637,60 @@ pub(crate) async fn sign_tx_draft_inner(
             Vec::new()
         };
         let settings = db::queries::get_settings(&conn)?;
-        (draft, coins, session_ttl_ms(&settings))
+        // For Ledger covenant actions, resolve names by hash from tracked_name_states.
+        let covenant_names = if profile_kind == "ledger_hardware" && draft.action != "send_hns" {
+            crate::providers::ledger::resolve_covenant_names(
+                &conn,
+                &draft.signing_inputs_json,
+                &profile.id,
+            )?
+        } else {
+            Vec::new()
+        };
+        (
+            draft,
+            profile_kind,
+            account_xpub,
+            coins,
+            session_ttl_ms(&settings),
+            covenant_names,
+        )
     };
 
-    // 2. Sign under the signer lock, dispatching by action.
-    let (signed_hex, summary_json) = {
+    // 2. Sign, dispatching by profile kind (ledger vs hot) and action.
+    let (signed_hex, summary_json) = if profile_kind == "ledger_hardware" {
+        sign_via_ledger(&draft, &account_xpub, &coins, &covenant_names).await?
+    } else {
+        sign_via_hot_session(state, &draft, &coins, ttl_ms)?
+    };
+
+    // 3. Persist the signed tx and status.
+    persist_signed_draft(state, draft_id, &signed_hex, &summary_json)?;
+
+    load_draft_summary(state, draft_id)
+}
+
+/// Persist the signed hex + summary and flip the draft's status to `signed`.
+fn persist_signed_draft(
+    state: &State<'_, AppState>,
+    draft_id: &str,
+    signed_hex: &str,
+    summary_json: &str,
+) -> Result<(), AppError> {
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    db::queries::update_tx_draft_signed(&conn, draft_id, signed_hex, summary_json)?;
+    Ok(())
+}
+
+/// The hot-wallet signing path — unchanged behaviour from before the Ledger
+/// integration. Locks the in-memory signer session and dispatches by action.
+fn sign_via_hot_session(
+    state: &State<'_, AppState>,
+    draft: &db::queries::TxDraftRow,
+    coins: &[send::SpendableCoin],
+    ttl_ms: u128,
+) -> Result<(String, String), AppError> {
+    {
         let mut slot = state
             .signer
             .lock()
@@ -595,7 +715,7 @@ pub(crate) async fn sign_tx_draft_inner(
                 session,
                 network,
                 params.account,
-                &coins,
+                coins,
                 &params.to_address,
                 params.amount_doos,
                 &params.change_address,
@@ -613,7 +733,7 @@ pub(crate) async fn sign_tx_draft_inner(
                 txid: Some(built.txid.clone()),
                 warnings: Vec::new(),
             };
-            (built.tx_hex, serde_json::to_string(&summary)?)
+            Ok((built.tx_hex, serde_json::to_string(&summary)?))
         } else {
             // Covenant action: sign the persisted plan; keep its build-time summary.
             let plan: crate::noncustodial::actions::DraftPlan =
@@ -628,18 +748,507 @@ pub(crate) async fn sign_tx_draft_inner(
                 Some(txid.as_str()),
                 "covenant draft summary txid diverged from the signed tx's txid"
             );
-            (hex, draft.summary_json.clone())
+            Ok((hex, draft.summary_json.clone()))
         }
+    }
+}
+
+/// Build `ChangeInfo` for a plan's claimed change output, but only after
+/// verifying it really is our own change: re-derive the change address
+/// (branch 1, index 0) from the account xpub and require it to match
+/// `plan.outputs[idx].address`. Never trust `change_output_index` in
+/// isolation — a wrong index would tell the device to hide an external
+/// payee from the user's on-screen review instead of the actual change.
+fn verify_ledger_change_output(
+    plan: &crate::noncustodial::actions::DraftPlan,
+    network: Network,
+    account_xpub: &crate::noncustodial::hd::ExtendedPubKey,
+) -> Result<Option<crate::providers::ledger::parse_mode::ChangeInfo>, AppError> {
+    use crate::noncustodial::hd::bip44_path;
+    use crate::providers::ledger::parse_mode::ChangeInfo;
+
+    match plan.change_output_index {
+        Some(idx) => {
+            let output = plan.outputs.get(idx).ok_or_else(|| {
+                AppError::Other(format!(
+                    "ledger plan: change_output_index {idx} is out of bounds ({} outputs)",
+                    plan.outputs.len()
+                ))
+            })?;
+            let derived =
+                derivation::derive_one(network, account_xpub, derivation::BRANCH_CHANGE, 0)?;
+            if derived.address != output.address {
+                return Err(AppError::Other(
+                    "ledger plan: claimed change output does not match the account's own change address — refusing to sign".to_string(),
+                ));
+            }
+            Ok(Some(ChangeInfo {
+                output_index: idx as u8,
+                address_version: 0, // p2wpkh
+                path: bip44_path(network, plan.account, 1, 0).to_vec(),
+            }))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Verify the connected Ledger's account xpub matches the wallet profile's
+/// stored one. Without this, a different Ledger plugged in would sign with
+/// its own keys while witness pubkeys (derived from the stored account_xpub)
+/// stay the profile's — the draft is marked signed, coins stay reserved, and
+/// broadcast fails on a script mismatch.
+fn verify_ledger_device_identity(
+    device_pubkey: &[u8; 33],
+    device_chain_code: &[u8; 32],
+    account_xpub: &crate::noncustodial::hd::ExtendedPubKey,
+) -> Result<(), AppError> {
+    let device_xpub =
+        crate::noncustodial::hd::ExtendedPubKey::from_parts(device_pubkey, device_chain_code)?;
+    if device_xpub.public != account_xpub.public
+        || device_xpub.chain_code != account_xpub.chain_code
+    {
+        return Err(AppError::Other(
+            "connected Ledger does not match this wallet profile's account xpub — wrong device plugged in? refusing to sign".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod ledger_signing_guards_tests {
+    use super::*;
+    use crate::noncustodial::actions::{DraftPlan, PlanOutput};
+    use crate::noncustodial::hd::ExtendedPubKey;
+
+    // Deterministic test-only "account xpub": derivation semantics (branch/
+    // index) are identical regardless of depth, so using the master node
+    // directly is fine for these tests (mirrors derivation.rs's test_xpub()).
+    fn test_xpub() -> ExtendedPubKey {
+        let seed = crate::noncustodial::hd::seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+        let master = crate::noncustodial::hd::ExtendedPrivKey::from_seed(&seed).unwrap();
+        ExtendedPubKey::from_priv(&master)
+    }
+
+    fn plan_with_outputs(
+        outputs: Vec<PlanOutput>,
+        change_output_index: Option<usize>,
+    ) -> DraftPlan {
+        DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "mainnet".to_string(),
+            inputs: Vec::new(),
+            outputs,
+            change_output_index,
+        }
+    }
+
+    fn plain_output(value: u64, address: &str) -> PlanOutput {
+        PlanOutput {
+            value,
+            address: address.to_string(),
+            covenant_type: 0,
+            covenant_items_hex: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn change_output_none_when_plan_has_no_change() {
+        let xpub = test_xpub();
+        let plan = plan_with_outputs(vec![plain_output(1000, "hs1qrecipient")], None);
+        let info = verify_ledger_change_output(&plan, Network::Main, &xpub).unwrap();
+        assert!(info.is_none());
+    }
+
+    #[test]
+    fn change_output_accepted_when_address_matches_derived_change() {
+        let xpub = test_xpub();
+        let change_addr =
+            derivation::derive_one(Network::Main, &xpub, derivation::BRANCH_CHANGE, 0)
+                .unwrap()
+                .address;
+        // Regression for the finalize-with-payment bug: change is NOT always
+        // at index 1. Put it at index 2, behind a covenant output and a
+        // third-party payment output, and confirm the guard follows the
+        // index rather than assuming a fixed position.
+        let plan = plan_with_outputs(
+            vec![
+                plain_output(500, "hs1qcovenant"),
+                plain_output(2000, "hs1qthird-party-payment"),
+                plain_output(1000, &change_addr),
+            ],
+            Some(2),
+        );
+        let info = verify_ledger_change_output(&plan, Network::Main, &xpub)
+            .unwrap()
+            .expect("change output should be recognized");
+        assert_eq!(info.output_index, 2);
+    }
+
+    #[test]
+    fn change_output_rejected_when_index_points_at_a_third_party_output() {
+        // This is exactly the CRITICAL bug: change_output_index hardcoded to
+        // 1 while the real change sits at index 2 (finalize-with-payment).
+        // outputs[1] is a payment to a third party, not our own change — the
+        // guard must refuse to treat it as change.
+        let xpub = test_xpub();
+        let change_addr =
+            derivation::derive_one(Network::Main, &xpub, derivation::BRANCH_CHANGE, 0)
+                .unwrap()
+                .address;
+        let plan = plan_with_outputs(
+            vec![
+                plain_output(500, "hs1qcovenant"),
+                plain_output(2000, "hs1qthird-party-payment"),
+                plain_output(1000, &change_addr),
+            ],
+            Some(1), // wrong: this is the third-party payment, not change
+        );
+        let err = verify_ledger_change_output(&plan, Network::Main, &xpub).unwrap_err();
+        assert!(
+            matches!(err, AppError::Other(ref msg) if msg.contains("does not match")),
+            "expected a 'does not match' refusal, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn change_output_rejected_when_index_out_of_bounds() {
+        let xpub = test_xpub();
+        let plan = plan_with_outputs(vec![plain_output(1000, "hs1qrecipient")], Some(5));
+        let err = verify_ledger_change_output(&plan, Network::Main, &xpub).unwrap_err();
+        assert!(
+            matches!(err, AppError::Other(ref msg) if msg.contains("out of bounds")),
+            "expected an 'out of bounds' refusal, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn device_identity_accepted_when_pubkey_and_chain_code_match() {
+        let xpub = test_xpub();
+        let pubkey = xpub.public.serialize();
+        let chain_code = xpub.chain_code;
+        verify_ledger_device_identity(&pubkey, &chain_code, &xpub)
+            .expect("matching device identity should be accepted");
+    }
+
+    #[test]
+    fn device_identity_rejected_when_a_different_device_is_connected() {
+        let profile_xpub = test_xpub();
+        // A different device: same derivation machinery, different seed —
+        // produces a different pubkey/chain code entirely.
+        let other_seed = crate::noncustodial::hd::seed_from_mnemonic(
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",
+            "",
+        )
+        .unwrap();
+        let other_master =
+            crate::noncustodial::hd::ExtendedPrivKey::from_seed(&other_seed).unwrap();
+        let other_xpub = ExtendedPubKey::from_priv(&other_master);
+        let pubkey = other_xpub.public.serialize();
+        let chain_code = other_xpub.chain_code;
+
+        let err = verify_ledger_device_identity(&pubkey, &chain_code, &profile_xpub).unwrap_err();
+        assert!(
+            matches!(err, AppError::Other(ref msg) if msg.contains("does not match this wallet profile")),
+            "expected a device-mismatch refusal, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn compute_send_summary_with_change_at_index_1() {
+        // Standard send: recipient at [0], change at [1].
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "mainnet".to_string(),
+            inputs: vec![crate::noncustodial::actions::PlanInput {
+                txid: "aa".repeat(32),
+                vout: 0,
+                value: 100_000_000,
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+            }],
+            outputs: vec![
+                crate::noncustodial::actions::PlanOutput {
+                    value: 90_000_000,
+                    address: "hs1qrecipient".to_string(),
+                    covenant_type: 0,
+                    covenant_items_hex: Vec::new(),
+                },
+                crate::noncustodial::actions::PlanOutput {
+                    value: 9_500_000,
+                    address: "hs1qchange".to_string(),
+                    covenant_type: 0,
+                    covenant_items_hex: Vec::new(),
+                },
+            ],
+            change_output_index: Some(1),
+        };
+        let summary =
+            compute_send_summary(&plan, "abc123".to_string(), "hs1qrecipient".to_string()).unwrap();
+        assert_eq!(summary.send_total_doos, 90_000_000);
+        assert_eq!(summary.change_doos, 9_500_000);
+        assert_eq!(summary.fee_doos, 500_000);
+        assert_eq!(summary.input_total_doos, 100_000_000);
+    }
+
+    #[test]
+    fn compute_send_summary_with_change_at_index_2_finalize_with_payment() {
+        // Regression for M1: finalize-with-payment has covenant at [0],
+        // payment at [1], change at [2]. The old hardcoded [1] would
+        // misreport the payment as change.
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "mainnet".to_string(),
+            inputs: vec![crate::noncustodial::actions::PlanInput {
+                txid: "aa".repeat(32),
+                vout: 0,
+                value: 100_000_000,
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+            }],
+            outputs: vec![
+                crate::noncustodial::actions::PlanOutput {
+                    value: 1_000_000,
+                    address: "hs1qcovenant".to_string(),
+                    covenant_type: 2, // REVEAL
+                    covenant_items_hex: vec!["deadbeef".to_string()],
+                },
+                crate::noncustodial::actions::PlanOutput {
+                    value: 50_000_000,
+                    address: "hs1qpayment".to_string(),
+                    covenant_type: 0,
+                    covenant_items_hex: Vec::new(),
+                },
+                crate::noncustodial::actions::PlanOutput {
+                    value: 48_500_000,
+                    address: "hs1qchange".to_string(),
+                    covenant_type: 0,
+                    covenant_items_hex: Vec::new(),
+                },
+            ],
+            change_output_index: Some(2),
+        };
+        let summary =
+            compute_send_summary(&plan, "def456".to_string(), "hs1qpayment".to_string()).unwrap();
+        // send_total = everything leaving the wallet that is NOT change
+        // = covenant(1M) + payment(50M) = 51M. The key regression assertion
+        // is that change is correctly read from index 2 (48.5M), NOT the
+        // index-1 payment (50M) the old hardcoded code would have used.
+        assert_eq!(summary.send_total_doos, 51_000_000);
+        assert_eq!(summary.change_doos, 48_500_000);
+        assert_eq!(summary.fee_doos, 500_000);
+    }
+
+    #[test]
+    fn compute_send_summary_no_change() {
+        // Sweep: all inputs go to recipient, no change.
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "mainnet".to_string(),
+            inputs: vec![crate::noncustodial::actions::PlanInput {
+                txid: "aa".repeat(32),
+                vout: 0,
+                value: 100_000_000,
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+            }],
+            outputs: vec![crate::noncustodial::actions::PlanOutput {
+                value: 99_500_000,
+                address: "hs1qrecipient".to_string(),
+                covenant_type: 0,
+                covenant_items_hex: Vec::new(),
+            }],
+            change_output_index: None,
+        };
+        let summary =
+            compute_send_summary(&plan, "xyz789".to_string(), "hs1qrecipient".to_string()).unwrap();
+        assert_eq!(summary.send_total_doos, 99_500_000);
+        assert_eq!(summary.change_doos, 0);
+        assert_eq!(summary.fee_doos, 500_000);
+    }
+
+    #[test]
+    fn compute_send_summary_rejects_corrupted_inverted_amounts() {
+        // Regression for M2: output_total > input_total (corrupted draft).
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "mainnet".to_string(),
+            inputs: vec![crate::noncustodial::actions::PlanInput {
+                txid: "aa".repeat(32),
+                vout: 0,
+                value: 50_000_000, // small input
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+            }],
+            outputs: vec![crate::noncustodial::actions::PlanOutput {
+                value: 100_000_000, // output > input (impossible)
+                address: "hs1qrecipient".to_string(),
+                covenant_type: 0,
+                covenant_items_hex: Vec::new(),
+            }],
+            change_output_index: None,
+        };
+        let err = compute_send_summary(&plan, "bad".to_string(), "hs1q".to_string()).unwrap_err();
+        assert!(
+            matches!(err, AppError::Other(ref msg) if msg.contains("corrupted draft")),
+            "expected a 'corrupted draft' error, got {err:?}"
+        );
+    }
+}
+
+/// The Ledger-hardware signing path. No in-memory signer session; instead
+/// connects to the physical device and drives the parse+sign APDU dance.
+/// Blocking HID I/O runs on a `spawn_blocking` task.
+async fn sign_via_ledger(
+    draft: &db::queries::TxDraftRow,
+    account_xpub_str: &str,
+    coins: &[send::SpendableCoin],
+    covenant_names: &[(usize, String)],
+) -> Result<(String, String), AppError> {
+    use crate::noncustodial::hd::ExtendedPubKey;
+    use crate::providers::ledger::{signing::sign_transaction, LedgerSigner};
+
+    // For send_hns, build a plan from the coin selection so both paths share
+    // the same signing entry point.
+    let (plan, summary_json, txid_expected) = if draft.action == "send_hns" {
+        let params: SendBuildParams = serde_json::from_str(&draft.signing_inputs_json)?;
+        let network = Network::from_str_opt(&params.network)
+            .ok_or_else(|| AppError::InvalidInput(format!("bad network '{}'", params.network)))?;
+        let plan = send::build_send_plan(
+            network,
+            params.account,
+            coins,
+            &params.to_address,
+            params.amount_doos,
+            &params.change_address,
+            params.rate_per_byte,
+            params.max,
+        )?;
+        // Compute the expected summary + txid from the unsigned tx so the
+        // frontend sees the same fee/change it did at build time.
+        let unsigned = crate::noncustodial::actions::rebuild_unsigned(&plan, network)?;
+        let summary = compute_send_summary(&plan, unsigned.txid(), params.to_address.clone())?;
+        // The expected txid must come from build_send_hns_draft's persisted
+        // summary, not from this freshly-rebuilt plan: comparing the plan's
+        // own txid against itself can never disagree, so it wouldn't catch a
+        // rebuild that silently diverges from what the user previewed at
+        // build time (different coins, different fee/change, a bug in
+        // build_send_plan between build and sign). See local_txid_from_summary.
+        let expected = local_txid_from_summary(&draft.summary_json).ok_or_else(|| {
+            AppError::Other(
+                "send_hns draft summary is missing a txid — refusing to sign".to_string(),
+            )
+        })?;
+        (plan, serde_json::to_string(&summary)?, Some(expected))
+    } else {
+        // Covenant action: plan is already persisted. The build-time summary
+        // carries the txid (Handshake txids hash the non-witness serialization
+        // only, so signatures can't change it). Extract it as the expected
+        // txid — we compare it against the device-returned txid below to catch
+        // any parse-mode blob corruption or divergence between the plan we
+        // sent and what the device actually signed.
+        let plan: crate::noncustodial::actions::DraftPlan =
+            serde_json::from_str(&draft.signing_inputs_json)?;
+        let expected = local_txid_from_summary(&draft.summary_json).ok_or_else(|| {
+            AppError::Other(
+                "covenant draft summary is missing a txid — refusing to sign".to_string(),
+            )
+        })?;
+        (plan, draft.summary_json.clone(), Some(expected))
     };
 
-    // 3. Persist the signed tx + summary.
-    {
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::update_tx_draft_signed(&conn, draft_id, &signed_hex, &summary_json)?;
-        db::queries::get_tx_draft(&conn, draft_id)?
-            .map(|d| d.to_summary())
-            .ok_or_else(|| AppError::Other("draft vanished after sign".to_string()))
+    let network = Network::from_str_opt(&plan.network)
+        .ok_or_else(|| AppError::InvalidInput(format!("bad network '{}'", plan.network)))?;
+
+    // Parse the stored xpub for local pubkey derivation.
+    let account_xpub = ExtendedPubKey::from_xpub(network, account_xpub_str)?;
+
+    // Build OutputName entries from the pre-resolved covenant names.
+    let names = output_names_from_pairs(covenant_names);
+
+    let change_info = verify_ledger_change_output(&plan, network, &account_xpub)?;
+
+    // Blocking HID I/O runs on the blocking thread pool.
+    let (hex, txid) = tokio::task::spawn_blocking(move || {
+        let mut signer = LedgerSigner::connect()?;
+        // Verify the app is present and reachable.
+        let _version = signer.get_app_version()?;
+        // No on-device confirmation needed; the xpub disclosure was already
+        // approved at import time.
+        let (device_pubkey, device_chain_code) =
+            signer.get_account_pubkey(network, plan.account, false)?;
+        verify_ledger_device_identity(&device_pubkey, &device_chain_code, &account_xpub)?;
+        sign_transaction(
+            &mut signer,
+            &plan,
+            &account_xpub,
+            network,
+            change_info.as_ref(),
+            &names,
+        )
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("ledger signing task failed: {e}")))??;
+
+    // Verify the device signed the transaction the user previewed.
+    // Handshake txids hash the non-witness serialization only, so a mismatch
+    // means the device parsed a different tx than we sent — never broadcast it.
+    // This check is mandatory for both send_hns and every covenant action.
+    let expected = txid_expected.ok_or_else(|| {
+        AppError::Other("internal: expected txid was not computed before signing".to_string())
+    })?;
+    if expected != txid {
+        return Err(AppError::Other(format!(
+            "ledger signed txid {txid} != expected {expected} — refusing to broadcast"
+        )));
     }
+
+    Ok((hex, summary_json))
+}
+
+/// Convert pre-resolved `(output_index, name)` pairs into the
+/// [`OutputName`](crate::providers::ledger::parse_mode::OutputName) entries
+/// that the parse-mode builder expects.
+fn output_names_from_pairs(
+    pairs: &[(usize, String)],
+) -> Vec<crate::providers::ledger::parse_mode::OutputName> {
+    pairs
+        .iter()
+        .map(
+            |(idx, name)| crate::providers::ledger::parse_mode::OutputName {
+                output_index: *idx,
+                name: name.clone(),
+            },
+        )
+        .collect()
+}
+
+/// Load the summary of the just-signed draft for the return value.
+fn load_draft_summary(
+    state: &State<'_, AppState>,
+    draft_id: &str,
+) -> Result<TxDraftSummary, AppError> {
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let draft = db::queries::get_tx_draft(&conn, draft_id)?
+        .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
+    Ok(draft.to_summary())
 }
 
 /// Sign an arbitrary message with the wallet key that owns `name`, reproducing

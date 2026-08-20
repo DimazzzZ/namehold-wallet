@@ -423,3 +423,138 @@ async fn probe_and_update_sets_flag_true_when_node_answers() {
         "probe_and_update stores true on the flag"
     );
 }
+
+// --- network_name_matches (the guard that prevents a regtest node from being
+//     treated as authoritative for a mainnet wallet) ---------------------------
+
+use crate::commands::read::network_name_matches;
+
+#[test]
+fn network_name_matches_same_network() {
+    assert!(network_name_matches("main", "main"));
+    assert!(network_name_matches("mainnet", "main"));
+    assert!(network_name_matches("main", "mainnet"));
+    assert!(network_name_matches("mainnet", "mainnet"));
+    assert!(network_name_matches("testnet", "testnet"));
+    assert!(network_name_matches("regtest", "regtest"));
+    assert!(network_name_matches("simnet", "simnet"));
+}
+
+#[test]
+fn network_name_matches_different_network() {
+    assert!(!network_name_matches("mainnet", "regtest"));
+    assert!(!network_name_matches("main", "regtest"));
+    assert!(!network_name_matches("mainnet", "testnet"));
+    assert!(!network_name_matches("testnet", "regtest"));
+    assert!(!network_name_matches("regtest", "main"));
+}
+
+// --- node_tip_height_if_synced_from_settings_with_network ---------------------
+
+use crate::commands::read::node_tip_height_if_synced_from_settings_with_network;
+
+#[tokio::test]
+async fn synced_with_matching_network_returns_height() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "result": { "blocks": 500, "headers": 500, "verificationprogress": 1.0, "chain": "main" },
+                "error": null, "id": null
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let h = node_tip_height_if_synced_from_settings_with_network(
+        &settings_for_url(&server.url()),
+        Some("mainnet"),
+    )
+    .await;
+    assert_eq!(h, Some(500));
+}
+
+#[tokio::test]
+async fn synced_with_mismatched_network_returns_none() {
+    let mut server = mockito::Server::new_async().await;
+    // Node reports "regtest" but wallet profile is "mainnet".
+    let _m = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "result": { "blocks": 42, "headers": 42, "verificationprogress": 1.0, "chain": "regtest" },
+                "error": null, "id": null
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let h = node_tip_height_if_synced_from_settings_with_network(
+        &settings_for_url(&server.url()),
+        Some("mainnet"),
+    )
+    .await;
+    assert_eq!(
+        h, None,
+        "regtest node must NOT be authoritative for mainnet wallet"
+    );
+}
+
+#[tokio::test]
+async fn synced_with_no_expected_network_skips_check() {
+    let mut server = mockito::Server::new_async().await;
+    // Node is regtest, no expected network → gate passes (backward-compat).
+    let _m = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "result": { "blocks": 10, "headers": 10, "verificationprogress": 1.0, "chain": "regtest" },
+                "error": null, "id": null
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let h = node_tip_height_if_synced_from_settings_with_network(
+        &settings_for_url(&server.url()),
+        None,
+    )
+    .await;
+    assert_eq!(h, Some(10), "no expected network → network check skipped");
+}
+
+#[tokio::test]
+async fn synced_with_no_chain_in_response_skips_check() {
+    let mut server = mockito::Server::new_async().await;
+    // Older hsd that doesn't report `chain` — gate passes conservatively.
+    let _m = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "result": { "blocks": 100, "headers": 100, "verificationprogress": 1.0 },
+                "error": null, "id": null
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let h = node_tip_height_if_synced_from_settings_with_network(
+        &settings_for_url(&server.url()),
+        Some("mainnet"),
+    )
+    .await;
+    assert_eq!(
+        h,
+        Some(100),
+        "missing chain in response → conservatively allow"
+    );
+}
