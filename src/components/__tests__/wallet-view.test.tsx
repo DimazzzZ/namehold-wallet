@@ -163,6 +163,8 @@ beforeEach(() => {
   clipboardWriteMock.mockClear();
   // Reset the sync trigger store to default state before each test.
   useSyncTriggerStore.setState({ manualSync: false });
+  // Mock scrollIntoView (jsdom doesn't implement it)
+  Element.prototype.scrollIntoView = vi.fn();
 });
 
 describe("WalletView (non-custodial)", () => {
@@ -1346,7 +1348,180 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       expect(screen.getByPlaceholderText(/rs1q/i)).toBeInTheDocument();
     });
 
-    // No toast should have been shown.
-    expect(useUiStore.getState().toastQueue.length).toBe(0);
+   // No toast should have been shown.
+   expect(useUiStore.getState().toastQueue.length).toBe(0);
+ });
+
+  describe("action-bus handlers", () => {
+    it("wallet:toggleQr shows and hides the QR code", async () => {
+      const { dispatchAction } = await import("../../lib/actionBus");
+      invokeMock.mockImplementation(routeInvoke({ unlocked: true }));
+      render(<WalletView />, { wrapper: wrapper() });
+
+      // Initially no QR visible
+      expect(screen.queryByRole("img", { hidden: true })).not.toBeInTheDocument();
+      const showQrBtn = await screen.findByRole("button", { name: "Show QR" });
+      expect(showQrBtn).toBeInTheDocument();
+
+      // Dispatch toggleQr action
+      act(() => { dispatchAction("wallet:toggleQr"); });
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Hide QR" })).toBeInTheDocument();
+      });
+
+      // Dispatch again to hide
+      act(() => { dispatchAction("wallet:toggleQr"); });
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Show QR" })).toBeInTheDocument();
+      });
+    });
+
+    it("wallet:focusFilter focuses the filter input", async () => {
+      const { dispatchAction } = await import("../../lib/actionBus");
+      invokeMock.mockImplementation(routeInvoke());
+      render(<WalletView />, { wrapper: wrapper() });
+
+      const filterInput = await screen.findByTestId("wallet-name-filter");
+      expect(document.activeElement).not.toBe(filterInput);
+
+      act(() => { dispatchAction("wallet:focusFilter"); });
+      await waitFor(() => {
+        expect(document.activeElement).toBe(filterInput);
+      });
+    });
+
+    it("wallet:list:next increments selected name index", async () => {
+      const { dispatchAction } = await import("../../lib/actionBus");
+      invokeMock.mockImplementation(
+        routeInvoke({
+          names: [
+            { name: "name1", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
+            { name: "name2", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
+            { name: "name3", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
+          ],
+        }),
+      );
+      render(<WalletView />, { wrapper: wrapper() });
+
+      // Wait for names to render (dot prefix is added by WalletView)
+      await screen.findByText(/\.name1/);
+      const getSelectedRow = () => {
+        const rows = screen.getAllByRole("row");
+        return rows.find((r) => r.getAttribute("aria-selected") === "true");
+      };
+
+      // Initially no row selected
+      expect(getSelectedRow()).toBeUndefined();
+
+      // Dispatch list:next — first row should be selected
+      act(() => { dispatchAction("wallet:list:next"); });
+      await waitFor(() => {
+        const selected = getSelectedRow();
+        expect(selected).toBeDefined();
+        expect(selected?.textContent).toContain("name1");
+      });
+
+      // Dispatch again — second row should be selected
+      act(() => { dispatchAction("wallet:list:next"); });
+      await waitFor(() => {
+        const selected = getSelectedRow();
+        expect(selected?.textContent).toContain("name2");
+      });
+    });
+
+    it("wallet:list:prev decrements selected name index", async () => {
+      const { dispatchAction } = await import("../../lib/actionBus");
+      invokeMock.mockImplementation(
+        routeInvoke({
+          names: [
+            { name: "name1", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
+            { name: "name2", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
+          ],
+        }),
+      );
+      render(<WalletView />, { wrapper: wrapper() });
+
+      await screen.findByText(/\.name1/);
+      const getSelectedRow = () => {
+        const rows = screen.getAllByRole("row");
+        return rows.find((r) => r.getAttribute("aria-selected") === "true");
+      };
+
+      // Move to index 1 first
+      act(() => { dispatchAction("wallet:list:next"); });
+      await waitFor(() => {
+        expect(getSelectedRow()?.textContent).toContain("name1");
+      });
+
+      // Move back to index 0
+      act(() => { dispatchAction("wallet:list:prev"); });
+      await waitFor(() => {
+        // After prev from index 1, should clamp to 0 (no row selected since we started at -1)
+        const selected = getSelectedRow();
+        expect(selected?.textContent).not.toContain("name2");
+      });
+    });
+
+    it("wallet:list:open opens NameActionsModal for selected name", async () => {
+      const { dispatchAction } = await import("../../lib/actionBus");
+      invokeMock.mockImplementation(
+        routeInvoke({
+          names: [
+            { name: "example", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
+          ],
+        }),
+      );
+      render(<WalletView />, { wrapper: wrapper() });
+
+      // Wait for the name to render, then select it
+      await screen.findByText(/\.example/);
+      act(() => { dispatchAction("wallet:list:next"); });
+
+      // Dispatch list:open
+      act(() => { dispatchAction("wallet:list:open"); });
+
+      // NameActionsModal should render and call read_name_info
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "example" });
+      });
+    });
+
+    it("wallet:toggleLock when unlocked calls handleLock", async () => {
+      const { dispatchAction } = await import("../../lib/actionBus");
+      invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true }));
+      render(<WalletView />, { wrapper: wrapper() });
+
+      // Unlock button should be visible initially (signer is unlocked)
+      const lockBtn = await screen.findByRole("button", { name: /Lock|Unlock/i });
+      expect(lockBtn.textContent).toMatch(/Lock/i);
+
+      // Dispatch toggleLock
+      act(() => { dispatchAction("wallet:toggleLock"); });
+
+      // Lock command should be invoked
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith("lock_local_signer", {});
+      });
+    });
+
+    it("wallet:toggleLock when locked calls handleUnlock", async () => {
+      const { dispatchAction } = await import("../../lib/actionBus");
+      invokeMock.mockImplementation(routeInvoke({ unlocked: false, canWrite: false }));
+      render(<WalletView />, { wrapper: wrapper() });
+
+      // Wait for the signer status to render
+      await screen.findByText(/Signer locked/);
+
+      // Dispatch toggleLock
+      act(() => { dispatchAction("wallet:toggleLock"); });
+
+      // Unlock command should be invoked
+      await waitFor(() => {
+        expect(invokeMock).toHaveBeenCalledWith(
+          "unlock_local_signer",
+          expect.objectContaining({ walletProfileId: "p1" }),
+        );
+      });
+    });
   });
 });

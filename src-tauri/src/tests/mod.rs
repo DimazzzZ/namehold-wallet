@@ -11,6 +11,7 @@ mod csv_import_tests;
 mod csv_tests;
 mod deadlines_cmd_tests;
 mod discover_names_tests;
+mod error_tests;
 mod explorer_sync_timestamp_tests;
 mod hsd_extra_tests;
 mod hsd_parity_tests;

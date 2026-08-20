@@ -14,13 +14,14 @@ MODE="${1:-release}"
 # checkout. This script then overwrites that placeholder with the real binary.
 mkdir -p binaries
 
-echo "Building namehold-syncd (mode=$MODE, target=$TARGET_TRIPLE)"
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+echo "Building namehold-syncd (mode=$MODE, target=$TARGET_TRIPLE, out=$TARGET_DIR)"
 if [ "$MODE" = "debug" ]; then
   cargo build --bin namehold-syncd
-  SRC="target/debug/namehold-syncd"
+  SRC="$TARGET_DIR/debug/namehold-syncd"
 else
   cargo build --release --bin namehold-syncd
-  SRC="target/release/namehold-syncd"
+  SRC="$TARGET_DIR/release/namehold-syncd"
 fi
 
 # Stage with target-triple suffix for Tauri's externalBin.
