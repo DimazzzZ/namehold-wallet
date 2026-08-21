@@ -15,6 +15,7 @@ pub mod hd;
 pub mod message;
 pub mod names;
 pub mod network;
+pub mod node_rpc;
 pub mod resource;
 pub mod rpc;
 pub mod send;
