@@ -3,6 +3,7 @@ mod auction_capabilities_tests;
 mod batches_cmd_tests;
 mod bids_cmd_tests;
 mod build_bid_draft_tests;
+mod build_finalize_draft_tests;
 mod build_open_draft_tests;
 mod build_redeem_draft_tests;
 mod build_register_draft_tests;

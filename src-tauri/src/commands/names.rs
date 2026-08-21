@@ -2098,16 +2098,39 @@ pub async fn build_finalize_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
-    let raw = names::raw_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let rblock = renewal_block(&client, ctx.network).await?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_finalize_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &coin, &rblock)
+}
+
+/// Pure inner logic for `build_finalize_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the coin-reservation + draft persist are atomic under that
+/// single held guard.
+///
+/// The two async RPC calls (`fetch_name_state` for `ns` and `renewal_block`
+/// for `rblock`) happen in the wrapper before the lock is acquired; the
+/// owner `NameCoin` is looked up by the wrapper as well. This inner takes
+/// all three as resolved inputs and performs the covenant parsing + target
+/// address extraction synchronously.
+pub(crate) fn build_finalize_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    owner_coin: &queries::NameCoin,
+    renewal_block: &[u8; 32],
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+    let raw = names::raw_name(name)?;
 
     // The finalize output goes to the TRANSFER target recorded on the owner
     // coin's covenant: items = [nameHash, height, version(u8), addrHash].
-    let cov_json = coin.covenant_json.as_deref().ok_or_else(|| {
+    let cov_json = owner_coin.covenant_json.as_deref().ok_or_else(|| {
         AppError::InvalidInput("name is not in transfer; nothing to finalize".into())
     })?;
     let cov: serde_json::Value = serde_json::from_str(cov_json)?;
@@ -2138,9 +2161,9 @@ pub async fn build_finalize_draft(
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
-        Some(name_input_from(coin.clone())),
+        Some(name_input_from(owner_coin.clone())),
         PrimaryOutput {
-            value: coin.value,
+            value: owner_coin.value,
             address: target_address.clone(),
             covenant: covenants::finalize(
                 &nh,
@@ -2149,18 +2172,18 @@ pub async fn build_finalize_draft(
                 flags,
                 ns.claimed,
                 ns.renewals,
-                &rblock,
+                renewal_block,
             ),
         },
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(
-        &state,
+    persist_with_conn(
+        conn,
         &ctx.profile_id,
         "finalize",
-        &name,
+        name,
         Some(&target_address),
         None,
         &res,
