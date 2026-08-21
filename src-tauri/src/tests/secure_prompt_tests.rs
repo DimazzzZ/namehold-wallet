@@ -253,7 +253,6 @@ fn test_secure_prompt_request_all_modes() {
     }
 }
 
-
 // --- SecurePromptRequest clone test ---
 
 #[test]

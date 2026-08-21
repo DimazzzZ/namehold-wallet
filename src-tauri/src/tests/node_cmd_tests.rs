@@ -49,10 +49,7 @@ fn test_pick_hsd_path_matches_existing_candidate() {
 
 #[test]
 fn test_pick_hsd_path_first_match_wins() {
-    let result = node::pick_hsd_path(
-        None,
-        &["/bin/sh".to_string(), "/bin/ls".to_string()],
-    );
+    let result = node::pick_hsd_path(None, &["/bin/sh".to_string(), "/bin/ls".to_string()]);
     assert_eq!(result, Some("/bin/sh".to_string()));
 }
 
@@ -109,7 +106,11 @@ fn test_node_start_error_clean_log() {
     let dir = std::env::temp_dir().join("namehold_test_clean_log");
     let _ = std::fs::create_dir_all(&dir);
     let log_path = dir.join("namehold-hsd.log");
-    std::fs::write(&log_path, "hsd started successfully\nlistening on port 12038\n").unwrap();
+    std::fs::write(
+        &log_path,
+        "hsd started successfully\nlistening on port 12038\n",
+    )
+    .unwrap();
     let result = node::node_start_error(dir.to_str().unwrap());
     assert!(result.is_none());
     let _ = std::fs::remove_dir_all(&dir);

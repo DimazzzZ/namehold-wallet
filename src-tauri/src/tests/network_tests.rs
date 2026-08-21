@@ -1,6 +1,6 @@
 //! Tests for `crate::noncustodial::network` — pure Network functions.
 
-use crate::noncustodial::network::{NameParams, Network};
+use crate::noncustodial::network::Network;
 
 // ── address_hrp ──────────────────────────────────────────────────────
 
@@ -134,7 +134,12 @@ fn test_name_params_simnet() {
 
 #[test]
 fn test_as_str_from_str_roundtrip() {
-    for net in [Network::Main, Network::Testnet, Network::Regtest, Network::Simnet] {
+    for net in [
+        Network::Main,
+        Network::Testnet,
+        Network::Regtest,
+        Network::Simnet,
+    ] {
         let s = net.as_str();
         assert_eq!(Network::from_str_opt(s), Some(net));
     }
