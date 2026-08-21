@@ -7,6 +7,7 @@ mod build_finalize_draft_tests;
 mod build_open_draft_tests;
 mod build_redeem_draft_tests;
 mod build_register_draft_tests;
+mod build_renew_draft_tests;
 mod build_reveal_draft_tests;
 mod build_transfer_draft_tests;
 mod build_update_draft_tests;
