@@ -528,7 +528,10 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
 /// every 60s, so simple sequential polling is preferable to pulling in a
 /// streaming-concurrency dependency. Names that error out or return
 /// null/unparsable data are silently dropped; they'll be retried next cycle.
-async fn fetch_all(node: &NodeRpcClient, names: &[String]) -> Vec<(String, HsdName)> {
+async fn fetch_all(
+    node: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    names: &[String],
+) -> Vec<(String, HsdName)> {
     let mut out = Vec::with_capacity(names.len());
     for name in names {
         match node.get_name_info(name).await {

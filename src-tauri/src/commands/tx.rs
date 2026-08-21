@@ -277,43 +277,12 @@ pub async fn sync_wallet_state(
     };
 
     // 2. Fetch coins per address (network I/O, no lock held).
-    let mut all_coins = Vec::new();
-    for addr in &addresses {
-        match client.get_coins_by_address(addr).await {
-            Ok(mut coins) => all_coins.append(&mut coins),
-            Err(e) => {
-                let url = settings
-                    .get("node_rpc_url")
-                    .map(|s| s.as_str())
-                    .unwrap_or("the configured node");
-                // A connection failure (no node listening) is reported by the RPC
-                // client as AppError::Http; an actual RPC method error (e.g.
-                // address index disabled) comes back as AppError::Rpc.
-                return Err(match e {
-                    AppError::Http(_) => AppError::Rpc(format!(
-                        "Can't reach your local node at {url}. Start hsd (with --index-address) \
-                         to sync and send. Reads still work via the explorer."
-                    )),
-                    other => AppError::Rpc(format!(
-                        "getcoinsbyaddress failed for {addr} (is the node's --index-address enabled?): {other}"
-                    )),
-                });
-            }
-        }
-    }
-
-    // 3. Fetch the full body of each funding tx (network I/O, no lock held) so
-    //    the transaction history can be served from cache.
-    let mut txs: Vec<(String, Option<i64>, String)> = Vec::new();
-    let mut seen_txids = std::collections::HashSet::new();
-    for coin in &all_coins {
-        if !seen_txids.insert(coin.txid.clone()) {
-            continue;
-        }
-        if let Ok(raw) = client.get_raw_transaction(&coin.txid).await {
-            txs.push((coin.txid.clone(), coin.height, raw.to_string()));
-        }
-    }
+    let node_url = settings
+        .get("node_rpc_url")
+        .map(|s| s.as_str())
+        .unwrap_or("the configured node");
+    let (all_coins, txs) =
+        fetch_wallet_coins_and_txs_with_client(&client, &addresses, node_url).await?;
 
     // 4. Persist UTXOs + tx cache under the lock.
     let balances = {
@@ -359,7 +328,7 @@ pub async fn sync_wallet_state(
 async fn refresh_name_states(
     state: &State<'_, AppState>,
     profile_id: &str,
-    client: &NodeRpcClient,
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
 ) -> Result<usize, AppError> {
     // Only refresh on-chain state for names the wallet already tracks/owns — NOT
     // the whole migration inventory (that could be hundreds of `getnameinfo`
@@ -1328,6 +1297,94 @@ pub async fn sign_name_message(
 
 // --- broadcast -------------------------------------------------------------
 
+/// Outcome of a broadcast attempt, as classified by
+/// [`classify_broadcast_outcome_with_client`].
+#[derive(Debug)]
+pub(crate) enum BroadcastOutcome {
+    /// Node accepted the tx and returned a txid.
+    Success(String),
+    /// Node answered with a JSON-RPC error (double-spend, malformed, etc.) —
+    /// the tx was definitively rejected and coins are unspent. The wrapped
+    /// `AppError` is always the original `AppError::Rpc(_)` from the client.
+    RpcError(AppError),
+    /// HTTP/transport failure (timeout, connection dropped, DNS, etc.) —
+    /// the outcome is ambiguous; the tx may be in the node's mempool. The
+    /// wrapped `AppError` preserves the original variant (e.g. `Http`,
+    /// `InvalidInput` for read-only sources) so the caller can propagate the
+    /// exact error type to the frontend.
+    TransportError(AppError),
+}
+
+/// Client-injected broadcast outcome classification for [`broadcast_tx_draft`].
+/// Calls `send_raw_transaction` and classifies the result into three
+/// categories: success (txid), RPC error (definitive rejection), or transport
+/// error (ambiguous). Testable against a mock.
+pub(crate) async fn classify_broadcast_outcome_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    signed_hex: &str,
+) -> BroadcastOutcome {
+    match client.send_raw_transaction(signed_hex).await {
+        Ok(txid) => BroadcastOutcome::Success(txid),
+        Err(e @ AppError::Rpc(_)) => BroadcastOutcome::RpcError(e),
+        Err(e) => BroadcastOutcome::TransportError(e),
+    }
+}
+
+/// Client-injected RPC-fetch phase of [`sync_wallet_state`]. Given the wallet's
+/// watch addresses, fetches every coin via `getcoinsbyaddress` per address, then
+/// fetches the raw body of each distinct funding tx via `getrawtransaction`.
+/// Returns `(all_coins, txs)` where `txs` is `(txid, height, raw_json_string)`.
+/// The caller persists both to the DB.
+///
+/// Errors classify like the original: `AppError::Http` (transport) is mapped to
+/// a "start hsd" hint, all other `getcoinsbyaddress` errors carry an
+/// "is --index-address enabled?" hint. Failed `getrawtransaction` calls are
+/// silently skipped — the tx cache is best-effort, not authoritative.
+///
+/// Testable against a mock without an AppState.
+pub(crate) async fn fetch_wallet_coins_and_txs_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    addresses: &[String],
+    node_url: &str,
+) -> Result<
+    (
+        Vec<crate::noncustodial::rpc::NodeCoin>,
+        Vec<(String, Option<i64>, String)>,
+    ),
+    AppError,
+> {
+    let mut all_coins = Vec::new();
+    for addr in addresses {
+        match client.get_coins_by_address(addr).await {
+            Ok(mut coins) => all_coins.append(&mut coins),
+            Err(e) => {
+                return Err(match e {
+                    AppError::Http(_) => AppError::Rpc(format!(
+                        "Can't reach your local node at {node_url}. Start hsd (with --index-address) \
+                         to sync and send. Reads still work via the explorer."
+                    )),
+                    other => AppError::Rpc(format!(
+                        "getcoinsbyaddress failed for {addr} (is the node's --index-address enabled?): {other}"
+                    )),
+                });
+            }
+        }
+    }
+
+    let mut txs: Vec<(String, Option<i64>, String)> = Vec::new();
+    let mut seen_txids = std::collections::HashSet::new();
+    for coin in &all_coins {
+        if !seen_txids.insert(coin.txid.clone()) {
+            continue;
+        }
+        if let Ok(raw) = client.get_raw_transaction(&coin.txid).await {
+            txs.push((coin.txid.clone(), coin.height, raw.to_string()));
+        }
+    }
+
+    Ok((all_coins, txs))
+}
+
 /// Broadcast a signed draft via node RPC.
 #[tauri::command]
 pub async fn broadcast_tx_draft(
@@ -1349,9 +1406,10 @@ pub async fn broadcast_tx_draft(
     // RPC URL is the opt-in. The only refusal is a read-only Explorer source,
     // which `send_raw_transaction` rejects internally.
     let client = NodeRpcClient::from_settings(&settings);
-    match client.send_raw_transaction(&signed_hex).await {
-        Ok(txid) => {
-            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let outcome = classify_broadcast_outcome_with_client(&client, &signed_hex).await;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    match outcome {
+        BroadcastOutcome::Success(txid) => {
             db::queries::update_tx_draft_status(
                 &conn,
                 &draft_id,
@@ -1359,69 +1417,20 @@ pub async fn broadcast_tx_draft(
                 None,
                 Some(&txid),
             )?;
-            // Deliberately do NOT release this draft's coin reservation here.
-            // The node accepting a tx to its mempool does not mean
-            // `tracked_utxos.spent_by_txid` gets set for its inputs yet — that
-            // only happens the next time `sync_wallet_state` reconciles the
-            // chain (see `noncustodial::sync::mark_missing_as_spent`), which
-            // can be minutes away. Freeing the reservation now would reopen
-            // exactly the double-spend window this feature closes: another
-            // draft could re-select the same still-locally-unspent coin
-            // before sync catches up. Once sync marks the coin spent,
-            // `load_spendable_coins` already excludes it via `spent_by_txid
-            // IS NULL` regardless of the (by then harmless, stale)
-            // reservation. If the broadcast is later judged `dropped`
-            // (evicted / never confirmed), the reservation is released then
-            // (see `refresh_tx_confirmations`); otherwise it self-heals via
-            // TTL if something goes wrong.
             Ok(BroadcastResult {
                 draft_id,
                 txid,
                 status: "broadcasted".to_string(),
             })
         }
-        // `AppError::Rpc(_)` means the node itself answered — with a JSON-RPC
-        // error envelope, an unparsable body, or an empty result (see
-        // `NodeRpcClient::call`) — so the node definitively did NOT accept
-        // this tx (e.g. a double-spend, a stale/evicted input, or a
-        // malformed request). The coins were never actually spent: mark the
-        // draft `failed` and free the reservation immediately rather than
-        // making the user wait out the TTL to retry. This mirrors
-        // `refresh_tx_confirmations`, which treats `Err(AppError::Rpc(_))`
-        // from `getrawtransaction` as the definitive "not found" signal.
-        Err(e @ AppError::Rpc(_)) => {
-            let msg = e.to_string();
-            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        BroadcastOutcome::RpcError(msg) => {
+            let msg = msg.to_string();
             db::queries::update_tx_draft_status(&conn, &draft_id, "failed", Some(&msg), None)?;
             db::queries::release_reserved_utxos_for_draft(&conn, &draft_id)?;
-            Err(e)
+            Err(AppError::Rpc(msg))
         }
-        // Any other error (HTTP/transport failure: timeout, dropped
-        // connection, DNS, TCP reset, ...) means we never got a definitive
-        // answer from the node — `sendrawtransaction` may have reached it
-        // and been accepted before the connection died. Treating this the
-        // same as an outright rejection would free the coin for re-selection
-        // by another draft while this one might already be sitting in the
-        // node's mempool: exactly the double-select window Finding 1 closes
-        // for the TTL sweep, reopened here via the broadcast error path.
-        // Instead: keep the reservation, and record the ambiguous outcome as
-        // `broadcast_pending` (a status already reserved for this in the
-        // schema's CHECK constraint and the frontend's `TxDraftSummary`
-        // union, previously unused) rather than `failed` — `failed` would
-        // read as "definitely did not happen", which we cannot claim.
-        // `refresh_tx_confirmations` DOES resolve this automatically: it also
-        // polls `broadcast_pending` drafts, computing the txid locally from
-        // `signed_tx_hex` (via `local_txid_from_summary`) since none was
-        // returned by the failed broadcast. If the node knows the tx, the
-        // draft is promoted to `broadcasted`/`confirmed`; if it definitively
-        // doesn't (past the eviction grace), the draft is marked `failed`
-        // and the reservation released. A manual retry is also always safe:
-        // if the node never got the first attempt, `sendrawtransaction`
-        // sends it now; if it already has the tx (mempool or mined), hsd
-        // accepts the retry and returns the same txid rather than erroring.
-        Err(e) => {
+        BroadcastOutcome::TransportError(e) => {
             let msg = e.to_string();
-            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             db::queries::update_tx_draft_status(
                 &conn,
                 &draft_id,
@@ -1799,56 +1808,74 @@ pub async fn get_write_capability(
     // any is missing, downgrade to read-only with a precise, actionable reason.
     if cap.can_write {
         let client = NodeRpcClient::from_settings(&settings);
-        match client.get_blockchain_info().await {
-            Err(_) => {
-                let url = settings
-                    .get("node_rpc_url")
-                    .map(|s| s.as_str())
-                    .unwrap_or("your node");
-                cap.broadcaster_available = false;
-                cap.can_write = false;
-                cap.reason = Some(format!("Start your local node ({url}) to send."));
-            }
-            Ok(info) => {
-                // "Synced" means the chain tip is reached (applied blocks caught up
-                // to the best known header). When `verification_progress` is
-                // available it is the most reliable signal — a node can report
-                // height == headers while still only ~8% verified if it is far
-                // behind the real chain tip. Always gate on progress when present.
-                let synced = match info.verification_progress {
-                    Some(p) => p >= 0.9999,
+        let node_url = settings
+            .get("node_rpc_url")
+            .map(|s| s.as_str())
+            .unwrap_or("your node");
+        apply_node_write_probe_with_client(&client, &mut cap, node_url, probe_addr.as_deref())
+            .await;
+    }
+    Ok(cap)
+}
+
+/// Client-injected node write-capability probe for [`get_write_capability`].
+/// Given a capability that is currently `can_write == true`, verifies the node
+/// is reachable, fully synced, and address-indexed — downgrading `cap` to
+/// read-only with a precise, actionable reason if any check fails. No-op when
+/// `cap.can_write` is already false. Testable against a mock.
+pub(crate) async fn apply_node_write_probe_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    cap: &mut crate::providers::WriteCapability,
+    node_url: &str,
+    probe_addr: Option<&str>,
+) {
+    if !cap.can_write {
+        return;
+    }
+    match client.get_blockchain_info().await {
+        Err(_) => {
+            cap.broadcaster_available = false;
+            cap.can_write = false;
+            cap.reason = Some(format!("Start your local node ({node_url}) to send."));
+        }
+        Ok(info) => {
+            // "Synced" means the chain tip is reached (applied blocks caught up
+            // to the best known header). When `verification_progress` is
+            // available it is the most reliable signal — a node can report
+            // height == headers while still only ~8% verified if it is far
+            // behind the real chain tip. Always gate on progress when present.
+            let synced = match info.verification_progress {
+                Some(p) => p >= 0.9999,
+                None => match info.headers {
+                    Some(h) if h > 0 => info.blocks >= h,
+                    _ => true,
+                },
+            };
+            if !synced {
+                let pct = match info.verification_progress {
+                    Some(p) => (p * 100.0).floor() as i64,
                     None => match info.headers {
-                        Some(h) if h > 0 => info.blocks >= h,
-                        _ => true,
+                        Some(h) if h > 0 => {
+                            ((info.blocks as f64 / h as f64) * 100.0).floor() as i64
+                        }
+                        _ => 0,
                     },
                 };
-                if !synced {
-                    let pct = match info.verification_progress {
-                        Some(p) => (p * 100.0).floor() as i64,
-                        None => match info.headers {
-                            Some(h) if h > 0 => {
-                                ((info.blocks as f64 / h as f64) * 100.0).floor() as i64
-                            }
-                            _ => 0,
-                        },
-                    };
+                cap.can_write = false;
+                cap.reason = Some(format!(
+                    "Your local node is still syncing ({pct}%). On-chain sends and transfers need a fully-synced node."
+                ));
+            } else if let Some(addr) = probe_addr {
+                if client.get_coins_by_address(addr).await.is_err() {
                     cap.can_write = false;
-                    cap.reason = Some(format!(
-                        "Your local node is still syncing ({pct}%). On-chain sends and transfers need a fully-synced node."
-                    ));
-                } else if let Some(addr) = &probe_addr {
-                    if client.get_coins_by_address(addr).await.is_err() {
-                        cap.can_write = false;
-                        cap.reason = Some(
-                            "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start hsd) and let it finish syncing."
-                                .to_string(),
-                        );
-                    }
+                    cap.reason = Some(
+                        "Your node isn't address-indexed — restart hsd with address indexing (Settings → Start hsd) and let it finish syncing."
+                            .to_string(),
+                    );
                 }
             }
         }
     }
-    Ok(cap)
 }
 
 /// Discard a draft that hasn't been broadcast, releasing any coins it had

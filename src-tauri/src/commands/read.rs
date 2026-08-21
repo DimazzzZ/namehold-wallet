@@ -151,6 +151,17 @@ pub(crate) async fn node_tip_height_if_synced_from_settings_with_network(
     expected_network: Option<&str>,
 ) -> Option<i64> {
     let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(settings);
+    node_tip_height_if_synced_with_client(&client, expected_network).await
+}
+
+/// The client-injected core of [`node_tip_height_if_synced_from_settings_with_network`].
+/// All the sync-progress + network-match logic lives here so it can be unit
+/// tested against a `MockNodeRpc` without a live node. The settings-based
+/// wrappers construct the real `NodeRpcClient` and delegate here.
+pub(crate) async fn node_tip_height_if_synced_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    expected_network: Option<&str>,
+) -> Option<i64> {
     let info = client.get_blockchain_info().await.ok()?;
     // Reject the node when its reported chain doesn't match the wallet's
     // network. When the node doesn't report `chain` at all (older builds), we
@@ -190,6 +201,118 @@ pub(crate) fn network_name_matches(profile_network: &str, node_chain: &str) -> b
     canonical(profile_network) == canonical(node_chain)
 }
 
+/// Client-injected RPC phase of owned-name discovery. Resolves each
+/// `WalletNameHash` → name via `getnamebyhash` (falling back to the coin's
+/// `raw_name_hex`), then fetches `getnameinfo` for each resolved name.
+///
+/// Returns `Vec<(name, name_info_json)>` — the caller persists to the DB.
+/// Shared between `discover_owned_names_via_node` (read.rs) and
+/// `node_discover_step` (sync.rs). Testable against a mock.
+pub(crate) async fn discover_names_via_node_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    hashes: &[crate::db::queries::WalletNameHash],
+) -> Vec<(String, serde_json::Value)> {
+    // Resolve each hash → name (node's getnamebyhash, else the coin's rawName).
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for h in hashes {
+        let resolved = match client.get_name_by_hash(&h.name_hash_hex).await {
+            Ok(Some(n)) => Some(n),
+            Ok(None) | Err(_) => h
+                .raw_name_hex
+                .as_deref()
+                .and_then(|hex| hex::decode(hex).ok())
+                .and_then(|bytes| String::from_utf8(bytes).ok()),
+        };
+        if let Some(name) = resolved {
+            let trimmed = name.trim().to_ascii_lowercase();
+            if !trimmed.is_empty() {
+                names.insert(trimmed);
+            }
+        }
+    }
+
+    let mut fetched: Vec<(String, serde_json::Value)> = Vec::new();
+    for name in &names {
+        if let Ok(info) = client.get_name_info(name).await {
+            fetched.push((name.clone(), info));
+        }
+    }
+    fetched
+}
+
+/// Per-name ownership resolution returned by [`resolve_name_ownership_with_client`].
+/// Aggregates everything the node knows about who currently owns a name:
+/// - `info` is the raw `getnameinfo.info` sub-object (or `None` when the name
+///   has never been opened / has no on-chain state);
+/// - `owner_txid` / `owner_vout` identify the current owner UTXO from
+///   `info.owner.{hash,index}` (both `None` when the name has no live owner);
+/// - `owner_address` is the address of that UTXO as reported by `gettxout`
+///   (`None` when the outpoint doesn't resolve, e.g. spent or missing tx-index).
+///
+/// The caller decides "is this ours" by checking `owner_address` against the
+/// wallet's derived address set — that check is intentionally kept OUT of this
+/// function so the pure resolution can be tested independently of any wallet.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NameOwnershipResolution {
+    pub info: Option<serde_json::Value>,
+    pub owner_txid: Option<String>,
+    pub owner_vout: Option<u32>,
+    pub owner_address: Option<String>,
+}
+
+/// Client-injected per-name ownership resolution for
+/// [`repair_owned_names_via_node`]. Fetches `getnameinfo`, extracts the owner
+/// outpoint, and resolves its address via `gettxout`. Returns
+/// `Err(String)` only when `getnameinfo` itself fails — every other partial
+/// result (missing owner, unresolved outpoint) is encoded in the returned
+/// `NameOwnershipResolution` so the caller can distinguish them.
+///
+/// Testable against a mock — covers the has-owner, no-owner (never opened),
+/// null-outpoint (all-zeros hash), and gettxout-miss branches.
+pub(crate) async fn resolve_name_ownership_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    name: &str,
+) -> Result<NameOwnershipResolution, String> {
+    let info_result = client
+        .get_name_info(name)
+        .await
+        .map_err(|e| format!("{name}: getnameinfo failed — {e}"))?;
+    let info = info_result.get("info").cloned().filter(|v| !v.is_null());
+
+    // Owner outpoint: info.owner.{hash,index} — or null when the name has no
+    // live owner (e.g. never OPENed, or fully released).
+    let owner = info.as_ref().and_then(|i| i.get("owner"));
+    let owner_txid = owner
+        .and_then(|o| o.get("hash"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let owner_vout = owner.and_then(|o| o.get("index")).and_then(|v| v.as_u64());
+
+    let (owner_address, owner_txid, owner_vout) = match (owner_txid, owner_vout) {
+        (Some(t), Some(v)) if !t.is_empty() && t != "0".repeat(t.len()) => {
+            match client.get_tx_out(&t, v as u32).await {
+                Ok(Some(txo)) => {
+                    let addr = txo
+                        .get("address")
+                        .and_then(|a| a.get("string").or_else(|| a.get("hash")))
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string());
+                    (addr, Some(t), Some(v as u32))
+                }
+                _ => (None, Some(t), Some(v as u32)),
+            }
+        }
+        _ => (None, None, None),
+    };
+
+    Ok(NameOwnershipResolution {
+        info,
+        owner_txid,
+        owner_vout,
+        owner_address,
+    })
+}
+
 /// Settings-based readiness gate: `true` when the local node is connected AND
 /// fully synced, making node/local data the authoritative read source. Mirrors
 /// [`is_node_ready_for_local_reads`] for callers that only have settings/a DB
@@ -227,31 +350,8 @@ async fn discover_owned_names_via_node(
 
     let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
 
-    // Resolve each hash → name (node's getnamebyhash, else the coin's rawName).
-    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for h in &hashes {
-        let resolved = match client.get_name_by_hash(&h.name_hash_hex).await {
-            Ok(Some(n)) => Some(n),
-            Ok(None) | Err(_) => h
-                .raw_name_hex
-                .as_deref()
-                .and_then(|hex| hex::decode(hex).ok())
-                .and_then(|bytes| String::from_utf8(bytes).ok()),
-        };
-        if let Some(name) = resolved {
-            let trimmed = name.trim().to_ascii_lowercase();
-            if !trimmed.is_empty() {
-                names.insert(trimmed);
-            }
-        }
-    }
-
-    let mut fetched: Vec<(String, serde_json::Value)> = Vec::new();
-    for name in &names {
-        if let Ok(info) = client.get_name_info(name).await {
-            fetched.push((name.clone(), info));
-        }
-    }
+    // Resolve hashes → names and fetch their on-chain state via the node.
+    let fetched = discover_names_via_node_with_client(&client, &hashes).await;
 
     let discovered_names: Vec<String> = fetched.iter().map(|(n, _)| n.clone()).collect();
     {
@@ -302,56 +402,26 @@ async fn repair_owned_names_via_node(
     let mut repaired = 0u32;
 
     for name in &candidates {
-        // Authoritative name state from the node.
-        let info_result = match client.get_name_info(name).await {
-            Ok(v) => v,
-            Err(e) => {
-                errors.push(format!("{name}: getnameinfo failed — {e}"));
+        let resolution = match resolve_name_ownership_with_client(&client, name).await {
+            Ok(r) => r,
+            Err(msg) => {
+                errors.push(msg);
                 continue;
             }
         };
-        let info_opt = info_result.get("info").cloned().filter(|v| !v.is_null());
 
-        // Resolve the current owner outpoint's address:
-        //   info.owner.{hash,index} IS the current owner UTXO (or null when the
-        //   name has no live owner — e.g. never OPENed, or fully released). We
-        //   ask the node for that specific output via `gettxout` and read its
-        //   address; if it belongs to one of our derived addresses, we own it.
-        let owner = info_opt.as_ref().and_then(|i| i.get("owner"));
-        let owner_txid = owner
-            .and_then(|o| o.get("hash"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let owner_vout = owner.and_then(|o| o.get("index")).and_then(|v| v.as_u64());
-
-        let (owner_addr, owner_txid_str, owner_vout_u32) = match (owner_txid, owner_vout) {
-            (Some(t), Some(v)) if !t.is_empty() && t != "0".repeat(t.len()) => {
-                match client.get_tx_out(&t, v as u32).await {
-                    Ok(Some(txo)) => {
-                        let addr = txo
-                            .get("address")
-                            .and_then(|a| a.get("string").or_else(|| a.get("hash")))
-                            .and_then(|s| s.as_str())
-                            .map(|s| s.to_string());
-                        (addr, Some(t), Some(v as u32))
-                    }
-                    _ => (None, Some(t), Some(v as u32)),
-                }
-            }
-            _ => (None, None, None),
-        };
-
-        let owned_by_wallet = owner_addr
+        let owned_by_wallet = resolution
+            .owner_address
             .as_deref()
             .map(|a| addr_set.contains(a))
             .unwrap_or(false);
 
         match (
             owned_by_wallet,
-            info_opt,
-            owner_txid_str,
-            owner_vout_u32,
-            owner_addr,
+            resolution.info,
+            resolution.owner_txid,
+            resolution.owner_vout,
+            resolution.owner_address,
         ) {
             (true, Some(info), Some(txid), Some(vout), Some(addr)) => {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -733,32 +803,8 @@ pub async fn read_name_info(
     // (or null `info` for a name that has never been touched on-chain).
     let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
     if is_node_ready_for_local_reads(&state).await {
-        if let Ok(raw) = node.get_name_info(&name).await {
-            // The node knows the name — `info` is present and carries auction state.
-            if let Some(info) = raw.get("info").filter(|v| !v.is_null()) {
-                if let Some(normalized) = crate::providers::hnsfans::normalize_name(info) {
-                    return Ok(serde_json::to_value(&normalized)?);
-                }
-            }
-            // `info` is null → the name exists in the HNS namespace but has never
-            // been opened. Synthesize an AVAILABLE entry so the frontend can offer
-            // the "Open auction" action cleanly.
-            return Ok(serde_json::to_value(&crate::hsd::types::HsdName {
-                name: name.clone(),
-                name_hash: None,
-                state: Some("AVAILABLE".to_string()),
-                height: None,
-                renewal: None,
-                owner: None,
-                value: None,
-                highest: None,
-                registered: Some(false),
-                expired: None,
-                stats: None,
-                transfer: None,
-                revoked: None,
-                bids: None,
-            })?);
+        if let Some(shaped) = read_name_info_node_with_client(&node, &name).await {
+            return Ok(serde_json::to_value(&shaped)?);
         }
     }
 
@@ -773,25 +819,58 @@ pub async fn read_name_info(
         Ok(Some(info)) => Ok(serde_json::to_value(&info)?),
         Ok(None) => {
             // Explorer confirms the name is unknown — synthesize AVAILABLE.
-            Ok(serde_json::to_value(&crate::hsd::types::HsdName {
-                name: name.clone(),
-                name_hash: None,
-                state: Some("AVAILABLE".to_string()),
-                height: None,
-                renewal: None,
-                owner: None,
-                value: None,
-                highest: None,
-                registered: Some(false),
-                expired: None,
-                stats: None,
-                transfer: None,
-                revoked: None,
-                bids: None,
-            })?)
+            Ok(serde_json::to_value(&synthesize_available_name(&name))?)
         }
         Err(e) => Err(e),
     }
+}
+
+/// A synthesized `AVAILABLE` name entry, used whenever the node or explorer
+/// confirms a name exists in the HNS namespace but has never been opened
+/// on-chain. Lets the frontend offer the "Open auction" action without
+/// treating a never-opened name as an error.
+pub(crate) fn synthesize_available_name(name: &str) -> crate::hsd::types::HsdName {
+    crate::hsd::types::HsdName {
+        name: name.to_string(),
+        name_hash: None,
+        state: Some("AVAILABLE".to_string()),
+        height: None,
+        renewal: None,
+        owner: None,
+        value: None,
+        highest: None,
+        registered: Some(false),
+        expired: None,
+        stats: None,
+        transfer: None,
+        revoked: None,
+        bids: None,
+    }
+}
+
+/// Client-injected node branch of [`read_name_info`]. Returns:
+/// - `Some(normalized)` when the node knows the name and carries auction state
+///   (`info` present and normalizable);
+/// - `Some(AVAILABLE)` when the node answers but `info` is null (name never
+///   opened on-chain) — a synthesized available entry;
+/// - `None` when the RPC fails (caller then falls back to the explorer path).
+///
+/// Testable against a mock — covers the normalize path, the null-info
+/// synthesize path, and the RPC-error fallthrough without a live node.
+pub(crate) async fn read_name_info_node_with_client(
+    node: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    name: &str,
+) -> Option<crate::hsd::types::HsdName> {
+    let raw = node.get_name_info(name).await.ok()?;
+    // The node knows the name — `info` is present and carries auction state.
+    if let Some(info) = raw.get("info").filter(|v| !v.is_null()) {
+        if let Some(normalized) = crate::providers::hnsfans::normalize_name(info) {
+            return Some(normalized);
+        }
+    }
+    // `info` is null (or unnormalizable) → the name exists in the HNS namespace
+    // but has never been opened. Synthesize an AVAILABLE entry.
+    Some(synthesize_available_name(name))
 }
 
 /// Empty `read_name_bids` response — used whenever there is nothing to show
@@ -1051,17 +1130,7 @@ pub async fn get_resource(
 
     // Name info: try node first, then explorer.
     let info: serde_json::Value = if node_ready {
-        if let Ok(raw) = node.get_name_info(&name).await {
-            if let Some(info) = raw.get("info").filter(|v| !v.is_null()) {
-                crate::providers::hnsfans::normalize_name(info)
-                    .map(|n| serde_json::to_value(&n).unwrap_or_default())
-                    .unwrap_or_default()
-            } else {
-                serde_json::json!({ "name": name, "state": "AVAILABLE" })
-            }
-        } else {
-            serde_json::json!({})
-        }
+        get_resource_info_with_client(&node, &name).await
     } else {
         match explorer.get_name_info_optional(&name).await {
             Ok(Some(i)) => serde_json::to_value(&i).unwrap_or_default(),
@@ -1072,10 +1141,7 @@ pub async fn get_resource(
 
     // 2. Fetch resource records (node only).
     let records: Vec<serde_json::Value> = if node_ready {
-        match node.get_name_resource(&name).await {
-            Ok(res) if !res.is_null() => records_from_resource(&res),
-            _ => vec![],
-        }
+        get_resource_records_with_client(&node, &name).await
     } else {
         vec![]
     };
@@ -1138,28 +1204,48 @@ pub async fn read_name_records(
             queries::get_settings(&conn)?
         };
         let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
-        if let Ok(res) = node.get_name_resource(&name).await {
-            // hsd's `getnameresource` returns `null` (not an object) when a
-            // name has no resource. Normalize to the uniform empty shape so
-            // frontends can always index `.records` safely.
-            if res.is_null() {
-                return Ok(empty_resource());
-            }
-            // Guarantee `records` is always present as an array, even if the
-            // node ever returns a resource without it — belt-and-braces so
-            // the frontend contract holds regardless of node version quirks.
-            if let serde_json::Value::Object(mut map) = res {
-                if !map.get("records").map(|v| v.is_array()).unwrap_or(false) {
-                    map.insert("records".to_string(), serde_json::Value::Array(vec![]));
-                }
-                return Ok(serde_json::Value::Object(map));
-            }
-            // Non-object, non-null (shouldn't happen with real hsd) —
-            // degrade rather than surface a surprise shape.
-            return Ok(empty_resource());
-        }
+        return Ok(read_name_records_with_client(&node, &name).await);
     }
     Ok(empty_resource())
+}
+
+/// Client-injected core of [`read_name_records`]. Fetches `getnameresource`,
+/// normalizes the tri-state (resource object / null / RPC error) to the
+/// uniform `{ records: [...] }` shape, and guarantees `records` is always
+/// present as an array. Testable against a mock.
+pub(crate) async fn read_name_records_with_client(
+    node: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    name: &str,
+) -> serde_json::Value {
+    // Uniform empty-resource shape returned on every degrade path so consumers
+    // can always do `resource.records` without a null check.
+    let empty_resource = || {
+        serde_json::json!({
+            "records": [],
+        })
+    };
+
+    if let Ok(res) = node.get_name_resource(name).await {
+        // hsd's `getnameresource` returns `null` (not an object) when a
+        // name has no resource. Normalize to the uniform empty shape so
+        // frontends can always index `.records` safely.
+        if res.is_null() {
+            return empty_resource();
+        }
+        // Guarantee `records` is always present as an array, even if the
+        // node ever returns a resource without it — belt-and-braces so
+        // the frontend contract holds regardless of node version quirks.
+        if let serde_json::Value::Object(mut map) = res {
+            if !map.get("records").map(|v| v.is_array()).unwrap_or(false) {
+                map.insert("records".to_string(), serde_json::Value::Array(vec![]));
+            }
+            return serde_json::Value::Object(map);
+        }
+        // Non-object, non-null (shouldn't happen with real hsd) —
+        // degrade rather than surface a surprise shape.
+        return empty_resource();
+    }
+    empty_resource()
 }
 
 /// Compact block details for the in-app Block Info modal, read from the local
@@ -1189,53 +1275,34 @@ pub async fn read_block_info(
         queries::get_settings(&conn)?
     };
     let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+    Ok(read_block_info_with_client(&node, height).await)
+}
 
+/// Client-injected core of [`read_block_info`]. Two RPC calls (`getblockhash`
+/// → `getblock`) with soft-degrade-to-null on either failure, then the pure
+/// `read_pure::build_block_info` shaper. Testable against a mock without
+/// needing a live node.
+pub(crate) async fn read_block_info_with_client(
+    node: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    height: i64,
+) -> serde_json::Value {
     // getblockhash(height) → getblock(hash, verbose, verboseTx). Any RPC
     // failure (node fell over mid-read, height beyond tip) soft-degrades.
     let hash = match node.get_block_hash(height).await {
         Ok(h) => h,
-        Err(_) => return Ok(serde_json::Value::Null),
+        Err(_) => return serde_json::Value::Null,
     };
     let block = match node.get_block(&hash).await {
         Ok(b) => b,
-        Err(_) => return Ok(serde_json::Value::Null),
+        Err(_) => return serde_json::Value::Null,
     };
 
     // hsd verbose block: { hash, height, time, difficulty, tx: [ { outputs:
     // [ { value } ] }, ... ] }. The coinbase is tx[0]; its outputs sum to the
-    // miner reward (subsidy + fees). Guard every access — a missing/short
-    // array yields a 0 reward rather than a panic.
-    let txs = block.get("tx").and_then(|v| v.as_array());
-    let tx_count = txs.map(|a| a.len()).unwrap_or(0);
-    let miner_reward: i64 = txs
-        .and_then(|a| a.first())
-        .and_then(|coinbase| coinbase.get("outputs"))
-        .and_then(|o| o.as_array())
-        .map(|outs| {
-            outs.iter()
-                .filter_map(|out| out.get("value").and_then(|v| v.as_i64()))
-                .sum()
-        })
-        .unwrap_or(0);
-
-    let block_height = block
-        .get("height")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(height);
-    let time = block.get("time").and_then(|v| v.as_i64()).unwrap_or(0);
-    let difficulty = block
-        .get("difficulty")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-
-    Ok(serde_json::json!({
-        "height": block_height,
-        "hash": hash,
-        "time": time,
-        "txCount": tx_count,
-        "minerReward": miner_reward,
-        "difficulty": difficulty,
-    }))
+    // miner reward (subsidy + fees). All the guarded shaping lives in the pure
+    // `read_pure::build_block_info` (unit-tested independently) so a
+    // missing/short array yields a 0 reward rather than a panic.
+    super::read_pure::build_block_info(&block, &hash, height)
 }
 
 /// Compact transaction details for the in-app Transaction Info modal, read
@@ -1281,19 +1348,30 @@ pub async fn read_tx_info(
         queries::get_settings(&conn)?
     };
     let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
+    Ok(read_tx_info_with_client(&node, &txid).await)
+}
 
+/// Client-injected core of [`read_tx_info`]. Fetches `GET /tx/:hash`, maps the
+/// tri-state result (tx object / `tx_index_disabled` / null soft-degrade), and
+/// shapes the compact response via the pure `compute_tx_fee_and_total`.
+/// Testable against a mock — covers the 404/miss, index-disabled, and generic
+/// degrade branches without a live node.
+pub(crate) async fn read_tx_info_with_client(
+    node: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    txid: &str,
+) -> serde_json::Value {
     // REST GET /tx/:hash — resolves spent prevouts via the tx-index, so
     // `fee` and `inputs[].coin` are populated even for old confirmed txs.
-    let tx = match node.get_tx_by_hash(&txid).await {
+    let tx = match node.get_tx_by_hash(txid).await {
         Ok(t) if !t.is_null() => t,
-        Ok(_) => return Ok(serde_json::Value::Null), // 404 / miss
+        Ok(_) => return serde_json::Value::Null, // 404 / miss
         Err(AppError::Rpc(msg)) if msg.to_ascii_lowercase().contains("tx index not enabled") => {
             // Distinct signal: the node responds but lacks --index-tx. The
             // modal renders a "tx index required" hint rather than the
             // misleading "requires synced node" message.
-            return Ok(serde_json::json!({ "error": "tx_index_disabled" }));
+            return serde_json::json!({ "error": "tx_index_disabled" });
         }
-        Err(_) => return Ok(serde_json::Value::Null), // generic degrade
+        Err(_) => return serde_json::Value::Null, // generic degrade
     };
 
     // REST tx shape: { hash, confirmations, height, block, time,
@@ -1303,7 +1381,7 @@ pub async fn read_tx_info(
     let hash = tx
         .get("hash")
         .and_then(|v| v.as_str())
-        .unwrap_or(&txid)
+        .unwrap_or(txid)
         .to_string();
     let confirmations = tx
         .get("confirmations")
@@ -1331,7 +1409,7 @@ pub async fn read_tx_info(
     // Pure fee + total_out extraction (unit-tested — see tests below).
     let (fee, total_out) = compute_tx_fee_and_total(&tx);
 
-    Ok(serde_json::json!({
+    serde_json::json!({
         "txid": hash,
         "confirmations": confirmations,
         "height": height,
@@ -1341,7 +1419,41 @@ pub async fn read_tx_info(
         "inputsCount": inputs_count,
         "outputsCount": outputs_count,
         "totalOut": total_out,
-    }))
+    })
+}
+
+/// Client-injected name-info fetch for [`get_resource`]. Tries the node's
+/// `getnameinfo`, normalizes to the HsdName shape, synthesizes AVAILABLE for
+/// null-info names, or returns an empty object on RPC failure. Testable
+/// against a mock without a live node.
+pub(crate) async fn get_resource_info_with_client(
+    node: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    name: &str,
+) -> serde_json::Value {
+    if let Ok(raw) = node.get_name_info(name).await {
+        if let Some(info) = raw.get("info").filter(|v| !v.is_null()) {
+            crate::providers::hnsfans::normalize_name(info)
+                .map(|n| serde_json::to_value(&n).unwrap_or_default())
+                .unwrap_or_default()
+        } else {
+            serde_json::json!({ "name": name, "state": "AVAILABLE" })
+        }
+    } else {
+        serde_json::json!({})
+    }
+}
+
+/// Client-injected resource-records fetch for [`get_resource`]. Fetches
+/// `getnameresource`, extracts the `records` array, or returns an empty vec
+/// on null/error. Testable against a mock.
+pub(crate) async fn get_resource_records_with_client(
+    node: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    name: &str,
+) -> Vec<serde_json::Value> {
+    match node.get_name_resource(name).await {
+        Ok(res) if !res.is_null() => records_from_resource(&res),
+        _ => vec![],
+    }
 }
 
 /// Extract the fee and total output value from an hsd `getrawtransaction`

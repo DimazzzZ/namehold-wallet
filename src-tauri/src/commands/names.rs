@@ -20,6 +20,7 @@ use crate::error::AppError;
 use crate::noncustodial::actions::{self, NameInputSpec, PrimaryOutput};
 use crate::noncustodial::hd::ExtendedPubKey;
 use crate::noncustodial::network::Network;
+use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::NodeRpcClient;
 use crate::noncustodial::send::{self, SpendableCoin};
 use crate::noncustodial::sync::{self, COV_REGISTER, COV_REVEAL};
@@ -27,6 +28,8 @@ use crate::noncustodial::tx::sighash;
 use crate::noncustodial::types::TxDraftSummary;
 use crate::noncustodial::{address, bids, covenants, names, resource};
 use crate::AppState;
+
+use super::names_pure;
 
 pub(crate) fn random_id() -> String {
     let mut b = [0u8; 16];
@@ -107,7 +110,7 @@ pub(crate) struct NameState {
 }
 
 pub(crate) async fn fetch_name_state(
-    client: &NodeRpcClient,
+    client: &dyn NodeRpc,
     name: &str,
 ) -> Result<NameState, AppError> {
     let v = client.get_name_info(name).await?;
@@ -137,7 +140,7 @@ pub(crate) async fn fetch_name_state(
 
 /// `getRenewalBlock`: internal-order 32-byte hash at `height - 2*renewalMaturity`.
 pub(crate) async fn renewal_block(
-    client: &NodeRpcClient,
+    client: &dyn NodeRpc,
     network: Network,
 ) -> Result<[u8; 32], AppError> {
     let tip = client.get_blockchain_info().await?.blocks;
@@ -724,7 +727,7 @@ async fn evaluate_name_action_capabilities(
 /// (where `owns_name` is true but `has_owner_coin` is false). On the node path
 /// it is always `false`, leaving that branch's behavior unchanged.
 #[allow(clippy::too_many_arguments)]
-fn build_name_action_capabilities(
+pub(crate) fn build_name_action_capabilities(
     name: String,
     phase: String,
     raw_phase: &str,
@@ -957,7 +960,8 @@ fn build_name_action_capabilities(
         next_action_for_task(&task_state);
 
     // 7. Extract countdown from stats.
-    let (countdown_label, countdown_blocks, countdown_hours) = extract_countdown(raw_phase, stats);
+    let (countdown_label, countdown_blocks, countdown_hours) =
+        names_pure::extract_countdown(raw_phase, stats);
 
     NameActionCapabilities {
         name,
@@ -991,7 +995,7 @@ fn build_name_action_capabilities(
 }
 
 /// Conservative fallback when the node is unreachable.
-fn conservative_capabilities(name: &str, reason: &str) -> NameActionCapabilities {
+pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionCapabilities {
     let disallowed = NameActionCapability {
         allowed: false,
         reason: Some(reason.into()),
@@ -1203,40 +1207,6 @@ pub(crate) fn next_action_for_task(
             (Some("RENEW".into()), Some("Renew Name".into()), Some("This name is close to expiry. Renew now — an expired Handshake name is lost forever.".into()))
         }
         AuctionTaskState::UnavailableOther => (None, None, None),
-    }
-}
-
-/// Extract countdown data from the node's stats object.
-fn extract_countdown(
-    phase: &str,
-    stats: Option<&serde_json::Value>,
-) -> (Option<String>, Option<i64>, Option<f64>) {
-    let stats = match stats {
-        Some(s) => s,
-        None => return (None, None, None),
-    };
-
-    match phase {
-        "OPENING" => {
-            let blocks = stats.get("blocksUntilBidding").and_then(|b| b.as_i64());
-            let hours = stats.get("hoursUntilBidding").and_then(|h| h.as_f64());
-            (blocks.map(|_| "Bidding opens in".into()), blocks, hours)
-        }
-        "BIDDING" => {
-            let blocks = stats.get("blocksUntilReveal").and_then(|b| b.as_i64());
-            let hours = stats.get("hoursUntilReveal").and_then(|h| h.as_f64());
-            (blocks.map(|_| "Reveal starts in".into()), blocks, hours)
-        }
-        "REVEAL" => {
-            let blocks = stats.get("blocksUntilClose").and_then(|b| b.as_i64());
-            let hours = stats.get("hoursUntilClose").and_then(|h| h.as_f64());
-            (blocks.map(|_| "Auction closes in".into()), blocks, hours)
-        }
-        "CLOSED" => {
-            let blocks = stats.get("blocksUntilExpire").and_then(|b| b.as_i64());
-            (blocks.map(|_| "Expires in".into()), blocks, None)
-        }
-        _ => (None, None, None),
     }
 }
 
@@ -1471,10 +1441,7 @@ pub async fn build_bid_draft(
     // `recover_bid_commitment` has no such height to work from and
     // leaves this NULL.
     let params = ctx.network.name_params();
-    let reveal_end_height = ns.height as i64
-        + (params.tree_interval as i64 + 1)
-        + params.bidding_period as i64
-        + params.reveal_period as i64;
+    let reveal_end_height = names_pure::reveal_end_height(ns.height as i64, &params);
     queries::set_reveal_end_height(
         &conn,
         &ctx.profile_id,
@@ -1665,10 +1632,7 @@ pub async fn build_batch_bid_draft(
         )?;
 
         // Estimate reveal-end height and stamp it.
-        let reveal_end_height = spec.ns.height as i64
-            + (params.tree_interval as i64 + 1)
-            + params.bidding_period as i64
-            + params.reveal_period as i64;
+        let reveal_end_height = names_pure::reveal_end_height(spec.ns.height as i64, &params);
         queries::set_reveal_end_height(&conn, &ctx.profile_id, &blind_hex, reveal_end_height)?;
 
         outcomes.push(BidOutcome {
@@ -1698,11 +1662,7 @@ pub async fn build_batch_bid_draft(
 
     // Persist the draft. Note: the schema stores one name per draft; for a
     // batch we use the first name as the draft label (a limitation).
-    let display_name = if names.len() == 1 {
-        names[0].clone()
-    } else {
-        format!("{} + {} more", names[0], names.len() - 1)
-    };
+    let display_name = names_pure::display_names(&names);
     let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
     let summary = persist_with_conn(
         &conn,
@@ -2171,11 +2131,7 @@ pub async fn build_batch_renew_draft(
         rate,
     )?;
     // Persist with first name as primary; the draft plan contains all names.
-    let display_name = if batch_names.len() == 1 {
-        batch_names[0].clone()
-    } else {
-        format!("{} + {} more", batch_names[0], batch_names.len() - 1)
-    };
+    let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist(
         &state,
@@ -2262,11 +2218,7 @@ pub async fn build_batch_reveal_draft(
         &ctx.change_address,
         rate,
     )?;
-    let display_name = if batch_names.len() == 1 {
-        batch_names[0].clone()
-    } else {
-        format!("{} + {} more", batch_names[0], batch_names.len() - 1)
-    };
+    let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist(
         &state,
@@ -2342,11 +2294,7 @@ pub async fn build_batch_redeem_draft(
         &ctx.change_address,
         rate,
     )?;
-    let display_name = if batch_names.len() == 1 {
-        batch_names[0].clone()
-    } else {
-        format!("{} + {} more", batch_names[0], batch_names.len() - 1)
-    };
+    let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist(
         &state,
@@ -2448,11 +2396,7 @@ pub async fn build_batch_finalize_draft(
         &ctx.change_address,
         rate,
     )?;
-    let display_name = if batch_names.len() == 1 {
-        batch_names[0].clone()
-    } else {
-        format!("{} + {} more", batch_names[0], batch_names.len() - 1)
-    };
+    let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist(
         &state,
