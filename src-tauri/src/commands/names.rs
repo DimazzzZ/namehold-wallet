@@ -1713,14 +1713,13 @@ pub async fn build_reveal_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let ns = fetch_name_state(&client, &name).await?;
 
     // Look up our bid commitment + the unspent BID coin at that address.
     let (bid, bid_coin) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let nh = names::hash_name(&name)?;
         let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, &name)?
             .ok_or_else(|| AppError::NotFound(format!("no bid commitment for '{name}'")))?;
         let coin = queries::find_unspent_covenant_utxo(
@@ -1736,6 +1735,33 @@ pub async fn build_reveal_draft(
         })?;
         (bid, coin)
     };
+
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let summary = build_reveal_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &bid, &bid_coin)?;
+
+    Ok(summary)
+}
+
+/// Pure inner logic for `build_reveal_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the commitment lookup + draft persist are atomic under that
+/// single held guard.
+///
+/// `ns` is the pre-fetched on-chain name state (the async RPC call happens
+/// in the wrapper before the lock is acquired). `bid` and `bid_coin` are
+/// pre-fetched from the DB in the wrapper.
+pub(crate) fn build_reveal_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    bid: &queries::BidCommitmentRow,
+    bid_coin: &queries::NameCoin,
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+
     let mut nonce = [0u8; 32];
     let nb = hex::decode(&bid.nonce_hex).map_err(|e| AppError::Crypto(format!("nonce: {e}")))?;
     if nb.len() != 32 {
@@ -1759,17 +1785,13 @@ pub async fn build_reveal_draft(
         &ctx.change_address,
         rate,
     )?;
-    let summary = persist(&state, &ctx.profile_id, "reveal", &name, None, None, &res)?;
+    let summary = persist_with_conn(conn, &ctx.profile_id, "reveal", name, None, None, &res)?;
     // Task 1 fix (companion to build_bid_draft): stamp the reveal txid onto
     // the SAME commitment row (keyed by name — `set_bid_reveal_txid`), so the
     // reveal-deadline scanner (which reads `reveal_txid`) can see this bid as
-    // resolved. `persist` already released its own lock, so this takes a
-    // short separate one; there is no multi-step guard to protect here (only
-    // one write).
-    {
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        queries::set_bid_reveal_txid(&conn, &ctx.profile_id, &name, &res.txid)?;
-    }
+    // resolved. Done under the caller's held lock, right after the draft
+    // persist — `res.txid` is the deterministic pre-signing Handshake txid.
+    queries::set_bid_reveal_txid(conn, &ctx.profile_id, name, &res.txid)?;
     Ok(summary)
 }
 
