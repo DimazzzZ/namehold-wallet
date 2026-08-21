@@ -2039,29 +2039,53 @@ pub async fn build_transfer_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
-    let (version, program) = address::decode(ctx.network, &recipient)?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_transfer_draft_inner(&conn, &ctx, &name, &recipient, fee_rate, &ns, &coin)
+}
+
+/// Pure inner logic for `build_transfer_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the coin-reservation + draft persist are atomic under that
+/// single held guard.
+///
+/// `ns` is the pre-fetched on-chain name state (the async RPC call happens
+/// in the wrapper before the lock is acquired). `owner_coin` is the wallet's
+/// current owner coin for `name`, pre-fetched by the wrapper.
+pub(crate) fn build_transfer_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    recipient: &str,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    owner_coin: &queries::NameCoin,
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+    let (version, program) = address::decode(ctx.network, recipient)?;
+    // TRANSFER initiates a name transfer to `recipient`; the output keeps the
+    // full owner-coin value on the name and stays at the current owner address
+    // until FINALIZE moves it.
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
-        Some(name_input_from(coin.clone())),
+        Some(name_input_from(owner_coin.clone())),
         PrimaryOutput {
-            value: coin.value,
-            address: coin.address.clone(),
+            value: owner_coin.value,
+            address: owner_coin.address.clone(),
             covenant: covenants::transfer(&nh, ns.height, version, &program),
         },
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(
-        &state,
+    persist_with_conn(
+        conn,
         &ctx.profile_id,
         "transfer",
-        &name,
-        Some(&recipient),
+        name,
+        Some(recipient),
         None,
         &res,
     )
