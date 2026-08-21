@@ -1960,24 +1960,47 @@ pub async fn build_update_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
-    let res_bytes = resource::encode(&records)?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_update_draft_inner(&conn, &ctx, &name, &records, fee_rate, &ns, &coin)
+}
+
+/// Pure inner logic for `build_update_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the coin-reservation + draft persist are atomic under that
+/// single held guard.
+///
+/// `ns` is the pre-fetched on-chain name state (the async RPC call happens
+/// in the wrapper before the lock is acquired). `owner_coin` is the wallet's
+/// current owner coin for `name`, pre-fetched by the wrapper.
+pub(crate) fn build_update_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    records: &[serde_json::Value],
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    owner_coin: &queries::NameCoin,
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+    let res_bytes = resource::encode(records)?;
+    // UPDATE keeps the full owner-coin value on the name (no price change);
+    // only the resource records get rewritten.
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
-        Some(name_input_from(coin.clone())),
+        Some(name_input_from(owner_coin.clone())),
         PrimaryOutput {
-            value: coin.value,
-            address: coin.address.clone(),
+            value: owner_coin.value,
+            address: owner_coin.address.clone(),
             covenant: covenants::update(&nh, ns.height, &res_bytes),
         },
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "update", &name, None, None, &res)
+    persist_with_conn(conn, &ctx.profile_id, "update", name, None, None, &res)
 }
 
 #[tauri::command]
