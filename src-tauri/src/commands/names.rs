@@ -1804,13 +1804,12 @@ pub async fn build_redeem_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let ns = fetch_name_state(&client, &name).await?;
 
     let coin = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let nh = names::hash_name(&name)?;
         let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, &name)?
             .ok_or_else(|| AppError::NotFound(format!("no bid for '{name}'")))?;
         queries::find_unspent_covenant_utxo(
@@ -1827,21 +1826,44 @@ pub async fn build_redeem_draft(
             ))
         })?
     };
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_redeem_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &coin)
+}
+
+/// Pure inner logic for `build_redeem_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the coin-reservation + draft persist are atomic under that
+/// single held guard.
+///
+/// `ns` is the pre-fetched on-chain name state (the async RPC call happens
+/// in the wrapper before the lock is acquired). `reveal_coin` is the wallet's
+/// unspent losing-REVEAL coin for `name`, pre-fetched by the wrapper.
+pub(crate) fn build_redeem_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    reveal_coin: &queries::NameCoin,
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+
     // REDEEM reclaims the reveal output value back to the wallet.
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
-        Some(name_input_from(coin.clone())),
+        Some(name_input_from(reveal_coin.clone())),
         PrimaryOutput {
-            value: coin.value,
-            address: coin.address.clone(),
+            value: reveal_coin.value,
+            address: reveal_coin.address.clone(),
             covenant: covenants::redeem(&nh, ns.height),
         },
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "redeem", &name, None, None, &res)
+    persist_with_conn(conn, &ctx.profile_id, "redeem", name, None, None, &res)
 }
 
 // --- owner actions (spend the name's owner UTXO) ---------------------------

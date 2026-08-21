@@ -4,6 +4,7 @@ mod batches_cmd_tests;
 mod bids_cmd_tests;
 mod build_bid_draft_tests;
 mod build_open_draft_tests;
+mod build_redeem_draft_tests;
 mod build_reveal_draft_tests;
 mod chain_scan_tests;
 mod command_helpers;
