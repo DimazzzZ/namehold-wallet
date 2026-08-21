@@ -40,12 +40,7 @@ fn seed_profile(conn: &rusqlite::Connection) {
     .unwrap();
 }
 
-fn seed_derived_address(
-    conn: &rusqlite::Connection,
-    address: &str,
-    branch: i64,
-    child_index: i64,
-) {
+fn seed_derived_address(conn: &rusqlite::Connection, address: &str, branch: i64, child_index: i64) {
     conn.execute(
         "INSERT INTO derived_addresses
             (wallet_profile_id, account_index, branch, child_index, address, script_pubkey_hex, public_key_hex)
@@ -95,20 +90,15 @@ fn seed_bid_commitment(
     .unwrap();
 }
 
-fn seed_draft(
-    conn: &rusqlite::Connection,
-    id: &str,
-    action: &str,
-    name: &str,
-) {
+fn seed_draft(conn: &rusqlite::Connection, id: &str, action: &str, name: &str) {
     let summary = serde_json::json!({ "name": name }).to_string();
     db::queries::insert_tx_draft(
         conn,
         id,
         PROFILE,
         action,
-        "0100000000",  // minimal unsigned tx hex
-        "[]",          // signing_inputs_json
+        "0100000000", // minimal unsigned tx hex
+        "[]",         // signing_inputs_json
         &summary,
     )
     .unwrap();
@@ -127,7 +117,15 @@ fn seed_tracked_name_state(
         "INSERT INTO tracked_name_states
             (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, height)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![PROFILE, name, name_hash_hex, state, owner_txid, owner_vout, height],
+        rusqlite::params![
+            PROFILE,
+            name,
+            name_hash_hex,
+            state,
+            owner_txid,
+            owner_vout,
+            height
+        ],
     )
     .unwrap();
 }
@@ -277,7 +275,15 @@ fn find_name_action_context_with_owner_coin() {
     );
 
     // Link the name to the owner UTXO via tracked_name_states
-    seed_tracked_name_state(&conn, NAME, name_hash_hex, "CLOSED", Some("tx3"), Some(0), Some(12345));
+    seed_tracked_name_state(
+        &conn,
+        NAME,
+        name_hash_hex,
+        "CLOSED",
+        Some("tx3"),
+        Some(0),
+        Some(12345),
+    );
 
     let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
     assert!(ctx.has_owner_coin);
@@ -440,7 +446,15 @@ fn find_name_action_context_transfer_with_items() {
     );
 
     // Link to tracked_name_states
-    seed_tracked_name_state(&conn, NAME, name_hash_hex, "TRANSFER", Some("tx4"), Some(0), None);
+    seed_tracked_name_state(
+        &conn,
+        NAME,
+        name_hash_hex,
+        "TRANSFER",
+        Some("tx4"),
+        Some(0),
+        None,
+    );
 
     let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
     assert_eq!(ctx.transfer_has_items, Some(true));
@@ -471,7 +485,15 @@ fn find_name_action_context_transfer_without_items() {
         Some(&transfer_covenant),
     );
 
-    seed_tracked_name_state(&conn, NAME, name_hash_hex, "TRANSFER", Some("tx4"), Some(0), None);
+    seed_tracked_name_state(
+        &conn,
+        NAME,
+        name_hash_hex,
+        "TRANSFER",
+        Some("tx4"),
+        Some(0),
+        None,
+    );
 
     let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
     assert_eq!(ctx.transfer_has_items, Some(false));
@@ -642,8 +664,8 @@ mod rpc_injected_tests {
         use crate::noncustodial::hd::ExtendedPubKey;
         // A dummy ExtendedPubKey — fee_rate() doesn't read it, only settings.
         let xpub = ExtendedPubKey::from_parts(
-            &[2; 33],  // dummy compressed pubkey (valid prefix + 32 zero bytes)
-            &[0; 32],  // dummy chain code
+            &[2; 33], // dummy compressed pubkey (valid prefix + 32 zero bytes)
+            &[0; 32], // dummy chain code
         )
         .unwrap();
         Ctx {

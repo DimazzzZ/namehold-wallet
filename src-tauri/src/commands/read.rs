@@ -819,7 +819,7 @@ pub async fn read_name_info(
         Ok(Some(info)) => Ok(serde_json::to_value(&info)?),
         Ok(None) => {
             // Explorer confirms the name is unknown — synthesize AVAILABLE.
-            Ok(serde_json::to_value(&synthesize_available_name(&name))?)
+            Ok(serde_json::to_value(synthesize_available_name(&name))?)
         }
         Err(e) => Err(e),
     }

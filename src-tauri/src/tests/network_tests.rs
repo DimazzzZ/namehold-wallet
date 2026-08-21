@@ -1,6 +1,6 @@
 //! Tests for `crate::noncustodial::network` — pure Network functions.
 
-use crate::noncustodial::network::Network;
+use crate::noncustodial::network::{NameParams, Network};
 
 // ── address_hrp ──────────────────────────────────────────────────────
 
@@ -153,5 +153,5 @@ fn test_name_params_derives() {
     let p2 = p; // Copy
     assert_eq!(p, p2); // PartialEq
     let _ = format!("{:?}", p); // Debug
-    let _clone = p.clone(); // Clone
+    let _clone: NameParams = p; // Clone (Copy implies Clone; avoid clippy::clone_on_copy)
 }

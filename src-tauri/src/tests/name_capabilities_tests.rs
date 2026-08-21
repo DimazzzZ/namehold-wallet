@@ -1,8 +1,10 @@
 //! Pure-logic tests for name action capability derivation.
 //!
 //! These tests cover the capability-building pipeline:
-//! 1. `NameActionContext` (DB-gathered evidence) → 2. `AuctionTaskState` (phase + evidence)
-//! → 3. `NameActionCapabilities` (full capability struct with reasons).
+//!
+//! 1. `NameActionContext` (DB-gathered evidence)
+//! 2. `AuctionTaskState` (phase + evidence)
+//! 3. `NameActionCapabilities` (full capability struct with reasons).
 //!
 //! All tests are pure — no DB, no RPC, no async. They construct fixtures and
 //! assert the capability rules match the product spec.
@@ -13,6 +15,7 @@ use crate::commands::names::{
 };
 
 /// Helper to construct a minimal `NameActionContext` with all fields set.
+#[allow(clippy::too_many_arguments)]
 fn ctx(
     has_bid_commitment: bool,
     has_bid_coin: bool,
@@ -86,17 +89,7 @@ fn task_state_available_with_pending_open() {
 #[test]
 fn task_state_empty_phase_treated_as_available() {
     let state = derive_auction_task_state(
-        "",
-        false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        None,
-        None,
+        "", false, false, false, false, false, None, None, false, None, None,
     );
     assert_eq!(state, AuctionTaskState::AvailableToOpen);
 }
@@ -104,17 +97,7 @@ fn task_state_empty_phase_treated_as_available() {
 #[test]
 fn task_state_opening_phase() {
     let state = derive_auction_task_state(
-        "OPENING",
-        false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        None,
-        None,
+        "OPENING", false, false, false, false, false, None, None, false, None, None,
     );
     assert_eq!(state, AuctionTaskState::WaitingForBidding);
 }
@@ -122,17 +105,8 @@ fn task_state_opening_phase() {
 #[test]
 fn task_state_bidding_with_commitment() {
     let state = derive_auction_task_state(
-        "BIDDING",
-        false,
-        true, // has_bid_commitment
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        None,
-        None,
+        "BIDDING", false, true, // has_bid_commitment
+        false, false, false, None, None, false, None, None,
     );
     assert_eq!(state, AuctionTaskState::WaitingForBidding);
 }
@@ -140,17 +114,7 @@ fn task_state_bidding_with_commitment() {
 #[test]
 fn task_state_bidding_without_commitment() {
     let state = derive_auction_task_state(
-        "BIDDING",
-        false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        None,
-        None,
+        "BIDDING", false, false, false, false, false, None, None, false, None, None,
     );
     assert_eq!(state, AuctionTaskState::ReadyToBid);
 }
@@ -158,17 +122,8 @@ fn task_state_bidding_without_commitment() {
 #[test]
 fn task_state_reveal_no_commitment_returns_unavailable() {
     let state = derive_auction_task_state(
-        "REVEAL",
-        false,
-        false, // no commitment
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        None,
-        None,
+        "REVEAL", false, false, // no commitment
+        false, false, false, None, None, false, None, None,
     );
     assert_eq!(state, AuctionTaskState::UnavailableOther);
 }
@@ -273,7 +228,7 @@ fn task_state_closed_owns_name_unregistered() {
         false,
         false,
         false,
-        true, // has_owner_coin
+        true,    // has_owner_coin
         Some(2), // COV_OPEN < COV_REGISTER
         None,
         false,
@@ -323,17 +278,8 @@ fn task_state_closed_owns_name_registered_expiring_soon() {
 fn task_state_closed_owns_name_no_coin_synced() {
     // Owned per explorer but coin not synced locally.
     let state = derive_auction_task_state(
-        "CLOSED",
-        true,
-        false,
-        false,
-        false,
-        false, // no owner coin
-        None,
-        None,
-        false,
-        None,
-        None,
+        "CLOSED", true, false, false, false, false, // no owner coin
+        None, None, false, None, None,
     );
     assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);
 }
@@ -341,17 +287,9 @@ fn task_state_closed_owns_name_no_coin_synced() {
 #[test]
 fn task_state_closed_lost_has_reveal_coin() {
     let state = derive_auction_task_state(
-        "CLOSED",
-        false, // doesn't own
-        false,
-        false,
-        true, // has_reveal_coin (losing bid)
-        false,
-        None,
-        None,
-        false,
-        None,
-        None,
+        "CLOSED", false, // doesn't own
+        false, false, true, // has_reveal_coin (losing bid)
+        false, None, None, false, None, None,
     );
     assert_eq!(state, AuctionTaskState::LostNeedsRedeem);
 }
@@ -359,17 +297,7 @@ fn task_state_closed_lost_has_reveal_coin() {
 #[test]
 fn task_state_transfer_phase() {
     let state = derive_auction_task_state(
-        "TRANSFER",
-        false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        None,
-        None,
+        "TRANSFER", false, false, false, false, false, None, None, false, None, None,
     );
     assert_eq!(state, AuctionTaskState::TransferPendingFinalize);
 }
@@ -377,17 +305,7 @@ fn task_state_transfer_phase() {
 #[test]
 fn task_state_revoked_phase() {
     let state = derive_auction_task_state(
-        "REVOKED",
-        false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        None,
-        None,
+        "REVOKED", false, false, false, false, false, None, None, false, None, None,
     );
     assert_eq!(state, AuctionTaskState::UnavailableOther);
 }
@@ -534,7 +452,9 @@ fn next_action_unavailable_other() {
 
 #[test]
 fn cap_available_phase_can_open() {
-    let action_ctx = ctx(false, false, false, false, None, None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        false, false, false, false, None, None, None, 0, false, None, None, None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "AVAILABLE".into(),
@@ -551,7 +471,9 @@ fn cap_available_phase_can_open() {
 
 #[test]
 fn cap_available_phase_with_pending_open_cannot_open() {
-    let action_ctx = ctx(false, false, false, false, None, None, None, 0, true, None, None, None);
+    let action_ctx = ctx(
+        false, false, false, false, None, None, None, 0, true, None, None, None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "AVAILABLE".into(),
@@ -563,12 +485,19 @@ fn cap_available_phase_with_pending_open_cannot_open() {
         None,
     );
     assert!(!caps.can_open.allowed);
-    assert!(caps.can_open.reason.as_ref().unwrap().contains("already opening"));
+    assert!(caps
+        .can_open
+        .reason
+        .as_ref()
+        .unwrap()
+        .contains("already opening"));
 }
 
 #[test]
 fn cap_bidding_phase_can_bid_without_commitment() {
-    let action_ctx = ctx(false, false, false, false, None, None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        false, false, false, false, None, None, None, 0, false, None, None, None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "BIDDING".into(),
@@ -585,7 +514,9 @@ fn cap_bidding_phase_can_bid_without_commitment() {
 
 #[test]
 fn cap_bidding_phase_cannot_bid_with_commitment() {
-    let action_ctx = ctx(true, false, false, false, None, None, None, 1, false, None, None, None);
+    let action_ctx = ctx(
+        true, false, false, false, None, None, None, 1, false, None, None, None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "BIDDING".into(),
@@ -597,12 +528,19 @@ fn cap_bidding_phase_cannot_bid_with_commitment() {
         None,
     );
     assert!(!caps.can_bid.allowed);
-    assert!(caps.can_bid.reason.as_ref().unwrap().contains("one bid per wallet"));
+    assert!(caps
+        .can_bid
+        .reason
+        .as_ref()
+        .unwrap()
+        .contains("one bid per wallet"));
 }
 
 #[test]
 fn cap_reveal_phase_can_reveal_with_commitment_and_coin() {
-    let action_ctx = ctx(true, true, false, false, None, None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        true, true, false, false, None, None, None, 0, false, None, None, None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "REVEAL".into(),
@@ -619,7 +557,9 @@ fn cap_reveal_phase_can_reveal_with_commitment_and_coin() {
 
 #[test]
 fn cap_reveal_phase_cannot_reveal_without_commitment() {
-    let action_ctx = ctx(false, true, false, false, None, None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        false, true, false, false, None, None, None, 0, false, None, None, None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "REVEAL".into(),
@@ -631,12 +571,19 @@ fn cap_reveal_phase_cannot_reveal_without_commitment() {
         None,
     );
     assert!(!caps.can_reveal.allowed);
-    assert!(caps.can_reveal.reason.as_ref().unwrap().contains("no bid commitment"));
+    assert!(caps
+        .can_reveal
+        .reason
+        .as_ref()
+        .unwrap()
+        .contains("no bid commitment"));
 }
 
 #[test]
 fn cap_reveal_phase_cannot_reveal_without_bid_coin() {
-    let action_ctx = ctx(true, false, false, false, None, None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        true, false, false, false, None, None, None, 0, false, None, None, None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "REVEAL".into(),
@@ -648,12 +595,19 @@ fn cap_reveal_phase_cannot_reveal_without_bid_coin() {
         None,
     );
     assert!(!caps.can_reveal.allowed);
-    assert!(caps.can_reveal.reason.as_ref().unwrap().contains("no unspent bid coin"));
+    assert!(caps
+        .can_reveal
+        .reason
+        .as_ref()
+        .unwrap()
+        .contains("no unspent bid coin"));
 }
 
 #[test]
 fn cap_closed_phase_can_redeem_lost_bid() {
-    let action_ctx = ctx(false, false, true, false, None, None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        false, false, true, false, None, None, None, 0, false, None, None, None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "CLOSED".into(),
@@ -669,7 +623,9 @@ fn cap_closed_phase_can_redeem_lost_bid() {
 
 #[test]
 fn cap_closed_phase_cannot_redeem_if_owns() {
-    let action_ctx = ctx(false, false, true, false, None, None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        false, false, true, false, None, None, None, 0, false, None, None, None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "CLOSED".into(),
@@ -681,12 +637,30 @@ fn cap_closed_phase_cannot_redeem_if_owns() {
         None,
     );
     assert!(!caps.can_redeem.allowed);
-    assert!(caps.can_redeem.reason.as_ref().unwrap().contains("won this auction"));
+    assert!(caps
+        .can_redeem
+        .reason
+        .as_ref()
+        .unwrap()
+        .contains("won this auction"));
 }
 
 #[test]
 fn cap_closed_phase_can_register_unregistered_win() {
-    let action_ctx = ctx(false, false, false, true, Some(2), None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        false,
+        false,
+        false,
+        true,
+        Some(2),
+        None,
+        None,
+        0,
+        false,
+        None,
+        None,
+        None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "CLOSED".into(),
@@ -702,7 +676,20 @@ fn cap_closed_phase_can_register_unregistered_win() {
 
 #[test]
 fn cap_closed_phase_cannot_register_already_registered() {
-    let action_ctx = ctx(false, false, false, true, Some(6), None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        false,
+        false,
+        false,
+        true,
+        Some(6),
+        None,
+        None,
+        0,
+        false,
+        None,
+        None,
+        None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "CLOSED".into(),
@@ -714,12 +701,19 @@ fn cap_closed_phase_cannot_register_already_registered() {
         None,
     );
     assert!(!caps.can_register.allowed);
-    assert!(caps.can_register.reason.as_ref().unwrap().contains("already registered"));
+    assert!(caps
+        .can_register
+        .reason
+        .as_ref()
+        .unwrap()
+        .contains("already registered"));
 }
 
 #[test]
 fn cap_owned_can_update_transfer_renew_revoke() {
-    let action_ctx = ctx(false, false, false, false, None, None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        false, false, false, false, None, None, None, 0, false, None, None, None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "CLOSED".into(),
@@ -738,7 +732,9 @@ fn cap_owned_can_update_transfer_renew_revoke() {
 
 #[test]
 fn cap_not_owned_cannot_update_transfer_renew_revoke() {
-    let action_ctx = ctx(false, false, false, false, None, None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        false, false, false, false, None, None, None, 0, false, None, None, None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "CLOSED".into(),
@@ -757,7 +753,20 @@ fn cap_not_owned_cannot_update_transfer_renew_revoke() {
 
 #[test]
 fn cap_spend_locked_disables_all_spend_actions() {
-    let action_ctx = ctx(false, false, false, true, Some(6), None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        false,
+        false,
+        false,
+        true,
+        Some(6),
+        None,
+        None,
+        0,
+        false,
+        None,
+        None,
+        None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "CLOSED".into(),
@@ -782,8 +791,20 @@ fn cap_spend_locked_disables_all_spend_actions() {
 
 #[test]
 fn cap_transfer_phase_can_finalize_with_items() {
-    let action_ctx =
-        ctx(false, false, false, false, None, None, Some(true), 0, false, None, None, None);
+    let action_ctx = ctx(
+        false,
+        false,
+        false,
+        false,
+        None,
+        None,
+        Some(true),
+        0,
+        false,
+        None,
+        None,
+        None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "TRANSFER".into(),
@@ -799,8 +820,20 @@ fn cap_transfer_phase_can_finalize_with_items() {
 
 #[test]
 fn cap_transfer_phase_cannot_finalize_without_items() {
-    let action_ctx =
-        ctx(false, false, false, false, None, None, Some(false), 0, false, None, None, None);
+    let action_ctx = ctx(
+        false,
+        false,
+        false,
+        false,
+        None,
+        None,
+        Some(false),
+        0,
+        false,
+        None,
+        None,
+        None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "TRANSFER".into(),
@@ -812,12 +845,30 @@ fn cap_transfer_phase_cannot_finalize_without_items() {
         None,
     );
     assert!(!caps.can_finalize.allowed);
-    assert!(caps.can_finalize.reason.as_ref().unwrap().contains("not in TRANSFER"));
+    assert!(caps
+        .can_finalize
+        .reason
+        .as_ref()
+        .unwrap()
+        .contains("not in TRANSFER"));
 }
 
 #[test]
 fn cap_expiring_soon_sets_correct_task_state() {
-    let action_ctx = ctx(false, false, false, true, Some(6), None, None, 0, false, None, None, None);
+    let action_ctx = ctx(
+        false,
+        false,
+        false,
+        true,
+        Some(6),
+        None,
+        None,
+        0,
+        false,
+        None,
+        None,
+        None,
+    );
     let caps = build_name_action_capabilities(
         "example".into(),
         "CLOSED".into(),

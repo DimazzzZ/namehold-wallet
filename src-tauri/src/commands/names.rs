@@ -1242,9 +1242,9 @@ pub(crate) fn build_open_draft_inner(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let rate = self::fee_rate(ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
+    let nh = names::hash_name(name)?;
     let nh_hex = hex::encode(nh);
-    let raw = names::raw_name(&name)?;
+    let raw = names::raw_name(name)?;
     // OPEN output goes to the next unused wallet receive address (value 0).
     let recv = crate::noncustodial::derivation::next_unused_receive_address(
         conn,
@@ -1328,26 +1328,43 @@ pub async fn build_bid_draft(
         ));
     }
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
-    let nh_hex = hex::encode(nh);
-    let raw = names::raw_name(&name)?;
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let ns = fetch_name_state(&client, &name).await?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_bid_draft_inner(&conn, &ctx, &name, bid_value, lockup, fee_rate, &ns)
+}
+
+/// Pure inner logic for `build_bid_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the multiplicity guard + commitment + draft persist are
+/// atomic under that single held guard.
+///
+/// `ns` is the pre-fetched on-chain name state (the async RPC call
+/// happens in the wrapper before the lock is acquired).
+pub(crate) fn build_bid_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    bid_value: i64,
+    lockup: i64,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+    let nh_hex = hex::encode(nh);
+    let raw = names::raw_name(name)?;
 
     // Bid output goes to the NEXT UNUSED wallet receive address. Rotation keeps
     // every bid on its own address; reveal/redeem additionally match the coin by
     // name hash, which is what keeps legacy bids (all on receive[0]) revealable.
-    let bid_addr = {
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        crate::noncustodial::derivation::next_unused_receive_address(
-            &conn,
-            &ctx.profile_id,
-            ctx.account,
-            ctx.network,
-            &ctx.account_xpub,
-        )?
-    };
+    let bid_addr = crate::noncustodial::derivation::next_unused_receive_address(
+        conn,
+        &ctx.profile_id,
+        ctx.account,
+        ctx.network,
+        &ctx.account_xpub,
+    )?;
     let (_v, program) = address::decode(ctx.network, &bid_addr.address)?;
     let mut addr_hash = [0u8; 20];
     if program.len() != 20 {
@@ -1373,8 +1390,8 @@ pub async fn build_bid_draft(
         rate,
     )?;
 
-    // --- Single critical section: bid-multiplicity guard (I2) + commitment
-    // persist + draft insert/reservation, ALL under one held MutexGuard.
+    // --- Bid-multiplicity guard (I2) + commitment persist + draft
+    // insert/reservation, ALL under the caller's held MutexGuard.
     //
     // Product rule: one bid per wallet per name. The UI already gates this
     // (`build_name_action_capabilities` / `existing_bid_count`), but that's
@@ -1386,15 +1403,12 @@ pub async fn build_bid_draft(
     //   (b) a not-yet-terminal `bid` draft for this name — one is already
     //       queued/signed/broadcast and might still land.
     //
-    // Both checks AND every write below (commitment insert, reveal-end-height
-    // stamp, draft insert + coin reservation) share ONE MutexGuard — no
-    // unlock/relock in between. Without that, two concurrent calls could both
-    // pass the checks before either had written anything (classic TOCTOU);
-    // `state.db` is a plain (non-reentrant) `std::sync::Mutex`, so holding it
-    // across `persist_with_conn` (rather than calling `persist`, which would
-    // try to lock it again and deadlock) is what makes this section atomic —
-    // the second caller simply blocks on `lock()` until the first is done,
-    // then sees the first's writes and is rejected by the same checks.
+    // Atomicity: the caller (the `#[tauri::command]` wrapper) locks the DB
+    // mutex ONCE for this whole function — no unlock/relock. Without that,
+    // two concurrent calls could both pass the checks before either had
+    // written anything (classic TOCTOU). Tests call this function directly
+    // with an owned `&Connection` (no mutex), which is fine because tests
+    // are single-threaded.
     //
     // This mostly SUBSUMES the `insert_bid_commitment` ON CONFLICT fix
     // (I2 part 2, defense-in-depth in `queries::insert_bid_commitment`): with
@@ -1403,10 +1417,8 @@ pub async fn build_bid_draft(
     // ON CONFLICT fix still matters as a second line of defense — e.g. if
     // this guard's on-chain/draft evidence is somehow stale — a same-value
     // re-bid must error instead of silently dropping its commitment row.
-    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-
     let existing_bid_coins = queries::find_unspent_covenant_utxos_by_name_hash(
-        &conn,
+        conn,
         &ctx.profile_id,
         sync::COV_BID as i64,
         &nh_hex,
@@ -1416,7 +1428,7 @@ pub async fn build_bid_draft(
             "wallet already has an unspent bid for '{name}' — one bid per wallet per name"
         )));
     }
-    if queries::has_pending_bid_draft_for_name(&conn, &ctx.profile_id, &name)? {
+    if queries::has_pending_bid_draft_for_name(conn, &ctx.profile_id, name)? {
         return Err(AppError::InvalidInput(format!(
             "a bid draft for '{name}' is already pending — one bid per wallet per name"
         )));
@@ -1427,9 +1439,9 @@ pub async fn build_bid_draft(
     // the function returns here and NO draft is ever persisted; a bid whose
     // commitment can't be trusted must never reach the chain.
     queries::insert_bid_commitment(
-        &conn,
+        conn,
         &ctx.profile_id,
-        &name,
+        name,
         &nh_hex,
         &bid_addr.address,
         bid_addr.branch as i64,
@@ -1453,13 +1465,13 @@ pub async fn build_bid_draft(
     let params = ctx.network.name_params();
     let reveal_end_height = names_pure::reveal_end_height(ns.height as i64, &params);
     queries::set_reveal_end_height(
-        &conn,
+        conn,
         &ctx.profile_id,
         &hex::encode(blind),
         reveal_end_height,
     )?;
 
-    let summary = persist_with_conn(&conn, &ctx.profile_id, "bid", &name, None, None, &res)?;
+    let summary = persist_with_conn(conn, &ctx.profile_id, "bid", name, None, None, &res)?;
     // Task 1 fix: stamp the on-chain bid txid onto this commitment NOW, while
     // still under the same held `conn` lock as the multiplicity guard and the
     // commitment/draft writes above — no unlock/relock, guard untouched.
@@ -1468,7 +1480,7 @@ pub async fn build_bid_draft(
     // this, `bid_commitments.bid_txid` stays NULL forever (it was previously
     // only ever set by tests), which is what makes `merge_name_bids` unable
     // to recognize a real bid as the wallet's own.
-    queries::set_bid_txid(&conn, &ctx.profile_id, &hex::encode(blind), &res.txid)?;
+    queries::set_bid_txid(conn, &ctx.profile_id, &hex::encode(blind), &res.txid)?;
     Ok(summary)
 }
 

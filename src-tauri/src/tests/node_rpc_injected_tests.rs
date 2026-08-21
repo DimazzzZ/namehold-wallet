@@ -478,7 +478,10 @@ async fn get_resource_info_normalizes_when_info_present() {
 async fn get_resource_info_returns_available_shape_when_info_null() {
     let mock = MockNodeRpc::new().with_name_info(json!({ "info": serde_json::Value::Null }));
     let info = crate::commands::read::get_resource_info_with_client(&mock, "fresh").await;
-    assert_eq!(info.get("state").and_then(|v| v.as_str()), Some("AVAILABLE"));
+    assert_eq!(
+        info.get("state").and_then(|v| v.as_str()),
+        Some("AVAILABLE")
+    );
     assert_eq!(info.get("name").and_then(|v| v.as_str()), Some("fresh"));
 }
 
@@ -527,8 +530,7 @@ async fn discover_names_resolves_via_getnamebyhash_then_fetches_info() {
         name_hash_hex: "aa".repeat(32),
         raw_name_hex: None,
     }];
-    let out =
-        crate::commands::read::discover_names_via_node_with_client(&mock, &hashes).await;
+    let out = crate::commands::read::discover_names_via_node_with_client(&mock, &hashes).await;
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].0, "example");
 }
@@ -544,8 +546,7 @@ async fn discover_names_falls_back_to_raw_name_when_hash_unresolved() {
         name_hash_hex: "bb".repeat(32),
         raw_name_hex: Some("6578616d706c65".to_string()),
     }];
-    let out =
-        crate::commands::read::discover_names_via_node_with_client(&mock, &hashes).await;
+    let out = crate::commands::read::discover_names_via_node_with_client(&mock, &hashes).await;
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].0, "example");
 }
@@ -565,8 +566,7 @@ async fn discover_names_dedupes_multiple_hashes_for_same_name() {
             raw_name_hex: None,
         },
     ];
-    let out =
-        crate::commands::read::discover_names_via_node_with_client(&mock, &hashes).await;
+    let out = crate::commands::read::discover_names_via_node_with_client(&mock, &hashes).await;
     // Both hashes resolve to the same name — dedup keeps one entry.
     assert_eq!(out.len(), 1);
 }
@@ -579,8 +579,7 @@ async fn discover_names_returns_empty_when_no_resolution_and_no_raw_name() {
         name_hash_hex: "cc".repeat(32),
         raw_name_hex: None,
     }];
-    let out =
-        crate::commands::read::discover_names_via_node_with_client(&mock, &hashes).await;
+    let out = crate::commands::read::discover_names_via_node_with_client(&mock, &hashes).await;
     assert!(out.is_empty());
 }
 
@@ -682,8 +681,7 @@ async fn broadcast_classify_success_returns_txid() {
 #[tokio::test]
 async fn broadcast_classify_rpc_error_marks_failed() {
     // JSON-RPC error → node definitively rejected → RpcError.
-    let mock = MockNodeRpc::new()
-        .with_send_raw_transaction_rpc_err("bad-txns-inputs-missing");
+    let mock = MockNodeRpc::new().with_send_raw_transaction_rpc_err("bad-txns-inputs-missing");
     let out = crate::commands::tx::classify_broadcast_outcome_with_client(&mock, "deadbeef").await;
     match out {
         crate::commands::tx::BroadcastOutcome::RpcError(e) => {
@@ -696,8 +694,7 @@ async fn broadcast_classify_rpc_error_marks_failed() {
 #[tokio::test]
 async fn broadcast_classify_transport_error_marks_pending() {
     // Transport error (Http) → ambiguous → TransportError → draft stays broadcast_pending.
-    let mock = MockNodeRpc::new()
-        .with_send_raw_transaction_transport_err("connection reset");
+    let mock = MockNodeRpc::new().with_send_raw_transaction_transport_err("connection reset");
     let out = crate::commands::tx::classify_broadcast_outcome_with_client(&mock, "deadbeef").await;
     match out {
         crate::commands::tx::BroadcastOutcome::TransportError(_) => {}
@@ -736,8 +733,16 @@ async fn write_probe_unreachable_downgrades_with_start_node_reason() {
     )
     .await;
     assert!(!cap.can_write);
-    assert!(cap.reason.as_deref().unwrap().contains("Start your local node"));
-    assert!(cap.reason.as_deref().unwrap().contains("http://localhost:12037"));
+    assert!(cap
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("Start your local node"));
+    assert!(cap
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("http://localhost:12037"));
 }
 
 #[tokio::test]
@@ -860,13 +865,10 @@ async fn fetch_coins_and_txs_success_returns_coins_and_txs() {
         .with_coins_by_address(vec![coin])
         .with_raw_transaction(json!({ "hash": "aabbcc", "outputs": [] }));
     let addresses = vec!["hs1qmine".to_string()];
-    let (coins, txs) = crate::commands::tx::fetch_wallet_coins_and_txs_with_client(
-        &mock,
-        &addresses,
-        "http://x",
-    )
-    .await
-    .unwrap();
+    let (coins, txs) =
+        crate::commands::tx::fetch_wallet_coins_and_txs_with_client(&mock, &addresses, "http://x")
+            .await
+            .unwrap();
     assert_eq!(coins.len(), 1);
     assert_eq!(txs.len(), 1);
     assert_eq!(txs[0].0, "aabbcc");
@@ -893,13 +895,10 @@ async fn fetch_coins_and_txs_dedupes_repeated_txids() {
         .with_coins_by_address(vec![coin_a, coin_b])
         .with_raw_transaction(json!({ "hash": "shared" }));
     let addresses = vec!["hs1qa".to_string()];
-    let (coins, txs) = crate::commands::tx::fetch_wallet_coins_and_txs_with_client(
-        &mock,
-        &addresses,
-        "http://x",
-    )
-    .await
-    .unwrap();
+    let (coins, txs) =
+        crate::commands::tx::fetch_wallet_coins_and_txs_with_client(&mock, &addresses, "http://x")
+            .await
+            .unwrap();
     assert_eq!(coins.len(), 2);
     assert_eq!(txs.len(), 1); // deduped
 }
@@ -918,9 +917,11 @@ async fn coins_guard_all_errors_returns_none() {
     // Wallet has addresses, every query errored → guard trips (returns None).
     let mock = MockNodeRpc::new().with_coins_by_address_err("Address indexing disabled");
     let addresses = vec!["hs1qa".to_string(), "hs1qb".to_string()];
-    let out =
-        crate::commands::sync::fetch_coins_with_guard_with_client(&mock, &addresses).await;
-    assert!(out.is_none(), "guard should trip when every address errored");
+    let out = crate::commands::sync::fetch_coins_with_guard_with_client(&mock, &addresses).await;
+    assert!(
+        out.is_none(),
+        "guard should trip when every address errored"
+    );
 }
 
 #[tokio::test]
@@ -929,8 +930,7 @@ async fn coins_guard_some_success_returns_partial_result() {
     // successful branch by returning an empty coin list.
     let mock = MockNodeRpc::new().with_coins_by_address(vec![]);
     let addresses = vec!["hs1qa".to_string()];
-    let out =
-        crate::commands::sync::fetch_coins_with_guard_with_client(&mock, &addresses).await;
+    let out = crate::commands::sync::fetch_coins_with_guard_with_client(&mock, &addresses).await;
     assert_eq!(out, Some(vec![]));
 }
 
@@ -944,8 +944,7 @@ async fn history_fetch_dedupes_by_hash_across_addresses() {
         json!({ "hash": "bb", "height": 2 }),
     ]);
     let addresses = vec!["hs1qa".to_string(), "hs1qb".to_string()];
-    let map =
-        crate::commands::history::fetch_and_dedup_txs_with_client(&mock, &addresses).await;
+    let map = crate::commands::history::fetch_and_dedup_txs_with_client(&mock, &addresses).await;
     assert_eq!(map.len(), 2);
     assert!(map.contains_key("aa"));
     assert!(map.contains_key("bb"));
@@ -956,8 +955,7 @@ async fn history_fetch_swallows_per_address_errors() {
     // With mock returning error, both addresses fail → empty map, no panic.
     let mock = MockNodeRpc::new().with_txs_by_address_err("index disabled");
     let addresses = vec!["hs1qa".to_string(), "hs1qb".to_string()];
-    let map =
-        crate::commands::history::fetch_and_dedup_txs_with_client(&mock, &addresses).await;
+    let map = crate::commands::history::fetch_and_dedup_txs_with_client(&mock, &addresses).await;
     assert!(map.is_empty());
 }
 
@@ -965,13 +963,10 @@ async fn history_fetch_swallows_per_address_errors() {
 async fn history_fetch_skips_tx_without_hash() {
     // A malformed tx object (no `hash` field) is ignored — never crashes,
     // never inserted.
-    let mock =
-        MockNodeRpc::new().with_txs_by_address(vec![json!({ "no_hash_field": true })]);
-    let map = crate::commands::history::fetch_and_dedup_txs_with_client(
-        &mock,
-        &["hs1qa".to_string()],
-    )
-    .await;
+    let mock = MockNodeRpc::new().with_txs_by_address(vec![json!({ "no_hash_field": true })]);
+    let map =
+        crate::commands::history::fetch_and_dedup_txs_with_client(&mock, &["hs1qa".to_string()])
+            .await;
     assert!(map.is_empty());
 }
 

@@ -48,14 +48,27 @@ fn test_xpub() -> ExtendedPubKey {
 
 fn seed_profile(conn: &rusqlite::Connection) {
     db::queries::insert_wallet_profile(
-        conn, PROFILE, "Test", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        conn,
+        PROFILE,
+        "Test",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKE",
+        0,
+        false,
     )
     .unwrap();
 }
 
 /// Insert a spendable `tracked_utxos` row at `(txid, vout)` so the funding
 /// coin the plan spends can actually be reserved by the draft insert.
-fn seed_tracked_coin(conn: &rusqlite::Connection, txid: &str, vout: i64, value: i64, address: &str) {
+fn seed_tracked_coin(
+    conn: &rusqlite::Connection,
+    txid: &str,
+    vout: i64,
+    value: i64,
+    address: &str,
+) {
     conn.execute(
         "INSERT INTO tracked_utxos
             (txid, vout, wallet_profile_id, address, script_pubkey_hex,
@@ -117,7 +130,10 @@ fn build_open_draft_succeeds_and_persists() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(reserved, 1, "the funding coin should be reserved by the draft");
+    assert_eq!(
+        reserved, 1,
+        "the funding coin should be reserved by the draft"
+    );
 }
 
 #[test]
@@ -273,7 +289,10 @@ fn build_open_draft_fails_with_insufficient_funds() {
 
     let err = build_open_draft_inner(&conn, &ctx, NAME, Some(100)).unwrap_err();
     // Insufficient-funds surfaces as an error (exact variant is send-layer's).
-    assert!(matches!(err, AppError::InvalidInput(_) | AppError::Other(_)));
+    assert!(matches!(
+        err,
+        AppError::InvalidInput(_) | AppError::Other(_)
+    ));
 }
 
 #[test]

@@ -673,7 +673,8 @@ pub async fn node_discover_step(db_path: &str, profile_id: &str) {
     let client = NodeRpcClient::from_settings(&settings);
 
     // Resolve hashes → names and fetch their on-chain state via the node.
-    let fetched = crate::commands::read::discover_names_via_node_with_client(&client, &hashes).await;
+    let fetched =
+        crate::commands::read::discover_names_via_node_with_client(&client, &hashes).await;
     if fetched.is_empty() {
         return;
     }
