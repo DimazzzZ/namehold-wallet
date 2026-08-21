@@ -1,5 +1,7 @@
 # Namehold — a non-custodial Handshake (HNS) wallet
 
+[![Tests](https://img.shields.io/badge/tests-1405%20Rust%20%2B%20745%20frontend-brightgreen)](https://github.com/DimazzzZ/namehold-wallet/pull/50)
+
 Namehold is a local desktop wallet for **Handshake (HNS)**: hold HNS, manage the
 names you own, run the full name-auction lifecycle, and edit on-chain DNS — all
 non-custodially, with your keys encrypted on your own machine. It also includes a
