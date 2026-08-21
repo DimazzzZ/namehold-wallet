@@ -20,6 +20,7 @@ use crate::error::AppError;
 use crate::noncustodial::actions::{self, NameInputSpec, PrimaryOutput};
 use crate::noncustodial::hd::ExtendedPubKey;
 use crate::noncustodial::network::Network;
+use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::NodeRpcClient;
 use crate::noncustodial::send::{self, SpendableCoin};
 use crate::noncustodial::sync::{self, COV_REGISTER, COV_REVEAL};
@@ -27,6 +28,8 @@ use crate::noncustodial::tx::sighash;
 use crate::noncustodial::types::TxDraftSummary;
 use crate::noncustodial::{address, bids, covenants, names, resource};
 use crate::AppState;
+
+use super::names_pure;
 
 pub(crate) fn random_id() -> String {
     let mut b = [0u8; 16];
@@ -107,7 +110,7 @@ pub(crate) struct NameState {
 }
 
 pub(crate) async fn fetch_name_state(
-    client: &NodeRpcClient,
+    client: &dyn NodeRpc,
     name: &str,
 ) -> Result<NameState, AppError> {
     let v = client.get_name_info(name).await?;
@@ -137,7 +140,7 @@ pub(crate) async fn fetch_name_state(
 
 /// `getRenewalBlock`: internal-order 32-byte hash at `height - 2*renewalMaturity`.
 pub(crate) async fn renewal_block(
-    client: &NodeRpcClient,
+    client: &dyn NodeRpc,
     network: Network,
 ) -> Result<[u8; 32], AppError> {
     let tip = client.get_blockchain_info().await?.blocks;
@@ -724,7 +727,7 @@ async fn evaluate_name_action_capabilities(
 /// (where `owns_name` is true but `has_owner_coin` is false). On the node path
 /// it is always `false`, leaving that branch's behavior unchanged.
 #[allow(clippy::too_many_arguments)]
-fn build_name_action_capabilities(
+pub(crate) fn build_name_action_capabilities(
     name: String,
     phase: String,
     raw_phase: &str,
@@ -957,7 +960,8 @@ fn build_name_action_capabilities(
         next_action_for_task(&task_state);
 
     // 7. Extract countdown from stats.
-    let (countdown_label, countdown_blocks, countdown_hours) = extract_countdown(raw_phase, stats);
+    let (countdown_label, countdown_blocks, countdown_hours) =
+        names_pure::extract_countdown(raw_phase, stats);
 
     NameActionCapabilities {
         name,
@@ -991,7 +995,7 @@ fn build_name_action_capabilities(
 }
 
 /// Conservative fallback when the node is unreachable.
-fn conservative_capabilities(name: &str, reason: &str) -> NameActionCapabilities {
+pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionCapabilities {
     let disallowed = NameActionCapability {
         allowed: false,
         reason: Some(reason.into()),
@@ -1206,40 +1210,6 @@ pub(crate) fn next_action_for_task(
     }
 }
 
-/// Extract countdown data from the node's stats object.
-fn extract_countdown(
-    phase: &str,
-    stats: Option<&serde_json::Value>,
-) -> (Option<String>, Option<i64>, Option<f64>) {
-    let stats = match stats {
-        Some(s) => s,
-        None => return (None, None, None),
-    };
-
-    match phase {
-        "OPENING" => {
-            let blocks = stats.get("blocksUntilBidding").and_then(|b| b.as_i64());
-            let hours = stats.get("hoursUntilBidding").and_then(|h| h.as_f64());
-            (blocks.map(|_| "Bidding opens in".into()), blocks, hours)
-        }
-        "BIDDING" => {
-            let blocks = stats.get("blocksUntilReveal").and_then(|b| b.as_i64());
-            let hours = stats.get("hoursUntilReveal").and_then(|h| h.as_f64());
-            (blocks.map(|_| "Reveal starts in".into()), blocks, hours)
-        }
-        "REVEAL" => {
-            let blocks = stats.get("blocksUntilClose").and_then(|b| b.as_i64());
-            let hours = stats.get("hoursUntilClose").and_then(|h| h.as_f64());
-            (blocks.map(|_| "Auction closes in".into()), blocks, hours)
-        }
-        "CLOSED" => {
-            let blocks = stats.get("blocksUntilExpire").and_then(|b| b.as_i64());
-            (blocks.map(|_| "Expires in".into()), blocks, None)
-        }
-        _ => (None, None, None),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Original covenant build commands follow
 // ---------------------------------------------------------------------------
@@ -1253,21 +1223,36 @@ pub async fn build_open_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
+    // Single critical section: the guard checks AND draft-insert + coin
+    // reservation share ONE MutexGuard (see the doc comment inside
+    // `build_open_draft_inner`). We grab the lock here and hand `&Connection`
+    // to the inner function.
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_open_draft_inner(&conn, &ctx, &name, fee_rate)
+}
+
+/// Pure inner logic for `build_open_draft`, testable without a Tauri
+/// `State<AppState>`. Callers must hold the DB mutex for the full duration
+/// of this call — the double-open guard + persist path is atomic under that
+/// single held guard.
+pub(crate) fn build_open_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
     let nh_hex = hex::encode(nh);
-    let raw = names::raw_name(&name)?;
+    let raw = names::raw_name(name)?;
     // OPEN output goes to the next unused wallet receive address (value 0).
-    let recv = {
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        crate::noncustodial::derivation::next_unused_receive_address(
-            &conn,
-            &ctx.profile_id,
-            ctx.account,
-            ctx.network,
-            &ctx.account_xpub,
-        )?
-    };
+    let recv = crate::noncustodial::derivation::next_unused_receive_address(
+        conn,
+        &ctx.profile_id,
+        ctx.account,
+        ctx.network,
+        &ctx.account_xpub,
+    )?;
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
@@ -1282,9 +1267,9 @@ pub async fn build_open_draft(
         rate,
     )?;
 
-    // --- Single critical section: double-open guard (Task 1, mirrors the I2
+    // --- Double-open guard (Task 1, mirrors the I2
     // bid-multiplicity guard in `build_bid_draft` above) + draft insert/coin
-    // reservation, ALL under one held MutexGuard.
+    // reservation, ALL under the caller's held MutexGuard.
     //
     // Safety rule: don't let this wallet broadcast a second OPEN for a name
     // it already opened. The UI already gates this (`can_open`, which now
@@ -1301,19 +1286,14 @@ pub async fn build_open_draft(
     // `can_open` (phase != AVAILABLE) already catches; this guard only
     // stops OUR OWN duplicate broadcasts.
     //
-    // Both checks AND the write below (draft insert + coin reservation) share
-    // ONE MutexGuard — no unlock/relock in between. Without that, two
-    // concurrent calls could both pass the checks before either had written
-    // anything (classic TOCTOU); `state.db` is a plain (non-reentrant)
-    // `std::sync::Mutex`, so holding it across `persist_with_conn` (rather
-    // than calling `persist`, which would try to lock it again and deadlock)
-    // is what makes this section atomic — the second caller simply blocks on
-    // `lock()` until the first is done, then sees the first's writes and is
-    // rejected by the same checks.
-    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-
+    // Atomicity: the caller (the `#[tauri::command]` wrapper) locks the DB
+    // mutex ONCE for this whole function — no unlock/relock. Without that,
+    // two concurrent calls could both pass the checks before either had
+    // written anything (classic TOCTOU). Tests call this function directly
+    // with an owned `&Connection` (no mutex), which is fine because tests
+    // are single-threaded.
     let existing_open_coins = queries::find_unspent_covenant_utxos_by_name_hash(
-        &conn,
+        conn,
         &ctx.profile_id,
         sync::COV_OPEN as i64,
         &nh_hex,
@@ -1323,13 +1303,13 @@ pub async fn build_open_draft(
             "an auction for '{name}' is already being opened — wait for it to confirm"
         )));
     }
-    if queries::has_pending_draft_for_name(&conn, &ctx.profile_id, "open", &name)? {
+    if queries::has_pending_draft_for_name(conn, &ctx.profile_id, "open", name)? {
         return Err(AppError::InvalidInput(format!(
             "an auction for '{name}' is already being opened — wait for it to confirm"
         )));
     }
 
-    persist_with_conn(&conn, &ctx.profile_id, "open", &name, None, None, &res)
+    persist_with_conn(conn, &ctx.profile_id, "open", name, None, None, &res)
 }
 
 // --- BID -------------------------------------------------------------------
@@ -1348,26 +1328,43 @@ pub async fn build_bid_draft(
         ));
     }
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
-    let nh_hex = hex::encode(nh);
-    let raw = names::raw_name(&name)?;
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let ns = fetch_name_state(&client, &name).await?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_bid_draft_inner(&conn, &ctx, &name, bid_value, lockup, fee_rate, &ns)
+}
+
+/// Pure inner logic for `build_bid_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the multiplicity guard + commitment + draft persist are
+/// atomic under that single held guard.
+///
+/// `ns` is the pre-fetched on-chain name state (the async RPC call
+/// happens in the wrapper before the lock is acquired).
+pub(crate) fn build_bid_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    bid_value: i64,
+    lockup: i64,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+    let nh_hex = hex::encode(nh);
+    let raw = names::raw_name(name)?;
 
     // Bid output goes to the NEXT UNUSED wallet receive address. Rotation keeps
     // every bid on its own address; reveal/redeem additionally match the coin by
     // name hash, which is what keeps legacy bids (all on receive[0]) revealable.
-    let bid_addr = {
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        crate::noncustodial::derivation::next_unused_receive_address(
-            &conn,
-            &ctx.profile_id,
-            ctx.account,
-            ctx.network,
-            &ctx.account_xpub,
-        )?
-    };
+    let bid_addr = crate::noncustodial::derivation::next_unused_receive_address(
+        conn,
+        &ctx.profile_id,
+        ctx.account,
+        ctx.network,
+        &ctx.account_xpub,
+    )?;
     let (_v, program) = address::decode(ctx.network, &bid_addr.address)?;
     let mut addr_hash = [0u8; 20];
     if program.len() != 20 {
@@ -1393,8 +1390,8 @@ pub async fn build_bid_draft(
         rate,
     )?;
 
-    // --- Single critical section: bid-multiplicity guard (I2) + commitment
-    // persist + draft insert/reservation, ALL under one held MutexGuard.
+    // --- Bid-multiplicity guard (I2) + commitment persist + draft
+    // insert/reservation, ALL under the caller's held MutexGuard.
     //
     // Product rule: one bid per wallet per name. The UI already gates this
     // (`build_name_action_capabilities` / `existing_bid_count`), but that's
@@ -1406,15 +1403,12 @@ pub async fn build_bid_draft(
     //   (b) a not-yet-terminal `bid` draft for this name — one is already
     //       queued/signed/broadcast and might still land.
     //
-    // Both checks AND every write below (commitment insert, reveal-end-height
-    // stamp, draft insert + coin reservation) share ONE MutexGuard — no
-    // unlock/relock in between. Without that, two concurrent calls could both
-    // pass the checks before either had written anything (classic TOCTOU);
-    // `state.db` is a plain (non-reentrant) `std::sync::Mutex`, so holding it
-    // across `persist_with_conn` (rather than calling `persist`, which would
-    // try to lock it again and deadlock) is what makes this section atomic —
-    // the second caller simply blocks on `lock()` until the first is done,
-    // then sees the first's writes and is rejected by the same checks.
+    // Atomicity: the caller (the `#[tauri::command]` wrapper) locks the DB
+    // mutex ONCE for this whole function — no unlock/relock. Without that,
+    // two concurrent calls could both pass the checks before either had
+    // written anything (classic TOCTOU). Tests call this function directly
+    // with an owned `&Connection` (no mutex), which is fine because tests
+    // are single-threaded.
     //
     // This mostly SUBSUMES the `insert_bid_commitment` ON CONFLICT fix
     // (I2 part 2, defense-in-depth in `queries::insert_bid_commitment`): with
@@ -1423,10 +1417,8 @@ pub async fn build_bid_draft(
     // ON CONFLICT fix still matters as a second line of defense — e.g. if
     // this guard's on-chain/draft evidence is somehow stale — a same-value
     // re-bid must error instead of silently dropping its commitment row.
-    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-
     let existing_bid_coins = queries::find_unspent_covenant_utxos_by_name_hash(
-        &conn,
+        conn,
         &ctx.profile_id,
         sync::COV_BID as i64,
         &nh_hex,
@@ -1436,7 +1428,7 @@ pub async fn build_bid_draft(
             "wallet already has an unspent bid for '{name}' — one bid per wallet per name"
         )));
     }
-    if queries::has_pending_bid_draft_for_name(&conn, &ctx.profile_id, &name)? {
+    if queries::has_pending_bid_draft_for_name(conn, &ctx.profile_id, name)? {
         return Err(AppError::InvalidInput(format!(
             "a bid draft for '{name}' is already pending — one bid per wallet per name"
         )));
@@ -1447,9 +1439,9 @@ pub async fn build_bid_draft(
     // the function returns here and NO draft is ever persisted; a bid whose
     // commitment can't be trusted must never reach the chain.
     queries::insert_bid_commitment(
-        &conn,
+        conn,
         &ctx.profile_id,
-        &name,
+        name,
         &nh_hex,
         &bid_addr.address,
         bid_addr.branch as i64,
@@ -1471,18 +1463,15 @@ pub async fn build_bid_draft(
     // `recover_bid_commitment` has no such height to work from and
     // leaves this NULL.
     let params = ctx.network.name_params();
-    let reveal_end_height = ns.height as i64
-        + (params.tree_interval as i64 + 1)
-        + params.bidding_period as i64
-        + params.reveal_period as i64;
+    let reveal_end_height = names_pure::reveal_end_height(ns.height as i64, &params);
     queries::set_reveal_end_height(
-        &conn,
+        conn,
         &ctx.profile_id,
         &hex::encode(blind),
         reveal_end_height,
     )?;
 
-    let summary = persist_with_conn(&conn, &ctx.profile_id, "bid", &name, None, None, &res)?;
+    let summary = persist_with_conn(conn, &ctx.profile_id, "bid", name, None, None, &res)?;
     // Task 1 fix: stamp the on-chain bid txid onto this commitment NOW, while
     // still under the same held `conn` lock as the multiplicity guard and the
     // commitment/draft writes above — no unlock/relock, guard untouched.
@@ -1491,7 +1480,7 @@ pub async fn build_bid_draft(
     // this, `bid_commitments.bid_txid` stays NULL forever (it was previously
     // only ever set by tests), which is what makes `merge_name_bids` unable
     // to recognize a real bid as the wallet's own.
-    queries::set_bid_txid(&conn, &ctx.profile_id, &hex::encode(blind), &res.txid)?;
+    queries::set_bid_txid(conn, &ctx.profile_id, &hex::encode(blind), &res.txid)?;
     Ok(summary)
 }
 
@@ -1665,10 +1654,7 @@ pub async fn build_batch_bid_draft(
         )?;
 
         // Estimate reveal-end height and stamp it.
-        let reveal_end_height = spec.ns.height as i64
-            + (params.tree_interval as i64 + 1)
-            + params.bidding_period as i64
-            + params.reveal_period as i64;
+        let reveal_end_height = names_pure::reveal_end_height(spec.ns.height as i64, &params);
         queries::set_reveal_end_height(&conn, &ctx.profile_id, &blind_hex, reveal_end_height)?;
 
         outcomes.push(BidOutcome {
@@ -1698,11 +1684,7 @@ pub async fn build_batch_bid_draft(
 
     // Persist the draft. Note: the schema stores one name per draft; for a
     // batch we use the first name as the draft label (a limitation).
-    let display_name = if names.len() == 1 {
-        names[0].clone()
-    } else {
-        format!("{} + {} more", names[0], names.len() - 1)
-    };
+    let display_name = names_pure::display_names(&names);
     let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
     let summary = persist_with_conn(
         &conn,
@@ -1731,14 +1713,13 @@ pub async fn build_reveal_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let ns = fetch_name_state(&client, &name).await?;
 
     // Look up our bid commitment + the unspent BID coin at that address.
     let (bid, bid_coin) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let nh = names::hash_name(&name)?;
         let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, &name)?
             .ok_or_else(|| AppError::NotFound(format!("no bid commitment for '{name}'")))?;
         let coin = queries::find_unspent_covenant_utxo(
@@ -1754,6 +1735,33 @@ pub async fn build_reveal_draft(
         })?;
         (bid, coin)
     };
+
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let summary = build_reveal_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &bid, &bid_coin)?;
+
+    Ok(summary)
+}
+
+/// Pure inner logic for `build_reveal_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the commitment lookup + draft persist are atomic under that
+/// single held guard.
+///
+/// `ns` is the pre-fetched on-chain name state (the async RPC call happens
+/// in the wrapper before the lock is acquired). `bid` and `bid_coin` are
+/// pre-fetched from the DB in the wrapper.
+pub(crate) fn build_reveal_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    bid: &queries::BidCommitmentRow,
+    bid_coin: &queries::NameCoin,
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+
     let mut nonce = [0u8; 32];
     let nb = hex::decode(&bid.nonce_hex).map_err(|e| AppError::Crypto(format!("nonce: {e}")))?;
     if nb.len() != 32 {
@@ -1777,17 +1785,13 @@ pub async fn build_reveal_draft(
         &ctx.change_address,
         rate,
     )?;
-    let summary = persist(&state, &ctx.profile_id, "reveal", &name, None, None, &res)?;
+    let summary = persist_with_conn(conn, &ctx.profile_id, "reveal", name, None, None, &res)?;
     // Task 1 fix (companion to build_bid_draft): stamp the reveal txid onto
     // the SAME commitment row (keyed by name — `set_bid_reveal_txid`), so the
     // reveal-deadline scanner (which reads `reveal_txid`) can see this bid as
-    // resolved. `persist` already released its own lock, so this takes a
-    // short separate one; there is no multi-step guard to protect here (only
-    // one write).
-    {
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        queries::set_bid_reveal_txid(&conn, &ctx.profile_id, &name, &res.txid)?;
-    }
+    // resolved. Done under the caller's held lock, right after the draft
+    // persist — `res.txid` is the deterministic pre-signing Handshake txid.
+    queries::set_bid_reveal_txid(conn, &ctx.profile_id, name, &res.txid)?;
     Ok(summary)
 }
 
@@ -1800,13 +1804,12 @@ pub async fn build_redeem_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let ns = fetch_name_state(&client, &name).await?;
 
     let coin = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let nh = names::hash_name(&name)?;
         let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, &name)?
             .ok_or_else(|| AppError::NotFound(format!("no bid for '{name}'")))?;
         queries::find_unspent_covenant_utxo(
@@ -1823,21 +1826,44 @@ pub async fn build_redeem_draft(
             ))
         })?
     };
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_redeem_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &coin)
+}
+
+/// Pure inner logic for `build_redeem_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the coin-reservation + draft persist are atomic under that
+/// single held guard.
+///
+/// `ns` is the pre-fetched on-chain name state (the async RPC call happens
+/// in the wrapper before the lock is acquired). `reveal_coin` is the wallet's
+/// unspent losing-REVEAL coin for `name`, pre-fetched by the wrapper.
+pub(crate) fn build_redeem_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    reveal_coin: &queries::NameCoin,
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+
     // REDEEM reclaims the reveal output value back to the wallet.
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
-        Some(name_input_from(coin.clone())),
+        Some(name_input_from(reveal_coin.clone())),
         PrimaryOutput {
-            value: coin.value,
-            address: coin.address.clone(),
+            value: reveal_coin.value,
+            address: reveal_coin.address.clone(),
             covenant: covenants::redeem(&nh, ns.height),
         },
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "redeem", &name, None, None, &res)
+    persist_with_conn(conn, &ctx.profile_id, "redeem", name, None, None, &res)
 }
 
 // --- owner actions (spend the name's owner UTXO) ---------------------------
@@ -1866,30 +1892,64 @@ pub async fn build_register_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let rblock = renewal_block(&client, ctx.network).await?;
-    let res_bytes = match &records {
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_register_draft_inner(
+        &conn,
+        &ctx,
+        &name,
+        records.as_deref(),
+        fee_rate,
+        &ns,
+        &coin,
+        &rblock,
+    )
+}
+
+/// Pure inner logic for `build_register_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the coin-reservation + draft persist are atomic under that
+/// single held guard.
+///
+/// The two async RPC calls (`fetch_name_state` for `ns` and `renewal_block`
+/// for `rblock`) happen in the wrapper before the lock is acquired; the
+/// owner `NameCoin` is looked up by the wrapper as well. This inner takes
+/// all three as resolved inputs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_register_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    records: Option<&[serde_json::Value]>,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    owner_coin: &queries::NameCoin,
+    renewal_block: &[u8; 32],
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+    let res_bytes = match records {
         Some(r) if !r.is_empty() => resource::encode(r)?,
-        _ => Vec::new(), // EMPTY resource
+        _ => Vec::new(), // EMPTY resource — a REGISTER with no DNS records.
     };
-    // REGISTER locks `ns.value` (the price); the rest returns as change.
+    // REGISTER locks `ns.value` (the auction's clearing price); the rest of
+    // the owner-coin value returns as change to the wallet.
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
-        Some(name_input_from(coin.clone())),
+        Some(name_input_from(owner_coin.clone())),
         PrimaryOutput {
             value: ns.value,
-            address: coin.address.clone(),
-            covenant: covenants::register(&nh, ns.height, &res_bytes, &rblock),
+            address: owner_coin.address.clone(),
+            covenant: covenants::register(&nh, ns.height, &res_bytes, renewal_block),
         },
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "register", &name, None, None, &res)
+    persist_with_conn(conn, &ctx.profile_id, "register", name, None, None, &res)
 }
 
 #[tauri::command]
@@ -1900,24 +1960,47 @@ pub async fn build_update_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
-    let res_bytes = resource::encode(&records)?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_update_draft_inner(&conn, &ctx, &name, &records, fee_rate, &ns, &coin)
+}
+
+/// Pure inner logic for `build_update_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the coin-reservation + draft persist are atomic under that
+/// single held guard.
+///
+/// `ns` is the pre-fetched on-chain name state (the async RPC call happens
+/// in the wrapper before the lock is acquired). `owner_coin` is the wallet's
+/// current owner coin for `name`, pre-fetched by the wrapper.
+pub(crate) fn build_update_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    records: &[serde_json::Value],
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    owner_coin: &queries::NameCoin,
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+    let res_bytes = resource::encode(records)?;
+    // UPDATE keeps the full owner-coin value on the name (no price change);
+    // only the resource records get rewritten.
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
-        Some(name_input_from(coin.clone())),
+        Some(name_input_from(owner_coin.clone())),
         PrimaryOutput {
-            value: coin.value,
-            address: coin.address.clone(),
+            value: owner_coin.value,
+            address: owner_coin.address.clone(),
             covenant: covenants::update(&nh, ns.height, &res_bytes),
         },
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "update", &name, None, None, &res)
+    persist_with_conn(conn, &ctx.profile_id, "update", name, None, None, &res)
 }
 
 #[tauri::command]
@@ -1927,25 +2010,49 @@ pub async fn build_renew_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let rblock = renewal_block(&client, ctx.network).await?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_renew_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &coin, &rblock)
+}
+
+/// Pure inner logic for `build_renew_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the coin-reservation + draft persist are atomic under that
+/// single held guard.
+///
+/// The two async RPC calls (`fetch_name_state` for `ns` and `renewal_block`
+/// for `rblock`) happen in the wrapper before the lock is acquired; the
+/// owner `NameCoin` is looked up by the wrapper as well. This inner takes
+/// all three as resolved inputs.
+pub(crate) fn build_renew_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    owner_coin: &queries::NameCoin,
+    renewal_block: &[u8; 32],
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+    // RENEW keeps the full owner-coin value on the name (no price change);
+    // only the renewal-block reference is refreshed to extend the lease.
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
-        Some(name_input_from(coin.clone())),
+        Some(name_input_from(owner_coin.clone())),
         PrimaryOutput {
-            value: coin.value,
-            address: coin.address.clone(),
-            covenant: covenants::renew(&nh, ns.height, &rblock),
+            value: owner_coin.value,
+            address: owner_coin.address.clone(),
+            covenant: covenants::renew(&nh, ns.height, renewal_block),
         },
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "renew", &name, None, None, &res)
+    persist_with_conn(conn, &ctx.profile_id, "renew", name, None, None, &res)
 }
 
 #[tauri::command]
@@ -1956,29 +2063,53 @@ pub async fn build_transfer_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
-    let (version, program) = address::decode(ctx.network, &recipient)?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_transfer_draft_inner(&conn, &ctx, &name, &recipient, fee_rate, &ns, &coin)
+}
+
+/// Pure inner logic for `build_transfer_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the coin-reservation + draft persist are atomic under that
+/// single held guard.
+///
+/// `ns` is the pre-fetched on-chain name state (the async RPC call happens
+/// in the wrapper before the lock is acquired). `owner_coin` is the wallet's
+/// current owner coin for `name`, pre-fetched by the wrapper.
+pub(crate) fn build_transfer_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    recipient: &str,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    owner_coin: &queries::NameCoin,
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+    let (version, program) = address::decode(ctx.network, recipient)?;
+    // TRANSFER initiates a name transfer to `recipient`; the output keeps the
+    // full owner-coin value on the name and stays at the current owner address
+    // until FINALIZE moves it.
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
-        Some(name_input_from(coin.clone())),
+        Some(name_input_from(owner_coin.clone())),
         PrimaryOutput {
-            value: coin.value,
-            address: coin.address.clone(),
+            value: owner_coin.value,
+            address: owner_coin.address.clone(),
             covenant: covenants::transfer(&nh, ns.height, version, &program),
         },
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(
-        &state,
+    persist_with_conn(
+        conn,
         &ctx.profile_id,
         "transfer",
-        &name,
-        Some(&recipient),
+        name,
+        Some(recipient),
         None,
         &res,
     )
@@ -1991,16 +2122,39 @@ pub async fn build_finalize_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
-    let raw = names::raw_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let rblock = renewal_block(&client, ctx.network).await?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_finalize_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &coin, &rblock)
+}
+
+/// Pure inner logic for `build_finalize_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the coin-reservation + draft persist are atomic under that
+/// single held guard.
+///
+/// The two async RPC calls (`fetch_name_state` for `ns` and `renewal_block`
+/// for `rblock`) happen in the wrapper before the lock is acquired; the
+/// owner `NameCoin` is looked up by the wrapper as well. This inner takes
+/// all three as resolved inputs and performs the covenant parsing + target
+/// address extraction synchronously.
+pub(crate) fn build_finalize_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    owner_coin: &queries::NameCoin,
+    renewal_block: &[u8; 32],
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+    let raw = names::raw_name(name)?;
 
     // The finalize output goes to the TRANSFER target recorded on the owner
     // coin's covenant: items = [nameHash, height, version(u8), addrHash].
-    let cov_json = coin.covenant_json.as_deref().ok_or_else(|| {
+    let cov_json = owner_coin.covenant_json.as_deref().ok_or_else(|| {
         AppError::InvalidInput("name is not in transfer; nothing to finalize".into())
     })?;
     let cov: serde_json::Value = serde_json::from_str(cov_json)?;
@@ -2031,9 +2185,9 @@ pub async fn build_finalize_draft(
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
-        Some(name_input_from(coin.clone())),
+        Some(name_input_from(owner_coin.clone())),
         PrimaryOutput {
-            value: coin.value,
+            value: owner_coin.value,
             address: target_address.clone(),
             covenant: covenants::finalize(
                 &nh,
@@ -2042,18 +2196,18 @@ pub async fn build_finalize_draft(
                 flags,
                 ns.claimed,
                 ns.renewals,
-                &rblock,
+                renewal_block,
             ),
         },
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(
-        &state,
+    persist_with_conn(
+        conn,
         &ctx.profile_id,
         "finalize",
-        &name,
+        name,
         Some(&target_address),
         None,
         &res,
@@ -2171,11 +2325,7 @@ pub async fn build_batch_renew_draft(
         rate,
     )?;
     // Persist with first name as primary; the draft plan contains all names.
-    let display_name = if batch_names.len() == 1 {
-        batch_names[0].clone()
-    } else {
-        format!("{} + {} more", batch_names[0], batch_names.len() - 1)
-    };
+    let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist(
         &state,
@@ -2262,11 +2412,7 @@ pub async fn build_batch_reveal_draft(
         &ctx.change_address,
         rate,
     )?;
-    let display_name = if batch_names.len() == 1 {
-        batch_names[0].clone()
-    } else {
-        format!("{} + {} more", batch_names[0], batch_names.len() - 1)
-    };
+    let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist(
         &state,
@@ -2342,11 +2488,7 @@ pub async fn build_batch_redeem_draft(
         &ctx.change_address,
         rate,
     )?;
-    let display_name = if batch_names.len() == 1 {
-        batch_names[0].clone()
-    } else {
-        format!("{} + {} more", batch_names[0], batch_names.len() - 1)
-    };
+    let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist(
         &state,
@@ -2448,11 +2590,7 @@ pub async fn build_batch_finalize_draft(
         &ctx.change_address,
         rate,
     )?;
-    let display_name = if batch_names.len() == 1 {
-        batch_names[0].clone()
-    } else {
-        format!("{} + {} more", batch_names[0], batch_names.len() - 1)
-    };
+    let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist(
         &state,

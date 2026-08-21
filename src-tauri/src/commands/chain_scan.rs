@@ -120,7 +120,7 @@ pub async fn run_chain_scanner(db_path: String) {
 /// Scan a single block: fetch via `getblock`, iterate outputs, upsert BID/REVEAL
 /// covenants into `name_bid_outpoints`.
 async fn scan_block(
-    client: &NodeRpcClient,
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
     db_path: &str,
     height: i64,
 ) -> Result<(), crate::error::AppError> {

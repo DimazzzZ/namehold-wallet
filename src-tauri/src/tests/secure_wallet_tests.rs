@@ -85,14 +85,20 @@ fn test_session_ttl_ms_defaults_to_900_seconds() {
 #[test]
 fn test_session_ttl_ms_from_settings() {
     let mut settings = std::collections::HashMap::new();
-    settings.insert("signer_session_timeout_seconds".to_string(), "3600".to_string());
+    settings.insert(
+        "signer_session_timeout_seconds".to_string(),
+        "3600".to_string(),
+    );
     assert_eq!(secure_wallet::session_ttl_ms(&settings), 3_600_000);
 }
 
 #[test]
 fn test_session_ttl_ms_rejects_zero() {
     let mut settings = std::collections::HashMap::new();
-    settings.insert("signer_session_timeout_seconds".to_string(), "0".to_string());
+    settings.insert(
+        "signer_session_timeout_seconds".to_string(),
+        "0".to_string(),
+    );
     assert_eq!(secure_wallet::session_ttl_ms(&settings), 900_000);
 }
 

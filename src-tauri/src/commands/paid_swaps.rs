@@ -202,6 +202,43 @@ pub fn find_payment_output(
     None
 }
 
+/// Outcome of [`verify_paid_transfer_with_client`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PaidTransferVerification {
+    /// The tx exists and contains a valid payment output to the seller.
+    Verified { paid_doos: i64, confirmations: u32 },
+    /// The tx exists but no qualifying payment output was found.
+    NoPayment { confirmations: u32 },
+}
+
+/// Client-injected payment verification for [`claim_paid_transfer`]. Fetches
+/// the tx by hash, checks it exists, extracts confirmations, and runs
+/// [`find_payment_output`] to verify the finalize-with-payment protocol.
+/// Returns `Err(NotFound)` when the node doesn't know the tx, or the
+/// appropriate `PaidTransferVerification` variant. Testable against a mock.
+pub(crate) async fn verify_paid_transfer_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    txid: &str,
+    buyer_address: &str,
+    price_doos: i64,
+) -> Result<PaidTransferVerification, crate::error::AppError> {
+    let tx_json = client.get_tx_by_hash(txid).await?;
+    if tx_json.is_null() {
+        return Err(crate::error::AppError::NotFound(format!(
+            "tx not found: {}",
+            txid
+        )));
+    }
+    let confirmations = tx_json["confirmations"].as_u64().unwrap_or(0) as u32;
+    match find_payment_output(&tx_json, buyer_address, price_doos) {
+        Some(paid_doos) => Ok(PaidTransferVerification::Verified {
+            paid_doos,
+            confirmations,
+        }),
+        None => Ok(PaidTransferVerification::NoPayment { confirmations }),
+    }
+}
+
 /// Claim a paid transfer: seller verifies the buyer's finalize-with-payment tx
 /// contains a P2WPKH output to the seller's address with value ≥ price_doos.
 /// This is verify-only; the payment already exists in the buyer's tx.
@@ -261,19 +298,15 @@ pub async fn claim_paid_transfer(
 
     // Fetch the tx from the node.
     let client = NodeRpcClient::from_settings(&settings);
-    let tx_json = client.get_tx_by_hash(&txid).await?;
-
-    if tx_json.is_null() {
-        return Err(AppError::NotFound(format!("tx not found: {}", txid)));
-    }
-
-    let confirmations = tx_json["confirmations"].as_u64().unwrap_or(0) as u32;
-
-    // In the finalize-with-payment protocol, the payment output goes to the
-    // seller (any output that is NOT the buyer's address, with value ≥ price).
-    let paid_doos = match find_payment_output(&tx_json, &offer.buyer_address, offer.price_doos) {
-        Some(v) => v,
-        None => {
+    let verification =
+        verify_paid_transfer_with_client(&client, &txid, &offer.buyer_address, offer.price_doos)
+            .await?;
+    let (paid_doos, confirmations) = match verification {
+        PaidTransferVerification::Verified {
+            paid_doos,
+            confirmations,
+        } => (paid_doos, confirmations),
+        PaidTransferVerification::NoPayment { confirmations } => {
             return Ok(ClaimResult {
                 verified: false,
                 paid_doos: 0,

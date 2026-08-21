@@ -681,7 +681,7 @@ pub struct BlockchainInfo {
 ///
 /// Only the fields the UTXO sync / draft builder depends on are typed; the rest
 /// of hsd's coin shape is ignored by serde.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct NodeCoin {
     /// Funding transaction hash (hex).
     #[serde(rename = "hash")]
@@ -717,7 +717,7 @@ pub struct NodeCoin {
 /// `type` is the numeric covenant type (0 = NONE, others are name ops); the
 /// `items` are the covenant's raw hex pushdata. Verified against hsd
 /// `lib/covenants/covenant.js` JSON shape.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct NodeCovenant {
     /// Numeric covenant type (hsd `covenant.type`).
     #[serde(rename = "type")]

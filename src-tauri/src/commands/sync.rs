@@ -591,10 +591,37 @@ pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
         Err(_) => return false,
     };
 
+    let all_coins = match fetch_coins_with_guard_with_client(&client, &addresses).await {
+        Some(coins) => coins,
+        // Guard tripped: had addresses but every per-address query errored —
+        // bail so the next sync retries from the same cursor (see the helper).
+        None => return false,
+    };
+
+    let mut conn = match open_conn(db_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    apply_node_sync_batch(&mut conn, profile_id, &all_coins, height).is_ok()
+}
+
+/// Client-injected coin-fetch phase for [`sync_node_step`], with the
+/// "false everything-spent cascade" guard. Fetches coins per address; returns
+/// `Some(all_coins)` on success, or `None` when the wallet HAS addresses but
+/// EVERY per-address query errored (node lacks `--index-address`, or is
+/// momentarily unreachable). Applying an empty set in that case would make
+/// `mark_missing_as_spent` wipe every tracked UTXO — so the caller must bail.
+///
+/// An empty address list returns `Some(vec![])` (nothing to fetch, nothing to
+/// wipe). Testable against a mock.
+pub(crate) async fn fetch_coins_with_guard_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    addresses: &[String],
+) -> Option<Vec<crate::noncustodial::rpc::NodeCoin>> {
     let mut all_coins = Vec::new();
     let mut any_success = false;
     let mut any_error = false;
-    for addr in &addresses {
+    for addr in addresses {
         match client.get_coins_by_address(addr).await {
             Ok(mut coins) => {
                 any_success = true;
@@ -603,23 +630,10 @@ pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
             Err(_) => any_error = true,
         }
     }
-
-    // Guard against a false "everything spent" cascade: if the wallet HAS
-    // addresses but EVERY per-address coin query errored (e.g. the node lacks
-    // `--index-address`, or is momentarily unreachable), `all_coins` is empty
-    // NOT because the wallet holds nothing but because we couldn't ask. Applying
-    // that empty set would make `mark_missing_as_spent` mark every tracked UTXO
-    // as spent, wiping the wallet's balance and cached names. Bail instead so
-    // the next sync retries from the same cursor.
     if !addresses.is_empty() && any_error && !any_success {
-        return false;
+        return None;
     }
-
-    let mut conn = match open_conn(db_path) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    apply_node_sync_batch(&mut conn, profile_id, &all_coins, height).is_ok()
+    Some(all_coins)
 }
 
 /// Node-only owned-name discovery. Replaces `discover_step` when the local
@@ -658,36 +672,11 @@ pub async fn node_discover_step(db_path: &str, profile_id: &str) {
 
     let client = NodeRpcClient::from_settings(&settings);
 
-    // Resolve each hash → name (prefer node's `getnamebyhash`; fall back to the
-    // coin's own rawName when the node can't resolve it). De-dup so we call
-    // getnameinfo at most once per name.
-    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for h in &hashes {
-        let resolved = match client.get_name_by_hash(&h.name_hash_hex).await {
-            Ok(Some(n)) => Some(n),
-            Ok(None) | Err(_) => h
-                .raw_name_hex
-                .as_deref()
-                .and_then(|hex| hex::decode(hex).ok())
-                .and_then(|bytes| String::from_utf8(bytes).ok()),
-        };
-        if let Some(name) = resolved {
-            let trimmed = name.trim().to_ascii_lowercase();
-            if !trimmed.is_empty() {
-                names.insert(trimmed);
-            }
-        }
-    }
-    if names.is_empty() {
+    // Resolve hashes → names and fetch their on-chain state via the node.
+    let fetched =
+        crate::commands::read::discover_names_via_node_with_client(&client, &hashes).await;
+    if fetched.is_empty() {
         return;
-    }
-
-    // Fetch each name's authoritative state from the node.
-    let mut fetched: Vec<(String, serde_json::Value)> = Vec::new();
-    for name in &names {
-        if let Ok(info) = client.get_name_info(name).await {
-            fetched.push((name.clone(), info));
-        }
     }
 
     // Upsert in a single transaction so a mid-write DB error can't leave

@@ -9,27 +9,10 @@ fn mock_app_with(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
         .expect("mock app")
 }
 
-/// Create a test DB with ALL migrations (including wallet_profiles from 006+).
+/// Create a test DB with ALL migrations applied (idempotent via schema_version).
 fn create_full_test_db() -> rusqlite::Connection {
     let conn = crate::tests::command_helpers::create_test_db();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/004_wallet_addresses.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/005_fix_hnsfans_api_url.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/006_noncustodial_wallet_profiles.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/007_noncustodial_chain_cache.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/008_noncustodial_name_state.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/009_node_rpc_settings.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/010_drop_legacy_settings.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/011_hsd_data_dir.sql"))
-        .unwrap();
-    conn.execute_batch(include_str!("../../../src-tauri/src/sql/012_tx_draft_confirmations.sql"))
-        .unwrap();
+    crate::db::migrations::run(&conn).unwrap();
     conn
 }
 
@@ -39,7 +22,11 @@ fn create_full_test_state() -> AppState {
         db: std::sync::Mutex::new(conn),
         signer: std::sync::Mutex::new(None),
         secure_prompts: std::sync::Mutex::new(std::collections::HashMap::new()),
-        hsd_child: std::sync::Mutex::new(None), node_rpc_alive: std::sync::atomic::AtomicBool::new(false), sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(crate::commands::sync::SyncStatus::default()))
+        hsd_child: std::sync::Mutex::new(None),
+        node_rpc_alive: std::sync::atomic::AtomicBool::new(false),
+        sync_status: std::sync::Arc::new(tokio::sync::Mutex::new(
+            crate::commands::sync::SyncStatus::default(),
+        )),
     }
 }
 
@@ -299,7 +286,9 @@ async fn test_delete_wallet_profile() {
     assert!(result.is_ok());
 
     // Verify it's gone
-    let profiles = secure_wallet::list_wallet_profiles(app.state()).await.unwrap();
+    let profiles = secure_wallet::list_wallet_profiles(app.state())
+        .await
+        .unwrap();
     assert!(profiles.is_empty());
 }
 
@@ -316,7 +305,9 @@ async fn test_delete_wallet_profile_clears_active() {
         crate::db::queries::set_active_profile(&conn, "wp1").unwrap();
     }
     let app = mock_app_with(state);
-    secure_wallet::delete_wallet_profile(app.state(), "wp1".into()).await.unwrap();
+    secure_wallet::delete_wallet_profile(app.state(), "wp1".into())
+        .await
+        .unwrap();
 
     // Active should be cleared
     let state_ref = app.state::<AppState>();
@@ -361,7 +352,9 @@ async fn test_get_signer_session_after_lock() {
     // Lock (no-op when already locked)
     secure_wallet::lock_local_signer(app.state()).await.unwrap();
     // Should still report locked
-    let summary = secure_wallet::get_signer_session(app.state()).await.unwrap();
+    let summary = secure_wallet::get_signer_session(app.state())
+        .await
+        .unwrap();
     assert!(!summary.unlocked);
 }
 
@@ -384,8 +377,12 @@ async fn test_set_active_then_list() {
         ).unwrap();
     }
     let app = mock_app_with(state);
-    secure_wallet::set_active_wallet_profile(app.state(), "wp2".into()).await.unwrap();
-    let profiles = secure_wallet::list_wallet_profiles(app.state()).await.unwrap();
+    secure_wallet::set_active_wallet_profile(app.state(), "wp2".into())
+        .await
+        .unwrap();
+    let profiles = secure_wallet::list_wallet_profiles(app.state())
+        .await
+        .unwrap();
     assert_eq!(profiles.len(), 2);
     // wp2 should be active
     let active = profiles.iter().find(|p| p.active).unwrap();
@@ -413,9 +410,13 @@ async fn test_set_active_different_profile_locks_signer() {
     let app = mock_app_with(state);
 
     // Set wp1 active
-    secure_wallet::set_active_wallet_profile(app.state(), "wp1".into()).await.unwrap();
+    secure_wallet::set_active_wallet_profile(app.state(), "wp1".into())
+        .await
+        .unwrap();
     // Switch to wp2 — signer should be locked (no signer was unlocked, but the code path is exercised)
-    let summary = secure_wallet::set_active_wallet_profile(app.state(), "wp2".into()).await.unwrap();
+    let summary = secure_wallet::set_active_wallet_profile(app.state(), "wp2".into())
+        .await
+        .unwrap();
     assert!(summary.active);
     assert_eq!(summary.id, "wp2");
 }

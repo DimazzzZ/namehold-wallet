@@ -35,7 +35,10 @@ fn test_app_error_display_and_serialize() {
     let err = AppError::Rpc("connection refused".to_string());
     assert_eq!(err.to_string(), "Node RPC error: connection refused");
     let json = serde_json::to_value(&err).unwrap();
-    assert_eq!(json, serde_json::json!("Node RPC error: connection refused"));
+    assert_eq!(
+        json,
+        serde_json::json!("Node RPC error: connection refused")
+    );
 }
 
 #[test]
@@ -56,7 +59,10 @@ fn test_app_error_json_variant() {
 
 #[test]
 fn test_app_error_io_variant() {
-    let err = AppError::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"));
+    let err = AppError::Io(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "denied",
+    ));
     assert!(err.to_string().contains("IO error:"));
     let json = serde_json::to_value(&err).unwrap();
     assert!(json.as_str().unwrap().contains("IO error:"));

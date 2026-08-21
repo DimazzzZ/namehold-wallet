@@ -311,24 +311,7 @@ pub async fn read_action_history(
     let our: HashSet<String> = addresses.iter().cloned().collect();
     let node = NodeRpcClient::from_settings(&settings);
 
-    // Dedupe by txid. Preserve one representative decoded tx per txid.
-    let mut by_txid: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-    for addr in &addresses {
-        // Gracefully degrade when the node lacks `--index-tx` / `--index-address`
-        // or is on a different network: swallow per-address errors and return
-        // whatever we could fetch. If EVERY address fails, the result is simply
-        // empty — the UI shows "No activity yet" instead of an error toast.
-        match node.get_txs_by_address(addr).await {
-            Ok(txs) => {
-                for tx in txs {
-                    if let Some(hash) = tx.get("hash").and_then(|h| h.as_str()) {
-                        by_txid.entry(hash.to_string()).or_insert(tx);
-                    }
-                }
-            }
-            Err(_) => continue,
-        }
-    }
+    let by_txid = fetch_and_dedup_txs_with_client(&node, &addresses).await;
 
     let mut rows: Vec<ActionRow> = by_txid
         .values()
@@ -345,6 +328,33 @@ pub async fn read_action_history(
     });
 
     Ok(rows)
+}
+
+/// Client-injected fetch+dedupe phase for [`read_action_history`]. Fetches
+/// `getTxByAddress` for each watch address and dedupes by `tx.hash`, preserving
+/// one representative decoded tx per txid. Per-address errors are swallowed —
+/// the node may lack `--index-tx` / `--index-address` for some addresses, be
+/// on a different network, or be momentarily unreachable; the caller still
+/// gets whatever we could fetch (empty map when every address fails).
+/// Testable against a mock without an AppState.
+pub(crate) async fn fetch_and_dedup_txs_with_client(
+    node: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    addresses: &[String],
+) -> BTreeMap<String, serde_json::Value> {
+    let mut by_txid: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    for addr in addresses {
+        match node.get_txs_by_address(addr).await {
+            Ok(txs) => {
+                for tx in txs {
+                    if let Some(hash) = tx.get("hash").and_then(|h| h.as_str()) {
+                        by_txid.entry(hash.to_string()).or_insert(tx);
+                    }
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    by_txid
 }
 
 #[cfg(test)]

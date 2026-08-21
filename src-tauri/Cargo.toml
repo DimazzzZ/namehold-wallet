@@ -83,6 +83,7 @@ rayon = "1.10"
 # `handshake-org/ledger-app-hns` device firmware is supported (dev-mode
 # sideload). See src/providers/ledger/ for the APDU implementation.
 hidapi = "2"
+async-trait = "0.1.92"
 
 # OS keyring for the Namebase-cookie data-encryption key. v3 ships no backend
 # by default — pick the native store per OS. Linux uses the Secret Service

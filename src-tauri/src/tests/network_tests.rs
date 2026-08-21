@@ -134,7 +134,12 @@ fn test_name_params_simnet() {
 
 #[test]
 fn test_as_str_from_str_roundtrip() {
-    for net in [Network::Main, Network::Testnet, Network::Regtest, Network::Simnet] {
+    for net in [
+        Network::Main,
+        Network::Testnet,
+        Network::Regtest,
+        Network::Simnet,
+    ] {
         let s = net.as_str();
         assert_eq!(Network::from_str_opt(s), Some(net));
     }
@@ -148,5 +153,5 @@ fn test_name_params_derives() {
     let p2 = p; // Copy
     assert_eq!(p, p2); // PartialEq
     let _ = format!("{:?}", p); // Debug
-    let _clone = p.clone(); // Clone
+    let _clone: NameParams = p; // Clone (Copy implies Clone; avoid clippy::clone_on_copy)
 }
