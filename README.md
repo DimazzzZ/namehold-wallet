@@ -1,6 +1,5 @@
 # Namehold — a non-custodial Handshake (HNS) wallet
 
-[![Tests](https://img.shields.io/badge/tests-1405%20Rust%20%2B%20745%20frontend-brightgreen)](https://github.com/DimazzzZ/namehold-wallet/pull/50)
 [![Coverage](https://img.shields.io/badge/coverage-81.28%25%20lines-brightgreen)](https://github.com/DimazzzZ/namehold-wallet/pull/50)
 
 Namehold is a local desktop wallet for **Handshake (HNS)**: hold HNS, manage the
@@ -30,13 +29,19 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   confirm each send, bid, or covenant action on-screen. Requires the official
   [`ledger-app-hns`](https://github.com/handshake-org/ledger-app-hns) firmware.
 - **Multiple wallets** — switch between them and delete ones you no longer need.
-- **Receive** — your address with a QR code, one-click copy.
+- **Receive** — your address with a QR code and one-click copy. Expand "View all
+  addresses" to see the full list of derived receive addresses with derivation
+  index, used/fresh badge, first-seen date, copy/QR/explorer buttons, and a
+  "Generate new address" button to allocate the next unused index.
 - **Per-wallet balances** — each wallet shows its own balance; values persist and
   refresh on demand (no bleed between wallets).
 
 ### Send HNS
 - A **build → sign → broadcast** draft flow: preview fee/change before any key is
   touched, sign in the secure window, then broadcast.
+- **Fee-rate control** — set a global default fee rate in Settings > Advanced, or
+  override per-transaction with a collapsible "Advanced" widget in every send/bid/
+  batch flow. Minimum 1000 doos/kvB (1 sat/byte).
 - **Send Max** to sweep a wallet.
 - **Status tracking** — sent transactions move Pending → Confirmed (with block
   height), or are flagged "Not confirmed" if they never make it on-chain.
@@ -48,7 +53,7 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   and a **"Locked in Auctions"** balance for in-flight bids.
 - A typed **DNS-record editor** (TXT/A/AAAA/NS/CNAME…) for register/update, with a
   raw-JSON fallback.
-- **Batch operations** — renew, reveal, redeem, or finalize multiple names in a
+- **Batch operations** — bid, renew, reveal, redeem, or finalize multiple names in a
   single transaction. Multi-select checkboxes on the Owned Names table with a
   batch action bar and a confirmation modal showing estimated fee + name list.
 - **Name watchlist** — track names you don't own for monitoring. Watchlist page
@@ -68,6 +73,8 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   switches to **node-authoritative** reads (owned names, balances, bid history)
   for faster, more reliable data. A local node is needed **only to send or
   perform name actions**.
+- When you click a transaction, name, or address link, it opens on **Shakeshift**
+  (https://shakeshift.com) for viewing on-chain details.
 
 ### Move from Namebase (one feature, not the core)
 - Connect with your Namebase session cookie to **list custodial domains**, see
@@ -96,7 +103,7 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 ### SPV mode
 
 - An opt-in **lightweight alternative** to the full node mode. SPV downloads only
-  block headers (~几十MB vs ~15GB), enabling fast first launch and minimal disk
+  block headers (~tens of MB vs ~15GB), enabling fast first launch and minimal disk
   usage.
 - **Balance and name data come from the explorer** — sending is blocked in SPV mode
   (read-only).
@@ -107,10 +114,22 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
   configurable fallback URL.
 - **SPV indicator** in the StatusStrip — shows "Explorer (SPV)" when in SPV mode.
 
+### Keyboard-first navigation
+
+- **Command palette** (⌘K / Ctrl+K) — fuzzy-searchable list of navigation targets
+  and view actions on the current page. Type to filter, ↑/↓ to move, Enter to run.
+- **Cheatsheet** (Shift+?) — overlay documenting all bindings for the current page.
+- **Per-page shortcuts** — common flows without the mouse:
+  - **Wallet** (`/`): `s` send, `r` refresh, `u` unlock, `q` toggle QR, `/` filter
+    names, `j`/`k` + Enter to walk owned names
+  - **Auctions** (`/auctions`): `/` lookup, `b` batch bid
+  - **Activity** (`/activity`): `/` search
+  - **Watchlist** (`/watchlist`): `a` add name, `e` export CSV
+
 ## How it works
 
 - **Reads are node-free.** Balances and names come from the explorer and are cached
-  locally per wallet.
+  locally per wallet. Links to transactions, names, and addresses open on Shakeshift.
 - **Sending needs a node.** Broadcasting and coin/owner discovery use a local
   **hsd** node over RPC. The app can start/stop hsd for you (Settings → Connections).
 - **Secrets stay in a secure window.** Your mnemonic/passphrase is only ever typed
@@ -241,17 +260,20 @@ on every platform:
   while the daemon is running)
 
 It holds your wallet profiles, the encrypted vault, the local chain cache, and (if
-used) the Portfolio inventory/batches/audit log.
+used) the local transaction history.
 
 ## Tech stack
 
 - **Tauri v2** — desktop shell
 - **React 19 + TypeScript** — frontend
 - **Vite** — build tool
-- **TanStack Query** — async state (TanStack Table + Virtual for the Portfolio grid)
+- **TanStack Query** — async state (TanStack Table + Virtual for data tables and
+  virtualized lists)
 - **Zustand** — client state
 - **Zod** — validation
 - **SQLite (rusqlite)** — local database
 - **reqwest** — HTTP client (explorer + hsd RPC)
 - **secp256k1 · bip39 · argon2 · aes-gcm · zeroize** — keys, mnemonics, vault crypto
+- **hidapi** — Ledger hardware wallet HID transport
+- **notify-rust** — cross-platform OS notifications (watchlist alerts)
 - **Tailwind CSS** — styling
