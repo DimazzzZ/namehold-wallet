@@ -1223,21 +1223,36 @@ pub async fn build_open_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
+    // Single critical section: the guard checks AND draft-insert + coin
+    // reservation share ONE MutexGuard (see the doc comment inside
+    // `build_open_draft_inner`). We grab the lock here and hand `&Connection`
+    // to the inner function.
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_open_draft_inner(&conn, &ctx, &name, fee_rate)
+}
+
+/// Pure inner logic for `build_open_draft`, testable without a Tauri
+/// `State<AppState>`. Callers must hold the DB mutex for the full duration
+/// of this call — the double-open guard + persist path is atomic under that
+/// single held guard.
+pub(crate) fn build_open_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
     let nh = names::hash_name(&name)?;
     let nh_hex = hex::encode(nh);
     let raw = names::raw_name(&name)?;
     // OPEN output goes to the next unused wallet receive address (value 0).
-    let recv = {
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        crate::noncustodial::derivation::next_unused_receive_address(
-            &conn,
-            &ctx.profile_id,
-            ctx.account,
-            ctx.network,
-            &ctx.account_xpub,
-        )?
-    };
+    let recv = crate::noncustodial::derivation::next_unused_receive_address(
+        conn,
+        &ctx.profile_id,
+        ctx.account,
+        ctx.network,
+        &ctx.account_xpub,
+    )?;
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
@@ -1252,9 +1267,9 @@ pub async fn build_open_draft(
         rate,
     )?;
 
-    // --- Single critical section: double-open guard (Task 1, mirrors the I2
+    // --- Double-open guard (Task 1, mirrors the I2
     // bid-multiplicity guard in `build_bid_draft` above) + draft insert/coin
-    // reservation, ALL under one held MutexGuard.
+    // reservation, ALL under the caller's held MutexGuard.
     //
     // Safety rule: don't let this wallet broadcast a second OPEN for a name
     // it already opened. The UI already gates this (`can_open`, which now
@@ -1271,19 +1286,14 @@ pub async fn build_open_draft(
     // `can_open` (phase != AVAILABLE) already catches; this guard only
     // stops OUR OWN duplicate broadcasts.
     //
-    // Both checks AND the write below (draft insert + coin reservation) share
-    // ONE MutexGuard — no unlock/relock in between. Without that, two
-    // concurrent calls could both pass the checks before either had written
-    // anything (classic TOCTOU); `state.db` is a plain (non-reentrant)
-    // `std::sync::Mutex`, so holding it across `persist_with_conn` (rather
-    // than calling `persist`, which would try to lock it again and deadlock)
-    // is what makes this section atomic — the second caller simply blocks on
-    // `lock()` until the first is done, then sees the first's writes and is
-    // rejected by the same checks.
-    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-
+    // Atomicity: the caller (the `#[tauri::command]` wrapper) locks the DB
+    // mutex ONCE for this whole function — no unlock/relock. Without that,
+    // two concurrent calls could both pass the checks before either had
+    // written anything (classic TOCTOU). Tests call this function directly
+    // with an owned `&Connection` (no mutex), which is fine because tests
+    // are single-threaded.
     let existing_open_coins = queries::find_unspent_covenant_utxos_by_name_hash(
-        &conn,
+        conn,
         &ctx.profile_id,
         sync::COV_OPEN as i64,
         &nh_hex,
@@ -1293,13 +1303,13 @@ pub async fn build_open_draft(
             "an auction for '{name}' is already being opened — wait for it to confirm"
         )));
     }
-    if queries::has_pending_draft_for_name(&conn, &ctx.profile_id, "open", &name)? {
+    if queries::has_pending_draft_for_name(conn, &ctx.profile_id, "open", name)? {
         return Err(AppError::InvalidInput(format!(
             "an auction for '{name}' is already being opened — wait for it to confirm"
         )));
     }
 
-    persist_with_conn(&conn, &ctx.profile_id, "open", &name, None, None, &res)
+    persist_with_conn(conn, &ctx.profile_id, "open", name, None, None, &res)
 }
 
 // --- BID -------------------------------------------------------------------
