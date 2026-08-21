@@ -1892,30 +1892,64 @@ pub async fn build_register_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let rblock = renewal_block(&client, ctx.network).await?;
-    let res_bytes = match &records {
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_register_draft_inner(
+        &conn,
+        &ctx,
+        &name,
+        records.as_deref(),
+        fee_rate,
+        &ns,
+        &coin,
+        &rblock,
+    )
+}
+
+/// Pure inner logic for `build_register_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the coin-reservation + draft persist are atomic under that
+/// single held guard.
+///
+/// The two async RPC calls (`fetch_name_state` for `ns` and `renewal_block`
+/// for `rblock`) happen in the wrapper before the lock is acquired; the
+/// owner `NameCoin` is looked up by the wrapper as well. This inner takes
+/// all three as resolved inputs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_register_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    records: Option<&[serde_json::Value]>,
+    fee_rate: Option<u64>,
+    ns: &NameState,
+    owner_coin: &queries::NameCoin,
+    renewal_block: &[u8; 32],
+) -> Result<TxDraftSummary, AppError> {
+    let rate = self::fee_rate(ctx, fee_rate);
+    let nh = names::hash_name(name)?;
+    let res_bytes = match records {
         Some(r) if !r.is_empty() => resource::encode(r)?,
-        _ => Vec::new(), // EMPTY resource
+        _ => Vec::new(), // EMPTY resource — a REGISTER with no DNS records.
     };
-    // REGISTER locks `ns.value` (the price); the rest returns as change.
+    // REGISTER locks `ns.value` (the auction's clearing price); the rest of
+    // the owner-coin value returns as change to the wallet.
     let res = actions::build_plan(
         ctx.network,
         ctx.account,
-        Some(name_input_from(coin.clone())),
+        Some(name_input_from(owner_coin.clone())),
         PrimaryOutput {
             value: ns.value,
-            address: coin.address.clone(),
-            covenant: covenants::register(&nh, ns.height, &res_bytes, &rblock),
+            address: owner_coin.address.clone(),
+            covenant: covenants::register(&nh, ns.height, &res_bytes, renewal_block),
         },
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "register", &name, None, None, &res)
+    persist_with_conn(conn, &ctx.profile_id, "register", name, None, None, &res)
 }
 
 #[tauri::command]
