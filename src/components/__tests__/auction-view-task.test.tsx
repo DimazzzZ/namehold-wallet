@@ -336,7 +336,7 @@ describe("AuctionsView — canonical table design", () => {
 describe("AuctionsView — batch-bid button", () => {
   it("batch-bid button hidden when profile is watch-only", async () => {
     const watchOnlyProfile = { ...profile, watchOnly: true };
-    const route = (cmd: string, args?: Record<string, unknown>) => {
+    const route = (cmd: string, _args?: Record<string, unknown>) => {
       if (cmd === "get_names_action_capabilities") {
         return Promise.resolve([]);
       }
