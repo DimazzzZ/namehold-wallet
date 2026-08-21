@@ -21,6 +21,7 @@ mod live_node_it;
 mod migration_tests;
 mod mock_node_rpc;
 mod name_capabilities_tests;
+mod names_action_context_tests;
 mod namebase_client_tests;
 mod namebase_cmd_tests;
 mod namebase_history_cmd_tests;
