@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import { resolve } from "path";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import pkg from "./package.json" with { type: "json" };
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -11,6 +12,13 @@ export default defineConfig({
     strictPort: true,
   },
   envPrefix: ["VITE_", "TAURI_"],
+  // Inject the version from package.json at build time so consumers (webqa
+  // mock, any future frontend-only surface) don't have to hardcode it. The
+  // real Tauri app already reads the version from the backend via the
+  // `current_version` command; this is the fallback for non-Tauri builds.
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   build: {
     target: ["es2021", "chrome100", "safari13"],
     minify: !process.env.TAURI_DEBUG ? "esbuild" : false,

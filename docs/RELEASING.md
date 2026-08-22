@@ -30,11 +30,18 @@ This creates:
 
 ## Cutting a release
 
-1. Bump the version in `src-tauri/tauri.conf.json`, `package.json`,
-   `src-tauri/Cargo.toml`, `src/components/Layout.tsx`, and
-   `src/lib/webqa-mock.ts` (`current_version`). Run `cargo check` in
-   `src-tauri/` to update `Cargo.lock`. Add a CHANGELOG entry: rename
-   `[Unreleased]` → `[X.Y.Z] - <date>` and open a fresh `[Unreleased]`.
+1. Bump the version:
+   ```bash
+   pnpm version:set X.Y.Z
+   ```
+   This updates `package.json`, `src-tauri/tauri.conf.json`, and
+   `src-tauri/Cargo.toml` in one shot, then runs `cargo check` to refresh
+   `Cargo.lock`. The frontend derives its version from these at build time
+   (backend via `CARGO_PKG_VERSION`, webqa mock via a Vite `define`), so no
+   `.tsx` file needs editing.
+
+   Then add a CHANGELOG entry: rename `[Unreleased]` → `[X.Y.Z] - <date>` and
+   open a fresh `[Unreleased]`.
 2. Commit and tag:
    ```bash
    git tag v0.X.0

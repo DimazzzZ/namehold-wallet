@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest",
-    "lint:secure-imports": "node scripts/lint-secure-imports.mjs"
+    "lint:secure-imports": "node scripts/lint-secure-imports.mjs",
+    "version:set": "node scripts/bump-version.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.0.0",
