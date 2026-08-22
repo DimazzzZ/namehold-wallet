@@ -1,11 +1,12 @@
 import { Card } from "./ui/Card";
 import { Button } from "./ui/Button";
 import { openExternal } from "../lib/openExternal";
+import { useCurrentVersion } from "../queries/updates";
 import logo from "../../src-tauri/icons/logo.png";
 
-const APP_VERSION = "0.4.0";
-
 export function AboutPage() {
+  const { data: appVersion } = useCurrentVersion();
+
   const handleGitHubClick = async () => {
     await openExternal("https://github.com/DimazzzZ/namehold-wallet/issues");
   };
@@ -21,7 +22,9 @@ export function AboutPage() {
           <h1 className="text-3xl font-bold text-gray-900">Namehold</h1>
 
           {/* Version */}
-          <div className="text-sm text-gray-500">Version {APP_VERSION}</div>
+          {appVersion && (
+            <div className="text-sm text-gray-500">Version {appVersion}</div>
+          )}
 
           {/* Description */}
           <p className="text-center text-sm text-gray-600 leading-relaxed">

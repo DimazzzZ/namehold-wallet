@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, NavLink, Outlet } from "react-router-dom";
 import { useActiveProfile, useWriteCapability } from "../queries/wallet";
+import { useCurrentVersion } from "../queries/updates";
 import { Toast } from "./ui/Toast";
 import { StatusStrip } from "./ui/StatusStrip";
 import { UpdateBanner } from "./UpdateBanner";
@@ -14,6 +15,7 @@ import { CommandPalette } from "./CommandPalette";
 export function Layout() {
   const { data: profile } = useActiveProfile();
   const { data: writeCap } = useWriteCapability();
+  const { data: appVersion } = useCurrentVersion();
 
   const network = profile?.network ?? "no wallet";
   const canWrite = writeCap?.canWrite ?? false;
@@ -65,7 +67,9 @@ export function Layout() {
         <div className="px-4 py-2 border-t border-gray-200">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-[10px] text-gray-400 mt-0.5">v0.4.1</div>
+              <div className="text-[10px] text-gray-400 mt-0.5">
+                {appVersion ? `v${appVersion}` : ""}
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <button
