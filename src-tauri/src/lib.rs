@@ -419,26 +419,30 @@ pub fn run() {
                     use tauri_plugin_updater::UpdaterExt;
                     // First check: 60s after launch (let networking settle).
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                    
+
                     // Then every 4 hours.
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(4 * 3600));
+                    let mut interval =
+                        tokio::time::interval(std::time::Duration::from_secs(4 * 3600));
                     loop {
                         interval.tick().await;
                         let state = handle.state::<AppState>();
-                        
+
                         // Check if update notifications are enabled.
                         let enabled = match state.db.lock() {
                             Ok(db) => match crate::db::queries::get_settings(&db) {
-                                Ok(settings) => settings.get("update_notify_enabled").map(String::as_str) == Some("true"),
+                                Ok(settings) => {
+                                    settings.get("update_notify_enabled").map(String::as_str)
+                                        == Some("true")
+                                }
                                 Err(_) => false,
                             },
                             Err(_) => false,
                         };
-                        
+
                         if !enabled {
                             continue;
                         }
-                        
+
                         // Check for updates.
                         let update = match handle.updater() {
                             Ok(updater) => match updater.check().await {
@@ -453,43 +457,51 @@ pub fn run() {
                                 None
                             }
                         };
-                        
+
                         if let Some(update) = update {
                             // Read last notified version from settings.
                             let last_notified = match state.db.lock() {
                                 Ok(db) => match crate::db::queries::get_settings(&db) {
-                                    Ok(settings) => settings.get("last_notified_update_version").cloned(),
+                                    Ok(settings) => {
+                                        settings.get("last_notified_update_version").cloned()
+                                    }
                                     Err(_) => None,
                                 },
                                 Err(_) => None,
                             };
-                            
+
                             let version = update.version.clone();
-                            
+
                             // Stash the checked update so the frontend's
                             // `get_pending_update_metadata` can hydrate the
                             // banner without re-checking, and `install_update`
                             // can install without a second round-trip.
                             {
-                                let pending = handle.state::<commands::updates::app_updates::PendingUpdate>();
+                                let pending =
+                                    handle.state::<commands::updates::app_updates::PendingUpdate>();
                                 *pending.0.lock().unwrap() = Some(update);
                             }
-                            
+
                             // Only notify if version changed (dedup).
                             if last_notified.as_deref() != Some(version.as_str()) {
                                 // Fire the notification.
                                 use tauri_plugin_notification::NotificationExt;
                                 let title = format!("Namehold v{version} is available");
                                 let body = "Download and install the latest version.".to_string();
-                                let _ = handle.notification()
+                                let _ = handle
+                                    .notification()
                                     .builder()
                                     .title(&title)
                                     .body(&body)
                                     .show();
-                                
+
                                 // Persist the notified version.
                                 if let Ok(db) = state.db.lock() {
-                                    let _ = crate::db::queries::set_setting(&db, "last_notified_update_version", &version);
+                                    let _ = crate::db::queries::set_setting(
+                                        &db,
+                                        "last_notified_update_version",
+                                        &version,
+                                    );
                                 }
                             }
                         }

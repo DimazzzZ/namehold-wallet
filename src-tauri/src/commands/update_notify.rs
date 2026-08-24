@@ -9,7 +9,9 @@ use tauri::State;
 pub fn is_update_notify_enabled(state: State<'_, AppState>) -> bool {
     match state.db.lock() {
         Ok(db) => match queries::get_settings(&db) {
-            Ok(settings) => settings.get("update_notify_enabled").map(String::as_str) == Some("true"),
+            Ok(settings) => {
+                settings.get("update_notify_enabled").map(String::as_str) == Some("true")
+            }
             Err(_) => false,
         },
         Err(_) => false,

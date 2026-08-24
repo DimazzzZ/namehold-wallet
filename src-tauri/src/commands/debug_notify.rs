@@ -97,7 +97,13 @@ pub async fn simulate_update_notification<R: tauri::Runtime>(
     use tauri_plugin_notification::NotificationExt;
     let title = format!("Namehold v{version} is available");
     let body = "Download and install the latest version.".to_string();
-    match app.notification().builder().title(&title).body(&body).show() {
+    match app
+        .notification()
+        .builder()
+        .title(&title)
+        .body(&body)
+        .show()
+    {
         Ok(()) => Ok(None),
         Err(e) => Ok(Some(e.to_string())),
     }
