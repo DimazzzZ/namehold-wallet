@@ -37,7 +37,7 @@ jobs:
       prerelease: ${{ steps.resolve.outputs.prerelease }}
       release_id: ${{ steps.draft.outputs.release_id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve + validate version
         id: resolve
@@ -152,7 +152,7 @@ jobs:
       # handled by the "Verify sccache backend" step below.
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Refresh apt package index (Linux)
         if: matrix.platform == 'ubuntu-22.04'
@@ -174,18 +174,23 @@ jobs:
             libwebkit2gtk-4.1-dev
             libappindicator3-dev
             librsvg2-dev
+            libsecret-1-dev
+            libudev-dev
             patchelf
             build-essential
             libssl-dev
-          # v2: bust the poisoned v1 cache (stale-index 404 dropped deps). Keep
-          # in sync with ci.yml.
-          version: "2"
+            mold
+          # v3: bust the poisoned v1 cache (stale-index 404 dropped deps) and
+          # pick up the packages added for Ledger HID (libudev-dev), the secret
+          # service (libsecret-1-dev), and faster linking (mold). Keep the
+          # package list and this version in sync with ci.yml.
+          version: "3"
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.17.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -198,7 +203,7 @@ jobs:
       # wrapper is on PATH by the time cargo runs. `mozilla/sccache-action`
       # handles per-OS binary install; the GHA backend is enabled via the
       # job-level env block above.
-      - uses: mozilla/sccache-action@v0.0.7
+      - uses: mozilla/sccache-action@v0.0.11
 
       # If the GitHub Actions Cache backend is unavailable, sccache's server
       # fails to start and — because it's RUSTC_WRAPPER — hard-fails the whole
@@ -214,7 +219,7 @@ jobs:
             echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
           fi
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: src-tauri
           # Stabilise the cache key against `Cargo.toml`/`Cargo.lock` version
@@ -292,7 +297,7 @@ jobs:
           cp "target/release/namehold-syncd${EXT}" "binaries/namehold-syncd-${TARGET_TRIPLE}${EXT}"
 
       - name: Build + upload bundles
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # --- Updater signing (required for auto-update) ---

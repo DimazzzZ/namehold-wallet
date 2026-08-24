@@ -18,13 +18,13 @@ jobs:
     name: Frontend (typecheck · build · test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.17.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -61,7 +61,7 @@ jobs:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
       RUSTFLAGS: -C link-arg=-fuse-ld=mold
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # `apt-get update` occasionally hangs on an unreachable/throttled Ubuntu
       # mirror on GitHub-hosted runners (observed on run 32168132022: this step
@@ -110,7 +110,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - uses: mozilla/sccache-action@v0.0.7
+      - uses: mozilla/sccache-action@v0.0.11
 
       # If the GitHub Actions Cache backend is unavailable, sccache's server
       # fails to start and — because it's RUSTC_WRAPPER — hard-fails the whole
@@ -127,7 +127,7 @@ jobs:
             echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
           fi
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: src-tauri
           shared-key: rust-ci
@@ -160,7 +160,7 @@ jobs:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
       RUSTFLAGS: -C link-arg=-fuse-ld=mold
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # `apt-get update` occasionally hangs on an unreachable/throttled Ubuntu
       # mirror on GitHub-hosted runners (observed on run 32168132022: the
@@ -203,7 +203,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - uses: mozilla/sccache-action@v0.0.7
+      - uses: mozilla/sccache-action@v0.0.11
 
       # If the GitHub Actions Cache backend is unavailable, sccache's server
       # fails to start and — because it's RUSTC_WRAPPER — hard-fails the whole
@@ -220,7 +220,7 @@ jobs:
             echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
           fi
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: src-tauri
           shared-key: rust-ci
@@ -265,14 +265,14 @@ jobs:
     # backlog is drained.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # --- pnpm audit (frontend) ---
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.17.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -293,7 +293,7 @@ jobs:
       # --- cargo audit (backend) ---
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: src-tauri
           shared-key: audit
