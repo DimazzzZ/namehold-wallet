@@ -84,3 +84,21 @@ pub async fn simulate_notification<R: tauri::Runtime>(
         ))),
     }
 }
+
+/// Fire a simulated "update available" notification, using the exact same
+/// title/body format as the real background update checker in `lib.rs`. Used
+/// by DebugNotificationsPanel to verify the notification on the current OS
+/// without waiting for a real release.
+#[tauri::command]
+pub async fn simulate_update_notification<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    version: String,
+) -> Result<Option<String>, AppError> {
+    use tauri_plugin_notification::NotificationExt;
+    let title = format!("Namehold v{version} is available");
+    let body = "Download and install the latest version.".to_string();
+    match app.notification().builder().title(&title).body(&body).show() {
+        Ok(()) => Ok(None),
+        Err(e) => Ok(Some(e.to_string())),
+    }
+}

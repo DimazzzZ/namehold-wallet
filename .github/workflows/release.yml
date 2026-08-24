@@ -36,6 +36,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
       release_id: ${{ steps.draft.outputs.release_id }}
+      release_notes: ${{ steps.notes.outputs.release_notes }}
     steps:
       - uses: actions/checkout@v7
 
@@ -95,6 +96,7 @@ jobs:
           echo "release_id=$RID" >> "$GITHUB_OUTPUT"
 
       - name: Set release notes from CHANGELOG.md
+        id: notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.resolve.outputs.version }}
@@ -111,15 +113,29 @@ jobs:
             found { print }
           ' CHANGELOG.md | sed '/./,$!d')"
           if [ -z "$NOTES" ]; then
-            echo "::warning::No CHANGELOG.md entry found for $VERSION — keeping auto-generated notes."
-            exit 0
+            # No CHANGELOG entry — fall back to the GitHub auto-generated notes
+            # that `--generate-notes` produced when the draft was created. This
+            # keeps `latest.json`'s `notes` field (populated downstream from the
+            # tauri-action `releaseBody` input) from ever being empty, which is
+            # what silently hid the "What's new?" button in the update banner.
+            echo "::warning::No CHANGELOG.md entry found for $VERSION — falling back to auto-generated release notes."
+            NOTES="$(gh release view "$TAG" --json body --jq .body)"
+          else
+            echo "Setting release body from CHANGELOG.md ($VERSION):"
+            echo "$NOTES" | head -5
+            echo "..."
+            # Write to a temp file to avoid shell quoting issues with special chars.
+            printf '%s\n' "$NOTES" > /tmp/release-notes.md
+            gh release edit "$TAG" --notes-file /tmp/release-notes.md
           fi
-          echo "Setting release body from CHANGELOG.md ($VERSION):"
-          echo "$NOTES" | head -5
-          echo "..."
-          # Write to a temp file to avoid shell quoting issues with special chars.
-          printf '%s\n' "$NOTES" > /tmp/release-notes.md
-          gh release edit "$TAG" --notes-file /tmp/release-notes.md
+          # Expose the resolved notes to downstream jobs so the build job can
+          # pass them to tauri-action's `releaseBody` input — that input is the
+          # sole source of `latest.json`'s `notes` field.
+          {
+            echo "release_notes<<NOTES_EOF"
+            printf '%s\n' "$NOTES"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     name: Build (${{ matrix.platform }})
@@ -311,6 +327,7 @@ jobs:
           # APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
+          releaseBody: ${{ needs.prepare.outputs.release_notes }}
           args: ${{ matrix.args }}
 
       # Surface cache effectiveness in the job log (hit rate, compile requests).

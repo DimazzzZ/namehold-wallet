@@ -25,6 +25,7 @@ pub mod sync;
 pub mod sync_spv;
 pub mod tray;
 pub mod tx;
+pub mod update_notify;
 #[cfg(desktop)]
 pub mod updates;
 pub mod watched_states;

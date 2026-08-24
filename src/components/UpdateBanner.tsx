@@ -37,6 +37,9 @@ export function UpdateBanner() {
 
   useEffect(() => {
     if (!isTauri()) return;
+    // Immediately hydrate from the Rust-side pending update (if the background
+    // loop already found one) so the banner shows without waiting 30s.
+    void useAppUpdate.getState().hydrateFromPending();
     // Delay the check so it doesn't compete with startup work (autostart hsd,
     // deadline scan, first paint). A single fire-and-forget check is enough;
     // users can re-check manually from Settings.

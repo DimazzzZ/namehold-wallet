@@ -40,6 +40,14 @@ interface AppUpdateState {
   dismiss: () => void;
   reset: () => void;
   /**
+   * Hydrate the store from the Rust-side pending update, if the background
+   * update-check loop already found one. Called on mount so the banner shows
+   * immediately when the window opens (e.g. after clicking a notification or
+   * reopening from the tray) — without waiting for the frontend's own timed
+   * check. No-op outside Tauri or when no update is pending.
+   */
+  hydrateFromPending: () => Promise<void>;
+  /**
    * DEV ONLY. Seed the store with the last GitHub release (or a synthetic
    * bumped version when offline) so the banner + Settings card show the
    * "available" notice — WITHOUT auto-installing. Clicking "Install now"
@@ -106,6 +114,21 @@ export const useAppUpdate = create<AppUpdateState>((set, get) => ({
       }
     } catch (e) {
       set({ phase: "error", error: String(e) });
+    }
+  },
+
+  hydrateFromPending: async () => {
+    if (!isTauri()) return;
+    const { phase } = get();
+    // Don't overwrite if already in a meaningful state.
+    if (phase !== "idle") return;
+    try {
+      const pending = await invoke<UpdateMetadata | null>("get_pending_update_metadata");
+      if (pending) {
+        set({ phase: "available", available: pending, simulated: false });
+      }
+    } catch {
+      // Non-fatal; the timed check will pick it up later.
     }
   },
 

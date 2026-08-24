@@ -507,6 +507,16 @@ export function Settings() {
         <WatchlistNotificationSettings form={form} updateField={updateField} />
       </div>
 
+      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-700">Update notifications</h3>
+        <div className="text-xs text-gray-500">
+          Get an OS notification when a new version of Namehold is available.
+          Checked every ~4 hours in the background, so you will be alerted even
+          when the app is hidden in the system tray.
+        </div>
+        <UpdateNotificationSettings form={form} updateField={updateField} />
+      </div>
+
       {/* Debug notifications: dev-only. Fires the app's real OS notifications
           on demand so both dispatch backends (Tauri plugin for deadlines,
           notify-rust for watchlist) can be verified visually. Compiled out
@@ -616,6 +626,71 @@ export function Settings() {
     </div>
   );
 }
+function UpdateNotificationSettings({
+  form,
+  updateField,
+}: {
+  form: Record<string, string>;
+  updateField: (key: string, value: string) => void;
+}) {
+  const [permission, setPermission] = useState<PermissionStatus | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const enabled = form.update_notify_enabled === "true";
+
+  useEffect(() => {
+    checkNotificationPermission().then(setPermission);
+  }, []);
+
+  const onToggle = async (checked: boolean) => {
+    updateField("update_notify_enabled", checked ? "true" : "false");
+    if (!checked) return;
+    setRequesting(true);
+    try {
+      const status = await requestNotificationPermission();
+      setPermission(status);
+    } finally {
+      setRequesting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => onToggle(e.target.checked)}
+          data-testid="update-notify-toggle"
+        />
+        Notify when a new version is available
+      </label>
+
+      {enabled && (
+        <>
+          {permission === "denied" && (
+            <div
+              className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2"
+              data-testid="update-notification-permission-denied"
+            >
+              OS notifications are blocked for this app. Enable them in your
+              system notification settings — otherwise you won&apos;t get an
+              alert when a new version is available.
+            </div>
+          )}
+          {permission === "unsupported" && (
+            <div className="text-xs text-gray-500">
+              OS notifications aren&apos;t available outside the desktop app.
+            </div>
+          )}
+          {requesting && (
+            <div className="text-xs text-gray-500">Requesting permission…</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 
 /**
  * Dev-only debug panel: one button per real notification kind. Each button
@@ -646,6 +721,7 @@ const SIM_KINDS: Array<{ kind: SimKind; label: string; family: "Deadline" | "Wat
 function DebugNotificationsPanel() {
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<SimKind | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
 
   const fire = async (kind: SimKind) => {
     setBusy(kind);
@@ -671,6 +747,30 @@ function DebugNotificationsPanel() {
     }
   };
 
+  const fireUpdate = async () => {
+    setUpdateBusy(true);
+    setStatus(null);
+    try {
+      const perm = await requestNotificationPermission();
+      if (perm === "denied") {
+        setStatus(`Permission denied — enable OS notifications for this app.`);
+        return;
+      }
+      const deliveryError = await invoke<string | null>("simulate_update_notification", {
+        version: "9.9.9-test",
+      });
+      if (deliveryError) {
+        setStatus(`Delivery error: ${deliveryError}`);
+      } else {
+        setStatus(`Fired: update available`);
+      }
+    } catch (e) {
+      setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-2">
@@ -687,6 +787,16 @@ function DebugNotificationsPanel() {
             </span>
           </Button>
         ))}
+        <Button
+          variant="secondary"
+          onClick={() => fireUpdate()}
+          disabled={busy !== null || updateBusy}
+          data-testid="sim-notify-update"
+        >
+          <span className="text-xs">
+            <span className="text-gray-400">[Update]</span> New version available
+          </span>
+        </Button>
       </div>
       {status && (
         <div

@@ -361,6 +361,13 @@ export interface Settings {
    * doos/kvB). Empty / missing means "use backend default" (1 sat/byte).
    */
   fee_rate_doos_per_kvb: string;
+  /**
+   * "true" | "false" — OS notifications when a new app version is available
+   * (I2). Opt-in; default off. When enabled, the Rust background loop checks
+   * for updates every ~4 hours and fires an OS notification if one is found,
+   * deduped against `last_notified_update_version`.
+   */
+  update_notify_enabled?: string;
 }
 
 // ---------------------------------------------------------------------------

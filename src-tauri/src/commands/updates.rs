@@ -129,6 +129,16 @@ pub mod app_updates {
         app.package_info().version.to_string()
     }
 
+    /// Get the pending update metadata (if any) without re-checking. Used by
+    /// the frontend to hydrate the update banner on mount when the Rust
+    /// background loop has already found an update.
+    #[tauri::command]
+    pub fn get_pending_update_metadata(
+        pending: State<'_, PendingUpdate>,
+    ) -> Option<UpdateMetadata> {
+        pending.0.lock().unwrap().as_ref().map(update_metadata)
+    }
+
     /// Map a plugin `Update` to the wire metadata. Split out for unit testing
     /// the field mapping without needing a live `Update` (which can't be
     /// constructed in tests).
