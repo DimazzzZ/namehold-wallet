@@ -911,4 +911,27 @@ mod tests {
             "sign-phase 0x6985 should be UserRejected, got: {err:?}"
         );
     }
+
+    // --- Coverage-driven tests: hex_to_32 error branches ---
+
+    /// `hex_to_32` rejects non-hex input.
+    #[test]
+    fn hex_to_32_rejects_invalid_hex() {
+        let err = hex_to_32("not-valid-hex-string!!").unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(ref m) if m.contains("bad txid hex")),
+            "got {err:?}"
+        );
+    }
+
+    /// `hex_to_32` rejects valid hex that decodes to the wrong length.
+    #[test]
+    fn hex_to_32_rejects_wrong_length() {
+        // "aabb" decodes to 2 bytes, not 32.
+        let err = hex_to_32("aabb").unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(ref m) if m.contains("32 bytes")),
+            "got {err:?}"
+        );
+    }
 }
