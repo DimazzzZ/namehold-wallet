@@ -362,4 +362,42 @@ mod tests {
         assert_ne!(info.owner_pid, 99999);
         assert_eq!(info.owner_type, "app");
     }
+
+    // --- Coverage-driven tests ---
+
+    /// All public functions surface a `Db` error (rather than panicking) when
+    /// the `sync_locks` table is missing.
+    #[test]
+    fn functions_propagate_db_error_when_table_missing() {
+        use crate::error::AppError;
+        let conn = Connection::open_in_memory().unwrap();
+        // No migrations → no sync_locks table.
+
+        assert!(matches!(
+            try_acquire(&conn, "p1", LockOwnerType::App),
+            Err(AppError::Db(_))
+        ));
+        assert!(matches!(
+            refresh_heartbeat(&conn, "p1"),
+            Err(AppError::Db(_))
+        ));
+        assert!(matches!(release(&conn, "p1"), Err(AppError::Db(_))));
+        assert!(matches!(release_all_owned(&conn), Err(AppError::Db(_))));
+        assert!(matches!(
+            acquire_for_app(&conn, "p1"),
+            Err(AppError::Db(_))
+        ));
+    }
+
+    /// `acquire_for_app` inserts a new lock row when no lock exists for the
+    /// profile (covers the None branch at line 206).
+    #[test]
+    fn acquire_for_app_inserts_when_no_lock_exists() {
+        let conn = setup_db();
+        // No lock for "p1" yet.
+        assert!(acquire_for_app(&conn, "p1").unwrap());
+        let info = get_lock_info(&conn, "p1").unwrap().unwrap();
+        assert_eq!(info.owner_pid, std::process::id());
+        assert_eq!(info.owner_type, "app");
+    }
 }
