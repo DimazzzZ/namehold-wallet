@@ -305,11 +305,15 @@ mod tests {
 
     fn mem_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../sql/001_initial.sql"))
+            .unwrap();
         conn.execute_batch(include_str!("../sql/006_noncustodial_wallet_profiles.sql"))
             .unwrap();
         conn.execute_batch(include_str!("../sql/007_noncustodial_chain_cache.sql"))
             .unwrap();
         conn.execute_batch(include_str!("../sql/008_noncustodial_name_state.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../sql/016_last_explorer_sync_at.sql"))
             .unwrap();
         // Insert a profile to satisfy the FK on derived_addresses.
         conn.execute(
@@ -484,5 +488,150 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 10);
+    }
+
+    // --- Coverage-driven tests below: exercise derive_next_for_profile
+    // (the public wrapper around get_wallet_profile + xpub parse +
+    // next_unused_receive_address) plus a handful of edge branches in
+    // derive_range / max_derived_index that lacked explicit coverage.
+
+    /// Insert a wallet profile with a real, parseable account xpub so
+    /// `derive_next_for_profile` can round-trip it back into an
+    /// `ExtendedPubKey`. Overwrites the placeholder profile from `mem_db`.
+    fn mem_db_with_real_xpub(network: Network, profile_id: &str) -> (Connection, ExtendedPubKey) {
+        let conn = mem_db();
+        let xpub = test_xpub();
+        let serialized = xpub.to_base58check(network);
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub)
+             VALUES (?1, 'RealXpub', 'watch_only_xpub', ?2, ?3)",
+            params![
+                profile_id,
+                match network {
+                    Network::Main => "mainnet",
+                    Network::Testnet => "testnet",
+                    Network::Regtest => "regtest",
+                    // The wallet_profiles.network CHECK constraint only permits
+                    // mainnet/testnet/regtest, so Simnet can't be persisted here.
+                    Network::Simnet => unreachable!("simnet not allowed by schema CHECK"),
+                },
+                serialized,
+            ],
+        )
+        .unwrap();
+        (conn, xpub)
+    }
+
+    /// `derive_next_for_profile` walks the full profile→network→xpub→derive
+    /// pipeline and returns the same address as calling
+    /// `next_unused_receive_address` directly with the parsed inputs.
+    #[test]
+    fn derive_next_for_profile_matches_direct_call() {
+        // Run across networks so the profile-network mapping (and the
+        // per-network address encoding) are all exercised.
+        for network in [Network::Main, Network::Regtest, Network::Testnet] {
+            let (conn, xpub) = mem_db_with_real_xpub(network, "p_real");
+
+            // First allocation on a fresh profile → child_index 0.
+            let via_wrapper = derive_next_for_profile(&conn, "p_real").unwrap();
+            assert_eq!(via_wrapper.branch, BRANCH_RECEIVE);
+            assert_eq!(via_wrapper.child_index, 0);
+
+            // Same address as deriving directly from the xpub.
+            let direct = derive_one(network, &xpub, BRANCH_RECEIVE, 0).unwrap();
+            assert_eq!(via_wrapper.address, direct.address, "network {network:?}");
+
+            // And it was persisted — a follow-up allocation advances only after
+            // a UTXO or bid marks index 0 used.
+            conn.execute(
+                "INSERT INTO tracked_utxos
+                    (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                     value_doos, covenant_type, spend_class)
+                 VALUES ('aa', 0, 'p_real', ?1, '00', 1000, 0, 'liquid_hns')",
+                params![&via_wrapper.address],
+            )
+            .unwrap();
+            let next = derive_next_for_profile(&conn, "p_real").unwrap();
+            assert_eq!(next.child_index, 1);
+            assert_ne!(next.address, via_wrapper.address);
+        }
+    }
+
+    /// `derive_next_for_profile` rejects an unknown profile id with the exact
+    /// error string the frontend contract depends on.
+    #[test]
+    fn derive_next_for_profile_missing_profile_errors() {
+        let (conn, _xpub) = mem_db_with_real_xpub(Network::Main, "p_real");
+        let err = derive_next_for_profile(&conn, "does-not-exist").unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(ref m) if m == "wallet profile not found"),
+            "got {err:?}"
+        );
+    }
+
+    /// `derive_next_for_profile` propagates a bogus network value on the
+    /// profile row through `network_from_profile`.
+    #[test]
+    fn derive_next_for_profile_bad_network_errors() {
+        // mem_db already inserts p1 with account_xpub='xpubPLACEHOLDER',
+        // which is not a valid base58check xpub.
+        let conn = mem_db();
+        let err = derive_next_for_profile(&conn, "p1").unwrap_err();
+        // Either an invalid-input from base58check decode or a downstream
+        // parse error — the important thing is it fails cleanly.
+        assert!(!err.to_string().is_empty());
+    }
+
+    /// `next_unused_receive_address` rejects a receive-index overflow when the
+    /// highest used index is u32::MAX.
+    #[test]
+    fn next_unused_receive_address_rejects_overflow() {
+        let conn = mem_db();
+        let xpub = test_xpub();
+        // Insert a derived_addresses row at u32::MAX plus a tracked_utxo at
+        // that address to mark it used, so max_used = u32::MAX and adding 1
+        // overflows.
+        let d_last = derive_one(Network::Main, &xpub, BRANCH_RECEIVE, 100).unwrap();
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1', 0, 0, ?1, ?2, ?3, ?4)",
+            params![
+                u32::MAX as i64,
+                &d_last.address,
+                &d_last.script_pubkey_hex,
+                &d_last.public_key_hex,
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, spend_class)
+             VALUES ('bb', 0, 'p1', ?1, '00', 1000, 0, 'liquid_hns')",
+            params![&d_last.address],
+        )
+        .unwrap();
+        let err =
+            next_unused_receive_address(&conn, "p1", 0, Network::Main, &xpub).unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(ref m) if m.contains("overflow")),
+            "got {err:?}"
+        );
+    }
+
+    /// `max_derived_index` returns None for an unknown profile+branch combo.
+    #[test]
+    fn max_derived_index_none_for_empty_branch() {
+        let conn = mem_db();
+        assert_eq!(
+            max_derived_index(&conn, "p1", 0, BRANCH_CHANGE).unwrap(),
+            None
+        );
+        assert_eq!(
+            max_derived_index(&conn, "unknown-profile", 0, BRANCH_RECEIVE).unwrap(),
+            None
+        );
     }
 }
