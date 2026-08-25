@@ -422,4 +422,63 @@ mod tests {
             "missing name should be Protocol error, got: {err:?}"
         );
     }
+
+    // --- Coverage-driven tests below: exercise guard branches in
+    // build_parse_blob for change path depth, txid parsing, and covenant support.
+
+    /// `build_parse_blob` rejects a change path deeper than 10 levels.
+    #[test]
+    fn parse_blob_rejects_change_path_too_deep() {
+        let plan = simple_send_plan();
+        let change = ChangeInfo {
+            output_index: 0,
+            address_version: 0,
+            path: vec![0u32; 11], // 11 levels, exceeds max 10
+        };
+        let err = build_parse_blob(&plan, Network::Main, Some(&change), &[]).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("too deep")),
+            "got {err:?}"
+        );
+    }
+
+    /// `build_parse_blob` rejects an input with malformed (non-hex) txid.
+    #[test]
+    fn parse_blob_rejects_malformed_txid_hex() {
+        let mut plan = simple_send_plan();
+        plan.inputs[0].txid = "not-valid-hex".to_string();
+        let err = build_parse_blob(&plan, Network::Main, None, &[]).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("bad input txid hex")),
+            "got {err:?}"
+        );
+    }
+
+    /// `build_parse_blob` rejects an input with txid that decodes to the wrong length.
+    #[test]
+    fn parse_blob_rejects_wrong_length_txid() {
+        let mut plan = simple_send_plan();
+        // "aabb" decodes to 2 bytes, not 32.
+        plan.inputs[0].txid = "aabb".to_string();
+        let err = build_parse_blob(&plan, Network::Main, None, &[]).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("32 bytes")),
+            "got {err:?}"
+        );
+    }
+
+    /// `build_parse_blob` rejects an output with an unsupported covenant type.
+    #[test]
+    fn parse_blob_rejects_unsupported_covenant_type() {
+        let mut plan = simple_send_plan();
+        // Use a covenant type that is not supported by the Ledger app.
+        // Supported types are defined in covenant_serializer::is_supported.
+        // Use type 255 which is almost certainly not supported.
+        plan.outputs[0].covenant_type = 255;
+        let err = build_parse_blob(&plan, Network::Main, None, &[]).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("unsupported covenant type")),
+            "got {err:?}"
+        );
+    }
 }
