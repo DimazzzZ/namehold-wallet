@@ -156,6 +156,18 @@ mod tests {
         assert!(write_name_marker(&mut out, "exãmple").is_err());
     }
 
+    /// `write_name_marker` rejects names longer than 255 bytes.
+    #[test]
+    fn name_marker_rejects_too_long() {
+        let long_name = "a".repeat(256);
+        let mut out = Vec::new();
+        let err = write_name_marker(&mut out, &long_name).unwrap_err();
+        assert!(
+            matches!(err, AppError::Protocol(ref m) if m.contains("too long")),
+            "got {err:?}"
+        );
+    }
+
     #[test]
     fn claim_is_unsupported() {
         assert!(!is_supported(1)); // COV_CLAIM
