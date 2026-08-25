@@ -139,6 +139,22 @@ fn derive_key(
 
 /// Encrypt `plaintext` (e.g. the mnemonic bytes) under `passphrase`, returning
 /// the self-describing vault blob. Always writes the current NHV2 format.
+///
+/// # Examples
+///
+/// ```
+/// use namehold_wallet_lib::noncustodial::vault::{encrypt, decrypt};
+/// let blob = encrypt(b"my secret seed", "correct horse battery staple").unwrap();
+/// let out = decrypt(&blob, "correct horse battery staple").unwrap();
+/// assert_eq!(out, b"my secret seed");
+/// ```
+///
+/// An empty passphrase is rejected:
+///
+/// ```
+/// use namehold_wallet_lib::noncustodial::vault::encrypt;
+/// assert!(encrypt(b"seed", "").is_err());
+/// ```
 pub fn encrypt(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, AppError> {
     if passphrase.is_empty() {
         return Err(AppError::InvalidInput(
@@ -181,6 +197,17 @@ pub fn encrypt(plaintext: &[u8], passphrase: &str) -> Result<Vec<u8>, AppError> 
 ///
 /// Returns `AppError::Crypto` on a wrong passphrase or tampered blob (GCM auth
 /// failure is indistinguishable from a wrong key, by design).
+///
+/// # Examples
+///
+/// ```
+/// use namehold_wallet_lib::noncustodial::vault::{encrypt, decrypt};
+/// let blob = encrypt(b"top secret", "hunter2").unwrap();
+/// // The right passphrase recovers the plaintext...
+/// assert_eq!(decrypt(&blob, "hunter2").unwrap(), b"top secret");
+/// // ...and a wrong one fails.
+/// assert!(decrypt(&blob, "wrong").is_err());
+/// ```
 pub fn decrypt(blob: &[u8], passphrase: &str) -> Result<Vec<u8>, AppError> {
     if blob.len() < 4 {
         return Err(AppError::Crypto("vault blob too short".into()));
@@ -380,5 +407,210 @@ mod tests {
     fn unknown_magic_rejected() {
         let blob = b"NHV9\x00\x00\x00\x00";
         assert!(decrypt(blob, "p").is_err());
+    }
+
+    // --- Coverage-driven tests below: exercise the guard branches in
+    // decrypt()/parse_v1()/parse_v2() that were previously unreachable via the
+    // higher-level tests (lines 186 / 213 / 218 / 252 of the module) plus the
+    // remaining parse_v2 bounds-check arms. Each test targets a specific
+    // rejection path so a regression in one branch fails a named test.
+
+    /// Line 186: `decrypt` rejects a blob shorter than the 4-byte magic prefix
+    /// before it ever looks at the magic. Guards against out-of-bounds panic.
+    #[test]
+    fn decrypt_blob_shorter_than_magic_rejected() {
+        for size in 0..4 {
+            let blob = vec![0u8; size];
+            let err = decrypt(&blob, "p").unwrap_err();
+            assert!(
+                matches!(err, AppError::Crypto(ref m) if m.contains("too short")),
+                "size={size} got {err:?}"
+            );
+        }
+    }
+
+    /// Line 213: `parse_v1` rejects an NHV1 blob that has the 4-byte magic but
+    /// no salt-length byte after it.
+    #[test]
+    fn v1_header_missing_salt_len_rejected() {
+        // Exactly 4 bytes (magic only, no salt_len byte).
+        let blob = *MAGIC_V1;
+        let err = decrypt(&blob, "p").unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("too short")),
+            "got {err:?}"
+        );
+    }
+
+    /// Line 218: `parse_v1` rejects a body truncated at the salt/nonce
+    /// boundary — declared salt_len is larger than the remaining bytes.
+    #[test]
+    fn v1_truncated_body_rejected() {
+        // magic(4) | salt_len=16 | only 5 bytes of salt (no nonce, no ct)
+        let mut blob = Vec::new();
+        blob.extend_from_slice(MAGIC_V1);
+        blob.push(16); // claims 16-byte salt
+        blob.extend_from_slice(&[0u8; 5]); // only 5 bytes follow
+        let err = decrypt(&blob, "p").unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("truncated")),
+            "got {err:?}"
+        );
+    }
+
+    /// Line 252: `parse_v2` rejects a body truncated after the params header
+    /// and salt_len byte — salt/nonce region shorter than declared.
+    #[test]
+    fn v2_truncated_body_after_salt_len_rejected() {
+        // Full v2 header (magic + mem + iters + lanes + salt_len=16) but only
+        // 5 bytes of body — declared salt+nonce (16+12=28) don't fit.
+        let mut blob = Vec::new();
+        blob.extend_from_slice(MAGIC_V2);
+        blob.extend_from_slice(&V2_MEM_KIB.to_le_bytes());
+        blob.extend_from_slice(&V2_ITERS.to_le_bytes());
+        blob.extend_from_slice(&V2_LANES.to_le_bytes());
+        blob.push(16); // claims 16-byte salt
+        blob.extend_from_slice(&[0u8; 5]); // only 5 bytes follow
+        let err = decrypt(&blob, "p").unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("truncated")),
+            "got {err:?}"
+        );
+    }
+
+    /// `parse_v2` rejects `iters > MAX_ITERS` — the existing
+    /// `v2_out_of_range_params_rejected` test only covers the mem_kib branch,
+    /// so this pins the iters bound independently.
+    #[test]
+    fn v2_iters_above_max_rejected() {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(MAGIC_V2);
+        blob.extend_from_slice(&V2_MEM_KIB.to_le_bytes());
+        blob.extend_from_slice(&(MAX_ITERS + 1).to_le_bytes());
+        blob.extend_from_slice(&V2_LANES.to_le_bytes());
+        blob.push(16);
+        blob.extend_from_slice(&[0u8; 16]);
+        blob.extend_from_slice(&[0u8; NONCE_LEN]);
+        blob.extend_from_slice(&[0u8; 32]);
+        let err = decrypt(&blob, "p").unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("out of range")),
+            "got {err:?}"
+        );
+    }
+
+    /// `parse_v2` rejects `lanes == 0` — Argon2 requires at least 1 lane; a
+    /// tampered blob claiming zero parallelism must be rejected before Argon2
+    /// sees it.
+    #[test]
+    fn v2_lanes_zero_rejected() {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(MAGIC_V2);
+        blob.extend_from_slice(&V2_MEM_KIB.to_le_bytes());
+        blob.extend_from_slice(&V2_ITERS.to_le_bytes());
+        blob.extend_from_slice(&0u32.to_le_bytes()); // lanes = 0
+        blob.push(16);
+        blob.extend_from_slice(&[0u8; 16]);
+        blob.extend_from_slice(&[0u8; NONCE_LEN]);
+        blob.extend_from_slice(&[0u8; 32]);
+        let err = decrypt(&blob, "p").unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("out of range")),
+            "got {err:?}"
+        );
+    }
+
+    /// `parse_v2` rejects `lanes > MAX_LANES`.
+    #[test]
+    fn v2_lanes_above_max_rejected() {
+        let mut blob = Vec::new();
+        blob.extend_from_slice(MAGIC_V2);
+        blob.extend_from_slice(&V2_MEM_KIB.to_le_bytes());
+        blob.extend_from_slice(&V2_ITERS.to_le_bytes());
+        blob.extend_from_slice(&(MAX_LANES + 1).to_le_bytes());
+        blob.push(16);
+        blob.extend_from_slice(&[0u8; 16]);
+        blob.extend_from_slice(&[0u8; NONCE_LEN]);
+        blob.extend_from_slice(&[0u8; 32]);
+        let err = decrypt(&blob, "p").unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("out of range")),
+            "got {err:?}"
+        );
+    }
+
+    /// A single-byte plaintext roundtrips — smallest legal payload.
+    #[test]
+    fn encrypt_single_byte_roundtrip() {
+        let blob = encrypt(b"x", "p").expect("encrypt");
+        assert_eq!(decrypt(&blob, "p").expect("decrypt"), b"x");
+    }
+
+    /// A 1 KiB plaintext roundtrips — larger than any conceivable seed, useful
+    /// for confirming the AES-GCM streaming path handles multi-block input.
+    #[test]
+    fn encrypt_large_plaintext_roundtrip() {
+        let secret: Vec<u8> = (0..1024).map(|i| i as u8).collect();
+        let blob = encrypt(&secret, "p").expect("encrypt");
+        let out = decrypt(&blob, "p").expect("decrypt");
+        assert_eq!(out, secret);
+        // Ciphertext must not contain the plaintext pattern.
+        assert!(!blob.windows(secret.len()).any(|w| w == secret.as_slice()));
+    }
+
+    /// Empty plaintext roundtrips — AES-GCM permits zero-length messages
+    /// (the auth tag is still produced).
+    #[test]
+    fn encrypt_empty_plaintext_roundtrip() {
+        let blob = encrypt(b"", "p").expect("encrypt empty");
+        assert_eq!(decrypt(&blob, "p").expect("decrypt empty"), b"");
+    }
+
+    /// Same passphrase + a *different* plaintext still produces a valid
+    /// roundtrip and a different blob (nonce/salt randomness carries).
+    #[test]
+    fn different_plaintexts_same_passphrase_roundtrip() {
+        let a = encrypt(b"aaaa", "p").expect("a");
+        let b = encrypt(b"bbbb", "p").expect("b");
+        assert_ne!(a, b);
+        assert_eq!(decrypt(&a, "p").unwrap(), b"aaaa");
+        assert_eq!(decrypt(&b, "p").unwrap(), b"bbbb");
+    }
+
+    /// A blob with tampered *nonce* fails decryption (GCM auth binds to nonce
+    /// so any change breaks the tag).
+    #[test]
+    fn tampered_nonce_fails() {
+        let mut blob = encrypt(b"seed", "p").expect("encrypt");
+        // NHV2 nonce sits at offset 4+4+4+4+1+salt_len = 17+16 = 33..45.
+        // salt_len is stored at offset 16 and is 16 in encrypt().
+        assert_eq!(blob[16], 16, "salt_len should be 16 in encrypt()");
+        blob[33] ^= 0x01; // flip a bit in the nonce
+        assert!(decrypt(&blob, "p").is_err());
+    }
+
+    /// A blob with tampered *embedded Argon2 params* fails — the key derived
+    /// from the tampered params doesn't match the encryption key, so GCM auth
+    /// fails. (Also validates that we don't panic on plausibly-shaped but
+    /// semantically wrong params still inside the accepted bounds.)
+    #[test]
+    fn tampered_v2_params_fail_auth() {
+        let mut blob = encrypt(b"seed", "p").expect("encrypt");
+        // Bump iters from V2_ITERS to V2_ITERS+1 (still within MAX_ITERS).
+        let new_iters = (V2_ITERS + 1).to_le_bytes();
+        blob[8..12].copy_from_slice(&new_iters);
+        let err = decrypt(&blob, "p").unwrap_err();
+        assert!(matches!(err, AppError::Crypto(_)), "got {err:?}");
+    }
+
+    /// InvalidInput variant carries the empty-passphrase message — pins the
+    /// error variant, not just its is_err() shape.
+    #[test]
+    fn empty_passphrase_returns_invalid_input_variant() {
+        let err = encrypt(b"seed", "").unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(ref m) if m.contains("passphrase")),
+            "got {err:?}"
+        );
     }
 }
