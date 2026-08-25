@@ -201,6 +201,10 @@ pub fn decrypt_cookie(blob_hex: &str) -> Result<Vec<u8>, AppError> {
 mod tests {
     use super::*;
 
+    /// Serializes all tests that mutate the process-global `TEST_DEK` slot so
+    /// they don't race each other under cargo's parallel test runner.
+    static DEK_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     // A fixed DEK for pure-crypto tests. These tests exercise the crypto
     // envelope directly (bypassing the OS keyring), so they never touch the
     // real Keychain/Credential-Manager/Secret-Service on the test host.
@@ -299,7 +303,85 @@ mod tests {
         // `#[cfg(any(test, debug_assertions))]` attribute on the item, not by
         // this test: a `--release` build has `debug_assertions` off, so the
         // function and its backing slot are not compiled at all.
+        let _held = DEK_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         set_test_dek(Some(vec![0u8; DEK_LEN]));
+        set_test_dek(None);
+    }
+
+    // --- Coverage-driven tests below: exercise the decrypt_with_dek guard
+    // branches (short blob, wrong dek length) and the test-DEK override path
+    // in get_or_create_dek via the public encrypt_cookie/decrypt_cookie API.
+
+    /// `decrypt_with_dek` rejects a blob that decodes to fewer than
+    /// 4 + NONCE_LEN (16) bytes — the earlier `decrypt_rejects_truncated_blob`
+    /// test only trims 5 bytes off a longer blob, so this pins the explicit
+    /// length guard.
+    #[test]
+    fn decrypt_rejects_blob_shorter_than_header() {
+        let dek = test_dek();
+        // 15 bytes = magic(4) + only 11 of the 12 nonce bytes → too short.
+        let short = hex::encode([0u8; 15]);
+        let err = decrypt_with_dek(&short, &dek).unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("too short")),
+            "got {err:?}"
+        );
+    }
+
+    /// `decrypt_with_dek` rejects a DEK of the wrong length, independently of
+    /// the encrypt-side check.
+    #[test]
+    fn decrypt_rejects_wrong_dek_length() {
+        let dek = test_dek();
+        // Produce a well-formed blob first, then try to decrypt with a short DEK.
+        let blob_hex = encrypt_with_dek(b"cookie", &dek).expect("encrypt");
+        let err = decrypt_with_dek(&blob_hex, &[0u8; 16]).unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("dek must be")),
+            "got {err:?}"
+        );
+    }
+
+    /// `decrypt_with_dek` rejects a hex string that isn't valid hex.
+    #[test]
+    fn decrypt_rejects_invalid_hex() {
+        let dek = test_dek();
+        let err = decrypt_with_dek("zzzz not hex", &dek).unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("hex decode")),
+            "got {err:?}"
+        );
+    }
+
+    /// The public `encrypt_cookie` / `decrypt_cookie` round-trip works when a
+    /// test DEK is installed — this exercises the `set_test_dek` early-return
+    /// branch in `get_or_create_dek` (line 154) and the DEK-zeroize wrappers
+    /// without touching the OS keyring.
+    ///
+    /// Serialized (not `#[serial]`, which isn't a dep here) via a module mutex
+    /// so it doesn't race other tests that toggle the shared TEST_DEK slot.
+    #[test]
+    fn public_cookie_roundtrip_with_test_dek() {
+        let _held = DEK_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+
+        set_test_dek(Some(test_dek()));
+        let plaintext = b"session=xyz; secure; httponly";
+        let blob_hex = encrypt_cookie(plaintext).expect("encrypt_cookie");
+        assert!(blob_hex.starts_with("4e424331"), "magic prefix");
+        let out = decrypt_cookie(&blob_hex).expect("decrypt_cookie");
+        assert_eq!(out, plaintext);
+        set_test_dek(None);
+    }
+
+    /// `encrypt_cookie` propagates the empty-plaintext rejection through the
+    /// public API (with a test DEK installed).
+    #[test]
+    fn public_encrypt_cookie_rejects_empty() {
+        let _held = DEK_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+
+        set_test_dek(Some(test_dek()));
+        let err = encrypt_cookie(b"").unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
         set_test_dek(None);
     }
 }
