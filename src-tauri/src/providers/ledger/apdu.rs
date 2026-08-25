@@ -455,4 +455,116 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].data.len(), MAX_APDU_DATA);
     }
+
+    // --- Coverage-driven tests below: exercise guard branches in
+    // network_flag, to_raw, encode_path, parse_public_key, and Cursor.
+
+    /// `network_flag` returns the correct P1 byte for each network variant.
+    #[test]
+    fn network_flag_all_variants() {
+        use crate::noncustodial::network::Network;
+        assert_eq!(network_flag(Network::Main), NET_FLAG_MAIN);
+        assert_eq!(network_flag(Network::Testnet), NET_FLAG_TESTNET);
+        assert_eq!(network_flag(Network::Regtest), NET_FLAG_REGTEST);
+        assert_eq!(network_flag(Network::Simnet), NET_FLAG_SIMNET);
+    }
+
+    /// `ApduCommand::to_raw` rejects data exceeding 255 bytes.
+    #[test]
+    fn to_raw_rejects_oversized_data() {
+        let cmd = ApduCommand {
+            cla: CLA_GENERAL,
+            ins: INS_GET_APP_VERSION,
+            p1: 0,
+            p2: 0,
+            data: vec![0u8; 256],
+        };
+        let err = cmd.to_raw().unwrap_err();
+        assert!(
+            matches!(err, AppError::Protocol(ref m) if m.contains("too long")),
+            "got {err:?}"
+        );
+    }
+
+    /// `encode_path` rejects paths deeper than 10 levels.
+    #[test]
+    fn encode_path_rejects_too_deep() {
+        let path = [0u32; 11];
+        let err = encode_path(&path).unwrap_err();
+        assert!(
+            matches!(err, AppError::Protocol(ref m) if m.contains("too deep")),
+            "got {err:?}"
+        );
+    }
+
+    /// `parse_public_key` handles an unexpected (non-0, non-32) chain_code
+    /// length by skipping those bytes and returning `None`.
+    #[test]
+    fn parse_public_key_unexpected_cc_length() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0x02; 33]); // pubkey
+        body.push(5); // cc_len = 5 (not 0 or 32)
+        body.extend_from_slice(&[0xCC; 5]); // 5 bytes to skip
+        body.push(0); // fp_len = 0
+        let parsed = parse_public_key(&body).unwrap();
+        assert!(parsed.chain_code.is_none());
+        assert!(parsed.parent_fingerprint.is_none());
+        assert!(parsed.address.is_none());
+    }
+
+    /// `parse_public_key` handles an unexpected (non-0, non-4) fingerprint
+    /// length by skipping those bytes and returning `None`.
+    #[test]
+    fn parse_public_key_unexpected_fp_length() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0x02; 33]); // pubkey
+        body.push(0); // cc_len = 0
+        body.push(2); // fp_len = 2 (not 0 or 4)
+        body.extend_from_slice(&[0xFF; 2]); // 2 bytes to skip
+        let parsed = parse_public_key(&body).unwrap();
+        assert!(parsed.chain_code.is_none());
+        assert!(parsed.parent_fingerprint.is_none());
+        assert!(parsed.address.is_none());
+    }
+
+    /// `parse_public_key` returns `address = None` when `addr_len` is 0.
+    #[test]
+    fn parse_public_key_zero_length_address() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0x02; 33]); // pubkey
+        body.push(32); // cc_len = 32
+        body.extend_from_slice(&[0xAB; 32]); // chain_code
+        body.push(4); // fp_len = 4
+        body.extend_from_slice(&0xDEAD_BEEFu32.to_be_bytes());
+        body.push(0); // addr_len = 0
+        let parsed = parse_public_key(&body).unwrap();
+        assert!(parsed.chain_code.is_some());
+        assert_eq!(parsed.parent_fingerprint, Some(0xDEAD_BEEF));
+        assert!(parsed.address.is_none());
+    }
+
+    /// `Cursor::take` returns an error when the buffer is too short.
+    #[test]
+    fn cursor_take_truncated() {
+        let buf = [0u8; 4];
+        let mut cur = Cursor::new(&buf);
+        assert!(cur.take(4).is_ok());
+        let err = cur.take(1).unwrap_err();
+        assert!(
+            matches!(err, AppError::Device(ref m) if m.contains("truncated")),
+            "got {err:?}"
+        );
+    }
+
+    /// `Cursor::take` fails immediately on an empty buffer.
+    #[test]
+    fn cursor_take_empty_buffer() {
+        let buf: &[u8] = &[];
+        let mut cur = Cursor::new(buf);
+        let err = cur.take(1).unwrap_err();
+        assert!(
+            matches!(err, AppError::Device(ref m) if m.contains("truncated")),
+            "got {err:?}"
+        );
+    }
 }
