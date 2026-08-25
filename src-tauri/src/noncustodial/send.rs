@@ -680,6 +680,99 @@ mod tests {
         assert!(matches!(err, AppError::InvalidInput(_)));
     }
 
+    /// When the leftover after `amount + fee_no_change` is too small to fund a
+    /// change output (i.e. `input_total` sits in the window
+    /// `[amount + fee_no_change, amount + fee_with_change)`), `select_coins`
+    /// returns a no-change selection and folds the remainder into the fee.
+    #[test]
+    fn select_coins_no_change_when_remainder_below_change_output_cost() {
+        let amount = 100_000u64;
+        let fee_no_change = estimate_fee(1, 1, 1); // 183
+        let fee_with_change = estimate_fee(1, 2, 1); // 215
+        // Pick input_total strictly inside [amount+fee_no_change, amount+fee_with_change).
+        let input_total = amount + fee_no_change + 5;
+        assert!(input_total < amount + fee_with_change);
+        let coins = vec![coin(1, input_total, 0, 0)];
+
+        let sel = select_coins(&coins, amount, 1).expect("selection");
+        assert_eq!(sel.change, 0, "no change output in this window");
+        assert_eq!(sel.fee, input_total - amount, "remainder folded into fee");
+        assert_eq!(sel.input_total, amount + sel.fee);
+    }
+
+    /// `select_all_coins` rejects an empty coin set.
+    #[test]
+    fn select_all_coins_rejects_empty_available() {
+        let err = select_all_coins(&[], 1).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
+    }
+
+    /// `build_send` with `max = true` sweeps every coin into one recipient
+    /// output (no change) and the recipient amount is `input_total - fee`.
+    #[test]
+    fn build_send_max_sweeps_all_coins() {
+        let mut session = test_session();
+        let addr = "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx";
+        let coins = vec![coin(1, 1_000_000, 0, 0), coin(2, 500_000, 0, 1)];
+        let built = build_send(
+            &mut session,
+            Network::Main,
+            ACCOUNT,
+            &coins,
+            addr,
+            0, // amount ignored when max = true
+            addr,
+            1,
+            true,
+        )
+        .expect("build max");
+        // All coins are swept in.
+        assert_eq!(built.num_inputs, 2);
+        // No change output: the single recipient output holds input_total - fee.
+        assert_eq!(built.change, 0);
+        assert_eq!(built.input_total, 1_500_000);
+        assert_eq!(built.output_total, built.input_total - built.fee);
+        assert_eq!(built.input_total, built.output_total + built.fee);
+    }
+
+    /// `build_send_plan` with `max = true` also sweeps all coins (unsigned path).
+    #[test]
+    fn build_send_plan_max_sweeps_all_coins() {
+        let addr = "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx";
+        let coins = vec![coin(1, 1_000_000, 0, 0), coin(2, 500_000, 0, 1)];
+        let plan = build_send_plan(
+            Network::Main,
+            ACCOUNT,
+            &coins,
+            addr,
+            0,
+            addr,
+            1,
+            true,
+        )
+        .expect("plan max");
+        assert_eq!(plan.inputs.len(), 2);
+    }
+
+    /// `release_stale_reservations` and `load_reserved_coins` surface a `Db`
+    /// error (instead of panicking) when their backing tables are missing.
+    #[test]
+    fn coin_loaders_propagate_db_error_when_tables_missing() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(matches!(
+            release_stale_reservations(&conn, "p1"),
+            Err(AppError::Db(_))
+        ));
+        assert!(matches!(
+            load_reserved_coins(&conn, "p1", "draft1"),
+            Err(AppError::Db(_))
+        ));
+        assert!(matches!(
+            load_spendable_coins(&conn, "p1", None),
+            Err(AppError::Db(_))
+        ));
+    }
+
     /// In-memory DB with the FULL migration chain (needed for
     /// `wallet_tx_drafts` + `reserved_by_draft_id`, used by the reservation
     /// tests below) and a single profile row, mirroring `derivation.rs`'s
