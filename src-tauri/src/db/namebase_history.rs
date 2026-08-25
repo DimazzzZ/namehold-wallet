@@ -492,4 +492,104 @@ mod tests {
         let count2 = backfill_subdomain_names(&conn).unwrap();
         assert_eq!(count2, 0);
     }
+
+    // --- Coverage-driven tests ---
+
+    /// `parse_data` returns the parsed JSON value (or Null for invalid JSON).
+    #[test]
+    fn parse_data_returns_value_or_null() {
+        let row = NamebaseHistoryRow {
+            id: 1,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            kind: "test:type:0".into(),
+            family: "test".into(),
+            verb: "type".into(),
+            name: Some("example".into()),
+            fee_doos: None,
+            bid_doos: None,
+            stake_doos: None,
+            usd_cents: None,
+            hns_doos: None,
+            auction_id: None,
+            bid_id: None,
+            sale_id: None,
+            data_json: r#"{"key":"value"}"#.into(),
+            imported_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let v = parse_data(&row);
+        assert_eq!(v["key"], "value");
+
+        // Invalid JSON returns Null.
+        let bad_row = NamebaseHistoryRow {
+            data_json: "not json {{{".into(),
+            ..row
+        };
+        assert_eq!(parse_data(&bad_row), Value::Null);
+    }
+
+    /// `backfill_subdomain_names` skips rows with invalid JSON in data_json.
+    #[test]
+    fn backfill_skips_rows_with_invalid_json() {
+        let conn = mem_db();
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                1_i64,
+                "2026-01-01T00:00:00Z",
+                "subdomains:confirm-transfer:2",
+                "subdomains",
+                "confirm-transfer",
+                "broken",
+                "not valid json {{{",
+            ],
+        )
+        .unwrap();
+
+        // Should not panic or error — just skips the row.
+        let count = backfill_subdomain_names(&conn).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    /// `backfill_subdomain_names` skips rows where domain is missing or empty.
+    #[test]
+    fn backfill_skips_rows_without_domain() {
+        let conn = mem_db();
+        // Row with valid JSON but no "domain" key at all.
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                2_i64,
+                "2026-01-01T00:00:00Z",
+                "subdomains:confirm-transfer:2",
+                "subdomains",
+                "confirm-transfer",
+                "nodomain",
+                r#"{"subdomain":"sub","saleId":"s1"}"#,
+            ],
+        )
+        .unwrap();
+        // Row with domain = "" (empty string).
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                3_i64,
+                "2026-01-01T00:00:00Z",
+                "subdomains:confirm-transfer:2",
+                "subdomains",
+                "confirm-transfer",
+                "emptydomain",
+                r#"{"domain":"  ","subdomain":"sub"}"#,
+            ],
+        )
+        .unwrap();
+
+        let count = backfill_subdomain_names(&conn).unwrap();
+        assert_eq!(count, 0);
+    }
 }
