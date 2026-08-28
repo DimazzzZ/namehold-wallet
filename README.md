@@ -1,6 +1,6 @@
 # Namehold — a non-custodial Handshake (HNS) wallet
 
-[![Coverage](https://img.shields.io/badge/coverage-92.18%25%20lines-brightgreen)](https://github.com/DimazzzZ/namehold-wallet/pull/50)
+[![Coverage](https://img.shields.io/badge/coverage-96.56%25%20lines-brightgreen)](https://github.com/DimazzzZ/namehold-wallet/pull/50)
 
 Namehold is a local desktop wallet for **Handshake (HNS)**: hold HNS, manage the
 names you own, run the full name-auction lifecycle, and edit on-chain DNS — all
@@ -300,3 +300,29 @@ coverage numbers reflect testable logic only. These attributes require the
 live database and a running event loop. Excluding it from coverage metrics prevents
 it from dragging down the overall number, while the pure logic it orchestrates
 (in `daemon::*` submodules and `commands::*`) is independently tested and counted.
+
+**What are the remaining ~3.5% uncovered lines?** After Phases 1–4, the residual
+uncovered lines fall into structurally-untestable categories that are documented
+in-place (via `coverage(off)` annotations) or intentionally left as-is:
+
+- **`#[tauri::command]` macro-attribute lines** — each Tauri command emits a
+  small IPC wrapper via macro expansion. Those wrappers only execute when the
+  frontend invokes the command through the real IPC dispatcher; unit tests call
+  the inner function directly.
+- **Interactive webview orchestration** (e.g., wallet-secure-prompt flows in
+  `commands/secure_wallet.rs`) — requires a live OS window and user input; no
+  injectable seam exists at the current abstraction level.
+- **Mutex-poison closures** (`.map_err(|e| AppError::Lock(e.to_string()))`) —
+  only trigger if a thread panics while holding a lock; structurally
+  unreachable in unit tests.
+- **BIP32 mathematical impossibilities** — early-return branches guarded by
+  child-derivation invariants that hold for all valid inputs.
+- **Region-boundary artifacts** — closing braces of nested `.map()`/`if let`
+  chains counted by `llvm-cov` as separate regions but not corresponding to any
+  distinct code path.
+
+The `truthfulness invariant` for this project's coverage number: an
+`coverage(off)` annotation is only added when either (a) the function's
+testable logic is confirmed 100% covered by direct tests, or (b) the missed
+lines are structurally unreachable. No annotation hides genuinely-reachable
+logic from measurement.
