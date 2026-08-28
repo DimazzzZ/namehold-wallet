@@ -766,3 +766,40 @@ async fn test_get_account_history_500_is_generic_error() {
     }
     m.assert_async().await;
 }
+
+// ---------------------------------------------------------------------------
+// base_url() getter + IPv6 loopback validation (Phase 4A.2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn base_url_getter_returns_configured_url() {
+    let client = NamebaseClient::with_base_url("test_cookie", "http://127.0.0.1:9090")
+        .expect("client construction");
+    assert_eq!(client.base_url(), "http://127.0.0.1:9090");
+}
+
+#[test]
+fn base_url_getter_returns_trimmed_url() {
+    // Verify base_url reflects the trailing-slash trim.
+    let client = NamebaseClient::with_base_url("c", "http://127.0.0.1:8080/")
+        .expect("client construction");
+    assert_eq!(client.base_url(), "http://127.0.0.1:8080");
+}
+
+#[test]
+fn validate_base_url_allows_ipv6_loopback_bracket_notation() {
+    // Exercises the `url::Host::Ipv6(a) => a.is_loopback()` branch at
+    // src/namebase/client.rs:215.
+    let client = NamebaseClient::with_base_url("test_cookie", "http://[::1]:8080")
+        .expect("IPv6 loopback should be allowed in test builds");
+    assert_eq!(client.base_url(), "http://[::1]:8080");
+}
+
+#[test]
+fn validate_base_url_rejects_non_loopback_non_namebase_host() {
+    let result = NamebaseClient::with_base_url("test_cookie", "https://evil.example.com");
+    assert!(
+        result.is_err(),
+        "arbitrary non-namebase, non-loopback host must be rejected"
+    );
+}

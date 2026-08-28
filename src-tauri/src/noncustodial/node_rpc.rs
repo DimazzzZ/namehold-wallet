@@ -98,6 +98,7 @@ pub trait NodeRpc: Send + Sync {
 /// trait's VALUE is that consumers use `&dyn NodeRpc` and tests inject
 /// `MockNodeRpc` — the forwarding impl is exercised only in production. The
 /// uncovered lines are structurally out of scope for unit tests.
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[async_trait]
 impl NodeRpc for NodeRpcClient {
     fn source(&self) -> ChainSource {

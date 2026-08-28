@@ -324,4 +324,79 @@ mod tests {
         let err = t.exchange_ok(&get_app_version()).unwrap_err();
         assert!(matches!(err, AppError::UserRejected));
     }
+
+    /// Response frame with an unexpected HID channel ID triggers the
+    /// framing-error branch (hid_transport.rs L111-113).
+    #[test]
+    fn exchange_apdu_rejects_unexpected_channel() {
+        use crate::providers::ledger::apdu::get_app_version;
+        let mut reads = frame_response(&[0x00], SW_OK);
+        // Corrupt the channel bytes on the first (and only) frame.
+        reads[0][0] = 0xFF;
+        reads[0][1] = 0xFF;
+        let mock = MockHid {
+            writes: Vec::new(),
+            reads: reads.into(),
+        };
+        let mut t = Transport::new(mock);
+        let err = t.exchange_ok(&get_app_version()).unwrap_err();
+        match err {
+            AppError::Device(msg) => {
+                assert!(msg.contains("unexpected HID channel"), "got: {msg}");
+                assert!(msg.contains("0xffff"), "channel should be reported: {msg}");
+            }
+            other => panic!("expected Device error, got {other:?}"),
+        }
+    }
+
+    /// Response frame with an unexpected HID tag triggers the framing-error
+    /// branch (hid_transport.rs L115-119).
+    #[test]
+    fn exchange_apdu_rejects_unexpected_tag() {
+        use crate::providers::ledger::apdu::get_app_version;
+        let mut reads = frame_response(&[0x00], SW_OK);
+        // Corrupt the tag byte on the first frame.
+        reads[0][2] = 0xFF;
+        let mock = MockHid {
+            writes: Vec::new(),
+            reads: reads.into(),
+        };
+        let mut t = Transport::new(mock);
+        let err = t.exchange_ok(&get_app_version()).unwrap_err();
+        match err {
+            AppError::Device(msg) => {
+                assert!(msg.contains("unexpected HID tag"), "got: {msg}");
+                assert!(msg.contains("0xff"), "tag should be reported: {msg}");
+            }
+            other => panic!("expected Device error, got {other:?}"),
+        }
+    }
+
+    /// Response frame with an out-of-order sequence number triggers the
+    /// framing-error branch (hid_transport.rs L122-126).
+    #[test]
+    fn exchange_apdu_rejects_sequence_out_of_order() {
+        use crate::providers::ledger::apdu::get_app_version;
+        // Build a two-frame response (200 bytes forces continuation).
+        let body: Vec<u8> = (0..200).map(|i| (i % 256) as u8).collect();
+        let mut reads = frame_response(&body, SW_OK);
+        assert!(reads.len() >= 2, "need multi-frame response for sequence test");
+        // Corrupt the second frame's sequence number: expected 1, we send 7.
+        reads[1][3] = 0x00;
+        reads[1][4] = 0x07;
+        let mock = MockHid {
+            writes: Vec::new(),
+            reads: reads.into(),
+        };
+        let mut t = Transport::new(mock);
+        let err = t.exchange_ok(&get_app_version()).unwrap_err();
+        match err {
+            AppError::Device(msg) => {
+                assert!(msg.contains("HID sequence out of order"), "got: {msg}");
+                assert!(msg.contains("got 7"), "seq should be reported: {msg}");
+                assert!(msg.contains("expected 1"), "expected seq should be reported: {msg}");
+            }
+            other => panic!("expected Device error, got {other:?}"),
+        }
+    }
 }

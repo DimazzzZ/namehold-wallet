@@ -382,4 +382,68 @@ mod tests {
             "tray_hint_shown should remain '1' on subsequent calls"
         );
     }
+
+    // --- is_close_to_tray_enabled / set_close_to_tray_enabled ----------------
+
+    #[tokio::test]
+    async fn is_close_to_tray_enabled_defaults_to_true() {
+        let app = app_with(migrated_conn());
+        let state: tauri::State<'_, AppState> = app.state();
+        let result = is_close_to_tray_enabled(state).await.unwrap();
+        assert!(result, "default should be enabled (CLOSE_TO_TRAY_DEFAULT = '1')");
+    }
+
+    #[tokio::test]
+    async fn is_close_to_tray_enabled_reads_explicit_false() {
+        let conn = migrated_conn();
+        crate::db::queries::set_setting(&conn, SETTING_CLOSE_TO_TRAY, "0").unwrap();
+        let app = app_with(conn);
+        let state: tauri::State<'_, AppState> = app.state();
+        let result = is_close_to_tray_enabled(state).await.unwrap();
+        assert!(!result, "should be disabled when setting is '0'");
+    }
+
+    #[tokio::test]
+    async fn set_close_to_tray_enabled_persists_true() {
+        let app = app_with(migrated_conn());
+        let state: tauri::State<'_, AppState> = app.state();
+        set_close_to_tray_enabled(state, true).await.unwrap();
+
+        let st = app.state::<AppState>();
+        let db = st.db.lock().unwrap();
+        let settings = crate::db::queries::get_settings(&db).unwrap();
+        assert_eq!(settings.get(SETTING_CLOSE_TO_TRAY).map(|s| s.as_str()), Some("1"));
+    }
+
+    #[tokio::test]
+    async fn set_close_to_tray_enabled_persists_false() {
+        let app = app_with(migrated_conn());
+        let state: tauri::State<'_, AppState> = app.state();
+        set_close_to_tray_enabled(state, false).await.unwrap();
+
+        let st = app.state::<AppState>();
+        let db = st.db.lock().unwrap();
+        let settings = crate::db::queries::get_settings(&db).unwrap();
+        assert_eq!(settings.get(SETTING_CLOSE_TO_TRAY).map(|s| s.as_str()), Some("0"));
+    }
+
+    // --- icon_kind (pure function) -------------------------------------------
+
+    #[test]
+    fn icon_kind_stopped_when_node_not_running() {
+        let snap = TraySnapshot { node_running: false, node_synced: true, bg_sync_on: true };
+        assert!(matches!(icon_kind(&snap), TrayIconKind::Stopped));
+    }
+
+    #[test]
+    fn icon_kind_syncing_when_not_synced() {
+        let snap = TraySnapshot { node_running: true, node_synced: false, bg_sync_on: true };
+        assert!(matches!(icon_kind(&snap), TrayIconKind::Syncing));
+    }
+
+    #[test]
+    fn icon_kind_normal_when_running_and_synced() {
+        let snap = TraySnapshot { node_running: true, node_synced: true, bg_sync_on: true };
+        assert!(matches!(icon_kind(&snap), TrayIconKind::Normal));
+    }
 }

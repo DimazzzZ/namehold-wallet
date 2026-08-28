@@ -909,3 +909,24 @@ async fn node_status_data_dir_respects_hsd_prefix_setting() {
     let v = node_status(app.state()).await.expect("node_status ok");
     assert_eq!(v["data_dir"], serde_json::json!("/custom/hsd/data"));
 }
+
+// ===========================================================================
+// active_profile_network fallback: active profile ID set but the profile row
+// doesn't exist → should fall back to Network::Main (node.rs L176).
+// ===========================================================================
+
+#[tokio::test]
+async fn node_status_falls_back_to_mainnet_for_missing_profile_row() {
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    // Set active profile to a non-existent ID — triggers Ok(None) from
+    // get_wallet_profile, exercising the `_ => Network::Main` arm.
+    db::queries::set_setting(&conn, "active_wallet_profile_id", "ghost_id").unwrap();
+    let app = app_with(conn);
+    let v = node_status(app.state()).await.expect("node_status ok");
+    assert_eq!(
+        v["network"],
+        serde_json::json!("main"),
+        "missing profile should default to mainnet"
+    );
+}

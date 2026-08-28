@@ -811,6 +811,51 @@ async fn write_probe_synced_and_indexed_keeps_write_capable() {
     assert!(cap.reason.is_none());
 }
 
+#[tokio::test]
+async fn write_probe_unsynced_no_verification_progress_uses_headers_ratio() {
+    // verification_progress=None → fall back to blocks/headers ratio.
+    // 500000/600000 = 83.3% → floor → 83%. Covers tx.rs:1867 + 1875-1877.
+    let mock = MockNodeRpc::new().with_blockchain_info(BlockchainInfo {
+        chain: Some("main".to_string()),
+        blocks: 500_000,
+        headers: Some(600_000),
+        verification_progress: None,
+        bestblockhash: None,
+    });
+    let mut cap = writable_cap();
+    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
+        .await;
+    assert!(!cap.can_write);
+    let reason = cap.reason.as_deref().unwrap();
+    assert!(reason.contains("83%"), "expected 83% in reason, got: {reason}");
+    assert!(reason.contains("still syncing"));
+}
+
+#[tokio::test]
+async fn write_probe_synced_no_verification_progress_via_headers() {
+    // verification_progress=None but blocks >= headers → considered synced.
+    // Covers tx.rs:1867 (the `info.blocks >= h` true branch).
+    let mock = MockNodeRpc::new()
+        .with_blockchain_info(BlockchainInfo {
+            chain: Some("main".to_string()),
+            blocks: 600_000,
+            headers: Some(600_000),
+            verification_progress: None,
+            bestblockhash: None,
+        })
+        .with_coins_by_address(vec![]);
+    let mut cap = writable_cap();
+    crate::commands::tx::apply_node_write_probe_with_client(
+        &mock,
+        &mut cap,
+        "http://x",
+        Some("hs1qprobe"),
+    )
+    .await;
+    assert!(cap.can_write, "blocks>=headers with no progress should be synced");
+    assert!(cap.reason.is_none());
+}
+
 fn writable_cap() -> crate::providers::WriteCapability {
     crate::providers::WriteCapability {
         can_write: true,
