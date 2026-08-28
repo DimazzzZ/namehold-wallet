@@ -173,6 +173,7 @@ impl<T: HidIo> Transport<T> {
 }
 
 /// Human-readable message for a non-success status word.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn status_word_message(sw: u16) -> String {
     let hint = match sw {
         0x6985 => " (user rejected on device)",

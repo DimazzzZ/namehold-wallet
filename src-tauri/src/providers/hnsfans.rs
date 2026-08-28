@@ -1142,4 +1142,29 @@ mod tests {
         // Integer negative preserved.
         assert_eq!(extract_amount(&json!({"c": -100}), &["c"]), -100);
     }
+
+    #[tokio::test]
+    async fn get_name_info_optional_returns_error_on_http_failure() {
+        // A 4xx status (other than 404) surfaces the "HNSFans name lookup failed"
+        // AppError::Other branch. Covers hnsfans.rs L282-286: 5xx is handled by
+        // get_with_fallback (returns before ever reaching this branch); 4xx
+        // codes flow through as an Ok(resp) here.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/names/testname")
+            .with_status(403)
+            .with_body("Forbidden")
+            .create_async()
+            .await;
+
+        let client = HnsFansClient::new(&server.url());
+        let result = client.get_name_info_optional("testname").await;
+        match result {
+            Err(AppError::Other(msg)) => {
+                assert!(msg.contains("HNSFans name lookup failed"), "got: {msg}");
+                assert!(msg.contains("403"), "status code should be in message: {msg}");
+            }
+            other => panic!("expected AppError::Other, got: {other:?}"),
+        }
+    }
 }
