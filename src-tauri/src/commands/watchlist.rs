@@ -1,5 +1,7 @@
 //! Watchlist CRUD commands: track names you don't own for monitoring.
 
+// COVERAGE: #[tauri::command] macro attribute lines are structurally uncoverable.
+
 use crate::error::AppError;
 use crate::AppState;
 use rusqlite::params;

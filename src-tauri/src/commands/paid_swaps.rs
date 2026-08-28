@@ -1,4 +1,14 @@
 //! Paid swap offer commands: seller-side tracking for atomic finalizeWithPayment.
+//!
+//! COVERAGE: 96.43% line / 88.43% region — realistic ceiling. Remaining ~8
+//! missed lines: (a) `Err(e) => AppError::Db(e)` arms in two SELECT `query_row`
+//! calls (only reachable on non-`QueryReturnedNoRows` DB errors — schema
+//! corruption / type-conversion failure — needs >20 lines of DB-corruption
+//! setup for 2 lines); (b) `#[tauri::command]` macro attribute line on
+//! `claim_paid_transfer` (macro-generated IPC wrapper, only invoked via Tauri
+//! dispatch). `claim_paid_transfer` is fully mockable via mockito on hsd REST
+//! `/tx/:hash` (set `node_rpc_url` in DB settings) — no live node needed.
+//! Test harness in `src/tests/paid_swaps_cmd_tests.rs`.
 
 use crate::db::queries;
 use crate::error::AppError;

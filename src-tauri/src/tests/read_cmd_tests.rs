@@ -19,6 +19,14 @@ use crate::db;
 use crate::hsd::types::{HsdBid, HsdName};
 use crate::AppState;
 
+// Extra imports used by the additional tests below. Kept in a second `use`
+// block so it's easy to see the read-tests baseline vs. the new coverage
+// harness in a single file.
+use crate::commands::read::{
+    get_resource, list_receive_addresses, read_block_info, read_renewals, read_tx_info,
+    repair_owned_names, reveal_next_receive_address,
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -1109,4 +1117,763 @@ async fn read_name_records_node_not_ready_returns_empty_resource_object() {
         .await
         .unwrap();
     assert_eq!(val, serde_json::json!({ "records": [] }));
+}
+
+// ===========================================================================
+// Additional coverage tests — target the State-wrapper commands and rarely-
+// exercised branches of `commands::read`. Grouped by target function.
+// ===========================================================================
+
+/// Standard JSON-RPC mock for a fully synced hsd node — pass into any test
+/// that needs `is_node_ready_for_local_reads` to return `true`.
+/// `progress=1.0`, `blocks==headers`, `chain="regtest"` (matches the default
+/// test profile network so the network-match gate passes).
+async fn mock_synced_node(server: &mut mockito::Server) -> mockito::Mock {
+    server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"chain":"regtest","blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await
+}
+
+// ---------------------------------------------------------------------------
+// read_renewals — no-profile hits `empty_renewals()`
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_renewals_no_profile_returns_empty_shape() {
+    let app = app_with(empty_db());
+    let resp = read_renewals(app.state(), None).await.unwrap();
+    assert!(resp.wallet_profile_id.is_none());
+    assert!(resp.current_height.is_none());
+    assert_eq!(resp.height_source, "unknown");
+    assert!(resp.names.is_empty());
+    // Serializable to camelCase JSON — the frontend contract.
+    let json = serde_json::to_value(&resp).unwrap();
+    assert_eq!(json["heightSource"], "unknown");
+    assert!(json["names"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn read_renewals_with_profile_uses_unknown_height_when_no_node() {
+    // Resolved profile, no synced node, no persisted-height signal → returns
+    // the response with height_source == "unknown" and an empty names list.
+    let conn = empty_db();
+    add_profile(&conn, "R1", "regtest");
+    db::queries::set_active_profile(&conn, "R1").unwrap();
+    let app = app_with(conn);
+    let resp = read_renewals(app.state(), Some("R1".into())).await.unwrap();
+    assert_eq!(resp.wallet_profile_id.as_deref(), Some("R1"));
+    assert_eq!(resp.height_source, "unknown");
+}
+
+// ---------------------------------------------------------------------------
+// list_receive_addresses — no profile / profile with addresses
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_receive_addresses_no_profile_returns_empty_vec() {
+    let app = app_with(empty_db());
+    let out = list_receive_addresses(app.state(), None).await.unwrap();
+    assert!(out.is_empty());
+}
+
+#[tokio::test]
+async fn list_receive_addresses_returns_derived_rows() {
+    let conn = empty_db();
+    add_profile(&conn, "R1", "regtest");
+    db::queries::set_active_profile(&conn, "R1").unwrap();
+    // Seed two receive-branch addresses (branch=0) — the query uses BRANCH_RECEIVE.
+    conn.execute(
+        "INSERT INTO derived_addresses
+            (wallet_profile_id, account_index, branch, child_index,
+             address, script_pubkey_hex, public_key_hex)
+         VALUES ('R1', 0, 0, 0, 'addr0', '00', '00'),
+                ('R1', 0, 0, 1, 'addr1', '00', '00')",
+        [],
+    )
+    .unwrap();
+    let app = app_with(conn);
+    let out = list_receive_addresses(app.state(), None).await.unwrap();
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0].index, 0);
+    assert_eq!(out[0].address, "addr0");
+    assert!(!out[0].used);
+    assert_eq!(out[1].index, 1);
+    assert_eq!(out[1].address, "addr1");
+}
+
+// ---------------------------------------------------------------------------
+// reveal_next_receive_address — command wrapper
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn reveal_next_receive_address_no_profile_errors() {
+    let app = app_with(empty_db());
+    let err = reveal_next_receive_address(app.state(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err}").contains("no active wallet profile"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn reveal_next_receive_address_derives_from_valid_profile() {
+    // Uses the shared `insert_valid_profile` helper which seeds a real xpub +
+    // an initial derived address, so `derive_next_for_profile` can succeed.
+    let conn = empty_db();
+    let id = crate::tests::names_cmd_tests::insert_valid_profile(&conn, "regtest");
+    let app = app_with(conn);
+    let addr = reveal_next_receive_address(app.state(), Some(id.clone()))
+        .await
+        .unwrap();
+    assert!(addr.starts_with("rs1"), "expected regtest bech32: {addr}");
+}
+
+// ---------------------------------------------------------------------------
+// read_block_info — soft-degrade + happy path via mock node
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_block_info_negative_height_returns_null() {
+    let app = app_with(empty_db());
+    let val = read_block_info(app.state(), -1).await.unwrap();
+    assert!(val.is_null());
+}
+
+#[tokio::test]
+async fn read_block_info_node_not_ready_returns_null() {
+    // Positive height but no synced node → soft-degrades to null (the
+    // "requires synced node" hint on the frontend).
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    let app = app_with(conn);
+    let val = read_block_info(app.state(), 100).await.unwrap();
+    assert!(val.is_null());
+}
+
+#[tokio::test]
+async fn read_block_info_synced_node_returns_shaped_block() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _bh = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockhash".into()))
+        .with_body(
+            r#"{"result":"aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44","error":null,"id":1}"#,
+        )
+        .create_async()
+        .await;
+    let _blk = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("\"getblock\"".into()))
+        .with_body(
+            r#"{"result":{"hash":"aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44","height":42,"time":1700000000,"difficulty":1.0,"tx":[{"outputs":[{"value":2000000000}]}]},"error":null,"id":1}"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = read_block_info(app.state(), 42).await.unwrap();
+    assert_eq!(val["height"], 42);
+    assert_eq!(val["minerReward"], 2_000_000_000i64);
+}
+
+// ---------------------------------------------------------------------------
+// read_tx_info — command wrapper (empty/no-node/happy-path)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_tx_info_empty_txid_returns_null() {
+    let app = app_with(empty_db());
+    let val = read_tx_info(app.state(), "".into()).await.unwrap();
+    assert!(val.is_null());
+    // Also whitespace-only: same soft-degrade path (the command trims).
+    let val = read_tx_info(app.state(), "   ".into()).await.unwrap();
+    assert!(val.is_null());
+}
+
+#[tokio::test]
+async fn read_tx_info_node_not_ready_returns_null() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    let app = app_with(conn);
+    let val = read_tx_info(app.state(), "aabb".into()).await.unwrap();
+    assert!(val.is_null());
+}
+
+#[tokio::test]
+async fn read_tx_info_synced_node_returns_shaped_tx() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _tx = server
+        .mock("GET", "/tx/deadbeef")
+        .with_body(
+            r#"{"hash":"deadbeef","confirmations":10,"height":200,"block":"blkhash",
+                 "time":1700000000,"fee":1000,
+                 "inputs":[{"coin":{"value":5000}}],
+                 "outputs":[{"value":3000},{"value":1000}]}"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = read_tx_info(app.state(), "deadbeef".into()).await.unwrap();
+    assert_eq!(val["txid"], "deadbeef");
+    assert_eq!(val["height"], 200);
+    assert_eq!(val["fee"], 1000);
+    assert_eq!(val["outputsCount"], 2);
+    assert_eq!(val["totalOut"], 4000);
+}
+
+// ---------------------------------------------------------------------------
+// get_resource — assembly of name info + resource records
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_resource_explorer_path_when_node_not_ready() {
+    // No node mocked → is_node_ready is false → explorer path.
+    let mut server = mockito::Server::new_async().await;
+    let _ex = server
+        .mock("GET", "/api/names/foo")
+        .with_status(200)
+        .with_body(
+            r#"{"name":"foo","state":"CLOSED","height":500,"renewal":600,
+                 "stats":{"blocksUntilExpire":100,"daysUntilExpire":0.7}}"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = get_resource(app.state(), "foo".into()).await.unwrap();
+    assert_eq!(val["name"], "foo");
+    assert_eq!(val["state"], "CLOSED");
+    assert_eq!(val["height"], 500);
+    assert_eq!(val["renewal"], 600);
+    // Records array is always present; node-only, so empty in this branch.
+    assert!(val["data"]["records"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn get_resource_explorer_404_synthesizes_available() {
+    // 404 → explorer's `get_name_info_optional` returns Ok(None), which
+    // get_resource maps to `{ name, state: "AVAILABLE" }`.
+    let mut server = mockito::Server::new_async().await;
+    let _ex = server
+        .mock("GET", "/api/names/newname")
+        .with_status(404)
+        .with_body("{}")
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = get_resource(app.state(), "newname".into()).await.unwrap();
+    assert_eq!(val["name"], "newname");
+    assert_eq!(val["state"], "AVAILABLE");
+    assert!(val["data"]["records"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn get_resource_node_ready_reads_info_and_records() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(
+            r#"{"result":{"info":{"name":"foo","state":"CLOSED","height":100,"renewal":200,"stats":{"blocksUntilExpire":50}}},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    let _nr = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameresource".into()))
+        .with_body(
+            r#"{"result":{"records":[{"type":"NS","ns":"ns1.example."}]},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = get_resource(app.state(), "foo".into()).await.unwrap();
+    assert_eq!(val["name"], "foo");
+    assert_eq!(val["state"], "CLOSED");
+    assert_eq!(val["height"], 100);
+    let recs = val["data"]["records"].as_array().unwrap();
+    assert_eq!(recs.len(), 1);
+    assert_eq!(recs[0]["type"], "NS");
+}
+
+// ---------------------------------------------------------------------------
+// read_name_info — node-ready branch + explorer 404 synthesize-available
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_name_info_explorer_404_synthesizes_available() {
+    let mut server = mockito::Server::new_async().await;
+    let _ex = server
+        .mock("GET", "/api/names/newname")
+        .with_status(404)
+        .with_body("")
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = read_name_info(app.state(), "newname".into()).await.unwrap();
+    assert_eq!(val["state"], "AVAILABLE");
+    assert_eq!(val["name"], "newname");
+}
+
+#[tokio::test]
+async fn read_name_info_node_ready_uses_node_branch() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(
+            r#"{"result":{"info":{"name":"foo","state":"CLOSED","height":100}},"error":null,"id":1}"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = read_name_info(app.state(), "foo".into()).await.unwrap();
+    assert_eq!(val["state"], "CLOSED");
+    assert_eq!(val["name"], "foo");
+}
+
+// ---------------------------------------------------------------------------
+// read_balance — explorer-fallback path (with pre-provisioned addresses)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_balance_explorer_fallback_returns_addressed_balance() {
+    let mut server = mockito::Server::new_async().await;
+    // No node mocked (so is_node_ready is false → explorer path).
+    let _addr = server
+        .mock("GET", "/api/addresses/addr0")
+        .with_status(200)
+        .with_body(r#"{"confirmed":123456,"unconfirmed":7890}"#)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "B1", "regtest");
+    db::queries::set_active_profile(&conn, "B1").unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+    // Seed a derived address so the explorer branch has something to hit and
+    // the auto-provision branch is skipped.
+    conn.execute(
+        "INSERT INTO derived_addresses
+            (wallet_profile_id, account_index, branch, child_index,
+             address, script_pubkey_hex, public_key_hex)
+         VALUES ('B1', 0, 0, 0, 'addr0', '00', '00')",
+        [],
+    )
+    .unwrap();
+
+    let app = app_with(conn);
+    let val = read_balance(app.state(), Some("B1".into())).await.unwrap();
+    assert_eq!(val["confirmed"], 123_456);
+    assert_eq!(val["unconfirmed"], 7_890);
+    assert_eq!(val["locked_confirmed"], 0);
+    assert_eq!(val["locked_unconfirmed"], 0);
+}
+
+#[tokio::test]
+async fn read_balance_explorer_fails_falls_back_to_cache() {
+    // Explorer returns HTTP error (500) for every attempt → HnsFansClient's
+    // `get_balance` returns Err → command falls back to the DB cache.
+    let mut server = mockito::Server::new_async().await;
+    let _err = server
+        .mock("GET", "/api/addresses/addr0")
+        .with_status(500)
+        .with_body("boom")
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "B2", "regtest");
+    db::queries::set_active_profile(&conn, "B2").unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+    add_liquid(&conn, "B2", "cachedtx", 400_000);
+    conn.execute(
+        "INSERT INTO derived_addresses
+            (wallet_profile_id, account_index, branch, child_index,
+             address, script_pubkey_hex, public_key_hex)
+         VALUES ('B2', 0, 0, 0, 'addr0', '00', '00')",
+        [],
+    )
+    .unwrap();
+
+    let app = app_with(conn);
+    let val = read_balance(app.state(), Some("B2".into())).await.unwrap();
+    // Falls back to cached balance (last resort).
+    assert_eq!(val["confirmed"], 400_000);
+}
+
+#[tokio::test]
+async fn read_balance_auto_provisions_addresses_from_valid_xpub() {
+    // Explicitly cover the auto-provision branch (lines 495–526 of read.rs):
+    // no derived_addresses and no cached UTXOs → the command must derive fresh
+    // addresses from the profile's stored xpub and hit the explorer with them.
+    // Assertion works two ways: (a) confirmed came back from the mocked
+    // explorer (>0), proving the explorer branch fired; (b) derived_addresses
+    // now has 20 receive rows, proving `ensure_addresses` actually ran.
+    let mut server = mockito::Server::new_async().await;
+    let _catchall = server
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"^/api/addresses/.+$".into()),
+        )
+        .with_status(200)
+        .with_body(r#"{"confirmed":42,"unconfirmed":0}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    let id = crate::tests::names_cmd_tests::insert_valid_profile(&conn, "regtest");
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+    // Drop everything `insert_valid_profile` pre-seeds that could shortcut the
+    // branch we want to exercise: derived_addresses (so addrs.is_empty()) AND
+    // tracked_utxos (so a cache fallback would return 0 — the >0 assertion
+    // below then only succeeds if the explorer branch actually ran).
+    conn.execute("DELETE FROM derived_addresses", []).unwrap();
+    conn.execute("DELETE FROM tracked_utxos", []).unwrap();
+
+    let app = app_with(conn);
+    let val = read_balance(app.state(), Some(id.clone())).await.unwrap();
+    assert!(
+        val["confirmed"].as_i64().unwrap() > 0,
+        "expected explorer branch to yield >0 confirmed, got: {val}"
+    );
+    // Bonus check: the auto-provisioned batch of 20 receive addresses is
+    // present, proving `ensure_addresses` fired on the receive branch.
+    let app2 = app; // reuse app for a second read
+    let rows = list_receive_addresses(app2.state(), Some(id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 20);
+}
+
+// ---------------------------------------------------------------------------
+// discover_owned_names — node-authoritative branch (State wrapper)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn discover_owned_names_node_path_no_hashes_returns_zero() {
+    // Synced node + active profile but no unspent name-covenant coins →
+    // discover_names_via_node_with_client returns empty → command returns 0.
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = discover_owned_names(app.state()).await.unwrap();
+    assert_eq!(val["discovered"], 0);
+    assert_eq!(val["names"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn discover_owned_names_node_path_upserts_from_hash() {
+    // Seed one unspent BID coin so `list_unspent_wallet_name_hashes` returns
+    // one hash. Node resolves hash → name → nameinfo. Command persists via
+    // `upsert_name_state` and returns the resolved names.
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _nh = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnamebyhash".into()))
+        .with_body(r#"{"result":"foo","error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(
+            r#"{"result":{"info":{"name":"foo","state":"CLOSED","height":100,"owner":null,"weak":false}},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    // Insert an unspent BID coin (covenant_type=3, spend_class='name_lockup')
+    // with a valid covenant_json that carries a nameHash at items[0] and
+    // rawName at items[2].
+    let name = "foo";
+    let nh = hex::encode(crate::noncustodial::names::hash_name(name).unwrap());
+    let raw = hex::encode(crate::noncustodial::names::raw_name(name).unwrap());
+    let cov = serde_json::json!({
+        "type": 3,
+        "action": "BID",
+        "items": [nh, "64000000", raw, "00".repeat(32)],
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+         VALUES ('aabbcc', 0, 'W1', 'addr0', '00', 1000, 3, ?1, 'name_lockup', NULL)",
+        rusqlite::params![cov],
+    )
+    .unwrap();
+
+    let app = app_with(conn);
+    let val = discover_owned_names(app.state()).await.unwrap();
+    assert_eq!(val["discovered"], 1);
+    let names: Vec<&str> = val["names"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|n| n.as_str())
+        .collect();
+    assert_eq!(names, vec!["foo"]);
+}
+
+// ---------------------------------------------------------------------------
+// repair_owned_names — node-authoritative path (State wrapper)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn repair_owned_names_no_profile_returns_zero() {
+    let app = app_with(empty_db());
+    let val = repair_owned_names(app.state()).await.unwrap();
+    assert_eq!(val["repaired"], 0);
+    assert_eq!(val["discovered"], 0);
+    assert_eq!(val["errors"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn repair_owned_names_via_node_path_records_ownership() {
+    // Synced node + one tracked name; `getnameinfo` returns an owner whose
+    // address is NOT in the wallet's address set → the "not owned" branch
+    // (touch_asset_synced) runs, but the pass still completes with repaired=0.
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(
+            r#"{"result":{"info":{"name":"foo","state":"CLOSED","height":100,"owner":null,"weak":false}},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    // A tracked name (candidates list must be non-empty for the loop to run).
+    add_owned_name(&conn, "W1", "foo", "txfoo");
+
+    let app = app_with(conn);
+    let val = repair_owned_names(app.state()).await.unwrap();
+    // No owner in `getnameinfo` → not owned by wallet → touch_asset_synced.
+    assert_eq!(val["repaired"], 0);
+    assert_eq!(val["candidates"], 1);
+    assert_eq!(val["errors"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn repair_owned_names_via_node_records_repair_when_owner_matches() {
+    // Synced node + one tracked name; `getnameinfo` reports an owner outpoint
+    // that `gettxout` resolves to an address in the wallet's set → the
+    // repaired-path runs (upsert_owned_name + mark_asset_finalized_owned).
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(
+            r#"{"result":{"info":{"name":"foo","state":"CLOSED","height":100,"owner":{"hash":"aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44","index":0},"weak":false}},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    let _txo = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("gettxout".into()))
+        .with_body(r#"{"result":{"address":{"string":"myaddr"}},"error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    // The wallet owns `myaddr` (so the returned owner address is in the set).
+    conn.execute(
+        "INSERT INTO derived_addresses
+            (wallet_profile_id, account_index, branch, child_index,
+             address, script_pubkey_hex, public_key_hex)
+         VALUES ('W1', 0, 0, 0, 'myaddr', '00', '00')",
+        [],
+    )
+    .unwrap();
+    add_owned_name(&conn, "W1", "foo", "txfoo");
+
+    let app = app_with(conn);
+    let val = repair_owned_names(app.state()).await.unwrap();
+    assert_eq!(val["repaired"], 1);
+    assert_eq!(val["candidates"], 1);
+    assert_eq!(val["errors"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn repair_owned_names_via_node_records_error_on_rpc_failure() {
+    // Node reports synced but `getnameinfo` fails → resolve_name_ownership_with_client
+    // returns Err → error is pushed and the loop continues (repaired=0, one
+    // error entry, candidates=1).
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_status(500)
+        .with_body(r#"{"result":null,"error":{"message":"boom"},"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    add_owned_name(&conn, "W1", "foo", "txfoo");
+
+    let app = app_with(conn);
+    let val = repair_owned_names(app.state()).await.unwrap();
+    assert_eq!(val["repaired"], 0);
+    assert_eq!(val["candidates"], 1);
+    let errors = val["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0].as_str().unwrap().contains("foo"),
+        "unexpected error entry: {:?}",
+        errors
+    );
+}
+
+// ---------------------------------------------------------------------------
+// estimate_persisted_height — a couple of edge branches
+// ---------------------------------------------------------------------------
+
+#[test]
+fn estimate_persisted_height_returns_none_when_no_signal() {
+    let conn = empty_db();
+    add_profile(&conn, "H1", "regtest");
+    let h = crate::commands::read::estimate_persisted_height(&conn, "H1").unwrap();
+    assert!(h.is_none());
+}
+
+#[test]
+fn estimate_persisted_height_reads_from_profile_last_synced_height() {
+    let conn = empty_db();
+    add_profile(&conn, "H2", "regtest");
+    conn.execute(
+        "UPDATE wallet_profiles
+            SET last_synced_height = 12345,
+                last_synced_at = datetime('now')
+          WHERE id = 'H2'",
+        [],
+    )
+    .unwrap();
+    let h = crate::commands::read::estimate_persisted_height(&conn, "H2")
+        .unwrap()
+        .unwrap();
+    // Value may be aged slightly (>=12345); the important thing is it was read.
+    assert!(h >= 12345, "expected >=12345, got {h}");
+}
+
+#[test]
+fn estimate_persisted_height_prefers_max_across_sources() {
+    // A tracked-name-states row carries stats implying height 20000, while
+    // last_synced_height on the profile is 15000 → max wins.
+    let conn = empty_db();
+    add_profile(&conn, "H3", "regtest");
+    let raw = serde_json::json!({
+        "stats": {
+            "renewalPeriodEnd": 25000,
+            "blocksUntilExpire": 5000,
+        }
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, raw_json, updated_at)
+         VALUES ('H3', 'foo', 'ab', 'CLOSED', ?1, datetime('now'))",
+        rusqlite::params![raw],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE wallet_profiles
+            SET last_synced_height = 15000,
+                last_synced_at = datetime('now')
+          WHERE id = 'H3'",
+        [],
+    )
+    .unwrap();
+    let h = crate::commands::read::estimate_persisted_height(&conn, "H3")
+        .unwrap()
+        .unwrap();
+    // Max of (25000 - 5000) and 15000 is 20000 (plus small aging drift).
+    assert!(h >= 20000, "expected >=20000, got {h}");
 }

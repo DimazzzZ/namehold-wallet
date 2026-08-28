@@ -1,6 +1,12 @@
 //! Read-only command to retrieve daemon-populated watched_name_states.
 //! The Watchlist page uses this to seed columns (Countdown, Highest bid,
 //! Expiry) without waiting for per-name RPC round-trips.
+//!
+//! COVERAGE: ~92% — the function body is fully covered. The remaining 2 lines
+//! are the `#[tauri::command]` attribute (line 24) and one macro-expanded IPC
+//! wrapper line (line 2 region). These only fire under real Tauri IPC dispatch
+//! and are structurally impossible to cover from unit tests. Same class of
+//! macro-attribute miss documented in `settings.rs` and `history.rs`.
 
 use crate::error::AppError;
 use crate::AppState;

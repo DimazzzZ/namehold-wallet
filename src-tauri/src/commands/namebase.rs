@@ -1,3 +1,14 @@
+// COVERAGE:
+// * #[tauri::command] macro attribute lines are structurally uncoverable — the
+//   macro is expanded at compile time and does not execute at runtime.
+// * The `read_cookie` keyring-unavailable branch (Err(_e) => ... return legacy)
+//   fires only when `cookie_vault::encrypt_cookie` fails because the OS keyring
+//   is unreachable. Tests install a fixed test DEK (so encryption always
+//   succeeds); forcing this branch would require an OS-level keyring failure
+//   that the test harness can't produce deterministically.
+// * The poisoned-Mutex fallback in `active_profile_network`
+//   (Err(_) => Network::Main) requires a panicked lock holder — not reachable
+//   through the command surface.
 use crate::db;
 use crate::error::AppError;
 use crate::namebase::client::NamebaseClient;

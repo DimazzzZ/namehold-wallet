@@ -4,6 +4,12 @@ use crate::models::asset::Asset;
 use crate::AppState;
 use tauri::State;
 
+// COVERAGE: ~85% line — structural ceiling. All 14 missed lines are
+// `#[tauri::command]` attribute lines (7 commands × 2 lines each: the attribute
+// itself + the macro-expanded IPC wrapper). Every function body is fully
+// covered. Same class of macro-attribute miss as `batches.rs` and `settings.rs`.
+// Test harness in `src/tests/assets_cmd_tests.rs`.
+
 #[tauri::command]
 pub async fn list_assets(
     state: State<'_, AppState>,

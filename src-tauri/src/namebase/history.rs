@@ -465,9 +465,8 @@ mod tests {
     fn row_with_invalid_json_data_uses_empty_object() {
         // Second column data is "not json {{{" (invalid). Row should still
         // appear with default empty-object semantics: no name, no fees, etc.
-        let csv = wrap(
-            "188679284,2026-01-17T12:37:54.492Z,auctions:place-bid:4,\"not json {{{\"\n",
-        );
+        let csv =
+            wrap("188679284,2026-01-17T12:37:54.492Z,auctions:place-bid:4,\"not json {{{\"\n");
         let events = parse_history_csv(&csv).unwrap();
         assert_eq!(events.len(), 1);
         let e = &events[0];

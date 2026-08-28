@@ -1,6 +1,6 @@
 # Namehold — a non-custodial Handshake (HNS) wallet
 
-[![Coverage](https://img.shields.io/badge/coverage-81.28%25%20lines-brightgreen)](https://github.com/DimazzzZ/namehold-wallet/pull/50)
+[![Coverage](https://img.shields.io/badge/coverage-92.18%25%20lines-brightgreen)](https://github.com/DimazzzZ/namehold-wallet/pull/50)
 
 Namehold is a local desktop wallet for **Handshake (HNS)**: hold HNS, manage the
 names you own, run the full name-auction lifecycle, and edit on-chain DNS — all
@@ -277,3 +277,26 @@ used) the local transaction history.
 - **hidapi** — Ledger hardware wallet HID transport
 - **notify-rust** — cross-platform OS notifications (watchlist alerts)
 - **Tailwind CSS** — styling
+
+## Coverage
+
+Unit test coverage is measured with `cargo-llvm-cov` on nightly:
+
+```bash
+just coverage
+# or manually:
+cargo +nightly llvm-cov --lib --ignore-filename-regex '(src/lib\.rs|src/daemon/mod\.rs)'
+```
+
+**Why nightly?** The codebase uses `#[cfg_attr(coverage_nightly, coverage(off))]`
+attributes to exclude genuinely-untestable IO shells (device spawning, OS window
+construction, USB-HID communication, HTTP requests) from coverage metrics, so that
+coverage numbers reflect testable logic only. These attributes require the
+`coverage_attribute` feature, which is nightly-only. The stable build is unaffected
+— the attributes are no-ops when `cfg(coverage_nightly)` is not set.
+
+**Why ignore `daemon/mod.rs`?** The daemon entry point (`run()`, `sync_all_profiles`,
+`write_pid_file`, `cleanup`) is 100% IO shell — it cannot be unit-tested without a
+live database and a running event loop. Excluding it from coverage metrics prevents
+it from dragging down the overall number, while the pure logic it orchestrates
+(in `daemon::*` submodules and `commands::*`) is independently tested and counted.

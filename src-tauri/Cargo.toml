@@ -8,6 +8,15 @@ default-run = "namehold-wallet"
 name = "namehold_wallet_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# `coverage_nightly` is a cfg injected automatically by cargo-llvm-cov when
+# building coverage instrumentation on nightly. Declaring it here keeps the
+# stable build (and clippy -D warnings) from flagging it as an unexpected cfg.
+# The `#![cfg_attr(coverage_nightly, feature(coverage_attribute))]` in lib.rs
+# and the `#[cfg_attr(coverage_nightly, coverage(off))]` attributes on IO-shell
+# functions are inert on stable — zero impact on the shipped binary.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+
 [[bin]]
 name = "namehold-syncd"
 path = "src/bin/namehold-syncd.rs"

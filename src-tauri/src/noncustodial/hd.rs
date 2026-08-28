@@ -698,7 +698,12 @@ mod tests {
         let master = ExtendedPrivKey::from_seed(&seed).expect("master");
         let xpub = ExtendedPubKey::from_priv(&master);
 
-        for network in [Network::Main, Network::Testnet, Network::Regtest, Network::Simnet] {
+        for network in [
+            Network::Main,
+            Network::Testnet,
+            Network::Regtest,
+            Network::Simnet,
+        ] {
             let encoded = xpub.to_base58check(network);
             let parsed = ExtendedPubKey::from_xpub(network, &encoded).unwrap();
             assert_eq!(
@@ -716,10 +721,7 @@ mod tests {
         let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
         let master = ExtendedPrivKey::from_seed(&seed).expect("master");
         let same = master.derive_path(&[]).expect("empty path");
-        assert_eq!(
-            master.secret.secret_bytes(),
-            same.secret.secret_bytes()
-        );
+        assert_eq!(master.secret.secret_bytes(), same.secret.secret_bytes());
         assert_eq!(master.chain_code, same.chain_code);
     }
 

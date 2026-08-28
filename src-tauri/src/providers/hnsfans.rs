@@ -1075,4 +1075,71 @@ mod tests {
             0
         );
     }
+
+    // --- Coverage: pure helper functions and error conversions ---
+
+    #[test]
+    fn explorer_error_http_converts_to_app_error_other() {
+        // Covers line 34: ExplorerError::Http(status) → AppError::Other.
+        let err: AppError = ExplorerError::Http(503).into();
+        match err {
+            AppError::Other(msg) => assert!(msg.contains("503"), "msg was: {msg}"),
+            other => panic!("expected AppError::Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn looks_like_empty_payload_covers_all_branches() {
+        // null / empty object / empty array → true.
+        assert!(looks_like_empty_payload(&json!(null)));
+        assert!(looks_like_empty_payload(&json!({})));
+        assert!(looks_like_empty_payload(&json!([])));
+        // Non-empty object / array → false.
+        assert!(!looks_like_empty_payload(&json!({"a": 1})));
+        assert!(!looks_like_empty_payload(&json!([1])));
+        // Scalar (string/number/bool) → false; covers the `_ => false` arm.
+        assert!(!looks_like_empty_payload(&json!("hello")));
+        assert!(!looks_like_empty_payload(&json!(42)));
+        assert!(!looks_like_empty_payload(&json!(true)));
+    }
+
+    #[test]
+    fn has_array_field_checks_key_shape() {
+        assert!(has_array_field(&json!({"list": []}), "list"));
+        assert!(has_array_field(&json!({"list": [1, 2]}), "list"));
+        assert!(!has_array_field(&json!({"list": "not array"}), "list"));
+        assert!(!has_array_field(&json!({}), "list"));
+    }
+
+    #[test]
+    fn history_shape_recognized_accepts_result_array_or_bare_array() {
+        assert!(history_shape_recognized(&json!({"result": []})));
+        assert!(history_shape_recognized(&json!([])));
+        assert!(history_shape_recognized(&json!([{"txid": "x"}])));
+        assert!(!history_shape_recognized(&json!({})));
+        assert!(!history_shape_recognized(&json!({"result": "not array"})));
+    }
+
+    #[test]
+    fn normalize_name_accepts_boolean_revoked() {
+        // `revoked` may be numeric (0/1) — already covered — or a bare boolean.
+        let entry = json!({ "name": "x", "revoked": true });
+        let name = normalize_name(&entry).expect("should normalize");
+        assert_eq!(name.revoked, Some(true));
+
+        let entry = json!({ "name": "x", "revoked": false });
+        let name = normalize_name(&entry).expect("should normalize");
+        assert_eq!(name.revoked, Some(false));
+    }
+
+    #[test]
+    fn extract_amount_handles_negative_and_rounding() {
+        // Round-half-up on positive floats.
+        assert_eq!(extract_amount(&json!({"c": 0.5}), &["c"]), 1);
+        // Negative floats round toward zero (Rust's f64::round is half-away-from-zero).
+        assert_eq!(extract_amount(&json!({"c": -1.4}), &["c"]), -1);
+        assert_eq!(extract_amount(&json!({"c": -1.5}), &["c"]), -2);
+        // Integer negative preserved.
+        assert_eq!(extract_amount(&json!({"c": -100}), &["c"]), -100);
+    }
 }

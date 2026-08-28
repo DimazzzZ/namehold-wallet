@@ -689,7 +689,7 @@ mod tests {
         let amount = 100_000u64;
         let fee_no_change = estimate_fee(1, 1, 1); // 183
         let fee_with_change = estimate_fee(1, 2, 1); // 215
-        // Pick input_total strictly inside [amount+fee_no_change, amount+fee_with_change).
+                                                     // Pick input_total strictly inside [amount+fee_no_change, amount+fee_with_change).
         let input_total = amount + fee_no_change + 5;
         assert!(input_total < amount + fee_with_change);
         let coins = vec![coin(1, input_total, 0, 0)];
@@ -740,17 +740,8 @@ mod tests {
     fn build_send_plan_max_sweeps_all_coins() {
         let addr = "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx";
         let coins = vec![coin(1, 1_000_000, 0, 0), coin(2, 500_000, 0, 1)];
-        let plan = build_send_plan(
-            Network::Main,
-            ACCOUNT,
-            &coins,
-            addr,
-            0,
-            addr,
-            1,
-            true,
-        )
-        .expect("plan max");
+        let plan = build_send_plan(Network::Main, ACCOUNT, &coins, addr, 0, addr, 1, true)
+            .expect("plan max");
         assert_eq!(plan.inputs.len(), 2);
     }
 

@@ -498,6 +498,15 @@ mod base_url_guard_tests {
     }
 
     #[test]
+    fn accepts_loopback_via_parsed_ip() {
+        // 127.0.0.2 is in 127.0.0.0/8 (loopback) but isn't caught by the
+        // literal `host == "127.0.0.1"` string check — exercises the
+        // `url::Host::Ipv4(a) => a.is_loopback()` match arm.
+        assert!(validate_base_url("http://127.0.0.2:8080").is_ok());
+        assert!(validate_base_url("http://127.255.255.254:8080").is_ok());
+    }
+
+    #[test]
     fn rejects_arbitrary_host() {
         // Any non-Namebase, non-loopback host must be refused so a poisoned
         // `namebase_base_url` setting can't redirect the session cookie.
@@ -534,5 +543,54 @@ mod base_url_guard_tests {
     fn rejects_empty_string() {
         assert!(validate_base_url("").is_err());
         assert!(validate_base_url("   ").is_err());
+    }
+}
+
+#[cfg(test)]
+mod cookie_helper_tests {
+    use super::*;
+
+    // -- normalize_cookie --
+
+    #[test]
+    fn normalize_strips_uppercase_cookie_prefix() {
+        assert_eq!(normalize_cookie("Cookie: a=1; b=2"), "a=1; b=2");
+    }
+
+    #[test]
+    fn normalize_strips_lowercase_cookie_prefix() {
+        assert_eq!(normalize_cookie("cookie: session=xyz"), "session=xyz");
+    }
+
+    #[test]
+    fn normalize_trims_whitespace() {
+        assert_eq!(normalize_cookie("  a=1  "), "a=1");
+    }
+
+    #[test]
+    fn normalize_passthrough_plain_value() {
+        assert_eq!(normalize_cookie("a=1; b=2"), "a=1; b=2");
+    }
+
+    // -- apply_set_cookie edge cases --
+
+    #[test]
+    fn apply_set_cookie_ignores_empty_input() {
+        let mut jar = vec![CookiePair {
+            name: "a".into(),
+            value: Some("1".into()),
+        }];
+        // An empty string: `splitn(2, ';')` yields `[""]`, `split_once('=')`
+        // returns None → early return. Jar unchanged.
+        apply_set_cookie(&mut jar, "");
+        assert_eq!(jar.len(), 1);
+    }
+
+    #[test]
+    fn apply_set_cookie_ignores_bare_name_without_equals() {
+        let mut jar = vec![];
+        // "bare-token" has no `=`, so `split_once('=')` returns None → return.
+        apply_set_cookie(&mut jar, "bare-token");
+        assert!(jar.is_empty());
     }
 }

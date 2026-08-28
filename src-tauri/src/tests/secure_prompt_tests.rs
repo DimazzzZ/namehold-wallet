@@ -42,6 +42,68 @@ fn test_expected_label_long_id() {
     assert_eq!(expected_label, format!("secure-prompt-{long_id}"));
 }
 
+// --- is_owning_window: pure comparison lifted out of assert_owning_window ---
+// The pure comparison is directly testable and covers the whole
+// matching / non-matching branch space (assert_owning_window itself is a thin
+// window shell, annotated coverage(off)).
+
+#[test]
+fn test_is_owning_window_matches_expected_label() {
+    assert!(secure_prompt::is_owning_window(
+        "secure-prompt-abc123",
+        "abc123"
+    ));
+}
+
+#[test]
+fn test_is_owning_window_rejects_wrong_prompt_id() {
+    assert!(!secure_prompt::is_owning_window(
+        "secure-prompt-abc123",
+        "other"
+    ));
+}
+
+#[test]
+fn test_is_owning_window_rejects_react_window_label() {
+    // The React app's window (label "main" or similar) must never be accepted.
+    assert!(!secure_prompt::is_owning_window("main", "abc123"));
+    assert!(!secure_prompt::is_owning_window("", "abc123"));
+}
+
+#[test]
+fn test_is_owning_window_rejects_prefix_only_label() {
+    // A label with just the prefix but no id must still be rejected when a
+    // non-empty prompt_id is expected.
+    assert!(!secure_prompt::is_owning_window(
+        "secure-prompt-",
+        "abc123"
+    ));
+}
+
+#[test]
+fn test_is_owning_window_matches_empty_prompt_id() {
+    // Empty prompt_id is an edge case: the label must equal exactly
+    // "secure-prompt-" for the match to succeed.
+    assert!(secure_prompt::is_owning_window("secure-prompt-", ""));
+    assert!(!secure_prompt::is_owning_window(
+        "secure-prompt-abc123",
+        ""
+    ));
+}
+
+#[test]
+fn test_is_owning_window_case_sensitive() {
+    // Labels are case-sensitive; an id differing only in case must NOT match.
+    assert!(!secure_prompt::is_owning_window(
+        "SECURE-PROMPT-abc123",
+        "abc123"
+    ));
+    assert!(!secure_prompt::is_owning_window(
+        "secure-prompt-ABC123",
+        "abc123"
+    ));
+}
+
 // --- SecurePromptRequest serialization tests ---
 
 #[test]

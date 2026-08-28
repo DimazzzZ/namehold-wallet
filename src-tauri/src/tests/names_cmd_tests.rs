@@ -2933,3 +2933,673 @@ async fn build_batch_bid_draft_rejects_non_biddable_phase() {
         "no batch-bid draft should be persisted when the batch is rejected"
     );
 }
+
+// ============================================================================
+// Async wrapper happy paths — cover the RPC-prefetch shells around the
+// _inner functions tested in build_batch_*_draft_tests.rs
+//
+// These exercise the async wrappers themselves: the pre-inner RPC calls
+// (fetch_name_state / renewal_block / owner_coin_and_state) + validation +
+// per-name DB prefetch loops that the pure `_inner` unit tests bypass.
+// ============================================================================
+
+/// Seed an owner coin for `name` at the profile's REAL derived receive[0]
+/// address (so the `get_name_coin` 3-way JOIN resolves) with a per-name txid
+/// (so 2+ names in a batch never collide on the tracked_utxos PK). Optional
+/// covenant JSON controls the coin's covenant (None → a plain owner coin).
+fn seed_owner_coin_at_derived(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+    txid: &str,
+    covenant_type: i64,
+    covenant_json: Option<&str>,
+) {
+    let addr = first_derived_address(conn, profile_id);
+    let nh = hex::encode(crate::noncustodial::names::hash_name(name).unwrap());
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, height)
+         VALUES (?1, ?2, ?3, 'CLOSED', ?4, 0, 100)",
+        rusqlite::params![profile_id, name, nh, txid],
+    )
+    .unwrap();
+    let spend_class = "name_control";
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+         VALUES (?1, 0, ?2, ?3, '00', 5000000, ?4, ?5, ?6, NULL)",
+        rusqlite::params![
+            txid,
+            profile_id,
+            &addr,
+            covenant_type,
+            covenant_json,
+            spend_class
+        ],
+    )
+    .unwrap();
+}
+
+/// Build a TRANSFER covenant JSON whose items[3] is a valid regtest p2wpkh
+/// target h160 (so finalize's target extraction succeeds). Returns the JSON.
+fn transfer_covenant_json_for(name: &str) -> String {
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(name).unwrap());
+    // A fixed, valid 20-byte target (version 0 = p2wpkh).
+    let target_h160 = [0x11u8; 20];
+    serde_json::json!({
+        "type": crate::noncustodial::sync::COV_TRANSFER,
+        "items": [
+            nh_hex,
+            "64000000", // height 100 little-endian u32
+            "00",       // version 0 (p2wpkh)
+            hex::encode(target_h160)
+        ]
+    })
+    .to_string()
+}
+
+/// Mock getnameinfo with an explicit `state` (phase) for the batch-bid path,
+/// which requires BIDDING/OPENING. Matches any name (generic regex).
+async fn mock_names_rpc_with_state(
+    server: &mut mockito::Server,
+    state: &str,
+) -> Vec<mockito::Mock> {
+    let mut mocks = Vec::new();
+    mocks.push(
+        server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+            .with_body(format!(
+                r#"{{"result":{{"info":{{"height":100,"value":50000,"renewals":2,"claimed":1,"weak":false,"state":"{state}"}}}},"error":null,"id":1}}"#
+            ))
+            .expect_at_least(1)
+            .create_async()
+            .await,
+    );
+    mocks.push(
+        server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_body(r#"{"result":{"blocks":1000},"error":null,"id":1}"#)
+            .expect_at_least(1)
+            .create_async()
+            .await,
+    );
+    mocks.push(
+        server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockhash".into()))
+            .with_body(r#"{"result":"0000000000000000000000000000000000000000000000000000000000000000","error":null,"id":1}"#)
+            .expect_at_least(1)
+            .create_async()
+            .await,
+    );
+    mocks
+}
+
+// --- build_batch_bid_draft: happy path + guard clauses ----------------------
+
+#[tokio::test]
+async fn build_batch_bid_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc_with_state(&mut server, "BIDDING").await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"11".repeat(32));
+    }
+    let app = mock_app_with(state);
+    let summary = names::build_batch_bid_draft(
+        app.state(),
+        vec!["alpha".into(), "bravo".into()],
+        1000,
+        2000,
+        None,
+    )
+    .await
+    .expect("batch bid draft should build for biddable names");
+    assert_eq!(summary.action, "batch-bid");
+}
+
+#[tokio::test]
+async fn build_batch_bid_draft_wrapper_rejects_empty() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let err = names::build_batch_bid_draft(app.state(), vec![], 1000, 2000, None)
+        .await
+        .expect_err("empty names must be rejected");
+    assert!(format!("{err}").contains("no names provided"));
+}
+
+#[tokio::test]
+async fn build_batch_bid_draft_wrapper_rejects_too_large() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let too_many: Vec<String> = (0..(names::MAX_BATCH_SIZE + 1))
+        .map(|i| format!("n{i}"))
+        .collect();
+    let err = names::build_batch_bid_draft(app.state(), too_many, 1000, 2000, None)
+        .await
+        .expect_err("oversized batch must be rejected");
+    assert!(format!("{err}").contains("batch too large"));
+}
+
+#[tokio::test]
+async fn build_batch_bid_draft_wrapper_rejects_bad_bid_value() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    // lockup < bid_value → rejected before any RPC.
+    let err = names::build_batch_bid_draft(app.state(), vec!["alpha".into()], 2000, 1000, None)
+        .await
+        .expect_err("lockup < bid must be rejected");
+    assert!(format!("{err}").contains("lockup must be"));
+}
+
+// --- build_batch_renew_draft: happy path + guards ---------------------------
+
+#[tokio::test]
+async fn build_batch_renew_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"22".repeat(32));
+        // One owner coin per name, distinct per-name txids.
+        seed_owner_coin_at_derived(&conn, &id, "alpha", &"a1".repeat(32), 0, None);
+        seed_owner_coin_at_derived(&conn, &id, "bravo", &"b1".repeat(32), 0, None);
+    }
+    let app = mock_app_with(state);
+    let summary =
+        names::build_batch_renew_draft(app.state(), vec!["alpha".into(), "bravo".into()], None)
+            .await
+            .expect("batch renew draft should build");
+    assert_eq!(summary.action, "batch-renew");
+}
+
+#[tokio::test]
+async fn build_batch_renew_draft_wrapper_rejects_empty() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let err = names::build_batch_renew_draft(app.state(), vec![], None)
+        .await
+        .expect_err("empty names must be rejected");
+    assert!(format!("{err}").contains("no names provided"));
+}
+
+#[tokio::test]
+async fn build_batch_renew_draft_wrapper_rejects_missing_owner() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        let _ = id;
+    }
+    let app = mock_app_with(state);
+    // No owner coin seeded → NotFound.
+    let err = names::build_batch_renew_draft(app.state(), vec!["ghost".into()], None)
+        .await
+        .expect_err("missing owner coin must be rejected");
+    assert!(format!("{err}").contains("does not hold"));
+}
+
+// --- build_batch_reveal_draft: happy path + guards --------------------------
+
+#[tokio::test]
+async fn build_batch_reveal_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"33".repeat(32));
+        let addr = first_derived_address(&conn, &id);
+        for (name, txid) in [("alpha", "a2".repeat(32)), ("bravo", "b2".repeat(32))] {
+            let cov = bid_covenant_json_for(name, &format!("blind-{name}"));
+            seed_covenant_coin(
+                &conn,
+                &id,
+                &txid,
+                &addr,
+                crate::noncustodial::sync::COV_BID,
+                2000,
+                Some(&cov),
+            );
+            seed_bid_commitment(&conn, &id, name, &addr);
+        }
+    }
+    let app = mock_app_with(state);
+    let summary =
+        names::build_batch_reveal_draft(app.state(), vec!["alpha".into(), "bravo".into()], None)
+            .await
+            .expect("batch reveal draft should build");
+    assert_eq!(summary.action, "batch-reveal");
+}
+
+#[tokio::test]
+async fn build_batch_reveal_draft_wrapper_rejects_missing_commitment() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        let _ = id;
+    }
+    let app = mock_app_with(state);
+    // No bid commitment seeded → NotFound.
+    let err = names::build_batch_reveal_draft(app.state(), vec!["nobid".into()], None)
+        .await
+        .expect_err("missing bid commitment must be rejected");
+    assert!(format!("{err}").contains("no bid commitment"));
+}
+
+#[tokio::test]
+async fn build_batch_reveal_draft_wrapper_rejects_empty() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let err = names::build_batch_reveal_draft(app.state(), vec![], None)
+        .await
+        .expect_err("empty names must be rejected");
+    assert!(format!("{err}").contains("no names provided"));
+}
+
+// --- build_batch_redeem_draft: happy path + guards --------------------------
+
+#[tokio::test]
+async fn build_batch_redeem_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"44".repeat(32));
+        let addr = first_derived_address(&conn, &id);
+        for (name, txid) in [("alpha", "a3".repeat(32)), ("bravo", "b3".repeat(32))] {
+            let cov = covenant_json_for(name, crate::noncustodial::sync::COV_REVEAL, "REVEAL");
+            seed_covenant_coin(
+                &conn,
+                &id,
+                &txid,
+                &addr,
+                crate::noncustodial::sync::COV_REVEAL,
+                1000,
+                Some(&cov),
+            );
+            seed_bid_commitment(&conn, &id, name, &addr);
+        }
+    }
+    let app = mock_app_with(state);
+    let summary =
+        names::build_batch_redeem_draft(app.state(), vec!["alpha".into(), "bravo".into()], None)
+            .await
+            .expect("batch redeem draft should build");
+    assert_eq!(summary.action, "batch-redeem");
+}
+
+#[tokio::test]
+async fn build_batch_redeem_draft_wrapper_rejects_too_large() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let too_many: Vec<String> = (0..(names::MAX_BATCH_SIZE + 1))
+        .map(|i| format!("n{i}"))
+        .collect();
+    let err = names::build_batch_redeem_draft(app.state(), too_many, None)
+        .await
+        .expect_err("oversized batch must be rejected");
+    assert!(format!("{err}").contains("batch too large"));
+}
+
+// --- build_batch_finalize_draft: happy path + guards ------------------------
+
+#[tokio::test]
+async fn build_batch_finalize_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"55".repeat(32));
+        for (name, txid) in [("alpha", "a4".repeat(32)), ("bravo", "b4".repeat(32))] {
+            let cov = transfer_covenant_json_for(name);
+            seed_owner_coin_at_derived(
+                &conn,
+                &id,
+                name,
+                &txid,
+                crate::noncustodial::sync::COV_TRANSFER as i64,
+                Some(&cov),
+            );
+        }
+    }
+    let app = mock_app_with(state);
+    let summary =
+        names::build_batch_finalize_draft(app.state(), vec!["alpha".into(), "bravo".into()], None)
+            .await
+            .expect("batch finalize draft should build");
+    assert_eq!(summary.action, "batch-finalize");
+}
+
+#[tokio::test]
+async fn build_batch_finalize_draft_wrapper_rejects_empty() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let err = names::build_batch_finalize_draft(app.state(), vec![], None)
+        .await
+        .expect_err("empty names must be rejected");
+    assert!(format!("{err}").contains("no names provided"));
+}
+
+#[tokio::test]
+async fn build_batch_finalize_draft_wrapper_rejects_missing_owner() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+        let conn2 = &conn;
+        set_node_rpc_url(conn2, &server.url());
+    }
+    let app = mock_app_with(state);
+    let err = names::build_batch_finalize_draft(app.state(), vec!["ghost".into()], None)
+        .await
+        .expect_err("missing owner coin must be rejected");
+    assert!(format!("{err}").contains("does not hold"));
+}
+
+// --- build_finalize_with_payment_draft: happy path + guards -----------------
+
+#[tokio::test]
+async fn build_finalize_with_payment_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    let payment_addr = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"66".repeat(32));
+        let cov = transfer_covenant_json_for("alpha");
+        seed_owner_coin_at_derived(
+            &conn,
+            &id,
+            "alpha",
+            &"a5".repeat(32),
+            crate::noncustodial::sync::COV_TRANSFER as i64,
+            Some(&cov),
+        );
+        // A valid regtest payment address (the wallet's own derived receive[0]).
+        first_derived_address(&conn, &id)
+    };
+    let app = mock_app_with(state);
+    let summary = names::build_finalize_with_payment_draft(
+        app.state(),
+        "alpha".into(),
+        payment_addr,
+        3_000_000,
+        None,
+    )
+    .await
+    .expect("finalize-with-payment draft should build");
+    assert_eq!(summary.action, "finalize-with-payment");
+}
+
+#[tokio::test]
+async fn build_finalize_with_payment_draft_wrapper_rejects_zero_payment() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let err = names::build_finalize_with_payment_draft(
+        app.state(),
+        "alpha".into(),
+        "rs1qtest".into(),
+        0,
+        None,
+    )
+    .await
+    .expect_err("zero payment value must be rejected");
+    assert!(format!("{err}").contains("payment value must be non-zero"));
+}
+
+// --- Single-name owner-action wrappers: happy paths -------------------------
+
+#[tokio::test]
+async fn build_register_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"71".repeat(32));
+        seed_owner_coin_at_derived(&conn, &id, "alpha", &"a6".repeat(32), 0, None);
+    }
+    let app = mock_app_with(state);
+    let summary = names::build_register_draft(app.state(), "alpha".into(), None, None)
+        .await
+        .expect("register draft should build");
+    assert_eq!(summary.action, "register");
+}
+
+#[tokio::test]
+async fn build_update_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"72".repeat(32));
+        seed_owner_coin_at_derived(&conn, &id, "alpha", &"a7".repeat(32), 0, None);
+    }
+    let app = mock_app_with(state);
+    let summary = names::build_update_draft(app.state(), "alpha".into(), vec![], None)
+        .await
+        .expect("update draft should build");
+    assert_eq!(summary.action, "update");
+}
+
+#[tokio::test]
+async fn build_renew_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"73".repeat(32));
+        seed_owner_coin_at_derived(&conn, &id, "alpha", &"a8".repeat(32), 0, None);
+    }
+    let app = mock_app_with(state);
+    let summary = names::build_renew_draft(app.state(), "alpha".into(), None)
+        .await
+        .expect("renew draft should build");
+    assert_eq!(summary.action, "renew");
+}
+
+#[tokio::test]
+async fn build_transfer_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    let recipient = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"74".repeat(32));
+        seed_owner_coin_at_derived(&conn, &id, "alpha", &"a9".repeat(32), 0, None);
+        first_derived_address(&conn, &id)
+    };
+    let app = mock_app_with(state);
+    let summary = names::build_transfer_draft(app.state(), "alpha".into(), recipient, None)
+        .await
+        .expect("transfer draft should build");
+    assert_eq!(summary.action, "transfer");
+}
+
+#[tokio::test]
+async fn build_cancel_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"75".repeat(32));
+        seed_owner_coin_at_derived(&conn, &id, "alpha", &"aa".repeat(32), 0, None);
+    }
+    let app = mock_app_with(state);
+    let summary = names::build_cancel_draft(app.state(), "alpha".into(), None)
+        .await
+        .expect("cancel draft should build");
+    assert_eq!(summary.action, "cancel");
+}
+
+#[tokio::test]
+async fn build_revoke_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"76".repeat(32));
+        seed_owner_coin_at_derived(&conn, &id, "alpha", &"ab".repeat(32), 0, None);
+    }
+    let app = mock_app_with(state);
+    let summary = names::build_revoke_draft(app.state(), "alpha".into(), None)
+        .await
+        .expect("revoke draft should build");
+    assert_eq!(summary.action, "revoke");
+}
+
+#[tokio::test]
+async fn build_redeem_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"77".repeat(32));
+        let addr = first_derived_address(&conn, &id);
+        let cov = covenant_json_for("alpha", crate::noncustodial::sync::COV_REVEAL, "REVEAL");
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &"ac".repeat(32),
+            &addr,
+            crate::noncustodial::sync::COV_REVEAL,
+            1000,
+            Some(&cov),
+        );
+        seed_bid_commitment(&conn, &id, "alpha", &addr);
+    }
+    let app = mock_app_with(state);
+    let summary = names::build_redeem_draft(app.state(), "alpha".into(), None)
+        .await
+        .expect("redeem draft should build");
+    assert_eq!(summary.action, "redeem");
+}
+
+#[tokio::test]
+async fn build_batch_renew_draft_wrapper_rejects_too_large() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let too_many: Vec<String> = (0..(names::MAX_BATCH_SIZE + 1))
+        .map(|i| format!("n{i}"))
+        .collect();
+    let err = names::build_batch_renew_draft(app.state(), too_many, None)
+        .await
+        .expect_err("oversized batch must be rejected");
+    assert!(format!("{err}").contains("batch too large"));
+}
+
+#[tokio::test]
+async fn build_batch_reveal_draft_wrapper_rejects_too_large() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let too_many: Vec<String> = (0..(names::MAX_BATCH_SIZE + 1))
+        .map(|i| format!("n{i}"))
+        .collect();
+    let err = names::build_batch_reveal_draft(app.state(), too_many, None)
+        .await
+        .expect_err("oversized batch must be rejected");
+    assert!(format!("{err}").contains("batch too large"));
+}
+
+#[tokio::test]
+async fn build_batch_redeem_draft_wrapper_rejects_empty() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let err = names::build_batch_redeem_draft(app.state(), vec![], None)
+        .await
+        .expect_err("empty names must be rejected");
+    assert!(format!("{err}").contains("no names provided"));
+}

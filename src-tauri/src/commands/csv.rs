@@ -1,3 +1,4 @@
+// COVERAGE: #[tauri::command] macro attribute lines are structurally uncoverable.
 use crate::db;
 use crate::error::AppError;
 use crate::models::asset::ImportResult;

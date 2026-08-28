@@ -717,3 +717,52 @@ async fn test_get_account_history_429_is_rate_limited() {
     }
     m.assert_async().await;
 }
+
+/// A 429 with no `Retry-After` header falls back to the default 60 s.
+#[tokio::test]
+async fn test_get_account_history_429_without_retry_after_defaults_to_60() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/account/history/export")
+        .with_status(429)
+        .with_body("rate limited")
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    let err = client
+        .get_account_history()
+        .await
+        .expect_err("429 should surface as NamebaseRateLimited");
+    match err {
+        AppError::NamebaseRateLimited { retry_after_secs } => {
+            assert_eq!(retry_after_secs, 60);
+        }
+        other => panic!("expected NamebaseRateLimited, got: {other:?}"),
+    }
+    m.assert_async().await;
+}
+
+/// A non-success, non-429 status (e.g. 500) on the CSV export surfaces as a
+/// generic `AppError::Other` carrying the status.
+#[tokio::test]
+async fn test_get_account_history_500_is_generic_error() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/account/history/export")
+        .with_status(500)
+        .with_body("boom")
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    let err = client
+        .get_account_history()
+        .await
+        .expect_err("500 should surface as a generic error");
+    match err {
+        AppError::Other(msg) => assert!(msg.contains("500"), "got {msg}"),
+        other => panic!("expected Other, got: {other:?}"),
+    }
+    m.assert_async().await;
+}

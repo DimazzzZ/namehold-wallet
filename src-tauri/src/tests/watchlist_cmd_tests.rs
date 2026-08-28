@@ -234,3 +234,156 @@ fn csv_import_skips_duplicates() {
     assert_eq!(result.imported, 0);
     assert_eq!(result.skipped, 1);
 }
+
+// --- coverage: tracked_name_states row populates state/expiry (line 130) -----
+
+#[test]
+fn get_watchlist_status_returns_cached_state_and_expiry() {
+    let app = app();
+    add_to_watchlist(app.state(), "cached".into(), None, None).unwrap();
+
+    // Seed a tracked_name_states row so the query at line 130 returns data.
+    {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        // tracked_name_states has a FK to wallet_profiles — seed a profile.
+        db::queries::insert_wallet_profile(
+            &conn, "wp1", "W", "mnemonic_hot", "regtest", "xpubFAKE", 0, false,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state, renewal_height)
+             VALUES ('wp1', 'cached', 'deadbeef', 'CLOSED', 200000)",
+            [],
+        )
+        .unwrap();
+    }
+
+    let statuses = get_watchlist_status(app.state(), vec!["cached".into()]).unwrap();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].state.as_deref(), Some("CLOSED"));
+    assert_eq!(statuses[0].expiry, Some(200000));
+}
+
+// --- coverage: csv_split_row escaped-quote handling (lines 199-200) ----------
+
+#[test]
+fn csv_export_import_round_trips_embedded_quotes() {
+    let path_str = tmp_csv_path("quotes");
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(path_str.clone());
+
+    let src = app();
+    // Notes contain a literal double-quote — csv_escape wraps in quotes and
+    // doubles the internal quote; csv_split_row must reverse that.
+    add_to_watchlist(
+        src.state(),
+        "quotey".into(),
+        Some("she said \"hello\"".into()),
+        Some("tag".into()),
+    )
+    .unwrap();
+    let exported = export_watchlist_csv(src.state(), path_str.clone()).unwrap();
+    assert_eq!(exported, 1);
+
+    let dest = app();
+    let result = import_watchlist_csv(dest.state(), path_str.clone()).unwrap();
+    assert_eq!(result.imported, 1);
+
+    let list = list_watchlist(dest.state()).unwrap();
+    let q = list.iter().find(|w| w.name == "quotey").unwrap();
+    assert_eq!(q.notes, "she said \"hello\"", "embedded quotes must survive round-trip");
+}
+
+// --- coverage: import without header row (line 293) --------------------------
+
+#[test]
+fn csv_import_without_header_treats_first_line_as_data() {
+    let path_str = tmp_csv_path("noheader");
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(path_str.clone());
+
+    // No "name" header — first line is data.
+    std::fs::write(&path_str, "alpha,tag1,note1\nbeta,tag2,note2\n").unwrap();
+
+    let app = app();
+    let result = import_watchlist_csv(app.state(), path_str).unwrap();
+    assert_eq!(result.imported, 2);
+    assert!(result.errors.is_empty());
+
+    let list = list_watchlist(app.state()).unwrap();
+    assert_eq!(list.len(), 2);
+    assert!(list.iter().any(|w| w.name == "alpha"));
+    assert!(list.iter().any(|w| w.name == "beta"));
+}
+
+// --- coverage: import skips empty lines (line 299) ---------------------------
+
+#[test]
+fn csv_import_skips_empty_lines() {
+    let path_str = tmp_csv_path("emptylines");
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(path_str.clone());
+
+    std::fs::write(&path_str, "name,tags,notes\nfoo,t,n\n\n  \nbar,t2,n2\n").unwrap();
+
+    let app = app();
+    let result = import_watchlist_csv(app.state(), path_str).unwrap();
+    assert_eq!(result.imported, 2);
+    assert!(result.errors.is_empty());
+}
+
+// --- coverage: import reports error for empty name field (lines 304-305) -----
+
+#[test]
+fn csv_import_errors_on_empty_name_field() {
+    let path_str = tmp_csv_path("emptyname");
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(path_str.clone());
+
+    // First row has a name, second row has an empty name field.
+    std::fs::write(&path_str, "name,tags\ngood,t\n,t2\n").unwrap();
+
+    let app = app();
+    let result = import_watchlist_csv(app.state(), path_str).unwrap();
+    assert_eq!(result.imported, 1);
+    assert_eq!(result.errors.len(), 1);
+    assert!(result.errors[0].contains("empty name"));
+}
+
+// --- coverage: is_watched query error propagation (line 81) ------------------
+
+/// If the `watched_names` table is gone, `is_watched`'s `query_row` fails and
+/// the error propagates via `?` at line 81.
+#[test]
+fn is_watched_propagates_query_error() {
+    let app = app();
+    {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        conn.execute_batch("DROP TABLE watched_names;").unwrap();
+    }
+    let result = is_watched(app.state(), "anything".into());
+    assert!(result.is_err(), "is_watched should fail when the table is gone");
+}

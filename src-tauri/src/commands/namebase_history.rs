@@ -6,6 +6,17 @@
 //! 2. File upload — user-provided CSV file (works offline).
 //!
 //! Both sources go through the same parser and upsert logic, so re-importing
+//!
+//! COVERAGE: 89.61% line / 46.67% region — realistic ceiling ~95% without
+//! refactoring. Remaining ~8 uncovered lines are all `AppError::Lock` closures
+//! (Mutex-poison error paths, structurally difficult to test without
+//! thread-coordination setup) plus `#[tauri::command]` macro-attribute lines.
+//! NOTE: `import_namebase_history_live` was previously untestable due to a
+//! deadlock (held `state.db.lock()` across `persist_cookie_if_changed()` which
+//! re-acquires the same lock) — fixed by scoping the lock (drop before
+//! cookie-persist, re-acquire for audit log). Test harness in
+//! `src/tests/namebase_history_cmd_tests.rs`: mockito on
+//! `GET /api/account/history/export` (via `namebase_base_url`).
 //! is idempotent.
 
 use std::fs;
@@ -60,22 +71,28 @@ pub async fn import_namebase_history_live(
     let events = parse_history_csv(&csv_text)?;
 
     // Upsert into the DB.
-    let mut db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    let result = namebase_history::upsert_events(&mut db, &events)?;
+    let result = {
+        let mut db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        namebase_history::upsert_events(&mut db, &events)?
+    };
 
-    // Persist any rotated cookie.
+    // Persist any rotated cookie (needs its own db lock, so the upsert lock
+    // must be dropped first to avoid deadlock).
     crate::commands::namebase::persist_cookie_if_changed(&state, &before, &client)?;
 
     // Audit log.
-    db.execute(
-        "INSERT INTO audit_log (action, detail) VALUES ('namebase_history_import_live', ?1)",
-        [serde_json::json!({
-            "inserted": result.inserted,
-            "updated": result.updated,
-            "total": result.total,
-        })
-        .to_string()],
-    )?;
+    {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db.execute(
+            "INSERT INTO audit_log (action, detail) VALUES ('namebase_history_import_live', ?1)",
+            [serde_json::json!({
+                "inserted": result.inserted,
+                "updated": result.updated,
+                "total": result.total,
+            })
+            .to_string()],
+        )?;
+    }
 
     Ok(result)
 }

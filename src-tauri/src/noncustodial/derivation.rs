@@ -409,6 +409,26 @@ mod tests {
         assert_eq!(count, 2);
     }
 
+    /// If the connection lacks the `derived_addresses` table, `conn.execute`
+    /// returns SqliteFailure and `persist_address`'s `?` propagates it as
+    /// `AppError`. Covers the previously-uncovered error branch at line 141.
+    #[test]
+    fn persist_address_propagates_db_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        let d = DerivedAddress {
+            branch: BRANCH_RECEIVE,
+            child_index: 0,
+            address: "hs1fake".to_string(),
+            script_pubkey_hex: "0014".to_string(),
+            public_key_hex: "02aa".to_string(),
+        };
+        let err = persist_address(&conn, "p1", 0, &d);
+        assert!(
+            err.is_err(),
+            "expected error from missing derived_addresses table"
+        );
+    }
+
     #[test]
     fn next_unused_receive_address_rotates_past_utxo_and_bid_usage() {
         let conn = mem_db();
@@ -613,8 +633,7 @@ mod tests {
             params![&d_last.address],
         )
         .unwrap();
-        let err =
-            next_unused_receive_address(&conn, "p1", 0, Network::Main, &xpub).unwrap_err();
+        let err = next_unused_receive_address(&conn, "p1", 0, Network::Main, &xpub).unwrap_err();
         assert!(
             matches!(err, AppError::InvalidInput(ref m) if m.contains("overflow")),
             "got {err:?}"

@@ -332,6 +332,82 @@ mod tests {
         assert_eq!(v.to_string(), "1.6.0");
     }
 
+    /// A GET_APP_VERSION response shorter than 3 bytes is a device protocol
+    /// error, not a valid version.
+    #[test]
+    fn app_version_short_body_is_error() {
+        let hid = ScriptedHid {
+            reads: vec![framed(&[1, 6])].into(), // 2 bytes < 3
+        };
+        let mut signer = LedgerSigner::with_transport(Transport::new(hid));
+        let err = signer.get_app_version().unwrap_err();
+        match err {
+            AppError::Device(m) => assert!(m.contains("GET_APP_VERSION"), "got {m}"),
+            other => panic!("expected Device, got {other:?}"),
+        }
+    }
+
+    /// A valid GET_PUBLIC_KEY response (with chain code) round-trips into a
+    /// `(pubkey, chain_code)` tuple. Covers `get_account_pubkey`.
+    #[test]
+    fn get_account_pubkey_returns_key_and_chain_code() {
+        // Body: pubkey(33=0x02..) | cc_len=32 | cc(32=0xAB..) | fp_len=0
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0x02; 33]);
+        body.push(32);
+        body.extend_from_slice(&[0xAB; 32]);
+        body.push(0);
+        // 67-byte body + SW spans two HID frames → use the multi-frame helper.
+        let hid = ScriptedHid {
+            reads: crate::providers::ledger::test_helpers::frame_response(&body, 0x9000).into(),
+        };
+        let mut signer = LedgerSigner::with_transport(Transport::new(hid));
+        let (pk, cc) = signer.get_account_pubkey(Network::Main, 0, false).unwrap();
+        assert_eq!(pk, [0x02; 33]);
+        assert_eq!(cc, [0xAB; 32]);
+    }
+
+    /// If the device omits the chain code (cc_len=0), `get_account_pubkey`
+    /// surfaces a `Device` error rather than a partial xpub.
+    #[test]
+    fn get_account_pubkey_without_chain_code_is_error() {
+        // Body: pubkey(33) | cc_len=0 | fp_len=0
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0x02; 33]);
+        body.push(0);
+        body.push(0);
+        let hid = ScriptedHid {
+            reads: vec![framed(&body)].into(),
+        };
+        let mut signer = LedgerSigner::with_transport(Transport::new(hid));
+        let err = signer
+            .get_account_pubkey(Network::Main, 0, false)
+            .unwrap_err();
+        match err {
+            AppError::Device(m) => assert!(m.contains("chain code"), "got {m}"),
+            other => panic!("expected Device, got {other:?}"),
+        }
+    }
+
+    /// `get_address_pubkey` returns just the compressed pubkey; chain code /
+    /// fingerprint / address are all optional and can be absent.
+    #[test]
+    fn get_address_pubkey_returns_public_key() {
+        // Body: pubkey(33=0x03..) | cc_len=0 | fp_len=0
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0x03; 33]);
+        body.push(0);
+        body.push(0);
+        let hid = ScriptedHid {
+            reads: vec![framed(&body)].into(),
+        };
+        let mut signer = LedgerSigner::with_transport(Transport::new(hid));
+        let pk = signer
+            .get_address_pubkey(Network::Main, 0, 0, 0, false)
+            .unwrap();
+        assert_eq!(pk, [0x03; 33]);
+    }
+
     #[test]
     fn account_path_shape() {
         let p = account_path(Network::Main, 0);
@@ -406,6 +482,32 @@ mod tests {
 
         let names = resolve_covenant_names(&conn, &json, "profile-1").unwrap();
         assert_eq!(names, vec![(0usize, "example".to_string())]);
+    }
+
+    /// A name-bearing covenant with an empty `covenant_items_hex` list has no
+    /// name hash at item[0] → the output is skipped (line-273 `else` branch),
+    /// not treated as an error.
+    #[test]
+    fn resolve_covenant_names_skips_output_missing_name_hash() {
+        use crate::noncustodial::sync::COV_TRANSFER;
+        let conn = name_states_db();
+        let plan = crate::noncustodial::actions::DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "main".into(),
+            inputs: vec![],
+            outputs: vec![crate::noncustodial::actions::PlanOutput {
+                value: 1,
+                address: "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx".into(),
+                covenant_type: COV_TRANSFER,
+                covenant_items_hex: vec![], // name-bearing but no items
+            }],
+            change_output_index: None,
+        };
+        let json = serde_json::to_string(&plan).unwrap();
+        let names = resolve_covenant_names(&conn, &json, "profile-1").unwrap();
+        assert!(names.is_empty());
     }
 
     #[test]

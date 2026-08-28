@@ -592,4 +592,43 @@ mod tests {
         let count = backfill_subdomain_names(&conn).unwrap();
         assert_eq!(count, 0);
     }
+
+    // --- Error-propagation tests: exercise the `?` branches by using a bare
+    // connection that lacks the `namebase_history` table. ---
+
+    #[test]
+    fn upsert_events_propagates_db_error() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let events = parse_history_csv(&sample_csv()).unwrap();
+        let err = upsert_events(&mut conn, &events);
+        assert!(err.is_err(), "expected error from missing table");
+    }
+
+    #[test]
+    fn list_history_propagates_db_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        let err = list_history(&conn, None, None, None);
+        assert!(err.is_err(), "expected error from missing table");
+    }
+
+    #[test]
+    fn summary_propagates_db_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        let err = summary(&conn);
+        assert!(err.is_err(), "expected error from missing table");
+    }
+
+    #[test]
+    fn clear_propagates_db_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        let err = clear(&conn);
+        assert!(err.is_err(), "expected error from missing table");
+    }
+
+    #[test]
+    fn backfill_subdomain_names_propagates_db_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        let err = backfill_subdomain_names(&conn);
+        assert!(err.is_err(), "expected error from missing table");
+    }
 }

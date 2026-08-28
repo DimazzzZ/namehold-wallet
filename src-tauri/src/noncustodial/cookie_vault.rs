@@ -38,6 +38,77 @@ const DEK_LEN: usize = 32;
 const KEYRING_SERVICE: &str = "namehold-wallet";
 const KEYRING_ACCOUNT: &str = "namebase-cookie-dek-v1";
 
+/// Injectable keyring seam.
+///
+/// The DEK-management logic (`resolve_dek_from_backend`) is written against
+/// this trait so tests can drive every branch (existing DEK / no entry /
+/// transport error / malformed base64) without touching the developer's real
+/// OS keyring. In production the sole implementation is [`RealKeyring`], a
+/// thin adapter over `keyring::Entry`.
+trait KeyringBackend {
+    /// Fetch the stored password.
+    /// - `Ok(Some(value))` — a value is present.
+    /// - `Ok(None)` — no entry has been stored yet (first-run case).
+    /// - `Err(_)` — the keyring itself is unavailable / errored.
+    fn get_password(&self) -> Result<Option<String>, AppError>;
+
+    /// Store the password, overwriting any prior value.
+    fn set_password(&self, value: &str) -> Result<(), AppError>;
+}
+
+/// Production keyring backend: wraps `keyring::Entry` and translates
+/// `keyring::error::Error::NoEntry` into `Ok(None)` so the resolver can
+/// treat "no entry yet" as a normal first-run state.
+struct RealKeyring {
+    entry: keyring::Entry,
+}
+
+impl RealKeyring {
+    fn new() -> Result<Self, AppError> {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+            .map_err(|e| AppError::Other(format!("keyring entry: {e}")))?;
+        Ok(Self { entry })
+    }
+}
+
+impl KeyringBackend for RealKeyring {
+    fn get_password(&self) -> Result<Option<String>, AppError> {
+        match self.entry.get_password() {
+            Ok(p) => Ok(Some(p)),
+            Err(keyring::error::Error::NoEntry) => Ok(None),
+            Err(e) => Err(AppError::Other(format!("keyring get_password: {e}"))),
+        }
+    }
+
+    fn set_password(&self, value: &str) -> Result<(), AppError> {
+        self.entry
+            .set_password(value)
+            .map_err(|e| AppError::Other(format!("keyring set_password: {e}")))
+    }
+}
+
+/// Resolve the DEK using the given backend: return the stored value when
+/// present, otherwise generate a fresh random DEK and persist it.
+///
+/// This is the branch-heavy piece of the flow; keeping it pure over the
+/// backend trait means all four cases (existing / new / bad base64 / backend
+/// error) are exercisable by the test suite.
+fn resolve_dek_from_backend<B: KeyringBackend + ?Sized>(backend: &B) -> Result<Vec<u8>, AppError> {
+    match backend.get_password()? {
+        Some(dek_b64) => BASE64
+            .decode(dek_b64.as_bytes())
+            .map_err(|e| AppError::Crypto(format!("dek base64 decode: {e}"))),
+        None => {
+            // First run: generate a random DEK and store it.
+            let mut dek = vec![0u8; DEK_LEN];
+            rand::thread_rng().fill_bytes(&mut dek);
+            let dek_b64 = BASE64.encode(&dek);
+            backend.set_password(&dek_b64)?;
+            Ok(dek)
+        }
+    }
+}
+
 /// Test-only override for the DEK. When set, `get_or_create_dek()` returns
 /// this DEK instead of consulting the OS keyring. This lets integration tests
 /// exercise the full encrypt/decrypt flow (via `encrypt_cookie` /
@@ -74,6 +145,25 @@ pub fn set_test_dek(dek: Option<Vec<u8>>) {
         assert_eq!(d.len(), DEK_LEN, "test DEK must be {DEK_LEN} bytes");
     }
     *test_dek_slot().lock().expect("test dek slot") = dek;
+}
+
+/// Test-only slot for a fake keyring backend. Same debug/test gating rules
+/// as `TEST_DEK` — completely absent from release object code.
+#[cfg(any(test, debug_assertions))]
+static TEST_BACKEND: std::sync::OnceLock<
+    std::sync::Mutex<Option<Box<dyn KeyringBackend + Send + Sync>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(any(test, debug_assertions))]
+fn test_backend_slot() -> &'static std::sync::Mutex<Option<Box<dyn KeyringBackend + Send + Sync>>> {
+    TEST_BACKEND.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Install a fake keyring backend for tests. Passing `None` clears it.
+/// Debug/test builds only.
+#[cfg(any(test, debug_assertions))]
+fn set_test_keyring_backend(backend: Option<Box<dyn KeyringBackend + Send + Sync>>) {
+    *test_backend_slot().lock().expect("test backend") = backend;
 }
 
 /// Encrypt `plaintext` under the given 32-byte DEK. Pure crypto — no keyring
@@ -152,30 +242,21 @@ fn get_or_create_dek() -> Result<Vec<u8>, AppError> {
         if let Some(dek) = test_dek_slot().lock().expect("test dek slot").clone() {
             return Ok(dek);
         }
-    }
-
-    use keyring::Entry;
-
-    let entry = Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        .map_err(|e| AppError::Other(format!("keyring entry: {e}")))?;
-
-    // Try to retrieve an existing DEK.
-    match entry.get_password() {
-        Ok(dek_b64) => BASE64
-            .decode(dek_b64.as_bytes())
-            .map_err(|e| AppError::Crypto(format!("dek base64 decode: {e}"))),
-        Err(keyring::error::Error::NoEntry) => {
-            // First run: generate a random DEK and store it.
-            let mut dek = vec![0u8; DEK_LEN];
-            rand::thread_rng().fill_bytes(&mut dek);
-            let dek_b64 = BASE64.encode(&dek);
-            entry
-                .set_password(&dek_b64)
-                .map_err(|e| AppError::Other(format!("keyring set_password: {e}")))?;
-            Ok(dek)
+        // Test-only backend override: if a fake keyring backend has been
+        // installed via `set_test_keyring_backend`, resolve through it. Take
+        // the backend out under a short-lived lock (dropped before we call the
+        // resolver) so the resolver can't deadlock on the same mutex, then
+        // restore it so subsequent calls in the same test still see it.
+        let installed = test_backend_slot().lock().expect("test backend").take();
+        if let Some(backend) = installed {
+            let out = resolve_dek_from_backend(backend.as_ref());
+            *test_backend_slot().lock().expect("test backend") = Some(backend);
+            return out;
         }
-        Err(e) => Err(AppError::Other(format!("keyring get_password: {e}"))),
     }
+
+    let backend = RealKeyring::new()?;
+    resolve_dek_from_backend(&backend)
 }
 
 /// Encrypt the plaintext cookie under the OS-keyring-held DEK.
@@ -235,6 +316,44 @@ mod tests {
             tampered.replace_range(20..21, &flipped.to_string());
         }
         assert!(decrypt_with_dek(&tampered, &dek).is_err());
+    }
+
+    #[test]
+    fn decrypt_rejects_tampered_blob_covers_both_flip_branches() {
+        // Position 20 (hex) lands in the random nonce region of the blob
+        // (MAGIC[4] + NONCE[12] = 16 bytes = 32 hex chars of prefix). Flipping
+        // any hex nibble there changes the AEAD nonce, so tag verification must
+        // fail. To make the mutation deterministic regardless of the random
+        // nonce, replace the char at 20 with a DIFFERENT hex digit than what's
+        // already there (never a no-op), covering both the '0' and non-'0'
+        // starting cases.
+        let dek = test_dek();
+        let plaintext = b"deterministic";
+        let blob_hex = encrypt_with_dek(plaintext, &dek).expect("encrypt");
+        let chars: Vec<char> = blob_hex.chars().collect();
+        assert!(chars.len() > 20, "blob too short for test");
+
+        // Deterministically flip position 20 to a guaranteed-different hex
+        // digit: '0' -> '1', anything else -> '0'. Because we branch on the
+        // ACTUAL original char (not a forced value), the replacement is always
+        // a real change, so the tampered blob is never identical to the input.
+        let flip = |c: char| if c == '0' { '1' } else { '0' };
+        let mut tampered: String = blob_hex.clone();
+        let orig = chars[20];
+        tampered.replace_range(20..21, &flip(orig).to_string());
+        assert_ne!(tampered, blob_hex, "mutation must actually change the blob");
+        assert!(decrypt_with_dek(&tampered, &dek).is_err());
+
+        // Also exercise the other arm of the `flip` closure explicitly so both
+        // branches are covered deterministically on every run: pick a source
+        // char that forces the opposite arm from the one above.
+        let forced_src = if orig == '0' { 'a' } else { '0' };
+        let mut tampered2: String = blob_hex.clone();
+        // Set position 21 (also inside the nonce) to a known source, then flip.
+        tampered2.replace_range(21..22, &forced_src.to_string());
+        let after_force: Vec<char> = tampered2.chars().collect();
+        tampered2.replace_range(21..22, &flip(after_force[21]).to_string());
+        assert!(decrypt_with_dek(&tampered2, &dek).is_err());
     }
 
     #[test]
@@ -383,5 +502,273 @@ mod tests {
         let err = encrypt_cookie(b"").unwrap_err();
         assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
         set_test_dek(None);
+    }
+
+    /// Directly exercises `get_or_create_dek`'s test-DEK early-return branch
+    /// (the `return Ok(dek)` when a fixed DEK is installed) without going
+    /// through the public encrypt/decrypt wrappers.
+    #[test]
+    fn get_or_create_dek_returns_installed_test_dek() {
+        let _held = DEK_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+
+        let fixed = test_dek();
+        set_test_dek(Some(fixed.clone()));
+        let got = get_or_create_dek().expect("test DEK should be returned");
+        assert_eq!(got, fixed);
+        set_test_dek(None);
+    }
+
+    // ------------------------------------------------------------------
+    // Fake keyring backend tests: drive every branch of
+    // `resolve_dek_from_backend` and the outer `get_or_create_dek` path
+    // that consults an installed backend.
+    // ------------------------------------------------------------------
+
+    /// A configurable in-memory keyring backend used to drive each branch.
+    /// `get_result` controls what `get_password()` returns; if a `set` occurs
+    /// its value is captured in `stored`.
+    struct FakeKeyring {
+        get_result: std::sync::Mutex<Result<Option<String>, String>>,
+        stored: std::sync::Mutex<Option<String>>,
+        set_result: std::sync::Mutex<Result<(), String>>,
+    }
+
+    impl FakeKeyring {
+        fn with_existing(dek_b64: &str) -> Self {
+            Self {
+                get_result: std::sync::Mutex::new(Ok(Some(dek_b64.to_string()))),
+                stored: std::sync::Mutex::new(None),
+                set_result: std::sync::Mutex::new(Ok(())),
+            }
+        }
+
+        fn empty() -> Self {
+            Self {
+                get_result: std::sync::Mutex::new(Ok(None)),
+                stored: std::sync::Mutex::new(None),
+                set_result: std::sync::Mutex::new(Ok(())),
+            }
+        }
+
+        fn get_errors(msg: &str) -> Self {
+            Self {
+                get_result: std::sync::Mutex::new(Err(msg.to_string())),
+                stored: std::sync::Mutex::new(None),
+                set_result: std::sync::Mutex::new(Ok(())),
+            }
+        }
+
+        fn empty_but_set_fails(msg: &str) -> Self {
+            Self {
+                get_result: std::sync::Mutex::new(Ok(None)),
+                stored: std::sync::Mutex::new(None),
+                set_result: std::sync::Mutex::new(Err(msg.to_string())),
+            }
+        }
+    }
+
+    impl KeyringBackend for FakeKeyring {
+        fn get_password(&self) -> Result<Option<String>, AppError> {
+            match &*self.get_result.lock().unwrap() {
+                Ok(v) => Ok(v.clone()),
+                Err(m) => Err(AppError::Other(format!("keyring get_password: {m}"))),
+            }
+        }
+        fn set_password(&self, value: &str) -> Result<(), AppError> {
+            match &*self.set_result.lock().unwrap() {
+                Ok(()) => {
+                    *self.stored.lock().unwrap() = Some(value.to_string());
+                    Ok(())
+                }
+                Err(m) => Err(AppError::Other(format!("keyring set_password: {m}"))),
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_dek_returns_decoded_existing_value() {
+        let fixed = vec![7u8; DEK_LEN];
+        let b64 = BASE64.encode(&fixed);
+        let fake = FakeKeyring::with_existing(&b64);
+        let dek = resolve_dek_from_backend(&fake).expect("decode should succeed");
+        assert_eq!(dek, fixed);
+    }
+
+    #[test]
+    fn resolve_dek_errors_on_malformed_base64() {
+        let fake = FakeKeyring::with_existing("not@@base64!!");
+        let err = resolve_dek_from_backend(&fake).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Crypto(msg) if msg.contains("base64 decode")),
+            "expected Crypto with 'base64 decode', got {err:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_dek_generates_and_stores_when_no_entry() {
+        let fake = FakeKeyring::empty();
+        let dek = resolve_dek_from_backend(&fake).expect("generate + store");
+        assert_eq!(dek.len(), DEK_LEN);
+        // The generated DEK was persisted back through the backend.
+        let stored_b64 = fake.stored.lock().unwrap().clone().expect("stored value");
+        let stored = BASE64.decode(stored_b64.as_bytes()).expect("stored b64");
+        assert_eq!(stored, dek);
+    }
+
+    #[test]
+    fn resolve_dek_propagates_get_error() {
+        let fake = FakeKeyring::get_errors("keyring service missing");
+        let err = resolve_dek_from_backend(&fake).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Other(msg) if msg.contains("keyring service missing")),
+            "expected Other with 'keyring service missing', got {err:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_dek_propagates_set_error_on_first_run() {
+        let fake = FakeKeyring::empty_but_set_fails("write denied");
+        let err = resolve_dek_from_backend(&fake).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Other(msg) if msg.contains("write denied")),
+            "expected Other with 'write denied', got {err:?}"
+        );
+    }
+
+    /// Serializes tests that mutate the process-global test-backend slot.
+    static BACKEND_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn get_or_create_dek_uses_installed_test_backend_existing_entry() {
+        // Must NOT race with test-DEK-slot tests either: get_or_create_dek
+        // consults TEST_DEK first.
+        let _dek_held = DEK_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let _held = BACKEND_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+
+        set_test_dek(None);
+        let fixed = vec![9u8; DEK_LEN];
+        let b64 = BASE64.encode(&fixed);
+        set_test_keyring_backend(Some(Box::new(FakeKeyring::with_existing(&b64))));
+
+        let got = get_or_create_dek().expect("existing DEK returned");
+        assert_eq!(got, fixed);
+
+        set_test_keyring_backend(None);
+    }
+
+    #[test]
+    fn get_or_create_dek_uses_installed_test_backend_new_entry() {
+        let _dek_held = DEK_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let _held = BACKEND_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+
+        set_test_dek(None);
+        set_test_keyring_backend(Some(Box::new(FakeKeyring::empty())));
+
+        let got = get_or_create_dek().expect("generated");
+        assert_eq!(got.len(), DEK_LEN);
+
+        set_test_keyring_backend(None);
+    }
+
+    /// Construct the real keyring adapter. `keyring::Entry::new` on all
+    /// current backends is a pure constructor (no I/O until get/set), so
+    /// this is safe to run in CI. We don't invoke `get_password` /
+    /// `set_password` because those would touch the developer's real
+    /// Keychain / Secret-Service / Credential-Manager.
+    #[test]
+    fn real_keyring_new_constructs_without_io() {
+        // If this ever starts to fail on CI because a platform's `Entry::new`
+        // began doing I/O, replace with a compile-only assertion or feature-gate.
+        assert!(RealKeyring::new().is_ok());
+    }
+
+    /// Serialize tests that mutate the global keyring credential builder.
+    static KEYRING_BUILDER_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Install the process-wide mock credential builder exactly once so all
+    /// `RealKeyring` tests below can safely exercise `Entry::get_password` /
+    /// `Entry::set_password` without touching the developer's real keychain.
+    /// The keyring v3 API has no getter/restore, so this replaces the OS
+    /// builder for the remainder of the test process — safe because no other
+    /// test in this crate constructs a real keyring entry beyond
+    /// `real_keyring_new_constructs_without_io` (which doesn't do I/O).
+    fn install_mock_keyring_once() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        });
+    }
+
+    /// Test `RealKeyring` get/set against the mock credential store.
+    /// This exercises the trait impl methods (lines 75-87) which delegate to
+    /// `keyring::Entry` and translate `NoEntry` → `Ok(None)`.
+    #[test]
+    fn real_keyring_get_set_with_mock_backend() {
+        let _held = KEYRING_BUILDER_GUARD
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        install_mock_keyring_once();
+
+        // First call: no entry exists yet → Ok(None).
+        let kr = RealKeyring::new().expect("mock keyring");
+        let got = kr.get_password().expect("get_password");
+        assert_eq!(got, None);
+
+        // Store a value.
+        kr.set_password("test-dek-b64").expect("set_password");
+
+        // Retrieve it.
+        let got = kr.get_password().expect("get_password");
+        assert_eq!(got, Some("test-dek-b64".to_string()));
+    }
+
+    /// Inject a one-shot error into the mock credential backing `entry`.
+    fn inject_mock_error(entry: &keyring::Entry, msg: &'static str) {
+        let mock_cred = entry
+            .get_credential()
+            .downcast_ref::<keyring::mock::MockCredential>()
+            .expect("mock credential builder must be installed");
+        mock_cred.set_error(keyring::Error::PlatformFailure(Box::<
+            dyn std::error::Error + Send + Sync,
+        >::from(msg)));
+    }
+
+    /// Drive `RealKeyring::get_password`'s error arm: a backend failure maps
+    /// to `AppError::Other("keyring get_password: …")`.
+    #[test]
+    fn real_keyring_get_password_maps_backend_error() {
+        let _held = KEYRING_BUILDER_GUARD
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        install_mock_keyring_once();
+
+        let kr = RealKeyring {
+            entry: keyring::Entry::new(KEYRING_SERVICE, "test-get-error-account").unwrap(),
+        };
+        inject_mock_error(&kr.entry, "simulated get failure");
+        let err = kr.get_password().unwrap_err();
+        assert!(
+            matches!(&err, AppError::Other(msg) if msg.contains("get_password")),
+            "expected Other with 'get_password', got {err:?}"
+        );
+    }
+
+    /// Drive `RealKeyring::set_password`'s error arm.
+    #[test]
+    fn real_keyring_set_password_maps_backend_error() {
+        let _held = KEYRING_BUILDER_GUARD
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        install_mock_keyring_once();
+
+        let kr = RealKeyring {
+            entry: keyring::Entry::new(KEYRING_SERVICE, "test-set-error-account").unwrap(),
+        };
+        inject_mock_error(&kr.entry, "simulated set failure");
+        let err = kr.set_password("anything").unwrap_err();
+        assert!(
+            matches!(&err, AppError::Other(msg) if msg.contains("set_password")),
+            "expected Other with 'set_password', got {err:?}"
+        );
     }
 }

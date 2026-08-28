@@ -331,3 +331,118 @@ async fn test_export_csv_filter_by_status() {
     assert!(content.contains("status_fin"));
     assert!(!content.contains("status_not"));
 }
+
+// --- coverage: CSV deserialize error path (lines 97-99 in csv.rs) ---
+
+/// Invalid UTF-8 bytes inside a CSV field cause a serde-level deserialize
+/// error → exercises the `Err(e) => errors.push(...)` branch.
+#[tokio::test]
+async fn test_import_csv_deserialize_error_invalid_utf8() {
+    // Header + one valid row + one row with invalid UTF-8 (0xFF byte) in the
+    // name field. The csv crate's UTF-8 validation fails for the second row.
+    let mut content: Vec<u8> = b"Name,Staked\ngood,false\n".to_vec();
+    content.extend_from_slice(b"bad");
+    content.push(0xFF);
+    content.extend_from_slice(b"name,false\n");
+
+    let dir = std::env::temp_dir().join("namehold_csv_cmd_test_imp_utf8");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("test.csv");
+    std::fs::write(&path, &content).unwrap();
+    let path_str = path.to_str().unwrap().to_string();
+
+    let state = setup_state();
+    let app = mock_app_with(state);
+
+    let result = crate::commands::csv::import_csv(app.state(), path_str).await;
+    cleanup("imp_utf8");
+
+    let res = result.unwrap();
+    assert_eq!(res.imported, 1, "the good row should import");
+    assert!(
+        !res.errors.is_empty(),
+        "the invalid-utf8 row should produce an error"
+    );
+    assert!(
+        res.errors[0].contains("Row"),
+        "error message should reference the row: {:?}",
+        res.errors
+    );
+}
+
+// --- coverage: empty-TLD-after-normalize skip path (lines 113-114) ---
+
+/// A TLD that is just dots (e.g. ".") passes the `!t.trim().is_empty()` guard
+/// but becomes empty after `normalize_tld` strips leading dots → triggers the
+/// `tld.is_empty()` skip path.
+#[tokio::test]
+async fn test_import_csv_skips_dot_only_tld() {
+    let csv_content = "Name,Staked\ngood,false\n.,false\n...,false\n";
+    let path = write_temp_csv(csv_content, "imp_dot_tld");
+    let state = setup_state();
+    let app = mock_app_with(state);
+
+    let result = crate::commands::csv::import_csv(app.state(), path).await;
+    cleanup("imp_dot_tld");
+
+    let res = result.unwrap();
+    assert_eq!(res.imported, 1, "only 'good' should import");
+    assert_eq!(res.skipped, 2, "'.' and '...' should be skipped after normalize");
+    assert!(res.errors.is_empty());
+}
+
+// --- coverage: INSERT error path (line 157/158) via BEFORE INSERT trigger ---
+
+/// Install a SQLite trigger that raises an error for a specific TLD, so the
+/// INSERT during import fails and hits the `Err(e) => errors.push(...)` path.
+#[tokio::test]
+async fn test_import_csv_reports_insert_errors() {
+    let csv_content = "Name,Staked\ngood,false\nblocked_tld,false\n";
+    let path = write_temp_csv(csv_content, "imp_insert_err");
+    let state = setup_state();
+
+    // Install a trigger that aborts INSERTs for the specific tld.
+    {
+        let db = state.db.lock().unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER block_insert BEFORE INSERT ON assets
+             FOR EACH ROW WHEN NEW.tld = 'blocked_tld'
+             BEGIN
+                 SELECT RAISE(ABORT, 'blocked by test trigger');
+             END;",
+        )
+        .unwrap();
+    }
+
+    let app = mock_app_with(state);
+    let result = crate::commands::csv::import_csv(app.state(), path).await;
+    cleanup("imp_insert_err");
+
+    let res = result.unwrap();
+    assert_eq!(res.imported, 1, "the good row should still import");
+    assert_eq!(res.errors.len(), 1, "the blocked row should produce an error");
+    assert!(
+        res.errors[0].contains("Row") && res.errors[0].contains("blocked"),
+        "error message should reference the row and trigger message: {:?}",
+        res.errors
+    );
+}
+
+// --- coverage: export list_assets error propagation (line 199) ---------------
+
+/// If the underlying `list_assets` query fails (e.g. because the table is gone),
+/// `export_csv` propagates the error via `?` at line 199.
+#[tokio::test]
+async fn test_export_csv_propagates_query_error() {
+    let out = temp_out_path("exp_query_err");
+    let state = setup_state();
+    // Drop the assets table so list_assets fails.
+    {
+        let db = state.db.lock().unwrap();
+        db.execute_batch("DROP TABLE assets;").unwrap();
+    }
+    let app = mock_app_with(state);
+    let result = crate::commands::csv::export_csv(app.state(), out, None, None, None).await;
+    cleanup("exp_query_err");
+    assert!(result.is_err(), "export should fail when assets table is missing");
+}

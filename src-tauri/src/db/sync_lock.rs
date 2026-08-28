@@ -383,10 +383,7 @@ mod tests {
         ));
         assert!(matches!(release(&conn, "p1"), Err(AppError::Db(_))));
         assert!(matches!(release_all_owned(&conn), Err(AppError::Db(_))));
-        assert!(matches!(
-            acquire_for_app(&conn, "p1"),
-            Err(AppError::Db(_))
-        ));
+        assert!(matches!(acquire_for_app(&conn, "p1"), Err(AppError::Db(_))));
     }
 
     /// `acquire_for_app` inserts a new lock row when no lock exists for the

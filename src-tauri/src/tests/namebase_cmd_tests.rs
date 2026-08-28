@@ -915,3 +915,224 @@ async fn namebase_client_with_cookie_falls_back_to_default_host() {
     let result = client.check_session().await;
     let _ = result;
 }
+
+
+// =========================================================================
+// active_profile_network: active profile ID set but profile row missing (line 401)
+// =========================================================================
+
+/// When the active profile ID references a non-existent row,
+/// `active_profile_network` falls back to `Network::Main`.
+#[tokio::test]
+async fn transfer_domain_falls_back_to_mainnet_for_missing_profile_row() {
+    install_test_dek();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    // Set active profile to an ID that has no matching wallet_profiles row.
+    db::queries::set_setting(&conn, "active_wallet_profile_id", "ghost_profile").unwrap();
+    db::queries::set_setting(&conn, "namebase_base_url", "http://localhost:1").unwrap();
+    let app = app_with(conn);
+
+    let res = namebase_transfer_domain(
+        app.state::<AppState>(),
+        "testdomain".into(),
+        good_addr(),
+    )
+    .await;
+    if let Err(AppError::InvalidInput(m)) = res {
+        assert!(
+            !m.contains("HNS address"),
+            "valid mainnet address should not be rejected: {m}"
+        );
+    }
+}
+
+// =========================================================================
+// namebase_withdraw_hns: invalid amount (line 420 in original)
+// =========================================================================
+
+#[tokio::test]
+async fn withdraw_hns_rejects_zero_amount() {
+    let mut server = Server::new_async().await;
+    let _m = server
+        .mock("POST", "/api/withdrawals")
+        .with_status(200)
+        .with_body("{}")
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url());
+    let app = app_with(conn);
+
+    let err = namebase_withdraw_hns(app.state::<AppState>(), good_addr(), "0".into())
+        .await
+        .expect_err("zero amount should be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("positive"), "msg: {msg}");
+}
+
+#[tokio::test]
+async fn withdraw_hns_rejects_negative_amount() {
+    let conn = seeded_conn("http://localhost:1");
+    let app = app_with(conn);
+
+    let err = namebase_withdraw_hns(app.state::<AppState>(), good_addr(), "-5".into())
+        .await
+        .expect_err("negative amount should be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("positive"), "msg: {msg}");
+}
+
+#[tokio::test]
+async fn withdraw_hns_rejects_non_numeric_amount() {
+    let conn = seeded_conn("http://localhost:1");
+    let app = app_with(conn);
+
+    let err = namebase_withdraw_hns(app.state::<AppState>(), good_addr(), "abc".into())
+        .await
+        .expect_err("non-numeric amount should be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("positive"), "msg: {msg}");
+}
+
+#[tokio::test]
+async fn withdraw_hns_rejects_invalid_address() {
+    let conn = seeded_conn("http://localhost:1");
+    let app = app_with(conn);
+
+    let err = namebase_withdraw_hns(
+        app.state::<AppState>(),
+        "INVALID_ADDR".into(),
+        "1.0".into(),
+    )
+    .await
+    .expect_err("invalid address should be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("HNS address"), "msg: {msg}");
+}
+
+#[tokio::test]
+async fn transfer_domain_rejects_invalid_address() {
+    let conn = seeded_conn("http://localhost:1");
+    let app = app_with(conn);
+
+    let err = namebase_transfer_domain(
+        app.state::<AppState>(),
+        "testdomain".into(),
+        "NOT_VALID".into(),
+    )
+    .await
+    .expect_err("invalid address should be rejected");
+    let msg = format!("{err}");
+    assert!(msg.contains("HNS address"), "msg: {msg}");
+}
+
+// =========================================================================
+// import_from_namebase: staked-only domain not in transferable list (line 312-320)
+// =========================================================================
+
+#[tokio::test]
+async fn import_imports_staked_only_domains_not_in_transferable_list() {
+    let mut server = Server::new_async().await;
+    let _domains_mock = server
+        .mock("GET", "/api/domains")
+        .with_status(200)
+        .with_body(r#"{"domains":[{"name":"alpha"}]}"#)
+        .create_async()
+        .await;
+    let _staked_mock = server
+        .mock("GET", "/api/domains/staked")
+        .with_status(200)
+        // "beta" is staked but NOT in the transferable domains list.
+        .with_body(r#"{"stakedDomains":[{"name":"beta"}]}"#)
+        .create_async()
+        .await;
+
+    let app = app_with(seeded_conn(&server.url()));
+    let result = import_from_namebase(app.state::<AppState>())
+        .await
+        .expect("import should succeed");
+
+    assert_eq!(result["imported"], 1); // alpha
+    assert_eq!(result["staked_imported"], 1); // beta (staked-only)
+
+    let state = app.state::<AppState>();
+    let db = state.db.lock().unwrap();
+    let beta = db::queries::get_assets_by_tlds(&db, &["beta".to_string()])
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("beta should be imported");
+    assert!(beta.is_staked);
+    assert_eq!(beta.status.as_str(), "do_not_touch_staked");
+}
+
+/// When the `/api/domains` response doesn't include a "domains" array
+/// (e.g. the field is missing or of a different type), the `if let Some(arr)`
+/// guard skips the first pass — the second pass still runs for staked names.
+#[tokio::test]
+async fn import_handles_missing_domains_array() {
+    let mut server = Server::new_async().await;
+    let _domains_mock = server
+        .mock("GET", "/api/domains")
+        .with_status(200)
+        // `domains` key present but not an array — as_array() returns None.
+        .with_body(r#"{"domains":null}"#)
+        .create_async()
+        .await;
+    let _staked_mock = server
+        .mock("GET", "/api/domains/staked")
+        .with_status(200)
+        .with_body(r#"{"stakedDomains":[{"name":"orphan"}]}"#)
+        .create_async()
+        .await;
+
+    let app = app_with(seeded_conn(&server.url()));
+    let result = import_from_namebase(app.state::<AppState>())
+        .await
+        .expect("import should succeed with missing domains array");
+    assert_eq!(result["imported"], 0);
+    assert_eq!(result["staked_imported"], 1);
+}
+
+/// A BEFORE INSERT trigger that aborts for a specific tld forces the import
+/// INSERT to fail → exercises the `Err(e) => errors.push(...)` path.
+#[tokio::test]
+async fn import_reports_insert_errors() {
+    let mut server = Server::new_async().await;
+    let _domains_mock = server
+        .mock("GET", "/api/domains")
+        .with_status(200)
+        .with_body(r#"{"domains":[{"name":"okname"},{"name":"blocked_tld"}]}"#)
+        .create_async()
+        .await;
+    let _staked_mock = server
+        .mock("GET", "/api/domains/staked")
+        .with_status(200)
+        .with_body(r#"{"stakedDomains":[]}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url());
+    conn.execute_batch(
+        "CREATE TRIGGER block_nb_insert BEFORE INSERT ON assets
+         FOR EACH ROW WHEN NEW.tld = 'blocked_tld'
+         BEGIN
+             SELECT RAISE(ABORT, 'blocked by test trigger');
+         END;",
+    )
+    .unwrap();
+    let app = app_with(conn);
+
+    let result = import_from_namebase(app.state::<AppState>())
+        .await
+        .expect("import should succeed even when a row errors");
+    assert_eq!(result["imported"], 1, "okname should import");
+    let errors = result["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1, "blocked_tld should produce an error");
+    assert!(
+        errors[0].as_str().unwrap().contains("blocked_tld"),
+        "error should reference the blocked tld: {errors:?}"
+    );
+}

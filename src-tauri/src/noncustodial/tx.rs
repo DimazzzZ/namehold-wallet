@@ -877,10 +877,7 @@ mod tests {
         let tx = two_in_two_out();
         let code = p2wpkh_script_code(&[0x11; 20]);
         let err = tx.signature_hash(2, &code, 1000, sighash::ALL).unwrap_err();
-        assert!(
-            format!("{err}").contains("out of range"),
-            "got {err}"
-        );
+        assert!(format!("{err}").contains("out of range"), "got {err}");
     }
 
     /// `signature_hash` with `ANYONECANPAY` zeroes the prevouts and sequences hashes.
@@ -889,7 +886,9 @@ mod tests {
         let tx = two_in_two_out();
         let code = p2wpkh_script_code(&[0x11; 20]);
         let sh_all = tx.signature_hash(0, &code, 1000, sighash::ALL).unwrap();
-        let sh_acp = tx.signature_hash(0, &code, 1000, sighash::ANYONECANPAY).unwrap();
+        let sh_acp = tx
+            .signature_hash(0, &code, 1000, sighash::ANYONECANPAY)
+            .unwrap();
         // The hashes must differ because ANYONECANPAY changes the preimage.
         assert_ne!(sh_all, sh_acp, "ANYONECANPAY must produce a different hash");
     }
@@ -942,9 +941,13 @@ mod tests {
         let tx = two_in_two_out();
         let code = p2wpkh_script_code(&[0x11; 20]);
         // SINGLEREVERSE with index 0 should hash output[len-1-0] = output[1].
-        let sh_sr_0 = tx.signature_hash(0, &code, 1000, sighash::SINGLEREVERSE).unwrap();
+        let sh_sr_0 = tx
+            .signature_hash(0, &code, 1000, sighash::SINGLEREVERSE)
+            .unwrap();
         // SINGLEREVERSE with index 1 should hash output[len-1-1] = output[0].
-        let sh_sr_1 = tx.signature_hash(1, &code, 1000, sighash::SINGLEREVERSE).unwrap();
+        let sh_sr_1 = tx
+            .signature_hash(1, &code, 1000, sighash::SINGLEREVERSE)
+            .unwrap();
         assert_ne!(sh_sr_0, sh_sr_1);
     }
 

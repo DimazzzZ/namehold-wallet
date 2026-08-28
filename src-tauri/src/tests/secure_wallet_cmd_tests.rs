@@ -420,3 +420,225 @@ async fn test_set_active_different_profile_locks_signer() {
     assert!(summary.active);
     assert_eq!(summary.id, "wp2");
 }
+
+// --- account_xpub_from_seed tests ---
+
+/// Fixed 32-byte test seed (deterministic; not a real BIP39 seed).
+fn test_seed_32() -> Vec<u8> {
+    hex::decode("c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e9a3d9bd").unwrap()
+}
+
+#[test]
+fn test_account_xpub_from_seed_mainnet_produces_base58check() {
+    let seed = test_seed_32();
+    let xpub = secure_wallet::account_xpub_from_seed(
+        crate::noncustodial::network::Network::Main,
+        &seed,
+        0,
+    )
+    .unwrap();
+    // Should be a non-empty base58check string.
+    assert!(!xpub.is_empty());
+    // Round-trip parse succeeds under mainnet.
+    let parsed = crate::noncustodial::hd::ExtendedPubKey::from_xpub(
+        crate::noncustodial::network::Network::Main,
+        &xpub,
+    );
+    assert!(parsed.is_ok(), "mainnet xpub must round-trip");
+}
+
+#[test]
+fn test_account_xpub_from_seed_testnet_produces_base58check() {
+    let seed = test_seed_32();
+    let xpub = secure_wallet::account_xpub_from_seed(
+        crate::noncustodial::network::Network::Testnet,
+        &seed,
+        0,
+    )
+    .unwrap();
+    assert!(!xpub.is_empty());
+    let parsed = crate::noncustodial::hd::ExtendedPubKey::from_xpub(
+        crate::noncustodial::network::Network::Testnet,
+        &xpub,
+    );
+    assert!(parsed.is_ok(), "testnet xpub must round-trip");
+}
+
+#[test]
+fn test_account_xpub_from_seed_regtest_produces_base58check() {
+    let seed = test_seed_32();
+    let xpub = secure_wallet::account_xpub_from_seed(
+        crate::noncustodial::network::Network::Regtest,
+        &seed,
+        0,
+    )
+    .unwrap();
+    assert!(!xpub.is_empty());
+}
+
+#[test]
+fn test_account_xpub_from_seed_different_accounts_differ() {
+    let seed = test_seed_32();
+    let xpub0 = secure_wallet::account_xpub_from_seed(
+        crate::noncustodial::network::Network::Main,
+        &seed,
+        0,
+    )
+    .unwrap();
+    let xpub1 = secure_wallet::account_xpub_from_seed(
+        crate::noncustodial::network::Network::Main,
+        &seed,
+        1,
+    )
+    .unwrap();
+    // Different BIP44 account indices must produce different xpubs.
+    assert_ne!(xpub0, xpub1);
+}
+
+#[test]
+fn test_account_xpub_from_seed_deterministic() {
+    let seed = test_seed_32();
+    let a = secure_wallet::account_xpub_from_seed(
+        crate::noncustodial::network::Network::Main,
+        &seed,
+        0,
+    )
+    .unwrap();
+    let b = secure_wallet::account_xpub_from_seed(
+        crate::noncustodial::network::Network::Main,
+        &seed,
+        0,
+    )
+    .unwrap();
+    assert_eq!(a, b);
+}
+
+// --- provision_addresses tests ---
+
+/// Insert a minimal watch-only wallet profile row (required by the FK on
+/// `derived_addresses.wallet_profile_id`).
+fn insert_test_profile(conn: &rusqlite::Connection, id: &str, network: &str, xpub: &str) {
+    conn.execute(
+        "INSERT INTO wallet_profiles (id, label, kind, network, account_index, account_xpub, watch_only, created_at)
+         VALUES (?1, 'Test', 'watch_only_xpub', ?2, 0, ?3, 1, datetime('now'))",
+        rusqlite::params![id, network, xpub],
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_provision_addresses_creates_receive_and_change() {
+    let conn = create_full_test_db();
+    let seed = test_seed_32();
+    let xpub_str = secure_wallet::account_xpub_from_seed(
+        crate::noncustodial::network::Network::Main,
+        &seed,
+        0,
+    )
+    .unwrap();
+    insert_test_profile(&conn, "wp_prov", "mainnet", &xpub_str);
+
+    let first = secure_wallet::provision_addresses(
+        &conn,
+        "wp_prov",
+        crate::noncustodial::network::Network::Main,
+        &xpub_str,
+        5,
+    )
+    .expect("provision_addresses");
+    assert!(!first.is_empty(), "must return the first receive address");
+
+    // gap*2 rows: 5 receive + 5 change.
+    let count: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM derived_addresses WHERE wallet_profile_id = 'wp_prov'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 10);
+
+    // Branch split: 5 rows on each of branch 0 (receive) and branch 1 (change).
+    let receive: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM derived_addresses WHERE wallet_profile_id = 'wp_prov' AND branch = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let change: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM derived_addresses WHERE wallet_profile_id = 'wp_prov' AND branch = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(receive, 5);
+    assert_eq!(change, 5);
+}
+
+#[test]
+fn test_provision_addresses_invalid_xpub_errors() {
+    let conn = create_full_test_db();
+    insert_test_profile(&conn, "wp_bad", "mainnet", "xpub_placeholder");
+
+    let result = secure_wallet::provision_addresses(
+        &conn,
+        "wp_bad",
+        crate::noncustodial::network::Network::Main,
+        "not-a-valid-xpub",
+        5,
+    );
+    assert!(result.is_err());
+
+    // Nothing should have been inserted.
+    let count: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM derived_addresses WHERE wallet_profile_id = 'wp_bad'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn test_provision_addresses_idempotent() {
+    let conn = create_full_test_db();
+    let seed = test_seed_32();
+    let xpub_str = secure_wallet::account_xpub_from_seed(
+        crate::noncustodial::network::Network::Main,
+        &seed,
+        0,
+    )
+    .unwrap();
+    insert_test_profile(&conn, "wp_idem", "mainnet", &xpub_str);
+
+    let first1 = secure_wallet::provision_addresses(
+        &conn,
+        "wp_idem",
+        crate::noncustodial::network::Network::Main,
+        &xpub_str,
+        3,
+    )
+    .unwrap();
+    let first2 = secure_wallet::provision_addresses(
+        &conn,
+        "wp_idem",
+        crate::noncustodial::network::Network::Main,
+        &xpub_str,
+        3,
+    )
+    .unwrap();
+
+    // Re-provisioning is a no-op: same first receive address, no duplicate rows.
+    assert_eq!(first1, first2);
+    let count: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM derived_addresses WHERE wallet_profile_id = 'wp_idem'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 6);
+}

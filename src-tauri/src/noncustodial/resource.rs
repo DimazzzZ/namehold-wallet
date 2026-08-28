@@ -611,7 +611,10 @@ mod tests {
         // version 0, TXT, count=1, len=5, but only 2 bytes follow.
         let buf = vec![0u8, TYPE_TXT, 1u8, 5u8, b'h', b'i'];
         let err = decode(&buf).unwrap_err();
-        assert!(format!("{err}").contains("truncated TXT bytes"), "got {err}");
+        assert!(
+            format!("{err}").contains("truncated TXT bytes"),
+            "got {err}"
+        );
     }
 
     /// `decode` rejects a GLUE4 record whose IP bytes are truncated.

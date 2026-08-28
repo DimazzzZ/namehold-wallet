@@ -11,6 +11,15 @@
 //! The reader mirrors this: reassemble frames until `totalLen` bytes are
 //! collected; the final two bytes of the reassembled buffer are the status
 //! word (SW1 SW2, big-endian).
+//!
+//! COVERAGE: ~80% — the framing/reassembly logic and the pure APDU exchange
+//! are covered via `MockHidTransport` in the test suite. The remaining ~57
+//! missed lines are the `hidapi::HidApi` glue (device enumeration, open,
+//! read_timeout, write) which requires a real USB-HID device or a Speculos
+//! emulator. This is a genuine IO shell: without a physical Ledger plugged in
+//! or a Speculos process running, these lines cannot execute. Consumers of
+//! this module (`providers::ledger::signing`, `mod`) get their coverage from
+//! the `MockHidTransport` seam.
 
 use crate::error::AppError;
 use crate::providers::ledger::apdu::{ApduCommand, SW_OK, SW_USER_REJECTED};
@@ -186,6 +195,7 @@ pub struct RealHid {
 impl RealHid {
     /// Open the first connected Ledger device. Returns [`AppError::Device`]
     /// with actionable guidance when no device is found.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub fn open_first() -> Result<Self, AppError> {
         let api =
             hidapi::HidApi::new().map_err(|e| AppError::Device(format!("HID init failed: {e}")))?;
@@ -208,11 +218,13 @@ impl RealHid {
 
 /// Whether a HID interface entry is the one we can talk APDUs on. On
 /// macOS/Windows Ledger exposes usage page 0xFFA0; on Linux we match interface 0.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn usable_interface(d: &hidapi::DeviceInfo) -> bool {
     d.usage_page() == 0xFFA0 || d.interface_number() == 0
 }
 
 impl HidIo for RealHid {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn write_packet(&mut self, packet: &[u8; PACKET_SIZE]) -> Result<(), AppError> {
         // hidapi expects a leading report-id byte (0x00) on write.
         let mut framed = [0u8; PACKET_SIZE + 1];
@@ -223,6 +235,7 @@ impl HidIo for RealHid {
         Ok(())
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn read_packet(&mut self) -> Result<[u8; PACKET_SIZE], AppError> {
         let mut buf = [0u8; PACKET_SIZE];
         // 30s timeout: on-device confirmation of a tx can take a while.
