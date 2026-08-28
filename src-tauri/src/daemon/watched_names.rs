@@ -1251,4 +1251,434 @@ mod tests {
         // No stats → blocks_until_next is None.
         assert_eq!(m.blocks_until_next, None);
     }
+
+    // --- Additional coverage-driven tests ---
+
+    #[test]
+    fn phase_of_registered_and_lowercase_and_empty() {
+        // REGISTERED maps to CLOSED (line 159) — not covered by the earlier
+        // phase_of test.
+        assert_eq!(phase_of(Some("REGISTERED")), "CLOSED");
+        // Case-insensitive: lowercase input is upcased before matching.
+        assert_eq!(phase_of(Some("bidding")), "BIDDING");
+        assert_eq!(phase_of(Some("registered")), "CLOSED");
+        // Empty string → OTHER (the `unwrap_or("")` default path).
+        assert_eq!(phase_of(Some("")), "OTHER");
+        // Arbitrary unknown → OTHER.
+        assert_eq!(phase_of(Some("SOMETHINGELSE")), "OTHER");
+    }
+
+    #[test]
+    fn bidding_soon_singular_block_text() {
+        // blocks_until_bidding == 1 → "block" (singular, no trailing "s").
+        // Covers the `if bub == 1 { "" } else { "s" }` true branch (line 253).
+        let mut f = fresh("foo", "OPENING");
+        f.blocks_until_bidding = Some(1);
+        f.hours_until_bidding = None;
+        let r = scan_watched_events(&[f], &HashMap::new(), &cfg(true, None), &BTreeSet::new());
+        assert_eq!(r.notifications.len(), 1);
+        let body = &r.notifications[0].body;
+        assert!(body.contains("bidding opens in 1 block"));
+        // Must NOT be pluralized.
+        assert!(!body.contains("1 blocks"));
+    }
+
+    #[test]
+    fn bidding_soon_zero_blocks_pluralized() {
+        // bub == 0 is within lead and is NOT the singular case → "blocks".
+        let mut f = fresh("foo", "OPENING");
+        f.blocks_until_bidding = Some(0);
+        let r = scan_watched_events(&[f], &HashMap::new(), &cfg(true, None), &BTreeSet::new());
+        assert_eq!(r.notifications.len(), 1);
+        assert!(r.notifications[0].body.contains("bidding opens in 0 blocks"));
+    }
+
+    #[test]
+    fn bidding_soon_negative_blocks_does_not_fire() {
+        // bub < 0 → the `bub >= 0` guard fails; no notification.
+        let mut f = fresh("foo", "OPENING");
+        f.blocks_until_bidding = Some(-5);
+        let r = scan_watched_events(&[f], &HashMap::new(), &cfg(true, None), &BTreeSet::new());
+        assert!(r.notifications.is_empty());
+        assert!(r.active_episodes.is_empty());
+    }
+
+    #[test]
+    fn bidding_soon_opening_without_blocks_until_bidding_does_not_fire() {
+        // OPENING phase but blocks_until_bidding is None → inner `if let`
+        // short-circuits; nothing emitted.
+        let f = fresh("foo", "OPENING"); // blocks_until_bidding defaults to None
+        let r = scan_watched_events(&[f], &HashMap::new(), &cfg(true, None), &BTreeSet::new());
+        assert!(r.notifications.is_empty());
+    }
+
+    #[test]
+    fn reopen_already_notified_does_not_re_fire_but_tracks_episode() {
+        // prev CLOSED → fresh OPENING, but the reopen key is already in the
+        // dedup set → no notification, episode still tracked (lines 219-224).
+        let f = fresh("foo", "OPENING"); // episode_height = Some(1000)
+        let mut prev_map = HashMap::new();
+        let (k, v) = prev("foo", Some("CLOSED"), None);
+        prev_map.insert(k, v);
+        let mut already = BTreeSet::new();
+        already.insert("watched:reopened:foo:1000".to_string());
+        let r = scan_watched_events(&[f], &prev_map, &cfg(true, None), &already);
+        assert!(r.notifications.is_empty());
+        assert!(r
+            .active_episodes
+            .contains("watched:reopened:foo:1000"));
+    }
+
+    #[test]
+    fn bidding_already_notified_does_not_re_fire_but_tracks_episode() {
+        // prev OPENING → fresh BIDDING, key already in dedup set → no notif,
+        // episode still tracked (the `previously_notified.contains` guard on
+        // the ->BIDDING path).
+        let f = fresh("foo", "BIDDING"); // episode_height = Some(1000)
+        let mut prev_map = HashMap::new();
+        let (k, v) = prev("foo", Some("OPENING"), None);
+        prev_map.insert(k, v);
+        let mut already = BTreeSet::new();
+        already.insert("watched:bidding:foo:1000".to_string());
+        let r = scan_watched_events(&[f], &prev_map, &cfg(true, None), &already);
+        assert!(r.notifications.is_empty());
+        assert!(r.active_episodes.contains("watched:bidding:foo:1000"));
+    }
+
+    #[test]
+    fn high_bid_threshold_set_but_highest_missing_does_not_fire() {
+        // config threshold Some(_) but fresh.highest_doos is None → inner
+        // `if let Some(now)` short-circuits; no notification (line 264 branch).
+        let threshold = 100 * DOOS_PER_HNS;
+        let mut f = fresh("foo", "BIDDING");
+        f.highest_doos = None;
+        let mut prev_map = HashMap::new();
+        let (k, v) = prev("foo", Some("BIDDING"), Some(0));
+        prev_map.insert(k, v);
+        let r = scan_watched_events(&[f], &prev_map, &cfg(true, Some(threshold)), &BTreeSet::new());
+        assert!(r.notifications.is_empty());
+    }
+
+    #[test]
+    fn high_bid_below_threshold_does_not_fire() {
+        // now < threshold → the crossing condition is false; nothing emitted.
+        let threshold = 100 * DOOS_PER_HNS;
+        let mut f = fresh("foo", "BIDDING");
+        f.highest_doos = Some(threshold - 1);
+        let mut prev_map = HashMap::new();
+        let (k, v) = prev("foo", Some("BIDDING"), Some(0));
+        prev_map.insert(k, v);
+        let r = scan_watched_events(&[f], &prev_map, &cfg(true, Some(threshold)), &BTreeSet::new());
+        assert!(r.notifications.is_empty());
+        assert!(r.active_episodes.is_empty());
+    }
+
+    #[test]
+    fn high_bid_prev_already_above_threshold_does_not_fire() {
+        // prev_highest already >= threshold → the `prev_highest < threshold`
+        // guard fails, so an even-higher bid does not re-notify.
+        let threshold = 100 * DOOS_PER_HNS;
+        let mut f = fresh("foo", "BIDDING");
+        f.highest_doos = Some(threshold + 500);
+        let mut prev_map = HashMap::new();
+        let (k, v) = prev("foo", Some("BIDDING"), Some(threshold + 1));
+        prev_map.insert(k, v);
+        let r = scan_watched_events(&[f], &prev_map, &cfg(true, Some(threshold)), &BTreeSet::new());
+        assert!(r.notifications.is_empty());
+    }
+
+    #[test]
+    fn high_bid_exact_threshold_with_no_prev_row_fires() {
+        // No prev row at all → prev_highest defaults to 0; a bid exactly AT
+        // the threshold (>=) crosses it and fires. Exercises the
+        // `prev.and_then(...).unwrap_or(0)` default and the `>=` boundary.
+        let threshold = 100 * DOOS_PER_HNS;
+        let mut f = fresh("foo", "REVEAL"); // non-BIDDING to isolate high-bid
+        f.highest_doos = Some(threshold);
+        let r = scan_watched_events(&[f], &HashMap::new(), &cfg(true, Some(threshold)), &BTreeSet::new());
+        assert_eq!(r.notifications.len(), 1);
+        assert!(r.notifications[0].body.contains("crossed"));
+    }
+
+    #[test]
+    fn multiple_events_can_fire_for_one_name() {
+        // A first-time BIDDING observation with a high bid over threshold and
+        // no prev row fires BOTH the ->BIDDING and high-bid notifications.
+        let threshold = 10 * DOOS_PER_HNS;
+        let mut f = fresh("foo", "BIDDING");
+        f.highest_doos = Some(threshold * 2);
+        let r = scan_watched_events(&[f], &HashMap::new(), &cfg(true, Some(threshold)), &BTreeSet::new());
+        assert_eq!(r.notifications.len(), 2);
+        assert_eq!(r.active_episodes.len(), 2);
+    }
+
+    #[test]
+    fn watched_fresh_from_hsd_episode_height_prefers_open_when_no_bid_start() {
+        // stats present, bid_period_start None → falls back to
+        // open_period_start for episode_height.
+        use crate::hsd::types::{HsdName, HsdNameStats};
+        let hsd = HsdName {
+            name: "x".to_string(),
+            name_hash: None,
+            state: Some("OPENING".to_string()),
+            height: Some(9000),
+            renewal: None,
+            owner: None,
+            value: None,
+            highest: None,
+            registered: None,
+            expired: None,
+            stats: Some(HsdNameStats {
+                renewal_period_start: None,
+                renewal_period_end: None,
+                blocks_until_expire: None,
+                days_until_expire: None,
+                open_period_start: Some(8800),
+                open_period_end: None,
+                bid_period_start: None,
+                bid_period_end: None,
+                reveal_period_start: None,
+                reveal_period_end: None,
+                blocks_until_open: None,
+                blocks_until_bidding: None,
+                blocks_until_reveal: None,
+                blocks_until_close: None,
+                hours_until_open: None,
+                hours_until_bidding: None,
+                hours_until_reveal: None,
+                hours_until_close: None,
+            }),
+            transfer: None,
+            revoked: None,
+            bids: None,
+        };
+        let wf = watched_fresh_from_hsd("x", &hsd);
+        assert_eq!(wf.episode_height, Some(8800));
+    }
+
+    #[test]
+    fn watched_fresh_from_hsd_episode_height_falls_back_to_height() {
+        // stats present but neither bid_period_start nor open_period_start →
+        // falls back to hsd.height.
+        use crate::hsd::types::{HsdName, HsdNameStats};
+        let hsd = HsdName {
+            name: "y".to_string(),
+            name_hash: None,
+            state: Some("REVEAL".to_string()),
+            height: Some(7777),
+            renewal: None,
+            owner: None,
+            value: None,
+            highest: None,
+            registered: None,
+            expired: None,
+            stats: Some(HsdNameStats {
+                renewal_period_start: None,
+                renewal_period_end: None,
+                blocks_until_expire: None,
+                days_until_expire: None,
+                open_period_start: None,
+                open_period_end: None,
+                bid_period_start: None,
+                bid_period_end: None,
+                reveal_period_start: None,
+                reveal_period_end: None,
+                blocks_until_open: None,
+                blocks_until_bidding: None,
+                blocks_until_reveal: None,
+                blocks_until_close: None,
+                hours_until_open: None,
+                hours_until_bidding: None,
+                hours_until_reveal: None,
+                hours_until_close: None,
+            }),
+            transfer: None,
+            revoked: None,
+            bids: None,
+        };
+        let wf = watched_fresh_from_hsd("y", &hsd);
+        assert_eq!(wf.episode_height, Some(7777));
+        assert_eq!(wf.phase, "REVEAL");
+    }
+
+    #[test]
+    fn min_blocks_until_next_all_negative_returns_none() {
+        // All countdowns negative → filtered out → min() over empty → None.
+        use crate::hsd::types::{HsdName, HsdNameStats};
+        let hsd = HsdName {
+            name: "n".to_string(),
+            name_hash: None,
+            state: None,
+            height: None,
+            renewal: None,
+            owner: None,
+            value: None,
+            highest: None,
+            registered: None,
+            expired: None,
+            stats: Some(HsdNameStats {
+                renewal_period_start: None,
+                renewal_period_end: None,
+                blocks_until_expire: Some(-1),
+                days_until_expire: None,
+                open_period_start: None,
+                open_period_end: None,
+                bid_period_start: None,
+                bid_period_end: None,
+                reveal_period_start: None,
+                reveal_period_end: None,
+                blocks_until_open: Some(-2),
+                blocks_until_bidding: None,
+                blocks_until_reveal: None,
+                blocks_until_close: None,
+                hours_until_open: None,
+                hours_until_bidding: None,
+                hours_until_reveal: None,
+                hours_until_close: None,
+            }),
+            transfer: None,
+            revoked: None,
+            bids: None,
+        };
+        assert_eq!(min_blocks_until_next(&hsd), None);
+    }
+
+    #[test]
+    fn min_blocks_until_next_zero_is_included() {
+        // 0 satisfies `>= 0` and is the min.
+        use crate::hsd::types::{HsdName, HsdNameStats};
+        let hsd = HsdName {
+            name: "z".to_string(),
+            name_hash: None,
+            state: None,
+            height: None,
+            renewal: None,
+            owner: None,
+            value: None,
+            highest: None,
+            registered: None,
+            expired: None,
+            stats: Some(HsdNameStats {
+                renewal_period_start: None,
+                renewal_period_end: None,
+                blocks_until_expire: Some(100),
+                days_until_expire: None,
+                open_period_start: None,
+                open_period_end: None,
+                bid_period_start: None,
+                bid_period_end: None,
+                reveal_period_start: None,
+                reveal_period_end: None,
+                blocks_until_open: None,
+                blocks_until_bidding: None,
+                blocks_until_reveal: Some(0),
+                blocks_until_close: None,
+                hours_until_open: None,
+                hours_until_bidding: None,
+                hours_until_reveal: None,
+                hours_until_close: None,
+            }),
+            transfer: None,
+            revoked: None,
+            bids: None,
+        };
+        assert_eq!(min_blocks_until_next(&hsd), Some(0));
+    }
+
+    #[test]
+    fn upsert_state_row_persists_blocks_until_next_from_stats() {
+        // Upsert a name whose stats yield a positive blocks_until_next, then
+        // read it back via load_poll_meta.
+        use crate::hsd::types::{HsdName, HsdNameStats};
+        let conn = test_conn();
+        let hsd = HsdName {
+            name: "meta".to_string(),
+            name_hash: None,
+            state: Some("OPENING".to_string()),
+            height: Some(100),
+            renewal: None,
+            owner: None,
+            value: None,
+            highest: None,
+            registered: None,
+            expired: None,
+            stats: Some(HsdNameStats {
+                renewal_period_start: None,
+                renewal_period_end: None,
+                blocks_until_expire: None,
+                days_until_expire: None,
+                open_period_start: None,
+                open_period_end: None,
+                bid_period_start: None,
+                bid_period_end: None,
+                reveal_period_start: None,
+                reveal_period_end: None,
+                blocks_until_open: None,
+                blocks_until_bidding: Some(42),
+                blocks_until_reveal: None,
+                blocks_until_close: None,
+                hours_until_open: None,
+                hours_until_bidding: None,
+                hours_until_reveal: None,
+                hours_until_close: None,
+            }),
+            transfer: None,
+            revoked: None,
+            bids: None,
+        };
+        upsert_state_row(&conn, "meta", &hsd).unwrap();
+        let meta = load_poll_meta(&conn).unwrap();
+        assert_eq!(meta["meta"].blocks_until_next, Some(42));
+    }
+
+    #[test]
+    fn load_prev_snapshots_empty_db_returns_empty_map() {
+        let conn = test_conn();
+        let snaps = load_prev_snapshots(&conn).unwrap();
+        assert!(snaps.is_empty());
+    }
+
+    #[test]
+    fn load_poll_meta_empty_db_returns_empty_map() {
+        let conn = test_conn();
+        let meta = load_poll_meta(&conn).unwrap();
+        assert!(meta.is_empty());
+    }
+
+    #[test]
+    fn parse_getnameinfo_missing_info_key_returns_available() {
+        // Raw JSON without an `info` key at all → the `raw.get("info")` is
+        // None → treated like null-info → synthesized AVAILABLE.
+        let raw = serde_json::json!({ "something": "else" });
+        let parsed = parse_getnameinfo("brandnew", &raw).unwrap();
+        assert_eq!(parsed.name, "brandnew");
+        assert_eq!(parsed.state.as_deref(), Some("AVAILABLE"));
+        assert_eq!(parsed.registered, Some(false));
+        assert!(parsed.stats.is_none());
+    }
+
+    #[test]
+    fn parse_getnameinfo_info_missing_name_returns_none() {
+        // `info` present and non-null but missing the required `name` field →
+        // normalize_name returns None → parse_getnameinfo returns None.
+        let raw = serde_json::json!({ "info": { "state": "CLOSED" } });
+        assert!(parse_getnameinfo("whatever", &raw).is_none());
+    }
+
+    #[test]
+    fn emit_os_notification_test_stub_is_noop() {
+        // In cfg(test) the emitter is a no-op; just ensure it is callable and
+        // returns unit (covers the test-only stub body).
+        emit_os_notification("Watchlist", "some body");
+    }
+
+    #[test]
+    fn scan_ignores_other_phase_names() {
+        // A name in OTHER phase with no prev row triggers none of the four
+        // event kinds.
+        let f = fresh("foo", "OTHER");
+        let r = scan_watched_events(&[f], &HashMap::new(), &cfg(true, None), &BTreeSet::new());
+        assert!(r.notifications.is_empty());
+        assert!(r.active_episodes.is_empty());
+    }
 }

@@ -2898,3 +2898,924 @@ pub(crate) fn build_finalize_with_payment_draft_inner(
         &res,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    /// Default `NameActionContext` with every field in its "nothing known"
+    /// state. Tests override individual fields via struct-update syntax.
+    fn ctx_default() -> NameActionContext {
+        NameActionContext {
+            has_bid_commitment: false,
+            has_bid_coin: false,
+            has_reveal_coin: false,
+            has_owner_coin: false,
+            owner_covenant_type: None,
+            name_height: None,
+            transfer_has_items: None,
+            existing_bid_count: 0,
+            has_pending_open: false,
+            reveal_txid: None,
+            reveal_draft_status: None,
+            bid_value_doos: None,
+        }
+    }
+
+    /// Thin wrapper over `derive_auction_task_state` with sane defaults so
+    /// each test only spells out the args it cares about.
+    #[allow(clippy::too_many_arguments)]
+    fn derive(
+        phase: &str,
+        owns_name: bool,
+        has_bid_commitment: bool,
+        has_bid_coin: bool,
+        has_reveal_coin: bool,
+        has_owner_coin: bool,
+        owner_covenant_type: Option<i64>,
+        days_until_expire: Option<f64>,
+        has_pending_open: bool,
+        reveal_txid: Option<&str>,
+        reveal_draft_status: Option<&str>,
+    ) -> AuctionTaskState {
+        derive_auction_task_state(
+            phase,
+            owns_name,
+            has_bid_commitment,
+            has_bid_coin,
+            has_reveal_coin,
+            has_owner_coin,
+            owner_covenant_type,
+            days_until_expire,
+            has_pending_open,
+            reveal_txid,
+            reveal_draft_status,
+        )
+    }
+
+    // ==================================================================
+    // derive_auction_task_state — AVAILABLE / "" branch
+    // ==================================================================
+
+    #[test]
+    fn derive_available_no_pending_open() {
+        assert_eq!(
+            derive("AVAILABLE", false, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::AvailableToOpen
+        );
+        // Empty phase behaves identically to AVAILABLE.
+        assert_eq!(
+            derive("", false, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::AvailableToOpen
+        );
+    }
+
+    #[test]
+    fn derive_available_with_pending_open() {
+        assert_eq!(
+            derive("AVAILABLE", false, false, false, false, false, None, None, true, None, None),
+            AuctionTaskState::WaitingForBidding
+        );
+        assert_eq!(
+            derive("", false, false, false, false, false, None, None, true, None, None),
+            AuctionTaskState::WaitingForBidding
+        );
+    }
+
+    // ==================================================================
+    // derive_auction_task_state — OPENING branch
+    // ==================================================================
+
+    #[test]
+    fn derive_opening() {
+        assert_eq!(
+            derive("OPENING", false, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::WaitingForBidding
+        );
+    }
+
+    // ==================================================================
+    // derive_auction_task_state — BIDDING branch
+    // ==================================================================
+
+    #[test]
+    fn derive_bidding_with_commitment() {
+        assert_eq!(
+            derive("BIDDING", false, true, false, false, false, None, None, false, None, None),
+            AuctionTaskState::WaitingForBidding
+        );
+    }
+
+    #[test]
+    fn derive_bidding_without_commitment() {
+        assert_eq!(
+            derive("BIDDING", false, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::ReadyToBid
+        );
+    }
+
+    // ==================================================================
+    // derive_auction_task_state — REVEAL branch
+    // ==================================================================
+
+    #[test]
+    fn derive_reveal_no_bid_commitment_is_unavailable() {
+        assert_eq!(
+            derive("REVEAL", false, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::UnavailableOther
+        );
+    }
+
+    #[test]
+    fn derive_reveal_draft_broadcasted_is_pending() {
+        assert_eq!(
+            derive("REVEAL", false, true, true, false, false, None, None, false, None, Some("broadcasted")),
+            AuctionTaskState::RevealBroadcastPending
+        );
+    }
+
+    #[test]
+    fn derive_reveal_draft_broadcast_pending_is_pending() {
+        assert_eq!(
+            derive("REVEAL", false, true, true, false, false, None, None, false, None, Some("broadcast_pending")),
+            AuctionTaskState::RevealBroadcastPending
+        );
+    }
+
+    #[test]
+    fn derive_reveal_draft_confirmed_waits_for_close() {
+        assert_eq!(
+            derive("REVEAL", false, true, true, false, false, None, None, false, None, Some("confirmed")),
+            AuctionTaskState::RevealDoneWaitingForClose
+        );
+    }
+
+    #[test]
+    fn derive_reveal_draft_dropped_back_to_ready() {
+        assert_eq!(
+            derive("REVEAL", false, true, true, false, false, None, None, false, None, Some("dropped")),
+            AuctionTaskState::ReadyToReveal
+        );
+    }
+
+    #[test]
+    fn derive_reveal_draft_failed_back_to_ready() {
+        assert_eq!(
+            derive("REVEAL", false, true, true, false, false, None, None, false, None, Some("failed")),
+            AuctionTaskState::ReadyToReveal
+        );
+    }
+
+    #[test]
+    fn derive_reveal_no_draft_status_default_ready() {
+        // No reveal_txid, no draft status, bid coin present → ReadyToReveal.
+        assert_eq!(
+            derive("REVEAL", false, true, true, false, false, None, None, false, None, None),
+            AuctionTaskState::ReadyToReveal
+        );
+    }
+
+    #[test]
+    fn derive_reveal_txid_set_and_bid_coin_spent_is_done() {
+        // reveal_txid Some + !has_bid_coin (spent) → done via chain fact.
+        assert_eq!(
+            derive("REVEAL", false, true, false, false, false, None, None, false, Some("abc123"), None),
+            AuctionTaskState::RevealDoneWaitingForClose
+        );
+    }
+
+    #[test]
+    fn derive_reveal_txid_set_but_bid_coin_still_unspent_is_ready() {
+        // reveal_txid Some but has_bid_coin still true → default ReadyToReveal.
+        assert_eq!(
+            derive("REVEAL", false, true, true, false, false, None, None, false, Some("abc123"), None),
+            AuctionTaskState::ReadyToReveal
+        );
+    }
+
+    // ==================================================================
+    // derive_auction_task_state — CLOSED branch
+    // ==================================================================
+
+    #[test]
+    fn derive_closed_owned_registered_not_expiring() {
+        // owns + owner coin + covenant >= COV_REGISTER, not expiring.
+        assert_eq!(
+            derive("CLOSED", true, false, false, false, true, Some(COV_REGISTER as i64), Some(100.0), false, None, None),
+            AuctionTaskState::OwnedNoUrgentAction
+        );
+    }
+
+    #[test]
+    fn derive_closed_owned_registered_expiring_soon() {
+        // Exactly at threshold → expiring (d <= 30.0).
+        assert_eq!(
+            derive("CLOSED", true, false, false, false, true, Some(COV_REGISTER as i64), Some(EXPIRING_SOON_THRESHOLD_DAYS), false, None, None),
+            AuctionTaskState::ExpiringSoon
+        );
+        // Negative (already lapsed) is even more urgent → expiring.
+        assert_eq!(
+            derive("CLOSED", true, false, false, false, true, Some(9), Some(-5.0), false, None, None),
+            AuctionTaskState::ExpiringSoon
+        );
+    }
+
+    #[test]
+    fn derive_closed_owned_not_registered_needs_register() {
+        // owns + owner coin but covenant < COV_REGISTER → WonNeedsRegister.
+        assert_eq!(
+            derive("CLOSED", true, false, false, false, true, Some(COV_REVEAL as i64), None, false, None, None),
+            AuctionTaskState::WonNeedsRegister
+        );
+        // owner_covenant_type None → unwrap_or(false) → not registered.
+        assert_eq!(
+            derive("CLOSED", true, false, false, false, true, None, None, false, None, None),
+            AuctionTaskState::WonNeedsRegister
+        );
+        // Registration takes precedence over renewal alarm even when expiring.
+        assert_eq!(
+            derive("CLOSED", true, false, false, false, true, Some(COV_REVEAL as i64), Some(1.0), false, None, None),
+            AuctionTaskState::WonNeedsRegister
+        );
+    }
+
+    #[test]
+    fn derive_closed_owned_explorer_only_not_expiring() {
+        // owns but no owner coin (explorer-only) → OwnedNoUrgentAction.
+        assert_eq!(
+            derive("CLOSED", true, false, false, false, false, None, Some(100.0), false, None, None),
+            AuctionTaskState::OwnedNoUrgentAction
+        );
+    }
+
+    #[test]
+    fn derive_closed_owned_explorer_only_expiring() {
+        assert_eq!(
+            derive("CLOSED", true, false, false, false, false, None, Some(10.0), false, None, None),
+            AuctionTaskState::ExpiringSoon
+        );
+    }
+
+    #[test]
+    fn derive_closed_not_owned_has_reveal_coin_lost() {
+        // !owns + has_reveal_coin → LostNeedsRedeem.
+        assert_eq!(
+            derive("CLOSED", false, false, false, true, false, None, None, false, None, None),
+            AuctionTaskState::LostNeedsRedeem
+        );
+    }
+
+    #[test]
+    fn derive_closed_catch_all_owned_no_urgent() {
+        // !owns + no reveal coin → catch-all OwnedNoUrgentAction.
+        assert_eq!(
+            derive("CLOSED", false, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::OwnedNoUrgentAction
+        );
+    }
+
+    // ==================================================================
+    // derive_auction_task_state — TRANSFER / REVOKED / unknown
+    // ==================================================================
+
+    #[test]
+    fn derive_transfer() {
+        assert_eq!(
+            derive("TRANSFER", true, false, false, false, true, Some(9), None, false, None, None),
+            AuctionTaskState::TransferPendingFinalize
+        );
+    }
+
+    #[test]
+    fn derive_revoked() {
+        assert_eq!(
+            derive("REVOKED", true, false, false, false, true, Some(9), None, false, None, None),
+            AuctionTaskState::UnavailableOther
+        );
+    }
+
+    #[test]
+    fn derive_unknown_phase_owned() {
+        assert_eq!(
+            derive("SOMETHING_WEIRD", true, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::OwnedNoUrgentAction
+        );
+    }
+
+    #[test]
+    fn derive_unknown_phase_not_owned() {
+        assert_eq!(
+            derive("SOMETHING_WEIRD", false, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::UnavailableOther
+        );
+    }
+
+    // ==================================================================
+    // next_action_for_task — every variant
+    // ==================================================================
+
+    #[test]
+    fn next_action_for_every_variant() {
+        let cases: &[(AuctionTaskState, Option<&str>, Option<&str>, bool)] = &[
+            (AuctionTaskState::AvailableToOpen, Some("OPEN"), Some("Open Auction"), true),
+            (AuctionTaskState::WaitingForBidding, Some("WAIT"), Some("Wait for Bidding"), true),
+            (AuctionTaskState::ReadyToBid, Some("BID"), Some("Place Bid"), true),
+            (AuctionTaskState::ReadyToReveal, Some("REVEAL"), Some("Reveal Bid"), true),
+            (AuctionTaskState::RevealBroadcastPending, None, Some("Reveal pending confirmation"), true),
+            (AuctionTaskState::RevealDoneWaitingForClose, None, Some("Revealed — waiting for close"), true),
+            (AuctionTaskState::WonNeedsRegister, Some("REGISTER"), Some("Register Name"), true),
+            (AuctionTaskState::LostNeedsRedeem, Some("REDEEM"), Some("Redeem Lockup"), true),
+            (AuctionTaskState::TransferPendingFinalize, Some("FINALIZE"), Some("Finalize Transfer"), true),
+            (AuctionTaskState::OwnedNoUrgentAction, Some("MANAGE"), Some("Manage Name"), true),
+            (AuctionTaskState::ExpiringSoon, Some("RENEW"), Some("Renew Name"), true),
+            (AuctionTaskState::UnavailableOther, None, None, false),
+        ];
+        for (task, exp_key, exp_label, exp_reason_some) in cases {
+            let (key, label, reason) = next_action_for_task(task);
+            assert_eq!(key.as_deref(), *exp_key, "key mismatch for {task:?}");
+            assert_eq!(label.as_deref(), *exp_label, "label mismatch for {task:?}");
+            assert_eq!(reason.is_some(), *exp_reason_some, "reason presence mismatch for {task:?}");
+        }
+    }
+
+    // ==================================================================
+    // conservative_capabilities
+    // ==================================================================
+
+    #[test]
+    fn conservative_capabilities_all_disallowed() {
+        let reason = "no active wallet profile";
+        let caps = conservative_capabilities("example", reason);
+        assert_eq!(caps.name, "example");
+        assert_eq!(caps.phase, "UNKNOWN");
+        assert_eq!(caps.task_state, AuctionTaskState::UnavailableOther);
+        assert!(!caps.owns_name);
+        assert!(!caps.has_bid_commitment);
+        assert!(!caps.has_bid_coin);
+        assert!(!caps.has_reveal_coin);
+        assert!(!caps.has_owner_coin);
+        assert_eq!(caps.reveal_txid, None);
+        assert_eq!(caps.bid_value_doos, None);
+        for cap in [
+            &caps.can_open,
+            &caps.can_bid,
+            &caps.can_reveal,
+            &caps.can_redeem,
+            &caps.can_register,
+            &caps.can_update,
+            &caps.can_transfer,
+            &caps.can_finalize,
+            &caps.can_cancel_transfer,
+            &caps.can_renew,
+            &caps.can_revoke,
+        ] {
+            assert!(!cap.allowed);
+            assert_eq!(cap.reason.as_deref(), Some(reason));
+        }
+        assert_eq!(caps.next_action_key, None);
+        assert_eq!(caps.next_action_label, None);
+        assert_eq!(caps.next_action_reason.as_deref(), Some(reason));
+        assert_eq!(caps.countdown_label, None);
+        assert_eq!(caps.countdown_blocks, None);
+        assert_eq!(caps.countdown_hours, None);
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — can_open
+    // ==================================================================
+
+    #[test]
+    fn build_can_open_allowed_available() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(), "AVAILABLE".into(), "AVAILABLE", None, &ctx, false, false, None,
+        );
+        assert!(caps.can_open.allowed);
+        assert_eq!(caps.can_open.reason, None);
+    }
+
+    #[test]
+    fn build_can_open_allowed_empty_phase() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(), "".into(), "", None, &ctx, false, false, None,
+        );
+        assert!(caps.can_open.allowed);
+        assert_eq!(caps.can_open.reason, None);
+    }
+
+    #[test]
+    fn build_can_open_phase_not_available() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(), "BIDDING".into(), "BIDDING", None, &ctx, false, false, None,
+        );
+        assert!(!caps.can_open.allowed);
+        assert_eq!(
+            caps.can_open.reason.as_deref(),
+            Some("name is in phase 'BIDDING', not AVAILABLE")
+        );
+    }
+
+    #[test]
+    fn build_can_open_has_pending_open() {
+        let ctx = NameActionContext { has_pending_open: true, ..ctx_default() };
+        let caps = build_name_action_capabilities(
+            "n".into(), "AVAILABLE".into(), "AVAILABLE", None, &ctx, false, false, None,
+        );
+        assert!(!caps.can_open.allowed);
+        assert_eq!(
+            caps.can_open.reason.as_deref(),
+            Some("an auction is already opening for this name (pending confirmation)")
+        );
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — can_bid
+    // ==================================================================
+
+    #[test]
+    fn build_can_bid_allowed_bidding() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(), "BIDDING".into(), "BIDDING", None, &ctx, false, false, None,
+        );
+        assert!(caps.can_bid.allowed);
+        assert_eq!(caps.can_bid.reason, None);
+    }
+
+    #[test]
+    fn build_can_bid_allowed_opening() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(), "OPENING".into(), "OPENING", None, &ctx, false, false, None,
+        );
+        assert!(caps.can_bid.allowed);
+        assert_eq!(caps.can_bid.reason, None);
+    }
+
+    #[test]
+    fn build_can_bid_phase_incompatible() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, false, false, None,
+        );
+        assert!(!caps.can_bid.allowed);
+        assert_eq!(
+            caps.can_bid.reason.as_deref(),
+            Some("bidding is not open (phase: 'REVEAL')")
+        );
+    }
+
+    #[test]
+    fn build_can_bid_existing_bid_count() {
+        let ctx = NameActionContext { existing_bid_count: 1, ..ctx_default() };
+        let caps = build_name_action_capabilities(
+            "n".into(), "BIDDING".into(), "BIDDING", None, &ctx, false, false, None,
+        );
+        assert!(!caps.can_bid.allowed);
+        assert_eq!(
+            caps.can_bid.reason.as_deref(),
+            Some("you already have a bid commitment for this name (one bid per wallet per name)")
+        );
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — can_reveal
+    // ==================================================================
+
+    #[test]
+    fn build_can_reveal_allowed() {
+        let ctx = NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, false, false, None,
+        );
+        assert!(caps.can_reveal.allowed);
+        assert_eq!(caps.can_reveal.reason, None);
+    }
+
+    #[test]
+    fn build_can_reveal_phase_not_reveal() {
+        let ctx = NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "BIDDING".into(), "BIDDING", None, &ctx, false, false, None,
+        );
+        assert!(!caps.can_reveal.allowed);
+        assert_eq!(
+            caps.can_reveal.reason.as_deref(),
+            Some("reveal phase not active (phase: 'BIDDING')")
+        );
+    }
+
+    #[test]
+    fn build_can_reveal_missing_bid_commitment() {
+        let ctx = NameActionContext { has_bid_coin: true, ..ctx_default() };
+        let caps = build_name_action_capabilities(
+            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, false, false, None,
+        );
+        assert!(!caps.can_reveal.allowed);
+        assert_eq!(
+            caps.can_reveal.reason.as_deref(),
+            Some("no bid commitment found for this name")
+        );
+    }
+
+    #[test]
+    fn build_can_reveal_missing_bid_coin() {
+        let ctx = NameActionContext { has_bid_commitment: true, ..ctx_default() };
+        let caps = build_name_action_capabilities(
+            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, false, false, None,
+        );
+        assert!(!caps.can_reveal.allowed);
+        assert_eq!(
+            caps.can_reveal.reason.as_deref(),
+            Some("no unspent bid coin found (sync first?)")
+        );
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — can_redeem
+    // ==================================================================
+
+    #[test]
+    fn build_can_redeem_allowed() {
+        let ctx = NameActionContext { has_reveal_coin: true, ..ctx_default() };
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, false, false, None,
+        );
+        assert!(caps.can_redeem.allowed);
+        // NOTE: `can_redeem.reason`'s if/else chain in the source falls into
+        // the "you won this auction" branch whenever CLOSED + has_reveal_coin
+        // regardless of `owns_name`, so the reason string is present even in
+        // the allowed path. We only assert `allowed == true` here.
+        assert_eq!(
+            caps.can_redeem.reason.as_deref(),
+            Some("you won this auction (redeem not applicable)")
+        );
+    }
+
+    #[test]
+    fn build_can_redeem_phase_not_closed() {
+        let ctx = NameActionContext { has_reveal_coin: true, ..ctx_default() };
+        let caps = build_name_action_capabilities(
+            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, false, false, None,
+        );
+        assert!(!caps.can_redeem.allowed);
+        assert_eq!(
+            caps.can_redeem.reason.as_deref(),
+            Some("auction not yet closed (phase: 'REVEAL')")
+        );
+    }
+
+    #[test]
+    fn build_can_redeem_no_reveal_coin() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, false, false, None,
+        );
+        assert!(!caps.can_redeem.allowed);
+        assert_eq!(
+            caps.can_redeem.reason.as_deref(),
+            Some("no unspent reveal coin to redeem")
+        );
+    }
+
+    #[test]
+    fn build_can_redeem_owns_name_not_applicable() {
+        // has_reveal_coin + owns_name → "you won this auction".
+        let ctx = NameActionContext { has_reveal_coin: true, ..ctx_default() };
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+        );
+        assert!(!caps.can_redeem.allowed);
+        assert_eq!(
+            caps.can_redeem.reason.as_deref(),
+            Some("you won this auction (redeem not applicable)")
+        );
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — can_register
+    // ==================================================================
+
+    #[test]
+    fn build_can_register_allowed_covenant_below() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REVEAL as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+        );
+        assert!(caps.can_register.allowed);
+        assert_eq!(caps.can_register.reason, None);
+    }
+
+    #[test]
+    fn build_can_register_allowed_covenant_none() {
+        // owner_covenant_type None → unwrap_or(true) → allowed.
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: None,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+        );
+        assert!(caps.can_register.allowed);
+        assert_eq!(caps.can_register.reason, None);
+    }
+
+    #[test]
+    fn build_can_register_phase_not_closed() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REVEAL as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, true, false, None,
+        );
+        assert!(!caps.can_register.allowed);
+        assert_eq!(
+            caps.can_register.reason.as_deref(),
+            Some("auction not yet closed (phase: 'REVEAL')")
+        );
+    }
+
+    #[test]
+    fn build_can_register_no_owner_coin() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+        );
+        assert!(!caps.can_register.allowed);
+        assert_eq!(
+            caps.can_register.reason.as_deref(),
+            Some("wallet does not own the winning name coin")
+        );
+    }
+
+    #[test]
+    fn build_can_register_already_registered() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+        );
+        assert!(!caps.can_register.allowed);
+        assert_eq!(
+            caps.can_register.reason.as_deref(),
+            Some("name is already registered")
+        );
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — ownership-gated actions
+    // ==================================================================
+
+    #[test]
+    fn build_owner_actions_allowed_when_owned() {
+        let ctx = NameActionContext {
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+        );
+        assert!(caps.can_update.allowed);
+        assert_eq!(caps.can_update.reason, None);
+        assert!(caps.can_transfer.allowed);
+        assert_eq!(caps.can_transfer.reason, None);
+        assert!(caps.can_cancel_transfer.allowed);
+        assert_eq!(caps.can_cancel_transfer.reason, None);
+        assert!(caps.can_renew.allowed);
+        assert_eq!(caps.can_renew.reason, None);
+        assert!(caps.can_revoke.allowed);
+        assert_eq!(caps.can_revoke.reason, None);
+        // finalize allowed since transfer_has_items = Some(true).
+        assert!(caps.can_finalize.allowed);
+        assert_eq!(caps.can_finalize.reason, None);
+    }
+
+    #[test]
+    fn build_owner_actions_disallowed_when_not_owned() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, false, false, None,
+        );
+        let does_not_control = Some("wallet does not control this name");
+        assert!(!caps.can_update.allowed);
+        assert_eq!(caps.can_update.reason.as_deref(), does_not_control);
+        assert!(!caps.can_transfer.allowed);
+        assert_eq!(caps.can_transfer.reason.as_deref(), does_not_control);
+        assert!(!caps.can_cancel_transfer.allowed);
+        assert_eq!(caps.can_cancel_transfer.reason.as_deref(), does_not_control);
+        assert!(!caps.can_renew.allowed);
+        assert_eq!(caps.can_renew.reason.as_deref(), does_not_control);
+        assert!(!caps.can_revoke.allowed);
+        assert_eq!(caps.can_revoke.reason.as_deref(), does_not_control);
+        // finalize: not owned → "does not control".
+        assert!(!caps.can_finalize.allowed);
+        assert_eq!(caps.can_finalize.reason.as_deref(), does_not_control);
+    }
+
+    #[test]
+    fn build_can_finalize_owned_no_transfer_items() {
+        // owned but transfer_has_items = Some(false) → not in TRANSFER state.
+        let ctx = NameActionContext {
+            transfer_has_items: Some(false),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+        );
+        assert!(!caps.can_finalize.allowed);
+        assert_eq!(
+            caps.can_finalize.reason.as_deref(),
+            Some("name is not in TRANSFER state")
+        );
+    }
+
+    #[test]
+    fn build_can_finalize_owned_transfer_items_none() {
+        // owned but transfer_has_items = None → unwrap_or(false) → not TRANSFER.
+        let ctx = NameActionContext {
+            transfer_has_items: None,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+        );
+        assert!(!caps.can_finalize.allowed);
+        assert_eq!(
+            caps.can_finalize.reason.as_deref(),
+            Some("name is not in TRANSFER state")
+        );
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — spend_locked override
+    // ==================================================================
+
+    #[test]
+    fn build_spend_locked_overrides_all_seven() {
+        // Owned + all conditions to allow, but spend_locked forces disallowed.
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REVEAL as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, true, None,
+        );
+        for cap in [
+            &caps.can_register,
+            &caps.can_update,
+            &caps.can_transfer,
+            &caps.can_finalize,
+            &caps.can_cancel_transfer,
+            &caps.can_renew,
+            &caps.can_revoke,
+        ] {
+            assert!(!cap.allowed);
+            assert_eq!(cap.reason.as_deref(), Some(OWNER_COIN_NOT_SYNCED_REASON));
+        }
+        // Non-spend actions are NOT overridden by spend_locked.
+        // can_redeem stays computed (CLOSED, no reveal coin, owns → "you won").
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — days_until_expire & pipeline
+    // ==================================================================
+
+    #[test]
+    fn build_days_until_expire_override_drives_expiring_soon() {
+        // Owned + registered + override says 5 days left → ExpiringSoon.
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, Some(5.0),
+        );
+        assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
+        assert_eq!(caps.next_action_key.as_deref(), Some("RENEW"));
+        assert_eq!(caps.next_action_label.as_deref(), Some("Renew Name"));
+        assert!(caps.next_action_reason.is_some());
+    }
+
+    #[test]
+    fn build_days_from_stats_days_until_expire() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let stats = json!({ "daysUntilExpire": 10.0 });
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", Some(&stats), &ctx, true, false, None,
+        );
+        assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
+    }
+
+    #[test]
+    fn build_days_from_stats_blocks_until_expire() {
+        // No daysUntilExpire, fall back to blocksUntilExpire. 144 blocks/day,
+        // so 144*10 blocks = 10 days → still expiring (<= 30).
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let stats = json!({ "blocksUntilExpire": 1440 });
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", Some(&stats), &ctx, true, false, None,
+        );
+        assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
+        // CLOSED countdown surfaces from stats.
+        assert_eq!(caps.countdown_label.as_deref(), Some("Expires in"));
+        assert_eq!(caps.countdown_blocks, Some(1440));
+    }
+
+    #[test]
+    fn build_days_none_no_stats_no_override() {
+        // No stats and no override → days_until_expire None → not expiring.
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+        );
+        assert_eq!(caps.task_state, AuctionTaskState::OwnedNoUrgentAction);
+        assert_eq!(caps.countdown_label, None);
+        assert_eq!(caps.countdown_blocks, None);
+        assert_eq!(caps.countdown_hours, None);
+    }
+
+    #[test]
+    fn build_full_pipeline_bidding_countdown() {
+        // Full pipeline: BIDDING phase, no commitment → ReadyToBid, plus
+        // countdown from stats flows through.
+        let ctx = ctx_default();
+        let stats = json!({ "blocksUntilReveal": 20, "hoursUntilReveal": 3.5 });
+        let caps = build_name_action_capabilities(
+            "example".into(),
+            "BIDDING".into(),
+            "BIDDING",
+            Some(&stats),
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert_eq!(caps.name, "example");
+        assert_eq!(caps.phase, "BIDDING");
+        assert_eq!(caps.task_state, AuctionTaskState::ReadyToBid);
+        assert_eq!(caps.next_action_key.as_deref(), Some("BID"));
+        assert_eq!(caps.next_action_label.as_deref(), Some("Place Bid"));
+        assert!(caps.next_action_reason.is_some());
+        assert_eq!(caps.countdown_label.as_deref(), Some("Reveal starts in"));
+        assert_eq!(caps.countdown_blocks, Some(20));
+        assert_eq!(caps.countdown_hours, Some(3.5));
+        // Passthrough context fields.
+        assert_eq!(caps.has_bid_commitment, false);
+    }
+
+    #[test]
+    fn build_pipeline_passes_through_reveal_txid_and_bid_value() {
+        let ctx = NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            reveal_txid: Some("deadbeef".into()),
+            bid_value_doos: Some(123_456),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, false, false, None,
+        );
+        assert_eq!(caps.reveal_txid.as_deref(), Some("deadbeef"));
+        assert_eq!(caps.bid_value_doos, Some(123_456));
+    }
+}

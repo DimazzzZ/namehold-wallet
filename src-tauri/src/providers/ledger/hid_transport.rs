@@ -400,4 +400,41 @@ mod tests {
             other => panic!("expected Device error, got {other:?}"),
         }
     }
+
+    /// Item 12 (hid_transport.rs:149-151): APDU response shorter than 2 bytes
+    /// (no status word) is rejected with a Device error. This tests the
+    /// branch where `buf.len() < 2` after reassembly.
+    #[test]
+    fn exchange_rejects_response_shorter_than_status_word() {
+        use crate::providers::ledger::apdu::get_app_version;
+        // Build a response with only 1 byte of body (no status word).
+        let reads = frame_response(&[0xFF], SW_OK);
+        // This creates a packet with 1 byte of body + 2 bytes of SW_OK = 3 bytes total.
+        // To get a response shorter than 2 bytes, we need to manually craft a packet
+        // that has fewer than 2 bytes total.
+        let mut mock = MockHid {
+            writes: Vec::new(),
+            reads: VecDeque::new(),
+        };
+        // Manually create a packet with only 1 byte of payload (the frame header
+        // indicates length 1, and we provide 1 byte, so after reassembly buf.len() == 1).
+        let mut pkt = [0u8; PACKET_SIZE];
+        pkt[0..2].copy_from_slice(&0x0101u16.to_be_bytes()); // channel
+        pkt[2] = 0x05; // tag
+        pkt[3..5].copy_from_slice(&0u16.to_be_bytes()); // seq 0
+        pkt[5..7].copy_from_slice(&1u16.to_be_bytes()); // length = 1 byte
+        pkt[7] = 0xAB; // the single byte
+        mock.reads.push_back(pkt);
+        let mut t = Transport::new(mock);
+        let err = t.exchange_ok(&get_app_version()).unwrap_err();
+        match err {
+            AppError::Device(msg) => {
+                assert!(
+                    msg.contains("shorter than a status word"),
+                    "got: {msg}"
+                );
+            }
+            other => panic!("expected Device error, got {other:?}"),
+        }
+    }
 }

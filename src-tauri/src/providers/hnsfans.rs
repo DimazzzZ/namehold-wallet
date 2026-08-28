@@ -1167,4 +1167,49 @@ mod tests {
             other => panic!("expected AppError::Other, got: {other:?}"),
         }
     }
+
+    // --- Coverage: reachable branches flagged uncovered in Phase 4 ----------
+
+    /// Item 9 (hnsfans.rs:183): `get_balance` skips empty/whitespace addresses
+    /// via `continue`, so passing only empty addresses results in `attempted=0`
+    /// and returns `Ok` with zero balance (not an error).
+    #[tokio::test]
+    async fn get_balance_skips_empty_addresses() {
+        let client = HnsFansClient::new("https://e.hnsfans.com");
+        let addrs = vec!["".to_string(), "   ".to_string(), "\t".to_string()];
+        let result = client.get_balance(&addrs).await;
+        assert!(result.is_ok(), "empty addresses should not error");
+        let balance = result.unwrap();
+        assert_eq!(balance.confirmed, 0);
+        assert_eq!(balance.unconfirmed, 0);
+    }
+
+    /// Item 10 (hnsfans.rs:605): `extract_amount` with a float value calls
+    /// `as_f64()` and rounds. This is already covered by the existing
+    /// `extract_amount_rounds_floats_and_defaults_to_zero` test, but we verify
+    /// it here explicitly.
+    #[test]
+    fn extract_amount_handles_float_via_as_f64() {
+        let body = json!({ "confirmed": 12.7 });
+        assert_eq!(extract_amount(&body, &["confirmed"]), 13);
+    }
+
+    /// Item 11 (hnsfans.rs:697): `normalize_name` handles `transfer` field
+    /// that is neither a Number nor Null (e.g., a string or boolean).
+    #[test]
+    fn normalize_name_handles_transfer_non_number_non_null() {
+        // A name entry where `transfer` is a string (unexpected shape).
+        let entry = json!({
+            "name": "testname",
+            "hash": "abcd1234",
+            "transfer": "unexpected_string",
+            "revoked": false,
+        });
+        let result = normalize_name(&entry);
+        // The function should still normalize it successfully, carrying the
+        // unexpected `transfer` value through.
+        assert!(result.is_some(), "should handle non-number transfer gracefully");
+        let name = result.unwrap();
+        assert_eq!(name.name, "testname");
+    }
 }

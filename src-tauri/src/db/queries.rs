@@ -3926,4 +3926,1125 @@ mod noncustodial_query_tests {
         // Draft should be gone via CASCADE.
         assert!(get_tx_draft(&conn, "d1").unwrap().is_none());
     }
+
+    // --- Coverage: reachable branches flagged uncovered in Phase 4 ----------
+
+    /// Item 1 (queries.rs:1185-1189): a coin already reserved by a *different*
+    /// live draft cannot be stolen — the conditional UPDATE claims 0 rows, so
+    /// the whole transaction rolls back with `InvalidInput` and draft B never
+    /// persists.
+    #[test]
+    fn insert_tx_draft_reserving_coins_conflict_rolls_back() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        // A spendable coin at (txid, vout).
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, spend_class, spent_by_txid)
+             VALUES ('coinA', 0, 'p1', 'rs1qa', '00', 1000, 0, 'liquid_hns', NULL)",
+            [],
+        )
+        .unwrap();
+        let inputs = [("coinA".to_string(), 0u32)];
+        // Draft A reserves the coin — succeeds.
+        insert_tx_draft_reserving_coins(&conn, "dA", "p1", "send_hns", "", "[]", "{}", &inputs)
+            .unwrap();
+        // Draft B tries to claim the same coin — must fail and roll back.
+        let err = insert_tx_draft_reserving_coins(
+            &conn, "dB", "p1", "send_hns", "", "[]", "{}", &inputs,
+        )
+        .unwrap_err();
+        match err {
+            AppError::InvalidInput(msg) => {
+                assert!(msg.contains("reserved by another"), "got: {msg}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+        // Draft B row was rolled back — it must not exist.
+        assert!(get_tx_draft(&conn, "dB").unwrap().is_none());
+        // Draft A still holds the reservation.
+        assert!(get_tx_draft(&conn, "dA").unwrap().is_some());
+    }
+
+    /// Item 2 (queries.rs:525): no snapshot rows → `Ok(None)`.
+    #[test]
+    fn get_latest_wallet_snapshot_none_on_empty() {
+        let conn = db();
+        assert!(get_latest_wallet_snapshot(&conn).unwrap().is_none());
+    }
+
+    /// Item 3 (queries.rs:158): `update_asset` with every field `None` makes
+    /// `sets` empty, so it early-returns `Ok(())` without issuing an UPDATE.
+    #[test]
+    fn update_asset_no_fields_is_noop() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        // A no-op update against a non-existent id still succeeds because the
+        // early return fires before any SQL runs.
+        update_asset(&conn, 999, None, None, None, None, None, None, None).unwrap();
+    }
+
+    /// Item 4 (queries.rs:2113): `covenant_item_hex` returns `None` when the
+    /// requested item is an empty string.
+    #[test]
+    fn covenant_item_hex_none_on_empty_item() {
+        let cov = serde_json::json!({ "items": ["", "aa"] }).to_string();
+        assert_eq!(covenant_item_hex(Some(&cov), 0), None);
+        // Sanity: a non-empty sibling still decodes.
+        assert_eq!(covenant_item_hex(Some(&cov), 1).as_deref(), Some("aa"));
+    }
+
+    /// Item 5 (queries.rs:2307): a name-covenant coin whose covenant_json has
+    /// no items[0] (no name hash) is skipped via `None => continue`.
+    #[test]
+    fn list_unspent_wallet_name_hashes_skips_hashless_coin() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        // A name_control coin with a covenant that has an empty items array —
+        // covenant_name_hash_hex returns None, so the row is skipped.
+        let cov = serde_json::json!({ "type": 6, "action": "REGISTER", "items": [] })
+            .to_string();
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+             VALUES ('t1', 0, 'p1', 'rs1qa', '00', 1000, 6, ?1, 'name_control', NULL)",
+            params![cov],
+        )
+        .unwrap();
+        let out = list_unspent_wallet_name_hashes(&conn, "p1").unwrap();
+        assert!(out.is_empty(), "hashless coin must be skipped: {out:?}");
+    }
+
+    /// Item 6 (queries.rs:2325): rawName dedup — when a hashless-rawName coin
+    /// (REVEAL) is seen FIRST and a rawName-carrying coin (BID) for the same
+    /// hash is seen SECOND, the `and_modify` branch upgrades the stored entry.
+    #[test]
+    fn list_unspent_wallet_name_hashes_upgrades_rawname_later() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        let raw = "6e616d65686f6c64"; // "namehold"
+        // REVEAL first (items[2] is a nonce, not read as rawName → None).
+        let reveal = serde_json::json!({
+            "type": 4, "action": "REVEAL", "items": ["hashA", "64000000", "nonce"],
+        })
+        .to_string();
+        // BID second, carrying rawName at items[2].
+        let bid = serde_json::json!({
+            "type": 3, "action": "BID", "items": ["hashA", "64000000", raw, "blind"],
+        })
+        .to_string();
+        // Insert order controls scan order: t1 (REVEAL) < t2 (BID) by txid.
+        for (txid, cov_type, cov) in
+            [("t1", 4i64, &reveal), ("t2", 3i64, &bid)]
+        {
+            conn.execute(
+                "INSERT INTO tracked_utxos
+                    (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                     value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+                 VALUES (?1, 0, 'p1', 'rs1qa', '00', 1000, ?2, ?3, 'name_lockup', NULL)",
+                params![txid, cov_type, cov],
+            )
+            .unwrap();
+        }
+        let out = list_unspent_wallet_name_hashes(&conn, "p1").unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name_hash_hex, "hasha");
+        // The rawName from the later BID was merged in over the earlier None.
+        assert_eq!(out[0].raw_name_hex.as_deref(), Some(raw));
+    }
+
+    /// Item 7a (queries.rs:2183): `find_unspent_covenant_utxo` ignores a coin
+    /// belonging to a *different* name hash (`Some(_) => {}`), returning None
+    /// when nothing matches the requested hash.
+    #[test]
+    fn find_unspent_covenant_utxo_ignores_other_name() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1',0,0,0,'rs1qa','0014','02')",
+            [],
+        )
+        .unwrap();
+        // Coin at rs1qa carries name hash "otherhash", not the "wanthash" we ask for.
+        let cov = serde_json::json!({
+            "type": 3, "action": "BID", "items": ["otherhash", "64000000", "72", "bl"],
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+             VALUES ('t1', 0, 'p1', 'rs1qa', '00', 1000, 3, ?1, 'name_lockup', NULL)",
+            params![cov],
+        )
+        .unwrap();
+        let got =
+            find_unspent_covenant_utxo(&conn, "p1", "rs1qa", 3, "want", "wanthash").unwrap();
+        assert!(got.is_none(), "other-name coin must be ignored: {got:?}");
+    }
+
+    /// Item 7b (queries.rs:2188): the lone-unknown-covenant fallback — a single
+    /// candidate whose covenant_json is NULL (unreadable) is returned as-is.
+    #[test]
+    fn find_unspent_covenant_utxo_lone_unknown_fallback() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1',0,0,0,'rs1qa','0014','02')",
+            [],
+        )
+        .unwrap();
+        // Single coin at rs1qa with covenant_type 3 but NULL covenant_json —
+        // covenant_name_hash_hex returns None → it lands in `unknown`.
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+             VALUES ('t1', 0, 'p1', 'rs1qa', '00', 1000, 3, NULL, 'name_lockup', NULL)",
+            [],
+        )
+        .unwrap();
+        let got =
+            find_unspent_covenant_utxo(&conn, "p1", "rs1qa", 3, "want", "wanthash").unwrap();
+        assert!(got.is_some(), "lone unknown-covenant coin should be returned");
+        assert_eq!(got.unwrap().txid, "t1");
+    }
+
+    /// Item 8 (queries.rs:1553): `draft_summary_covers_name` returns false when
+    /// the summary JSON is unparseable.
+    #[test]
+    fn draft_summary_covers_name_false_on_bad_json() {
+        assert!(!draft_summary_covers_name("{not valid json", "foo"));
+        // Sanity: valid JSON with a matching name field returns true.
+        assert!(draft_summary_covers_name(r#"{"name":"foo"}"#, "foo"));
+    }
+
+    // ── Phase 5: Additional coverage tests to reach ~100% ──────────────────
+
+    /// Coverage: read_cached_transactions — "other" direction (no our addr, no our spend)
+    #[test]
+    fn read_cached_transactions_other_direction() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        // Cache a transaction with neither our address nor our UTXO
+        cache_transaction(
+            &conn,
+            "p1",
+            "other_tx",
+            Some(102),
+            None,
+            r#"{"outputs":[{"value":100000,"address":"rs1qother"}],"inputs":[]}"#,
+        )
+        .unwrap();
+
+        let txs = read_cached_transactions(&conn, "p1").unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0]["direction"], "other");
+        assert_eq!(txs[0]["value"], 0);
+        assert_eq!(txs[0]["address"], "");
+    }
+
+    /// Coverage: read_cached_transactions — unconfirmed (NULL height)
+    #[test]
+    fn read_cached_transactions_unconfirmed() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1',0,0,0,'rs1qaddr','0014','02')",
+            [],
+        )
+        .unwrap();
+        cache_transaction(
+            &conn,
+            "p1",
+            "unconf_tx",
+            None,
+            None,
+            r#"{"outputs":[{"value":500000,"address":"rs1qaddr"}],"inputs":[]}"#,
+        )
+        .unwrap();
+
+        let txs = read_cached_transactions(&conn, "p1").unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0]["confirmed"], false);
+        assert_eq!(txs[0]["height"], serde_json::Value::Null);
+        assert_eq!(txs[0]["direction"], "receive");
+    }
+
+    /// Coverage: read_cached_transactions — send with multiple foreign outputs
+    #[test]
+    fn read_cached_transactions_send_multiple_outputs() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1',0,0,0,'rs1qmine','0014','02')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, spend_class)
+             VALUES ('prevtx', 0, 'p1', 'rs1qmine', '0014', 500000, 0, 'liquid_hns')",
+            [],
+        )
+        .unwrap();
+        // Send with multiple foreign outputs — sent_outputs sums all non-ours
+        cache_transaction(
+            &conn,
+            "p1",
+            "multi_send",
+            Some(200),
+            None,
+            r#"{"outputs":[{"value":100000,"address":"rs1qfirst"},{"value":50000,"address":"rs1qsecond"},{"value":340000,"address":"rs1qmine"}],"inputs":[{"prevout":{"hash":"prevtx","index":0}}]}"#,
+        )
+        .unwrap();
+
+        let txs = read_cached_transactions(&conn, "p1").unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0]["direction"], "send");
+        // sent_outputs = 100000 + 50000 = 150000 (only non-ours outputs)
+        assert_eq!(txs[0]["value"], 150000);
+        assert_eq!(txs[0]["address"], "rs1qfirst"); // first non-ours address
+    }
+
+    /// Coverage: row_to_profile with has_passphrase=1 branch, receive_address set, last_synced fields
+    #[test]
+    fn row_to_profile_with_passphrase_and_fields() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        // Insert a secret row with kdf != "none" → has_passphrase = true
+        conn.execute(
+            "INSERT INTO wallet_secrets
+                (wallet_profile_id, kdf, kdf_salt_hex, nonce_hex, ciphertext_hex, public_fingerprint)
+             VALUES ('p1', 'pbkdf2', 'salt', 'nonce', 'aabb', 'fp')",
+            [],
+        )
+        .unwrap();
+        // Populate receive_address and last_synced fields
+        conn.execute(
+            "UPDATE wallet_profiles SET receive_address = 'rs1qreceive', last_synced_at = datetime('now'), last_synced_height = 100 WHERE id = 'p1'",
+            [],
+        )
+        .unwrap();
+        set_active_profile(&conn, "p1").unwrap();
+
+        let profile = get_wallet_profile(&conn, "p1").unwrap().unwrap();
+        assert_eq!(profile.id, "p1");
+        assert_eq!(profile.receive_address.as_deref(), Some("rs1qreceive"));
+        assert_eq!(profile.last_synced_height, Some(100));
+        assert!(profile.last_synced_at.is_some());
+        assert!(profile.has_passphrase);
+        assert!(profile.active);
+    }
+
+    /// Coverage: list_wallet_profiles exercises row_to_profile on multiple rows
+    #[test]
+    fn list_wallet_profiles_multiple() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        seed_profile(&conn, "p2");
+        set_active_profile(&conn, "p2").unwrap();
+
+        let profiles = list_wallet_profiles(&conn).unwrap();
+        assert_eq!(profiles.len(), 2);
+        let p2 = profiles.iter().find(|p| p.id == "p2").unwrap();
+        assert!(p2.active);
+        let p1 = profiles.iter().find(|p| p.id == "p1").unwrap();
+        assert!(!p1.active);
+    }
+
+    /// Coverage: read_owned_names_explorer — both ownership signals
+    #[test]
+    fn read_owned_names_explorer_both_signals() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // Name A: owner_address IS NOT NULL (explorer-verified path, no UTXO needed)
+        let name_a = crate::hsd::types::HsdName {
+            name: "explorer_owned".into(),
+            name_hash: Some("hash_a".into()),
+            state: Some("CLOSED".into()),
+            height: Some(100),
+            renewal: Some(200),
+            owner: None,
+            value: None,
+            highest: None,
+            registered: None,
+            expired: None,
+            stats: None,
+            transfer: None,
+            revoked: None,
+            bids: None,
+        };
+        upsert_owned_name(&conn, "p1", &name_a, "txid_a", 0, "rs1qexplorer").unwrap();
+
+        // Name B: owner_address IS NULL but matching unspent name_control UTXO
+        conn.execute(
+            "INSERT INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, owner_address)
+             VALUES ('p1', 'node_owned', 'hash_b', 'CLOSED', 'txid_b', 0, NULL)",
+            [],
+        )
+        .unwrap();
+        seed_name_control_utxo(&conn, "p1", "txid_b", 0, "rs1qnode");
+
+        let names = read_owned_names_explorer(&conn, "p1").unwrap();
+        assert_eq!(names.len(), 2);
+        let by_name = |n: &str| names.iter().find(|x| x["name"] == n).unwrap().clone();
+        assert_eq!(by_name("explorer_owned")["owner_address"], "rs1qexplorer");
+        // node_owned has NULL owner_address
+        assert_eq!(by_name("node_owned")["owner_address"], serde_json::Value::Null);
+    }
+
+    /// Coverage: read_owned_names_explorer — registered/expired extraction from raw_json
+    #[test]
+    fn read_owned_names_explorer_registered_expired_from_raw_json() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // raw_json with explicit registered=true, expired=false
+        let raw_json = serde_json::json!({
+            "name": "testname",
+            "state": "CLOSED",
+            "registered": true,
+            "expired": false,
+            "renewal": 500
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout,
+                 owner_address, height, renewal_height, raw_json)
+             VALUES ('p1', 'testname', 'hash1', 'CLOSED', 'txid1', 0, 'rs1qowner', 100, 500, ?1)",
+            params![raw_json],
+        )
+        .unwrap();
+
+        let names = read_owned_names_explorer(&conn, "p1").unwrap();
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0]["registered"], true);
+        assert_eq!(names[0]["expired"], false);
+    }
+
+    /// Coverage: read_owned_names_explorer — derived registered from CLOSED state + renewal
+    #[test]
+    fn read_owned_names_explorer_derived_registered() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // raw_json WITHOUT registered field but CLOSED state + renewal > 0 → derived registered = true
+        let raw_json = serde_json::json!({
+            "name": "derived_reg",
+            "state": "CLOSED",
+            "renewal": 500
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout,
+                 owner_address, height, renewal_height, raw_json)
+             VALUES ('p1', 'derived_reg', 'hash2', 'CLOSED', 'txid2', 0, 'rs1qowner', 100, 500, ?1)",
+            params![raw_json],
+        )
+        .unwrap();
+
+        let names = read_owned_names_explorer(&conn, "p1").unwrap();
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0]["registered"], true);
+    }
+
+    /// Coverage: read_cached_names — registered branch (covenant_type >= 6)
+    #[test]
+    fn read_cached_names_registered_branch() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        upsert_name_state(
+            &conn,
+            "p1",
+            "registered_name",
+            &serde_json::json!({"info":{"name":"registered_name","state":"CLOSED","height":100,"renewal":200}}),
+        )
+        .unwrap();
+
+        // Insert a name_control UTXO with covenant_type = 6 (>= 6 → registered)
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, spend_class, spent_by_txid)
+             VALUES ('txid_reg', 0, 'p1', 'rs1qaddr', '0014', 1000, 6, 'name_control', NULL)",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "UPDATE tracked_name_states SET owner_txid = 'txid_reg', owner_vout = 0 WHERE name = 'registered_name'",
+            [],
+        )
+        .unwrap();
+
+        let names = read_cached_names(&conn, "p1").unwrap();
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0]["name"], "registered_name");
+        assert_eq!(names[0]["registered"], true);
+    }
+
+    /// Coverage: read_cached_names — not-registered branch (covenant_type < 6)
+    #[test]
+    fn read_cached_names_not_registered_branch() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        upsert_name_state(
+            &conn,
+            "p1",
+            "won_name",
+            &serde_json::json!({"info":{"name":"won_name","state":"CLOSED","height":100,"renewal":200}}),
+        )
+        .unwrap();
+
+        // Insert a REVEAL UTXO with covenant_type = 4 (< 6 → not registered)
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, spend_class, spent_by_txid)
+             VALUES ('txid_rev', 0, 'p1', 'rs1qaddr', '0014', 1000, 4, 'name_control', NULL)",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "UPDATE tracked_name_states SET owner_txid = 'txid_rev', owner_vout = 0 WHERE name = 'won_name'",
+            [],
+        )
+        .unwrap();
+
+        let names = read_cached_names(&conn, "p1").unwrap();
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0]["registered"], false);
+    }
+
+    /// Coverage: get_recent_audit_log after triggering audit writes
+    #[test]
+    fn get_recent_audit_log_after_writes() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld, status) VALUES ('a','not_started')", []).unwrap();
+        let id1 = conn.last_insert_rowid();
+        update_asset(&conn, id1, Some("finalized_owned"), None, None, None, None, None, None).unwrap();
+        bulk_update_status(&conn, &[id1], "waiting_finalize").unwrap();
+
+        let log = get_recent_audit_log(&conn, 10).unwrap();
+        assert!(log.len() >= 2);
+        // Most recent first
+        assert_eq!(log[0]["action"], "bulk_status_change");
+        assert_eq!(log[1]["action"], "asset_update");
+    }
+
+    /// Coverage: get_name_coin returns Some with all fields populated
+    #[test]
+    fn get_name_coin_returns_some() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1',0,0,5,'rs1qname','0014','02')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, spend_class, spent_by_txid)
+             VALUES ('nametx', 0, 'p1', 'rs1qname', '0014', 2000, 6, 'name_control', NULL)",
+            [],
+        )
+        .unwrap();
+
+        upsert_name_state(
+            &conn,
+            "p1",
+            "myname",
+            &serde_json::json!({"info":{"name":"myname","state":"CLOSED","height":100}}),
+        )
+        .unwrap();
+
+        conn.execute(
+            "UPDATE tracked_name_states SET owner_txid = 'nametx', owner_vout = 0 WHERE name = 'myname'",
+            [],
+        )
+        .unwrap();
+
+        let coin = get_name_coin(&conn, "p1", "myname").unwrap().unwrap();
+        assert_eq!(coin.txid, "nametx");
+        assert_eq!(coin.vout, 0);
+        assert_eq!(coin.value, 2000);
+        assert_eq!(coin.address, "rs1qname");
+        assert_eq!(coin.branch, 0);
+        assert_eq!(coin.child_index, 5);
+        assert_eq!(coin.covenant_type, 6);
+        assert_eq!(coin.name_height, Some(100));
+    }
+
+    /// Coverage: get_wallet_snapshots ordering (newest first) and fields
+    #[test]
+    fn get_wallet_snapshots_ordering_and_fields() {
+        let conn = db();
+        insert_wallet_snapshot(&conn, "w1", 100, Some("rs1qa"), 1, None).unwrap();
+        insert_wallet_snapshot(&conn, "w1", 200, None, 2, None).unwrap();
+        insert_wallet_snapshot(&conn, "w1", 300, Some("rs1qc"), 3, None).unwrap();
+
+        let snaps = get_wallet_snapshots(&conn, 10).unwrap();
+        assert_eq!(snaps.len(), 3);
+        // Newest first (highest id)
+        assert_eq!(snaps[0]["balance"], 300);
+        assert_eq!(snaps[0]["address"], "rs1qc");
+        assert_eq!(snaps[0]["name_count"], 3);
+        assert_eq!(snaps[1]["balance"], 200);
+        assert_eq!(snaps[1]["address"], serde_json::Value::Null);
+        assert_eq!(snaps[2]["balance"], 100);
+    }
+
+    /// Coverage: get_latest_wallet_snapshot returns most recent with fields
+    #[test]
+    fn get_latest_wallet_snapshot_with_fields() {
+        let conn = db();
+        insert_wallet_snapshot(&conn, "w1", 100, Some("rs1qa"), 1, None).unwrap();
+        insert_wallet_snapshot(&conn, "w2", 200, Some("rs1qb"), 2, None).unwrap();
+
+        let snap = get_latest_wallet_snapshot(&conn).unwrap().unwrap();
+        assert_eq!(snap["wallet_name"], "w2");
+        assert_eq!(snap["balance"], 200);
+        assert_eq!(snap["address"], "rs1qb");
+        assert_eq!(snap["name_count"], 2);
+    }
+
+    /// Coverage: row_to_name_coin via find_unspent_covenant_utxo with a match
+    #[test]
+    fn row_to_name_coin_via_find_unspent_match() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1',0,1,3,'rs1qcoin','0014','02')",
+            [],
+        )
+        .unwrap();
+
+        let cov = serde_json::json!({
+            "type": 3, "action": "BID",
+            "items": ["namehash1", "64000000", "72", "blind"],
+        })
+        .to_string();
+
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+             VALUES ('bidtx', 2, 'p1', 'rs1qcoin', '00', 5000, 3, ?1, 'name_lockup', NULL)",
+            params![cov],
+        )
+        .unwrap();
+
+        let coin = find_unspent_covenant_utxo(&conn, "p1", "rs1qcoin", 3, "name", "namehash1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(coin.txid, "bidtx");
+        assert_eq!(coin.vout, 2);
+        assert_eq!(coin.value, 5000);
+        assert_eq!(coin.branch, 1);
+        assert_eq!(coin.child_index, 3);
+        assert_eq!(coin.covenant_type, 3);
+        assert_eq!(coin.covenant_json.as_deref().is_some(), true);
+    }
+
+    /// Coverage: list_receive_addresses with used/unused detection
+    #[test]
+    fn list_receive_addresses_used_unused() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1',0,0,0,'rs1qused','0014','02'),
+                    ('p1',0,0,1,'rs1qfresh','0014','02')",
+            [],
+        )
+        .unwrap();
+
+        // Mark first address as used by a UTXO
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, spend_class)
+             VALUES ('tx0', 0, 'p1', 'rs1qused', '0014', 1000, 0, 'liquid_hns')",
+            [],
+        )
+        .unwrap();
+
+        let addrs = list_receive_addresses(&conn, "p1", 0).unwrap();
+        assert_eq!(addrs.len(), 2);
+        assert_eq!(addrs[0].index, 0);
+        assert_eq!(addrs[0].address, "rs1qused");
+        assert!(addrs[0].used);
+        assert_eq!(addrs[1].index, 1);
+        assert_eq!(addrs[1].address, "rs1qfresh");
+        assert!(!addrs[1].used);
+    }
+
+    /// Coverage: get_tracked_name_state returns Some with all fields
+    #[test]
+    fn get_tracked_name_state_returns_some() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        upsert_name_state(
+            &conn,
+            "p1",
+            "tracked",
+            &serde_json::json!({"info":{"name":"tracked","state":"CLOSED","renewal":200}}),
+        )
+        .unwrap();
+
+        let row = get_tracked_name_state(&conn, "p1", "tracked").unwrap().unwrap();
+        assert_eq!(row.name, "tracked");
+        assert_eq!(row.state.as_deref(), Some("CLOSED"));
+        assert_eq!(row.renewal_height, Some(200));
+    }
+
+    /// Coverage: get_tracked_name_state returns None for missing
+    #[test]
+    fn get_tracked_name_state_returns_none() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        assert!(get_tracked_name_state(&conn, "p1", "nonexistent").unwrap().is_none());
+    }
+
+    /// Coverage: delete_tx_draft releases coins and refuses broadcasted
+    #[test]
+    fn delete_tx_draft_releases_and_refuses_broadcasted() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, spend_class)
+             VALUES ('coin1', 0, 'p1', 'rs1q', '00', 1000, 0, 'liquid_hns')",
+            [],
+        )
+        .unwrap();
+
+        let inputs = [("coin1".to_string(), 0u32)];
+        insert_tx_draft_reserving_coins(&conn, "d1", "p1", "send_hns", "", "[]", "{}", &inputs)
+            .unwrap();
+
+        // Can delete a draft-status draft
+        delete_tx_draft(&conn, "d1").unwrap();
+        assert!(get_tx_draft(&conn, "d1").unwrap().is_none());
+
+        // Coin reservation released
+        let reserved: Option<String> = conn.query_row(
+            "SELECT reserved_by_draft_id FROM tracked_utxos WHERE txid = 'coin1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(reserved, None);
+
+        // Cannot delete a broadcasted draft
+        insert_tx_draft(&conn, "d2", "p1", "send_hns", "", "{}", "{}").unwrap();
+        update_tx_draft_status(&conn, "d2", "broadcasted", None, Some("txid1")).unwrap();
+        let err = delete_tx_draft(&conn, "d2").unwrap_err();
+        match err {
+            AppError::InvalidInput(msg) => assert!(msg.contains("broadcast")),
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    /// Coverage: list_assets with sort by various columns and desc direction
+    #[test]
+    fn list_assets_sort_columns_and_desc() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld, status) VALUES ('zzz','not_started')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld, status) VALUES ('aaa','finalized_owned')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld, status) VALUES ('mmm','waiting_finalize')", []).unwrap();
+
+        // Sort by tld ascending
+        let by_tld = list_assets(&conn, None, None, None, Some("tld"), Some("asc")).unwrap();
+        assert_eq!(by_tld[0].tld, "aaa");
+        assert_eq!(by_tld[2].tld, "zzz");
+
+        // Sort by tld descending
+        let by_tld_desc = list_assets(&conn, None, None, None, Some("tld"), Some("desc")).unwrap();
+        assert_eq!(by_tld_desc[0].tld, "zzz");
+        assert_eq!(by_tld_desc[2].tld, "aaa");
+
+        // Sort by status
+        let by_status = list_assets(&conn, None, None, None, Some("status"), None).unwrap();
+        assert_eq!(by_status.len(), 3);
+    }
+
+    /// Coverage: list_assets with search + status + staked combined
+    #[test]
+    fn list_assets_combined_filters() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld, status, is_staked, notes) VALUES ('match','finalized_owned',1,'target note')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld, status, is_staked, notes) VALUES ('nomatch','not_started',0,'target note')", []).unwrap();
+
+        let results = list_assets(&conn, Some("finalized_owned"), Some(true), Some("target"), None, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].tld, "match");
+    }
+
+    /// Coverage: update_asset with all Option fields Some
+    #[test]
+    fn update_asset_all_fields_some() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld, status) VALUES ('test','not_started')", []).unwrap();
+        let id = conn.last_insert_rowid();
+
+        update_asset(
+            &conn,
+            id,
+            Some("finalized_owned"),
+            Some("premium"),
+            Some(r#"["tag1","tag2"]"#),
+            Some("a note"),
+            Some(100),
+            Some("txhash1"),
+            Some("txhash2"),
+        )
+        .unwrap();
+
+        let asset = get_asset(&conn, id).unwrap();
+        assert_eq!(asset.status.as_str(), "finalized_owned");
+        assert_eq!(asset.category.as_deref(), Some("premium"));
+        assert_eq!(asset.tags, vec!["tag1".to_string(), "tag2".to_string()]);
+        assert_eq!(asset.notes.as_deref(), Some("a note"));
+        assert_eq!(asset.hns_received, Some(100));
+    }
+
+    /// Coverage: update_batch with empty fields (early return)
+    #[test]
+    fn update_batch_empty_noop() {
+        let conn = db();
+        let batch_id = create_batch(&conn, "batch1", None, &[]).unwrap();
+        // All None → early return Ok(())
+        update_batch(&conn, batch_id, None, None, None).unwrap();
+        // Verify name unchanged
+        let name: String = conn.query_row(
+            "SELECT name FROM batches WHERE id = ?1",
+            params![batch_id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(name, "batch1");
+    }
+
+    /// Coverage: update_batch with all fields populated
+    #[test]
+    fn update_batch_all_fields() {
+        let conn = db();
+        let batch_id = create_batch(&conn, "batch1", Some("desc1"), &[]).unwrap();
+
+        update_batch(&conn, batch_id, Some("new_name"), Some("new_desc"), Some("in_progress")).unwrap();
+
+        let (name, desc, status): (String, Option<String>, Option<String>) = conn.query_row(
+            "SELECT name, description, status FROM batches WHERE id = ?1",
+            params![batch_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(name, "new_name");
+        assert_eq!(desc.as_deref(), Some("new_desc"));
+        assert_eq!(status.as_deref(), Some("in_progress"));
+    }
+
+    /// Coverage: bulk_update_status writes audit log
+    #[test]
+    fn bulk_update_status_audit_log() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld, status) VALUES ('a','not_started')", []).unwrap();
+        let id1 = conn.last_insert_rowid();
+
+        bulk_update_status(&conn, &[id1], "waiting_finalize").unwrap();
+
+        let log = get_recent_audit_log(&conn, 10).unwrap();
+        assert!(log.iter().any(|e| e["action"] == "bulk_status_change"));
+    }
+
+    /// Coverage: bulk_update_tags writes audit log
+    #[test]
+    fn bulk_update_tags_audit_log() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld) VALUES ('a')", []).unwrap();
+        let id1 = conn.last_insert_rowid();
+
+        bulk_update_tags(&conn, &[id1], "newtag").unwrap();
+
+        let log = get_recent_audit_log(&conn, 10).unwrap();
+        assert!(log.iter().any(|e| e["action"] == "bulk_tag_change"));
+    }
+
+    /// Coverage: get_batch_with_assets with multiple assets in order
+    #[test]
+    fn get_batch_with_assets_order() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld) VALUES ('aaa')", []).unwrap();
+        let id1 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO assets (tld) VALUES ('bbb')", []).unwrap();
+        let id2 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO assets (tld) VALUES ('ccc')", []).unwrap();
+        let id3 = conn.last_insert_rowid();
+
+        let batch_id = create_batch(&conn, "ordered", None, &[id3, id1, id2]).unwrap();
+
+        let batch = get_batch_with_assets(&conn, batch_id).unwrap();
+        assert_eq!(batch.assets.len(), 3);
+        // Order matches insertion order (sort_order)
+        assert_eq!(batch.assets[0].tld, "ccc");
+        assert_eq!(batch.assets[1].tld, "aaa");
+        assert_eq!(batch.assets[2].tld, "bbb");
+    }
+
+    /// Coverage: add_to_batch respects sort_order continuation
+    #[test]
+    fn add_to_batch_sort_order() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld) VALUES ('a')", []).unwrap();
+        let id1 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO assets (tld) VALUES ('b')", []).unwrap();
+        let id2 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO assets (tld) VALUES ('c')", []).unwrap();
+        let id3 = conn.last_insert_rowid();
+
+        let batch_id = create_batch(&conn, "batch", None, &[id1]).unwrap();
+        add_to_batch(&conn, batch_id, &[id2, id3]).unwrap();
+
+        let batch = get_batch_with_assets(&conn, batch_id).unwrap();
+        assert_eq!(batch.assets.len(), 3);
+        assert_eq!(batch.assets[0].tld, "a");
+        assert_eq!(batch.assets[1].tld, "b");
+        assert_eq!(batch.assets[2].tld, "c");
+    }
+
+    /// Coverage: remove_from_batch removes specific assets
+    #[test]
+    fn remove_from_batch_specific() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld) VALUES ('a')", []).unwrap();
+        let id1 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO assets (tld) VALUES ('b')", []).unwrap();
+        let id2 = conn.last_insert_rowid();
+
+        let batch_id = create_batch(&conn, "batch", None, &[id1, id2]).unwrap();
+        let removed = remove_from_batch(&conn, batch_id, &[id1]).unwrap();
+        assert_eq!(removed, 1);
+
+        let batch = get_batch_with_assets(&conn, batch_id).unwrap();
+        assert_eq!(batch.assets.len(), 1);
+        assert_eq!(batch.assets[0].tld, "b");
+    }
+
+    /// Coverage: list_pending_reveal_deadlines with revealed bids excluded
+    #[test]
+    fn list_pending_reveal_deadlines_excludes_revealed() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        insert_bid_commitment(&conn, "p1", "unrevealed", "h1", "rs1q", 0, 0, 100, 200, "n1", "b1").unwrap();
+        insert_bid_commitment(&conn, "p1", "revealed", "h2", "rs1q", 0, 0, 100, 200, "n2", "b2").unwrap();
+
+        set_reveal_end_height(&conn, "p1", "b1", 500).unwrap();
+        set_reveal_end_height(&conn, "p1", "b2", 600).unwrap();
+
+        // Mark one as revealed
+        set_bid_reveal_txid(&conn, "p1", "revealed", "reveal_txid").unwrap();
+
+        let deadlines = list_pending_reveal_deadlines(&conn).unwrap();
+        assert_eq!(deadlines.len(), 1);
+        assert_eq!(deadlines[0].1, "unrevealed");
+    }
+
+    /// Coverage: list_bid_commitments with bid_txid and reveal_txid populated
+    #[test]
+    fn list_bid_commitments_with_txids() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        insert_bid_commitment(&conn, "p1", "name1", "hash1", "rs1q", 0, 0, 100, 200, "nonce", "blind1").unwrap();
+        set_bid_txid(&conn, "p1", "blind1", "bid_txid_1").unwrap();
+        set_bid_reveal_txid(&conn, "p1", "name1", "reveal_txid_1").unwrap();
+
+        let bids = list_bid_commitments(&conn, "p1").unwrap();
+        assert_eq!(bids.len(), 1);
+        assert_eq!(bids[0].bid_txid.as_deref(), Some("bid_txid_1"));
+        assert_eq!(bids[0].reveal_txid.as_deref(), Some("reveal_txid_1"));
+    }
+
+    /// Coverage: auction_position_names includes draft-based names
+    #[test]
+    fn auction_position_names_includes_drafts() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // Insert a broadcasted bid draft
+        insert_tx_draft(&conn, "d1", "p1", "bid", "", "{}", r#"{"action":"bid","name":"bidname"}"#).unwrap();
+        update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txid1")).unwrap();
+
+        // Insert a signed open draft
+        insert_tx_draft(&conn, "d2", "p1", "open", "", "{}", r#"{"action":"open","name":"openname"}"#).unwrap();
+        update_tx_draft_status(&conn, "d2", "signed", None, None).unwrap();
+
+        // Insert a draft-status (not in-flight) — should be excluded
+        insert_tx_draft(&conn, "d3", "p1", "bid", "", "{}", r#"{"action":"bid","name":"draftonly"}"#).unwrap();
+
+        let positions = auction_position_names(&conn, "p1").unwrap();
+        assert!(positions.contains(&"bidname".to_string()));
+        assert!(positions.contains(&"openname".to_string()));
+        assert!(!positions.contains(&"draftonly".to_string()));
+    }
+
+    /// Coverage: count_repair_candidates
+    #[test]
+    fn count_repair_candidates_matches_list() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        conn.execute("INSERT INTO assets (tld) VALUES ('a')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('b')", []).unwrap();
+
+        let count = count_repair_candidates(&conn, "p1", 12).unwrap();
+        let list = list_repair_candidates(&conn, "p1", 100, 12).unwrap();
+        assert_eq!(count as usize, list.len());
+    }
+
+    /// Coverage: insert_tx_draft_reserving_coins with multiple inputs
+    #[test]
+    fn insert_tx_draft_reserving_multiple_coins() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, covenant_type, spend_class)
+             VALUES ('coin1', 0, 'p1', 'rs1q', '00', 1000, 0, 'liquid_hns'),
+                    ('coin2', 1, 'p1', 'rs1q', '00', 2000, 0, 'liquid_hns')",
+            [],
+        )
+        .unwrap();
+
+        let inputs = vec![("coin1".to_string(), 0u32), ("coin2".to_string(), 1u32)];
+        insert_tx_draft_reserving_coins(&conn, "d1", "p1", "send_hns", "", "[]", "{}", &inputs).unwrap();
+
+        let r1: Option<String> = conn.query_row(
+            "SELECT reserved_by_draft_id FROM tracked_utxos WHERE txid = 'coin1'",
+            [], |r| r.get(0),
+        ).unwrap();
+        let r2: Option<String> = conn.query_row(
+            "SELECT reserved_by_draft_id FROM tracked_utxos WHERE txid = 'coin2'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(r1.as_deref(), Some("d1"));
+        assert_eq!(r2.as_deref(), Some("d1"));
+    }
+
+    /// Coverage: create_batch with asset_ids
+    #[test]
+    fn create_batch_with_assets() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld) VALUES ('a')", []).unwrap();
+        let id1 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO assets (tld) VALUES ('b')", []).unwrap();
+        let id2 = conn.last_insert_rowid();
+
+        let batch_id = create_batch(&conn, "test_batch", Some("desc"), &[id1, id2]).unwrap();
+
+        let batch = get_batch_with_assets(&conn, batch_id).unwrap();
+        assert_eq!(batch.name, "test_batch");
+        assert_eq!(batch.description.as_deref(), Some("desc"));
+        assert_eq!(batch.assets.len(), 2);
+    }
+
+    /// Coverage: read_cached_transactions with NULL raw_json
+    #[test]
+    fn read_cached_transactions_null_raw_json() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        // Insert directly with NULL raw_json
+        conn.execute(
+            "INSERT INTO wallet_transactions_cache (wallet_profile_id, txid, height, time, raw_json)
+             VALUES ('p1', 'nulltx', 100, NULL, NULL)",
+            [],
+        )
+        .unwrap();
+
+        let txs = read_cached_transactions(&conn, "p1").unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0]["hash"], "nulltx");
+        assert_eq!(txs[0]["direction"], "other");
+        assert_eq!(txs[0]["value"], 0);
+    }
+
+    /// Coverage: list_assets with empty search string (should not filter)
+    #[test]
+    fn list_assets_empty_search() {
+        let conn = db();
+        conn.execute("INSERT INTO assets (tld) VALUES ('a')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('b')", []).unwrap();
+
+        let results = list_assets(&conn, None, None, Some(""), None, None).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    /// Coverage: get_bid_commitment returns most recent
+    #[test]
+    fn get_bid_commitment_most_recent() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        insert_bid_commitment(&conn, "p1", "name1", "hash1", "rs1q", 0, 0, 100, 200, "nonce1", "blind1").unwrap();
+        // Manually set created_at to an older time so the second insert is newer
+        conn.execute(
+            "UPDATE bid_commitments SET created_at = '2020-01-01 00:00:00' WHERE blind_hex = 'blind1'",
+            [],
+        )
+        .unwrap();
+        // Second commitment (newer created_at)
+        insert_bid_commitment(&conn, "p1", "name1", "hash1", "rs1q", 0, 0, 200, 400, "nonce2", "blind2").unwrap();
+
+        let bid = get_bid_commitment(&conn, "p1", "name1").unwrap().unwrap();
+        // Most recent (by created_at DESC) is blind2
+        assert_eq!(bid.blind_hex, "blind2");
+        assert_eq!(bid.bid_value_doos, 200);
+    }
+
+    /// Coverage: get_bid_commitment returns None for missing
+    #[test]
+    fn get_bid_commitment_none_for_missing() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        assert!(get_bid_commitment(&conn, "p1", "nonexistent").unwrap().is_none());
+    }
 }

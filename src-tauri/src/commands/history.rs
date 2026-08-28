@@ -602,4 +602,37 @@ mod tests {
         assert_eq!(row.value_doos, 0);
         assert_eq!(row.name_hash.as_deref(), Some("deadbeef"));
     }
+
+    /// Item 13 (history.rs:234): a TX with a name covenant on an external
+    /// address that does NOT spend our coins → direction = "internal".
+    #[test]
+    fn classify_name_covenant_external_is_internal() {
+        let ours = addrs(&["hs1qmine"]);
+        // External input (spends_ours=false), a plain output landing on our
+        // address (received_by_us > 0, so the tx passes the touch-our-wallet
+        // gate), and the name-covenant output at an EXTERNAL address
+        // (name_cov_addr_is_ours=false). Neither send nor receive on the
+        // covenant → direction = "internal".
+        let tx = json!({
+            "hash": "ff",
+            "height": 300,
+            "inputs": [
+                {"prevout": {"hash": "pp", "index": 0},
+                 "coin": {"value": 500_000_000, "address": "hs1qother",
+                          "covenant": {"type": 0, "items": []}}}
+            ],
+            "outputs": [
+                {"value": 1_000_000, "address": "hs1qmine",
+                 "covenant": {"type": 0, "action": "NONE", "items": []}},
+                {"value": 5_000_000, "address": "hs1qexternal",
+                 "covenant": {"type": 3, "action": "BID",
+                              "items": ["deadbeef", "000000c8", "666f6f", "cafebabe"]}}
+            ]
+        });
+        let row = classify_tx(&tx, &ours).unwrap();
+        assert_eq!(row.action, "bid");
+        assert_eq!(row.direction, "internal");
+        // No counterparty since it's not a TRANSFER.
+        assert!(row.counterparty.is_none());
+    }
 }

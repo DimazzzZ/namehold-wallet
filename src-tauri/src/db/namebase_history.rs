@@ -631,4 +631,688 @@ mod tests {
         let err = backfill_subdomain_names(&conn);
         assert!(err.is_err(), "expected error from missing table");
     }
+
+    /// Synthetic large-event import test that exercises the same code paths as
+    /// `imports_real_fixture_when_present` but without requiring the fixture file.
+    /// This covers the branches in `upsert_events` that count inserted vs updated rows.
+    #[test]
+    fn upsert_large_batch_exercises_insert_and_update_branches() {
+        let mut conn = mem_db();
+
+        // Build synthetic events directly (bypassing CSV escaping ceremony) so
+        // we exercise `upsert_events`'s insert-then-update branches across many
+        // rows — the same code paths the fixture-guarded test would cover.
+        let mut events: Vec<NamebaseEvent> = Vec::new();
+        for i in 0..150_i64 {
+            let id = 1_000_000 + i;
+            let domain_name = format!("domain{}", i % 10);
+            let bid = 100_000_000 + i * 1_000_000;
+            let fee = 10_000 + i;
+            let data_json = format!(
+                r#"{{"domainName":"{}","auctionId":"a{}","bidAmountString":"{}","prepaidFeeString":"{}"}}"#,
+                domain_name, i, bid, fee
+            );
+            events.push(NamebaseEvent {
+                id,
+                created_at: format!("2026-01-{:02}T12:00:00Z", (i % 28) + 1),
+                kind: "auctions:place-bid:4".into(),
+                family: "auctions".into(),
+                verb: "place-bid".into(),
+                name: Some(domain_name),
+                fee_doos: Some(fee),
+                bid_doos: Some(bid),
+                stake_doos: None,
+                usd_cents: None,
+                hns_doos: None,
+                auction_id: Some(format!("a{i}")),
+                bid_id: None,
+                sale_id: None,
+                data_json,
+            });
+        }
+
+        // First import: all rows are inserted.
+        let r1 = upsert_events(&mut conn, &events).unwrap();
+        assert_eq!(r1.inserted, events.len());
+        assert_eq!(r1.updated, 0);
+        assert_eq!(r1.total, events.len());
+
+        // Verify the rows are in the DB.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM namebase_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count as usize, events.len());
+
+        // Second import: all rows already exist, so they're updated.
+        let r2 = upsert_events(&mut conn, &events).unwrap();
+        assert_eq!(r2.inserted, 0);
+        assert_eq!(r2.updated, events.len());
+        assert_eq!(r2.total, events.len());
+
+        // Verify no duplicates were created.
+        let count2: i64 = conn
+            .query_row("SELECT COUNT(*) FROM namebase_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count2, count, "row count should not change on re-import");
+
+        // Verify the summary aggregates correctly across all rows.
+        let s = summary(&conn).unwrap();
+        assert_eq!(s.event_count as usize, events.len());
+        assert!(s.total_fee_doos > 0, "expected some fees from bids");
+        assert!(s.name_count > 0, "expected distinct names");
+    }
+
+    /// `list_history` with empty/whitespace name/family/search filters
+    /// exercises the `filter(|s| !s.trim().is_empty())` branches.
+    #[test]
+    fn list_history_empty_and_whitespace_filters_are_ignored() {
+        let mut conn = mem_db();
+        let events = parse_history_csv(&sample_csv()).unwrap();
+        upsert_events(&mut conn, &events).unwrap();
+
+        // Empty string filters should be treated as None (no filtering).
+        let all = list_history(&conn, Some(""), None, None).unwrap();
+        assert_eq!(all.len(), 3, "empty name filter should not restrict");
+
+        let all2 = list_history(&conn, None, Some("  "), None).unwrap();
+        assert_eq!(all2.len(), 3, "whitespace family filter should not restrict");
+
+        let all3 = list_history(&conn, None, None, Some("  ")).unwrap();
+        assert_eq!(all3.len(), 3, "whitespace search filter should not restrict");
+
+        // All three empty at once.
+        let all4 = list_history(&conn, Some(""), Some("  "), Some("")).unwrap();
+        assert_eq!(all4.len(), 3, "all empty filters should not restrict");
+    }
+
+    /// `summary` on an empty table returns zeros and None for earliest/latest.
+    #[test]
+    fn summary_on_empty_table_returns_zeros_and_none() {
+        let conn = mem_db();
+        let s = summary(&conn).unwrap();
+        assert_eq!(s.event_count, 0);
+        assert_eq!(s.name_count, 0);
+        assert_eq!(s.total_fee_doos, 0);
+        assert_eq!(s.total_usd_cents, 0);
+        assert!(s.earliest.is_none());
+        assert!(s.latest.is_none());
+    }
+
+    /// `backfill_subdomain_names` skips rows where subdomain is missing or empty.
+    #[test]
+    fn backfill_skips_rows_without_subdomain() {
+        let conn = mem_db();
+        // Row with valid JSON, domain present, but no "subdomain" key.
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                10_i64,
+                "2026-01-01T00:00:00Z",
+                "subdomains:confirm-transfer:2",
+                "subdomains",
+                "confirm-transfer",
+                "onlydomain",
+                r#"{"domain":"onlydomain","saleId":"s1"}"#,
+            ],
+        )
+        .unwrap();
+        // Row with domain present but subdomain = "" (empty).
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                11_i64,
+                "2026-01-01T00:00:00Z",
+                "subdomains:confirm-transfer:2",
+                "subdomains",
+                "confirm-transfer",
+                "emptysub",
+                r#"{"domain":"emptysub","subdomain":"  "}"#,
+            ],
+        )
+        .unwrap();
+
+        let count = backfill_subdomain_names(&conn).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // --- Row-getter error-arm tests -------------------------------------
+    //
+    // Each read path (`list_history`, `summary`, `backfill_subdomain_names`)
+    // maps a row via closures that use `r.get::<T>(i)?`. The `?` on each
+    // getter is a distinct region whose *error* arm only fires when the
+    // stored value has an incompatible type. SQLite keeps a BLOB as a BLOB
+    // even in a TEXT-affinity column, and `r.get::<String>()` on a BLOB
+    // returns `InvalidColumnType` — the lever we use here to drive those
+    // otherwise-unreachable error branches.
+
+    /// Insert a row whose `created_at` is a BLOB (not TEXT), so any
+    /// `r.get::<String>(created_at_col)` call fails mid-map.
+    fn insert_row_with_blob_created_at(conn: &Connection, id: i64) {
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                vec![0xDE_u8, 0xAD, 0xBE, 0xEF], // BLOB in a TEXT column
+                "auctions:place-bid:4",
+                "auctions",
+                "place-bid",
+                "blobrow",
+                r#"{"domainName":"blobrow"}"#,
+            ],
+        )
+        .unwrap();
+    }
+
+    /// `list_history`'s row-mapping closure propagates a getter error when a
+    /// column holds an incompatible type. Exercises the `r.get(..)?` error
+    /// arm, the `row?` propagation, and the `Err` return of the whole fn.
+    #[test]
+    fn list_history_propagates_row_getter_error() {
+        let conn = mem_db();
+        insert_row_with_blob_created_at(&conn, 900_001);
+        let err = list_history(&conn, None, None, None);
+        assert!(err.is_err(), "expected a row-getter type error to surface");
+    }
+
+    /// `summary`'s `MIN(created_at)` / `MAX(created_at)` return a BLOB when
+    /// all rows store BLOB timestamps, so `r.get::<Option<String>>(4)` in the
+    /// summary closure errors — driving that closure's error arm.
+    #[test]
+    fn summary_propagates_row_getter_error() {
+        let conn = mem_db();
+        insert_row_with_blob_created_at(&conn, 900_002);
+        let err = summary(&conn);
+        assert!(
+            err.is_err(),
+            "expected MIN/MAX blob timestamp to fail String conversion"
+        );
+    }
+
+    /// `backfill_subdomain_names` reads `name` as `Option<String>`; a BLOB
+    /// there makes `r.get::<_, Option<String>>(1)?` error inside the
+    /// `query_map` closure, propagated by `.collect::<Result<..>>()?`.
+    #[test]
+    fn backfill_propagates_row_getter_error() {
+        let conn = mem_db();
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                900_003_i64,
+                "2026-01-01T00:00:00Z",
+                "subdomains:confirm-transfer:2",
+                "subdomains",
+                "confirm-transfer",
+                vec![0x01_u8, 0x02, 0x03], // BLOB in the TEXT `name` column
+                r#"{"domain":"shot","subdomain":"moon"}"#,
+            ],
+        )
+        .unwrap();
+        let err = backfill_subdomain_names(&conn);
+        assert!(err.is_err(), "expected blob `name` to fail String conversion");
+    }
+
+    // --- backfill: already-correct-name branch --------------------------
+
+    /// A subdomain row whose `name` ALREADY equals the composed
+    /// `{sub}.{dom}` must be skipped (the `if current != Some(composed)`
+    /// FALSE arm), while a genuinely stale sibling row is still fixed. This
+    /// exercises both sides of the equality check and keeps `updates`
+    /// non-empty so the transaction/commit path also runs.
+    #[test]
+    fn backfill_skips_already_correct_row_but_fixes_stale_one() {
+        let conn = mem_db();
+
+        // Already correct: name == "moon.shot" — should NOT be re-written.
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                700_001_i64,
+                "2026-01-01T00:00:00Z",
+                "subdomains:confirm-transfer:2",
+                "subdomains",
+                "confirm-transfer",
+                "moon.shot",
+                r#"{"domain":"shot","subdomain":"moon"}"#,
+            ],
+        )
+        .unwrap();
+        // Stale: name == "star" but should become "sky.star".
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                700_002_i64,
+                "2026-01-02T00:00:00Z",
+                "subdomains:confirm-transfer:2",
+                "subdomains",
+                "confirm-transfer",
+                "star",
+                r#"{"domain":"star","subdomain":"sky"}"#,
+            ],
+        )
+        .unwrap();
+
+        // Only the stale row is updated (the already-correct one is skipped).
+        let count = backfill_subdomain_names(&conn).unwrap();
+        assert_eq!(count, 1);
+
+        let correct: String = conn
+            .query_row(
+                "SELECT name FROM namebase_history WHERE id = 700001",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(correct, "moon.shot");
+        let fixed: String = conn
+            .query_row(
+                "SELECT name FROM namebase_history WHERE id = 700002",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fixed, "sky.star");
+    }
+
+    /// `backfill` composes/normalizes: trims surrounding whitespace, strips a
+    /// leading dot, and lowercases. A row whose composed value differs from
+    /// the stored `name` only by case/whitespace still counts as an update,
+    /// confirming the normalization arm inside the composition.
+    #[test]
+    fn backfill_normalizes_case_and_whitespace() {
+        let conn = mem_db();
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                710_001_i64,
+                "2026-01-01T00:00:00Z",
+                "subdomains:confirm-transfer:2",
+                "subdomains",
+                "confirm-transfer",
+                "OLDNAME",
+                r#"{"domain":"Shot","subdomain":"Moon"}"#,
+            ],
+        )
+        .unwrap();
+        let count = backfill_subdomain_names(&conn).unwrap();
+        assert_eq!(count, 1);
+        let fixed: String = conn
+            .query_row(
+                "SELECT name FROM namebase_history WHERE id = 710001",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Lowercased composition of subdomain + domain.
+        assert_eq!(fixed, "moon.shot");
+    }
+
+    /// `parse_data` on an empty `data_json` string falls back to `Value::Null`
+    /// (empty string is not valid JSON), covering the fallback arm distinctly
+    /// from the "garbage text" case already tested.
+    #[test]
+    fn parse_data_empty_string_is_null() {
+        let base = NamebaseHistoryRow {
+            id: 1,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            kind: "test:type:0".into(),
+            family: "test".into(),
+            verb: "type".into(),
+            name: None,
+            fee_doos: None,
+            bid_doos: None,
+            stake_doos: None,
+            usd_cents: None,
+            hns_doos: None,
+            auction_id: None,
+            bid_id: None,
+            sale_id: None,
+            data_json: String::new(),
+            imported_at: "2026-01-01T00:00:00Z".into(),
+        };
+        assert_eq!(parse_data(&base), Value::Null);
+
+        // A JSON literal `null` also round-trips to `Value::Null`.
+        let null_row = NamebaseHistoryRow {
+            data_json: "null".into(),
+            ..base.clone()
+        };
+        assert_eq!(parse_data(&null_row), Value::Null);
+
+        // A non-object valid JSON value (array) is preserved, exercising the
+        // Ok arm with a non-object payload.
+        let arr_row = NamebaseHistoryRow {
+            data_json: "[1,2,3]".into(),
+            ..base
+        };
+        assert_eq!(parse_data(&arr_row), serde_json::json!([1, 2, 3]));
+    }
+
+    /// `list_history` on an empty table returns an empty vec (the `for row in
+    /// rows` loop body never runs — covers the zero-iteration path and the
+    /// `Ok(out)` return with no filters applied).
+    #[test]
+    fn list_history_empty_table_returns_empty_vec() {
+        let conn = mem_db();
+        let rows = list_history(&conn, None, None, None).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    /// `list_history` orders newest-first by `created_at DESC, id DESC`.
+    /// Seeds rows with mixed timestamps (and a tie on timestamp to force the
+    /// secondary `id DESC` key) and asserts the exact returned order.
+    #[test]
+    fn list_history_orders_newest_first_with_id_tiebreak() {
+        let conn = mem_db();
+        let insert = |id: i64, created_at: &str| {
+            conn.execute(
+                "INSERT INTO namebase_history
+                   (id, created_at, type, family, verb, name, data_json)
+                 VALUES (?1, ?2, 'x:y:0', 'fam', 'y', 'n', '{}')",
+                params![id, created_at],
+            )
+            .unwrap();
+        };
+        insert(1, "2026-01-01T00:00:00Z");
+        insert(2, "2026-03-01T00:00:00Z");
+        // Tie with id=2 on timestamp — id DESC must place 3 before 2.
+        insert(3, "2026-03-01T00:00:00Z");
+        insert(4, "2026-02-01T00:00:00Z");
+
+        let rows = list_history(&conn, None, None, None).unwrap();
+        let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        // Newest first; tie broken by id DESC (3 before 2); oldest last.
+        assert_eq!(ids, vec![3, 2, 4, 1]);
+    }
+
+    /// `list_history` name filter normalizes to lowercase and trims, so a
+    /// mixed-case padded query still matches a stored lowercased name.
+    #[test]
+    fn list_history_name_filter_normalizes_query() {
+        let mut conn = mem_db();
+        let events = parse_history_csv(&sample_csv()).unwrap();
+        upsert_events(&mut conn, &events).unwrap();
+
+        // "  DIVER " → trimmed + lowercased → "diver" (2 rows).
+        let rows = list_history(&conn, Some("  DIVER "), None, None).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.name.as_deref() == Some("diver")));
+    }
+
+    /// All three filters supplied simultaneously — exercises the combined
+    /// `AND name = ? AND family = ? AND name LIKE ?` SQL-building path.
+    #[test]
+    fn list_history_all_filters_combined() {
+        let mut conn = mem_db();
+        let events = parse_history_csv(&sample_csv()).unwrap();
+        upsert_events(&mut conn, &events).unwrap();
+
+        let rows = list_history(&conn, Some("diver"), Some("auctions"), Some("div")).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows
+            .iter()
+            .all(|r| r.family == "auctions" && r.name.as_deref() == Some("diver")));
+
+        // A family that excludes all name-matching rows yields nothing.
+        let none = list_history(&conn, Some("diver"), Some("subdomains"), None).unwrap();
+        assert!(none.is_empty());
+    }
+
+    /// `upsert_events` with an empty slice performs no inserts and commits an
+    /// empty transaction (covers the zero-iteration `for e in events` path
+    /// and `total == 0`).
+    #[test]
+    fn upsert_events_empty_slice_is_noop() {
+        let mut conn = mem_db();
+        let r = upsert_events(&mut conn, &[]).unwrap();
+        assert_eq!(r.inserted, 0);
+        assert_eq!(r.updated, 0);
+        assert_eq!(r.total, 0);
+        assert_eq!(summary(&conn).unwrap().event_count, 0);
+    }
+
+    /// `upsert_events` for a single event with all optional money/id fields
+    /// present, then a re-upsert that flips them to `None` — verifying the
+    /// `ON CONFLICT DO UPDATE` overwrites nullable columns and the row is
+    /// read back with `Some`/`None` correctly through `list_history`.
+    #[test]
+    fn upsert_single_event_with_and_without_optional_fields() {
+        let mut conn = mem_db();
+        let full = NamebaseEvent {
+            id: 5_000_001,
+            created_at: "2026-05-01T00:00:00Z".into(),
+            kind: "auctions:place-bid:4".into(),
+            family: "auctions".into(),
+            verb: "place-bid".into(),
+            name: Some("optional".into()),
+            fee_doos: Some(111),
+            bid_doos: Some(222),
+            stake_doos: Some(333),
+            usd_cents: Some(444),
+            hns_doos: Some(555),
+            auction_id: Some("a1".into()),
+            bid_id: Some("b1".into()),
+            sale_id: Some("s1".into()),
+            data_json: r#"{"domainName":"optional"}"#.into(),
+        };
+        let r1 = upsert_events(&mut conn, std::slice::from_ref(&full)).unwrap();
+        assert_eq!(r1.inserted, 1);
+        assert_eq!(r1.updated, 0);
+
+        let rows = list_history(&conn, Some("optional"), None, None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fee_doos, Some(111));
+        assert_eq!(rows[0].bid_doos, Some(222));
+        assert_eq!(rows[0].stake_doos, Some(333));
+        assert_eq!(rows[0].usd_cents, Some(444));
+        assert_eq!(rows[0].hns_doos, Some(555));
+        assert_eq!(rows[0].auction_id.as_deref(), Some("a1"));
+        assert_eq!(rows[0].bid_id.as_deref(), Some("b1"));
+        assert_eq!(rows[0].sale_id.as_deref(), Some("s1"));
+
+        // Re-upsert the same id with every optional field cleared to None.
+        let empty = NamebaseEvent {
+            name: None,
+            fee_doos: None,
+            bid_doos: None,
+            stake_doos: None,
+            usd_cents: None,
+            hns_doos: None,
+            auction_id: None,
+            bid_id: None,
+            sale_id: None,
+            ..full
+        };
+        let r2 = upsert_events(&mut conn, std::slice::from_ref(&empty)).unwrap();
+        assert_eq!(r2.inserted, 0);
+        assert_eq!(r2.updated, 1);
+
+        // name is now NULL → not matched by the name filter; fetch via family.
+        let rows2 = list_history(&conn, None, Some("auctions"), None).unwrap();
+        assert_eq!(rows2.len(), 1);
+        assert_eq!(rows2[0].name, None);
+        assert_eq!(rows2[0].fee_doos, None);
+        assert_eq!(rows2[0].auction_id, None);
+    }
+
+    /// `clear` on an empty table returns 0 (the count-deleted path for the
+    /// zero-rows case), distinct from the populated `clear_removes_all` test.
+    #[test]
+    fn clear_on_empty_table_returns_zero() {
+        let conn = mem_db();
+        assert_eq!(clear(&conn).unwrap(), 0);
+    }
+
+    // --- Per-column getter error arms -----------------------------------
+    //
+    // `list_history`'s row-mapping closure calls `r.get::<T>(i)?` for all 16
+    // columns in order. Once a getter errors, the `?` short-circuits and the
+    // later getters never run — so a single bad row only ever exercises ONE
+    // getter's error arm. To drive every getter's error branch we insert one
+    // row per column with a BLOB planted in exactly that column (a BLOB fails
+    // both `String` and `i64`/`Option<_>` conversion, and SQLite preserves a
+    // BLOB even in a TEXT/INTEGER-affinity column). `id` (column 0) is an
+    // INTEGER PRIMARY KEY and cannot hold a BLOB, so it is excluded.
+
+    /// Seed a valid row, then overwrite one column with a raw BLOB so the
+    /// corresponding `r.get(col)?` in the read closures errors.
+    fn seed_then_blob_column(conn: &Connection, id: i64, column: &str) {
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, fee_doos, bid_doos,
+                stake_doos, usd_cents, hns_doos, auction_id, bid_id, sale_id,
+                data_json)
+             VALUES (?1, '2026-01-01T00:00:00Z', 'auctions:place-bid:4',
+                     'auctions', 'place-bid', 'nm', 1, 2, 3, 4, 5, 'a', 'b',
+                     's', '{}')",
+            params![id],
+        )
+        .unwrap();
+        // X'DEADBEEF' is a 4-byte BLOB literal; affinity leaves it a BLOB.
+        conn.execute(
+            &format!("UPDATE namebase_history SET {column} = X'DEADBEEF' WHERE id = ?1"),
+            params![id],
+        )
+        .unwrap();
+    }
+
+    /// Drive each `list_history` column getter's error arm (columns 2..=15;
+    /// `id`/column 0 can't hold a BLOB, and `created_at`/column 1 is covered
+    /// by an earlier test). Each iteration uses its own single-row table so a
+    /// BLOB in the target column is the first getter to fail.
+    #[test]
+    fn list_history_each_column_getter_error_arm() {
+        let columns = [
+            "type",
+            "family",
+            "verb",
+            "name",
+            "fee_doos",
+            "bid_doos",
+            "stake_doos",
+            "usd_cents",
+            "hns_doos",
+            "auction_id",
+            "bid_id",
+            "sale_id",
+            "data_json",
+            // `imported_at` (col 15) is read last; its error arm is covered
+            // by planting a BLOB there as well.
+            "imported_at",
+        ];
+        for (i, col) in columns.iter().enumerate() {
+            let conn = mem_db();
+            seed_then_blob_column(&conn, 800_000 + i as i64, col);
+            let res = list_history(&conn, None, None, None);
+            assert!(
+                res.is_err(),
+                "expected a getter type error when column `{col}` is a BLOB"
+            );
+        }
+    }
+
+    /// Drive the `backfill_subdomain_names` query_map getters for the
+    /// remaining columns it reads: `id` (col 0, i64) and `data_json`
+    /// (col 2, String). A BLOB in `data_json` makes `r.get::<_, String>(2)?`
+    /// error inside the map closure. (`id` as PK can't be blobbed; the `name`
+    /// col-1 error arm is covered by `backfill_propagates_row_getter_error`.)
+    #[test]
+    fn backfill_data_json_getter_error_arm() {
+        let conn = mem_db();
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, '2026-01-01T00:00:00Z', 'subdomains:confirm-transfer:2',
+                     'subdomains', 'confirm-transfer', 'nm', '{}')",
+            params![800_100_i64],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE namebase_history SET data_json = X'DEADBEEF' WHERE id = ?1",
+            params![800_100_i64],
+        )
+        .unwrap();
+        let err = backfill_subdomain_names(&conn);
+        assert!(err.is_err(), "expected blob data_json to fail String conversion");
+    }
+
+    /// Drive the `summary` closure's remaining aggregate getters. `COUNT(*)`
+    /// and `COUNT(DISTINCT name)` are always integers, and `SUM(...)` is
+    /// coerced by COALESCE — but `MIN`/`MAX(created_at)` echo the stored value
+    /// type. A single BLOB `created_at` alongside normal rows makes MIN a BLOB
+    /// (byte order sorts BLOBs after text is class-ordered) — but to be robust
+    /// we make ALL created_at BLOBs so both MIN and MAX are BLOBs, failing the
+    /// `earliest`/`latest` String conversions. Already covered for a single
+    /// row; here we confirm the multi-row aggregate path too.
+    #[test]
+    fn summary_getter_error_with_multiple_blob_timestamps() {
+        let conn = mem_db();
+        for id in [820_001_i64, 820_002] {
+            conn.execute(
+                "INSERT INTO namebase_history
+                   (id, created_at, type, family, verb, name, data_json)
+                 VALUES (?1, '2026-01-01T00:00:00Z', 'x:y:0', 'f', 'y', 'n', '{}')",
+                params![id],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE namebase_history SET created_at = X'DEADBEEF' WHERE id = ?1",
+                params![id],
+            )
+            .unwrap();
+        }
+        let err = summary(&conn);
+        assert!(err.is_err(), "expected blob MIN/MAX(created_at) to fail");
+    }
+
+    /// Cover the `latest: r.get(5)?` error arm specifically. The summary
+    /// closure reads `earliest` (MIN, col 4) before `latest` (MAX, col 5), so
+    /// both being BLOBs short-circuits at `earliest`. SQLite's storage-class
+    /// sort order places BLOBs *after* TEXT, so a table with one valid TEXT
+    /// timestamp and one BLOB timestamp yields MIN = valid TEXT (earliest
+    /// succeeds) and MAX = BLOB (latest's String conversion fails) — isolating
+    /// the `latest` getter's error branch.
+    #[test]
+    fn summary_latest_getter_error_arm_isolated() {
+        let conn = mem_db();
+        // Valid TEXT timestamp row (this is the MIN).
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, '2026-01-01T00:00:00Z', 'x:y:0', 'f', 'y', 'n', '{}')",
+            params![821_001_i64],
+        )
+        .unwrap();
+        // BLOB timestamp row (sorts last → becomes the MAX).
+        conn.execute(
+            "INSERT INTO namebase_history
+               (id, created_at, type, family, verb, name, data_json)
+             VALUES (?1, '2026-01-01T00:00:00Z', 'x:y:0', 'f', 'y', 'n', '{}')",
+            params![821_002_i64],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE namebase_history SET created_at = X'DEADBEEF' WHERE id = ?1",
+            params![821_002_i64],
+        )
+        .unwrap();
+        let err = summary(&conn);
+        assert!(
+            err.is_err(),
+            "expected MAX(created_at) BLOB to fail the `latest` String getter"
+        );
+    }
 }

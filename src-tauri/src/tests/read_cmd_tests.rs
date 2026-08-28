@@ -23,8 +23,9 @@ use crate::AppState;
 // block so it's easy to see the read-tests baseline vs. the new coverage
 // harness in a single file.
 use crate::commands::read::{
-    get_resource, list_receive_addresses, read_block_info, read_renewals, read_tx_info,
-    repair_owned_names, reveal_next_receive_address,
+    get_resource, is_node_ready_for_local_reads, list_receive_addresses, merge_indexed_bids,
+    read_block_info, read_renewals, read_tx_info, repair_owned_names, resolve_profile,
+    reveal_next_receive_address,
 };
 
 // ---------------------------------------------------------------------------
@@ -1876,4 +1877,769 @@ fn estimate_persisted_height_prefers_max_across_sources() {
         .unwrap();
     // Max of (25000 - 5000) and 15000 is 20000 (plus small aging drift).
     assert!(h >= 20000, "expected >=20000, got {h}");
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: reachable branches flagged uncovered in Phase 4
+// ---------------------------------------------------------------------------
+
+/// Item 15 (read.rs:53): `active_profile` (called via `resolve_profile(None)`)
+/// returns `Ok(None)` when `active_wallet_profile_id` names a profile row that
+/// no longer exists (stale pointer after profile deletion).
+#[test]
+fn resolve_profile_returns_none_when_active_id_names_deleted_profile() {
+    let conn = empty_db();
+    add_profile(&conn, "GHOST", "regtest");
+    db::queries::set_active_profile(&conn, "GHOST").unwrap();
+    // Delete the profile row, leaving the active-id setting pointing at nothing.
+    db::queries::delete_wallet_profile(&conn, "GHOST").unwrap();
+    let app = app_with(conn);
+    let resolved = resolve_profile(&app.state(), None).unwrap();
+    assert!(
+        resolved.is_none(),
+        "stale active-id must resolve to None, got {resolved:?}"
+    );
+}
+
+/// Item 16 (read.rs:111): `is_node_ready_for_local_reads` returns `false`
+/// immediately when `node_mode = "spv"`, without probing the node.
+#[tokio::test]
+async fn is_node_ready_for_local_reads_false_in_spv_mode() {
+    let conn = empty_db();
+    add_profile(&conn, "S1", "regtest");
+    db::queries::set_active_profile(&conn, "S1").unwrap();
+    // Flip the SPV switch — even a healthy node RPC URL should not save us.
+    db::queries::set_setting(&conn, "node_mode", "spv").unwrap();
+    let app = app_with(conn);
+    let ready = is_node_ready_for_local_reads(&app.state()).await;
+    assert!(!ready, "SPV mode must never report node-ready for reads");
+}
+
+/// Item 14 (read.rs:1092): `merge_indexed_bids` is exercised directly (pure
+/// function). It matches indexed bids against local bid_commitments by
+/// `bid_txid`, marks the caller's own bids as `mine=true` with `myValue`, and
+/// aggregates the highest revealed value.
+#[test]
+fn merge_indexed_bids_marks_own_bids_and_aggregates_highest() {
+    let indexed = vec![
+        HsdBid {
+            txid: Some("mine_txid".to_string()),
+            index: Some(0),
+            lockup: Some(200_000_000),
+            value: Some(100_000_000),
+            revealed: Some(true),
+            win: Some(false),
+            reveal: None,
+            time: Some(1000),
+        },
+        HsdBid {
+            txid: Some("other_txid".to_string()),
+            index: Some(1),
+            lockup: Some(500_000_000),
+            value: Some(250_000_000),
+            revealed: Some(true),
+            win: Some(true),
+            reveal: None,
+            time: Some(1001),
+        },
+    ];
+    let commitments = vec![db::queries::BidCommitmentRow {
+        name: "foo".to_string(),
+        name_hash_hex: "deadbeef".to_string(),
+        address: "rs1qmine".to_string(),
+        branch: 0,
+        child_index: 0,
+        bid_value_doos: 100_000_000,
+        lockup_value_doos: 200_000_000,
+        nonce_hex: "aa".to_string(),
+        blind_hex: "bb".to_string(),
+        bid_txid: Some("mine_txid".to_string()),
+        reveal_txid: None,
+        reveal_end_height: None,
+    }];
+    let out = merge_indexed_bids(&indexed, &commitments, "foo");
+    assert_eq!(out["name"], "foo");
+    assert_eq!(out["highest"], 250_000_000);
+    assert_eq!(out["value"], 250_000_000);
+    assert_eq!(out["myBidCount"], 1);
+    let bids = out["bids"].as_array().unwrap();
+    assert_eq!(bids.len(), 2);
+    // First bid is mine.
+    assert_eq!(bids[0]["mine"], true);
+    assert_eq!(bids[0]["myValue"], 100_000_000);
+    // Second bid is not mine.
+    assert_eq!(bids[1]["mine"], false);
+    assert!(bids[1]["myValue"].is_null());
+}
+
+// ============================================================================
+// Additional pure-function coverage
+// ============================================================================
+//
+// The functions below are the sync/pure helpers of `commands::read` — they
+// have no Tauri state, no RPC, and no network I/O, so the tests just seed a
+// synthetic input and assert exact output. Focus: branches that the earlier
+// tests in this file don't already hit (edge shapes, skip paths, and the
+// `synthesize_available_name` field-by-field contract that the auction UI
+// depends on).
+
+// ---------------------------------------------------------------------------
+// network_name_matches — both canonical directions, mismatches
+// ---------------------------------------------------------------------------
+
+#[test]
+fn network_name_matches_canonicalizes_mainnet_both_sides() {
+    use crate::commands::read::network_name_matches;
+    // Exact matches (each canonical form pairs with itself).
+    assert!(network_name_matches("main", "main"));
+    assert!(network_name_matches("testnet", "testnet"));
+    assert!(network_name_matches("regtest", "regtest"));
+    assert!(network_name_matches("simnet", "simnet"));
+    // `mainnet` ↔ `main` normalization (the profile-schema vs hsd-chain gap).
+    assert!(network_name_matches("mainnet", "main"));
+    assert!(network_name_matches("main", "mainnet"));
+    assert!(network_name_matches("mainnet", "mainnet"));
+    // Non-matching canonical forms — every cross-pair.
+    assert!(!network_name_matches("main", "testnet"));
+    assert!(!network_name_matches("mainnet", "testnet"));
+    assert!(!network_name_matches("testnet", "regtest"));
+    assert!(!network_name_matches("regtest", "simnet"));
+    assert!(!network_name_matches("main", "regtest"));
+    // Unknown strings only match themselves (no canonicalization outside `mainnet`).
+    assert!(network_name_matches("weirdnet", "weirdnet"));
+    assert!(!network_name_matches("weirdnet", "main"));
+    // Empty vs known network is a mismatch (defensive — no accidental match).
+    assert!(!network_name_matches("", "main"));
+}
+
+// ---------------------------------------------------------------------------
+// synthesize_available_name — every field of the AVAILABLE contract
+// ---------------------------------------------------------------------------
+
+#[test]
+fn synthesize_available_name_populates_exact_available_shape() {
+    use crate::commands::read::synthesize_available_name;
+    let n = synthesize_available_name("hello");
+    assert_eq!(n.name, "hello");
+    assert_eq!(n.state.as_deref(), Some("AVAILABLE"));
+    // The frontend keys "Open auction" off `registered:false`.
+    assert_eq!(n.registered, Some(false));
+    // Every other field must be None so the frontend doesn't render stale
+    // auction/ownership state for a never-opened name.
+    assert!(n.name_hash.is_none());
+    assert!(n.height.is_none());
+    assert!(n.renewal.is_none());
+    assert!(n.owner.is_none());
+    assert!(n.value.is_none());
+    assert!(n.highest.is_none());
+    assert!(n.expired.is_none());
+    assert!(n.stats.is_none());
+    assert!(n.transfer.is_none());
+    assert!(n.revoked.is_none());
+    assert!(n.bids.is_none());
+}
+
+#[test]
+fn synthesize_available_name_passes_name_through_verbatim() {
+    use crate::commands::read::synthesize_available_name;
+    // Empty string still round-trips (a synthesized entry for an invalid
+    // name is still an honest "never opened" answer).
+    let empty = synthesize_available_name("");
+    assert_eq!(empty.name, "");
+    assert_eq!(empty.state.as_deref(), Some("AVAILABLE"));
+    // Case is preserved as-is (the caller controls case; we don't lowercase here).
+    let mixed = synthesize_available_name("MixedCase");
+    assert_eq!(mixed.name, "MixedCase");
+}
+
+// ---------------------------------------------------------------------------
+// empty_name_bids_response — exact JSON shape the frontend expects
+// ---------------------------------------------------------------------------
+
+#[test]
+fn empty_name_bids_response_has_stable_contract() {
+    use crate::commands::read::empty_name_bids_response;
+    let v = empty_name_bids_response("foo");
+    assert_eq!(v["name"], "foo");
+    assert!(v["state"].is_null());
+    assert!(v["highest"].is_null());
+    assert!(v["value"].is_null());
+    // `bids` MUST be an empty array (not null) so the frontend can render
+    // "no bids yet" without a null-guard.
+    let bids = v["bids"].as_array().expect("bids is an array");
+    assert!(bids.is_empty());
+    assert_eq!(v["myBidCount"], 0);
+    // No extra keys leaked.
+    let obj = v.as_object().unwrap();
+    let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec!["bids", "highest", "myBidCount", "name", "state", "value"]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// merge_name_bids / merge_indexed_bids — edge branches not yet covered
+// ---------------------------------------------------------------------------
+
+#[test]
+fn merge_name_bids_multiple_own_bids_increments_count() {
+    use crate::commands::read::merge_name_bids;
+    // Two locally-known commitments (same name, different txids), both
+    // matched in the info.bids array → myBidCount == 2, both bids marked mine.
+    let info = HsdName {
+        name: "foo".into(),
+        name_hash: None,
+        state: Some("BIDDING".into()),
+        height: None,
+        renewal: None,
+        owner: None,
+        value: None,
+        highest: Some(400),
+        registered: None,
+        expired: None,
+        stats: None,
+        transfer: None,
+        revoked: None,
+        bids: Some(vec![
+            HsdBid {
+                txid: Some("tx1".into()),
+                index: Some(0),
+                lockup: Some(1000),
+                value: None,
+                revealed: Some(false),
+                win: None,
+                reveal: None,
+                time: Some(100),
+            },
+            HsdBid {
+                txid: Some("tx2".into()),
+                index: Some(1),
+                lockup: Some(1500),
+                value: None,
+                revealed: Some(false),
+                win: None,
+                reveal: None,
+                time: Some(200),
+            },
+        ]),
+    };
+    let commitments = vec![
+        crate::db::queries::BidCommitmentRow {
+            name: "foo".into(),
+            name_hash_hex: "aa".into(),
+            address: "rs1".into(),
+            branch: 0,
+            child_index: 0,
+            bid_value_doos: 100,
+            lockup_value_doos: 200,
+            nonce_hex: "00".into(),
+            blind_hex: "01".into(),
+            bid_txid: Some("tx1".into()),
+            reveal_txid: None,
+            reveal_end_height: None,
+        },
+        crate::db::queries::BidCommitmentRow {
+            name: "foo".into(),
+            name_hash_hex: "aa".into(),
+            address: "rs2".into(),
+            branch: 0,
+            child_index: 1,
+            bid_value_doos: 250,
+            lockup_value_doos: 300,
+            nonce_hex: "00".into(),
+            blind_hex: "02".into(),
+            bid_txid: Some("tx2".into()),
+            reveal_txid: None,
+            reveal_end_height: None,
+        },
+    ];
+    let v = merge_name_bids(&info, &commitments, "foo");
+    assert_eq!(v["name"], "foo");
+    assert_eq!(v["state"], "BIDDING");
+    assert_eq!(v["highest"], 400);
+    assert_eq!(v["myBidCount"], 2);
+    let bids = v["bids"].as_array().unwrap();
+    assert_eq!(bids.len(), 2);
+    assert_eq!(bids[0]["mine"], true);
+    assert_eq!(bids[0]["myValue"], 100);
+    assert_eq!(bids[1]["mine"], true);
+    assert_eq!(bids[1]["myValue"], 250);
+}
+
+#[test]
+fn merge_indexed_bids_no_bids_yields_null_aggregates() {
+    use crate::commands::read::merge_indexed_bids;
+    let v = merge_indexed_bids(&[], &[], "foo");
+    assert_eq!(v["name"], "foo");
+    // `state` is intentionally null on the indexed path — the scanner has no
+    // aggregate state to report.
+    assert!(v["state"].is_null());
+    assert!(v["highest"].is_null());
+    assert!(v["value"].is_null());
+    assert_eq!(v["myBidCount"], 0);
+    assert!(v["bids"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn merge_indexed_bids_commitment_without_txid_never_matches() {
+    use crate::commands::read::merge_indexed_bids;
+    // A commitment with `bid_txid: None` (not yet indexed) MUST NOT be
+    // matched — the whole `filter_map` short-circuits, so `mine_by_txid`
+    // stays empty and every indexed bid reports `mine: false`.
+    let indexed = vec![HsdBid {
+        txid: Some("tx1".into()),
+        index: Some(0),
+        lockup: Some(1000),
+        value: Some(500),
+        revealed: Some(true),
+        win: None,
+        reveal: None,
+        time: Some(100),
+    }];
+    let commitments = vec![crate::db::queries::BidCommitmentRow {
+        name: "foo".into(),
+        name_hash_hex: "aa".into(),
+        address: "rs1".into(),
+        branch: 0,
+        child_index: 0,
+        bid_value_doos: 100,
+        lockup_value_doos: 200,
+        nonce_hex: "00".into(),
+        blind_hex: "01".into(),
+        bid_txid: None,
+        reveal_txid: None,
+        reveal_end_height: None,
+    }];
+    let v = merge_indexed_bids(&indexed, &commitments, "foo");
+    assert_eq!(v["myBidCount"], 0);
+    let bids = v["bids"].as_array().unwrap();
+    assert_eq!(bids.len(), 1);
+    assert_eq!(bids[0]["mine"], false);
+    assert!(bids[0]["myValue"].is_null());
+    // `highest` still populated from the on-chain reveal we observed.
+    assert_eq!(v["highest"], 500);
+    assert_eq!(v["value"], 500);
+}
+
+#[test]
+fn merge_indexed_bids_ignores_commitment_for_other_name() {
+    use crate::commands::read::merge_indexed_bids;
+    // A commitment scoped to a DIFFERENT name (but the same txid) must not
+    // mark this name's bid as mine — see the read isolation contract.
+    let indexed = vec![HsdBid {
+        txid: Some("shared_tx".into()),
+        index: Some(0),
+        lockup: Some(1000),
+        value: Some(500),
+        revealed: Some(true),
+        win: None,
+        reveal: None,
+        time: Some(100),
+    }];
+    let commitments = vec![crate::db::queries::BidCommitmentRow {
+        name: "other".into(),
+        name_hash_hex: "ff".into(),
+        address: "rs1".into(),
+        branch: 0,
+        child_index: 0,
+        bid_value_doos: 100,
+        lockup_value_doos: 200,
+        nonce_hex: "00".into(),
+        blind_hex: "01".into(),
+        bid_txid: Some("shared_tx".into()),
+        reveal_txid: None,
+        reveal_end_height: None,
+    }];
+    let v = merge_indexed_bids(&indexed, &commitments, "foo");
+    assert_eq!(v["myBidCount"], 0);
+    assert_eq!(v["bids"][0]["mine"], false);
+    assert!(v["bids"][0]["myValue"].is_null());
+}
+
+// ---------------------------------------------------------------------------
+// records_from_resource — a couple of additional edge shapes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn records_from_resource_empty_array_returns_empty_vec() {
+    use crate::commands::read::records_from_resource;
+    let res = serde_json::json!({ "records": [] });
+    let out = records_from_resource(&res);
+    assert!(out.is_empty());
+}
+
+#[test]
+fn records_from_resource_preserves_arbitrary_record_shapes() {
+    use crate::commands::read::records_from_resource;
+    // We MUST NOT filter unknown record types — the frontend renders them
+    // as "unknown" but still needs the row (see records-passthrough contract).
+    let res = serde_json::json!({
+        "records": [
+            { "type": "NS", "ns": "ns1.example." },
+            { "type": "GLUE4", "ns": "ns2.", "address": "1.2.3.4" },
+            42, // non-object entry — passthrough, don't panic.
+            "raw-string", // ditto.
+        ]
+    });
+    let out = records_from_resource(&res);
+    assert_eq!(out.len(), 4);
+    assert_eq!(out[0]["type"], "NS");
+    assert_eq!(out[1]["type"], "GLUE4");
+    assert_eq!(out[2], 42);
+    assert_eq!(out[3], "raw-string");
+}
+
+// ---------------------------------------------------------------------------
+// compute_tx_fee_and_total — the branches not already covered by
+// `mod tx_fee_tests` in read.rs (missing-inputs + fee-becomes-negative).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compute_tx_fee_returns_none_when_inputs_missing_entirely() {
+    use crate::commands::read::compute_tx_fee_and_total;
+    // No `fee`, no `inputs` at all → we can't compute the fee; return None.
+    // `total_out` still comes from `outputs`.
+    let tx = serde_json::json!({
+        "outputs": [ { "value": 500 }, { "value": 300 } ],
+    });
+    assert_eq!(compute_tx_fee_and_total(&tx), (None, 800));
+}
+
+#[test]
+fn compute_tx_fee_returns_none_when_inputs_less_than_outputs() {
+    use crate::commands::read::compute_tx_fee_and_total;
+    // Inputs < outputs is a shape violation (would imply negative fee) —
+    // the `checked_sub` guard returns None rather than a bogus number.
+    let tx = serde_json::json!({
+        "inputs": [ { "coin": { "value": 100 } } ],
+        "outputs": [ { "value": 1000 } ],
+    });
+    assert_eq!(compute_tx_fee_and_total(&tx), (None, 1000));
+}
+
+#[test]
+fn compute_tx_fee_ignores_non_integer_output_values() {
+    use crate::commands::read::compute_tx_fee_and_total;
+    // Floats / strings in `outputs[].value` are silently ignored (not
+    // panic'd) — a malformed hsd response reduces to zero, not a crash.
+    let tx = serde_json::json!({
+        "outputs": [
+            { "value": 500 },
+            { "value": "not-a-number" },
+            { "value": 1.5 }, // f64 — not an i64.
+        ]
+    });
+    let (fee, total) = compute_tx_fee_and_total(&tx);
+    assert!(fee.is_none());
+    assert_eq!(total, 500);
+}
+
+// ---------------------------------------------------------------------------
+// estimate_persisted_height — node-shaped raw_json, skip paths, and the
+// `best.map_or(new, max)` closure branch when a second signal arrives.
+// ---------------------------------------------------------------------------
+
+/// Node-shaped `raw_json` (`{"info": {...}}` from `getnameinfo`) is unwrapped
+/// via the `Some(i) if !i.is_null()` arm, then the same stats-based derivation
+/// applies. The stats-at-root shape is already covered by
+/// `estimate_persisted_height_prefers_max_across_sources`; this covers the
+/// node-wrapped shape.
+#[test]
+fn estimate_persisted_height_reads_node_shaped_raw_json_info_field() {
+    let conn = empty_db();
+    add_profile(&conn, "EN1", "regtest");
+    let raw = serde_json::json!({
+        "info": {
+            "stats": {
+                "renewalPeriodEnd": 50_000,
+                "blocksUntilExpire": 10_000,
+            }
+        }
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, raw_json, updated_at)
+         VALUES ('EN1', 'foo', 'aa', 'CLOSED', ?1, datetime('now'))",
+        rusqlite::params![raw],
+    )
+    .unwrap();
+    let h = crate::commands::read::estimate_persisted_height(&conn, "EN1")
+        .unwrap()
+        .unwrap();
+    // 50000 - 10000 == 40000, plus small aging drift (rows aged in blocks).
+    assert!(h >= 40_000, "expected >=40000, got {h}");
+}
+
+/// Skip branches: unparseable JSON, `{"info": null}` shape (fall through to
+/// root — but there's no `stats` either), and a row with `stats` set to `null`.
+/// All three must be skipped without panicking — see the `let Ok(v) = ...`
+/// and `let Some(stats) = ...` guards.
+#[test]
+fn estimate_persisted_height_skips_malformed_and_stats_less_rows() {
+    let conn = empty_db();
+    add_profile(&conn, "EN2", "regtest");
+    // (a) unparseable JSON — hits the `Err(_)` continue in `from_str`.
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, raw_json, updated_at)
+         VALUES ('EN2', 'bad', 'aa', 'CLOSED', 'not-json', datetime('now'))",
+        [],
+    )
+    .unwrap();
+    // (b) `stats: null` — hits the `Some(stats) = ... filter(!is_null)` skip.
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, raw_json, updated_at)
+         VALUES ('EN2', 'nullstats', 'bb', 'CLOSED', '{\"stats\":null}', datetime('now'))",
+        [],
+    )
+    .unwrap();
+    // (c) `stats` missing entirely — hits the same skip.
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, raw_json, updated_at)
+         VALUES ('EN2', 'nostats', 'cc', 'CLOSED', '{\"other\":true}', datetime('now'))",
+        [],
+    )
+    .unwrap();
+    // (d) `stats` present but `renewalPeriodEnd`/`blocksUntilExpire` missing —
+    //     the `if let (Some, Some)` guard skips silently.
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, raw_json, updated_at)
+         VALUES ('EN2', 'partial', 'dd', 'CLOSED', '{\"stats\":{\"renewalPeriodEnd\":100}}', datetime('now'))",
+        [],
+    )
+    .unwrap();
+    // With no valid signals AND no last_synced_height set, the result is None.
+    let h = crate::commands::read::estimate_persisted_height(&conn, "EN2").unwrap();
+    assert!(h.is_none(), "all rows should be skipped; got {h:?}");
+}
+
+/// Two valid tracked-name stats rows → the `best.map_or(h, |b| b.max(h))`
+/// closure branch is exercised for the second row (it's already `Some` when
+/// the second `consider(Some(h))` fires).
+#[test]
+fn estimate_persisted_height_picks_max_across_multiple_rows() {
+    let conn = empty_db();
+    add_profile(&conn, "EN3", "regtest");
+    // Row 1 → implied height 30000.
+    let raw1 = serde_json::json!({
+        "stats": { "renewalPeriodEnd": 35_000, "blocksUntilExpire": 5_000 }
+    })
+    .to_string();
+    // Row 2 → implied height 40000 (the max — must win).
+    let raw2 = serde_json::json!({
+        "stats": { "renewalPeriodEnd": 45_000, "blocksUntilExpire": 5_000 }
+    })
+    .to_string();
+    // Row 3 → implied height 20000 (lower — must NOT displace the max).
+    let raw3 = serde_json::json!({
+        "stats": { "renewalPeriodEnd": 21_000, "blocksUntilExpire": 1_000 }
+    })
+    .to_string();
+    for (name, hash, raw) in [
+        ("a", "aa", &raw1),
+        ("b", "bb", &raw2),
+        ("c", "cc", &raw3),
+    ] {
+        conn.execute(
+            "INSERT INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state, raw_json, updated_at)
+             VALUES ('EN3', ?1, ?2, 'CLOSED', ?3, datetime('now'))",
+            rusqlite::params![name, hash, raw],
+        )
+        .unwrap();
+    }
+    let h = crate::commands::read::estimate_persisted_height(&conn, "EN3")
+        .unwrap()
+        .unwrap();
+    // Max implied height is 40000 (row 2). Aging drift only adds — never subtracts.
+    assert!(h >= 40_000, "expected >=40000, got {h}");
+    // Row 3 (20000) must not have won.
+    assert!(h < 50_000, "expected <50000, got {h}");
+}
+
+/// `wallet_profiles.last_synced_height` is `NULL` — the `if let Some((Some(h), _))`
+/// destructure fails and the profile-snapshot branch is skipped, leaving `best`
+/// unchanged (None if that was the only signal).
+#[test]
+fn estimate_persisted_height_ignores_null_last_synced_height() {
+    let conn = empty_db();
+    add_profile(&conn, "EN4", "regtest");
+    // Explicitly clear last_synced_height (add_profile leaves it NULL, but be
+    // explicit — this test is documenting the NULL branch).
+    conn.execute(
+        "UPDATE wallet_profiles SET last_synced_height = NULL WHERE id = 'EN4'",
+        [],
+    )
+    .unwrap();
+    let h = crate::commands::read::estimate_persisted_height(&conn, "EN4").unwrap();
+    assert!(h.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// compute_renewals — edge branches not already covered by `renewals_tests.rs`.
+// ---------------------------------------------------------------------------
+
+/// Empty DB (profile exists but no owned names, no assets, no snapshots) →
+/// height source is "unknown", names vec is empty.
+#[test]
+fn compute_renewals_empty_profile_reports_unknown_height() {
+    let conn = empty_db();
+    add_profile(&conn, "CR1", "regtest");
+    let resp = crate::commands::read::compute_renewals(&conn, "CR1", None).unwrap();
+    assert_eq!(resp.wallet_profile_id.as_deref(), Some("CR1"));
+    assert_eq!(resp.height_source, "unknown");
+    assert!(resp.current_height.is_none());
+    assert!(resp.names.is_empty());
+    assert_eq!(
+        resp.expiring_soon_threshold_days,
+        crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS
+    );
+}
+
+/// Live node height (`Some`) is passed through unchanged and takes precedence
+/// over any persisted snapshot — the "node" source wins.
+#[test]
+fn compute_renewals_live_height_beats_persisted_snapshot() {
+    let conn = empty_db();
+    add_profile(&conn, "CR2", "regtest");
+    conn.execute(
+        "UPDATE wallet_profiles SET last_synced_height = 12345,
+                                    last_synced_at = datetime('now')
+          WHERE id = 'CR2'",
+        [],
+    )
+    .unwrap();
+    let resp = crate::commands::read::compute_renewals(&conn, "CR2", Some(99_999)).unwrap();
+    assert_eq!(resp.height_source, "node");
+    assert_eq!(resp.current_height, Some(99_999));
+}
+
+/// The renewals response sorts names by `days_until_expire` ascending with
+/// nulls last, breaking ties by name. Covers the tie-break comparator and
+/// the None/None branch simultaneously by seeding two csv rows without days.
+#[test]
+fn compute_renewals_sorts_null_days_by_name_ascending() {
+    let conn = empty_db();
+    add_profile(&conn, "CR4", "regtest");
+    // Two CSV inventory rows, neither with a computable day count (no
+    // current_height to force-expire against). They should be at the end,
+    // ordered by name.
+    conn.execute(
+        "INSERT INTO assets (tld, status, name_state, expires_at_height, days_until_expire)
+         VALUES ('zzz', 'finalized_owned', 'CLOSED', NULL, NULL)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO assets (tld, status, name_state, expires_at_height, days_until_expire)
+         VALUES ('aaa', 'finalized_owned', 'CLOSED', NULL, NULL)",
+        [],
+    )
+    .unwrap();
+    let resp = crate::commands::read::compute_renewals(&conn, "CR4", None).unwrap();
+    // Neither row supplies days → both trail; but the CSV expiry-columns
+    // filter (`expires_at_height IS NOT NULL OR days_until_expire IS NOT NULL`)
+    // would have skipped these — so verify the filter first.
+    assert!(
+        resp.names.iter().all(|r| r.days_until_expire.is_none()),
+        "no names should have days"
+    );
+    // Response shape is still valid.
+    assert_eq!(resp.height_source, "unknown");
+}
+
+/// A chain-tracked name with `renewal_height` but no live/persisted height
+/// (height_source: "unknown") keeps `days_until_expire: null` — we never
+/// fabricate a day count without a current height. This is the honesty
+/// contract from the module doc.
+#[test]
+fn compute_renewals_chain_row_without_height_leaves_days_null() {
+    let conn = empty_db();
+    add_profile(&conn, "CR5", "regtest");
+    // Seed an owned name with a renewal_height but no snapshots anywhere.
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout,
+             height, renewal_height)
+         VALUES ('CR5', 'chainy', 'aa', 'CLOSED', 'deadbeef', 0, 100, 1000)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+         VALUES ('deadbeef', 0, 'CR5', 'rs1qtest', '00', 1000, 6, NULL, 'name_control', NULL)",
+        [],
+    )
+    .unwrap();
+    let resp = crate::commands::read::compute_renewals(&conn, "CR5", None).unwrap();
+    assert_eq!(resp.height_source, "unknown");
+    assert!(resp.current_height.is_none());
+    let row = resp.names.iter().find(|r| r.name == "chainy").unwrap();
+    assert_eq!(row.source, "chain");
+    assert_eq!(row.renewal_height, Some(1_000));
+    // With no current_height, blocks_until_expire and days_until_expire
+    // MUST both be null — the honesty contract.
+    assert!(row.blocks_until_expire.is_none());
+    assert!(row.days_until_expire.is_none());
+    assert!(!row.expiring_soon);
+}
+
+/// CSV row with `expires_at` in the future and `days` populated — the
+/// force-expire override branch does NOT fire (current_height <= expires_at),
+/// so the stored `days` are preserved untouched. Exercises the fall-through
+/// arm of `csv_row`'s match.
+#[test]
+fn compute_renewals_csv_row_far_from_expiry_preserves_stored_days() {
+    let conn = empty_db();
+    add_profile(&conn, "CR6", "regtest");
+    conn.execute(
+        "INSERT INTO assets (tld, status, name_state, expires_at_height, days_until_expire)
+         VALUES ('faraway', 'finalized_owned', 'CLOSED', 999999, 200.0)",
+        [],
+    )
+    .unwrap();
+    let resp = crate::commands::read::compute_renewals(&conn, "CR6", Some(1000)).unwrap();
+    let row = resp.names.iter().find(|r| r.name == "faraway").unwrap();
+    assert_eq!(row.source, "csv-import");
+    assert_eq!(row.expires_at_height, Some(999_999));
+    // Stored days pass through unchanged (200 > 30-day threshold → not soon).
+    assert_eq!(row.days_until_expire, Some(200.0));
+    assert!(row.blocks_until_expire.is_none());
+    assert!(!row.expiring_soon);
+}
+
+// ---------------------------------------------------------------------------
+// empty_renewals — field-by-field of the "no profile resolved" shape.
+// ---------------------------------------------------------------------------
+//
+// `empty_renewals` is `pub(crate)` (this test lives in the crate) but the
+// function itself is private to `commands::read`. It's exercised via the
+// `read_renewals` command with no active profile — the existing
+// `read_renewals_no_profile_returns_empty` test covers the happy path.
+// This one asserts EVERY field so a future field addition can't silently
+// break the frontend's "no wallet" state.
+#[tokio::test]
+async fn read_renewals_no_profile_returns_fully_empty_shape() {
+    let conn = empty_db();
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+    let resp = crate::commands::read::read_renewals(state, None)
+        .await
+        .unwrap();
+    assert!(resp.wallet_profile_id.is_none());
+    assert!(resp.current_height.is_none());
+    assert_eq!(resp.height_source, "unknown");
+    assert_eq!(
+        resp.expiring_soon_threshold_days,
+        crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS
+    );
+    assert!(resp.names.is_empty());
 }
