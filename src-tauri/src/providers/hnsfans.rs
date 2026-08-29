@@ -944,6 +944,46 @@ mod tests {
     }
 
     #[test]
+    fn normalize_name_maps_all_optional_auction_stats_and_flags() {
+        // Every optional stats field present (the explorer's fullest shape),
+        // plus `expired` as a bool and `revoked` as an unsigned number — this
+        // exercises the `.and_then(as_u64/as_i64/as_f64/as_bool)` arms and the
+        // `revoked` `.or_else(|| v.as_u64()...)` fallback that the minimal
+        // fixtures leave uncovered.
+        let entry = json!({
+            "name": "fulltld",
+            "state": "OPENING",
+            "expired": true,
+            "revoked": 1u64,
+            "stats": {
+                "openPeriodStart": 10u64,
+                "openPeriodEnd": 20u64,
+                "revealPeriodStart": 30u64,
+                "revealPeriodEnd": 40u64,
+                "blocksUntilOpen": 5i64,
+                "blocksUntilBidding": 6i64,
+                "blocksUntilClose": 8i64,
+                "hoursUntilOpen": 0.5f64,
+                "hoursUntilClose": 2.5f64,
+            }
+        });
+        let name = normalize_name(&entry).expect("should normalize");
+        let stats = name.stats.expect("stats present");
+        assert_eq!(stats.open_period_start, Some(10));
+        assert_eq!(stats.open_period_end, Some(20));
+        assert_eq!(stats.reveal_period_start, Some(30));
+        assert_eq!(stats.reveal_period_end, Some(40));
+        assert_eq!(stats.blocks_until_open, Some(5));
+        assert_eq!(stats.blocks_until_bidding, Some(6));
+        assert_eq!(stats.blocks_until_close, Some(8));
+        assert_eq!(stats.hours_until_open, Some(0.5));
+        assert_eq!(stats.hours_until_close, Some(2.5));
+        assert_eq!(name.expired, Some(true));
+        // `revoked: 1` (unsigned) normalizes to true via the u64 fallback.
+        assert_eq!(name.revoked, Some(true));
+    }
+
+    #[test]
     fn normalize_name_treats_zero_transfer_as_none() {
         let entry = json!({ "name": "x", "transfer": 0, "revoked": 1 });
         let name = normalize_name(&entry).expect("should normalize");

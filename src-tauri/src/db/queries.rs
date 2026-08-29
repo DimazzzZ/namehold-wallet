@@ -5047,4 +5047,197 @@ mod noncustodial_query_tests {
         seed_profile(&conn, "p1");
         assert!(get_bid_commitment(&conn, "p1", "nonexistent").unwrap().is_none());
     }
+
+    /// Coverage: has_pending_bid_draft_for_name — the `||` short-circuit means
+    /// we need a case where the first `has_pending_draft_for_name` call returns
+    /// false (no single-bid draft) but the second (batch-bid) returns true.
+    #[test]
+    fn has_pending_bid_draft_for_name_checks_batch_bid_when_no_single_bid() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // No single-bid draft for "name1"
+        assert!(!has_pending_bid_draft_for_name(&conn, "p1", "name1").unwrap());
+
+        // Insert a batch-bid draft for "name1"
+        insert_tx_draft(
+            &conn,
+            "batch_d1",
+            "p1",
+            "batch-bid",
+            "",
+            "{}",
+            r#"{"action":"batch-bid","nameList":["name1","name2"]}"#,
+        )
+        .unwrap();
+        update_tx_draft_status(&conn, "batch_d1", "signed", None, None).unwrap();
+
+        // Now the check should return true (batch-bid draft exists)
+        assert!(has_pending_bid_draft_for_name(&conn, "p1", "name1").unwrap());
+    }
+
+    /// Coverage: auction_position_names — the for-loop over bid commitments
+    /// and the if-branch checking `get_name_coin(...).is_none()`.
+    #[test]
+    fn auction_position_names_includes_bid_commitments_and_filters_owned() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // Seed a bid commitment for "unowned_bid"
+        insert_bid_commitment(
+            &conn,
+            "p1",
+            "unowned_bid",
+            "hash_unowned",
+            "rs1q_unowned",
+            0,
+            0,
+            100,
+            200,
+            "nonce",
+            "blind_unowned",
+        )
+        .unwrap();
+
+        // Seed a bid commitment for "owned_bid" + a full owner coin
+        // (`get_name_coin` requires a joinable tracked_name_states row with
+        // owner_txid/vout pointing at an unspent tracked_utxos row whose
+        // address is registered in derived_addresses).
+        insert_bid_commitment(
+            &conn,
+            "p1",
+            "owned_bid",
+            "hash_owned",
+            "rs1q_owned",
+            0,
+            0,
+            100,
+            200,
+            "nonce",
+            "blind_owned",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1',0,0,7,'rs1q_owned','0014','02')",
+            [],
+        )
+        .unwrap();
+        seed_name_control_utxo(&conn, "p1", "owner_txid", 0, "rs1q_owned");
+        upsert_name_state(
+            &conn,
+            "p1",
+            "owned_bid",
+            &serde_json::json!({"info":{"name":"owned_bid","state":"CLOSED","height":100}}),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE tracked_name_states SET owner_txid = 'owner_txid', owner_vout = 0
+             WHERE name = 'owned_bid'",
+            [],
+        )
+        .unwrap();
+
+        let positions = auction_position_names(&conn, "p1").unwrap();
+        // unowned_bid should be included (no owner coin)
+        assert!(positions.contains(&"unowned_bid".to_string()));
+        // owned_bid should be excluded (has owner coin)
+        assert!(!positions.contains(&"owned_bid".to_string()));
+    }
+
+    /// Coverage: list_drafts_awaiting_confirmation — the for-loop body when
+    /// at least one draft matches the status criteria.
+    #[test]
+    fn list_drafts_awaiting_confirmation_includes_broadcasted() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // Insert a broadcasted draft (should be included)
+        insert_tx_draft(&conn, "d1", "p1", "bid", "", "{}", r#"{"action":"bid"}"#).unwrap();
+        update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txid1")).unwrap();
+
+        // Insert a draft-status draft (should NOT be included)
+        insert_tx_draft(&conn, "d2", "p1", "bid", "", "{}", r#"{"action":"bid"}"#).unwrap();
+
+        let awaiting = list_drafts_awaiting_confirmation(&conn, "p1", 1000, 10).unwrap();
+        assert_eq!(awaiting.len(), 1, "only broadcasted draft should be included");
+        assert_eq!(awaiting[0].id, "d1");
+    }
+
+    /// Coverage: list_pending_reveal_deadlines — the for-loop body when at
+    /// least one bid commitment has a reveal deadline.
+    #[test]
+    fn list_pending_reveal_deadlines_includes_unrevealed_with_deadline() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // Bid commitment with reveal deadline (should be included)
+        insert_bid_commitment(
+            &conn,
+            "p1",
+            "name_with_deadline",
+            "hash1",
+            "rs1q1",
+            0,
+            0,
+            100,
+            200,
+            "nonce",
+            "blind1",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE bid_commitments SET reveal_end_height = 5000 WHERE name = 'name_with_deadline'",
+            [],
+        )
+        .unwrap();
+
+        // Bid commitment without reveal deadline (should NOT be included)
+        insert_bid_commitment(
+            &conn,
+            "p1",
+            "name_no_deadline",
+            "hash2",
+            "rs1q2",
+            0,
+            0,
+            100,
+            200,
+            "nonce",
+            "blind2",
+        )
+        .unwrap();
+
+        let deadlines = list_pending_reveal_deadlines(&conn).unwrap();
+        assert_eq!(deadlines.len(), 1);
+        assert_eq!(deadlines[0].0, "p1");
+        assert_eq!(deadlines[0].1, "name_with_deadline");
+        assert_eq!(deadlines[0].2, 5000);
+    }
+
+    /// Coverage: row_to_profile — the `watch_only` and `has_passphrase` flag
+    /// decoding with the `!= 0` and `unwrap_or` patterns.
+    #[test]
+    fn row_to_profile_decodes_watch_only_and_passphrase_flags() {
+        let conn = db();
+        // Insert a watch-only profile with a passphrase. The `kind` column
+        // has a CHECK constraint restricting values to a known set — use the
+        // real `watch_only_xpub` kind, which is what the app writes.
+        insert_wallet_profile(&conn, "watch_p1", "Watch Only", "watch_only_xpub", "mainnet", "xpubWATCH", 0, true).unwrap();
+        insert_wallet_secret(&conn, "watch_p1", &[0xaa, 0xbb], "argon2id", "fp456").unwrap();
+
+        // Insert a non-watch profile without passphrase
+        insert_wallet_profile(&conn, "hot_p1", "Hot Wallet", "mnemonic_hot", "mainnet", "xpubHOT", 0, false).unwrap();
+
+        let profiles = list_wallet_profiles(&conn).unwrap();
+        let watch_p = profiles.iter().find(|p| p.id == "watch_p1").unwrap();
+        let hot_p = profiles.iter().find(|p| p.id == "hot_p1").unwrap();
+
+        assert!(watch_p.watch_only, "watch_p1 should be watch_only");
+        assert!(watch_p.has_passphrase, "watch_p1 should have passphrase");
+        assert!(!hot_p.watch_only, "hot_p1 should NOT be watch_only");
+        assert!(!hot_p.has_passphrase, "hot_p1 should NOT have passphrase");
+    }
 }

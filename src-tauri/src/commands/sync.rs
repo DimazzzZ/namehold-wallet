@@ -1623,4 +1623,154 @@ mod db_hardening_tests {
         let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
         let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     }
+
+    /// A db_path whose parent directory does not exist makes `open_conn`
+    /// fail. Every sync step routes its first connection through `open_conn`
+    /// and bails on error — these guards keep a transient FS/DB failure from
+    /// panicking the background sync thread. Drive each step with a bad path
+    /// and assert it returns quietly (the step fns are `async` and infallible
+    /// from the caller's view; reaching the `return`/`return false` arm is the
+    /// behavior under test).
+    fn unopenable_db_path() -> String {
+        // A path under a directory that does not exist -> sqlite open fails.
+        std::env::temp_dir()
+            .join("namehold_sync_no_such_dir_xyz")
+            .join("nested")
+            .join("wallet.db")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn sync_node_step_returns_false_when_conn_cannot_open() {
+        let bad = unopenable_db_path();
+        let ok = sync_node_step(&bad, "p1").await;
+        assert!(!ok, "sync_node_step must return false when open_conn fails");
+    }
+
+    #[tokio::test]
+    async fn node_discover_step_returns_early_when_conn_cannot_open() {
+        // Infallible return type — the assertion is simply that it does not
+        // panic and completes, exercising the `Err(_) => return` guard.
+        let bad = unopenable_db_path();
+        node_discover_step(&bad, "p1").await;
+    }
+
+    #[tokio::test]
+    async fn repair_step_windowed_returns_early_when_conn_cannot_open() {
+        let bad = unopenable_db_path();
+        let status = Arc::new(Mutex::new(SyncStatus::default()));
+        repair_step_windowed(&status, &bad, "p1", REPAIR_WINDOW).await;
+    }
+
+    #[tokio::test]
+    async fn discover_step_returns_early_when_conn_cannot_open() {
+        let bad = unopenable_db_path();
+        let status = Arc::new(Mutex::new(SyncStatus::default()));
+        discover_step(&status, &bad, "p1").await;
+    }
+
+    /// `run_sync_steps` computes `node_authoritative`; when the DB cannot be
+    /// opened the settings lookup yields `None`, driving the `None => false`
+    /// arm (line ~466). With a bad path every downstream step also hits its
+    /// own `open_conn` guard, so the whole orchestration returns quietly.
+    #[tokio::test]
+    async fn run_sync_steps_treats_unopenable_db_as_non_authoritative() {
+        let bad = unopenable_db_path();
+        let status = Arc::new(Mutex::new(SyncStatus::default()));
+        // report_progress = true so the progress-label writes are exercised too.
+        run_sync_steps(&status, &bad, "p1", true).await;
+    }
+
+    /// Pre-set `cancel_requested = true` before entering the repair loop; the
+    /// top-of-window cancel check must observe it and write the "Sync cancelled"
+    /// progress label before any explorer traffic. The DB must be openable so
+    /// the guard runs (the open_conn guard would swallow a bad-path case).
+    #[tokio::test]
+    async fn repair_step_windowed_bails_on_pre_set_cancel_flag() {
+        let path = temp_db_path("repair_cancel");
+        let _ = std::fs::remove_file(&path);
+        let conn = open_conn(path.to_str().unwrap()).expect("open");
+        crate::db::queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Test",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
+        )
+        .unwrap();
+        drop(conn);
+
+        let status = Arc::new(Mutex::new(SyncStatus {
+            cancel_requested: true,
+            ..SyncStatus::default()
+        }));
+        repair_step_windowed(&status, path.to_str().unwrap(), "p1", REPAIR_WINDOW).await;
+
+        let s = status.lock().await;
+        assert_eq!(
+            s.progress_label, "Sync cancelled",
+            "top-of-window cancel guard must set the progress label"
+        );
+        assert!(!s.waiting, "cancel guard must clear the waiting flag");
+        drop(s);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    /// Same shape for `discover_step`: pre-set cancel, expect the "Sync cancelled"
+    /// label. The discover fn checks `cancel_requested` at the top of its
+    /// address-scan loop; with no addresses seeded the loop body never runs, but
+    /// the top cancel arm also fires from a top-level cancel check earlier in
+    /// the fn (documented in the cover map at lines 1121/1163/1256).
+    #[tokio::test]
+    async fn discover_step_bails_on_pre_set_cancel_flag() {
+        let path = temp_db_path("discover_cancel");
+        let _ = std::fs::remove_file(&path);
+        let conn = open_conn(path.to_str().unwrap()).expect("open");
+        crate::db::queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Test",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
+        )
+        .unwrap();
+        // Seed at least one address so the discover fn enters its per-address
+        // loop where the mid-fn cancel checks live.
+        let addr = crate::noncustodial::derivation::DerivedAddress {
+            branch: 0,
+            child_index: 0,
+            address: "hs1qcanceladdr".to_string(),
+            script_pubkey_hex: "0014dead".to_string(),
+            public_key_hex: "02deadbeef".to_string(),
+        };
+        crate::noncustodial::derivation::persist_address(&conn, "p1", 0, &addr).unwrap();
+        drop(conn);
+
+        let status = Arc::new(Mutex::new(SyncStatus {
+            cancel_requested: true,
+            ..SyncStatus::default()
+        }));
+        discover_step(&status, path.to_str().unwrap(), "p1").await;
+
+        let s = status.lock().await;
+        // Either the top-level cancel arm or the per-page arm sets the label;
+        // both write the same string, and either is a valid observation here.
+        assert_eq!(s.progress_label, "Sync cancelled");
+        drop(s);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
 }

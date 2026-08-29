@@ -1681,4 +1681,102 @@ mod tests {
         assert!(r.notifications.is_empty());
         assert!(r.active_episodes.is_empty());
     }
+
+    // -------- try_run_watched_scan integration branches ------------------
+    //
+    // The pure scanner has thorough coverage above. What was missing was the
+    // outer `try_run_watched_scan` orchestration — specifically its three
+    // early-return arms:
+    //   1. `!config.enabled`      — feature switch off
+    //   2. `watched.is_empty()`   — watchlist empty
+    //   3. `fetched.is_empty()`   — node unreachable / not-ready, so no rows
+    //                                to upsert or scan
+    // Each is driven by a file-backed temp DB seeded to reach that arm and
+    // asserted by the observable side effect (no notifications, no state row
+    // written).
+
+    fn temp_watched_db(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!("namehold_watched_scan_{tag}_{n}.db"))
+    }
+
+    fn cleanup_db(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[tokio::test]
+    async fn try_run_watched_scan_returns_ok_when_config_disabled() {
+        let path = temp_watched_db("disabled");
+        let _ = std::fs::remove_file(&path);
+        let conn = crate::commands::sync::open_conn(path.to_str().unwrap()).unwrap();
+        // Explicitly disable the feature — `load_config` reads settings and
+        // treats a "false"/"0" value as disabled.
+        crate::db::queries::set_setting(&conn, SETTING_ENABLED, "false").unwrap();
+        drop(conn);
+
+        // Even with no watched names / no node, the disabled arm returns Ok
+        // before touching either. If this ever reached the node probe with
+        // no settings pointing anywhere real, this test would flake — it
+        // doesn't, because the guard runs first.
+        let out = try_run_watched_scan(path.to_str().unwrap()).await;
+        assert!(out.is_ok(), "disabled config must return Ok(()): {out:?}");
+
+        cleanup_db(&path);
+    }
+
+    #[tokio::test]
+    async fn try_run_watched_scan_returns_ok_when_watchlist_is_empty() {
+        let path = temp_watched_db("empty_watchlist");
+        let _ = std::fs::remove_file(&path);
+        let conn = crate::commands::sync::open_conn(path.to_str().unwrap()).unwrap();
+        // Enable the feature so we reach the `watched.is_empty()` guard, and
+        // seed NO watched_names rows.
+        crate::db::queries::set_setting(&conn, SETTING_ENABLED, "true").unwrap();
+        drop(conn);
+
+        let out = try_run_watched_scan(path.to_str().unwrap()).await;
+        assert!(out.is_ok(), "empty watchlist must return Ok(()): {out:?}");
+
+        cleanup_db(&path);
+    }
+
+    #[tokio::test]
+    async fn try_run_watched_scan_returns_ok_when_node_not_ready() {
+        // Enabled + one watched name + settings that point at an unreachable
+        // node → `node_ready_from_settings` returns false → `fetched` is empty
+        // → the fn returns Ok before running the scanner or writing state.
+        let path = temp_watched_db("node_down");
+        let _ = std::fs::remove_file(&path);
+        let conn = crate::commands::sync::open_conn(path.to_str().unwrap()).unwrap();
+        crate::db::queries::set_setting(&conn, SETTING_ENABLED, "true").unwrap();
+        // Point node RPC at a definitely-closed local port so the readiness
+        // probe fails fast.
+        crate::db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+        crate::db::queries::set_setting(&conn, "node_rpc_api_key", "x").unwrap();
+        // Seed one watched name.
+        conn.execute("INSERT INTO watched_names (name) VALUES ('example')", [])
+            .unwrap();
+        drop(conn);
+
+        let out = try_run_watched_scan(path.to_str().unwrap()).await;
+        assert!(out.is_ok(), "node-not-ready must return Ok(()): {out:?}");
+
+        // No state row should have been written — the fn returned before the
+        // upsert loop.
+        let conn = crate::commands::sync::open_conn(path.to_str().unwrap()).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM watched_name_states", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "state must not be upserted when the node is unreachable"
+        );
+        drop(conn);
+
+        cleanup_db(&path);
+    }
 }
