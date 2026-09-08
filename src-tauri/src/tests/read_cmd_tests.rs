@@ -1059,6 +1059,68 @@ async fn read_name_bids_falls_through_to_explorer_when_scanner_behind() {
 }
 
 // ---------------------------------------------------------------------------
+// read_name_bids — node synced AND scanner has indexed past the name's
+// auction height → serve bids from the local `name_bid_outpoints` index and
+// return WITHOUT any explorer call (read.rs:1092, the `scanner_covers` arm).
+// No explorer route is mocked, so a fall-through would fail loudly.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_name_bids_serves_from_local_index_when_scanner_covers() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    // Deliberately point the explorer at an unroutable URL: if the code ever
+    // falls through to the explorer this test must fail, proving the local
+    // index served the answer.
+    db::queries::set_setting(&conn, "explorer_api_url", "http://127.0.0.1:1").unwrap();
+
+    // Name opened at height 500; scanner cursor advanced to 1000 → covers it.
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, height)
+         VALUES ('W1', 'coveredname', '', 'BIDDING', NULL, NULL, 500)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE chain_scan_cursor SET last_height = 1000 WHERE id = 1",
+        [],
+    )
+    .unwrap();
+
+    // One indexed BID for the name, keyed by the same name-hash the command
+    // computes via `hash_name`.
+    let name_hash_hex =
+        hex::encode(crate::noncustodial::names::hash_name("coveredname").unwrap());
+    conn.execute(
+        "INSERT INTO name_bid_outpoints
+            (bid_txid, bid_vout, name_hash_hex, name, lockup_value_doos,
+             address, height, reveal_txid, reveal_value_doos)
+         VALUES ('txLocal', 0, ?1, 'coveredname', 200000000, 'rs1qx', 510,
+                 'txReveal', 150000000)",
+        params![name_hash_hex],
+    )
+    .unwrap();
+
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "coveredname".into(), Some("W1".into()))
+        .await
+        .unwrap();
+    // Served from the local index: the single indexed (revealed) bid appears,
+    // and the highest revealed value aggregates from it.
+    assert_eq!(val["name"], "coveredname");
+    let bids = val["bids"].as_array().expect("bids array");
+    assert_eq!(bids.len(), 1);
+    assert_eq!(bids[0]["txid"], "txLocal");
+    assert_eq!(val["highest"], 150_000_000);
+}
+
+// ---------------------------------------------------------------------------
 // records_from_resource — pure helper (Manage DNS: current records prefill)
 // ---------------------------------------------------------------------------
 
@@ -2441,11 +2503,7 @@ fn estimate_persisted_height_picks_max_across_multiple_rows() {
         "stats": { "renewalPeriodEnd": 21_000, "blocksUntilExpire": 1_000 }
     })
     .to_string();
-    for (name, hash, raw) in [
-        ("a", "aa", &raw1),
-        ("b", "bb", &raw2),
-        ("c", "cc", &raw3),
-    ] {
+    for (name, hash, raw) in [("a", "aa", &raw1), ("b", "bb", &raw2), ("c", "cc", &raw3)] {
         conn.execute(
             "INSERT INTO tracked_name_states
                 (wallet_profile_id, name, name_hash_hex, state, raw_json, updated_at)
@@ -2642,4 +2700,201 @@ async fn read_renewals_no_profile_returns_fully_empty_shape() {
         crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS
     );
     assert!(resp.names.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// read_balance — node-ready branch: reads authoritatively from the local
+// tracked_utxos cache instead of the explorer.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_balance_node_ready_reads_from_local_cache() {
+    // With a synced node, `is_node_ready_for_local_reads` returns true and
+    // `read_balance` short-circuits straight to `queries::read_cached_balance`
+    // (the local-chain path at read.rs:495-496). The mocked node MUST NOT be
+    // asked for coin data — the whole point of this branch is that the local
+    // cache is authoritative once the node is caught up.
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    // A single liquid coin — cached balance should reflect it exactly.
+    add_liquid(&conn, "W1", "aa11", 4_242_000);
+
+    let app = app_with(conn);
+    let val = read_balance(app.state(), None).await.unwrap();
+    assert_eq!(val["confirmed"], 4_242_000);
+    assert_eq!(val["unconfirmed"], 0);
+    // No name coins seeded → both locked buckets are zero.
+    assert_eq!(val["locked_confirmed"], 0);
+    assert_eq!(val["locked_unconfirmed"], 0);
+}
+
+// ---------------------------------------------------------------------------
+// read_name_records — node-ready branch: fetch the DNS resource via the
+// local node's `getnameresource` instead of the explorer/no-op fallback.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_name_records_node_ready_fetches_from_node() {
+    // Node reports synced + returns a DNS resource for "example". This drives
+    // the node-RPC branch at read.rs:1219-1224, previously uncovered.
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _res = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameresource".into()))
+        .with_body(
+            r#"{"result":{"records":[{"type":"NS","ns":"ns1.example."}]},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = read_name_records(app.state(), "example".into(), None)
+        .await
+        .unwrap();
+    // The node's `records` array must round-trip through the node-ready path.
+    let recs = val["records"].as_array().expect("records is an array");
+    assert_eq!(recs.len(), 1);
+    assert_eq!(recs[0]["type"], "NS");
+    assert_eq!(recs[0]["ns"], "ns1.example.");
+}
+
+#[tokio::test]
+async fn read_name_records_node_ready_null_resource_yields_empty_records() {
+    // hsd returns `null` for names that own no DNS resource; the node-ready
+    // branch must still normalize that to `{records: []}` — the uniform
+    // "empty resource" shape the frontend depends on.
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _res = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameresource".into()))
+        .with_body(r#"{"result":null,"error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    let val = read_name_records(app.state(), "nothing".into(), None)
+        .await
+        .unwrap();
+    assert_eq!(val["records"].as_array().map(|a| a.len()), Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// repair_owned_names — malformed-getnameinfo Rpc-error mapping. When the
+// resolver returns Some(info) whose shape doesn't deserialize into `HsdName`,
+// `repair_owned_names_via_node` MUST surface an `AppError::Rpc` naming the
+// offending name so the user can diagnose a bad node. (read.rs:449-450)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn repair_owned_names_via_node_returns_rpc_error_on_malformed_getnameinfo() {
+    // Node reports synced. `getnameinfo` returns a valid-looking envelope with
+    // an `owner` that resolves to a wallet address (so the branch is entered),
+    // but `height` is a JSON array — HsdName deserialization will fail.
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(
+            // `height: []` breaks HsdName (`Option<u64>`), the rest is
+            // structurally valid enough to enter the repair arm.
+            r#"{"result":{"info":{"name":"foo","state":"CLOSED","height":[],"owner":{"hash":"aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44","index":0},"weak":false}},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    let _txo = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("gettxout".into()))
+        .with_body(r#"{"result":{"address":{"string":"myaddr"}},"error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    conn.execute(
+        "INSERT INTO derived_addresses
+            (wallet_profile_id, account_index, branch, child_index,
+             address, script_pubkey_hex, public_key_hex)
+         VALUES ('W1', 0, 0, 0, 'myaddr', '00', '00')",
+        [],
+    )
+    .unwrap();
+    add_owned_name(&conn, "W1", "foo", "txfoo");
+
+    let app = app_with(conn);
+    let err = repair_owned_names(app.state())
+        .await
+        .expect_err("malformed node getnameinfo must surface as an error");
+    match err {
+        crate::error::AppError::Rpc(msg) => {
+            assert!(
+                msg.contains("malformed node getnameinfo") && msg.contains("foo"),
+                "error must name the offending payload + name; got {msg:?}"
+            );
+        }
+        other => panic!("expected AppError::Rpc, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// get_resource — explorer-error graceful degrade. Node not ready + explorer
+// returns a hard error (500) → name info degrades to `{}` (no name/state)
+// while records stay empty, rather than the whole command erroring out.
+// (read.rs:1155)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_resource_explorer_error_degrades_to_empty_info() {
+    // No node mocked → node not ready → explorer path. Explorer answers 500,
+    // so `get_name_info_optional` returns Err → info becomes `{}`.
+    let mut server = mockito::Server::new_async().await;
+    let _ex = server
+        .mock("GET", "/api/names/broken")
+        .with_status(500)
+        .with_body("upstream boom")
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+
+    let app = app_with(conn);
+    // The command must still succeed (graceful degrade), not propagate the 500.
+    let val = get_resource(app.state(), "broken".into()).await.unwrap();
+    // The requested name always echoes back, but the degraded (empty) info
+    // means every info-derived field collapses to its "unknown" form: state
+    // is the empty string, and height/renewal/stats are null.
+    assert_eq!(val["name"], "broken");
+    assert_eq!(val["state"], "", "empty info → empty state string");
+    assert!(val["height"].is_null(), "no height from degraded info");
+    assert!(val["renewal"].is_null(), "no renewal from degraded info");
+    assert!(val["stats"].is_null(), "no stats from degraded info");
+    // Records contract still holds: always a present, empty array.
+    assert!(val["data"]["records"].as_array().unwrap().is_empty());
 }

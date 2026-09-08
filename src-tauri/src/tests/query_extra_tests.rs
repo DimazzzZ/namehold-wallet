@@ -187,8 +187,17 @@ mod branch_cov {
     }
 
     fn seed_profile(conn: &Connection, id: &str) {
-        insert_wallet_profile(conn, id, "Primary", "mnemonic_hot", "regtest", "xpubX", 0, false)
-            .unwrap();
+        insert_wallet_profile(
+            conn,
+            id,
+            "Primary",
+            "mnemonic_hot",
+            "regtest",
+            "xpubX",
+            0,
+            false,
+        )
+        .unwrap();
     }
 
     // --- settings / assets -------------------------------------------------
@@ -213,21 +222,34 @@ mod branch_cov {
     #[test]
     fn list_assets_status_and_sort_desc_variants() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status, category) VALUES ('bravo','not_started','Z')", []).unwrap();
-        conn.execute("INSERT INTO assets (tld, status, category) VALUES ('alpha','finalized_owned','A')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status, category) VALUES ('bravo','not_started','Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status, category) VALUES ('alpha','finalized_owned','A')",
+            [],
+        )
+        .unwrap();
         let ns = list_assets(&conn, Some("not_started"), None, None, None, None).unwrap();
         assert_eq!(ns.len(), 1);
         assert_eq!(ns[0].tld, "bravo");
         let sorted = list_assets(&conn, None, None, None, Some("category"), Some("desc")).unwrap();
         assert_eq!(sorted[0].category.as_deref(), Some("Z"));
-        let fallback = list_assets(&conn, None, None, None, Some("not_a_column"), Some("asc")).unwrap();
+        let fallback =
+            list_assets(&conn, None, None, None, Some("not_a_column"), Some("asc")).unwrap();
         assert_eq!(fallback[0].tld, "alpha");
     }
 
     #[test]
     fn get_asset_reads_row() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status, notes) VALUES ('x','not_started','n')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status, notes) VALUES ('x','not_started','n')",
+            [],
+        )
+        .unwrap();
         let all = list_assets(&conn, None, None, None, None, None).unwrap();
         let a = get_asset(&conn, all[0].id).unwrap();
         assert_eq!(a.tld, "x");
@@ -237,7 +259,11 @@ mod branch_cov {
     #[test]
     fn update_asset_every_field_arm() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('u','not_started')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('u','not_started')",
+            [],
+        )
+        .unwrap();
         let id = list_assets(&conn, None, None, None, None, None).unwrap()[0].id;
         update_asset(
             &conn,
@@ -262,11 +288,19 @@ mod branch_cov {
     #[test]
     fn update_asset_no_fields_returns_early() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('u','not_started')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('u','not_started')",
+            [],
+        )
+        .unwrap();
         let id = list_assets(&conn, None, None, None, None, None).unwrap()[0].id;
         update_asset(&conn, id, None, None, None, None, None, None, None).unwrap();
         let audit: i64 = conn
-            .query_row("SELECT COUNT(*) FROM audit_log WHERE action='asset_update'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE action='asset_update'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(audit, 0);
     }
@@ -275,10 +309,21 @@ mod branch_cov {
     fn bulk_update_status_and_tags_nonempty() {
         let conn = db();
         for t in ["a", "b"] {
-            conn.execute("INSERT INTO assets (tld, status) VALUES (?1,'not_started')", params![t]).unwrap();
+            conn.execute(
+                "INSERT INTO assets (tld, status) VALUES (?1,'not_started')",
+                params![t],
+            )
+            .unwrap();
         }
-        let ids: Vec<i64> = list_assets(&conn, None, None, None, None, None).unwrap().iter().map(|a| a.id).collect();
-        assert_eq!(bulk_update_status(&conn, &ids, "finalized_owned").unwrap(), 2);
+        let ids: Vec<i64> = list_assets(&conn, None, None, None, None, None)
+            .unwrap()
+            .iter()
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(
+            bulk_update_status(&conn, &ids, "finalized_owned").unwrap(),
+            2
+        );
         assert_eq!(bulk_update_tags(&conn, &ids, r#"["x"]"#).unwrap(), 2);
         let a = get_asset(&conn, ids[0]).unwrap();
         assert_eq!(a.status.as_str(), "finalized_owned");
@@ -288,7 +333,11 @@ mod branch_cov {
     #[test]
     fn set_asset_status_by_tld_updates_and_noops() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('here','not_started')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('here','not_started')",
+            [],
+        )
+        .unwrap();
         set_asset_status_by_tld(&conn, "here", "namebase_transfer_requested").unwrap();
         set_asset_status_by_tld(&conn, "missing", "namebase_transfer_requested").unwrap();
         let a = &list_assets(&conn, None, None, None, None, None).unwrap()[0];
@@ -298,10 +347,19 @@ mod branch_cov {
     #[test]
     fn delete_asset_removes_row_and_audits() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('gone','not_started')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('gone','not_started')",
+            [],
+        )
+        .unwrap();
         let id = list_assets(&conn, None, None, None, None, None).unwrap()[0].id;
         delete_asset(&conn, id).unwrap();
-        assert_eq!(list_assets(&conn, None, None, None, None, None).unwrap().len(), 0);
+        assert_eq!(
+            list_assets(&conn, None, None, None, None, None)
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     // --- batches -----------------------------------------------------------
@@ -310,9 +368,17 @@ mod branch_cov {
     fn batch_list_get_update_add_remove_delete() {
         let conn = db();
         for t in ["a", "b", "c"] {
-            conn.execute("INSERT INTO assets (tld, status) VALUES (?1,'not_started')", params![t]).unwrap();
+            conn.execute(
+                "INSERT INTO assets (tld, status) VALUES (?1,'not_started')",
+                params![t],
+            )
+            .unwrap();
         }
-        let ids: Vec<i64> = list_assets(&conn, None, None, None, None, None).unwrap().iter().map(|a| a.id).collect();
+        let ids: Vec<i64> = list_assets(&conn, None, None, None, None, None)
+            .unwrap()
+            .iter()
+            .map(|a| a.id)
+            .collect();
         let bid = create_batch(&conn, "B", Some("d"), &ids[..2]).unwrap();
 
         let batches = list_batches(&conn).unwrap();
@@ -346,8 +412,16 @@ mod branch_cov {
     #[test]
     fn dashboard_stats_counts_and_status_map() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status, is_staked) VALUES ('a','not_started',0)", []).unwrap();
-        conn.execute("INSERT INTO assets (tld, status, is_staked) VALUES ('b','finalized_owned',1)", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status, is_staked) VALUES ('a','not_started',0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status, is_staked) VALUES ('b','finalized_owned',1)",
+            [],
+        )
+        .unwrap();
         let stats = get_dashboard_stats(&conn).unwrap();
         assert_eq!(stats["total"], 2);
         assert_eq!(stats["staked"], 1);
@@ -364,7 +438,8 @@ mod branch_cov {
             [],
         )
         .unwrap();
-        conn.execute("INSERT INTO audit_log (action) VALUES ('a2')", []).unwrap();
+        conn.execute("INSERT INTO audit_log (action) VALUES ('a2')", [])
+            .unwrap();
         let entries = get_recent_audit_log(&conn, 10).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["action"], "a2");
@@ -427,7 +502,11 @@ mod branch_cov {
     fn inventory_tlds_sorted() {
         let conn = db();
         for t in ["gamma", "alpha", "beta"] {
-            conn.execute("INSERT INTO assets (tld, status) VALUES (?1,'not_started')", params![t]).unwrap();
+            conn.execute(
+                "INSERT INTO assets (tld, status) VALUES (?1,'not_started')",
+                params![t],
+            )
+            .unwrap();
         }
         assert_eq!(
             get_inventory_tlds(&conn).unwrap(),
@@ -441,7 +520,11 @@ mod branch_cov {
     fn repair_candidates_and_recently_synced() {
         let conn = db();
         seed_profile(&conn, "p1");
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('never','not_started')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('never','not_started')",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO assets (tld, status, last_synced_at) VALUES ('old','not_started', datetime('now','-10 days'))",
             [],
@@ -465,7 +548,10 @@ mod branch_cov {
         assert!(cands.contains(&"tracked".to_string()));
         assert!(!cands.contains(&"fresh".to_string()));
 
-        assert_eq!(count_repair_candidates(&conn, "p1", 24).unwrap() as usize, cands.len());
+        assert_eq!(
+            count_repair_candidates(&conn, "p1", 24).unwrap() as usize,
+            cands.len()
+        );
 
         let recent = list_recently_synced_tlds(&conn, 24).unwrap();
         assert_eq!(recent, vec!["fresh".to_string()]);
@@ -474,8 +560,16 @@ mod branch_cov {
     #[test]
     fn mark_finalized_and_touch_synced() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('own','not_started')", []).unwrap();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('staked','do_not_touch_staked')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('own','not_started')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('staked','do_not_touch_staked')",
+            [],
+        )
+        .unwrap();
         mark_asset_finalized_owned(&conn, "own", Some("CLOSED")).unwrap();
         mark_asset_finalized_owned(&conn, "staked", Some("CLOSED")).unwrap();
         let assets = list_assets(&conn, None, None, None, None, None).unwrap();
@@ -493,7 +587,17 @@ mod branch_cov {
     fn profile_list_and_get_null_and_active() {
         let conn = db();
         seed_profile(&conn, "p1");
-        insert_wallet_profile(&conn, "p2", "Watch", "watch_only_xpub", "regtest", "xpubW", 0, true).unwrap();
+        insert_wallet_profile(
+            &conn,
+            "p2",
+            "Watch",
+            "watch_only_xpub",
+            "regtest",
+            "xpubW",
+            0,
+            true,
+        )
+        .unwrap();
         set_active_profile(&conn, "p1").unwrap();
 
         let list = list_wallet_profiles(&conn).unwrap();
@@ -632,8 +736,15 @@ mod branch_cov {
         seed_profile(&conn, "p1");
         insert_basic_draft(&conn, "d1", "send_hns", "");
         update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txX")).unwrap();
-        assert_eq!(get_draft_status_by_txid(&conn, "p1", "txX").unwrap().as_deref(), Some("broadcasted"));
-        assert!(get_draft_status_by_txid(&conn, "p1", "nope").unwrap().is_none());
+        assert_eq!(
+            get_draft_status_by_txid(&conn, "p1", "txX")
+                .unwrap()
+                .as_deref(),
+            Some("broadcasted")
+        );
+        assert!(get_draft_status_by_txid(&conn, "p1", "nope")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -680,7 +791,14 @@ mod branch_cov {
         )
         .unwrap();
         let all = get_profile_addresses(&conn, "p1").unwrap();
-        assert_eq!(all, vec!["rs1qr0".to_string(), "rs1qr1".to_string(), "rs1qch".to_string()]);
+        assert_eq!(
+            all,
+            vec![
+                "rs1qr0".to_string(),
+                "rs1qr1".to_string(),
+                "rs1qch".to_string()
+            ]
+        );
 
         let recv = list_receive_addresses(&conn, "p1", 0).unwrap();
         assert_eq!(recv.len(), 2);
@@ -708,7 +826,9 @@ mod branch_cov {
         .unwrap();
         upsert_owned_name(&conn, "p1", &name, "ownA", 0, "rs1qOwnerA").unwrap();
         upsert_owned_name(&conn, "p1", &name, "ownB", 0, "rs1qOwnerB").unwrap();
-        let row = get_tracked_name_state(&conn, "p1", "owned").unwrap().unwrap();
+        let row = get_tracked_name_state(&conn, "p1", "owned")
+            .unwrap()
+            .unwrap();
         assert_eq!(row.owner_address.as_deref(), Some("rs1qOwnerB"));
 
         let owned = read_owned_names_explorer(&conn, "p1").unwrap();
@@ -717,14 +837,19 @@ mod branch_cov {
         assert_eq!(owned[0]["owner_address"], "rs1qOwnerB");
         assert_eq!(owned[0]["registered"], true);
 
-        assert_eq!(list_tracked_name_names(&conn, "p1").unwrap(), vec!["owned".to_string()]);
+        assert_eq!(
+            list_tracked_name_names(&conn, "p1").unwrap(),
+            vec!["owned".to_string()]
+        );
     }
 
     #[test]
     fn get_tracked_name_state_none_for_missing() {
         let conn = db();
         seed_profile(&conn, "p1");
-        assert!(get_tracked_name_state(&conn, "p1", "absent").unwrap().is_none());
+        assert!(get_tracked_name_state(&conn, "p1", "absent")
+            .unwrap()
+            .is_none());
     }
 
     // --- name coins / covenant utxos ---------------------------------------
@@ -739,7 +864,15 @@ mod branch_cov {
         .unwrap();
     }
 
-    fn seed_cov_utxo(conn: &Connection, txid: &str, vout: i64, addr: &str, cov: i64, class: &str, cov_json: Option<&str>) {
+    fn seed_cov_utxo(
+        conn: &Connection,
+        txid: &str,
+        vout: i64,
+        addr: &str,
+        cov: i64,
+        class: &str,
+        cov_json: Option<&str>,
+    ) {
         conn.execute(
             "INSERT INTO tracked_utxos
                 (txid, vout, wallet_profile_id, address, script_pubkey_hex, value_doos, covenant_type, covenant_json, spend_class)
@@ -778,7 +911,11 @@ mod branch_cov {
         let found = find_unspent_covenant_utxo(&conn, "p1", "rs1qbid", 3, "name", "aabb").unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().txid, "bidtx");
-        assert!(find_unspent_covenant_utxo(&conn, "p1", "rs1qbid", 3, "name", "ffff").unwrap().is_none());
+        assert!(
+            find_unspent_covenant_utxo(&conn, "p1", "rs1qbid", 3, "name", "ffff")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -787,7 +924,8 @@ mod branch_cov {
         seed_profile(&conn, "p1");
         seed_addr(&conn, 0, 0, "rs1qsole");
         seed_cov_utxo(&conn, "soletx", 0, "rs1qsole", 3, "name_lockup", None);
-        let found = find_unspent_covenant_utxo(&conn, "p1", "rs1qsole", 3, "name", "whatever").unwrap();
+        let found =
+            find_unspent_covenant_utxo(&conn, "p1", "rs1qsole", 3, "name", "whatever").unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().txid, "soletx");
     }
@@ -826,7 +964,15 @@ mod branch_cov {
         let reveal_cj = r#"{"type":4,"items":["AABB","noncehex"]}"#;
         seed_cov_utxo(&conn, "o", 0, "rs1qx", 2, "name_lockup", Some(open_cj));
         seed_cov_utxo(&conn, "r", 0, "rs1qx", 4, "name_control", Some(reveal_cj));
-        seed_cov_utxo(&conn, "bad", 0, "rs1qx", 2, "name_lockup", Some(r#"{"type":2,"items":[]}"#));
+        seed_cov_utxo(
+            &conn,
+            "bad",
+            0,
+            "rs1qx",
+            2,
+            "name_lockup",
+            Some(r#"{"type":2,"items":[]}"#),
+        );
         let hashes = list_unspent_wallet_name_hashes(&conn, "p1").unwrap();
         assert_eq!(hashes.len(), 1);
         assert_eq!(hashes[0].name_hash_hex, "aabb");
@@ -839,8 +985,14 @@ mod branch_cov {
     fn bid_commitment_insert_conflict_and_list_and_deadlines() {
         let conn = db();
         seed_profile(&conn, "p1");
-        insert_bid_commitment(&conn, "p1", "n1", "h1", "rs1q", 0, 0, 100, 200, "nn1", "bl1").unwrap();
-        assert!(insert_bid_commitment(&conn, "p1", "n1", "h1", "rs1q", 0, 0, 100, 200, "nn1", "bl1").is_err());
+        insert_bid_commitment(
+            &conn, "p1", "n1", "h1", "rs1q", 0, 0, 100, 200, "nn1", "bl1",
+        )
+        .unwrap();
+        assert!(insert_bid_commitment(
+            &conn, "p1", "n1", "h1", "rs1q", 0, 0, 100, 200, "nn1", "bl1"
+        )
+        .is_err());
         assert!(bid_commitment_exists(&conn, "p1", "n1", "bl1").unwrap());
         assert!(!bid_commitment_exists(&conn, "p1", "n1", "other").unwrap());
 
@@ -881,7 +1033,20 @@ mod branch_cov {
             [],
         )
         .unwrap();
-        insert_bid_commitment(&conn, "p1", "ownedname", "h2", "rs1q", 0, 0, 1, 2, "n2", "b2").unwrap();
+        insert_bid_commitment(
+            &conn,
+            "p1",
+            "ownedname",
+            "h2",
+            "rs1q",
+            0,
+            0,
+            1,
+            2,
+            "n2",
+            "b2",
+        )
+        .unwrap();
 
         let names = auction_position_names(&conn, "p1").unwrap();
         assert!(names.contains(&"opening".to_string()));
@@ -918,7 +1083,9 @@ mod branch_cov_extra {
         .unwrap();
         // state is None -> fallback "UNKNOWN"
         upsert_owned_name(&conn, "p1", &name, "own", 0, "rs1qA").unwrap();
-        let got = get_tracked_name_state(&conn, "p1", "noState").unwrap().unwrap();
+        let got = get_tracked_name_state(&conn, "p1", "noState")
+            .unwrap()
+            .unwrap();
         assert_eq!(got.state.as_deref(), Some("UNKNOWN"));
     }
 
@@ -943,6 +1110,9 @@ mod branch_cov_extra {
         update_tx_draft_status(&conn, "opnn", "broadcasted", None, Some("txopnn")).unwrap();
         // Even though the draft is in-flight, no "name" is inserted.
         let names = auction_position_names(&conn, "p1").unwrap();
-        assert!(names.is_empty(), "draft without a name field must be skipped");
+        assert!(
+            names.is_empty(),
+            "draft without a name field must be skipped"
+        );
     }
 }
