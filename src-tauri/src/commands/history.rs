@@ -329,14 +329,29 @@ pub async fn read_action_history(
 
     // Newest first: unconfirmed (height=None) leads, then confirmed by height
     // desc, ties broken by txid for a stable order.
-    rows.sort_by(|a, b| match (a.height, b.height) {
-        (None, None) => a.txid.cmp(&b.txid),
-        (None, Some(_)) => std::cmp::Ordering::Less,
-        (Some(_), None) => std::cmp::Ordering::Greater,
-        (Some(x), Some(y)) => y.cmp(&x).then_with(|| a.txid.cmp(&b.txid)),
-    });
+    rows.sort_by(|a, b| compare_action_rows_by_recency(a.height, &a.txid, b.height, &b.txid));
 
     Ok(rows)
+}
+
+/// Comparator for [`ActionRow`]s used by `read_action_history`.
+///
+/// Order: unconfirmed rows (`height == None`) come first, then confirmed rows
+/// by descending height; ties broken by ascending `txid` for stability.
+///
+/// Extracted from an inline closure so every match arm is directly testable.
+pub(crate) fn compare_action_rows_by_recency(
+    a_height: Option<i64>,
+    a_txid: &str,
+    b_height: Option<i64>,
+    b_txid: &str,
+) -> std::cmp::Ordering {
+    match (a_height, b_height) {
+        (None, None) => a_txid.cmp(b_txid),
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some(x), Some(y)) => y.cmp(&x).then_with(|| a_txid.cmp(b_txid)),
+    }
 }
 
 /// Client-injected fetch+dedupe phase for [`read_action_history`]. Fetches
@@ -634,5 +649,66 @@ mod tests {
         assert_eq!(row.direction, "internal");
         // No counterparty since it's not a TRANSFER.
         assert!(row.counterparty.is_none());
+    }
+}
+
+#[cfg(test)]
+mod recency_comparator_tests {
+    use super::compare_action_rows_by_recency;
+    use std::cmp::Ordering;
+
+    // (None, None): both unconfirmed -> ordered by ascending txid.
+    #[test]
+    fn both_unconfirmed_break_tie_by_txid() {
+        assert_eq!(
+            compare_action_rows_by_recency(None, "aaa", None, "bbb"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_action_rows_by_recency(None, "bbb", None, "aaa"),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_action_rows_by_recency(None, "same", None, "same"),
+            Ordering::Equal
+        );
+    }
+
+    // (None, Some): unconfirmed always leads a confirmed row.
+    #[test]
+    fn unconfirmed_leads_confirmed() {
+        assert_eq!(
+            compare_action_rows_by_recency(None, "z", Some(100), "a"),
+            Ordering::Less
+        );
+    }
+
+    // (Some, None): confirmed always trails an unconfirmed row.
+    #[test]
+    fn confirmed_trails_unconfirmed() {
+        assert_eq!(
+            compare_action_rows_by_recency(Some(100), "a", None, "z"),
+            Ordering::Greater
+        );
+    }
+
+    // (Some, Some): higher height (newer) sorts first; ties broken by txid.
+    #[test]
+    fn confirmed_rows_sort_by_descending_height_then_txid() {
+        // b is higher/newer -> a comes after b.
+        assert_eq!(
+            compare_action_rows_by_recency(Some(100), "a", Some(200), "b"),
+            Ordering::Greater
+        );
+        // a is higher/newer -> a comes first.
+        assert_eq!(
+            compare_action_rows_by_recency(Some(200), "a", Some(100), "b"),
+            Ordering::Less
+        );
+        // Same height -> ascending txid tiebreak.
+        assert_eq!(
+            compare_action_rows_by_recency(Some(150), "aaa", Some(150), "bbb"),
+            Ordering::Less
+        );
     }
 }

@@ -90,4 +90,18 @@ mod tests {
         assert!(!verify_name(&"a".repeat(64))); // too long
         assert!(hash_name("ABC").is_err());
     }
+
+    #[test]
+    fn raw_name_rejects_invalid_names() {
+        // Valid names should work.
+        assert_eq!(raw_name("abc").unwrap(), b"abc");
+        assert_eq!(raw_name("test-name").unwrap(), b"test-name");
+
+        // Invalid names should error.
+        assert!(raw_name("").is_err()); // empty
+        assert!(raw_name("-abc").is_err()); // leading hyphen
+        assert!(raw_name("abc-").is_err()); // trailing hyphen
+        assert!(raw_name("ABC").is_err()); // uppercase
+        assert!(raw_name("a.b").is_err()); // dot not allowed
+    }
 }

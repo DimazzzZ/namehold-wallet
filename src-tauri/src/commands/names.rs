@@ -2965,7 +2965,19 @@ mod tests {
     #[test]
     fn derive_available_no_pending_open() {
         assert_eq!(
-            derive("AVAILABLE", false, false, false, false, false, None, None, false, None, None),
+            derive(
+                "AVAILABLE",
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                None
+            ),
             AuctionTaskState::AvailableToOpen
         );
         // Empty phase behaves identically to AVAILABLE.

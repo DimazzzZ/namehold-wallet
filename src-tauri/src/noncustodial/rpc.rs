@@ -1805,3 +1805,28 @@ mod tests {
         }
     }
 }
+
+/// When the RPC error envelope has `code: null`, the `unwrap_or_default()`
+/// fallback should produce an empty suffix (no "(code …)" fragment).
+#[tokio::test]
+async fn call_rpc_error_without_code_omits_code_suffix() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .with_body(r#"{"result":null,"error":{"message":"just a message","code":null},"id":1}"#)
+        .create_async()
+        .await;
+    let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+    let err = client.get_info().await.unwrap_err();
+    match err {
+        AppError::Rpc(msg) => {
+            assert!(msg.contains("just a message"), "got: {msg}");
+            // No "(code ...)" fragment because code was null.
+            assert!(
+                !msg.contains("(code"),
+                "code suffix should be absent: {msg}"
+            );
+        }
+        other => panic!("expected Rpc, got {other:?}"),
+    }
+}
