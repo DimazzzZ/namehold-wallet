@@ -86,7 +86,11 @@ pub(crate) fn session_ttl_ms(settings: &std::collections::HashMap<String, String
 }
 
 /// Derive the BIP44 account-level xpub string `m/44'/coin'/account'`.
-pub(crate) fn account_xpub_from_seed(network: Network, seed: &[u8], account: u32) -> Result<String, AppError> {
+pub(crate) fn account_xpub_from_seed(
+    network: Network,
+    seed: &[u8],
+    account: u32,
+) -> Result<String, AppError> {
     let master = ExtendedPrivKey::from_seed(seed)?;
     let path = [
         HARDENED_OFFSET + 44,

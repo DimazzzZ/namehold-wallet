@@ -185,7 +185,7 @@ fn confirm_details_for_draft(draft: &db::queries::TxDraftRow) -> serde_json::Val
 /// `fee_rate_doos_per_kvb` setting (in doos per 1000 vbytes; divide by 1000
 /// to get doos/byte, floored at the relay-minimum), else the node's
 /// `estimatesmartfee`, else the fixed relay-floor default. Never errors.
-async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Option<u64>) -> u64 {
+pub(crate) async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Option<u64>) -> u64 {
     if let Some(r) = fee_rate {
         return r;
     }
@@ -2099,7 +2099,11 @@ mod pure_helper_tests {
         }
     }
 
-    fn build_plan(inputs: Vec<PlanInput>, outputs: Vec<PlanOutput>, change_output_index: Option<usize>) -> DraftPlan {
+    fn build_plan(
+        inputs: Vec<PlanInput>,
+        outputs: Vec<PlanOutput>,
+        change_output_index: Option<usize>,
+    ) -> DraftPlan {
         DraftPlan {
             version: 0,
             locktime: 0,
@@ -2118,7 +2122,8 @@ mod pure_helper_tests {
         let id = random_id();
         assert_eq!(id.len(), 32, "random_id should be 16 bytes hex-encoded");
         assert!(
-            id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            id.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "random_id should be lowercase hex only, got {id:?}"
         );
     }
@@ -2142,10 +2147,9 @@ mod pure_helper_tests {
         let xpub = test_xpub();
         let xpub_str = xpub.to_base58check(Network::Main);
         let addr = change_address(Network::Main, &xpub_str).unwrap();
-        let expected =
-            derivation::derive_one(Network::Main, &xpub, derivation::BRANCH_CHANGE, 0)
-                .unwrap()
-                .address;
+        let expected = derivation::derive_one(Network::Main, &xpub, derivation::BRANCH_CHANGE, 0)
+            .unwrap()
+            .address;
         assert_eq!(addr, expected);
         assert!(
             addr.starts_with("hs1q"),
@@ -2173,7 +2177,10 @@ mod pure_helper_tests {
     #[test]
     fn session_ttl_ms_reads_valid_numeric_setting() {
         let mut settings = HashMap::new();
-        settings.insert("signer_session_timeout_seconds".to_string(), "60".to_string());
+        settings.insert(
+            "signer_session_timeout_seconds".to_string(),
+            "60".to_string(),
+        );
         assert_eq!(session_ttl_ms(&settings), 60_000u128);
     }
 
@@ -2199,7 +2206,10 @@ mod pure_helper_tests {
         // Zero is filtered out (`filter(|n| *n > 0)`), so we still get the
         // default rather than a 0-ms TTL that would time out immediately.
         let mut settings = HashMap::new();
-        settings.insert("signer_session_timeout_seconds".to_string(), "0".to_string());
+        settings.insert(
+            "signer_session_timeout_seconds".to_string(),
+            "0".to_string(),
+        );
         assert_eq!(session_ttl_ms(&settings), 900_000u128);
     }
 
@@ -2257,8 +2267,8 @@ mod pure_helper_tests {
             vec![plan_output(2_800, "hs1qrecipient")],
             None,
         );
-        let s = compute_send_summary(&plan, "txid-x".to_string(), "hs1qrecipient".to_string())
-            .unwrap();
+        let s =
+            compute_send_summary(&plan, "txid-x".to_string(), "hs1qrecipient".to_string()).unwrap();
         assert_eq!(s.input_total_doos, 3_000);
         assert_eq!(s.change_doos, 0);
         assert_eq!(s.send_total_doos, 2_800);
@@ -2291,8 +2301,8 @@ mod pure_helper_tests {
             vec![plan_output(2_000, "hs1qrecipient")],
             None,
         );
-        let err = compute_send_summary(&plan, "t".to_string(), "hs1qrecipient".to_string())
-            .unwrap_err();
+        let err =
+            compute_send_summary(&plan, "t".to_string(), "hs1qrecipient".to_string()).unwrap_err();
         match err {
             AppError::Other(msg) => assert!(
                 msg.contains("output_total exceeds input_total"),
@@ -2353,10 +2363,7 @@ mod pure_helper_tests {
     #[test]
     fn local_txid_from_summary_returns_txid_when_present() {
         let json = serde_json::json!({ "txid": "deadbeef", "other": 1 }).to_string();
-        assert_eq!(
-            local_txid_from_summary(&json),
-            Some("deadbeef".to_string())
-        );
+        assert_eq!(local_txid_from_summary(&json), Some("deadbeef".to_string()));
     }
 
     #[test]

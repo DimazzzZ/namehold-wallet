@@ -2990,7 +2990,19 @@ mod tests {
     #[test]
     fn derive_available_with_pending_open() {
         assert_eq!(
-            derive("AVAILABLE", false, false, false, false, false, None, None, true, None, None),
+            derive(
+                "AVAILABLE",
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+                None,
+                true,
+                None,
+                None
+            ),
             AuctionTaskState::WaitingForBidding
         );
         assert_eq!(
@@ -3046,7 +3058,19 @@ mod tests {
     #[test]
     fn derive_reveal_draft_broadcasted_is_pending() {
         assert_eq!(
-            derive("REVEAL", false, true, true, false, false, None, None, false, None, Some("broadcasted")),
+            derive(
+                "REVEAL",
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                Some("broadcasted")
+            ),
             AuctionTaskState::RevealBroadcastPending
         );
     }
@@ -3054,7 +3078,19 @@ mod tests {
     #[test]
     fn derive_reveal_draft_broadcast_pending_is_pending() {
         assert_eq!(
-            derive("REVEAL", false, true, true, false, false, None, None, false, None, Some("broadcast_pending")),
+            derive(
+                "REVEAL",
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                Some("broadcast_pending")
+            ),
             AuctionTaskState::RevealBroadcastPending
         );
     }
@@ -3062,7 +3098,19 @@ mod tests {
     #[test]
     fn derive_reveal_draft_confirmed_waits_for_close() {
         assert_eq!(
-            derive("REVEAL", false, true, true, false, false, None, None, false, None, Some("confirmed")),
+            derive(
+                "REVEAL",
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                Some("confirmed")
+            ),
             AuctionTaskState::RevealDoneWaitingForClose
         );
     }
@@ -3070,7 +3118,19 @@ mod tests {
     #[test]
     fn derive_reveal_draft_dropped_back_to_ready() {
         assert_eq!(
-            derive("REVEAL", false, true, true, false, false, None, None, false, None, Some("dropped")),
+            derive(
+                "REVEAL",
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                Some("dropped")
+            ),
             AuctionTaskState::ReadyToReveal
         );
     }
@@ -3078,7 +3138,19 @@ mod tests {
     #[test]
     fn derive_reveal_draft_failed_back_to_ready() {
         assert_eq!(
-            derive("REVEAL", false, true, true, false, false, None, None, false, None, Some("failed")),
+            derive(
+                "REVEAL",
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                Some("failed")
+            ),
             AuctionTaskState::ReadyToReveal
         );
     }
@@ -3096,7 +3168,19 @@ mod tests {
     fn derive_reveal_txid_set_and_bid_coin_spent_is_done() {
         // reveal_txid Some + !has_bid_coin (spent) → done via chain fact.
         assert_eq!(
-            derive("REVEAL", false, true, false, false, false, None, None, false, Some("abc123"), None),
+            derive(
+                "REVEAL",
+                false,
+                true,
+                false,
+                false,
+                false,
+                None,
+                None,
+                false,
+                Some("abc123"),
+                None
+            ),
             AuctionTaskState::RevealDoneWaitingForClose
         );
     }
@@ -3105,7 +3189,19 @@ mod tests {
     fn derive_reveal_txid_set_but_bid_coin_still_unspent_is_ready() {
         // reveal_txid Some but has_bid_coin still true → default ReadyToReveal.
         assert_eq!(
-            derive("REVEAL", false, true, true, false, false, None, None, false, Some("abc123"), None),
+            derive(
+                "REVEAL",
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+                false,
+                Some("abc123"),
+                None
+            ),
             AuctionTaskState::ReadyToReveal
         );
     }
@@ -3118,7 +3214,19 @@ mod tests {
     fn derive_closed_owned_registered_not_expiring() {
         // owns + owner coin + covenant >= COV_REGISTER, not expiring.
         assert_eq!(
-            derive("CLOSED", true, false, false, false, true, Some(COV_REGISTER as i64), Some(100.0), false, None, None),
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(COV_REGISTER as i64),
+                Some(100.0),
+                false,
+                None,
+                None
+            ),
             AuctionTaskState::OwnedNoUrgentAction
         );
     }
@@ -3127,12 +3235,36 @@ mod tests {
     fn derive_closed_owned_registered_expiring_soon() {
         // Exactly at threshold → expiring (d <= 30.0).
         assert_eq!(
-            derive("CLOSED", true, false, false, false, true, Some(COV_REGISTER as i64), Some(EXPIRING_SOON_THRESHOLD_DAYS), false, None, None),
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(COV_REGISTER as i64),
+                Some(EXPIRING_SOON_THRESHOLD_DAYS),
+                false,
+                None,
+                None
+            ),
             AuctionTaskState::ExpiringSoon
         );
         // Negative (already lapsed) is even more urgent → expiring.
         assert_eq!(
-            derive("CLOSED", true, false, false, false, true, Some(9), Some(-5.0), false, None, None),
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(9),
+                Some(-5.0),
+                false,
+                None,
+                None
+            ),
             AuctionTaskState::ExpiringSoon
         );
     }
@@ -3141,7 +3273,19 @@ mod tests {
     fn derive_closed_owned_not_registered_needs_register() {
         // owns + owner coin but covenant < COV_REGISTER → WonNeedsRegister.
         assert_eq!(
-            derive("CLOSED", true, false, false, false, true, Some(COV_REVEAL as i64), None, false, None, None),
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(COV_REVEAL as i64),
+                None,
+                false,
+                None,
+                None
+            ),
             AuctionTaskState::WonNeedsRegister
         );
         // owner_covenant_type None → unwrap_or(false) → not registered.
@@ -3151,7 +3295,19 @@ mod tests {
         );
         // Registration takes precedence over renewal alarm even when expiring.
         assert_eq!(
-            derive("CLOSED", true, false, false, false, true, Some(COV_REVEAL as i64), Some(1.0), false, None, None),
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(COV_REVEAL as i64),
+                Some(1.0),
+                false,
+                None,
+                None
+            ),
             AuctionTaskState::WonNeedsRegister
         );
     }
@@ -3160,7 +3316,19 @@ mod tests {
     fn derive_closed_owned_explorer_only_not_expiring() {
         // owns but no owner coin (explorer-only) → OwnedNoUrgentAction.
         assert_eq!(
-            derive("CLOSED", true, false, false, false, false, None, Some(100.0), false, None, None),
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                false,
+                None,
+                Some(100.0),
+                false,
+                None,
+                None
+            ),
             AuctionTaskState::OwnedNoUrgentAction
         );
     }
@@ -3168,7 +3336,19 @@ mod tests {
     #[test]
     fn derive_closed_owned_explorer_only_expiring() {
         assert_eq!(
-            derive("CLOSED", true, false, false, false, false, None, Some(10.0), false, None, None),
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                false,
+                None,
+                Some(10.0),
+                false,
+                None,
+                None
+            ),
             AuctionTaskState::ExpiringSoon
         );
     }
@@ -3198,7 +3378,19 @@ mod tests {
     #[test]
     fn derive_transfer() {
         assert_eq!(
-            derive("TRANSFER", true, false, false, false, true, Some(9), None, false, None, None),
+            derive(
+                "TRANSFER",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(9),
+                None,
+                false,
+                None,
+                None
+            ),
             AuctionTaskState::TransferPendingFinalize
         );
     }
@@ -3206,7 +3398,19 @@ mod tests {
     #[test]
     fn derive_revoked() {
         assert_eq!(
-            derive("REVOKED", true, false, false, false, true, Some(9), None, false, None, None),
+            derive(
+                "REVOKED",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(9),
+                None,
+                false,
+                None,
+                None
+            ),
             AuctionTaskState::UnavailableOther
         );
     }
@@ -3214,7 +3418,19 @@ mod tests {
     #[test]
     fn derive_unknown_phase_owned() {
         assert_eq!(
-            derive("SOMETHING_WEIRD", true, false, false, false, false, None, None, false, None, None),
+            derive(
+                "SOMETHING_WEIRD",
+                true,
+                false,
+                false,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                None
+            ),
             AuctionTaskState::OwnedNoUrgentAction
         );
     }
@@ -3222,7 +3438,19 @@ mod tests {
     #[test]
     fn derive_unknown_phase_not_owned() {
         assert_eq!(
-            derive("SOMETHING_WEIRD", false, false, false, false, false, None, None, false, None, None),
+            derive(
+                "SOMETHING_WEIRD",
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                None
+            ),
             AuctionTaskState::UnavailableOther
         );
     }
@@ -3234,24 +3462,83 @@ mod tests {
     #[test]
     fn next_action_for_every_variant() {
         let cases: &[(AuctionTaskState, Option<&str>, Option<&str>, bool)] = &[
-            (AuctionTaskState::AvailableToOpen, Some("OPEN"), Some("Open Auction"), true),
-            (AuctionTaskState::WaitingForBidding, Some("WAIT"), Some("Wait for Bidding"), true),
-            (AuctionTaskState::ReadyToBid, Some("BID"), Some("Place Bid"), true),
-            (AuctionTaskState::ReadyToReveal, Some("REVEAL"), Some("Reveal Bid"), true),
-            (AuctionTaskState::RevealBroadcastPending, None, Some("Reveal pending confirmation"), true),
-            (AuctionTaskState::RevealDoneWaitingForClose, None, Some("Revealed — waiting for close"), true),
-            (AuctionTaskState::WonNeedsRegister, Some("REGISTER"), Some("Register Name"), true),
-            (AuctionTaskState::LostNeedsRedeem, Some("REDEEM"), Some("Redeem Lockup"), true),
-            (AuctionTaskState::TransferPendingFinalize, Some("FINALIZE"), Some("Finalize Transfer"), true),
-            (AuctionTaskState::OwnedNoUrgentAction, Some("MANAGE"), Some("Manage Name"), true),
-            (AuctionTaskState::ExpiringSoon, Some("RENEW"), Some("Renew Name"), true),
+            (
+                AuctionTaskState::AvailableToOpen,
+                Some("OPEN"),
+                Some("Open Auction"),
+                true,
+            ),
+            (
+                AuctionTaskState::WaitingForBidding,
+                Some("WAIT"),
+                Some("Wait for Bidding"),
+                true,
+            ),
+            (
+                AuctionTaskState::ReadyToBid,
+                Some("BID"),
+                Some("Place Bid"),
+                true,
+            ),
+            (
+                AuctionTaskState::ReadyToReveal,
+                Some("REVEAL"),
+                Some("Reveal Bid"),
+                true,
+            ),
+            (
+                AuctionTaskState::RevealBroadcastPending,
+                None,
+                Some("Reveal pending confirmation"),
+                true,
+            ),
+            (
+                AuctionTaskState::RevealDoneWaitingForClose,
+                None,
+                Some("Revealed — waiting for close"),
+                true,
+            ),
+            (
+                AuctionTaskState::WonNeedsRegister,
+                Some("REGISTER"),
+                Some("Register Name"),
+                true,
+            ),
+            (
+                AuctionTaskState::LostNeedsRedeem,
+                Some("REDEEM"),
+                Some("Redeem Lockup"),
+                true,
+            ),
+            (
+                AuctionTaskState::TransferPendingFinalize,
+                Some("FINALIZE"),
+                Some("Finalize Transfer"),
+                true,
+            ),
+            (
+                AuctionTaskState::OwnedNoUrgentAction,
+                Some("MANAGE"),
+                Some("Manage Name"),
+                true,
+            ),
+            (
+                AuctionTaskState::ExpiringSoon,
+                Some("RENEW"),
+                Some("Renew Name"),
+                true,
+            ),
             (AuctionTaskState::UnavailableOther, None, None, false),
         ];
         for (task, exp_key, exp_label, exp_reason_some) in cases {
             let (key, label, reason) = next_action_for_task(task);
             assert_eq!(key.as_deref(), *exp_key, "key mismatch for {task:?}");
             assert_eq!(label.as_deref(), *exp_label, "label mismatch for {task:?}");
-            assert_eq!(reason.is_some(), *exp_reason_some, "reason presence mismatch for {task:?}");
+            assert_eq!(
+                reason.is_some(),
+                *exp_reason_some,
+                "reason presence mismatch for {task:?}"
+            );
         }
     }
 
@@ -3305,7 +3592,14 @@ mod tests {
     fn build_can_open_allowed_available() {
         let ctx = ctx_default();
         let caps = build_name_action_capabilities(
-            "n".into(), "AVAILABLE".into(), "AVAILABLE", None, &ctx, false, false, None,
+            "n".into(),
+            "AVAILABLE".into(),
+            "AVAILABLE",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(caps.can_open.allowed);
         assert_eq!(caps.can_open.reason, None);
@@ -3315,7 +3609,14 @@ mod tests {
     fn build_can_open_allowed_empty_phase() {
         let ctx = ctx_default();
         let caps = build_name_action_capabilities(
-            "n".into(), "".into(), "", None, &ctx, false, false, None,
+            "n".into(),
+            "".into(),
+            "",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(caps.can_open.allowed);
         assert_eq!(caps.can_open.reason, None);
@@ -3325,7 +3626,14 @@ mod tests {
     fn build_can_open_phase_not_available() {
         let ctx = ctx_default();
         let caps = build_name_action_capabilities(
-            "n".into(), "BIDDING".into(), "BIDDING", None, &ctx, false, false, None,
+            "n".into(),
+            "BIDDING".into(),
+            "BIDDING",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(!caps.can_open.allowed);
         assert_eq!(
@@ -3336,9 +3644,19 @@ mod tests {
 
     #[test]
     fn build_can_open_has_pending_open() {
-        let ctx = NameActionContext { has_pending_open: true, ..ctx_default() };
+        let ctx = NameActionContext {
+            has_pending_open: true,
+            ..ctx_default()
+        };
         let caps = build_name_action_capabilities(
-            "n".into(), "AVAILABLE".into(), "AVAILABLE", None, &ctx, false, false, None,
+            "n".into(),
+            "AVAILABLE".into(),
+            "AVAILABLE",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(!caps.can_open.allowed);
         assert_eq!(
@@ -3355,7 +3673,14 @@ mod tests {
     fn build_can_bid_allowed_bidding() {
         let ctx = ctx_default();
         let caps = build_name_action_capabilities(
-            "n".into(), "BIDDING".into(), "BIDDING", None, &ctx, false, false, None,
+            "n".into(),
+            "BIDDING".into(),
+            "BIDDING",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(caps.can_bid.allowed);
         assert_eq!(caps.can_bid.reason, None);
@@ -3365,7 +3690,14 @@ mod tests {
     fn build_can_bid_allowed_opening() {
         let ctx = ctx_default();
         let caps = build_name_action_capabilities(
-            "n".into(), "OPENING".into(), "OPENING", None, &ctx, false, false, None,
+            "n".into(),
+            "OPENING".into(),
+            "OPENING",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(caps.can_bid.allowed);
         assert_eq!(caps.can_bid.reason, None);
@@ -3375,7 +3707,14 @@ mod tests {
     fn build_can_bid_phase_incompatible() {
         let ctx = ctx_default();
         let caps = build_name_action_capabilities(
-            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, false, false, None,
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(!caps.can_bid.allowed);
         assert_eq!(
@@ -3386,9 +3725,19 @@ mod tests {
 
     #[test]
     fn build_can_bid_existing_bid_count() {
-        let ctx = NameActionContext { existing_bid_count: 1, ..ctx_default() };
+        let ctx = NameActionContext {
+            existing_bid_count: 1,
+            ..ctx_default()
+        };
         let caps = build_name_action_capabilities(
-            "n".into(), "BIDDING".into(), "BIDDING", None, &ctx, false, false, None,
+            "n".into(),
+            "BIDDING".into(),
+            "BIDDING",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(!caps.can_bid.allowed);
         assert_eq!(
@@ -3409,7 +3758,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, false, false, None,
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(caps.can_reveal.allowed);
         assert_eq!(caps.can_reveal.reason, None);
@@ -3423,7 +3779,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "BIDDING".into(), "BIDDING", None, &ctx, false, false, None,
+            "n".into(),
+            "BIDDING".into(),
+            "BIDDING",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(!caps.can_reveal.allowed);
         assert_eq!(
@@ -3434,9 +3797,19 @@ mod tests {
 
     #[test]
     fn build_can_reveal_missing_bid_commitment() {
-        let ctx = NameActionContext { has_bid_coin: true, ..ctx_default() };
+        let ctx = NameActionContext {
+            has_bid_coin: true,
+            ..ctx_default()
+        };
         let caps = build_name_action_capabilities(
-            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, false, false, None,
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(!caps.can_reveal.allowed);
         assert_eq!(
@@ -3447,9 +3820,19 @@ mod tests {
 
     #[test]
     fn build_can_reveal_missing_bid_coin() {
-        let ctx = NameActionContext { has_bid_commitment: true, ..ctx_default() };
+        let ctx = NameActionContext {
+            has_bid_commitment: true,
+            ..ctx_default()
+        };
         let caps = build_name_action_capabilities(
-            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, false, false, None,
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(!caps.can_reveal.allowed);
         assert_eq!(
@@ -3464,9 +3847,19 @@ mod tests {
 
     #[test]
     fn build_can_redeem_allowed() {
-        let ctx = NameActionContext { has_reveal_coin: true, ..ctx_default() };
+        let ctx = NameActionContext {
+            has_reveal_coin: true,
+            ..ctx_default()
+        };
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, false, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(caps.can_redeem.allowed);
         // NOTE: `can_redeem.reason`'s if/else chain in the source falls into
@@ -3481,9 +3874,19 @@ mod tests {
 
     #[test]
     fn build_can_redeem_phase_not_closed() {
-        let ctx = NameActionContext { has_reveal_coin: true, ..ctx_default() };
+        let ctx = NameActionContext {
+            has_reveal_coin: true,
+            ..ctx_default()
+        };
         let caps = build_name_action_capabilities(
-            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, false, false, None,
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(!caps.can_redeem.allowed);
         assert_eq!(
@@ -3496,7 +3899,14 @@ mod tests {
     fn build_can_redeem_no_reveal_coin() {
         let ctx = ctx_default();
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, false, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert!(!caps.can_redeem.allowed);
         assert_eq!(
@@ -3508,9 +3918,19 @@ mod tests {
     #[test]
     fn build_can_redeem_owns_name_not_applicable() {
         // has_reveal_coin + owns_name → "you won this auction".
-        let ctx = NameActionContext { has_reveal_coin: true, ..ctx_default() };
+        let ctx = NameActionContext {
+            has_reveal_coin: true,
+            ..ctx_default()
+        };
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
         );
         assert!(!caps.can_redeem.allowed);
         assert_eq!(
@@ -3531,7 +3951,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
         );
         assert!(caps.can_register.allowed);
         assert_eq!(caps.can_register.reason, None);
@@ -3546,7 +3973,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
         );
         assert!(caps.can_register.allowed);
         assert_eq!(caps.can_register.reason, None);
@@ -3560,7 +3994,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, true, false, None,
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
         );
         assert!(!caps.can_register.allowed);
         assert_eq!(
@@ -3573,7 +4014,14 @@ mod tests {
     fn build_can_register_no_owner_coin() {
         let ctx = ctx_default();
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
         );
         assert!(!caps.can_register.allowed);
         assert_eq!(
@@ -3590,7 +4038,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
         );
         assert!(!caps.can_register.allowed);
         assert_eq!(
@@ -3610,7 +4065,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
         );
         assert!(caps.can_update.allowed);
         assert_eq!(caps.can_update.reason, None);
@@ -3631,7 +4093,14 @@ mod tests {
     fn build_owner_actions_disallowed_when_not_owned() {
         let ctx = ctx_default();
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, false, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         let does_not_control = Some("wallet does not control this name");
         assert!(!caps.can_update.allowed);
@@ -3657,7 +4126,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
         );
         assert!(!caps.can_finalize.allowed);
         assert_eq!(
@@ -3674,7 +4150,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
         );
         assert!(!caps.can_finalize.allowed);
         assert_eq!(
@@ -3697,7 +4180,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, true, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            true,
+            None,
         );
         for cap in [
             &caps.can_register,
@@ -3728,7 +4218,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, Some(5.0),
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            Some(5.0),
         );
         assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
         assert_eq!(caps.next_action_key.as_deref(), Some("RENEW"));
@@ -3745,7 +4242,14 @@ mod tests {
         };
         let stats = json!({ "daysUntilExpire": 10.0 });
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", Some(&stats), &ctx, true, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            Some(&stats),
+            &ctx,
+            true,
+            false,
+            None,
         );
         assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
     }
@@ -3761,7 +4265,14 @@ mod tests {
         };
         let stats = json!({ "blocksUntilExpire": 1440 });
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", Some(&stats), &ctx, true, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            Some(&stats),
+            &ctx,
+            true,
+            false,
+            None,
         );
         assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
         // CLOSED countdown surfaces from stats.
@@ -3778,7 +4289,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "CLOSED".into(), "CLOSED", None, &ctx, true, false, None,
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
         );
         assert_eq!(caps.task_state, AuctionTaskState::OwnedNoUrgentAction);
         assert_eq!(caps.countdown_label, None);
@@ -3825,7 +4343,14 @@ mod tests {
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
-            "n".into(), "REVEAL".into(), "REVEAL", None, &ctx, false, false, None,
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
         );
         assert_eq!(caps.reveal_txid.as_deref(), Some("deadbeef"));
         assert_eq!(caps.bid_value_doos, Some(123_456));

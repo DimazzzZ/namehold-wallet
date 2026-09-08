@@ -1290,7 +1290,9 @@ mod tests {
         f.blocks_until_bidding = Some(0);
         let r = scan_watched_events(&[f], &HashMap::new(), &cfg(true, None), &BTreeSet::new());
         assert_eq!(r.notifications.len(), 1);
-        assert!(r.notifications[0].body.contains("bidding opens in 0 blocks"));
+        assert!(r.notifications[0]
+            .body
+            .contains("bidding opens in 0 blocks"));
     }
 
     #[test]
@@ -1324,9 +1326,7 @@ mod tests {
         already.insert("watched:reopened:foo:1000".to_string());
         let r = scan_watched_events(&[f], &prev_map, &cfg(true, None), &already);
         assert!(r.notifications.is_empty());
-        assert!(r
-            .active_episodes
-            .contains("watched:reopened:foo:1000"));
+        assert!(r.active_episodes.contains("watched:reopened:foo:1000"));
     }
 
     #[test]
@@ -1355,7 +1355,12 @@ mod tests {
         let mut prev_map = HashMap::new();
         let (k, v) = prev("foo", Some("BIDDING"), Some(0));
         prev_map.insert(k, v);
-        let r = scan_watched_events(&[f], &prev_map, &cfg(true, Some(threshold)), &BTreeSet::new());
+        let r = scan_watched_events(
+            &[f],
+            &prev_map,
+            &cfg(true, Some(threshold)),
+            &BTreeSet::new(),
+        );
         assert!(r.notifications.is_empty());
     }
 
@@ -1368,7 +1373,12 @@ mod tests {
         let mut prev_map = HashMap::new();
         let (k, v) = prev("foo", Some("BIDDING"), Some(0));
         prev_map.insert(k, v);
-        let r = scan_watched_events(&[f], &prev_map, &cfg(true, Some(threshold)), &BTreeSet::new());
+        let r = scan_watched_events(
+            &[f],
+            &prev_map,
+            &cfg(true, Some(threshold)),
+            &BTreeSet::new(),
+        );
         assert!(r.notifications.is_empty());
         assert!(r.active_episodes.is_empty());
     }
@@ -1383,7 +1393,12 @@ mod tests {
         let mut prev_map = HashMap::new();
         let (k, v) = prev("foo", Some("BIDDING"), Some(threshold + 1));
         prev_map.insert(k, v);
-        let r = scan_watched_events(&[f], &prev_map, &cfg(true, Some(threshold)), &BTreeSet::new());
+        let r = scan_watched_events(
+            &[f],
+            &prev_map,
+            &cfg(true, Some(threshold)),
+            &BTreeSet::new(),
+        );
         assert!(r.notifications.is_empty());
     }
 
@@ -1395,7 +1410,12 @@ mod tests {
         let threshold = 100 * DOOS_PER_HNS;
         let mut f = fresh("foo", "REVEAL"); // non-BIDDING to isolate high-bid
         f.highest_doos = Some(threshold);
-        let r = scan_watched_events(&[f], &HashMap::new(), &cfg(true, Some(threshold)), &BTreeSet::new());
+        let r = scan_watched_events(
+            &[f],
+            &HashMap::new(),
+            &cfg(true, Some(threshold)),
+            &BTreeSet::new(),
+        );
         assert_eq!(r.notifications.len(), 1);
         assert!(r.notifications[0].body.contains("crossed"));
     }
@@ -1407,7 +1427,12 @@ mod tests {
         let threshold = 10 * DOOS_PER_HNS;
         let mut f = fresh("foo", "BIDDING");
         f.highest_doos = Some(threshold * 2);
-        let r = scan_watched_events(&[f], &HashMap::new(), &cfg(true, Some(threshold)), &BTreeSet::new());
+        let r = scan_watched_events(
+            &[f],
+            &HashMap::new(),
+            &cfg(true, Some(threshold)),
+            &BTreeSet::new(),
+        );
         assert_eq!(r.notifications.len(), 2);
         assert_eq!(r.active_episodes.len(), 2);
     }

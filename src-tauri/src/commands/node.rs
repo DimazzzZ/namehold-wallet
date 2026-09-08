@@ -179,9 +179,9 @@ fn active_profile_network(state: &AppState) -> Network {
 
 /// Whether the hsd we started this session is still alive. Reaps a child that has
 /// exited (clearing the handle) so the status reflects reality.
-// IO shell: the `Some(child)` arm calls child.try_wait() on a real OS process
-// handle. Only reachable when start_hsd has spawned a child — integration-only.
-#[cfg_attr(coverage_nightly, coverage(off))]
+// The `Some(child)` arm calls child.try_wait() on a real OS process handle,
+// reachable only after start_hsd has spawned a child. Exercised by the
+// fake-hsd integration tests in tests/node_lifecycle_tests.rs.
 fn is_running(state: &AppState) -> Result<bool, AppError> {
     let mut guard = state
         .hsd_child
@@ -359,11 +359,11 @@ pub(crate) fn node_start_error(data_dir: &str) -> Option<(String, bool)> {
 /// `hsd_prefix` setting (default `~/.hsd`); the API key mirrors `node_rpc_api_key`
 /// and the network mirrors the active profile, so the app talks to exactly the
 /// node it started.
-// IO shell: Command::spawn(), Stdio wiring, child.try_wait(), and the startup
-// wait-loop require a real hsd binary. The RPC-probe "adopt" path at the top
-// IS unit-tested (mockito). The spawn/wait/kill paths below are integration-only.
+// Command::spawn(), Stdio wiring, child.try_wait(), and the startup wait-loop
+// require a real hsd binary. The RPC-probe "adopt" path at the top is
+// unit-tested (mockito); the spawn/wait/log-tail paths are covered by the
+// fake-hsd integration tests in tests/node_lifecycle_tests.rs.
 #[tauri::command]
-#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     if is_running(&state)? {
         return Err(AppError::Other("hsd is already running.".to_string()));
@@ -558,10 +558,11 @@ pub(crate) fn read_log_tail(path: &std::path::Path) -> String {
 /// Stop hsd. Kills the child we spawned (if any) AND asks any reachable node to
 /// shut down over RPC — so the app can stop a node it adopted or that the user
 /// started outside the app, not just one from this session.
-// IO shell: child.kill() / child.wait() are OS process operations that cannot
-// be unit-tested. The RPC stop() and audit-log paths ARE unit-tested (mockito).
+// child.kill() / child.wait() are OS process operations; the RPC stop() and
+// audit-log paths are unit-tested (mockito), and the kill-the-spawned-child
+// path is covered by the fake-hsd integration tests
+// (tests/node_lifecycle_tests.rs).
 #[tauri::command]
-#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
     let child = {
         let mut guard = state
@@ -616,10 +617,10 @@ pub(crate) fn chain_paths_for_network(data_dir: &str, network: Network) -> Vec<s
 /// current chain data to a timestamped backup under the data dir, then start hsd
 /// fresh so it re-syncs with the wallet's required indexes. The backup is
 /// reversible (the wallet/key/conf are left in place); reads stay node-free.
-// IO shell: child.kill(), std::fs::rename() of chain data, and the subsequent
-// start_hsd spawn require a real hsd + filesystem. Integration-only.
+// child.kill(), std::fs::rename() of chain data, and the subsequent start_hsd
+// spawn require a real hsd + filesystem — covered by the fake-hsd integration
+// tests in tests/node_lifecycle_tests.rs.
 #[tauri::command]
-#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     // 1. Stop any node we manage so the chain files aren't locked.
     {
