@@ -3,7 +3,7 @@
 //!
 //! The inner takes a pre-resolved `Vec<(name, name_hash, bid_commitment,
 //! bid_coin, state)>` (the wrapper's per-name bid-commitment / BID-coin lookup
-//! + `fetch_name_state` RPC), parses each stored 32-byte nonce, builds one
+//! and `fetch_name_state` RPC), parses each stored 32-byte nonce, builds one
 //! REVEAL covenant output per name, and persists a single batch draft.
 
 use std::collections::HashMap;

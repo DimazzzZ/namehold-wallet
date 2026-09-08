@@ -4,7 +4,7 @@
 //!
 //! The inner takes a pre-resolved owner `NameCoin` (in TRANSFER state), the
 //! `NameState`, and the renewal-block hash (the wrapper's `owner_coin_and_state`
-//! + `renewal_block` prefetch); it parses the TRANSFER target, validates the
+//! and `renewal_block` prefetch); it parses the TRANSFER target, validates the
 //! payment address, funds the finalize + payment outputs, and persists the
 //! draft recording the payment address as the recipient.
 

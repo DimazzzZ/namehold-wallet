@@ -122,6 +122,7 @@ fn name_state() -> NameState {
 
 /// Setup: profile, funding coin, N owner coins, and a `Ctx`. Returns the
 /// connection, ctx, and the per_name vec for the inner.
+#[allow(clippy::type_complexity)]
 fn setup(
     names_in: &[&str],
 ) -> (

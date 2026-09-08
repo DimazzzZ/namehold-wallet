@@ -4591,7 +4591,7 @@ mod noncustodial_query_tests {
         assert_eq!(coin.branch, 1);
         assert_eq!(coin.child_index, 3);
         assert_eq!(coin.covenant_type, 3);
-        assert_eq!(coin.covenant_json.as_deref().is_some(), true);
+        assert!(coin.covenant_json.as_deref().is_some());
     }
 
     /// Coverage: list_receive_addresses with used/unused detection

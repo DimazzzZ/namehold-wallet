@@ -406,7 +406,7 @@ async fn live_import_csv_parse_error_propagates() {
 
 #[tokio::test]
 async fn live_import_without_cookie_errors() {
-    let mut server = mockito::Server::new_async().await;
+    let server = mockito::Server::new_async().await;
     // No mock registered — client build should fail before any HTTP call.
     let app = app_with(seeded_conn_no_cookie(&server.url()));
     let err = import_namebase_history_live(app.state()).await;

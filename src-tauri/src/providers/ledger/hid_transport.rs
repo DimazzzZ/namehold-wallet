@@ -414,7 +414,7 @@ mod tests {
     fn exchange_rejects_response_shorter_than_status_word() {
         use crate::providers::ledger::apdu::get_app_version;
         // Build a response with only 1 byte of body (no status word).
-        let reads = frame_response(&[0xFF], SW_OK);
+        let _reads = frame_response(&[0xFF], SW_OK);
         // This creates a packet with 1 byte of body + 2 bytes of SW_OK = 3 bytes total.
         // To get a response shorter than 2 bytes, we need to manually craft a packet
         // that has fewer than 2 bytes total.
