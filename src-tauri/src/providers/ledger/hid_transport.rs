@@ -381,7 +381,10 @@ mod tests {
         // Build a two-frame response (200 bytes forces continuation).
         let body: Vec<u8> = (0..200).map(|i| (i % 256) as u8).collect();
         let mut reads = frame_response(&body, SW_OK);
-        assert!(reads.len() >= 2, "need multi-frame response for sequence test");
+        assert!(
+            reads.len() >= 2,
+            "need multi-frame response for sequence test"
+        );
         // Corrupt the second frame's sequence number: expected 1, we send 7.
         reads[1][3] = 0x00;
         reads[1][4] = 0x07;
@@ -395,7 +398,10 @@ mod tests {
             AppError::Device(msg) => {
                 assert!(msg.contains("HID sequence out of order"), "got: {msg}");
                 assert!(msg.contains("got 7"), "seq should be reported: {msg}");
-                assert!(msg.contains("expected 1"), "expected seq should be reported: {msg}");
+                assert!(
+                    msg.contains("expected 1"),
+                    "expected seq should be reported: {msg}"
+                );
             }
             other => panic!("expected Device error, got {other:?}"),
         }
@@ -429,10 +435,7 @@ mod tests {
         let err = t.exchange_ok(&get_app_version()).unwrap_err();
         match err {
             AppError::Device(msg) => {
-                assert!(
-                    msg.contains("shorter than a status word"),
-                    "got: {msg}"
-                );
+                assert!(msg.contains("shorter than a status word"), "got: {msg}");
             }
             other => panic!("expected Device error, got {other:?}"),
         }

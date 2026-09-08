@@ -1202,7 +1202,10 @@ mod tests {
         match result {
             Err(AppError::Other(msg)) => {
                 assert!(msg.contains("HNSFans name lookup failed"), "got: {msg}");
-                assert!(msg.contains("403"), "status code should be in message: {msg}");
+                assert!(
+                    msg.contains("403"),
+                    "status code should be in message: {msg}"
+                );
             }
             other => panic!("expected AppError::Other, got: {other:?}"),
         }
@@ -1248,8 +1251,61 @@ mod tests {
         let result = normalize_name(&entry);
         // The function should still normalize it successfully, carrying the
         // unexpected `transfer` value through.
-        assert!(result.is_some(), "should handle non-number transfer gracefully");
+        assert!(
+            result.is_some(),
+            "should handle non-number transfer gracefully"
+        );
         let name = result.unwrap();
         assert_eq!(name.name, "testname");
+    }
+
+    /// When stats fields are present but have the wrong JSON type (e.g. strings
+    /// instead of numbers), the `and_then(|v| v.as_u64())` closures return None.
+    /// This covers the None arms on lines 663–676 and 729.
+    #[test]
+    fn normalize_name_wrong_type_stats_fields_yield_none() {
+        let entry = json!({
+            "name": "wrongtypes",
+            "expired": "not_a_bool",
+            "stats": {
+                "openPeriodStart": "nope",
+                "openPeriodEnd": "nope",
+                "revealPeriodStart": "nope",
+                "revealPeriodEnd": "nope",
+                "blocksUntilOpen": "nope",
+                "blocksUntilBidding": "nope",
+                "blocksUntilClose": "nope",
+                "hoursUntilOpen": "nope",
+                "hoursUntilClose": "nope",
+            }
+        });
+        let name = normalize_name(&entry).expect("should still normalize");
+        let stats = name.stats.expect("stats object present");
+        // Every typed accessor returns None because the values are strings.
+        assert_eq!(stats.open_period_start, None);
+        assert_eq!(stats.open_period_end, None);
+        assert_eq!(stats.reveal_period_start, None);
+        assert_eq!(stats.reveal_period_end, None);
+        assert_eq!(stats.blocks_until_open, None);
+        assert_eq!(stats.blocks_until_bidding, None);
+        assert_eq!(stats.blocks_until_close, None);
+        assert_eq!(stats.hours_until_open, None);
+        assert_eq!(stats.hours_until_close, None);
+        assert_eq!(name.expired, None);
+    }
+
+    /// The `revoked` field's third fallback `.or_else(|| v.as_u64().map(…))`
+    /// is only reached when `as_bool()` and `as_i64()` both return None.
+    /// In serde_json, `as_i64()` fails for values > i64::MAX, so we use one.
+    #[test]
+    fn normalize_name_revoked_u64_overflow_hits_as_u64_fallback() {
+        let big = (i64::MAX as u64) + 1; // 2^63 — too large for as_i64()
+        let entry = json!({
+            "name": "bigrevoke",
+            "revoked": big,
+        });
+        let name = normalize_name(&entry).expect("should normalize");
+        // big != 0, so revoked normalizes to true via the u64 fallback.
+        assert_eq!(name.revoked, Some(true));
     }
 }
