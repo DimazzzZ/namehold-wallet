@@ -166,6 +166,48 @@ fn set_test_keyring_backend(backend: Option<Box<dyn KeyringBackend + Send + Sync
     *test_backend_slot().lock().expect("test backend") = backend;
 }
 
+/// Test-only helper: force the keyring resolution used by [`encrypt_cookie`] /
+/// [`decrypt_cookie`] to fail, as if the OS keyring were unavailable.
+///
+/// This installs a fake backend whose `get_password` errors and clears any
+/// fixed test DEK (which `get_or_create_dek` would otherwise consult first,
+/// short-circuiting the backend). Pass `false` to restore the default state
+/// (no fake backend, no test DEK). Debug/test builds only.
+///
+/// Exposed at `pub(crate)` so command-layer tests (e.g. the Namebase cookie
+/// migration fallback in `commands::namebase::read_cookie`) can drive the
+/// keyring-unavailable branch without depending on the private
+/// `KeyringBackend` trait or the test-only `FakeKeyring` type.
+#[cfg(any(test, debug_assertions))]
+pub(crate) fn set_keyring_unavailable_for_test(unavailable: bool) {
+    set_test_dek(None);
+    if unavailable {
+        set_test_keyring_backend(Some(Box::new(FailingKeyring)));
+    } else {
+        set_test_keyring_backend(None);
+    }
+}
+
+/// Minimal always-failing keyring backend for [`set_keyring_unavailable_for_test`].
+/// Kept outside `#[cfg(test)] mod tests` (unlike `FakeKeyring`) so it is
+/// reachable from the `pub(crate)` helper used by other modules' tests.
+#[cfg(any(test, debug_assertions))]
+struct FailingKeyring;
+
+#[cfg(any(test, debug_assertions))]
+impl KeyringBackend for FailingKeyring {
+    fn get_password(&self) -> Result<Option<String>, AppError> {
+        Err(AppError::Other(
+            "keyring get_password: unavailable (test)".to_string(),
+        ))
+    }
+    fn set_password(&self, _value: &str) -> Result<(), AppError> {
+        Err(AppError::Other(
+            "keyring set_password: unavailable (test)".to_string(),
+        ))
+    }
+}
+
 /// Encrypt `plaintext` under the given 32-byte DEK. Pure crypto — no keyring
 /// access. The keyring-backed variant is [`encrypt_cookie`].
 fn encrypt_with_dek(plaintext: &[u8], dek: &[u8]) -> Result<String, AppError> {

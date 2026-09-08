@@ -19,7 +19,7 @@ use tauri::State;
 /// Read the Namebase session cookie, preferring the encrypted v1 blob.
 /// If `namebase_cookie_v1` is empty but the legacy `namebase_cookie` has a
 /// value, migrate it: encrypt → store in v1 → blank the legacy row.
-fn read_cookie(state: &AppState) -> Result<String, AppError> {
+pub(crate) fn read_cookie(state: &AppState) -> Result<String, AppError> {
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let settings = db::queries::get_settings(&db)?;
 

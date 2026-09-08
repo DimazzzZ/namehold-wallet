@@ -7,6 +7,7 @@
 
 use mockito::Server;
 use rusqlite::params;
+use serial_test::serial;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
@@ -27,7 +28,9 @@ const COOKIE: &str = "test-cookie-123";
 /// encrypt/decrypt flow without hitting the OS keyring. Must be called once
 /// before any test that uses `encrypt_cookie` or `decrypt_cookie`. Installed
 /// from `seeded_conn` / `conn_without_cookie` so EVERY test in this module is
-/// isolated from the real OS keyring regardless of run order.
+/// isolated from the real OS keyring regardless of run order. Cross-test races
+/// on the process-global `TEST_DEK` / test-keyring-backend slots are prevented
+/// by the `#[serial(cookie_vault)]` attribute on every test in this file.
 fn install_test_dek() {
     crate::noncustodial::cookie_vault::set_test_dek(Some((0..32u8).collect()));
 }
@@ -141,6 +144,7 @@ async fn status_cookie_present_session_expired_returns_not_connected_with_error(
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn status_cookie_present_session_valid_returns_connected_and_account() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -165,6 +169,7 @@ async fn status_cookie_present_session_valid_returns_connected_and_account() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn fetch_domains_returns_domains() {
     let mut server = Server::new_async().await;
     let m = server
@@ -183,6 +188,7 @@ async fn fetch_domains_returns_domains() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn fetch_domains_propagates_api_error() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -204,6 +210,7 @@ async fn fetch_domains_propagates_api_error() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn fetch_staked_returns_staked_domains() {
     let mut server = Server::new_async().await;
     let m = server
@@ -222,6 +229,7 @@ async fn fetch_staked_returns_staked_domains() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn fetch_staked_propagates_api_error() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -243,6 +251,7 @@ async fn fetch_staked_propagates_api_error() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn fetch_renewals_propagates_api_error() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -264,6 +273,7 @@ async fn fetch_renewals_propagates_api_error() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn fetch_withdrawals_returns_withdrawals() {
     let mut server = Server::new_async().await;
     let m = server
@@ -282,6 +292,7 @@ async fn fetch_withdrawals_returns_withdrawals() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn fetch_withdrawals_propagates_api_error() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -303,6 +314,7 @@ async fn fetch_withdrawals_propagates_api_error() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn fetch_domain_withdrawals_returns_domain_withdrawals() {
     let mut server = Server::new_async().await;
     let m = server
@@ -321,6 +333,7 @@ async fn fetch_domain_withdrawals_returns_domain_withdrawals() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn fetch_domain_withdrawals_propagates_api_error() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -342,6 +355,7 @@ async fn fetch_domain_withdrawals_propagates_api_error() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn import_imports_domains_and_staked_domains_into_assets() {
     let mut server = Server::new_async().await;
     let _domains_mock = server
@@ -421,6 +435,7 @@ async fn import_imports_domains_and_staked_domains_into_assets() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn import_upserts_existing_asset() {
     let mut server = Server::new_async().await;
     let _domains_mock = server
@@ -461,6 +476,7 @@ async fn import_upserts_existing_asset() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn import_skips_malformed_domain_rows() {
     let mut server = Server::new_async().await;
     let _domains_mock = server
@@ -491,6 +507,7 @@ async fn import_skips_malformed_domain_rows() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn import_propagates_domains_api_error() {
     let mut server = Server::new_async().await;
     let _domains_mock = server
@@ -508,6 +525,7 @@ async fn import_propagates_domains_api_error() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn import_propagates_staked_api_error() {
     let mut server = Server::new_async().await;
     let _domains_mock = server
@@ -535,6 +553,7 @@ async fn import_propagates_staked_api_error() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn connect_namebase_success_stores_cookie_and_returns_account() {
     let mut server = Server::new_async().await;
     let _mock = server
@@ -582,6 +601,7 @@ async fn connect_namebase_success_stores_cookie_and_returns_account() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn connect_namebase_rejects_invalid_session() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -609,6 +629,7 @@ async fn connect_namebase_rejects_invalid_session() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn disconnect_writes_audit_log_entry() {
     let conn = seeded_conn("http://localhost:1");
     let app = app_with(conn);
@@ -634,6 +655,7 @@ async fn disconnect_writes_audit_log_entry() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn transfer_domain_sets_asset_status_to_transfer_requested() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -671,6 +693,7 @@ async fn transfer_domain_sets_asset_status_to_transfer_requested() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_hns_stores_address_and_amount_in_audit_log() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -707,6 +730,7 @@ async fn withdraw_hns_stores_address_and_amount_in_audit_log() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn namebase_client_trims_whitespace_from_base_url() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -735,6 +759,7 @@ async fn namebase_client_trims_whitespace_from_base_url() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn transfer_domain_falls_back_to_mainnet_when_no_profile() {
     let conn = conn_without_profile();
     db::queries::set_setting(&conn, "namebase_base_url", "http://localhost:1").unwrap();
@@ -755,6 +780,7 @@ async fn transfer_domain_falls_back_to_mainnet_when_no_profile() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_hns_falls_back_to_mainnet_when_no_profile() {
     let conn = conn_without_profile();
     db::queries::set_setting(&conn, "namebase_base_url", "http://localhost:1").unwrap();
@@ -782,6 +808,7 @@ async fn withdraw_hns_falls_back_to_mainnet_when_no_profile() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn namebase_client_with_cookie_uses_base_url_from_settings() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -814,6 +841,7 @@ async fn namebase_client_with_cookie_uses_base_url_from_settings() {
 /// command layer must write the updated cookie string back to settings so the
 /// next command (and the next app launch) uses it instead of the stale paste.
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn fetch_domains_persists_rotated_cookie_to_settings() {
     let mut server = Server::new_async().await;
     let m = server
@@ -861,6 +889,7 @@ async fn fetch_domains_persists_rotated_cookie_to_settings() {
 /// A response that doesn't rotate the cookie must not rewrite settings (no-op
 /// write when nothing changed).
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn fetch_domains_does_not_touch_settings_when_cookie_unchanged() {
     let mut server = Server::new_async().await;
     let m = server
@@ -905,6 +934,7 @@ async fn fetch_domains_does_not_touch_settings_when_cookie_unchanged() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn namebase_client_with_cookie_falls_back_to_default_host() {
     let conn = conn_without_cookie();
     let app = app_with(conn);
@@ -916,7 +946,6 @@ async fn namebase_client_with_cookie_falls_back_to_default_host() {
     let _ = result;
 }
 
-
 // =========================================================================
 // active_profile_network: active profile ID set but profile row missing (line 401)
 // =========================================================================
@@ -924,6 +953,7 @@ async fn namebase_client_with_cookie_falls_back_to_default_host() {
 /// When the active profile ID references a non-existent row,
 /// `active_profile_network` falls back to `Network::Main`.
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn transfer_domain_falls_back_to_mainnet_for_missing_profile_row() {
     install_test_dek();
     let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -934,12 +964,8 @@ async fn transfer_domain_falls_back_to_mainnet_for_missing_profile_row() {
     db::queries::set_setting(&conn, "namebase_base_url", "http://localhost:1").unwrap();
     let app = app_with(conn);
 
-    let res = namebase_transfer_domain(
-        app.state::<AppState>(),
-        "testdomain".into(),
-        good_addr(),
-    )
-    .await;
+    let res =
+        namebase_transfer_domain(app.state::<AppState>(), "testdomain".into(), good_addr()).await;
     if let Err(AppError::InvalidInput(m)) = res {
         assert!(
             !m.contains("HNS address"),
@@ -953,6 +979,7 @@ async fn transfer_domain_falls_back_to_mainnet_for_missing_profile_row() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_hns_rejects_zero_amount() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -973,6 +1000,7 @@ async fn withdraw_hns_rejects_zero_amount() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_hns_rejects_negative_amount() {
     let conn = seeded_conn("http://localhost:1");
     let app = app_with(conn);
@@ -985,6 +1013,7 @@ async fn withdraw_hns_rejects_negative_amount() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_hns_rejects_non_numeric_amount() {
     let conn = seeded_conn("http://localhost:1");
     let app = app_with(conn);
@@ -997,22 +1026,20 @@ async fn withdraw_hns_rejects_non_numeric_amount() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn withdraw_hns_rejects_invalid_address() {
     let conn = seeded_conn("http://localhost:1");
     let app = app_with(conn);
 
-    let err = namebase_withdraw_hns(
-        app.state::<AppState>(),
-        "INVALID_ADDR".into(),
-        "1.0".into(),
-    )
-    .await
-    .expect_err("invalid address should be rejected");
+    let err = namebase_withdraw_hns(app.state::<AppState>(), "INVALID_ADDR".into(), "1.0".into())
+        .await
+        .expect_err("invalid address should be rejected");
     let msg = format!("{err}");
     assert!(msg.contains("HNS address"), "msg: {msg}");
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn transfer_domain_rejects_invalid_address() {
     let conn = seeded_conn("http://localhost:1");
     let app = app_with(conn);
@@ -1033,6 +1060,7 @@ async fn transfer_domain_rejects_invalid_address() {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn import_imports_staked_only_domains_not_in_transferable_list() {
     let mut server = Server::new_async().await;
     let _domains_mock = server
@@ -1072,6 +1100,7 @@ async fn import_imports_staked_only_domains_not_in_transferable_list() {
 /// (e.g. the field is missing or of a different type), the `if let Some(arr)`
 /// guard skips the first pass — the second pass still runs for staked names.
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn import_handles_missing_domains_array() {
     let mut server = Server::new_async().await;
     let _domains_mock = server
@@ -1099,6 +1128,7 @@ async fn import_handles_missing_domains_array() {
 /// A BEFORE INSERT trigger that aborts for a specific tld forces the import
 /// INSERT to fail → exercises the `Err(e) => errors.push(...)` path.
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn import_reports_insert_errors() {
     let mut server = Server::new_async().await;
     let _domains_mock = server
@@ -1135,4 +1165,75 @@ async fn import_reports_insert_errors() {
         errors[0].as_str().unwrap().contains("blocked_tld"),
         "error should reference the blocked tld: {errors:?}"
     );
+}
+
+/// `read_cookie` migrates a legacy plaintext `namebase_cookie` into the
+/// encrypted `namebase_cookie_v1` on read. When the OS keyring is unavailable,
+/// `cookie_vault::encrypt_cookie` fails and the migration must degrade
+/// gracefully: return the legacy plaintext unchanged and leave BOTH the legacy
+/// row and `namebase_cookie_v1` untouched, so a later read (with the keyring
+/// back) can retry the migration. Covers the `Err(_e) => return Ok(legacy)`
+/// fallback arm in `commands::namebase::read_cookie`.
+#[test]
+#[serial(cookie_vault)]
+fn read_cookie_returns_legacy_plaintext_when_keyring_unavailable() {
+    // Force encrypt_cookie's keyring resolution to fail (also clears any fixed
+    // test DEK, which get_or_create_dek would otherwise consult first).
+    crate::noncustodial::cookie_vault::set_keyring_unavailable_for_test(true);
+
+    // A DB with an active profile and a legacy plaintext cookie, but NO v1 blob
+    // — the exact precondition that triggers the migration path. Built inline
+    // (not via seeded_conn) because seeded_conn reinstalls the working DEK.
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::insert_wallet_profile(
+        &conn, PROFILE, "NB", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, PROFILE).unwrap();
+    const LEGACY: &str = "legacy-plaintext-cookie-value";
+    db::queries::set_setting(&conn, "namebase_cookie", LEGACY).unwrap();
+    // namebase_cookie_v1 intentionally left unset (empty).
+
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+
+    let got = crate::commands::namebase::read_cookie(&state)
+        .expect("read_cookie must degrade gracefully, not error, when keyring is unavailable");
+    assert_eq!(
+        got, LEGACY,
+        "fallback arm must return the legacy plaintext unchanged"
+    );
+
+    // The migration must NOT have partially applied: legacy row still holds the
+    // plaintext and the v1 blob was never written.
+    {
+        let db = state.db.lock().unwrap();
+        let settings = db::queries::get_settings(&db).unwrap();
+        assert_eq!(
+            settings.get("namebase_cookie").map(|s| s.as_str()),
+            Some(LEGACY),
+            "legacy plaintext must be preserved for a later retry (not blanked)"
+        );
+        assert!(
+            settings
+                .get("namebase_cookie_v1")
+                .map(|s| s.is_empty())
+                .unwrap_or(true),
+            "no encrypted v1 blob should be written when encryption failed"
+        );
+        // No migration audit row should have been recorded.
+        let migrated: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'namebase_cookie_migrated'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(migrated, 0, "failed migration must not write an audit row");
+    }
+
+    // Restore default keyring state for subsequent tests.
+    crate::noncustodial::cookie_vault::set_keyring_unavailable_for_test(false);
 }
