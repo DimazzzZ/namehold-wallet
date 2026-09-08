@@ -715,10 +715,18 @@ mod tests {
         assert_eq!(all.len(), 3, "empty name filter should not restrict");
 
         let all2 = list_history(&conn, None, Some("  "), None).unwrap();
-        assert_eq!(all2.len(), 3, "whitespace family filter should not restrict");
+        assert_eq!(
+            all2.len(),
+            3,
+            "whitespace family filter should not restrict"
+        );
 
         let all3 = list_history(&conn, None, None, Some("  ")).unwrap();
-        assert_eq!(all3.len(), 3, "whitespace search filter should not restrict");
+        assert_eq!(
+            all3.len(),
+            3,
+            "whitespace search filter should not restrict"
+        );
 
         // All three empty at once.
         let all4 = list_history(&conn, Some(""), Some("  "), Some("")).unwrap();
@@ -856,7 +864,10 @@ mod tests {
         )
         .unwrap();
         let err = backfill_subdomain_names(&conn);
-        assert!(err.is_err(), "expected blob `name` to fail String conversion");
+        assert!(
+            err.is_err(),
+            "expected blob `name` to fail String conversion"
+        );
     }
 
     // --- backfill: already-correct-name branch --------------------------
@@ -1246,7 +1257,10 @@ mod tests {
         )
         .unwrap();
         let err = backfill_subdomain_names(&conn);
-        assert!(err.is_err(), "expected blob data_json to fail String conversion");
+        assert!(
+            err.is_err(),
+            "expected blob data_json to fail String conversion"
+        );
     }
 
     /// Drive the `summary` closure's remaining aggregate getters. `COUNT(*)`

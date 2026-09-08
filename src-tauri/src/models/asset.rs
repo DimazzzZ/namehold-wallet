@@ -134,8 +134,14 @@ mod tests {
     fn from_str_unknown_defaults_to_not_started() {
         let d = std::mem::discriminant(&MigrationStatus::NotStarted);
         assert_eq!(std::mem::discriminant(&MigrationStatus::from_str("")), d);
-        assert_eq!(std::mem::discriminant(&MigrationStatus::from_str("unknown")), d);
-        assert_eq!(std::mem::discriminant(&MigrationStatus::from_str("garbage")), d);
+        assert_eq!(
+            std::mem::discriminant(&MigrationStatus::from_str("unknown")),
+            d
+        );
+        assert_eq!(
+            std::mem::discriminant(&MigrationStatus::from_str("garbage")),
+            d
+        );
     }
 
     #[test]
@@ -294,7 +300,11 @@ mod tests {
         .unwrap();
 
         let asset = conn
-            .query_row("SELECT * FROM assets WHERE tld = 'example'", [], Asset::from_row)
+            .query_row(
+                "SELECT * FROM assets WHERE tld = 'example'",
+                [],
+                Asset::from_row,
+            )
             .unwrap();
 
         assert!(asset.id >= 1);
@@ -313,7 +323,10 @@ mod tests {
         assert_eq!(asset.name_state.as_deref(), Some("CLOSED"));
         assert_eq!(asset.expires_at_height, Some(500_000));
         assert_eq!(asset.days_until_expire, Some(42.5));
-        assert_eq!(asset.last_synced_at.as_deref(), Some("2024-02-01T00:00:00Z"));
+        assert_eq!(
+            asset.last_synced_at.as_deref(),
+            Some("2024-02-01T00:00:00Z")
+        );
         assert!(!asset.created_at.is_empty());
         assert!(!asset.updated_at.is_empty());
     }
@@ -329,7 +342,11 @@ mod tests {
         .unwrap();
 
         let asset = conn
-            .query_row("SELECT * FROM assets WHERE tld = 'staked'", [], Asset::from_row)
+            .query_row(
+                "SELECT * FROM assets WHERE tld = 'staked'",
+                [],
+                Asset::from_row,
+            )
             .unwrap();
 
         assert!(asset.is_staked);
@@ -361,7 +378,11 @@ mod tests {
         .unwrap();
 
         let asset = conn
-            .query_row("SELECT * FROM assets WHERE tld = 'bad-tags'", [], Asset::from_row)
+            .query_row(
+                "SELECT * FROM assets WHERE tld = 'bad-tags'",
+                [],
+                Asset::from_row,
+            )
             .unwrap();
         assert!(asset.tags.is_empty());
         assert_eq!(
@@ -458,7 +479,10 @@ mod tests {
             [],
             Asset::from_row,
         );
-        assert!(result.is_err(), "expected error from type mismatch on is_staked");
+        assert!(
+            result.is_err(),
+            "expected error from type mismatch on is_staked"
+        );
     }
 
     /// Error path: `from_row` fails at a late column (`created_at`) when it's

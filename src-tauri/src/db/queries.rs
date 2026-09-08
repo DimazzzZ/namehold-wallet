@@ -3951,10 +3951,9 @@ mod noncustodial_query_tests {
         insert_tx_draft_reserving_coins(&conn, "dA", "p1", "send_hns", "", "[]", "{}", &inputs)
             .unwrap();
         // Draft B tries to claim the same coin — must fail and roll back.
-        let err = insert_tx_draft_reserving_coins(
-            &conn, "dB", "p1", "send_hns", "", "[]", "{}", &inputs,
-        )
-        .unwrap_err();
+        let err =
+            insert_tx_draft_reserving_coins(&conn, "dB", "p1", "send_hns", "", "[]", "{}", &inputs)
+                .unwrap_err();
         match err {
             AppError::InvalidInput(msg) => {
                 assert!(msg.contains("reserved by another"), "got: {msg}");
@@ -4003,8 +4002,7 @@ mod noncustodial_query_tests {
         seed_profile(&conn, "p1");
         // A name_control coin with a covenant that has an empty items array —
         // covenant_name_hash_hex returns None, so the row is skipped.
-        let cov = serde_json::json!({ "type": 6, "action": "REGISTER", "items": [] })
-            .to_string();
+        let cov = serde_json::json!({ "type": 6, "action": "REGISTER", "items": [] }).to_string();
         conn.execute(
             "INSERT INTO tracked_utxos
                 (txid, vout, wallet_profile_id, address, script_pubkey_hex,
@@ -4025,7 +4023,7 @@ mod noncustodial_query_tests {
         let conn = db();
         seed_profile(&conn, "p1");
         let raw = "6e616d65686f6c64"; // "namehold"
-        // REVEAL first (items[2] is a nonce, not read as rawName → None).
+                                      // REVEAL first (items[2] is a nonce, not read as rawName → None).
         let reveal = serde_json::json!({
             "type": 4, "action": "REVEAL", "items": ["hashA", "64000000", "nonce"],
         })
@@ -4036,9 +4034,7 @@ mod noncustodial_query_tests {
         })
         .to_string();
         // Insert order controls scan order: t1 (REVEAL) < t2 (BID) by txid.
-        for (txid, cov_type, cov) in
-            [("t1", 4i64, &reveal), ("t2", 3i64, &bid)]
-        {
+        for (txid, cov_type, cov) in [("t1", 4i64, &reveal), ("t2", 3i64, &bid)] {
             conn.execute(
                 "INSERT INTO tracked_utxos
                     (txid, vout, wallet_profile_id, address, script_pubkey_hex,
@@ -4083,8 +4079,7 @@ mod noncustodial_query_tests {
             params![cov],
         )
         .unwrap();
-        let got =
-            find_unspent_covenant_utxo(&conn, "p1", "rs1qa", 3, "want", "wanthash").unwrap();
+        let got = find_unspent_covenant_utxo(&conn, "p1", "rs1qa", 3, "want", "wanthash").unwrap();
         assert!(got.is_none(), "other-name coin must be ignored: {got:?}");
     }
 
@@ -4112,9 +4107,11 @@ mod noncustodial_query_tests {
             [],
         )
         .unwrap();
-        let got =
-            find_unspent_covenant_utxo(&conn, "p1", "rs1qa", 3, "want", "wanthash").unwrap();
-        assert!(got.is_some(), "lone unknown-covenant coin should be returned");
+        let got = find_unspent_covenant_utxo(&conn, "p1", "rs1qa", 3, "want", "wanthash").unwrap();
+        assert!(
+            got.is_some(),
+            "lone unknown-covenant coin should be returned"
+        );
         assert_eq!(got.unwrap().txid, "t1");
     }
 
@@ -4308,7 +4305,10 @@ mod noncustodial_query_tests {
         let by_name = |n: &str| names.iter().find(|x| x["name"] == n).unwrap().clone();
         assert_eq!(by_name("explorer_owned")["owner_address"], "rs1qexplorer");
         // node_owned has NULL owner_address
-        assert_eq!(by_name("node_owned")["owner_address"], serde_json::Value::Null);
+        assert_eq!(
+            by_name("node_owned")["owner_address"],
+            serde_json::Value::Null
+        );
     }
 
     /// Coverage: read_owned_names_explorer — registered/expired extraction from raw_json
@@ -4443,9 +4443,24 @@ mod noncustodial_query_tests {
     #[test]
     fn get_recent_audit_log_after_writes() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('a','not_started')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('a','not_started')",
+            [],
+        )
+        .unwrap();
         let id1 = conn.last_insert_rowid();
-        update_asset(&conn, id1, Some("finalized_owned"), None, None, None, None, None, None).unwrap();
+        update_asset(
+            &conn,
+            id1,
+            Some("finalized_owned"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         bulk_update_status(&conn, &[id1], "waiting_finalize").unwrap();
 
         let log = get_recent_audit_log(&conn, 10).unwrap();
@@ -4629,7 +4644,9 @@ mod noncustodial_query_tests {
         )
         .unwrap();
 
-        let row = get_tracked_name_state(&conn, "p1", "tracked").unwrap().unwrap();
+        let row = get_tracked_name_state(&conn, "p1", "tracked")
+            .unwrap()
+            .unwrap();
         assert_eq!(row.name, "tracked");
         assert_eq!(row.state.as_deref(), Some("CLOSED"));
         assert_eq!(row.renewal_height, Some(200));
@@ -4640,7 +4657,9 @@ mod noncustodial_query_tests {
     fn get_tracked_name_state_returns_none() {
         let conn = db();
         seed_profile(&conn, "p1");
-        assert!(get_tracked_name_state(&conn, "p1", "nonexistent").unwrap().is_none());
+        assert!(get_tracked_name_state(&conn, "p1", "nonexistent")
+            .unwrap()
+            .is_none());
     }
 
     /// Coverage: delete_tx_draft releases coins and refuses broadcasted
@@ -4667,11 +4686,13 @@ mod noncustodial_query_tests {
         assert!(get_tx_draft(&conn, "d1").unwrap().is_none());
 
         // Coin reservation released
-        let reserved: Option<String> = conn.query_row(
-            "SELECT reserved_by_draft_id FROM tracked_utxos WHERE txid = 'coin1'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let reserved: Option<String> = conn
+            .query_row(
+                "SELECT reserved_by_draft_id FROM tracked_utxos WHERE txid = 'coin1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(reserved, None);
 
         // Cannot delete a broadcasted draft
@@ -4688,9 +4709,21 @@ mod noncustodial_query_tests {
     #[test]
     fn list_assets_sort_columns_and_desc() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('zzz','not_started')", []).unwrap();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('aaa','finalized_owned')", []).unwrap();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('mmm','waiting_finalize')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('zzz','not_started')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('aaa','finalized_owned')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('mmm','waiting_finalize')",
+            [],
+        )
+        .unwrap();
 
         // Sort by tld ascending
         let by_tld = list_assets(&conn, None, None, None, Some("tld"), Some("asc")).unwrap();
@@ -4714,7 +4747,15 @@ mod noncustodial_query_tests {
         conn.execute("INSERT INTO assets (tld, status, is_staked, notes) VALUES ('match','finalized_owned',1,'target note')", []).unwrap();
         conn.execute("INSERT INTO assets (tld, status, is_staked, notes) VALUES ('nomatch','not_started',0,'target note')", []).unwrap();
 
-        let results = list_assets(&conn, Some("finalized_owned"), Some(true), Some("target"), None, None).unwrap();
+        let results = list_assets(
+            &conn,
+            Some("finalized_owned"),
+            Some(true),
+            Some("target"),
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].tld, "match");
     }
@@ -4723,7 +4764,11 @@ mod noncustodial_query_tests {
     #[test]
     fn update_asset_all_fields_some() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('test','not_started')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('test','not_started')",
+            [],
+        )
+        .unwrap();
         let id = conn.last_insert_rowid();
 
         update_asset(
@@ -4755,11 +4800,13 @@ mod noncustodial_query_tests {
         // All None → early return Ok(())
         update_batch(&conn, batch_id, None, None, None).unwrap();
         // Verify name unchanged
-        let name: String = conn.query_row(
-            "SELECT name FROM batches WHERE id = ?1",
-            params![batch_id],
-            |r| r.get(0),
-        ).unwrap();
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM batches WHERE id = ?1",
+                params![batch_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(name, "batch1");
     }
 
@@ -4769,13 +4816,22 @@ mod noncustodial_query_tests {
         let conn = db();
         let batch_id = create_batch(&conn, "batch1", Some("desc1"), &[]).unwrap();
 
-        update_batch(&conn, batch_id, Some("new_name"), Some("new_desc"), Some("in_progress")).unwrap();
+        update_batch(
+            &conn,
+            batch_id,
+            Some("new_name"),
+            Some("new_desc"),
+            Some("in_progress"),
+        )
+        .unwrap();
 
-        let (name, desc, status): (String, Option<String>, Option<String>) = conn.query_row(
-            "SELECT name, description, status FROM batches WHERE id = ?1",
-            params![batch_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        ).unwrap();
+        let (name, desc, status): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT name, description, status FROM batches WHERE id = ?1",
+                params![batch_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
         assert_eq!(name, "new_name");
         assert_eq!(desc.as_deref(), Some("new_desc"));
         assert_eq!(status.as_deref(), Some("in_progress"));
@@ -4785,7 +4841,11 @@ mod noncustodial_query_tests {
     #[test]
     fn bulk_update_status_audit_log() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld, status) VALUES ('a','not_started')", []).unwrap();
+        conn.execute(
+            "INSERT INTO assets (tld, status) VALUES ('a','not_started')",
+            [],
+        )
+        .unwrap();
         let id1 = conn.last_insert_rowid();
 
         bulk_update_status(&conn, &[id1], "waiting_finalize").unwrap();
@@ -4798,7 +4858,8 @@ mod noncustodial_query_tests {
     #[test]
     fn bulk_update_tags_audit_log() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld) VALUES ('a')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('a')", [])
+            .unwrap();
         let id1 = conn.last_insert_rowid();
 
         bulk_update_tags(&conn, &[id1], "newtag").unwrap();
@@ -4811,11 +4872,14 @@ mod noncustodial_query_tests {
     #[test]
     fn get_batch_with_assets_order() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld) VALUES ('aaa')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('aaa')", [])
+            .unwrap();
         let id1 = conn.last_insert_rowid();
-        conn.execute("INSERT INTO assets (tld) VALUES ('bbb')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('bbb')", [])
+            .unwrap();
         let id2 = conn.last_insert_rowid();
-        conn.execute("INSERT INTO assets (tld) VALUES ('ccc')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('ccc')", [])
+            .unwrap();
         let id3 = conn.last_insert_rowid();
 
         let batch_id = create_batch(&conn, "ordered", None, &[id3, id1, id2]).unwrap();
@@ -4832,11 +4896,14 @@ mod noncustodial_query_tests {
     #[test]
     fn add_to_batch_sort_order() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld) VALUES ('a')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('a')", [])
+            .unwrap();
         let id1 = conn.last_insert_rowid();
-        conn.execute("INSERT INTO assets (tld) VALUES ('b')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('b')", [])
+            .unwrap();
         let id2 = conn.last_insert_rowid();
-        conn.execute("INSERT INTO assets (tld) VALUES ('c')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('c')", [])
+            .unwrap();
         let id3 = conn.last_insert_rowid();
 
         let batch_id = create_batch(&conn, "batch", None, &[id1]).unwrap();
@@ -4853,9 +4920,11 @@ mod noncustodial_query_tests {
     #[test]
     fn remove_from_batch_specific() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld) VALUES ('a')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('a')", [])
+            .unwrap();
         let id1 = conn.last_insert_rowid();
-        conn.execute("INSERT INTO assets (tld) VALUES ('b')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('b')", [])
+            .unwrap();
         let id2 = conn.last_insert_rowid();
 
         let batch_id = create_batch(&conn, "batch", None, &[id1, id2]).unwrap();
@@ -4873,8 +4942,24 @@ mod noncustodial_query_tests {
         let conn = db();
         seed_profile(&conn, "p1");
 
-        insert_bid_commitment(&conn, "p1", "unrevealed", "h1", "rs1q", 0, 0, 100, 200, "n1", "b1").unwrap();
-        insert_bid_commitment(&conn, "p1", "revealed", "h2", "rs1q", 0, 0, 100, 200, "n2", "b2").unwrap();
+        insert_bid_commitment(
+            &conn,
+            "p1",
+            "unrevealed",
+            "h1",
+            "rs1q",
+            0,
+            0,
+            100,
+            200,
+            "n1",
+            "b1",
+        )
+        .unwrap();
+        insert_bid_commitment(
+            &conn, "p1", "revealed", "h2", "rs1q", 0, 0, 100, 200, "n2", "b2",
+        )
+        .unwrap();
 
         set_reveal_end_height(&conn, "p1", "b1", 500).unwrap();
         set_reveal_end_height(&conn, "p1", "b2", 600).unwrap();
@@ -4893,7 +4978,10 @@ mod noncustodial_query_tests {
         let conn = db();
         seed_profile(&conn, "p1");
 
-        insert_bid_commitment(&conn, "p1", "name1", "hash1", "rs1q", 0, 0, 100, 200, "nonce", "blind1").unwrap();
+        insert_bid_commitment(
+            &conn, "p1", "name1", "hash1", "rs1q", 0, 0, 100, 200, "nonce", "blind1",
+        )
+        .unwrap();
         set_bid_txid(&conn, "p1", "blind1", "bid_txid_1").unwrap();
         set_bid_reveal_txid(&conn, "p1", "name1", "reveal_txid_1").unwrap();
 
@@ -4910,15 +4998,42 @@ mod noncustodial_query_tests {
         seed_profile(&conn, "p1");
 
         // Insert a broadcasted bid draft
-        insert_tx_draft(&conn, "d1", "p1", "bid", "", "{}", r#"{"action":"bid","name":"bidname"}"#).unwrap();
+        insert_tx_draft(
+            &conn,
+            "d1",
+            "p1",
+            "bid",
+            "",
+            "{}",
+            r#"{"action":"bid","name":"bidname"}"#,
+        )
+        .unwrap();
         update_tx_draft_status(&conn, "d1", "broadcasted", None, Some("txid1")).unwrap();
 
         // Insert a signed open draft
-        insert_tx_draft(&conn, "d2", "p1", "open", "", "{}", r#"{"action":"open","name":"openname"}"#).unwrap();
+        insert_tx_draft(
+            &conn,
+            "d2",
+            "p1",
+            "open",
+            "",
+            "{}",
+            r#"{"action":"open","name":"openname"}"#,
+        )
+        .unwrap();
         update_tx_draft_status(&conn, "d2", "signed", None, None).unwrap();
 
         // Insert a draft-status (not in-flight) — should be excluded
-        insert_tx_draft(&conn, "d3", "p1", "bid", "", "{}", r#"{"action":"bid","name":"draftonly"}"#).unwrap();
+        insert_tx_draft(
+            &conn,
+            "d3",
+            "p1",
+            "bid",
+            "",
+            "{}",
+            r#"{"action":"bid","name":"draftonly"}"#,
+        )
+        .unwrap();
 
         let positions = auction_position_names(&conn, "p1").unwrap();
         assert!(positions.contains(&"bidname".to_string()));
@@ -4931,8 +5046,10 @@ mod noncustodial_query_tests {
     fn count_repair_candidates_matches_list() {
         let conn = db();
         seed_profile(&conn, "p1");
-        conn.execute("INSERT INTO assets (tld) VALUES ('a')", []).unwrap();
-        conn.execute("INSERT INTO assets (tld) VALUES ('b')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('a')", [])
+            .unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('b')", [])
+            .unwrap();
 
         let count = count_repair_candidates(&conn, "p1", 12).unwrap();
         let list = list_repair_candidates(&conn, "p1", 100, 12).unwrap();
@@ -4956,16 +5073,23 @@ mod noncustodial_query_tests {
         .unwrap();
 
         let inputs = vec![("coin1".to_string(), 0u32), ("coin2".to_string(), 1u32)];
-        insert_tx_draft_reserving_coins(&conn, "d1", "p1", "send_hns", "", "[]", "{}", &inputs).unwrap();
+        insert_tx_draft_reserving_coins(&conn, "d1", "p1", "send_hns", "", "[]", "{}", &inputs)
+            .unwrap();
 
-        let r1: Option<String> = conn.query_row(
-            "SELECT reserved_by_draft_id FROM tracked_utxos WHERE txid = 'coin1'",
-            [], |r| r.get(0),
-        ).unwrap();
-        let r2: Option<String> = conn.query_row(
-            "SELECT reserved_by_draft_id FROM tracked_utxos WHERE txid = 'coin2'",
-            [], |r| r.get(0),
-        ).unwrap();
+        let r1: Option<String> = conn
+            .query_row(
+                "SELECT reserved_by_draft_id FROM tracked_utxos WHERE txid = 'coin1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let r2: Option<String> = conn
+            .query_row(
+                "SELECT reserved_by_draft_id FROM tracked_utxos WHERE txid = 'coin2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(r1.as_deref(), Some("d1"));
         assert_eq!(r2.as_deref(), Some("d1"));
     }
@@ -4974,9 +5098,11 @@ mod noncustodial_query_tests {
     #[test]
     fn create_batch_with_assets() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld) VALUES ('a')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('a')", [])
+            .unwrap();
         let id1 = conn.last_insert_rowid();
-        conn.execute("INSERT INTO assets (tld) VALUES ('b')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('b')", [])
+            .unwrap();
         let id2 = conn.last_insert_rowid();
 
         let batch_id = create_batch(&conn, "test_batch", Some("desc"), &[id1, id2]).unwrap();
@@ -5011,8 +5137,10 @@ mod noncustodial_query_tests {
     #[test]
     fn list_assets_empty_search() {
         let conn = db();
-        conn.execute("INSERT INTO assets (tld) VALUES ('a')", []).unwrap();
-        conn.execute("INSERT INTO assets (tld) VALUES ('b')", []).unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('a')", [])
+            .unwrap();
+        conn.execute("INSERT INTO assets (tld) VALUES ('b')", [])
+            .unwrap();
 
         let results = list_assets(&conn, None, None, Some(""), None, None).unwrap();
         assert_eq!(results.len(), 2);
@@ -5024,7 +5152,10 @@ mod noncustodial_query_tests {
         let conn = db();
         seed_profile(&conn, "p1");
 
-        insert_bid_commitment(&conn, "p1", "name1", "hash1", "rs1q", 0, 0, 100, 200, "nonce1", "blind1").unwrap();
+        insert_bid_commitment(
+            &conn, "p1", "name1", "hash1", "rs1q", 0, 0, 100, 200, "nonce1", "blind1",
+        )
+        .unwrap();
         // Manually set created_at to an older time so the second insert is newer
         conn.execute(
             "UPDATE bid_commitments SET created_at = '2020-01-01 00:00:00' WHERE blind_hex = 'blind1'",
@@ -5032,7 +5163,10 @@ mod noncustodial_query_tests {
         )
         .unwrap();
         // Second commitment (newer created_at)
-        insert_bid_commitment(&conn, "p1", "name1", "hash1", "rs1q", 0, 0, 200, 400, "nonce2", "blind2").unwrap();
+        insert_bid_commitment(
+            &conn, "p1", "name1", "hash1", "rs1q", 0, 0, 200, 400, "nonce2", "blind2",
+        )
+        .unwrap();
 
         let bid = get_bid_commitment(&conn, "p1", "name1").unwrap().unwrap();
         // Most recent (by created_at DESC) is blind2
@@ -5045,7 +5179,9 @@ mod noncustodial_query_tests {
     fn get_bid_commitment_none_for_missing() {
         let conn = db();
         seed_profile(&conn, "p1");
-        assert!(get_bid_commitment(&conn, "p1", "nonexistent").unwrap().is_none());
+        assert!(get_bid_commitment(&conn, "p1", "nonexistent")
+            .unwrap()
+            .is_none());
     }
 
     /// Coverage: has_pending_bid_draft_for_name — the `||` short-circuit means
@@ -5162,7 +5298,11 @@ mod noncustodial_query_tests {
         insert_tx_draft(&conn, "d2", "p1", "bid", "", "{}", r#"{"action":"bid"}"#).unwrap();
 
         let awaiting = list_drafts_awaiting_confirmation(&conn, "p1", 1000, 10).unwrap();
-        assert_eq!(awaiting.len(), 1, "only broadcasted draft should be included");
+        assert_eq!(
+            awaiting.len(),
+            1,
+            "only broadcasted draft should be included"
+        );
         assert_eq!(awaiting[0].id, "d1");
     }
 
@@ -5225,11 +5365,31 @@ mod noncustodial_query_tests {
         // Insert a watch-only profile with a passphrase. The `kind` column
         // has a CHECK constraint restricting values to a known set — use the
         // real `watch_only_xpub` kind, which is what the app writes.
-        insert_wallet_profile(&conn, "watch_p1", "Watch Only", "watch_only_xpub", "mainnet", "xpubWATCH", 0, true).unwrap();
+        insert_wallet_profile(
+            &conn,
+            "watch_p1",
+            "Watch Only",
+            "watch_only_xpub",
+            "mainnet",
+            "xpubWATCH",
+            0,
+            true,
+        )
+        .unwrap();
         insert_wallet_secret(&conn, "watch_p1", &[0xaa, 0xbb], "argon2id", "fp456").unwrap();
 
         // Insert a non-watch profile without passphrase
-        insert_wallet_profile(&conn, "hot_p1", "Hot Wallet", "mnemonic_hot", "mainnet", "xpubHOT", 0, false).unwrap();
+        insert_wallet_profile(
+            &conn,
+            "hot_p1",
+            "Hot Wallet",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubHOT",
+            0,
+            false,
+        )
+        .unwrap();
 
         let profiles = list_wallet_profiles(&conn).unwrap();
         let watch_p = profiles.iter().find(|p| p.id == "watch_p1").unwrap();
