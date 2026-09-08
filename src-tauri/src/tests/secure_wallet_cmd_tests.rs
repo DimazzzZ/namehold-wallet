@@ -37,6 +37,23 @@ fn test_xpub() -> crate::noncustodial::hd::ExtendedPubKey {
     crate::noncustodial::hd::ExtendedPubKey::from_priv(&master)
 }
 
+/// Insert an unlocked [`SignerSession`] into `state.signer` for the given
+/// profile id. Lets tests exercise the "signer is unlocked" branches of
+/// `get_signer_session`, `set_active_wallet_profile`, and
+/// `delete_wallet_profile` without going through the interactive unlock flow.
+fn seed_unlocked_signer(state: &AppState, wallet_profile_id: &str) {
+    let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+    let master = crate::noncustodial::hd::ExtendedPrivKey::from_seed(&seed).unwrap();
+    let session = crate::noncustodial::session::SignerSession::unlock(
+        wallet_profile_id.to_string(),
+        crate::noncustodial::network::Network::Main,
+        master,
+        60_000, // 60s TTL — comfortably unexpired during the test.
+    );
+    let mut slot = state.signer.lock().unwrap();
+    *slot = Some(session);
+}
+
 // --- random_id tests ---
 
 #[test]
@@ -641,4 +658,183 @@ fn test_provision_addresses_idempotent() {
         )
         .unwrap();
     assert_eq!(count, 6);
+}
+
+// --- unlocked-signer branches -------------------------------------------------
+//
+// These tests seed an unlocked [`SignerSession`] directly into `state.signer`
+// (bypassing the interactive secure-window unlock flow) so we can exercise the
+// three "signer is unlocked" branches in `secure_wallet.rs` that the rest of
+// the suite leaves cold:
+//   * `get_signer_session` L564-568 — the `Some(s) if s.is_unlocked()` arm that
+//     reports the unlocked profile id, `unlocked: true`, and the TTL deadline.
+//   * `set_active_wallet_profile` L603-604 — the `*slot = None` line when the
+//     caller switches away from the currently-unlocked profile.
+//   * `delete_wallet_profile` L637-638 — the `*slot = None` line when the
+//     currently-unlocked profile is the one being deleted.
+
+#[tokio::test]
+async fn get_signer_session_reports_unlocked_when_slot_populated() {
+    let state = create_full_test_state();
+    seed_unlocked_signer(&state, "wp_unlocked");
+    let app = mock_app_with(state);
+
+    let summary = secure_wallet::get_signer_session(app.state())
+        .await
+        .expect("get_signer_session should not error");
+
+    assert!(summary.unlocked, "unlocked branch not entered");
+    assert_eq!(
+        summary.wallet_profile_id.as_deref(),
+        Some("wp_unlocked"),
+        "summary must expose the unlocked profile id"
+    );
+    assert!(
+        summary.unlocked_until_epoch_ms > 0,
+        "unlocked_until_epoch_ms must be populated (was {})",
+        summary.unlocked_until_epoch_ms
+    );
+}
+
+#[tokio::test]
+async fn set_active_wallet_profile_clears_signer_when_switching_away_from_unlocked() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_index, account_xpub, watch_only, created_at)
+             VALUES ('wp1', 'First', 'watch_only_xpub', 'mainnet', 0, 'xpub1', 1, datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_index, account_xpub, watch_only, created_at)
+             VALUES ('wp2', 'Second', 'watch_only_xpub', 'mainnet', 0, 'xpub2', 1, datetime('now'))",
+            [],
+        )
+        .unwrap();
+    }
+    // Signer is unlocked for wp1. Switching to wp2 must clear the slot so stale
+    // key material can't be reused for a different wallet.
+    seed_unlocked_signer(&state, "wp1");
+    let app = mock_app_with(state);
+
+    let summary = secure_wallet::set_active_wallet_profile(app.state(), "wp2".into())
+        .await
+        .expect("set_active_wallet_profile should succeed");
+    assert_eq!(summary.id, "wp2");
+    assert!(summary.active);
+
+    // Slot must have been cleared by the `*slot = None` arm.
+    let state_ref = app.state::<AppState>();
+    let slot = state_ref.signer.lock().unwrap();
+    assert!(
+        slot.is_none(),
+        "signer slot must be cleared when switching away from the unlocked profile"
+    );
+}
+
+#[tokio::test]
+async fn set_active_wallet_profile_preserves_signer_when_reselecting_same_profile() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_index, account_xpub, watch_only, created_at)
+             VALUES ('wp1', 'First', 'watch_only_xpub', 'mainnet', 0, 'xpub1', 1, datetime('now'))",
+            [],
+        )
+        .unwrap();
+    }
+    // Signer is unlocked for wp1. Re-selecting wp1 must leave the slot intact
+    // — this asserts the `s.wallet_profile_id() != wallet_profile_id` guard
+    // fires as `false`, so the `*slot = None` line is skipped.
+    seed_unlocked_signer(&state, "wp1");
+    let app = mock_app_with(state);
+
+    secure_wallet::set_active_wallet_profile(app.state(), "wp1".into())
+        .await
+        .expect("set_active_wallet_profile should succeed");
+
+    let state_ref = app.state::<AppState>();
+    let slot = state_ref.signer.lock().unwrap();
+    assert!(
+        slot.is_some(),
+        "signer slot must be preserved when re-selecting the currently-unlocked profile"
+    );
+    assert_eq!(
+        slot.as_ref().unwrap().wallet_profile_id(),
+        "wp1",
+        "the preserved session must still belong to wp1"
+    );
+}
+
+#[tokio::test]
+async fn delete_wallet_profile_clears_signer_when_deleting_active_unlocked_profile() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_index, account_xpub, watch_only, created_at)
+             VALUES ('wp1', 'Active', 'watch_only_xpub', 'mainnet', 0, 'xpub1', 1, datetime('now'))",
+            [],
+        )
+        .unwrap();
+        crate::db::queries::set_active_profile(&conn, "wp1").unwrap();
+    }
+    seed_unlocked_signer(&state, "wp1");
+    let app = mock_app_with(state);
+
+    secure_wallet::delete_wallet_profile(app.state(), "wp1".into())
+        .await
+        .expect("delete_wallet_profile should succeed");
+
+    // The `*slot = None` arm must have fired: signer slot is now empty.
+    let state_ref = app.state::<AppState>();
+    let slot = state_ref.signer.lock().unwrap();
+    assert!(
+        slot.is_none(),
+        "signer slot must be cleared when deleting the currently-unlocked profile"
+    );
+}
+
+#[tokio::test]
+async fn delete_wallet_profile_preserves_signer_when_deleting_a_different_profile() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_index, account_xpub, watch_only, created_at)
+             VALUES ('wp1', 'Unlocked', 'watch_only_xpub', 'mainnet', 0, 'xpub1', 1, datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_index, account_xpub, watch_only, created_at)
+             VALUES ('wp2', 'Other', 'watch_only_xpub', 'mainnet', 0, 'xpub2', 1, datetime('now'))",
+            [],
+        )
+        .unwrap();
+    }
+    // Signer is unlocked for wp1; deleting wp2 must leave the slot alone.
+    // This exercises the `s.wallet_profile_id() == wallet_profile_id` guard
+    // returning `false`, so the `*slot = None` line inside the `if` is skipped.
+    seed_unlocked_signer(&state, "wp1");
+    let app = mock_app_with(state);
+
+    secure_wallet::delete_wallet_profile(app.state(), "wp2".into())
+        .await
+        .expect("delete_wallet_profile should succeed");
+
+    let state_ref = app.state::<AppState>();
+    let slot = state_ref.signer.lock().unwrap();
+    assert!(
+        slot.is_some(),
+        "signer slot must be preserved when deleting an unrelated profile"
+    );
+    assert_eq!(
+        slot.as_ref().unwrap().wallet_profile_id(),
+        "wp1",
+        "the preserved session must still belong to wp1"
+    );
 }
