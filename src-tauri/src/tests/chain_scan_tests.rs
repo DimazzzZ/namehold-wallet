@@ -469,7 +469,17 @@ async fn scan_block_inserts_reveal_and_matches_to_existing_bid() {
     let name_hash = "11223344";
 
     // Pre-seed a BID row so the REVEAL can match it
-    seed_bid(&conn, "txbid1", 0, name_hash, Some("test"), 3_000_000, 90, None, None);
+    seed_bid(
+        &conn,
+        "txbid1",
+        0,
+        name_hash,
+        Some("test"),
+        3_000_000,
+        90,
+        None,
+        None,
+    );
 
     // Now scan a block containing a REVEAL for the same name_hash
     let mock = MockNodeRpc::new()
@@ -734,7 +744,9 @@ async fn scan_block_upsert_updates_name_on_conflict() {
                 }]
             }]
         }));
-    scan_block(&mock1, path.to_str().unwrap(), 10).await.unwrap();
+    scan_block(&mock1, path.to_str().unwrap(), 10)
+        .await
+        .unwrap();
 
     // Second insert: same (txid, vout) but now with a valid name
     let raw_name_hex = hex::encode("upserted");
@@ -753,7 +765,9 @@ async fn scan_block_upsert_updates_name_on_conflict() {
                 }]
             }]
         }));
-    scan_block(&mock2, path.to_str().unwrap(), 11).await.unwrap();
+    scan_block(&mock2, path.to_str().unwrap(), 11)
+        .await
+        .unwrap();
 
     // The row should still be 1 (upserted, not duplicated)
     let bids = read_indexed_bids(&conn, name_hash).unwrap();

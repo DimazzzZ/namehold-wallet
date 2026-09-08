@@ -10,8 +10,8 @@ use crate::commands::namebase_history::{
     import_namebase_history_from_file, import_namebase_history_live,
 };
 use crate::db;
-use crate::AppState;
 use crate::error::AppError;
+use crate::AppState;
 
 // ---------------------------------------------------------------------------
 // Live-import helpers (copied/adapted from namebase_cmd_tests.rs; the guidance
@@ -356,8 +356,7 @@ async fn live_import_rotates_cookie() {
             .cloned()
             .unwrap_or_default();
         assert!(!v1.is_empty(), "encrypted v1 blob should be present");
-        let decrypted =
-            crate::noncustodial::cookie_vault::decrypt_cookie(&v1).expect("decrypt");
+        let decrypted = crate::noncustodial::cookie_vault::decrypt_cookie(&v1).expect("decrypt");
         assert_eq!(String::from_utf8_lossy(&decrypted), "nb-sunset=NEW");
     }
     m.assert_async().await;
@@ -411,7 +410,10 @@ async fn live_import_without_cookie_errors() {
     // No mock registered — client build should fail before any HTTP call.
     let app = app_with(seeded_conn_no_cookie(&server.url()));
     let err = import_namebase_history_live(app.state()).await;
-    assert!(err.is_err(), "missing cookie should error from namebase_client");
+    assert!(
+        err.is_err(),
+        "missing cookie should error from namebase_client"
+    );
 }
 
 // =========================================================================
@@ -481,7 +483,10 @@ async fn import_from_file_missing_path_errors() {
     let err =
         import_namebase_history_from_file(app.state(), "/nonexistent/does-not-exist.csv".into())
             .await;
-    assert!(matches!(err, Err(AppError::Io(_))), "expected Io error, got {err:?}");
+    assert!(
+        matches!(err, Err(AppError::Io(_))),
+        "expected Io error, got {err:?}"
+    );
 }
 
 #[tokio::test]

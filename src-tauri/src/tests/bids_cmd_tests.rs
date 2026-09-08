@@ -633,8 +633,7 @@ async fn brute_force_errors_when_all_coins_missing_covenant_blind() {
     }
 
     let app = mock_app_with(state);
-    let result =
-        bids::brute_force_recover_bid(app.state(), Some(profile_id), name.into()).await;
+    let result = bids::brute_force_recover_bid(app.state(), Some(profile_id), name.into()).await;
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
     assert!(
@@ -679,7 +678,14 @@ async fn brute_force_skips_coin_with_missing_covenant_blind() {
     {
         let conn = state.db.lock().unwrap();
         // Coin A: missing blind → skipped (line 237)
-        seed_unspent_bid_coin(&conn, &profile_id, &"11".repeat(32), &addr, 2_000_000, &bad_cov);
+        seed_unspent_bid_coin(
+            &conn,
+            &profile_id,
+            &"11".repeat(32),
+            &addr,
+            2_000_000,
+            &bad_cov,
+        );
         // Coin B: valid → found
         seed_unspent_bid_coin(
             &conn,
@@ -692,10 +698,9 @@ async fn brute_force_skips_coin_with_missing_covenant_blind() {
     }
 
     let app = mock_app_with(state);
-    let result =
-        bids::brute_force_recover_bid(app.state(), Some(profile_id), name.into())
-            .await
-            .expect("should skip bad coin and find the good one");
+    let result = bids::brute_force_recover_bid(app.state(), Some(profile_id), name.into())
+        .await
+        .expect("should skip bad coin and find the good one");
     assert_eq!(result.bid_value_doos, value as i64);
 }
 
@@ -732,8 +737,7 @@ async fn brute_force_errors_when_no_value_matches() {
     }
 
     let app = mock_app_with(state);
-    let result =
-        bids::brute_force_recover_bid(app.state(), Some(profile_id), name.into()).await;
+    let result = bids::brute_force_recover_bid(app.state(), Some(profile_id), name.into()).await;
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
     assert!(
@@ -781,13 +785,9 @@ async fn recover_propagates_insert_error() {
     }
 
     let app = mock_app_with(state);
-    let result = bids::recover_bid_commitment(
-        app.state(),
-        Some(profile_id),
-        name.into(),
-        value as i64,
-    )
-    .await;
+    let result =
+        bids::recover_bid_commitment(app.state(), Some(profile_id), name.into(), value as i64)
+            .await;
     assert!(result.is_err(), "recovery should propagate INSERT error");
 }
 
@@ -816,7 +816,14 @@ async fn brute_force_propagates_insert_error() {
 
     {
         let conn = state.db.lock().unwrap();
-        seed_unspent_bid_coin(&conn, &profile_id, &"88".repeat(32), &addr, lockup as i64, &cov);
+        seed_unspent_bid_coin(
+            &conn,
+            &profile_id,
+            &"88".repeat(32),
+            &addr,
+            lockup as i64,
+            &cov,
+        );
         conn.execute_batch(
             "CREATE TRIGGER block_bf_insert BEFORE INSERT ON bid_commitments
              FOR EACH ROW WHEN NEW.name = 'brfrc'
@@ -848,8 +855,7 @@ async fn recover_propagates_query_error() {
     };
     let app = mock_app_with(state);
     let result =
-        bids::recover_bid_commitment(app.state(), Some(profile_id), "anything".into(), 1000)
-            .await;
+        bids::recover_bid_commitment(app.state(), Some(profile_id), "anything".into(), 1000).await;
     assert!(result.is_err(), "recover should propagate query error");
 }
 
@@ -930,14 +936,10 @@ async fn recover_skips_coin_with_undecodable_address() {
     }
 
     let app = mock_app_with(state);
-    let result = bids::recover_bid_commitment(
-        app.state(),
-        Some(profile_id),
-        name.into(),
-        value as i64,
-    )
-    .await
-    .expect("should skip undecodable-addr coin and find the good one");
+    let result =
+        bids::recover_bid_commitment(app.state(), Some(profile_id), name.into(), value as i64)
+            .await
+            .expect("should skip undecodable-addr coin and find the good one");
     assert_eq!(result.address, good_addr);
 }
 
@@ -1018,11 +1020,8 @@ async fn recover_skips_coin_with_non_20_byte_program() {
 
     // Create a P2WSH address (32-byte program) for regtest.
     let program_32 = [0xABu8; 32];
-    let p2wsh_addr = bech32::segwit::encode_v0(
-        bech32::Hrp::parse("rs").unwrap(),
-        &program_32,
-    )
-    .unwrap();
+    let p2wsh_addr =
+        bech32::segwit::encode_v0(bech32::Hrp::parse("rs").unwrap(), &program_32).unwrap();
 
     {
         let conn = state.db.lock().unwrap();
@@ -1068,14 +1067,10 @@ async fn recover_skips_coin_with_non_20_byte_program() {
     }
 
     let app = mock_app_with(state);
-    let result = bids::recover_bid_commitment(
-        app.state(),
-        Some(profile_id),
-        name.into(),
-        value as i64,
-    )
-    .await
-    .expect("should skip P2WSH coin and find the P2WPKH one");
+    let result =
+        bids::recover_bid_commitment(app.state(), Some(profile_id), name.into(), value as i64)
+            .await
+            .expect("should skip P2WSH coin and find the P2WPKH one");
     assert_eq!(result.address, good_addr);
 }
 
@@ -1095,11 +1090,8 @@ async fn brute_force_skips_coin_with_non_20_byte_program() {
     };
 
     let program_32 = [0xCDu8; 32];
-    let p2wsh_addr = bech32::segwit::encode_v0(
-        bech32::Hrp::parse("rs").unwrap(),
-        &program_32,
-    )
-    .unwrap();
+    let p2wsh_addr =
+        bech32::segwit::encode_v0(bech32::Hrp::parse("rs").unwrap(), &program_32).unwrap();
 
     {
         let conn = state.db.lock().unwrap();

@@ -781,8 +781,8 @@ fn base_url_getter_returns_configured_url() {
 #[test]
 fn base_url_getter_returns_trimmed_url() {
     // Verify base_url reflects the trailing-slash trim.
-    let client = NamebaseClient::with_base_url("c", "http://127.0.0.1:8080/")
-        .expect("client construction");
+    let client =
+        NamebaseClient::with_base_url("c", "http://127.0.0.1:8080/").expect("client construction");
     assert_eq!(client.base_url(), "http://127.0.0.1:8080");
 }
 

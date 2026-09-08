@@ -101,7 +101,10 @@ async fn spv_node_unreachable_returns_false() {
     let conn = rusqlite::Connection::open(&path).unwrap();
     let height =
         crate::noncustodial::sync::get_sync_height(&conn, PROFILE).expect("read sync height");
-    assert_eq!(height, 0, "cursor must remain 0 when SPV node is unreachable");
+    assert_eq!(
+        height, 0,
+        "cursor must remain 0 when SPV node is unreachable"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +139,10 @@ async fn happy_path_advances_cursor_and_returns_true() {
     set_setting(&path, "explorer_api_url", &server.url());
 
     let result = sync_spv_step(path.to_str().unwrap(), PROFILE).await;
-    assert!(result, "sync_spv_step should succeed with node + explorer up");
+    assert!(
+        result,
+        "sync_spv_step should succeed with node + explorer up"
+    );
 
     let conn = rusqlite::Connection::open(&path).unwrap();
     let height =

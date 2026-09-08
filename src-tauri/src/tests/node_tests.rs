@@ -434,7 +434,10 @@ fn test_get_hsd_version_none_when_exit_nonzero() {
 
 #[test]
 fn test_parse_hsd_version_prerelease_and_build_suffix() {
-    assert_eq!(node::parse_hsd_version("8.0.0-rc.1+build.5"), Some((8, 0, 0)));
+    assert_eq!(
+        node::parse_hsd_version("8.0.0-rc.1+build.5"),
+        Some((8, 0, 0))
+    );
 }
 
 #[test]

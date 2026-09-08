@@ -1095,8 +1095,7 @@ async fn read_name_bids_serves_from_local_index_when_scanner_covers() {
 
     // One indexed BID for the name, keyed by the same name-hash the command
     // computes via `hash_name`.
-    let name_hash_hex =
-        hex::encode(crate::noncustodial::names::hash_name("coveredname").unwrap());
+    let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name("coveredname").unwrap());
     conn.execute(
         "INSERT INTO name_bid_outpoints
             (bid_txid, bid_vout, name_hash_hex, name, lockup_value_doos,

@@ -2228,7 +2228,10 @@ async fn sync_wallet_state_calls_mark_missing_as_spent_when_coins_present() {
                 |r| r.get(0),
             )
             .ok();
-        assert_eq!(spent_by, None, "pre-seeded coin should be unspent before sync");
+        assert_eq!(
+            spent_by, None,
+            "pre-seeded coin should be unspent before sync"
+        );
     }
 
     let res = sync_wallet_state(app.state(), None).await.expect("sync ok");
@@ -2290,7 +2293,10 @@ async fn sign_tx_draft_inner_loads_reserved_coins_when_present() {
         .expect("sign with fallback coins");
     assert_eq!(result.id, draft.id);
     let row = draft_row(&app, &draft.id);
-    assert_eq!(row.status, "signed", "draft must be signed after fallback coin load");
+    assert_eq!(
+        row.status, "signed",
+        "draft must be signed after fallback coin load"
+    );
 }
 
 #[tokio::test]
@@ -2325,7 +2331,11 @@ async fn sign_tx_draft_inner_rejects_expired_session() {
     let err = sign_tx_draft_inner(&app.state(), &draft.id)
         .await
         .expect_err("signing with expired session must error");
-    assert_eq!(err.to_string(), "Wallet locked", "must reject expired session");
+    assert_eq!(
+        err.to_string(),
+        "Wallet locked",
+        "must reject expired session"
+    );
 }
 
 #[tokio::test]

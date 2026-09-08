@@ -757,10 +757,14 @@ async fn stop_hsd_soft_succeeds_when_no_node_reachable() {
         .node_rpc_alive
         .store(true, std::sync::atomic::Ordering::Relaxed);
 
-    stop_hsd(app.state()).await.expect("stop_hsd is best-effort");
+    stop_hsd(app.state())
+        .await
+        .expect("stop_hsd is best-effort");
 
     assert!(
-        !state.node_rpc_alive.load(std::sync::atomic::Ordering::Relaxed),
+        !state
+            .node_rpc_alive
+            .load(std::sync::atomic::Ordering::Relaxed),
         "node_rpc_alive must be cleared eagerly for the tray/UI to flip"
     );
 
@@ -855,7 +859,14 @@ async fn node_status_reflects_seeded_profile_network_regtest() {
     // `active_profile_network` branch where get_wallet_profile returns
     // Some(p) and network_from_profile succeeds.
     db::queries::insert_wallet_profile(
-        &conn, "p1", "test", "watch_only_xpub", "regtest", "xpub_placeholder", 0, true,
+        &conn,
+        "p1",
+        "test",
+        "watch_only_xpub",
+        "regtest",
+        "xpub_placeholder",
+        0,
+        true,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, "p1").unwrap();
@@ -870,7 +881,14 @@ async fn node_status_reflects_seeded_profile_network_testnet() {
     let conn = blank_conn();
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
     db::queries::insert_wallet_profile(
-        &conn, "p1", "test", "watch_only_xpub", "testnet", "xpub_placeholder", 0, true,
+        &conn,
+        "p1",
+        "test",
+        "watch_only_xpub",
+        "testnet",
+        "xpub_placeholder",
+        0,
+        true,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, "p1").unwrap();

@@ -248,7 +248,14 @@ fn get_watchlist_status_returns_cached_state_and_expiry() {
         let conn = state.db.lock().unwrap();
         // tracked_name_states has a FK to wallet_profiles — seed a profile.
         db::queries::insert_wallet_profile(
-            &conn, "wp1", "W", "mnemonic_hot", "regtest", "xpubFAKE", 0, false,
+            &conn,
+            "wp1",
+            "W",
+            "mnemonic_hot",
+            "regtest",
+            "xpubFAKE",
+            0,
+            false,
         )
         .unwrap();
         conn.execute(
@@ -298,7 +305,10 @@ fn csv_export_import_round_trips_embedded_quotes() {
 
     let list = list_watchlist(dest.state()).unwrap();
     let q = list.iter().find(|w| w.name == "quotey").unwrap();
-    assert_eq!(q.notes, "she said \"hello\"", "embedded quotes must survive round-trip");
+    assert_eq!(
+        q.notes, "she said \"hello\"",
+        "embedded quotes must survive round-trip"
+    );
 }
 
 // --- coverage: import without header row (line 293) --------------------------
@@ -385,5 +395,8 @@ fn is_watched_propagates_query_error() {
         conn.execute_batch("DROP TABLE watched_names;").unwrap();
     }
     let result = is_watched(app.state(), "anything".into());
-    assert!(result.is_err(), "is_watched should fail when the table is gone");
+    assert!(
+        result.is_err(),
+        "is_watched should fail when the table is gone"
+    );
 }

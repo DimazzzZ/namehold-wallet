@@ -112,6 +112,7 @@ fn good_addr() -> String {
 // =========================================================================
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn status_no_cookie_returns_not_connected() {
     let app = app_with(conn_without_cookie());
     let v = get_namebase_status(app.state::<AppState>())
@@ -122,6 +123,7 @@ async fn status_no_cookie_returns_not_connected() {
 }
 
 #[tokio::test]
+#[serial(cookie_vault)]
 async fn status_cookie_present_session_expired_returns_not_connected_with_error() {
     let mut server = Server::new_async().await;
     let _m = server
@@ -1188,7 +1190,14 @@ fn read_cookie_returns_legacy_plaintext_when_keyring_unavailable() {
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     db::queries::insert_wallet_profile(
-        &conn, PROFILE, "NB", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        &conn,
+        PROFILE,
+        "NB",
+        "mnemonic_hot",
+        "mainnet",
+        "xpubFAKE",
+        0,
+        false,
     )
     .unwrap();
     db::queries::set_active_profile(&conn, PROFILE).unwrap();

@@ -387,7 +387,10 @@ async fn test_import_csv_skips_dot_only_tld() {
 
     let res = result.unwrap();
     assert_eq!(res.imported, 1, "only 'good' should import");
-    assert_eq!(res.skipped, 2, "'.' and '...' should be skipped after normalize");
+    assert_eq!(
+        res.skipped, 2,
+        "'.' and '...' should be skipped after normalize"
+    );
     assert!(res.errors.is_empty());
 }
 
@@ -420,7 +423,11 @@ async fn test_import_csv_reports_insert_errors() {
 
     let res = result.unwrap();
     assert_eq!(res.imported, 1, "the good row should still import");
-    assert_eq!(res.errors.len(), 1, "the blocked row should produce an error");
+    assert_eq!(
+        res.errors.len(),
+        1,
+        "the blocked row should produce an error"
+    );
     assert!(
         res.errors[0].contains("Row") && res.errors[0].contains("blocked"),
         "error message should reference the row and trigger message: {:?}",
@@ -444,5 +451,8 @@ async fn test_export_csv_propagates_query_error() {
     let app = mock_app_with(state);
     let result = crate::commands::csv::export_csv(app.state(), out, None, None, None).await;
     cleanup("exp_query_err");
-    assert!(result.is_err(), "export should fail when assets table is missing");
+    assert!(
+        result.is_err(),
+        "export should fail when assets table is missing"
+    );
 }

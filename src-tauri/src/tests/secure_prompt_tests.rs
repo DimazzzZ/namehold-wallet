@@ -74,10 +74,7 @@ fn test_is_owning_window_rejects_react_window_label() {
 fn test_is_owning_window_rejects_prefix_only_label() {
     // A label with just the prefix but no id must still be rejected when a
     // non-empty prompt_id is expected.
-    assert!(!secure_prompt::is_owning_window(
-        "secure-prompt-",
-        "abc123"
-    ));
+    assert!(!secure_prompt::is_owning_window("secure-prompt-", "abc123"));
 }
 
 #[test]
@@ -85,10 +82,7 @@ fn test_is_owning_window_matches_empty_prompt_id() {
     // Empty prompt_id is an edge case: the label must equal exactly
     // "secure-prompt-" for the match to succeed.
     assert!(secure_prompt::is_owning_window("secure-prompt-", ""));
-    assert!(!secure_prompt::is_owning_window(
-        "secure-prompt-abc123",
-        ""
-    ));
+    assert!(!secure_prompt::is_owning_window("secure-prompt-abc123", ""));
 }
 
 #[test]

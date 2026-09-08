@@ -827,7 +827,10 @@ async fn write_probe_unsynced_no_verification_progress_uses_headers_ratio() {
         .await;
     assert!(!cap.can_write);
     let reason = cap.reason.as_deref().unwrap();
-    assert!(reason.contains("83%"), "expected 83% in reason, got: {reason}");
+    assert!(
+        reason.contains("83%"),
+        "expected 83% in reason, got: {reason}"
+    );
     assert!(reason.contains("still syncing"));
 }
 
@@ -852,7 +855,10 @@ async fn write_probe_synced_no_verification_progress_via_headers() {
         Some("hs1qprobe"),
     )
     .await;
-    assert!(cap.can_write, "blocks>=headers with no progress should be synced");
+    assert!(
+        cap.can_write,
+        "blocks>=headers with no progress should be synced"
+    );
     assert!(cap.reason.is_none());
 }
 

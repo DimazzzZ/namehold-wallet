@@ -262,10 +262,7 @@ fn find_binary_in_dirs_returns_none_when_binary_absent() {
     // Existing dir, but binary not present.
     let dir = fresh_tmp_dir("absent");
     let hit = find_binary_in_dirs("namehold-syncd", std::slice::from_ref(&dir));
-    assert!(
-        hit.is_none(),
-        "empty dir must produce no hit; got {hit:?}"
-    );
+    assert!(hit.is_none(), "empty dir must produce no hit; got {hit:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -286,10 +283,8 @@ fn find_binary_in_dirs_finds_binary_in_first_dir() {
 fn find_binary_in_dirs_skips_missing_dirs_and_finds_later_match() {
     // First dir doesn't exist; second is empty; third holds the binary.
     // Exercises the loop's "keep going after miss" behavior.
-    let nonexistent = std::env::temp_dir().join(format!(
-        "namehold_daemon_ctl_ghost_{}",
-        std::process::id()
-    ));
+    let nonexistent =
+        std::env::temp_dir().join(format!("namehold_daemon_ctl_ghost_{}", std::process::id()));
     // Ensure it really doesn't exist.
     let _ = std::fs::remove_dir_all(&nonexistent);
 
@@ -331,10 +326,7 @@ fn find_binary_in_dirs_honors_bin_name_arg() {
     std::fs::write(dir.join("some-other-binary"), b"stub").expect("write stub");
 
     let hit = find_binary_in_dirs("namehold-syncd", std::slice::from_ref(&dir));
-    assert!(
-        hit.is_none(),
-        "wrong filename must not match; got {hit:?}"
-    );
+    assert!(hit.is_none(), "wrong filename must not match; got {hit:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

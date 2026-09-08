@@ -87,7 +87,10 @@ fn set_update_notify_enabled_true_persists_string_true() {
     let conn = migrated_conn();
     let app = app_with(conn);
     set_update_notify_enabled(true, app.state()).expect("set true");
-    assert_eq!(raw_setting(&app, "update_notify_enabled").as_deref(), Some("true"));
+    assert_eq!(
+        raw_setting(&app, "update_notify_enabled").as_deref(),
+        Some("true")
+    );
     // Round-trips through the read command too.
     assert!(is_update_notify_enabled(app.state()));
 }
@@ -101,7 +104,10 @@ fn set_update_notify_enabled_false_persists_string_false() {
     assert!(is_update_notify_enabled(app.state()));
 
     set_update_notify_enabled(false, app.state()).expect("set false");
-    assert_eq!(raw_setting(&app, "update_notify_enabled").as_deref(), Some("false"));
+    assert_eq!(
+        raw_setting(&app, "update_notify_enabled").as_deref(),
+        Some("false")
+    );
     assert!(!is_update_notify_enabled(app.state()));
 }
 
@@ -112,7 +118,10 @@ fn set_update_notify_enabled_overwrites_existing_value() {
     let app = app_with(conn);
 
     set_update_notify_enabled(true, app.state()).expect("set true");
-    assert_eq!(raw_setting(&app, "update_notify_enabled").as_deref(), Some("true"));
+    assert_eq!(
+        raw_setting(&app, "update_notify_enabled").as_deref(),
+        Some("true")
+    );
 }
 
 // --- Error-path coverage (line 15: get_settings fails) ----------------------
