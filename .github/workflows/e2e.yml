@@ -122,6 +122,29 @@ jobs:
       - name: Install tauri-driver
         run: cargo install tauri-driver --locked
 
+      # Diagnostic: launch the built binary directly under Xvfb and capture its
+      # own stderr/exit code. tauri-driver swallows the app's output, so when a
+      # session fails with UND_ERR_SOCKET we can't tell whether the app panicked
+      # on startup. This runs the raw executable for a few seconds and reports
+      # what it printed and how it exited. Best-effort — never fails the job.
+      - name: Smoke-launch app (diagnostic)
+        run: |
+          set +e
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x1024x24 >/tmp/xvfb_smoke.log 2>&1 &
+          XVFB_PID=$!
+          sleep 2
+          BIN=src-tauri/target/release/namehold-wallet
+          echo "== binary: $BIN =="
+          ls -la "$BIN" || true
+          echo "== launching for 8s (WEBKIT_DISABLE_COMPOSITING_MODE=1) =="
+          WEBKIT_DISABLE_COMPOSITING_MODE=1 timeout 8 "$BIN" >/tmp/app_smoke.log 2>&1
+          echo "== exit code: $? (124 = still-running/timeout = healthy) =="
+          echo "== app stdout/stderr =="
+          cat /tmp/app_smoke.log || true
+          kill "$XVFB_PID" 2>/dev/null || true
+          exit 0
+
       # Start a virtual display, then tauri-driver (which spawns WebKitWebDriver
       # and, per session, the app window — all on $DISPLAY). WDIO only talks HTTP
       # to the driver on :4444, so the test process itself needs no display.
