@@ -1,0 +1,149 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E Tests (Tauri App)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+      RUSTFLAGS: -C link-arg=-fuse-ld=mold
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.17.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Bound the apt index refresh and retry — mirror blips on GitHub-hosted
+      # runners are transient. Best-effort (no `exit 1`): the cached-install
+      # step below is the actual gate and tolerates a stale index on cache-hit.
+      - name: Refresh apt package index
+        timeout-minutes: 3
+        run: |
+          set +e
+          for i in 1 2 3; do
+            sudo timeout 120 apt-get update && exit 0
+            echo "::warning::apt-get update failed (attempt $i) — retrying in 5s"
+            sleep 5
+          done
+          echo "::warning::apt-get update failed after 3 attempts — proceeding with stale index"
+
+      # Same Tauri build deps as ci.yml / release.yml, plus the two packages
+      # needed to drive the built app headlessly under WebDriver:
+      #   - webkit2gtk-driver: provides WebKitWebDriver, which tauri-driver wraps
+      #   - xvfb: virtual framebuffer so the GTK/WebKit window has a display
+      - name: Install Tauri system dependencies
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9  # v1.6.3
+        with:
+          packages: >-
+            libwebkit2gtk-4.1-dev
+            libappindicator3-dev
+            librsvg2-dev
+            libsecret-1-dev
+            libudev-dev
+            patchelf
+            build-essential
+            libssl-dev
+            mold
+            webkit2gtk-driver
+            xvfb
+          version: "3"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla/sccache-action@v0.0.11
+
+      # If the GHA cache backend is down, sccache (as RUSTC_WRAPPER) hard-fails
+      # the job before any crate compiles. Probe startup; on failure, unset the
+      # wrapper so cargo compiles directly (mold + Swatinem still apply).
+      - name: Verify sccache backend (degrade gracefully if ghac is down)
+        run: |
+          if ! sccache --start-server 2>/tmp/sccache_start.log; then
+            echo "::warning::sccache failed to start — disabling compiler cache for this run"
+            cat /tmp/sccache_start.log || true
+            echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+          fi
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: src-tauri
+          shared-key: rust-e2e
+
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Build the release binary the WebDriver launches. `tauri build` bundles
+      # the frontend (via beforeBuildCommand) then compiles the Rust binary.
+      - name: Build Tauri app
+        run: pnpm tauri build
+
+      - name: Install E2E dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: e2e
+
+      # tauri-driver is a Cargo binary (not an npm package). It starts the
+      # WebDriver server on :4444 and spawns WebKitWebDriver under the hood.
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      # Start a virtual display, then tauri-driver (which spawns WebKitWebDriver
+      # and, per session, the app window — all on $DISPLAY). WDIO only talks HTTP
+      # to the driver on :4444, so the test process itself needs no display.
+      - name: Run E2E tests
+        working-directory: e2e
+        timeout-minutes: 20
+        run: |
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x1024x24 >/tmp/xvfb.log 2>&1 &
+          XVFB_PID=$!
+          sleep 2
+          tauri-driver >/tmp/tauri-driver.log 2>&1 &
+          DRIVER_PID=$!
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:4444/status >/dev/null 2>&1; then
+              echo "tauri-driver ready"
+              break
+            fi
+            sleep 1
+          done
+          set +e
+          pnpm test
+          STATUS=$?
+          set -e
+          kill "$DRIVER_PID" 2>/dev/null || true
+          kill "$XVFB_PID" 2>/dev/null || true
+          exit $STATUS
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: |
+            e2e/logs/
+            /tmp/tauri-driver.log
+            /tmp/xvfb.log
+          retention-days: 7
