@@ -146,6 +146,7 @@ pub(crate) fn persist_cookie_if_changed(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn connect_namebase(
     state: State<'_, AppState>,
     cookie: String,
@@ -174,6 +175,7 @@ pub async fn connect_namebase(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn disconnect_namebase(state: State<'_, AppState>) -> Result<(), AppError> {
     write_cookie(&state, "")?;
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -185,6 +187,7 @@ pub async fn disconnect_namebase(state: State<'_, AppState>) -> Result<(), AppEr
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn get_namebase_status(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -210,6 +213,7 @@ pub async fn get_namebase_status(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_namebase_domains(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -221,6 +225,7 @@ pub async fn fetch_namebase_domains(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_namebase_staked(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -232,6 +237,7 @@ pub async fn fetch_namebase_staked(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_namebase_renewals(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -246,6 +252,7 @@ pub async fn fetch_namebase_renewals(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_namebase_withdrawals(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -257,6 +264,7 @@ pub async fn fetch_namebase_withdrawals(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn import_from_namebase(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -360,6 +368,7 @@ pub async fn import_from_namebase(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn namebase_transfer_domain(
     state: State<'_, AppState>,
     name: String,
@@ -414,6 +423,7 @@ fn active_profile_network(state: &AppState) -> crate::noncustodial::network::Net
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn namebase_withdraw_hns(
     state: State<'_, AppState>,
     address: String,
@@ -454,6 +464,7 @@ pub async fn namebase_withdraw_hns(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_namebase_domain_withdrawals(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {

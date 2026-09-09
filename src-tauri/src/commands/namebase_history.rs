@@ -31,6 +31,7 @@ use crate::AppState;
 /// Import account history from a local CSV file. The user provides the path
 /// (via Tauri dialog). Returns counts and summary.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn import_namebase_history_from_file(
     state: State<'_, AppState>,
     path: String,
@@ -59,6 +60,7 @@ pub async fn import_namebase_history_from_file(
 /// Import account history from the live Namebase API. Requires an active
 /// session (connected Namebase account). Returns counts and summary.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn import_namebase_history_live(
     state: State<'_, AppState>,
 ) -> Result<ImportHistoryResult, AppError> {

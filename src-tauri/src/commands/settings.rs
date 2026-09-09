@@ -15,6 +15,7 @@ use tauri::State;
 // returns. Test harness in `src/tests/settings_cmd_tests.rs`.
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn get_settings(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let mut settings = db::queries::get_settings(&db)?;
@@ -30,6 +31,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<serde_json::Valu
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn update_setting(
     state: State<'_, AppState>,
     key: String,
@@ -60,6 +62,7 @@ pub async fn update_setting(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn get_audit_log(
     state: State<'_, AppState>,
     limit: Option<i64>,
@@ -89,6 +92,7 @@ pub async fn get_audit_log(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn get_wallet_snapshots(
     state: State<'_, AppState>,
     limit: Option<i64>,

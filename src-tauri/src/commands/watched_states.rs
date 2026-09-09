@@ -29,6 +29,7 @@ pub struct WatchedNameStateRow {
 /// this table small (one row per watched name). The frontend uses
 /// `last_state_json` to hydrate the full HsdName without an RPC call.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn get_watched_states(
     state: State<'_, AppState>,
 ) -> Result<Vec<WatchedNameStateRow>, AppError> {

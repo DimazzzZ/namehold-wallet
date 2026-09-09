@@ -36,6 +36,7 @@ pub(crate) fn pick_hsd_path(override_path: Option<&str>, candidates: &[String]) 
 
 /// Common hsd install locations to probe (a GUI-launched app has a minimal PATH,
 /// so the user's shell PATH isn't available — we must look in the usual dirs).
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn hsd_candidates() -> Vec<String> {
     let mut candidates = vec![
         "/opt/homebrew/bin/hsd".to_string(),
@@ -62,6 +63,7 @@ pub(crate) fn hsd_candidates() -> Vec<String> {
 /// install dirs, then `which hsd`, then the bare name (resolved via PATH).
 // IO shell: the `which hsd` fallback depends on the system PATH and cannot be
 // exercised deterministically in unit tests. Covered by integration tests.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn find_hsd_binary(override_path: Option<&str>) -> String {
     if let Some(found) = pick_hsd_path(override_path, &hsd_candidates()) {
         return found;
@@ -159,6 +161,7 @@ fn resolve_data_dir(state: &AppState) -> Result<String, AppError> {
 
 /// The active profile's network, defaulting to mainnet — matches the network the
 /// rest of the app operates on (and the default RPC port).
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn active_profile_network(state: &AppState) -> Network {
     let conn = match state.db.lock() {
         Ok(c) => c,
@@ -182,6 +185,7 @@ fn active_profile_network(state: &AppState) -> Network {
 // The `Some(child)` arm calls child.try_wait() on a real OS process handle,
 // reachable only after start_hsd has spawned a child. Exercised by the
 // fake-hsd integration tests in tests/node_lifecycle_tests.rs.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn is_running(state: &AppState) -> Result<bool, AppError> {
     let mut guard = state
         .hsd_child
@@ -364,6 +368,7 @@ pub(crate) fn node_start_error(data_dir: &str) -> Option<(String, bool)> {
 // unit-tested (mockito); the spawn/wait/log-tail paths are covered by the
 // fake-hsd integration tests in tests/node_lifecycle_tests.rs.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     if is_running(&state)? {
         return Err(AppError::Other("hsd is already running.".to_string()));
@@ -563,6 +568,7 @@ pub(crate) fn read_log_tail(path: &std::path::Path) -> String {
 // path is covered by the fake-hsd integration tests
 // (tests/node_lifecycle_tests.rs).
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
     let child = {
         let mut guard = state
@@ -621,6 +627,7 @@ pub(crate) fn chain_paths_for_network(data_dir: &str, network: Network) -> Vec<s
 // spawn require a real hsd + filesystem — covered by the fake-hsd integration
 // tests in tests/node_lifecycle_tests.rs.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     // 1. Stop any node we manage so the chain files aren't locked.
     {

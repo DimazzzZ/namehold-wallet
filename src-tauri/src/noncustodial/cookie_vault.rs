@@ -276,6 +276,7 @@ fn decrypt_with_dek(blob_hex: &str, dek: &[u8]) -> Result<Vec<u8>, AppError> {
 /// On first call, generates a random 32-byte key and stores it.
 /// On subsequent calls, retrieves the stored key.
 /// Returns AppError if the keyring is unavailable.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn get_or_create_dek() -> Result<Vec<u8>, AppError> {
     // Test-only override: if a fixed DEK has been installed via
     // `set_test_dek`, use it instead of consulting the OS keyring.

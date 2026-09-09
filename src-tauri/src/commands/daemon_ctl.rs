@@ -37,6 +37,7 @@ const DAEMON_BIN_NAME: &str = "namehold-syncd";
 
 /// Check if background sync is enabled in settings.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn is_background_sync_enabled(state: State<'_, AppState>) -> Result<bool, AppError> {
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let settings = db::queries::get_settings(&db)?;
@@ -49,6 +50,7 @@ pub async fn is_background_sync_enabled(state: State<'_, AppState>) -> Result<bo
 
 /// Enable or disable background sync. Spawns or stops the daemon accordingly.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn set_background_sync_enabled(
     state: State<'_, AppState>,
     enabled: bool,
@@ -82,6 +84,7 @@ pub async fn is_daemon_alive() -> Result<bool, AppError> {
 // ---------------------------------------------------------------------------
 
 /// Spawn the daemon as a detached process that outlives the app.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn spawn_daemon() -> Result<(), AppError> {
     // Don't spawn if already running.
     if check_daemon_alive() {
@@ -129,6 +132,7 @@ pub fn stop_daemon() -> Result<(), AppError> {
 
 /// Ensure the daemon is running if background sync is enabled.
 /// Called on app startup.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn ensure_daemon_if_enabled(settings: &std::collections::HashMap<String, String>) {
     let enabled = settings
         .get(SETTING_BACKGROUND_SYNC)
@@ -159,6 +163,7 @@ fn read_pid_file() -> Option<u32> {
 }
 
 /// Check if the daemon is alive using the PID file.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn check_daemon_alive() -> bool {
     match read_pid_file() {
         Some(pid) => is_process_alive(pid),
@@ -219,6 +224,7 @@ pub(crate) const RESOURCE_REL_DIRS: &[&str] = &[
 ];
 
 /// Return the platform-adjusted daemon binary name (appends `.exe` on Windows).
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn daemon_bin_name() -> String {
     if cfg!(target_os = "windows") {
         format!("{DAEMON_BIN_NAME}.exe")

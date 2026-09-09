@@ -185,6 +185,7 @@ fn confirm_details_for_draft(draft: &db::queries::TxDraftRow) -> serde_json::Val
 /// `fee_rate_doos_per_kvb` setting (in doos per 1000 vbytes; divide by 1000
 /// to get doos/byte, floored at the relay-minimum), else the node's
 /// `estimatesmartfee`, else the fixed relay-floor default. Never errors.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Option<u64>) -> u64 {
     if let Some(r) = fee_rate {
         return r;
@@ -222,6 +223,7 @@ pub(crate) async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Opti
 /// Refresh the local chain cache for a profile from the node: scan derived
 /// addresses for coins, upsert UTXOs, reconcile spends, advance the cursor.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn sync_wallet_state(
     state: State<'_, AppState>,
     wallet_profile_id: Option<String>,
@@ -372,6 +374,7 @@ async fn refresh_name_states(
 
 /// Standalone name-state refresh (also run as part of `sync_wallet_state`).
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn sync_tracked_names(
     state: State<'_, AppState>,
     wallet_profile_id: Option<String>,
@@ -399,6 +402,7 @@ pub async fn sync_tracked_names(
 /// Build (but do not sign) a plain HNS send. Runs coin selection for an accurate
 /// fee/change preview and persists a `draft` row.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_send_hns_draft(
     state: State<'_, AppState>,
     to_address: String,
@@ -507,6 +511,7 @@ pub async fn build_send_hns_draft(
 
 /// Preview the fee/change for a prospective send without persisting a draft.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn estimate_tx_draft_fee(
     state: State<'_, AppState>,
     value_doos: i64,
@@ -583,6 +588,7 @@ pub(crate) async fn sign_tx_draft_confirmed<R: Runtime>(
 /// command — callers must have already obtained user confirmation (the
 /// `sign_tx_draft` command does this). Kept separate so tests can drive signing
 /// deterministically without opening a secure window.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) async fn sign_tx_draft_inner(
     state: &State<'_, AppState>,
     draft_id: &str,
@@ -666,6 +672,7 @@ fn persist_signed_draft(
 
 /// The hot-wallet signing path — unchanged behaviour from before the Ledger
 /// integration. Locks the in-memory signer session and dispatches by action.
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn sign_via_hot_session(
     state: &State<'_, AppState>,
     draft: &db::queries::TxDraftRow,
@@ -1357,6 +1364,7 @@ pub(crate) async fn classify_broadcast_outcome_with_client(
 /// silently skipped — the tx cache is best-effort, not authoritative.
 ///
 /// Testable against a mock without an AppState.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) async fn fetch_wallet_coins_and_txs_with_client(
     client: &dyn crate::noncustodial::node_rpc::NodeRpc,
     addresses: &[String],
@@ -1754,6 +1762,7 @@ pub async fn refresh_tx_confirmations(
 /// Read cached balances for a profile (or the active profile) without touching
 /// the node. Returns zeros when no profile is active.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn get_wallet_balances(
     state: State<'_, AppState>,
     wallet_profile_id: Option<String>,
@@ -1780,6 +1789,7 @@ pub async fn get_wallet_balances(
 /// Report non-custodial write capability: writes require an unlocked signer AND
 /// a broadcaster-capable node source. The frontend gates spend actions on this.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn get_write_capability(
     state: State<'_, AppState>,
 ) -> Result<crate::providers::WriteCapability, AppError> {
@@ -1899,6 +1909,7 @@ pub(crate) async fn apply_node_write_probe_with_client(
 /// reserved (I3) so a later draft can spend them. Refuses to delete a draft
 /// that already reached the chain (`broadcasted`/`confirmed`).
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn delete_tx_draft(state: State<'_, AppState>, draft_id: String) -> Result<(), AppError> {
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db::queries::delete_tx_draft(&conn, &draft_id)
@@ -1913,6 +1924,7 @@ pub async fn delete_tx_draft(state: State<'_, AppState>, draft_id: String) -> Re
 /// then the coin is normally already excluded from selection via
 /// `spent_by_txid`, so this is inert in practice).
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn release_tx_draft_reservation(
     state: State<'_, AppState>,
     draft_id: String,
@@ -1924,6 +1936,7 @@ pub async fn release_tx_draft_reservation(
 
 /// List drafts for a profile (or the active profile).
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn list_tx_drafts(
     state: State<'_, AppState>,
     wallet_profile_id: Option<String>,

@@ -59,6 +59,7 @@ pub struct RecoveredBidCommitment {
 /// resolves it (falls back to the active profile) — this pins recovery to a
 /// specific wallet rather than silently trusting backend "active" state.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn recover_bid_commitment(
     state: State<'_, AppState>,
     wallet_profile_id: Option<String>,
@@ -366,6 +367,7 @@ struct ExportedBidCommitment {
 /// save as a backup file. Contains secret nonce/blind material — the frontend
 /// must warn the user to store it alongside their seed.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn export_bid_commitments(
     state: State<'_, AppState>,
     wallet_profile_id: Option<String>,

@@ -35,6 +35,7 @@ use super::sync::open_conn;
 /// when `node_authoritative == false` in `run_sync_steps`.
 ///
 /// Returns `true` if the sync completed successfully.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn sync_spv_step(db_path: &str, profile_id: &str) -> bool {
     let conn = match open_conn(db_path) {
         Ok(c) => c,

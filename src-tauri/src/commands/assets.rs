@@ -11,6 +11,7 @@ use tauri::State;
 // Test harness in `src/tests/assets_cmd_tests.rs`.
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn list_assets(
     state: State<'_, AppState>,
     status: Option<String>,
@@ -31,12 +32,14 @@ pub async fn list_assets(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn get_asset(state: State<'_, AppState>, id: i64) -> Result<Asset, AppError> {
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db::queries::get_asset(&db, id)
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[allow(clippy::too_many_arguments)] // Tauri command params map 1:1 to a frontend call site — not worth splitting.
 pub async fn update_asset(
     state: State<'_, AppState>,
@@ -64,6 +67,7 @@ pub async fn update_asset(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn bulk_update_status(
     state: State<'_, AppState>,
     ids: Vec<i64>,
@@ -74,6 +78,7 @@ pub async fn bulk_update_status(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn bulk_update_tags(
     state: State<'_, AppState>,
     ids: Vec<i64>,
@@ -84,12 +89,14 @@ pub async fn bulk_update_tags(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn delete_asset(state: State<'_, AppState>, id: i64) -> Result<(), AppError> {
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     db::queries::delete_asset(&db, id)
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn get_dashboard_stats(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {

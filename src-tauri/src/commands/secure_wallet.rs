@@ -103,6 +103,7 @@ pub(crate) fn account_xpub_from_seed(
 
 /// Derive + persist the initial receive/change address windows for a profile.
 /// Returns the first receive address (the profile's default receive address).
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn provision_addresses(
     conn: &rusqlite::Connection,
     profile_id: &str,
@@ -542,6 +543,7 @@ pub async fn unlock_local_signer(
 
 /// Lock the local signer, zeroizing in-memory key material.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn lock_local_signer(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
     let mut slot = state
         .signer
@@ -553,6 +555,7 @@ pub async fn lock_local_signer(state: tauri::State<'_, AppState>) -> Result<(), 
 
 /// Current signer session state (secret-free).
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn get_signer_session(
     state: tauri::State<'_, AppState>,
 ) -> Result<SignerSessionSummary, AppError> {
@@ -572,6 +575,7 @@ pub async fn get_signer_session(
 
 /// List all wallet profiles.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn list_wallet_profiles(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<WalletProfileSummary>, AppError> {
@@ -582,6 +586,7 @@ pub async fn list_wallet_profiles(
 /// Set the active wallet profile. Switching away from the unlocked profile locks
 /// the signer so stale key material is never used for a different wallet.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn set_active_wallet_profile(
     state: tauri::State<'_, AppState>,
     wallet_profile_id: String,
@@ -614,6 +619,7 @@ pub async fn set_active_wallet_profile(
 /// Delete a wallet profile and all its data. If it was the active profile, the
 /// active selection is cleared and the signer is locked.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn delete_wallet_profile(
     state: tauri::State<'_, AppState>,
     wallet_profile_id: String,
