@@ -102,13 +102,19 @@ jobs:
       - name: Build Tauri app
         run: pnpm tauri build --no-bundle
 
-      # e2e/ has its own pnpm-workspace.yaml, so pnpm treats it as an isolated
-      # workspace root (it does NOT attach to the repo-root workspace, which
-      # would install nothing and leave wdio missing). That file also carries
-      # the build-script allowlist and the relaxed minimum-release-age policy
-      # this test tooling needs. A plain frozen install is all that's required.
+      # --ignore-workspace: don't attach to the repo-root pnpm workspace (which
+      #   would install nothing here and leave wdio missing).
+      # --ignore-scripts: skip dependency postinstall build scripts. pnpm v11
+      #   otherwise fails the install with ERR_PNPM_IGNORED_BUILDS when a dep
+      #   (esbuild, edgedriver, geckodriver) has an unapproved build script.
+      #   E2E only needs the JS entrypoints — tsx/wdio run fine without them,
+      #   and the unused browser drivers are irrelevant (we drive Tauri via
+      #   tauri-driver + WebKitWebDriver).
+      # --config.minimum-release-age=0: skip pnpm v11's default 24h supply-chain
+      #   hold for this never-shipped test tooling (a freshly published
+      #   transitive like jszip would otherwise block CI).
       - name: Install E2E dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-workspace --ignore-scripts --config.minimum-release-age=0
         working-directory: e2e
 
       # tauri-driver is a Cargo binary (not an npm package). It starts the

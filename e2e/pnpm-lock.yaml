@@ -9,28 +9,28 @@ importers:
   .:
     devDependencies:
       '@tauri-apps/cli':
-        specifier: ^2.0.0
+        specifier: ^2.11.4
         version: 2.11.4
       '@wdio/cli':
-        specifier: ^9.0.0
+        specifier: ^9.31.7
         version: 9.31.7(@types/node@26.5.0)(expect-webdriverio@6.0.10)
       '@wdio/local-runner':
-        specifier: ^9.0.0
+        specifier: ^9.31.7
         version: 9.31.7(@wdio/globals@9.31.3)(webdriverio@9.31.7)
       '@wdio/mocha-framework':
-        specifier: ^9.0.0
+        specifier: ^9.31.7
         version: 9.31.7
       '@wdio/spec-reporter':
-        specifier: ^9.0.0
+        specifier: ^9.31.2
         version: 9.31.2
       tsx:
-        specifier: ^4.19.0
+        specifier: ^4.23.13
         version: 4.23.13
       typescript:
-        specifier: ~5.7.0
+        specifier: ~5.7.3
         version: 5.7.3
       webdriverio:
-        specifier: ^9.0.0
+        specifier: ^9.31.7
         version: 9.31.7
 
 packages:
@@ -412,30 +412,35 @@ packages:
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@tauri-apps/cli-linux-arm64-musl@2.11.4':
     resolution: {integrity: sha512-v277UnT/fB64xAfSroL5N3Km3tLmvATWqJJw/wRI+g6o+HkeD0slyE7gOhNs1MbjE41R7bQOTxMVoL3aomUJmw==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@tauri-apps/cli-linux-riscv64-gnu@2.11.4':
     resolution: {integrity: sha512-qqgNkQ2u1yZHxjhxsZaxUtRDW8dIqIYm33rx/mzwQv0SfY9x1B+iraj8vWeFiXjjSVVhEMepXSOts1TqPzvXNQ==}
     engines: {node: '>= 10'}
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@tauri-apps/cli-linux-x64-gnu@2.11.4':
     resolution: {integrity: sha512-2VRNWl84FOH0m2giiDkO2h0QXlcMJeX+zJDpI5kDIQAx6s+geF3v48F4DXfJez4GS/FdoDGnPnw1C2iYGbQ7bQ==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@tauri-apps/cli-linux-x64-musl@2.11.4':
     resolution: {integrity: sha512-o9GyhYor/nc7xarmwDE3ka2szuW3uuZzXjHWh64Q8YX5AtSgxdQkFWzrY4O8KiGtVNvFBI14H3Q49Qj5TOIP/A==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@tauri-apps/cli-win32-arm64-msvc@2.11.4':
     resolution: {integrity: sha512-ld5Ehb598m0VkYyylRPNeCFsBe/km0jxis6KgMpl3IGY6I/i1RwQXO05I1AsXUXO2WC6AvB/Lw4qTf/asiuEiQ==}
@@ -2105,7 +2110,7 @@ snapshots:
 
   '@jest/pattern@30.5.0':
     dependencies:
-      '@types/node': 20.19.43
+      '@types/node': 26.5.0
       jest-regex-util: 30.5.0
 
   '@jest/schemas@30.5.0':
@@ -2118,7 +2123,7 @@ snapshots:
       '@jest/schemas': 30.5.0
       '@types/istanbul-lib-coverage': 2.0.6
       '@types/istanbul-reports': 3.0.4
-      '@types/node': 20.19.43
+      '@types/node': 26.5.0
       '@types/yargs': 17.0.35
       chalk: 4.1.2
 
@@ -2222,7 +2227,6 @@ snapshots:
   '@types/node@26.5.0':
     dependencies:
       undici-types: 8.9.0
-    optional: true
 
   '@types/normalize-package-data@2.4.4': {}
 
@@ -2234,7 +2238,7 @@ snapshots:
 
   '@types/ws@8.18.1':
     dependencies:
-      '@types/node': 20.19.43
+      '@types/node': 26.5.0
 
   '@types/yargs-parser@21.0.3': {}
 
@@ -3127,7 +3131,7 @@ snapshots:
     dependencies:
       '@jest/expect-utils': 30.5.1
       '@jest/types': 30.5.1
-      '@types/node': 20.19.43
+      '@types/node': 26.5.0
       jest-util: 30.5.1
 
   jest-regex-util@30.5.0: {}
@@ -3135,7 +3139,7 @@ snapshots:
   jest-util@30.5.1:
     dependencies:
       '@jest/types': 30.5.1
-      '@types/node': 20.19.43
+      '@types/node': 26.5.0
       chalk: 4.1.2
       ci-info: 4.4.0
       graceful-fs: 4.2.11
@@ -3665,8 +3669,7 @@ snapshots:
 
   undici-types@6.21.0: {}
 
-  undici-types@8.9.0:
-    optional: true
+  undici-types@8.9.0: {}
 
   undici@6.28.1: {}
 
