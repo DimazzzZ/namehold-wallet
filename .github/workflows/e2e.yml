@@ -102,8 +102,12 @@ jobs:
       - name: Build Tauri app
         run: pnpm tauri build --no-bundle
 
+      # `--ignore-workspace` is required: without it pnpm walks up to the repo
+      # root's pnpm-workspace.yaml, treats e2e/ as the root project, installs
+      # nothing here, and `pnpm test` then fails with "wdio: not found". The
+      # flag makes e2e/ a self-contained install into e2e/node_modules.
       - name: Install E2E dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-workspace
         working-directory: e2e
 
       # tauri-driver is a Cargo binary (not an npm package). It starts the
