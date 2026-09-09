@@ -1,6 +1,6 @@
 # Namehold — a non-custodial Handshake (HNS) wallet
 
-[![Coverage](https://img.shields.io/badge/coverage-96.56%25%20lines-brightgreen)](https://github.com/DimazzzZ/namehold-wallet/pull/50)
+[![Coverage](https://img.shields.io/badge/coverage-97.81%25%20lines-brightgreen)](https://github.com/DimazzzZ/namehold-wallet/pull/50)
 
 Namehold is a local desktop wallet for **Handshake (HNS)**: hold HNS, manage the
 names you own, run the full name-auction lifecycle, and edit on-chain DNS — all
@@ -301,7 +301,7 @@ live database and a running event loop. Excluding it from coverage metrics preve
 it from dragging down the overall number, while the pure logic it orchestrates
 (in `daemon::*` submodules and `commands::*`) is independently tested and counted.
 
-**What are the remaining ~3.5% uncovered lines?** After Phases 1–4, the residual
+**What are the remaining ~2.2% uncovered lines?** After Phases 1–5, the residual
 uncovered lines fall into structurally-untestable categories that are documented
 in-place (via `coverage(off)` annotations) or intentionally left as-is:
 
@@ -326,3 +326,22 @@ The `truthfulness invariant` for this project's coverage number: an
 testable logic is confirmed 100% covered by direct tests, or (b) the missed
 lines are structurally unreachable. No annotation hides genuinely-reachable
 logic from measurement.
+
+## End-to-end tests
+
+The IO-shell paths excluded from the unit-coverage number above (app lifecycle
+in `lib.rs`, the background daemon in `daemon/mod.rs`, and interactive secure-window
+flows) are exercised separately by an end-to-end suite that drives the built app
+through WebDriver. See [`e2e/`](e2e/README.md).
+
+```bash
+cd e2e
+pnpm install
+pnpm test   # requires a release build + the Tauri WebDriver running on :4444
+```
+
+The E2E suite uses [WebdriverIO](https://webdriver.io/) with the Tauri WebDriver
+(`tauri driver`, from `@tauri-apps/cli`). It runs in CI on Linux via
+`.github/workflows/e2e.yml` after a `cargo tauri build --release`. These tests
+deliberately cover the runtime-only surface that unit tests cannot reach, so the
+two suites are complementary rather than overlapping.
