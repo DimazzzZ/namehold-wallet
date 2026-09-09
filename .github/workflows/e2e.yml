@@ -25,6 +25,15 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
       RUSTFLAGS: -C link-arg=-fuse-ld=mold
+      # The E2E build dominates the job (~350s of ~430s). It compiles the
+      # `release` profile, whose `lto = "thin"` + `codegen-units = 1` trade
+      # compile time for runtime speed we don't need in a WebDriver smoke test.
+      # Override those two knobs FOR THIS JOB ONLY (env, not Cargo.toml) so the
+      # shipping builds in ci.yml / release.yml keep full optimization. This
+      # slashes the final-crate compile + link, which caching can't help because
+      # it rebuilds whenever app code changes.
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
       - uses: actions/checkout@v7
 
@@ -114,7 +123,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: src-tauri
-          shared-key: rust-e2e
+          # Bumped when the release-profile overrides above changed
+          # (LTO/codegen-units): cargo fingerprints these flags, so the old
+          # cache would just miss on every crate. Start a clean namespace.
+          shared-key: rust-e2e-fastlink
 
       - name: Install Node dependencies
         run: pnpm install --frozen-lockfile
@@ -188,7 +200,7 @@ jobs:
 
       - name: Upload test artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-logs
           path: |
