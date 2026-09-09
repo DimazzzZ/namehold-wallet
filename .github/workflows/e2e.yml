@@ -80,6 +80,22 @@ jobs:
             dbus-x11
           version: "3"
 
+      # awalsh128/cache-apt-pkgs-action restores packages by extracting cached
+      # .debs and does NOT re-run dpkg post-install triggers. gsettings-desktop-
+      # schemas ships raw *.gschema.xml that must be compiled into
+      # /usr/share/glib-2.0/schemas/gschemas.compiled by glib-compile-schemas —
+      # a dpkg trigger that only fires on a real install (cache miss). On a cache
+      # HIT the compiled file is absent, so org.gnome.system.proxy reads as "not
+      # installed" and WebKit aborts with a fatal GLib-GIO-ERROR. Compile the
+      # schemas explicitly so the result is identical on hit and miss.
+      - name: Compile GSettings schemas
+        run: |
+          sudo glib-compile-schemas /usr/share/glib-2.0/schemas
+          # Sanity check the schema WebKit needs is now present.
+          gsettings list-schemas | grep -q '^org.gnome.system.proxy$' \
+            && echo "org.gnome.system.proxy present" \
+            || (echo "::error::org.gnome.system.proxy still missing after compile" && exit 1)
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: mozilla/sccache-action@v0.0.11
