@@ -102,19 +102,13 @@ jobs:
       - name: Build Tauri app
         run: pnpm tauri build --no-bundle
 
-      # `--ignore-workspace` is required: without it pnpm walks up to the repo
-      # root's pnpm-workspace.yaml, treats e2e/ as the root project, installs
-      # nothing here, and `pnpm test` then fails with "wdio: not found". The
-      # flag makes e2e/ a self-contained install into e2e/node_modules.
-      #
-      # `--config.minimum-release-age=0` disables pnpm v11's default 24h
-      # supply-chain hold for THIS install only. E2E test tooling is never
-      # shipped to users, so a freshly-published transitive (e.g. jszip via
-      # webdriverio's driver bundle) shouldn't block CI. The app graph at the
-      # repo root still enforces the default policy. e2e/.npmrc pins the same
-      # value for local dev.
+      # e2e/ has its own pnpm-workspace.yaml, so pnpm treats it as an isolated
+      # workspace root (it does NOT attach to the repo-root workspace, which
+      # would install nothing and leave wdio missing). That file also carries
+      # the build-script allowlist and the relaxed minimum-release-age policy
+      # this test tooling needs. A plain frozen install is all that's required.
       - name: Install E2E dependencies
-        run: pnpm install --frozen-lockfile --ignore-workspace --config.minimum-release-age=0
+        run: pnpm install --frozen-lockfile
         working-directory: e2e
 
       # tauri-driver is a Cargo binary (not an npm package). It starts the
