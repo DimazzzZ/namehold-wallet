@@ -95,10 +95,12 @@ jobs:
       - name: Install Node dependencies
         run: pnpm install --frozen-lockfile
 
-      # Build the release binary the WebDriver launches. `tauri build` bundles
-      # the frontend (via beforeBuildCommand) then compiles the Rust binary.
+      # Build only the release executable the WebDriver launches. `--no-bundle`
+      # skips .deb/.rpm/.AppImage packaging and the updater-signing step (the
+      # app enables createUpdaterArtifacts, which otherwise fails here without
+      # TAURI_SIGNING_PRIVATE_KEY). E2E drives the raw binary, not a bundle.
       - name: Build Tauri app
-        run: pnpm tauri build
+        run: pnpm tauri build --no-bundle
 
       - name: Install E2E dependencies
         run: pnpm install --frozen-lockfile

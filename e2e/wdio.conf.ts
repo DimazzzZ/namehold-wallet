@@ -9,10 +9,12 @@
  *   3. Run tests:        pnpm test          (from e2e/)
  */
 
-// The built binary, relative to this config's directory (e2e/). Tauri v2 names
-// the release binary after `productName` ("Namehold") when `mainBinaryName` is
-// unset — NOT after the Cargo package name ("namehold-wallet").
-const appBinary = "../src-tauri/target/release/Namehold";
+// The built executable, relative to this config's directory (e2e/). Tauri v2
+// names the release EXECUTABLE after the Cargo package name ("namehold-wallet")
+// — `productName` ("Namehold") only names the bundles (.deb/.rpm/.AppImage),
+// which `tauri build --no-bundle` skips. Confirmed from CI build output:
+//   "Built application at: .../target/release/namehold-wallet".
+const appBinary = "../src-tauri/target/release/namehold-wallet";
 
 export const config: WebdriverIO.Config = {
   runner: "local",
