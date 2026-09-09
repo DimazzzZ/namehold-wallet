@@ -26,7 +26,10 @@ const appBinary = path.resolve(configDir, "../src-tauri/target/release/namehold-
 
 export const config: WebdriverIO.Config = {
   runner: "local",
+  // Connect directly to tauri-driver — no /wd/hub path prefix.
+  hostname: "127.0.0.1",
   port: 4444,
+  path: "/",
   specs: ["./specs/**/*.e2e.ts"],
   // tauri-driver proxies to a SINGLE WebKitWebDriver/app session at a time.
   // WDIO otherwise launches one worker per spec in parallel, so multiple app
@@ -46,6 +49,12 @@ export const config: WebdriverIO.Config = {
   capabilities: [
     {
       platformName: "linux",
+      // WDIO 9 defaults to opening a WebDriver BiDi session (it appends
+      // webSocketUrl: true to the capabilities). tauri-driver + WebKitWebDriver
+      // only speak classic W3C WebDriver, so the BiDi handshake closes the
+      // socket mid-response — surfacing as "Failed to create a session:
+      // UND_ERR_SOCKET". Force classic mode to negotiate a plain W3C session.
+      "wdio:enforceWebDriverClassic": true,
       "tauri:options": {
         application: appBinary,
       },
