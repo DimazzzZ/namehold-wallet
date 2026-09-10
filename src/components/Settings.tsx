@@ -13,7 +13,8 @@ import {
 import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
-import type { NodeConnectionCheck } from "../types";
+import { ConnectionCheckStatus } from "./ui/ConnectionCheckStatus";
+import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
 import { useUiStore } from "../stores/ui";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { useAppUpdate } from "../hooks/useAppUpdate";
@@ -58,10 +59,7 @@ export function Settings() {
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
-  // Node connectivity check (Test connection button, shared by remote-node flow).
-  const [testingConnection, setTestingConnection] = useState(false);
-  const [connectionResult, setConnectionResult] = useState<NodeConnectionCheck | null>(null);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const nodeProbe = useNodeConnectionCheck();
 
   useEffect(() => {
     if (settings) {
@@ -141,39 +139,6 @@ export function Settings() {
     feeRateRaw && parseDoosPerKvb(feeRateRaw) === null
       ? "Fee rate must be a whole number of doos/kvB"
       : null;
-
-  /**
-   * Probe the currently-typed Node RPC URL + API key (no persistence). Used by
-   * the "Test connection" button in the Node RPC block. Backed by the
-   * `check_node_connection` command; surfaces `reachable` / `synced` /
-   * `height` inline so the user validates before switching `chain_source` to
-   * remote_node.
-   */
-  const testNodeConnection = async () => {
-    const url = (form.node_rpc_url ?? "").trim();
-    if (!url) {
-      setConnectionError("Enter a Node RPC URL first");
-      setConnectionResult(null);
-      return;
-    }
-    setTestingConnection(true);
-    setConnectionError(null);
-    setConnectionResult(null);
-    try {
-      const result = await invoke<NodeConnectionCheck>("check_node_connection", {
-        url,
-        api_key: form.node_rpc_api_key || undefined,
-      });
-      setConnectionResult(result);
-      if (!result.reachable) {
-        setConnectionError(result.error || "Node unreachable");
-      }
-    } catch (e) {
-      setConnectionError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setTestingConnection(false);
-    }
-  };
 
   // Pick the hsd data directory with the native folder browser (Finder).
   const pickDataDir = async () => {
@@ -329,24 +294,13 @@ export function Settings() {
             <Button
               size="sm"
               variant="secondary"
-              onClick={testNodeConnection}
-              disabled={testingConnection}
+              onClick={() => nodeProbe.run(form.node_rpc_url ?? "", form.node_rpc_api_key)}
+              disabled={nodeProbe.testing}
               data-testid="test-connection-button"
             >
-              {testingConnection ? "Testing…" : "Test connection"}
+              {nodeProbe.testing ? "Testing…" : "Test connection"}
             </Button>
-            {connectionResult?.reachable && (
-              <span className="text-xs text-green-600" data-testid="connection-success">
-                ✓ Connected · height {connectionResult.height} ·{" "}
-                {connectionResult.synced ? "synced" : "syncing"}
-                {connectionResult.network ? ` · ${connectionResult.network}` : ""}
-              </span>
-            )}
-            {connectionError && (
-              <span className="text-xs text-red-600" data-testid="connection-error">
-                {connectionError}
-              </span>
-            )}
+            <ConnectionCheckStatus result={nodeProbe.result} error={nodeProbe.error} />
           </div>
           <div className="text-xs text-gray-500">
             Needed only to send or do name actions. Run hsd with{" "}

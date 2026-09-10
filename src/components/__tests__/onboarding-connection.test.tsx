@@ -129,7 +129,7 @@ describe("Onboarding — Connection choice", () => {
 
     // Test the connection.
     fireEvent.click(screen.getByTestId("test-connection-button"));
-    await waitFor(() => expect(screen.getByTestId("test-success")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("connection-success")).toBeInTheDocument());
 
     // Now the continue button should be enabled.
     expect(continueBtn).not.toBeDisabled();

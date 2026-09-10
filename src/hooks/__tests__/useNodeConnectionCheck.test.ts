@@ -1,0 +1,81 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { renderHook, act } from "@testing-library/react";
+
+const invokeMock = vi.fn();
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+import { useNodeConnectionCheck } from "../useNodeConnectionCheck";
+
+const reachable = { reachable: true, height: 100, headers: 100, synced: true, network: "main", error: null };
+const unreachable = { reachable: false, height: null, headers: null, synced: false, network: null, error: "connection refused" };
+
+// NOTE: `invokeMock.mockReset()` (or `.mockClear()`) here — instead of the
+// equivalent global `vi.clearAllMocks()` — triggers a Vitest 3.2.6 spy quirk:
+// a rejected result from a *prior* test gets misattributed as an unhandled
+// rejection on a *later* test, even though the hook's try/catch handles it.
+// `vi.clearAllMocks()` clears the same call/implementation state without
+// tripping that quirk.
+beforeEach(() => vi.clearAllMocks());
+
+describe("useNodeConnectionCheck", () => {
+  it("refuses an empty URL without calling the backend", async () => {
+    const { result } = renderHook(() => useNodeConnectionCheck());
+    await act(async () => {
+      await result.current.run("   ");
+    });
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(result.current.error).toMatch(/enter a node rpc url/i);
+    expect(result.current.ok).toBe(false);
+  });
+
+  it("trims the URL, omits a blank key, and reports ok on a reachable node", async () => {
+    invokeMock.mockResolvedValue(reachable);
+    const { result } = renderHook(() => useNodeConnectionCheck());
+    await act(async () => {
+      await result.current.run("  https://n.example.com:12037 ", "");
+    });
+    expect(invokeMock).toHaveBeenCalledWith("check_node_connection", {
+      url: "https://n.example.com:12037",
+      api_key: undefined,
+    });
+    expect(result.current.ok).toBe(true);
+    expect(result.current.result).toEqual(reachable);
+    expect(result.current.error).toBeNull();
+    expect(result.current.testing).toBe(false);
+  });
+
+  it("surfaces the node's reason when unreachable", async () => {
+    invokeMock.mockResolvedValue(unreachable);
+    const { result } = renderHook(() => useNodeConnectionCheck());
+    await act(async () => {
+      await result.current.run("https://n.example.com:12037");
+    });
+    expect(result.current.ok).toBe(false);
+    expect(result.current.error).toBe("connection refused");
+  });
+
+  it("surfaces a thrown backend error (e.g. the plaintext-key guard)", async () => {
+    invokeMock.mockRejectedValue(new Error("refusing to send API key over plaintext HTTP"));
+    const { result } = renderHook(() => useNodeConnectionCheck());
+    await act(async () => {
+      await result.current.run("http://10.0.0.5:12037", "k");
+    });
+    expect(result.current.ok).toBe(false);
+    expect(result.current.error).toMatch(/plaintext/);
+  });
+
+  it("reset() drops a previous result and error", async () => {
+    invokeMock.mockResolvedValue(reachable);
+    const { result } = renderHook(() => useNodeConnectionCheck());
+    await act(async () => {
+      await result.current.run("https://n.example.com:12037");
+    });
+    expect(result.current.ok).toBe(true);
+    act(() => result.current.reset());
+    expect(result.current.ok).toBe(false);
+    expect(result.current.result).toBeNull();
+    expect(result.current.error).toBeNull();
+  });
+});

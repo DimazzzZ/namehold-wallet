@@ -2,11 +2,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useSettingsStore } from "../stores/settings";
 import { AddWalletForm } from "./AddWalletForm";
 import { useState } from "react";
-import { invoke } from "../lib/invoke";
-import { useUiStore } from "../stores/ui";
 import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
-import type { NodeConnectionCheck } from "../types";
+import { ConnectionCheckStatus } from "./ui/ConnectionCheckStatus";
+import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
 
 /**
  * Wallet-first, non-custodial onboarding (first run, zero profiles).
@@ -51,14 +50,10 @@ export function Onboarding() {
  */
 function ConnectionChoice({ onNext }: { onNext: () => void }) {
   const saveAll = useSettingsStore((s) => s.saveAll);
-  // showToast reserved for future inline error surfacing; kept minimal here.
-  useUiStore((s) => s.showToast);
   const [remoteUrl, setRemoteUrl] = useState("");
   const [remoteApiKey, setRemoteApiKey] = useState("");
   const [allowRemoteBroadcast, setAllowRemoteBroadcast] = useState(false);
-  const [testingConnection, setTestingConnection] = useState(false);
-  const [testResult, setTestResult] = useState<NodeConnectionCheck | null>(null);
-  const [testError, setTestError] = useState<string | null>(null);
+  const probe = useNodeConnectionCheck();
 
   const selectLocal = async () => {
     await saveAll({ chain_source: "local_node", node_mode: "full" });
@@ -70,38 +65,13 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
     onNext();
   };
 
-  const testRemoteConnection = async () => {
-    if (!remoteUrl.trim()) {
-      setTestError("Enter a node RPC URL");
-      return;
-    }
-    setTestingConnection(true);
-    setTestError(null);
-    setTestResult(null);
-    try {
-      const result = await invoke<NodeConnectionCheck>("check_node_connection", {
-        url: remoteUrl,
-        api_key: remoteApiKey || undefined,
-      });
-      setTestResult(result);
-      if (!result.reachable) {
-        setTestError(result.error || "Node unreachable");
-      }
-    } catch (e) {
-      setTestError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setTestingConnection(false);
-    }
-  };
-
   const selectRemote = async () => {
-    if (!testResult?.reachable) {
-      setTestError("Test the connection first");
-      return;
-    }
+    // The Continue button is disabled until a probe succeeds; this guard only
+    // covers a programmatic click.
+    if (!probe.ok) return;
     await saveAll({
       chain_source: "remote_node",
-      node_rpc_url: remoteUrl,
+      node_rpc_url: remoteUrl.trim(),
       node_rpc_api_key: remoteApiKey,
       allow_remote_broadcast: allowRemoteBroadcast ? "true" : "false",
     });
@@ -153,23 +123,13 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
               />
               <Button
                 size="sm"
-                onClick={testRemoteConnection}
-                disabled={testingConnection}
+                onClick={() => probe.run(remoteUrl, remoteApiKey)}
+                disabled={probe.testing}
                 data-testid="test-connection-button"
               >
-                {testingConnection ? "Testing…" : "Test Connection"}
+                {probe.testing ? "Testing…" : "Test Connection"}
               </Button>
-              {testError && (
-                <p className="text-xs text-red-600" data-testid="test-error">
-                  {testError}
-                </p>
-              )}
-              {testResult?.reachable && (
-                <div className="text-xs text-green-600" data-testid="test-success">
-                  ✓ Connected (height: {testResult.height},{" "}
-                  {testResult.synced ? "synced" : "syncing"})
-                </div>
-              )}
+              <ConnectionCheckStatus result={probe.result} error={probe.error} />
               <label className="flex items-center gap-2 text-xs">
                 <input
                   type="checkbox"
@@ -182,7 +142,7 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
               <Button
                 size="sm"
                 onClick={selectRemote}
-                disabled={!testResult?.reachable}
+                disabled={!probe.ok}
                 data-testid="select-remote-button"
               >
                 Continue
