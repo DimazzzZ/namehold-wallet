@@ -1440,8 +1440,8 @@ pub async fn broadcast_tx_draft(
     }
     // A remote node additionally needs the explicit "Allow sending via remote
     // node" opt-in. The UI gate shows the same rule; enforcing it here too
-    // means a bypassed UI still cannot push a signed tx through someone
-    // else's node.
+    // closes a code path that would otherwise skip that gate and broadcast
+    // through someone else's node.
     if client.source() == ChainSource::RemoteNode
         && !crate::noncustodial::rpc::remote_broadcast_allowed(&settings)
     {
@@ -1843,7 +1843,7 @@ pub async fn get_write_capability(
         cap.broadcaster_available = false;
         cap.can_write = false;
         cap.reason = Some(
-            "SPV mode cannot send transactions. Switch to Full node mode in Settings → Connections to enable sending."
+            "SPV mode cannot send transactions. Choose \"Local full node\" or a remote node under Settings → Connections → Chain source."
                 .to_string(),
         );
         return Ok(cap);

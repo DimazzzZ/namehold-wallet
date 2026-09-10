@@ -12,7 +12,7 @@ export const CONNECTION_MODE_LABELS: Record<ConnectionMode, string> = {
   local_full: "Local full node (this device runs hsd)",
   local_spv: "SPV — lightweight, read-only (headers only, explorer for data)",
   remote_node: "Remote node (point at someone else's hsd)",
-  explorer: "Explorer only (read-only)",
+  explorer: "Read-only (never send)",
 };
 
 export function toConnectionMode(chainSource: ChainSource, nodeMode: NodeMode): ConnectionMode {

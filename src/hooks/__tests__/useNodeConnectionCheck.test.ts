@@ -11,13 +11,7 @@ import { useNodeConnectionCheck } from "../useNodeConnectionCheck";
 const reachable = { reachable: true, height: 100, headers: 100, synced: true, network: "main", error: null };
 const unreachable = { reachable: false, height: null, headers: null, synced: false, network: null, error: "connection refused" };
 
-// NOTE: `invokeMock.mockReset()` (or `.mockClear()`) here — instead of the
-// equivalent global `vi.clearAllMocks()` — triggers a Vitest 3.2.6 spy quirk:
-// a rejected result from a *prior* test gets misattributed as an unhandled
-// rejection on a *later* test, even though the hook's try/catch handles it.
-// `vi.clearAllMocks()` clears the same call/implementation state without
-// tripping that quirk.
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => invokeMock.mockReset());
 
 describe("useNodeConnectionCheck", () => {
   it("refuses an empty URL without calling the backend", async () => {
@@ -57,7 +51,7 @@ describe("useNodeConnectionCheck", () => {
   });
 
   it("surfaces a thrown backend error (e.g. the plaintext-key guard)", async () => {
-    invokeMock.mockRejectedValue(new Error("refusing to send API key over plaintext HTTP"));
+    invokeMock.mockRejectedValueOnce(new Error("refusing to send API key over plaintext HTTP"));
     const { result } = renderHook(() => useNodeConnectionCheck());
     await act(async () => {
       await result.current.run("http://10.0.0.5:12037", "k");

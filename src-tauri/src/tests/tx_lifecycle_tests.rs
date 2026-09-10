@@ -921,7 +921,10 @@ async fn broadcast_refused_for_remote_node_without_opt_in() {
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     db::queries::set_setting(&conn, "chain_source", "remote_node").unwrap();
-    // Deliberately NO allow_remote_broadcast row: the default must be "off".
+    // No opt-in is written here, so the row keeps migration 009's seeded
+    // `allow_remote_broadcast = "false"` (migration 010 no longer deletes it).
+    // The missing-key default itself is pinned separately by
+    // `remote_broadcast_allowed_defaults_off_and_requires_literal_true` in rpc.rs.
     let app = app_with(conn);
 
     let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)

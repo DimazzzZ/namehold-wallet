@@ -286,10 +286,11 @@ export function Settings() {
             ))}
           </select>
           <div className="text-xs text-gray-500">
-            Where the wallet reads chain data and sends transactions. Remote and SPV are a
-            privacy/trust tradeoff, not custody — your keys never leave this device. SPV
-            downloads only block headers and reads balances/names from the explorer; switching
-            to or from SPV needs an hsd restart (use "Re-sync node data" below if it misbehaves).
+            Where the wallet sends transactions. Reads come from your node when it is synced,
+            otherwise the explorer. Remote and SPV are a privacy/trust tradeoff, not custody —
+            your keys never leave this device. SPV downloads only block headers and reads
+            balances/names from the explorer; switching to or from SPV needs an hsd restart (use
+            "Re-sync node data" below if it misbehaves).
           </div>
           <Input
             label="Node RPC URL (sending)"
