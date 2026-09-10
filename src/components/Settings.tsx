@@ -18,12 +18,11 @@ import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
 import type { ChainSource, NodeMode } from "../types";
 import {
   CONNECTION_MODE_LABELS,
-  boolToSetting,
   fromConnectionMode,
-  settingIsTrue,
   toConnectionMode,
   type ConnectionMode,
 } from "../lib/connectionMode";
+import { boolToSetting, hasStoredSecret, settingToBool } from "../lib/settingsBool";
 import { useUiStore } from "../stores/ui";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { useAppUpdate } from "../hooks/useAppUpdate";
@@ -183,8 +182,7 @@ export function Settings() {
     // is stored. Saving that empty value would clobber the stored secret.
     // Skip the field on save when it's still empty AND the backend reported a
     // stored value via the `__has_<key>` marker.
-    const hasStoredApiKey =
-      (settings as unknown as Record<string, string>)["__has_node_rpc_api_key"] === "true";
+    const hasStoredApiKey = hasStoredSecret(settings, "node_rpc_api_key");
     if (hasStoredApiKey && (normalized.node_rpc_api_key ?? "") === "") {
       delete normalized.node_rpc_api_key;
     }
@@ -308,12 +306,12 @@ export function Settings() {
             probe={nodeProbe}
             urlLabel="Node RPC URL (sending)"
             urlPlaceholder="http://127.0.0.1:12037"
+            apiKeyLabel="Node RPC API key"
             apiKeyPlaceholder={
-              (settings as unknown as Record<string, string>)["__has_node_rpc_api_key"] === "true"
+              hasStoredSecret(settings, "node_rpc_api_key")
                 ? "•••••• (stored — leave blank to keep)"
                 : "(optional)"
             }
-            buttonLabel="Test connection"
           />
           <div className="text-xs text-gray-500">
             Needed only to send or do name actions. Run hsd with{" "}
@@ -324,7 +322,7 @@ export function Settings() {
             <label className="flex items-center gap-2 text-sm pt-2">
               <input
                 type="checkbox"
-                checked={settingIsTrue(form.allow_remote_broadcast)}
+                checked={settingToBool(form.allow_remote_broadcast)}
                 onChange={(e) =>
                   updateField("allow_remote_broadcast", boolToSetting(e.target.checked))
                 }
@@ -374,10 +372,8 @@ export function Settings() {
           <label className="flex items-center gap-2 text-sm pt-2">
             <input
               type="checkbox"
-              checked={form.autostart_hsd === "true"}
-              onChange={(e) =>
-                updateField("autostart_hsd", e.target.checked ? "true" : "false")
-              }
+              checked={settingToBool(form.autostart_hsd)}
+              onChange={(e) => updateField("autostart_hsd", boolToSetting(e.target.checked))}
               data-testid="autostart-hsd-checkbox"
             />
             Autostart HSD when the app launches
@@ -676,14 +672,14 @@ function UpdateNotificationSettings({
 }) {
   const [permission, setPermission] = useState<PermissionStatus | null>(null);
   const [requesting, setRequesting] = useState(false);
-  const enabled = form.update_notify_enabled === "true";
+  const enabled = settingToBool(form.update_notify_enabled);
 
   useEffect(() => {
     checkNotificationPermission().then(setPermission);
   }, []);
 
   const onToggle = async (checked: boolean) => {
-    updateField("update_notify_enabled", checked ? "true" : "false");
+    updateField("update_notify_enabled", boolToSetting(checked));
     if (!checked) return;
     setRequesting(true);
     try {
@@ -1108,14 +1104,14 @@ function NotificationSettings({
 }) {
   const [permission, setPermission] = useState<PermissionStatus | null>(null);
   const [requesting, setRequesting] = useState(false);
-  const enabled = form.deadline_notify_enabled === "true";
+  const enabled = settingToBool(form.deadline_notify_enabled);
 
   useEffect(() => {
     checkNotificationPermission().then(setPermission);
   }, []);
 
   const onToggle = async (checked: boolean) => {
-    updateField("deadline_notify_enabled", checked ? "true" : "false");
+    updateField("deadline_notify_enabled", boolToSetting(checked));
     if (!checked) return;
     setRequesting(true);
     try {
@@ -1189,14 +1185,14 @@ function WatchlistNotificationSettings({
 }) {
   const [permission, setPermission] = useState<PermissionStatus | null>(null);
   const [requesting, setRequesting] = useState(false);
-  const enabled = form.watchlist_notify_enabled === "true";
+  const enabled = settingToBool(form.watchlist_notify_enabled);
 
   useEffect(() => {
     checkNotificationPermission().then(setPermission);
   }, []);
 
   const onToggle = async (checked: boolean) => {
-    updateField("watchlist_notify_enabled", checked ? "true" : "false");
+    updateField("watchlist_notify_enabled", boolToSetting(checked));
     if (!checked) return;
     setRequesting(true);
     try {

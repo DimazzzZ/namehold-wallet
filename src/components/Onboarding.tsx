@@ -4,7 +4,8 @@ import { AddWalletForm } from "./AddWalletForm";
 import { useState } from "react";
 import { Button } from "./ui/Button";
 import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
-import { boolToSetting, fromConnectionMode } from "../lib/connectionMode";
+import { fromConnectionMode } from "../lib/connectionMode";
+import { boolToSetting } from "../lib/settingsBool";
 import { RemoteNodeFields } from "./ui/RemoteNodeFields";
 
 /**
@@ -124,6 +125,7 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
                 apiKeyPlaceholder="API key (optional)"
                 urlTestId="remote-url-input"
                 apiKeyTestId="remote-api-key-input"
+                actionsLayout="stack"
               />
               <label className="flex items-center gap-2 text-xs">
                 <input
