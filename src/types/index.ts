@@ -11,7 +11,11 @@ export type MigrationStatus =
 /** Node operating mode — determines sync behavior and data sources. */
 export type NodeMode = "full" | "spv";
 
-/** Chain data source — determines how the wallet reads and writes. */
+/**
+ * Persisted `chain_source` setting. SPV is NOT a value here: the backend
+ * derives `ChainSource::SpvNode` from `chain_source` + `node_mode` — see
+ * `src/lib/connectionMode.ts` for the UI-facing mode that folds both together.
+ */
 export type ChainSource = "local_node" | "remote_node" | "explorer";
 
 /** Result of a connectivity check against a candidate remote node RPC. */
@@ -341,7 +345,7 @@ export interface Settings {
   explorer_fallback_url: string;
   /**
    * "local_node" | "remote_node" | "explorer" — which data source to use.
-   * Determines whether node_mode dropdown is visible.
+   * Edited together with node_mode via the Chain source selector (see connectionMode.ts).
    */
   chain_source: ChainSource;
   /**

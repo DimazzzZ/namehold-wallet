@@ -15,6 +15,13 @@ import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
 import { ConnectionCheckStatus } from "./ui/ConnectionCheckStatus";
 import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
+import type { ChainSource, NodeMode } from "../types";
+import {
+  CONNECTION_MODE_LABELS,
+  fromConnectionMode,
+  toConnectionMode,
+  type ConnectionMode,
+} from "../lib/connectionMode";
 import { useUiStore } from "../stores/ui";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { useAppUpdate } from "../hooks/useAppUpdate";
@@ -260,18 +267,29 @@ export function Settings() {
         <div className="space-y-2 pt-2 border-t border-gray-100">
           <label className="text-sm font-medium">Chain source</label>
           <select
-            value={form.chain_source ?? "local_node"}
-            onChange={(e) => updateField("chain_source", e.target.value)}
+            value={toConnectionMode(
+              (form.chain_source ?? "local_node") as ChainSource,
+              (form.node_mode ?? "full") as NodeMode,
+            )}
+            onChange={(e) => {
+              const next = fromConnectionMode(e.target.value as ConnectionMode);
+              updateField("chain_source", next.chain_source);
+              updateField("node_mode", next.node_mode);
+            }}
             className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
             data-testid="chain-source-select"
           >
-            <option value="local_node">Local node (this device runs hsd)</option>
-            <option value="remote_node">Remote node (point at someone else's hsd)</option>
-            <option value="explorer">Explorer only (read-only)</option>
+            {(Object.keys(CONNECTION_MODE_LABELS) as ConnectionMode[]).map((mode) => (
+              <option key={mode} value={mode}>
+                {CONNECTION_MODE_LABELS[mode]}
+              </option>
+            ))}
           </select>
           <div className="text-xs text-gray-500">
-            Where the wallet reads chain data. Remote/SPV are a privacy/trust tradeoff, not
-            custody — your keys never leave this device.
+            Where the wallet reads chain data and sends transactions. Remote and SPV are a
+            privacy/trust tradeoff, not custody — your keys never leave this device. SPV
+            downloads only block headers and reads balances/names from the explorer; switching
+            to or from SPV needs an hsd restart (use "Re-sync node data" below if it misbehaves).
           </div>
           <Input
             label="Node RPC URL (sending)"
@@ -365,28 +383,6 @@ export function Settings() {
             Leave empty to auto-detect. Set this if the app can't find your hsd
             install (e.g. <code>$(which hsd)</code>). Save settings to apply.
           </div>
-
-          {/* Node mode dropdown: only visible when using a local or remote node.
-              When chain_source is "explorer", the node mode is irrelevant. */}
-          {(form.chain_source ?? "local_node") !== "explorer" && (
-            <div className="space-y-2 pt-2 border-t border-gray-100">
-              <label className="text-sm font-medium">Node mode</label>
-              <select
-                value={form.node_mode ?? "full"}
-                onChange={(e) => updateField("node_mode", e.target.value)}
-                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
-                data-testid="node-mode-select"
-              >
-                <option value="full">Full node (requires ~15GB, indexes all addresses)</option>
-                <option value="spv">Lightweight SPV (faster sync, uses explorer for data)</option>
-              </select>
-              <div className="text-xs text-gray-500">
-                SPV mode downloads only block headers. Faster initial sync, less disk space.
-                Balance and name data come from the explorer. Requires hsd restart to apply.
-                If switching causes issues, use "Re-sync node data" below.
-              </div>
-            </div>
-          )}
 
           <label className="flex items-center gap-2 text-sm pt-2">
             <input

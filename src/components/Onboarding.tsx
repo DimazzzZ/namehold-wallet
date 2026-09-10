@@ -6,6 +6,7 @@ import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
 import { ConnectionCheckStatus } from "./ui/ConnectionCheckStatus";
 import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
+import { fromConnectionMode } from "../lib/connectionMode";
 
 /**
  * Wallet-first, non-custodial onboarding (first run, zero profiles).
@@ -56,12 +57,12 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
   const probe = useNodeConnectionCheck();
 
   const selectLocal = async () => {
-    await saveAll({ chain_source: "local_node", node_mode: "full" });
+    await saveAll(fromConnectionMode("local_full"));
     onNext();
   };
 
   const selectSpv = async () => {
-    await saveAll({ chain_source: "local_node", node_mode: "spv" });
+    await saveAll(fromConnectionMode("local_spv"));
     onNext();
   };
 
@@ -70,7 +71,7 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
     // covers a programmatic click.
     if (!probe.ok) return;
     await saveAll({
-      chain_source: "remote_node",
+      ...fromConnectionMode("remote_node"),
       node_rpc_url: remoteUrl.trim(),
       node_rpc_api_key: remoteApiKey,
       allow_remote_broadcast: allowRemoteBroadcast ? "true" : "false",

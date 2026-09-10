@@ -145,6 +145,10 @@ describe("Onboarding — Connection choice", () => {
       key: "node_rpc_url",
       value: "http://example.com:12037",
     });
+    expect(invokeMock).toHaveBeenCalledWith("update_setting", {
+      key: "node_mode",
+      value: "full",
+    });
   });
 
   it("failed probe shows the node's reason and keeps Continue disabled", async () => {
