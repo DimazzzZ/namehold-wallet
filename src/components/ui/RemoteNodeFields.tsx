@@ -8,9 +8,9 @@ export interface RemoteNodeFieldsProps {
   url: string;
   /** RPC API key value. */
   apiKey: string;
-  /** Called when the URL changes; the caller should reset the probe. */
+  /** Called when the URL changes. The probe is reset for you. */
   onUrlChange: (url: string) => void;
-  /** Called when the API key changes; the caller should reset the probe. */
+  /** Called when the API key changes. The probe is reset for you. */
   onApiKeyChange: (key: string) => void;
   /** The probe state (testing, result, error, ok). */
   probe: NodeConnectionCheckState;
@@ -40,9 +40,10 @@ export interface RemoteNodeFieldsProps {
  * Labels, placeholders, testids, and the Test-button layout are the parent's
  * to choose; everything else is identical between the two screens.
  *
- * The caller is responsible for calling `probe.reset()` from `onUrlChange` /
- * `onApiKeyChange`, so a stale "connected" result can't outlive the URL or key
- * it was probed with.
+ * Editing either field resets the probe here, so a stale "connected" result
+ * can never outlive the URL or key it was probed with. Leaving that to the
+ * caller made it a footgun: two call sites had to remember it, and forgetting
+ * it in a third would silently show a green check for an unprobed node.
  */
 export function RemoteNodeFields({
   url,
@@ -63,7 +64,10 @@ export function RemoteNodeFields({
       <Input
         label={urlLabel}
         value={url}
-        onChange={(e) => onUrlChange(e.target.value)}
+        onChange={(e) => {
+          probe.reset();
+          onUrlChange(e.target.value);
+        }}
         placeholder={urlPlaceholder}
         data-testid={urlTestId}
       />
@@ -71,7 +75,10 @@ export function RemoteNodeFields({
         label={apiKeyLabel}
         type="password"
         value={apiKey}
-        onChange={(e) => onApiKeyChange(e.target.value)}
+        onChange={(e) => {
+          probe.reset();
+          onApiKeyChange(e.target.value);
+        }}
         placeholder={apiKeyPlaceholder}
         data-testid={apiKeyTestId}
       />

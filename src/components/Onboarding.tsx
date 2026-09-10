@@ -112,14 +112,8 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
               <RemoteNodeFields
                 url={remoteUrl}
                 apiKey={remoteApiKey}
-                onUrlChange={(v) => {
-                  setRemoteUrl(v);
-                  probe.reset();
-                }}
-                onApiKeyChange={(v) => {
-                  setRemoteApiKey(v);
-                  probe.reset();
-                }}
+                onUrlChange={setRemoteUrl}
+                onApiKeyChange={setRemoteApiKey}
                 probe={probe}
                 urlPlaceholder="https://node.example.com:12037"
                 apiKeyPlaceholder="API key (optional)"

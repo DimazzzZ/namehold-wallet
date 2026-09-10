@@ -295,14 +295,8 @@ export function Settings() {
           <RemoteNodeFields
             url={form.node_rpc_url ?? ""}
             apiKey={form.node_rpc_api_key ?? ""}
-            onUrlChange={(v) => {
-              updateField("node_rpc_url", v);
-              nodeProbe.reset();
-            }}
-            onApiKeyChange={(v) => {
-              updateField("node_rpc_api_key", v);
-              nodeProbe.reset();
-            }}
+            onUrlChange={(v) => updateField("node_rpc_url", v)}
+            onApiKeyChange={(v) => updateField("node_rpc_api_key", v)}
             probe={nodeProbe}
             urlLabel="Node RPC URL (sending)"
             urlPlaceholder="http://127.0.0.1:12037"

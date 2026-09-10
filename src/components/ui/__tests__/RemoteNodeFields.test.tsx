@@ -68,6 +68,20 @@ describe("RemoteNodeFields", () => {
     expect(onApiKeyChange).toHaveBeenCalledWith("sekrit");
   });
 
+  it("invalidates a stale probe result itself, so no caller has to remember", () => {
+    const probe = renderFields({ probe: probeState({ ok: true }) });
+
+    fireEvent.change(screen.getByTestId("node-rpc-url-input"), {
+      target: { value: "http://127.0.0.1:12037" },
+    });
+    expect(probe.reset).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByTestId("node-rpc-api-key-input"), {
+      target: { value: "sekrit" },
+    });
+    expect(probe.reset).toHaveBeenCalledTimes(2);
+  });
+
   it("probes the current url and key when Test connection is clicked", () => {
     const probe = renderFields({ url: "http://127.0.0.1:12037", apiKey: "sekrit" });
     fireEvent.click(screen.getByTestId("test-connection-button"));
