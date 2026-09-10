@@ -29,7 +29,7 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
 
 import { Settings } from "../Settings";
-import { useSettingsStore } from "../../stores/settings";
+import { loadSettings } from "../../test/fixtures/settings";
 
 function route(cmd: string) {
   switch (cmd) {
@@ -81,70 +81,11 @@ function wrapper() {
 // Load a settings map that mirrors what `get_settings` returns AFTER redaction:
 // no `node_rpc_api_key` value, only the `__has_node_rpc_api_key` marker.
 function loadWithStoredKey() {
-  useSettingsStore.setState({
-    loaded: true,
-    settings: {
-      node_rpc_url: "http://127.0.0.1:12037",
-      node_rpc_api_key: "",
-      hsd_prefix: "",
-      hsd_path: "",
-      autostart_hsd: "true",
-      explorer_api_url: "https://e.hnsfans.com",
-      address_gap_limit: "20",
-      signer_session_timeout_seconds: "900",
-      onboarding_complete: "true",
-      deadline_notify_enabled: "false",
-      deadline_notify_reveal_lead_blocks: "144",
-      deadline_notify_renewal_lead_days: "30",
-      watchlist_notify_enabled: "false",
-      watchlist_notify_bidding_soon_lead_blocks: "144",
-      watchlist_notify_highest_bid_threshold_hns: "",
-      background_sync_enabled: "1",
-      node_mode: "full",
-      explorer_fallback_url: "",
-      chain_source: "local_node",
-      allow_remote_broadcast: "false",
-      close_to_tray: "1",
-      tray_hint_shown: "0",
-      launch_at_login: "0",
-      fee_rate_doos_per_kvb: "",
-      // The presence marker the redacted `get_settings` emits when a key is
-      // stored server-side. Not part of the Settings type — cast at read time.
-      __has_node_rpc_api_key: "true",
-    } as unknown as ReturnType<typeof useSettingsStore.getState>["settings"],
-  });
+  loadSettings({ __has_node_rpc_api_key: "true" });
 }
 
 function loadWithoutStoredKey() {
-  useSettingsStore.setState({
-    loaded: true,
-    settings: {
-      node_rpc_url: "http://127.0.0.1:12037",
-      node_rpc_api_key: "",
-      hsd_prefix: "",
-      hsd_path: "",
-      autostart_hsd: "true",
-      explorer_api_url: "https://e.hnsfans.com",
-      address_gap_limit: "20",
-      signer_session_timeout_seconds: "900",
-      onboarding_complete: "true",
-      deadline_notify_enabled: "false",
-      deadline_notify_reveal_lead_blocks: "144",
-      deadline_notify_renewal_lead_days: "30",
-      watchlist_notify_enabled: "false",
-      watchlist_notify_bidding_soon_lead_blocks: "144",
-      watchlist_notify_highest_bid_threshold_hns: "",
-      background_sync_enabled: "1",
-      node_mode: "full",
-      explorer_fallback_url: "",
-      chain_source: "local_node",
-      allow_remote_broadcast: "false",
-      close_to_tray: "1",
-      tray_hint_shown: "0",
-      launch_at_login: "0",
-      fee_rate_doos_per_kvb: "",
-    },
-  });
+  loadSettings();
 }
 
 function apiKeyInput(): HTMLInputElement {
