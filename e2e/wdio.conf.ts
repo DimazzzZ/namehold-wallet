@@ -15,14 +15,15 @@ import { fileURLToPath } from "node:url";
 // The built executable. Tauri v2 names the release EXECUTABLE after the Cargo
 // package name ("namehold-wallet") — `productName` ("Namehold") only names the
 // bundles (.deb/.rpm/.AppImage), which `tauri build --no-bundle` skips.
-// Confirmed from CI build output:
-//   "Built application at: .../target/release/namehold-wallet".
+// E2E builds with `tauri build --debug --no-bundle` (smoke tests don't need
+// optimization), so the binary is in target/debug/. Confirmed from CI:
+//   "Built application at: .../target/debug/namehold-wallet".
 //
 // Resolve to an ABSOLUTE path: tauri-driver launches the binary relative to
 // its OWN working directory, not e2e/, so a relative path fails to spawn the
 // app (the session then dies with connection-refused).
 const configDir = path.dirname(fileURLToPath(import.meta.url));
-const appBinary = path.resolve(configDir, "../src-tauri/target/release/namehold-wallet");
+const appBinary = path.resolve(configDir, "../src-tauri/target/debug/namehold-wallet");
 
 export const config: WebdriverIO.Config = {
   runner: "local",

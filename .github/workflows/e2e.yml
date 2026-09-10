@@ -25,15 +25,13 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
       RUSTFLAGS: -C link-arg=-fuse-ld=mold
-      # The E2E build dominates the job (~350s of ~430s). It compiles the
-      # `release` profile, whose `lto = "thin"` + `codegen-units = 1` trade
-      # compile time for runtime speed we don't need in a WebDriver smoke test.
-      # Override those two knobs FOR THIS JOB ONLY (env, not Cargo.toml) so the
-      # shipping builds in ci.yml / release.yml keep full optimization. This
-      # slashes the final-crate compile + link, which caching can't help because
-      # it rebuilds whenever app code changes.
-      CARGO_PROFILE_RELEASE_LTO: "false"
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      # The E2E build dominates the job (~350s of ~430s). Switch to the debug
+      # profile (opt-level=0, no LTO, incremental enabled) for a ~3–5× speedup
+      # over release. Smoke tests (title/visibility/window-size) pass identically
+      # on debug binaries. The sidecar also builds in debug (via SIDECAR_PROFILE)
+      # so we don't waste ~20–50s on release codegen+link for a binary the tests
+      # never even launch.
+      SIDECAR_PROFILE: debug
     steps:
       - uses: actions/checkout@v7
 
@@ -123,20 +121,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           workspaces: src-tauri
-          # Bumped when the release-profile overrides above changed
-          # (LTO/codegen-units): cargo fingerprints these flags, so the old
-          # cache would just miss on every crate. Start a clean namespace.
-          shared-key: rust-e2e-fastlink
+          # Bumped when switching from release to debug profile: cargo
+          # fingerprints the profile, so the old cache would miss on every crate.
+          # Start a clean namespace.
+          shared-key: rust-e2e-debug
 
       - name: Install Node dependencies
         run: pnpm install --frozen-lockfile
 
-      # Build only the release executable the WebDriver launches. `--no-bundle`
+      # Build only the debug executable the WebDriver launches. `--debug` picks
+      # the dev profile (opt-level=0, incremental) — ~3–5× faster to compile
+      # than release and identical from WebDriver's perspective. `--no-bundle`
       # skips .deb/.rpm/.AppImage packaging and the updater-signing step (the
       # app enables createUpdaterArtifacts, which otherwise fails here without
       # TAURI_SIGNING_PRIVATE_KEY). E2E drives the raw binary, not a bundle.
       - name: Build Tauri app
-        run: pnpm tauri build --no-bundle
+        run: pnpm tauri build --debug --no-bundle
 
       # --ignore-workspace: don't attach to the repo-root pnpm workspace (which
       #   would install nothing here and leave wdio missing).
