@@ -1438,6 +1438,18 @@ pub async fn broadcast_tx_draft(
             "chain source is read-only; broadcasting is disabled".to_string(),
         ));
     }
+    // A remote node additionally needs the explicit "Allow sending via remote
+    // node" opt-in. The UI gate shows the same rule; enforcing it here too
+    // means a bypassed UI still cannot push a signed tx through someone
+    // else's node.
+    if client.source() == ChainSource::RemoteNode
+        && !crate::noncustodial::rpc::remote_broadcast_allowed(&settings)
+    {
+        return Err(AppError::InvalidInput(
+            "sending via remote node is disabled; enable \"Allow sending via remote node\" in Settings → Connections"
+                .to_string(),
+        ));
+    }
     let outcome = classify_broadcast_outcome_with_client(&client, &signed_hex).await;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     match outcome {
@@ -1812,8 +1824,7 @@ pub async fn get_write_capability(
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
         let source = ChainSource::from_settings(&settings);
-        let allow_remote =
-            settings.get("allow_remote_broadcast").map(|s| s.as_str()) == Some("true");
+        let allow_remote = crate::noncustodial::rpc::remote_broadcast_allowed(&settings);
         // One address to probe the node's address index (if a profile exists).
         let probe_addr = active_profile(&conn)
             .ok()

@@ -17,6 +17,7 @@
 
 ### Fixed
 - **SPV mode can no longer broadcast, even past the UI gate.** `ChainSource::SpvNode` is now refused at the RPC broadcast boundary (`can_broadcast()` returns `false`) and up-front in `broadcast_tx_draft`, not only by the UI write-capability gate. A signed draft attempted against an SPV source fails cleanly with a read-only error and is left untouched (neither `failed` nor `broadcast_pending`) — nothing is sent over the wire. Defense-in-depth for the documented "SPV = read-only" product intent.
+- **"Allow sending via remote node" is now enforced by the backend, not just the UI.** `broadcast_tx_draft` refuses a `remote_node` chain source unless `allow_remote_broadcast` is `"true"`, leaving the signed draft untouched. Previously only the write-capability gate in the UI consulted the flag.
 
 ### Changed
 

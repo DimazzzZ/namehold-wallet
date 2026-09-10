@@ -71,10 +71,7 @@ impl ChainSource {
 
     /// Whether this source can broadcast transactions via node RPC.
     pub fn can_broadcast(self) -> bool {
-        matches!(
-            self,
-            ChainSource::LocalNode | ChainSource::RemoteNode
-        )
+        matches!(self, ChainSource::LocalNode | ChainSource::RemoteNode)
     }
 }
 
@@ -166,6 +163,18 @@ pub fn resolve_node_api_key(settings: &HashMap<String, String>) -> String {
         return String::new();
     }
     read_hsd_conf_api_key(prefix).unwrap_or_default()
+}
+
+/// Whether the user has opted in to broadcasting through a remote node.
+/// Mirrors the `allow_remote_broadcast` setting ("true" / "false", default
+/// off). Only meaningful when the chain source is [`ChainSource::RemoteNode`];
+/// both the UI gate (`get_write_capability`) and the broadcast boundary
+/// (`broadcast_tx_draft`) consult this same rule.
+pub fn remote_broadcast_allowed(settings: &HashMap<String, String>) -> bool {
+    settings
+        .get("allow_remote_broadcast")
+        .map(|s| s.trim() == "true")
+        .unwrap_or(false)
 }
 
 /// Parse `api-key: <value>` (or `api-key <value>`) from `<prefix>/hsd.conf`.
@@ -755,6 +764,21 @@ mod tests {
         // The broadcast boundary refuses it too (defense-in-depth), not just
         // the UI write-capability gate.
         assert!(!ChainSource::SpvNode.can_broadcast());
+    }
+
+    #[test]
+    fn remote_broadcast_allowed_defaults_off_and_requires_literal_true() {
+        let mut s = HashMap::new();
+        assert!(!remote_broadcast_allowed(&s), "missing key must mean off");
+        s.insert("allow_remote_broadcast".to_string(), "false".to_string());
+        assert!(!remote_broadcast_allowed(&s));
+        s.insert("allow_remote_broadcast".to_string(), "1".to_string());
+        assert!(
+            !remote_broadcast_allowed(&s),
+            "only the literal \"true\" opts in"
+        );
+        s.insert("allow_remote_broadcast".to_string(), " true ".to_string());
+        assert!(remote_broadcast_allowed(&s), "whitespace is tolerated");
     }
 
     #[test]
