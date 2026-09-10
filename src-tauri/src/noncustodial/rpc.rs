@@ -58,13 +58,23 @@ impl ChainSource {
 
     /// Build the chain source considering both `chain_source` and `node_mode` settings.
     ///
-    /// This is the inverse of `fromConnectionMode` in `src/lib/connectionMode.ts`:
-    /// the frontend flattens the four UI `ConnectionMode`s (`local_full` /
-    /// `local_spv` / `remote_node` / `explorer`) into the persisted
-    /// `(chain_source, node_mode)` pair, and this match expands that pair back
-    /// into a `ChainSource`. Keep the two in lockstep — adding a mode requires
-    /// editing both, since there is no shared source across the TS/Rust
-    /// boundary. The arms below mirror the mapping table in `connectionMode.ts`.
+    /// This is the read side of the mapping `fromConnectionMode` in
+    /// `src/lib/connectionMode.ts` writes: the frontend flattens the four UI
+    /// `ConnectionMode`s (`local_full` / `local_spv` / `remote_node` /
+    /// `explorer`) into the persisted `(chain_source, node_mode)` pair, and
+    /// this match reads that pair back as a `ChainSource`. It is not that
+    /// function's inverse — the TS-side inverse is `toConnectionMode`, and
+    /// this one is lossy: both `("local_node", "spv")` and
+    /// `("remote_node", "spv")` collapse to `SpvNode`.
+    ///
+    /// Each of the four `ConnectionMode`s has a matching arm below, but the
+    /// arms are deliberately wider than what the frontend writes:
+    /// `("remote_node", "spv")` is unreachable via `fromConnectionMode` (it
+    /// always pairs `remote_node` with `node_mode: "full"`) and exists only to
+    /// stay read-only if a stale `node_mode: "spv"` survives a mode switch.
+    ///
+    /// Keep the two sides in lockstep — adding a UI mode requires editing
+    /// both, since there is no shared source across the TS/Rust boundary.
     pub fn from_settings(settings: &std::collections::HashMap<String, String>) -> Self {
         let chain_source = settings
             .get("chain_source")
