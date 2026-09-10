@@ -2,12 +2,7 @@ import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import { useActiveProfile, useSignerSession, useWriteCapability } from "../../queries/wallet";
-import {
-  useNodeStatus,
-  useStartHsd,
-  useStopHsd,
-  useResyncHsd,
-} from "../../queries/node";
+import { useNodeStatus, useStartHsd, useStopHsd, useResyncHsd } from "../../queries/node";
 import type { ShellStatusItem, StatusTone } from "../../types";
 import { Popover, PopoverItem } from "./Popover";
 import { useUiStore } from "../../stores/ui";
@@ -96,9 +91,7 @@ export function StatusStrip({ className }: { className?: string }) {
         label: "Node",
         value: nodeConnected ? "Connected" : nodeStarting ? "Starting…" : "Offline",
         tone: nodeConnected ? "success" : nodeStarting ? "warning" : "default",
-        detail: nodeConnected
-          ? `block ${node?.height ?? "?"}`
-          : "Open menu to start a node",
+        detail: nodeConnected ? `block ${node?.height ?? "?"}` : "Open menu to start a node",
       });
 
       const canWrite = writeCap?.canWrite ?? false;
@@ -135,17 +128,13 @@ export function StatusStrip({ className }: { className?: string }) {
 
   const pillInner = (item: ShellStatusItem) => (
     <>
-      <span
-        className={cn("inline-block h-2 w-2 rounded-full", TONE_DOT[item.tone])}
-        aria-hidden
-      />
+      <span className={cn("inline-block h-2 w-2 rounded-full", TONE_DOT[item.tone])} aria-hidden />
       <span className="text-gray-500">{item.label}:</span>
       <span className={cn("font-medium", TONE_TEXT[item.tone])}>{item.value}</span>
     </>
   );
 
-  const pillClasses =
-    "flex items-center gap-1.5 text-xs hover:opacity-80 transition-opacity";
+  const pillClasses = "flex items-center gap-1.5 text-xs hover:opacity-80 transition-opacity";
 
   return (
     <div className={cn("flex items-center gap-4", className)}>
@@ -176,11 +165,7 @@ export function StatusStrip({ className }: { className?: string }) {
                       data-testid="status-strip-node-start"
                       disabled={nodeBusy}
                       onClick={() =>
-                        void runNodeAction(
-                          () => startHsd.mutateAsync(),
-                          "Starting node…",
-                          close,
-                        )
+                        void runNodeAction(() => startHsd.mutateAsync(), "Starting node…", close)
                       }
                     >
                       Start node
@@ -191,11 +176,7 @@ export function StatusStrip({ className }: { className?: string }) {
                       data-testid="status-strip-node-cancel"
                       disabled={nodeBusy}
                       onClick={() =>
-                        void runNodeAction(
-                          () => stopHsd.mutateAsync(),
-                          "Stopping node…",
-                          close,
-                        )
+                        void runNodeAction(() => stopHsd.mutateAsync(), "Stopping node…", close)
                       }
                     >
                       Cancel start
@@ -207,11 +188,7 @@ export function StatusStrip({ className }: { className?: string }) {
                         data-testid="status-strip-node-stop"
                         disabled={nodeBusy}
                         onClick={() =>
-                          void runNodeAction(
-                            () => stopHsd.mutateAsync(),
-                            "Stopping node…",
-                            close,
-                          )
+                          void runNodeAction(() => stopHsd.mutateAsync(), "Stopping node…", close)
                         }
                       >
                         Stop node

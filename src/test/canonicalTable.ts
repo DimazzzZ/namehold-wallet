@@ -51,10 +51,7 @@ function hasClass(el: Element, cls: string): boolean {
 }
 
 /** Assert that `table` follows the canonical (non-virtualized) design. */
-export function assertCanonicalTable(
-  table: HTMLTableElement,
-  opts: { name?: string } = {},
-): void {
+export function assertCanonicalTable(table: HTMLTableElement, opts: { name?: string } = {}): void {
   const tag = opts.name ? `[${opts.name}] ` : "";
 
   // Table itself: w-full text-sm.
@@ -75,9 +72,7 @@ export function assertCanonicalTable(
   const hrClasses = classList(headerRow);
   for (const required of ["text-left", "text-gray-500", "border-b"]) {
     if (!hrClasses.includes(required)) {
-      throw new Error(
-        `${tag}<thead><tr> missing "${required}": ${hrClasses.join(" ")}`,
-      );
+      throw new Error(`${tag}<thead><tr> missing "${required}": ${hrClasses.join(" ")}`);
     }
   }
 
@@ -120,9 +115,7 @@ export function assertCanonicalTable(
     const cls = classList(tr);
     for (const required of ["border-t", "border-gray-100", "hover:bg-gray-50"]) {
       if (!cls.includes(required)) {
-        throw new Error(
-          `${tag}<tbody> row #${i} missing "${required}": ${cls.join(" ")}`,
-        );
+        throw new Error(`${tag}<tbody> row #${i} missing "${required}": ${cls.join(" ")}`);
       }
     }
     if (cls.includes("border-b")) {
@@ -139,9 +132,7 @@ export function assertCanonicalTable(
     cells.forEach((td, colIdx) => {
       const cls = classList(td);
       if (!cls.includes("py-1")) {
-        throw new Error(
-          `${tag}<td> row=${rowIdx} col=${colIdx} missing "py-1": ${cls.join(" ")}`,
-        );
+        throw new Error(`${tag}<td> row=${rowIdx} col=${colIdx} missing "py-1": ${cls.join(" ")}`);
       }
       for (const banned of ["py-2", "px-2", "px-3", "font-semibold"]) {
         if (cls.includes(banned)) {
@@ -192,15 +183,11 @@ export function assertVirtualCanonicalTable(
     const cls = classList(th);
     for (const banned of ["font-medium", "font-semibold", "text-gray-600"]) {
       if (cls.includes(banned)) {
-        throw new Error(
-          `${tag}virtual <th> #${i} has banned class "${banned}": ${cls.join(" ")}`,
-        );
+        throw new Error(`${tag}virtual <th> #${i} has banned class "${banned}": ${cls.join(" ")}`);
       }
     }
     if (!cls.includes("text-gray-500")) {
-      throw new Error(
-        `${tag}virtual <th> #${i} missing "text-gray-500": ${cls.join(" ")}`,
-      );
+      throw new Error(`${tag}virtual <th> #${i} missing "text-gray-500": ${cls.join(" ")}`);
     }
     // Compact density — accept py-1 or py-1.5, reject py-2/py-3.
     const compact = cls.includes("py-1") || cls.includes("py-1.5");
@@ -211,9 +198,7 @@ export function assertVirtualCanonicalTable(
     }
     for (const banned of ["py-2", "py-3"]) {
       if (cls.includes(banned)) {
-        throw new Error(
-          `${tag}virtual <th> #${i} uses non-compact "${banned}"`,
-        );
+        throw new Error(`${tag}virtual <th> #${i} uses non-compact "${banned}"`);
       }
     }
   });
@@ -228,9 +213,7 @@ export function assertVirtualCanonicalTable(
     const cls = classList(tr);
     for (const required of ["border-t", "border-gray-100", "hover:bg-gray-50"]) {
       if (!cls.includes(required)) {
-        throw new Error(
-          `${tag}virtual <tbody> row #${i} missing "${required}": ${cls.join(" ")}`,
-        );
+        throw new Error(`${tag}virtual <tbody> row #${i} missing "${required}": ${cls.join(" ")}`);
       }
     }
   });

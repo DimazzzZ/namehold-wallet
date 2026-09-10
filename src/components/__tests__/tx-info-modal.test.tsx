@@ -141,10 +141,9 @@ describe("TxInfoModal", () => {
       isError: false,
     } as any);
 
-    const { unmount } = render(
-      <TxInfoModal txid={TXID} open onClose={vi.fn()} isMainnet />,
-      { wrapper: wrapper() },
-    );
+    const { unmount } = render(<TxInfoModal txid={TXID} open onClose={vi.fn()} isMainnet />, {
+      wrapper: wrapper(),
+    });
     expect(screen.getByTestId("tx-explorer-link")).toBeInTheDocument();
     unmount();
 

@@ -22,29 +22,21 @@ export function AboutPage() {
           <h1 className="text-3xl font-bold text-gray-900">Namehold</h1>
 
           {/* Version */}
-          {appVersion && (
-            <div className="text-sm text-gray-500">Version {appVersion}</div>
-          )}
+          {appVersion && <div className="text-sm text-gray-500">Version {appVersion}</div>}
 
           {/* Description */}
           <p className="text-center text-sm text-gray-600 leading-relaxed">
-            A self-custodial Handshake TLD manager. Bid, register, renew, and
-            manage your Handshake domains.
+            A self-custodial Handshake TLD manager. Bid, register, renew, and manage your Handshake
+            domains.
           </p>
 
           {/* GitHub link */}
-          <Button
-            variant="primary"
-            onClick={handleGitHubClick}
-            className="w-full"
-          >
+          <Button variant="primary" onClick={handleGitHubClick} className="w-full">
             Report Issues or Request Features
           </Button>
 
           {/* Footer note */}
-          <div className="text-xs text-gray-400 text-center">
-            Built for the Handshake community
-          </div>
+          <div className="text-xs text-gray-400 text-center">Built for the Handshake community</div>
         </div>
       </Card>
     </div>

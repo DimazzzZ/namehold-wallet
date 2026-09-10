@@ -37,9 +37,7 @@ describe("AddWalletForm — Ledger import path", () => {
     fireEvent.click(screen.getByText(/Connect a Ledger device/i));
 
     expect(
-      screen.getByText(
-        /Make sure your Ledger is connected via USB, unlocked, and the Handshake/i,
-      ),
+      screen.getByText(/Make sure your Ledger is connected via USB, unlocked, and the Handshake/i),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Import from Ledger/i })).toBeInTheDocument();
   });
@@ -64,18 +62,14 @@ describe("AddWalletForm — Ledger import path", () => {
   it("shows 'Connecting to device...' while the import is pending", async () => {
     // Use a promise we control so the button label reflects the pending state.
     let resolve: (v: unknown) => void = () => {};
-    invokeMock.mockImplementationOnce(
-      () => new Promise((r) => (resolve = r)),
-    );
+    invokeMock.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
 
     render(wrap(<AddWalletForm onDone={vi.fn()} defaultLabel="L" />));
     fireEvent.click(screen.getByText(/Connect a Ledger device/i));
     fireEvent.click(screen.getByRole("button", { name: /Import from Ledger/i }));
 
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /Connecting to device/i }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Connecting to device/i })).toBeInTheDocument();
     });
 
     // Resolve to clean up the pending mutation.

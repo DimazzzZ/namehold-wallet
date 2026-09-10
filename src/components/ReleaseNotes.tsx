@@ -22,34 +22,36 @@ import { openExternal, resolveReleaseNotesHref } from "../lib/openExternal";
 
 function buildComponents(version: string | undefined): Components {
   return {
-  h1: ({ children }) => <h3 className="text-sm font-semibold mt-3 first:mt-0">{children}</h3>,
-  h2: ({ children }) => <h3 className="text-sm font-semibold mt-3 first:mt-0">{children}</h3>,
-  h3: ({ children }) => <h4 className="text-xs font-semibold mt-2 first:mt-0">{children}</h4>,
-  p: ({ children }) => <p className="my-1">{children}</p>,
-  ul: ({ children }) => <ul className="list-disc pl-5 space-y-0.5 my-1">{children}</ul>,
-  ol: ({ children }) => <ol className="list-decimal pl-5 space-y-0.5 my-1">{children}</ol>,
-  li: ({ children }) => <li>{children}</li>,
-  code: ({ children }) => (
-    <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[0.9em]">{children}</code>
-  ),
-  pre: ({ children }) => (
-    <pre className="rounded bg-gray-100 p-2 overflow-auto font-mono text-xs my-2">{children}</pre>
-  ),
-  a: ({ href, children }) => {
-    const resolved = href ? resolveReleaseNotesHref(href, version ? `v${version}` : "HEAD") : undefined;
-    return (
-      <a
-        href={resolved}
-        className="text-blue-600 underline hover:no-underline cursor-pointer"
-        onClick={(e) => {
-          e.preventDefault();
-          if (resolved) void openExternal(resolved);
-        }}
-      >
-        {children}
-      </a>
-    );
-  },
+    h1: ({ children }) => <h3 className="text-sm font-semibold mt-3 first:mt-0">{children}</h3>,
+    h2: ({ children }) => <h3 className="text-sm font-semibold mt-3 first:mt-0">{children}</h3>,
+    h3: ({ children }) => <h4 className="text-xs font-semibold mt-2 first:mt-0">{children}</h4>,
+    p: ({ children }) => <p className="my-1">{children}</p>,
+    ul: ({ children }) => <ul className="list-disc pl-5 space-y-0.5 my-1">{children}</ul>,
+    ol: ({ children }) => <ol className="list-decimal pl-5 space-y-0.5 my-1">{children}</ol>,
+    li: ({ children }) => <li>{children}</li>,
+    code: ({ children }) => (
+      <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[0.9em]">{children}</code>
+    ),
+    pre: ({ children }) => (
+      <pre className="rounded bg-gray-100 p-2 overflow-auto font-mono text-xs my-2">{children}</pre>
+    ),
+    a: ({ href, children }) => {
+      const resolved = href
+        ? resolveReleaseNotesHref(href, version ? `v${version}` : "HEAD")
+        : undefined;
+      return (
+        <a
+          href={resolved}
+          className="text-blue-600 underline hover:no-underline cursor-pointer"
+          onClick={(e) => {
+            e.preventDefault();
+            if (resolved) void openExternal(resolved);
+          }}
+        >
+          {children}
+        </a>
+      );
+    },
   };
 }
 

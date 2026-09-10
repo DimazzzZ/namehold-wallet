@@ -23,7 +23,11 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   isPermissionGranted: vi.fn().mockResolvedValue(false),
   requestPermission: vi.fn().mockResolvedValue("default"),
 }));
-vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({
+  enable: vi.fn().mockResolvedValue(undefined),
+  disable: vi.fn().mockResolvedValue(undefined),
+  isEnabled: vi.fn().mockResolvedValue(false),
+}));
 
 import { loadSettings } from "../../test/fixtures/settings";
 import { renderSettings } from "../../test/fixtures/renderSettings";
@@ -76,9 +80,7 @@ describe("Settings — Background sync checkbox", () => {
     renderSettings();
     const box = await screen.findByTestId("background-sync-checkbox");
     expect(box).toBeChecked();
-    expect(
-      screen.getByText(/Sync in background/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Sync in background/i)).toBeInTheDocument();
   });
 
   it("renders unchecked when the setting is '0'", async () => {
@@ -99,9 +101,7 @@ describe("Settings — Background sync checkbox", () => {
 
     // The specialized command is invoked directly — no Save button click needed.
     await waitFor(() => {
-      const call = invokeMock.mock.calls.find(
-        (c) => c[0] === "set_background_sync_enabled",
-      );
+      const call = invokeMock.mock.calls.find((c) => c[0] === "set_background_sync_enabled");
       expect(call?.[1]).toEqual({ enabled: false });
     });
   });
@@ -116,9 +116,7 @@ describe("Settings — Background sync checkbox", () => {
     expect(box).toBeChecked();
 
     await waitFor(() => {
-      const call = invokeMock.mock.calls.find(
-        (c) => c[0] === "set_background_sync_enabled",
-      );
+      const call = invokeMock.mock.calls.find((c) => c[0] === "set_background_sync_enabled");
       expect(call?.[1]).toEqual({ enabled: true });
     });
   });

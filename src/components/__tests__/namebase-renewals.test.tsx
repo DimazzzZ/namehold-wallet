@@ -46,14 +46,31 @@ function route(opts: { connected?: boolean; renewals?: unknown[] } = {}) {
           connected,
           has_cookie: connected,
           account: connected
-            ? { balance: { hns: 100, btc: 0 }, has2fa: false, withdrawalFeeHns: 1, minimums: { hns: 1 } }
+            ? {
+                balance: { hns: 100, btc: 0 },
+                has2fa: false,
+                withdrawalFeeHns: 1,
+                minimums: { hns: 1 },
+              }
             : undefined,
         });
       case "fetch_namebase_domains":
         return Promise.resolve({
           domains: [
-            { name: "soon", owner_id: "o", owned_since: "2024-01-01", auto_renew_active: false, status: "active" },
-            { name: "later", owner_id: "o", owned_since: "2024-01-01", auto_renew_active: true, status: "active" },
+            {
+              name: "soon",
+              owner_id: "o",
+              owned_since: "2024-01-01",
+              auto_renew_active: false,
+              status: "active",
+            },
+            {
+              name: "later",
+              owner_id: "o",
+              owned_since: "2024-01-01",
+              auto_renew_active: true,
+              status: "active",
+            },
           ],
         });
       case "fetch_namebase_staked":
@@ -73,7 +90,9 @@ function route(opts: { connected?: boolean; renewals?: unknown[] } = {}) {
 }
 
 function wrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={qc}>
@@ -124,9 +143,7 @@ describe("NamebaseDashboard — Expiring soon panel", () => {
     // The bar is NOT inside the Expiring-soon panel, and comes AFTER it in the DOM
     // (i.e. it sits with the Your Domains table below).
     expect(expiring).not.toContainElement(bar);
-    expect(
-      expiring.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect(expiring.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("is hidden when there are no expiring domains", async () => {

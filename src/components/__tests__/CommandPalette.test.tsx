@@ -128,8 +128,7 @@ describe("CommandPalette component", () => {
   it("dispatches an action when an action command runs", () => {
     const onClose = vi.fn();
     const events: string[] = [];
-    const listener = (e: Event) =>
-      events.push((e as CustomEvent).detail.actionId);
+    const listener = (e: Event) => events.push((e as CustomEvent).detail.actionId);
     window.addEventListener("namehold:action", listener);
     render(<Harness open={true} onClose={onClose} />);
     // Filter to the Sync action and run it.

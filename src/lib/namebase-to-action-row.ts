@@ -66,11 +66,7 @@ export function namebaseEventToActionRow(row: NamebaseHistoryRow): NamebaseActio
   let valueDoos = 0;
   let direction = "internal";
 
-  if (
-    row.family === "auctions" ||
-    row.family === "subdomains" ||
-    row.family === "marketplace"
-  ) {
+  if (row.family === "auctions" || row.family === "subdomains" || row.family === "marketplace") {
     direction = "internal";
     valueDoos = 0;
   } else if (row.family === "wallet" && row.hnsDoos != null) {

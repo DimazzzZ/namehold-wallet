@@ -160,7 +160,9 @@ describe("assertVirtualCanonicalTable", () => {
 
   it("catches text-gray-600 on a virtual <th> (must be text-gray-500)", () => {
     const bad = VIRTUAL_GOOD.replace("text-gray-500", "text-gray-600");
-    expect(() => assertVirtualCanonicalTable(makeTable(bad))).toThrow(/text-gray-600|text-gray-500/);
+    expect(() => assertVirtualCanonicalTable(makeTable(bad))).toThrow(
+      /text-gray-600|text-gray-500/,
+    );
   });
 
   it("catches py-2 on a virtual <th>", () => {

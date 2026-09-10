@@ -22,7 +22,11 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   isPermissionGranted: vi.fn().mockResolvedValue(false),
   requestPermission: vi.fn().mockResolvedValue("default"),
 }));
-vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({
+  enable: vi.fn().mockResolvedValue(undefined),
+  disable: vi.fn().mockResolvedValue(undefined),
+  isEnabled: vi.fn().mockResolvedValue(false),
+}));
 
 import { loadSettings } from "../../test/fixtures/settings";
 import { renderSettings } from "../../test/fixtures/renderSettings";
@@ -40,9 +44,7 @@ describe("Settings — Autostart HSD checkbox", () => {
     const box = await screen.findByTestId("autostart-hsd-checkbox");
     expect(box).toBeChecked();
     // The label text is visible next to the checkbox.
-    expect(
-      screen.getByText(/Autostart HSD when the app launches/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Autostart HSD when the app launches/i)).toBeInTheDocument();
   });
 
   it("renders unchecked when the setting is 'false'", async () => {
@@ -63,9 +65,7 @@ describe("Settings — Autostart HSD checkbox", () => {
 
     await waitFor(() => {
       const call = invokeMock.mock.calls.find(
-        (c) =>
-          c[0] === "update_setting" &&
-          (c[1] as { key?: string })?.key === "autostart_hsd",
+        (c) => c[0] === "update_setting" && (c[1] as { key?: string })?.key === "autostart_hsd",
       );
       expect(call?.[1]).toEqual({ key: "autostart_hsd", value: "false" });
     });

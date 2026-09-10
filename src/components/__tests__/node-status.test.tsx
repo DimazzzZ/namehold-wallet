@@ -13,7 +13,11 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn(),
   readText: vi.fn().mockResolvedValue(""),
 }));
-vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({
+  enable: vi.fn().mockResolvedValue(undefined),
+  disable: vi.fn().mockResolvedValue(undefined),
+  isEnabled: vi.fn().mockResolvedValue(false),
+}));
 
 import { Settings } from "../Settings";
 import { StatusStrip } from "../ui/StatusStrip";
@@ -100,7 +104,9 @@ beforeEach(() => {
 
 describe("Node status (truthful, RPC-based)", () => {
   it("Settings shows Connected · block N when the RPC answers", async () => {
-    invokeMock.mockImplementation(route(nodeStatus({ connected: true, process_alive: true, height: 218456 })));
+    invokeMock.mockImplementation(
+      route(nodeStatus({ connected: true, process_alive: true, height: 218456 })),
+    );
     render(<Settings />, { wrapper: wrapper() });
 
     expect(await screen.findByText(/Connected.*block 218456/i)).toBeInTheDocument();
@@ -110,20 +116,38 @@ describe("Node status (truthful, RPC-based)", () => {
 
   it("Settings shows the sync progress while behind the chain tip (blocks < headers)", async () => {
     invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 40000, headers: 100000, verification_progress: 0.4 })),
+      route(
+        nodeStatus({
+          connected: true,
+          process_alive: true,
+          height: 40000,
+          headers: 100000,
+          verification_progress: 0.4,
+        }),
+      ),
     );
     render(<Settings />, { wrapper: wrapper() });
 
     // pct is blocks/headers (40000/100000 = 40%), shown with the H/headers detail.
     expect(await screen.findByText(/Syncing · 40%/i)).toBeInTheDocument();
-    expect(await screen.findByText(/Syncing the chain — 40% · block 40000 \/ 100000/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Syncing the chain — 40% · block 40000 \/ 100000/i),
+    ).toBeInTheDocument();
   });
 
   it("Settings shows Syncing without denominator when blocks == headers but progress < 0.9999 (early IBD)", async () => {
     // hsd in early IBD reports headers == height (hasn't learned peers' higher headers yet).
     // This is 19% complete, so it's not synced. Must NOT show the confusing "/ 65027" denominator.
     invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 65027, headers: 65027, verification_progress: 0.19 })),
+      route(
+        nodeStatus({
+          connected: true,
+          process_alive: true,
+          height: 65027,
+          headers: 65027,
+          verification_progress: 0.19,
+        }),
+      ),
     );
     render(<Settings />, { wrapper: wrapper() });
 
@@ -140,7 +164,15 @@ describe("Node status (truthful, RPC-based)", () => {
     // the node is still far behind the real chain. Must show Syncing, not lie
     // about being synced.
     invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 317, headers: 317, verification_progress: 0.9997 })),
+      route(
+        nodeStatus({
+          connected: true,
+          process_alive: true,
+          height: 317,
+          headers: 317,
+          verification_progress: 0.9997,
+        }),
+      ),
     );
     render(<Settings />, { wrapper: wrapper() });
 
@@ -151,7 +183,15 @@ describe("Node status (truthful, RPC-based)", () => {
 
   it("Settings shows Synced — 100% only when progress >= 0.9999", async () => {
     invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 317, headers: 317, verification_progress: 0.9999 })),
+      route(
+        nodeStatus({
+          connected: true,
+          process_alive: true,
+          height: 317,
+          headers: 317,
+          verification_progress: 0.9999,
+        }),
+      ),
     );
     render(<Settings />, { wrapper: wrapper() });
 
@@ -161,7 +201,15 @@ describe("Node status (truthful, RPC-based)", () => {
 
   it("Settings shows the progress bar while syncing too", async () => {
     invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 40000, headers: 100000, verification_progress: 0.4 })),
+      route(
+        nodeStatus({
+          connected: true,
+          process_alive: true,
+          height: 40000,
+          headers: 100000,
+          verification_progress: 0.4,
+        }),
+      ),
     );
     render(<Settings />, { wrapper: wrapper() });
     expect(await screen.findByTestId("node-sync-progress")).toHaveTextContent(/40%/);
@@ -265,7 +313,9 @@ describe("Node status (truthful, RPC-based)", () => {
   });
 
   it("StatusStrip says Node: Connected when the RPC answers", async () => {
-    invokeMock.mockImplementation(route(nodeStatus({ connected: true, process_alive: true, height: 9 })));
+    invokeMock.mockImplementation(
+      route(nodeStatus({ connected: true, process_alive: true, height: 9 })),
+    );
     render(<StatusStrip />, { wrapper: wrapper() });
 
     expect(await screen.findByText("Node:")).toBeInTheDocument();
@@ -290,7 +340,15 @@ describe("Node status (truthful, RPC-based)", () => {
 
   it("StatusStrip shows Source: Local when node is connected and synced", async () => {
     invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 100, headers: 100, read_source: "local" })),
+      route(
+        nodeStatus({
+          connected: true,
+          process_alive: true,
+          height: 100,
+          headers: 100,
+          read_source: "local",
+        }),
+      ),
     );
     render(<StatusStrip />, { wrapper: wrapper() });
 
@@ -308,7 +366,15 @@ describe("Node status (truthful, RPC-based)", () => {
 
   it("Settings shows Read source: Local node cache when node is synced", async () => {
     invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 100, headers: 100, read_source: "local" })),
+      route(
+        nodeStatus({
+          connected: true,
+          process_alive: true,
+          height: 100,
+          headers: 100,
+          read_source: "local",
+        }),
+      ),
     );
     render(<Settings />, { wrapper: wrapper() });
 
@@ -321,7 +387,9 @@ describe("Node status (truthful, RPC-based)", () => {
     render(<Settings />, { wrapper: wrapper() });
 
     expect(
-      await screen.findByText(/when the node is connected and fully synced, reads come from the local node cache/i),
+      await screen.findByText(
+        /when the node is connected and fully synced, reads come from the local node cache/i,
+      ),
     ).toBeInTheDocument();
   });
 });
@@ -339,9 +407,18 @@ describe("Settings — bid backup export (Task 2 / C2)", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: null, unlocked: false, unlockedUntilEpochMs: 0 });
+          return Promise.resolve({
+            walletProfileId: null,
+            unlocked: false,
+            unlockedUntilEpochMs: 0,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: null });
+          return Promise.resolve({
+            signerUnlocked: false,
+            broadcasterAvailable: false,
+            canWrite: false,
+            reason: null,
+          });
         case "export_bid_commitments":
           return Promise.resolve('[{"name":"example"}]');
         default:
@@ -351,9 +428,7 @@ describe("Settings — bid backup export (Task 2 / C2)", () => {
     render(<Settings />, { wrapper: wrapper() });
 
     // Warning copy about backing up alongside the seed.
-    expect(
-      await screen.findByText(/store it alongside your seed phrase/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/store it alongside your seed phrase/i)).toBeInTheDocument();
 
     const button = await screen.findByTestId("export-bid-backup");
     // The button is disabled until the active profile loads.
@@ -381,9 +456,18 @@ describe("Settings — bid backup export (Task 2 / C2)", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: null, unlocked: false, unlockedUntilEpochMs: 0 });
+          return Promise.resolve({
+            walletProfileId: null,
+            unlocked: false,
+            unlockedUntilEpochMs: 0,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: null });
+          return Promise.resolve({
+            signerUnlocked: false,
+            broadcasterAvailable: false,
+            canWrite: false,
+            reason: null,
+          });
         case "export_bid_commitments":
           return Promise.resolve("[]");
         default:
@@ -417,7 +501,9 @@ describe("StatusStrip Node pill menu", () => {
   });
 
   it("shows Stop and Re-sync when connected", async () => {
-    invokeMock.mockImplementation(route(nodeStatus({ connected: true, process_alive: true, height: 100 })));
+    invokeMock.mockImplementation(
+      route(nodeStatus({ connected: true, process_alive: true, height: 100 })),
+    );
     render(<StatusStrip />, { wrapper: wrapper() });
 
     const pill = await screen.findByTestId("status-strip-node");
@@ -454,7 +540,9 @@ describe("StatusStrip Node pill menu", () => {
   });
 
   it("Sending pill still navigates to /settings (no menu)", async () => {
-    invokeMock.mockImplementation(route(nodeStatus({ connected: true, process_alive: true, height: 100 })));
+    invokeMock.mockImplementation(
+      route(nodeStatus({ connected: true, process_alive: true, height: 100 })),
+    );
     render(<StatusStrip />, { wrapper: wrapper() });
 
     // Sending pill should be a plain button, not a popover trigger.

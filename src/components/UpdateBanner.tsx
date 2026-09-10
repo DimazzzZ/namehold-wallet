@@ -14,8 +14,7 @@ import { WhatsNewModal } from "./WhatsNewModal";
  * mock always reports "up to date" anyway.
  */
 export function UpdateBanner() {
-  const { phase, available, progress, dismissedVersion, check, install, dismiss } =
-    useAppUpdate();
+  const { phase, available, progress, dismissedVersion, check, install, dismiss } = useAppUpdate();
   const [showNotes, setShowNotes] = useState(false);
   const [relaunching, setRelaunching] = useState(false);
   const showToast = useUiStore((s) => s.showToast);
@@ -68,61 +67,61 @@ export function UpdateBanner() {
         className="px-6 py-1.5 text-xs text-blue-900 bg-blue-100 border-b border-blue-200 flex items-center gap-3"
         data-testid="update-banner"
       >
-      <span>
-        🎉 <strong>Namehold v{available!.version}</strong> is available.
-      </span>
+        <span>
+          🎉 <strong>Namehold v{available!.version}</strong> is available.
+        </span>
 
-      {phase === "available" && (
-        <>
-          {available.notes && (
+        {phase === "available" && (
+          <>
+            {available.notes && (
+              <button
+                type="button"
+                className="text-blue-800/70 hover:text-blue-900 cursor-pointer"
+                onClick={() => setShowNotes(true)}
+                data-testid="update-banner-whats-new"
+              >
+                What's new?
+              </button>
+            )}
+            <button
+              type="button"
+              className="underline font-medium hover:no-underline cursor-pointer"
+              onClick={() => void install()}
+              data-testid="update-banner-install"
+            >
+              Install now
+            </button>
             <button
               type="button"
               className="text-blue-800/70 hover:text-blue-900 cursor-pointer"
-              onClick={() => setShowNotes(true)}
-              data-testid="update-banner-whats-new"
+              onClick={() => dismiss()}
+              data-testid="update-banner-later"
             >
-              What's new?
+              Later
             </button>
-          )}
-          <button
-            type="button"
-            className="underline font-medium hover:no-underline cursor-pointer"
-            onClick={() => void install()}
-            data-testid="update-banner-install"
-          >
-            Install now
-          </button>
-          <button
-            type="button"
-            className="text-blue-800/70 hover:text-blue-900 cursor-pointer"
-            onClick={() => dismiss()}
-            data-testid="update-banner-later"
-          >
-            Later
-          </button>
-        </>
-      )}
+          </>
+        )}
 
-      {phase === "installing" && (
-        <span data-testid="update-banner-progress">
-          Installing… {pct != null ? `${pct}%` : ""}
-        </span>
-      )}
+        {phase === "installing" && (
+          <span data-testid="update-banner-progress">
+            Installing… {pct != null ? `${pct}%` : ""}
+          </span>
+        )}
 
-      {phase === "installed" && (
-        <>
-          <span className="text-green-800">Update installed.</span>
-          <button
-            type="button"
-            className="underline font-medium hover:no-underline cursor-pointer disabled:cursor-not-allowed"
-            onClick={() => void handleRelaunch()}
-            disabled={relaunching}
-            data-testid="update-banner-relaunch"
-          >
-            {relaunching ? "Relaunching…" : "Relaunch now"}
-          </button>
-        </>
-      )}
+        {phase === "installed" && (
+          <>
+            <span className="text-green-800">Update installed.</span>
+            <button
+              type="button"
+              className="underline font-medium hover:no-underline cursor-pointer disabled:cursor-not-allowed"
+              onClick={() => void handleRelaunch()}
+              disabled={relaunching}
+              data-testid="update-banner-relaunch"
+            >
+              {relaunching ? "Relaunching…" : "Relaunch now"}
+            </button>
+          </>
+        )}
       </div>
       <WhatsNewModal
         open={showNotes}

@@ -13,9 +13,7 @@ export function parseStringArraySetting(raw: string | null | undefined): string[
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((v) => (typeof v === "string" ? v.trim() : ""))
-      .filter((v) => v.length > 0);
+    return parsed.map((v) => (typeof v === "string" ? v.trim() : "")).filter((v) => v.length > 0);
   } catch {
     return [];
   }
@@ -23,9 +21,7 @@ export function parseStringArraySetting(raw: string | null | undefined): string[
 
 /** Serialize a string array back into the settings storage format. */
 export function serializeStringArraySetting(values: string[]): string {
-  return JSON.stringify(
-    values.map((v) => v.trim()).filter((v) => v.length > 0),
-  );
+  return JSON.stringify(values.map((v) => v.trim()).filter((v) => v.length > 0));
 }
 
 /**
@@ -42,14 +38,11 @@ export function normalizeTransaction(
     (typeof tx.txid === "string" && tx.txid) ||
     `tx-${index}`;
 
-  const confirmations =
-    typeof tx.confirmations === "number" ? tx.confirmations : null;
-  const confirmed =
-    confirmations !== null ? confirmations > 0 : Boolean(tx.confirmed);
+  const confirmations = typeof tx.confirmations === "number" ? tx.confirmations : null;
+  const confirmed = confirmations !== null ? confirmations > 0 : Boolean(tx.confirmed);
   const height = typeof tx.height === "number" ? tx.height : null;
 
-  const matchedAddress =
-    typeof tx.matchedAddress === "string" ? tx.matchedAddress : null;
+  const matchedAddress = typeof tx.matchedAddress === "string" ? tx.matchedAddress : null;
 
   let amountDoos = 0;
   let address = matchedAddress ?? "";
@@ -64,8 +57,7 @@ export function normalizeTransaction(
       const addr = typeof o.address === "string" ? o.address : "";
       if (addr && !address) address = addr;
     }
-    direction =
-      typeof tx.fee === "number" && tx.fee > 0 ? "send" : "receive";
+    direction = typeof tx.fee === "number" && tx.fee > 0 ? "send" : "receive";
   } else {
     // Flat external shape: a single value/amount and direction hint.
     const value =
@@ -73,8 +65,7 @@ export function normalizeTransaction(
       (typeof tx.amount === "number" && tx.amount) ||
       0;
     amountDoos = value;
-    const dir =
-      typeof tx.direction === "string" ? tx.direction.toLowerCase() : "";
+    const dir = typeof tx.direction === "string" ? tx.direction.toLowerCase() : "";
     if (dir === "send" || dir === "out" || dir === "sent") {
       direction = "send";
     } else if (dir === "receive" || dir === "in" || dir === "received") {

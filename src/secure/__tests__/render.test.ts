@@ -17,9 +17,7 @@ function mount() {
 }
 
 function buttonByText(root: HTMLElement, text: string): HTMLButtonElement {
-  const btn = Array.from(root.querySelectorAll("button")).find(
-    (b) => b.textContent === text,
-  );
+  const btn = Array.from(root.querySelectorAll("button")).find((b) => b.textContent === text);
   if (!btn) throw new Error(`button "${text}" not found`);
   return btn as HTMLButtonElement;
 }
@@ -91,11 +89,7 @@ describe("secure render — extraction smoke test", () => {
   it("renders passphrase mode with a required-value guard", () => {
     const root = mount();
     const submit = vi.fn<(r: PromptResult) => void>();
-    render(
-      root,
-      { mode: "passphrase", title: "Unlock", message: "Enter passphrase" },
-      submit,
-    );
+    render(root, { mode: "passphrase", title: "Unlock", message: "Enter passphrase" }, submit);
     // Empty passphrase is rejected (no submit, error shown).
     buttonByText(root, "Continue").click();
     expect(submit).not.toHaveBeenCalled();

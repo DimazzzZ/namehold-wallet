@@ -17,12 +17,7 @@ export function WhatsNewModal({
   notes: string;
 }) {
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      title={`What's new in v${version}`}
-      className="max-w-2xl"
-    >
+    <Dialog open={open} onClose={onClose} title={`What's new in v${version}`} className="max-w-2xl">
       <div className="space-y-2 text-sm max-h-[70vh] overflow-y-auto" data-testid="whats-new-modal">
         <ReleaseNotes notes={notes} version={version} />
       </div>

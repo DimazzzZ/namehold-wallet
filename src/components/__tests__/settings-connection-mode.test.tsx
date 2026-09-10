@@ -66,7 +66,11 @@ describe("Settings — Chain source (connection mode)", () => {
   });
 
   it("selecting SPV saves chain_source=local_node AND node_mode=spv, and hides the remote opt-in", async () => {
-    loadSettings({ chain_source: "remote_node", node_mode: "full", allow_remote_broadcast: "true" });
+    loadSettings({
+      chain_source: "remote_node",
+      node_mode: "full",
+      allow_remote_broadcast: "true",
+    });
     renderSettings();
     fireEvent.change(await screen.findByTestId("chain-source-select"), {
       target: { value: "local_spv" },

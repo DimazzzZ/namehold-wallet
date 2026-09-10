@@ -67,9 +67,8 @@ export async function checkNotificationPermission(): Promise<PermissionStatus> {
 export async function requestNotificationPermission(): Promise<PermissionStatus> {
   if (!isTauri()) return "unsupported";
   try {
-    const { isPermissionGranted, requestPermission } = await import(
-      "@tauri-apps/plugin-notification"
-    );
+    const { isPermissionGranted, requestPermission } =
+      await import("@tauri-apps/plugin-notification");
     if (await isPermissionGranted()) return "granted";
     const result = await requestPermission();
     return result === "granted" ? "granted" : "denied";

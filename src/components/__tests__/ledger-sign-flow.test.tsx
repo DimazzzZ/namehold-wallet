@@ -46,7 +46,9 @@ describe("useExecuteDraft — Ledger signing pipeline", () => {
       return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
     });
 
-    const { result } = renderHook(() => useExecuteDraft(), { wrapper: ({ children }) => wrap(children) });
+    const { result } = renderHook(() => useExecuteDraft(), {
+      wrapper: ({ children }) => wrap(children),
+    });
 
     let outcome: unknown;
     await act(async () => {
@@ -68,7 +70,9 @@ describe("useExecuteDraft — Ledger signing pipeline", () => {
       return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
     });
 
-    const { result } = renderHook(() => useExecuteDraft(), { wrapper: ({ children }) => wrap(children) });
+    const { result } = renderHook(() => useExecuteDraft(), {
+      wrapper: ({ children }) => wrap(children),
+    });
 
     let caught: unknown;
     await act(async () => {
@@ -90,13 +94,17 @@ describe("useExecuteDraft — Ledger signing pipeline", () => {
       if (cmd === "sign_tx_draft") {
         // Matches AppError::Device rendering from status_word_message().
         return Promise.reject(
-          new Error("Ledger device error: APDU failed with status 0x5515 (device locked — unlock it)"),
+          new Error(
+            "Ledger device error: APDU failed with status 0x5515 (device locked — unlock it)",
+          ),
         );
       }
       return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
     });
 
-    const { result } = renderHook(() => useExecuteDraft(), { wrapper: ({ children }) => wrap(children) });
+    const { result } = renderHook(() => useExecuteDraft(), {
+      wrapper: ({ children }) => wrap(children),
+    });
 
     let caught: unknown;
     await act(async () => {
@@ -127,7 +135,9 @@ describe("useExecuteDraft — Ledger signing pipeline", () => {
       return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
     });
 
-    const { result } = renderHook(() => useExecuteDraft(), { wrapper: ({ children }) => wrap(children) });
+    const { result } = renderHook(() => useExecuteDraft(), {
+      wrapper: ({ children }) => wrap(children),
+    });
 
     let caught: unknown;
     await act(async () => {
@@ -149,7 +159,9 @@ describe("useExecuteDraft — Ledger signing pipeline", () => {
       return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
     });
 
-    const { result } = renderHook(() => useExecuteDraft(), { wrapper: ({ children }) => wrap(children) });
+    const { result } = renderHook(() => useExecuteDraft(), {
+      wrapper: ({ children }) => wrap(children),
+    });
 
     let caught: unknown;
     await act(async () => {
@@ -177,7 +189,9 @@ describe("useExecuteDraft — Ledger signing pipeline", () => {
       return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
     });
 
-    const { result } = renderHook(() => useExecuteDraft(), { wrapper: ({ children }) => wrap(children) });
+    const { result } = renderHook(() => useExecuteDraft(), {
+      wrapper: ({ children }) => wrap(children),
+    });
 
     await act(async () => {
       await result.current.run("d1", "p-hot", /* unlocked */ false);
@@ -210,7 +224,9 @@ describe("Ledger unlock error copy (M6)", () => {
       return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
     });
 
-    const { result } = renderHook(() => useExecuteDraft(), { wrapper: ({ children }) => wrap(children) });
+    const { result } = renderHook(() => useExecuteDraft(), {
+      wrapper: ({ children }) => wrap(children),
+    });
 
     let caught: unknown;
     await act(async () => {

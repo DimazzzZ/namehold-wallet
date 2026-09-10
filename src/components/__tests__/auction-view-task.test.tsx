@@ -134,25 +134,55 @@ function routeInvoke() {
   return (cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "get_names_action_capabilities") {
       const names = (args as { names?: string[] })?.names ?? [];
-      return Promise.resolve(
-        names.map((n) => CAPS_BY_NAME[n] ?? baseCaps(n, {})),
-      );
+      return Promise.resolve(names.map((n) => CAPS_BY_NAME[n] ?? baseCaps(n, {})));
     }
     switch (cmd) {
       case "list_wallet_profiles":
         return Promise.resolve([profile]);
       case "get_signer_session":
-        return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+        return Promise.resolve({
+          walletProfileId: profile.id,
+          unlocked: true,
+          unlockedUntilEpochMs: Date.now() + 60000,
+        });
       case "get_write_capability":
-        return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+        return Promise.resolve({
+          signerUnlocked: true,
+          broadcasterAvailable: true,
+          canWrite: true,
+          reason: null,
+        });
       case "read_names":
         return Promise.resolve([
-          { name: "revealname", state: "REVEAL", height: 100, renewal: 200, owner: null, stats: null },
+          {
+            name: "revealname",
+            state: "REVEAL",
+            height: 100,
+            renewal: 200,
+            owner: null,
+            stats: null,
+          },
           // registered: false explicitly (genuine "won, not yet registered" /
           // "lost, not yet redeemed" cases) — required for the CLOSED-phase
           // gate in AuctionsView, which only admits an explicit `false`.
-          { name: "wonname", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "abc", index: 0 }, stats: null, registered: false },
-          { name: "lostname", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "abc", index: 0 }, stats: null, registered: false },
+          {
+            name: "wonname",
+            state: "CLOSED",
+            height: 100,
+            renewal: 200,
+            owner: { hash: "abc", index: 0 },
+            stats: null,
+            registered: false,
+          },
+          {
+            name: "lostname",
+            state: "CLOSED",
+            height: 100,
+            renewal: 200,
+            owner: { hash: "abc", index: 0 },
+            stats: null,
+            registered: false,
+          },
         ]);
       default:
         return Promise.resolve(null);
@@ -190,9 +220,7 @@ describe("AuctionsView — task-driven row rendering", () => {
       expect(names.sort()).toEqual(["lostname", "revealname", "wonname"]);
     }
     // Crucially, the old per-name command must never be invoked from this view.
-    expect(
-      invokeMock.mock.calls.some((c) => c[0] === "get_name_action_capabilities"),
-    ).toBe(false);
+    expect(invokeMock.mock.calls.some((c) => c[0] === "get_name_action_capabilities")).toBe(false);
   });
 
   it("sorts rows by urgency: readyToReveal, then wonNeedsRegister, then lostNeedsRedeem", async () => {
@@ -270,9 +298,18 @@ describe("AuctionsView — task-driven row rendering", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+          return Promise.resolve({
+            walletProfileId: profile.id,
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 60000,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+          return Promise.resolve({
+            signerUnlocked: true,
+            broadcasterAvailable: true,
+            canWrite: true,
+            reason: null,
+          });
         case "read_names":
           return Promise.resolve([
             // Genuinely-owned name whose `registered` flag is UNKNOWN (the field
@@ -344,9 +381,18 @@ describe("AuctionsView — batch-bid button", () => {
         case "list_wallet_profiles":
           return Promise.resolve([watchOnlyProfile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: watchOnlyProfile.id, unlocked: false, unlockedUntilEpochMs: 0 });
+          return Promise.resolve({
+            walletProfileId: watchOnlyProfile.id,
+            unlocked: false,
+            unlockedUntilEpochMs: 0,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: "Watch-only" });
+          return Promise.resolve({
+            signerUnlocked: false,
+            broadcasterAvailable: false,
+            canWrite: false,
+            reason: "Watch-only",
+          });
         case "read_names":
           return Promise.resolve([]);
         default:
@@ -400,7 +446,9 @@ describe("AuctionsView — batch-bid button", () => {
     await screen.findByText(/Active Auctions/i);
 
     // Dispatch the action-bus event
-    act(() => { dispatchAction("auctions:batchBid"); });
+    act(() => {
+      dispatchAction("auctions:batchBid");
+    });
 
     // Modal should open
     await waitFor(() => {

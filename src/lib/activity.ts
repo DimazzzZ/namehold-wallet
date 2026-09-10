@@ -81,10 +81,7 @@ function parseCreatedAt(s: string): number {
  *
  * Result is sorted newest-first by sortTs.
  */
-export function mergeActivity(
-  rows: ActionRow[],
-  drafts: TxDraftSummary[],
-): MergedRow[] {
+export function mergeActivity(rows: ActionRow[], drafts: TxDraftSummary[]): MergedRow[] {
   // Be defensive: either source may arrive as null/undefined from a
   // backend that returns null, or before a query resolves.
   const safeRows = Array.isArray(rows) ? rows : [];
@@ -130,8 +127,7 @@ export function mergeActivity(
       // For a self-homed covenant matched to a draft, expose the locked
       // name value so the UI can render its "222 HNS carried" tooltip.
       nameValueDoos:
-        draft?.summary?.recipientAddress == null &&
-        (draft?.summary?.sendTotalDoos ?? 0) > 0
+        draft?.summary?.recipientAddress == null && (draft?.summary?.sendTotalDoos ?? 0) > 0
           ? draft!.summary!.sendTotalDoos
           : null,
     });

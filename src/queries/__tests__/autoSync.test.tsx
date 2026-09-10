@@ -18,7 +18,10 @@ function makeBackend() {
   const impl = (cmd: string) => {
     switch (cmd) {
       case "node_status":
-        return Promise.resolve({ connected: state.readSource === "local", read_source: state.readSource });
+        return Promise.resolve({
+          connected: state.readSource === "local",
+          read_source: state.readSource,
+        });
       case "get_sync_status":
         return Promise.resolve({ running: state.running });
       case "start_full_sync":

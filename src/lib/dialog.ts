@@ -28,9 +28,7 @@ export interface SaveDialogOptions {
  * native OS picker. Callers should handle `null` gracefully (they already do,
  * because Tauri returns `null` when the user cancels).
  */
-export async function open(
-  options?: OpenDialogOptions,
-): Promise<string | string[] | null> {
+export async function open(options?: OpenDialogOptions): Promise<string | string[] | null> {
   if (isTauri()) {
     const { open: tauriOpen } = await import("@tauri-apps/plugin-dialog");
     return tauriOpen(options as Parameters<typeof tauriOpen>[0]);
@@ -46,9 +44,7 @@ export async function open(
  *
  * In browser mode returns `null` (same rationale as `open`).
  */
-export async function save(
-  options?: SaveDialogOptions,
-): Promise<string | null> {
+export async function save(options?: SaveDialogOptions): Promise<string | null> {
   if (isTauri()) {
     const { save: tauriSave } = await import("@tauri-apps/plugin-dialog");
     return tauriSave(options as Parameters<typeof tauriSave>[0]);

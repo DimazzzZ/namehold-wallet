@@ -112,9 +112,7 @@ export function useActionHistory(): UseQueryResult<ActionRow[]> {
  * pin a profile id (e.g. AuctionsView) can share the exact same id across
  * both queries.
  */
-export function useAuctionPositions(
-  walletProfileId: string | null,
-): UseQueryResult<string[]> {
+export function useAuctionPositions(walletProfileId: string | null): UseQueryResult<string[]> {
   const nodeLive = useNodeLive();
   return useQuery<string[]>({
     queryKey: ["read", "auctionPositions", walletProfileId],
@@ -155,9 +153,7 @@ export function useReadRenewals(): UseQueryResult<RenewalsResponse | null> {
 }
 
 /** Provider-aware single-name lookup. */
-export function useReadNameInfo(
-  name: string | null | undefined,
-): UseQueryResult<HsdName | null> {
+export function useReadNameInfo(name: string | null | undefined): UseQueryResult<HsdName | null> {
   return useQuery<HsdName | null>({
     queryKey: ["read", "name", name ?? ""],
     enabled: Boolean(name && name.trim().length > 0),
@@ -188,10 +184,10 @@ export function useNameActionCapabilities(
       // Pin the evaluation to THIS wallet so capabilities can never reflect
       // another profile's owned-name evidence (the active profile may flip
       // mid-switch).
-      const raw = await invoke<NameActionCapabilities | null>(
-        "get_name_action_capabilities",
-        { name: name!.trim(), walletProfileId: profileId },
-      );
+      const raw = await invoke<NameActionCapabilities | null>("get_name_action_capabilities", {
+        name: name!.trim(),
+        walletProfileId: profileId,
+      });
       return raw ?? null;
     },
     staleTime: STALE_TIME,
@@ -226,14 +222,14 @@ export function useNameBids(
 }
 
 /**
-* Current DNS records for a name, read from the local hsd node
-* (`read_name_records` → `getnameresource`). Node-only: the explorer doesn't
-* expose resource records, so this returns `[]` whenever no synced node is
-* reachable (the backend degrades gracefully and never errors). The name
-* actions modal seeds its DNS editor from this once per open so the user can
-* see, edit, and delete the name's existing records. Pinned to a specific
-* wallet the same way as `useNameBids`.
-*/
+ * Current DNS records for a name, read from the local hsd node
+ * (`read_name_records` → `getnameresource`). Node-only: the explorer doesn't
+ * expose resource records, so this returns `[]` whenever no synced node is
+ * reachable (the backend degrades gracefully and never errors). The name
+ * actions modal seeds its DNS editor from this once per open so the user can
+ * see, edit, and delete the name's existing records. Pinned to a specific
+ * wallet the same way as `useNameBids`.
+ */
 export function useNameRecords(
   name: string | null | undefined,
   walletProfileId: string | null,
@@ -272,9 +268,7 @@ export function useNameRecords(
  * node is reachable, so this hook is nullable. A mined block is immutable, so
  * results never go stale (`staleTime: Infinity`).
  */
-export function useReadBlockInfo(
-  height: number | null,
-): UseQueryResult<BlockInfo | null> {
+export function useReadBlockInfo(height: number | null): UseQueryResult<BlockInfo | null> {
   return useQuery<BlockInfo | null>({
     queryKey: ["read", "block", height ?? 0],
     enabled: height != null && height > 0,
@@ -298,9 +292,7 @@ export function useReadBlockInfo(
  * Pending txs gain confirmations over time, so a short stale time keeps
  * the data fresh on re-open.
  */
-export function useReadTxInfo(
-  txid: string | null,
-): UseQueryResult<TxInfo | TxInfoError | null> {
+export function useReadTxInfo(txid: string | null): UseQueryResult<TxInfo | TxInfoError | null> {
   return useQuery<TxInfo | TxInfoError | null>({
     queryKey: ["read", "tx", txid ?? ""],
     enabled: Boolean(txid && txid.trim().length > 0),
@@ -335,10 +327,10 @@ export function useNamesActionCapabilities(
     queryKey: ["read", "namesCapabilities", profileId, namesKey],
     enabled: names.length > 0,
     queryFn: async () => {
-      const raw = await invoke<NameActionCapabilities[] | null>(
-        "get_names_action_capabilities",
-        { names, walletProfileId: profileId },
-      );
+      const raw = await invoke<NameActionCapabilities[] | null>("get_names_action_capabilities", {
+        names,
+        walletProfileId: profileId,
+      });
       return Array.isArray(raw) ? raw : [];
     },
     staleTime: STALE_TIME,
@@ -358,11 +350,8 @@ export function useNamesActionCapabilities(
 export function useRecoverBidCommitment() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: {
-      walletProfileId: string | null;
-      name: string;
-      bidValueDoos: number;
-    }) => invoke<RecoveredBidCommitment>("recover_bid_commitment", args as Record<string, unknown>),
+    mutationFn: (args: { walletProfileId: string | null; name: string; bidValueDoos: number }) =>
+      invoke<RecoveredBidCommitment>("recover_bid_commitment", args as Record<string, unknown>),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["read"] });
       qc.invalidateQueries({ queryKey: ["wallet"] });
@@ -384,10 +373,7 @@ export function useRecoverBidCommitment() {
 export function useBruteForceRecoverBid() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: {
-      walletProfileId: string | null;
-      name: string;
-    }) =>
+    mutationFn: (args: { walletProfileId: string | null; name: string }) =>
       invoke<import("../types").BruteForcedBidCommitment>(
         "brute_force_recover_bid",
         args as Record<string, unknown>,
@@ -410,9 +396,7 @@ export function useReadTransactions(): UseQueryResult<WalletTransactionRow[]> {
         walletProfileId: profileId,
       });
       const arr = Array.isArray(raw) ? (raw as unknown[]) : [];
-      return arr.map((tx, i) =>
-        normalizeTransaction(tx as Record<string, unknown>, i),
-      );
+      return arr.map((tx, i) => normalizeTransaction(tx as Record<string, unknown>, i));
     },
     staleTime: STALE_TIME,
   });
@@ -431,10 +415,9 @@ export function useReceiveAddresses(): UseQueryResult<ReceiveAddressRow[]> {
     queryKey: ["read", "receive_addresses", profileId],
     enabled: profileId != null,
     queryFn: async () => {
-      const rows = await invoke<ReceiveAddressRow[] | null>(
-        "list_receive_addresses",
-        { walletProfileId: profileId },
-      );
+      const rows = await invoke<ReceiveAddressRow[] | null>("list_receive_addresses", {
+        walletProfileId: profileId,
+      });
       return rows ?? [];
     },
     staleTime: STALE_TIME,

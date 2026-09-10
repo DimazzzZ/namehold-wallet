@@ -80,10 +80,7 @@ export function NamebaseHistoryImport() {
       const rateLimitMatch = msg.match(/retry after (\d+)s/i);
       if (rateLimitMatch) {
         const secs = Number(rateLimitMatch[1]);
-        showToast(
-          `Namebase is rate-limiting exports — try again in ~${secs} seconds.`,
-          "info",
-        );
+        showToast(`Namebase is rate-limiting exports — try again in ~${secs} seconds.`, "info");
       } else {
         showToast(`Fetch failed: ${msg}`, "error");
       }
@@ -104,18 +101,20 @@ export function NamebaseHistoryImport() {
 
   const hasData = (summary?.eventCount ?? 0) > 0;
   const totalFeeHns = formatHns(summary?.totalFeeDoos ?? 0);
-  const totalUsd =
-    ((summary?.totalUsdCents ?? 0) / 100).toLocaleString("en-US", {
-      style: "currency",
-      currency: "USD",
-    });
+  const totalUsd = ((summary?.totalUsdCents ?? 0) / 100).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+  });
 
   return (
     <div className="bg-white rounded border border-gray-200 p-4 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-semibold">Account history (imported)</h3>
-          <Badge variant="default" title="Imported from your Namebase account export — not derived from on-chain data.">
+          <Badge
+            variant="default"
+            title="Imported from your Namebase account export — not derived from on-chain data."
+          >
             Imported — not on-chain data
           </Badge>
         </div>
@@ -133,11 +132,7 @@ export function NamebaseHistoryImport() {
           >
             {importLive.isPending ? "Fetching…" : "Fetch from Namebase"}
           </Button>
-          <Button
-            size="sm"
-            onClick={handleUpload}
-            disabled={importFile.isPending}
-          >
+          <Button size="sm" onClick={handleUpload} disabled={importFile.isPending}>
             {importFile.isPending ? "Importing…" : "Upload CSV"}
           </Button>
         </div>
@@ -145,8 +140,8 @@ export function NamebaseHistoryImport() {
 
       <p className="text-xs text-gray-500">
         One-shot import of your Namebase account-history export (bids, fees, sales, deposits).
-        Namebase stopped recording activity on 2026-06-12. Data here is historical only and
-        is stored separately from on-chain wallet data.
+        Namebase stopped recording activity on 2026-06-12. Data here is historical only and is
+        stored separately from on-chain wallet data.
       </p>
 
       {hasData ? (
@@ -232,7 +227,11 @@ export function NamebaseHistoryImport() {
                         <td className="px-2 py-1">{r.family}</td>
                         <td className="px-2 py-1">{r.verb}</td>
                         <td className="px-2 py-1">
-                          {r.name ? `.${displayName(r.name)}` : <span className="text-gray-400">—</span>}
+                          {r.name ? (
+                            `.${displayName(r.name)}`
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
                         </td>
                         <td className="px-2 py-1 text-right font-mono">
                           {r.bidDoos != null ? formatHns(r.bidDoos) : "—"}
@@ -244,9 +243,7 @@ export function NamebaseHistoryImport() {
                           {r.feeDoos != null ? formatHns(r.feeDoos) : "—"}
                         </td>
                         <td className="px-2 py-1 text-right font-mono">
-                          {r.usdCents != null
-                            ? `$${(r.usdCents / 100).toFixed(2)}`
-                            : "—"}
+                          {r.usdCents != null ? `$${(r.usdCents / 100).toFixed(2)}` : "—"}
                         </td>
                       </tr>
                     ))}

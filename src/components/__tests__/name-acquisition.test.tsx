@@ -66,13 +66,32 @@ describe("WalletView — Auctions link", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+          return Promise.resolve({
+            walletProfileId: profile.id,
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 60000,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+          return Promise.resolve({
+            signerUnlocked: true,
+            broadcasterAvailable: true,
+            canWrite: true,
+            reason: null,
+          });
         case "get_wallet_balances":
-          return Promise.resolve({ liquidDoos: 5_000_000, nameControlDoos: 0, nameLockupDoos: 0, totalDoos: 5_000_000 });
+          return Promise.resolve({
+            liquidDoos: 5_000_000,
+            nameControlDoos: 0,
+            nameLockupDoos: 0,
+            totalDoos: 5_000_000,
+          });
         case "read_balance":
-          return Promise.resolve({ confirmed: 0, unconfirmed: 0, locked_confirmed: 0, locked_unconfirmed: 0 });
+          return Promise.resolve({
+            confirmed: 0,
+            unconfirmed: 0,
+            locked_confirmed: 0,
+            locked_unconfirmed: 0,
+          });
         case "list_tx_drafts":
           return Promise.resolve([]);
         case "read_names":
@@ -99,9 +118,18 @@ describe("AuctionsView — name lookup and modal", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+          return Promise.resolve({
+            walletProfileId: profile.id,
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 60000,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+          return Promise.resolve({
+            signerUnlocked: true,
+            broadcasterAvailable: true,
+            canWrite: true,
+            reason: null,
+          });
         default:
           return Promise.resolve(null);
       }
@@ -165,9 +193,18 @@ describe("AuctionsView — name lookup and modal", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+          return Promise.resolve({
+            walletProfileId: profile.id,
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 60000,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+          return Promise.resolve({
+            signerUnlocked: true,
+            broadcasterAvailable: true,
+            canWrite: true,
+            reason: null,
+          });
         case "read_name_info":
           return Promise.resolve({ name: "helloworld123", state: "AVAILABLE" });
         default:
@@ -198,9 +235,18 @@ describe("AuctionsView — name lookup and modal", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+          return Promise.resolve({
+            walletProfileId: profile.id,
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 60000,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+          return Promise.resolve({
+            signerUnlocked: true,
+            broadcasterAvailable: true,
+            canWrite: true,
+            reason: null,
+          });
         case "read_name_info":
           return Promise.resolve({ name: "xn--90ai7ab", state: "AVAILABLE" });
         default:
@@ -240,9 +286,18 @@ describe("AuctionsView — name lookup and modal", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+          return Promise.resolve({
+            walletProfileId: profile.id,
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 60000,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+          return Promise.resolve({
+            signerUnlocked: true,
+            broadcasterAvailable: true,
+            canWrite: true,
+            reason: null,
+          });
         case "read_name_info":
           return Promise.resolve({ name: "xn--90ai7ab", state: "AVAILABLE" });
         default:
@@ -281,7 +336,10 @@ describe("AuctionsView — name lookup and modal", () => {
 });
 
 describe("NameActionsModal — guided acquisition flow", () => {
-  function routeModal(nameInfo: Record<string, unknown> | null, overrides: Record<string, unknown> = {}) {
+  function routeModal(
+    nameInfo: Record<string, unknown> | null,
+    overrides: Record<string, unknown> = {},
+  ) {
     return (cmd: string) => {
       if (cmd === "get_name_action_capabilities") {
         return Promise.resolve(overrides.capabilities ?? null);
@@ -290,9 +348,18 @@ describe("NameActionsModal — guided acquisition flow", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+          return Promise.resolve({
+            walletProfileId: profile.id,
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 60000,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+          return Promise.resolve({
+            signerUnlocked: true,
+            broadcasterAvailable: true,
+            canWrite: true,
+            reason: null,
+          });
         case "read_name_info":
           return Promise.resolve(nameInfo);
         default:
@@ -361,43 +428,46 @@ describe("NameActionsModal — guided acquisition flow", () => {
 
   it("shows Register for a CLOSED name (wonNeedsRegister task)", async () => {
     invokeMock.mockImplementation(
-      routeModal({
-        name: "closedname",
-        state: "CLOSED",
-        height: 100,
-        renewal: 200,
-        owner: { hash: profile.receiveAddress, index: 0 },
-        value: 1_000_000,
-        highest: 2_000_000,
-        stats: { blocksUntilExpire: 100 },
-      }, {
-        capabilities: {
+      routeModal(
+        {
           name: "closedname",
-          phase: "CLOSED",
-          taskState: "wonNeedsRegister",
-          ownsName: true,
-          hasBidCommitment: false,
-          hasRevealCoin: false,
-          hasOwnerCoin: true,
-          canOpen: { allowed: false, reason: null },
-          canBid: { allowed: false, reason: "Phase is CLOSED" },
-          canReveal: { allowed: false, reason: "No commitment" },
-          canRedeem: { allowed: false, reason: null },
-          canRegister: { allowed: true, reason: null },
-          canUpdate: { allowed: true, reason: null },
-          canTransfer: { allowed: true, reason: null },
-          canFinalize: { allowed: false, reason: null },
-          canCancelTransfer: { allowed: false, reason: null },
-          canRenew: { allowed: true, reason: null },
-          canRevoke: { allowed: true, reason: null },
-          nextActionKey: "REGISTER",
-          nextActionLabel: "Register Name",
-          nextActionReason: "You won the auction! Register the name to finalize ownership.",
-          countdownLabel: null,
-          countdownBlocks: null,
-          countdownHours: null,
+          state: "CLOSED",
+          height: 100,
+          renewal: 200,
+          owner: { hash: profile.receiveAddress, index: 0 },
+          value: 1_000_000,
+          highest: 2_000_000,
+          stats: { blocksUntilExpire: 100 },
         },
-      }),
+        {
+          capabilities: {
+            name: "closedname",
+            phase: "CLOSED",
+            taskState: "wonNeedsRegister",
+            ownsName: true,
+            hasBidCommitment: false,
+            hasRevealCoin: false,
+            hasOwnerCoin: true,
+            canOpen: { allowed: false, reason: null },
+            canBid: { allowed: false, reason: "Phase is CLOSED" },
+            canReveal: { allowed: false, reason: "No commitment" },
+            canRedeem: { allowed: false, reason: null },
+            canRegister: { allowed: true, reason: null },
+            canUpdate: { allowed: true, reason: null },
+            canTransfer: { allowed: true, reason: null },
+            canFinalize: { allowed: false, reason: null },
+            canCancelTransfer: { allowed: false, reason: null },
+            canRenew: { allowed: true, reason: null },
+            canRevoke: { allowed: true, reason: null },
+            nextActionKey: "REGISTER",
+            nextActionLabel: "Register Name",
+            nextActionReason: "You won the auction! Register the name to finalize ownership.",
+            countdownLabel: null,
+            countdownBlocks: null,
+            countdownHours: null,
+          },
+        },
+      ),
     );
     render(<NameActionsModal name="closedname" open onClose={() => {}} />, { wrapper: wrapper() });
 
@@ -407,44 +477,47 @@ describe("NameActionsModal — guided acquisition flow", () => {
 
   it("shows owner-manage for CLOSED name when wallet owns it and it is already registered", async () => {
     invokeMock.mockImplementation(
-      routeModal({
-        name: "ownedname",
-        state: "CLOSED",
-        height: 100,
-        renewal: 200,
-        owner: { hash: profile.receiveAddress, index: 0 },
-        registered: true,
-        value: 1_000_000,
-        highest: 2_000_000,
-        stats: { blocksUntilExpire: 100 },
-      }, {
-        capabilities: {
+      routeModal(
+        {
           name: "ownedname",
-          phase: "CLOSED",
-          taskState: "ownedNoUrgentAction",
-          ownsName: true,
-          hasBidCommitment: false,
-          hasRevealCoin: false,
-          hasOwnerCoin: true,
-          canOpen: { allowed: false, reason: null },
-          canBid: { allowed: false, reason: "Phase is CLOSED" },
-          canReveal: { allowed: false, reason: "No commitment" },
-          canRedeem: { allowed: false, reason: null },
-          canRegister: { allowed: true, reason: null },
-          canUpdate: { allowed: true, reason: null },
-          canTransfer: { allowed: true, reason: null },
-          canFinalize: { allowed: false, reason: null },
-          canCancelTransfer: { allowed: false, reason: null },
-          canRenew: { allowed: true, reason: null },
-          canRevoke: { allowed: true, reason: null },
-          nextActionKey: null,
-          nextActionLabel: "Manage",
-          nextActionReason: null,
-          countdownLabel: null,
-          countdownBlocks: null,
-          countdownHours: null,
+          state: "CLOSED",
+          height: 100,
+          renewal: 200,
+          owner: { hash: profile.receiveAddress, index: 0 },
+          registered: true,
+          value: 1_000_000,
+          highest: 2_000_000,
+          stats: { blocksUntilExpire: 100 },
         },
-      }),
+        {
+          capabilities: {
+            name: "ownedname",
+            phase: "CLOSED",
+            taskState: "ownedNoUrgentAction",
+            ownsName: true,
+            hasBidCommitment: false,
+            hasRevealCoin: false,
+            hasOwnerCoin: true,
+            canOpen: { allowed: false, reason: null },
+            canBid: { allowed: false, reason: "Phase is CLOSED" },
+            canReveal: { allowed: false, reason: "No commitment" },
+            canRedeem: { allowed: false, reason: null },
+            canRegister: { allowed: true, reason: null },
+            canUpdate: { allowed: true, reason: null },
+            canTransfer: { allowed: true, reason: null },
+            canFinalize: { allowed: false, reason: null },
+            canCancelTransfer: { allowed: false, reason: null },
+            canRenew: { allowed: true, reason: null },
+            canRevoke: { allowed: true, reason: null },
+            nextActionKey: null,
+            nextActionLabel: "Manage",
+            nextActionReason: null,
+            countdownLabel: null,
+            countdownBlocks: null,
+            countdownHours: null,
+          },
+        },
+      ),
     );
     render(<NameActionsModal name="ownedname" open onClose={() => {}} />, { wrapper: wrapper() });
 
@@ -459,49 +532,53 @@ describe("NameActionsModal — guided acquisition flow", () => {
   });
 
   it("shows a not-synced-locally banner for an owned CLOSED name with no local owner coin", async () => {
-    const notSyncedReason =
-      "owner coin not synced locally — connect a node and Refresh to manage";
+    const notSyncedReason = "owner coin not synced locally — connect a node and Refresh to manage";
     invokeMock.mockImplementation(
-      routeModal({
-        name: "unsyncedname",
-        state: "CLOSED",
-        height: 100,
-        renewal: 200,
-        owner: { hash: profile.receiveAddress, index: 0 },
-        registered: true,
-        value: 1_000_000,
-        highest: 2_000_000,
-        stats: { blocksUntilExpire: 100 },
-      }, {
-        capabilities: {
+      routeModal(
+        {
           name: "unsyncedname",
-          phase: "CLOSED",
-          taskState: "ownedNoUrgentAction",
-          ownsName: true,
-          hasBidCommitment: false,
-          hasRevealCoin: false,
-          hasOwnerCoin: false,
-          canOpen: { allowed: false, reason: null },
-          canBid: { allowed: false, reason: "Phase is CLOSED" },
-          canReveal: { allowed: false, reason: "No commitment" },
-          canRedeem: { allowed: false, reason: null },
-          canRegister: { allowed: false, reason: notSyncedReason },
-          canUpdate: { allowed: false, reason: notSyncedReason },
-          canTransfer: { allowed: false, reason: notSyncedReason },
-          canFinalize: { allowed: false, reason: notSyncedReason },
-          canCancelTransfer: { allowed: false, reason: notSyncedReason },
-          canRenew: { allowed: false, reason: notSyncedReason },
-          canRevoke: { allowed: false, reason: notSyncedReason },
-          nextActionKey: null,
-          nextActionLabel: "Manage",
-          nextActionReason: null,
-          countdownLabel: null,
-          countdownBlocks: null,
-          countdownHours: null,
+          state: "CLOSED",
+          height: 100,
+          renewal: 200,
+          owner: { hash: profile.receiveAddress, index: 0 },
+          registered: true,
+          value: 1_000_000,
+          highest: 2_000_000,
+          stats: { blocksUntilExpire: 100 },
         },
-      }),
+        {
+          capabilities: {
+            name: "unsyncedname",
+            phase: "CLOSED",
+            taskState: "ownedNoUrgentAction",
+            ownsName: true,
+            hasBidCommitment: false,
+            hasRevealCoin: false,
+            hasOwnerCoin: false,
+            canOpen: { allowed: false, reason: null },
+            canBid: { allowed: false, reason: "Phase is CLOSED" },
+            canReveal: { allowed: false, reason: "No commitment" },
+            canRedeem: { allowed: false, reason: null },
+            canRegister: { allowed: false, reason: notSyncedReason },
+            canUpdate: { allowed: false, reason: notSyncedReason },
+            canTransfer: { allowed: false, reason: notSyncedReason },
+            canFinalize: { allowed: false, reason: notSyncedReason },
+            canCancelTransfer: { allowed: false, reason: notSyncedReason },
+            canRenew: { allowed: false, reason: notSyncedReason },
+            canRevoke: { allowed: false, reason: notSyncedReason },
+            nextActionKey: null,
+            nextActionLabel: "Manage",
+            nextActionReason: null,
+            countdownLabel: null,
+            countdownBlocks: null,
+            countdownHours: null,
+          },
+        },
+      ),
     );
-    render(<NameActionsModal name="unsyncedname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NameActionsModal name="unsyncedname" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
 
     // Still gets the "you own this name" owned-manage framing…
     expect(await screen.findByText(/You own this name/i)).toBeInTheDocument();
@@ -518,46 +595,51 @@ describe("NameActionsModal — guided acquisition flow", () => {
 
   it("auto-expands the management section for an owned name without clicking the toggle", async () => {
     invokeMock.mockImplementation(
-      routeModal({
-        name: "autoexpandname",
-        state: "CLOSED",
-        height: 100,
-        renewal: 200,
-        owner: { hash: profile.receiveAddress, index: 0 },
-        registered: true,
-        value: 1_000_000,
-        highest: 2_000_000,
-        stats: { blocksUntilExpire: 100 },
-      }, {
-        capabilities: {
+      routeModal(
+        {
           name: "autoexpandname",
-          phase: "CLOSED",
-          taskState: "ownedNoUrgentAction",
-          ownsName: true,
-          hasBidCommitment: false,
-          hasRevealCoin: false,
-          hasOwnerCoin: false,
-          canOpen: { allowed: false, reason: null },
-          canBid: { allowed: false, reason: "Phase is CLOSED" },
-          canReveal: { allowed: false, reason: "No commitment" },
-          canRedeem: { allowed: false, reason: null },
-          canRegister: { allowed: false, reason: "owner coin not synced" },
-          canUpdate: { allowed: false, reason: "owner coin not synced" },
-          canTransfer: { allowed: false, reason: "owner coin not synced" },
-          canFinalize: { allowed: false, reason: "owner coin not synced" },
-          canCancelTransfer: { allowed: false, reason: "owner coin not synced" },
-          canRenew: { allowed: false, reason: "owner coin not synced" },
-          canRevoke: { allowed: false, reason: "owner coin not synced" },
-          nextActionKey: null,
-          nextActionLabel: "Manage",
-          nextActionReason: null,
-          countdownLabel: null,
-          countdownBlocks: null,
-          countdownHours: null,
+          state: "CLOSED",
+          height: 100,
+          renewal: 200,
+          owner: { hash: profile.receiveAddress, index: 0 },
+          registered: true,
+          value: 1_000_000,
+          highest: 2_000_000,
+          stats: { blocksUntilExpire: 100 },
         },
-      }),
+        {
+          capabilities: {
+            name: "autoexpandname",
+            phase: "CLOSED",
+            taskState: "ownedNoUrgentAction",
+            ownsName: true,
+            hasBidCommitment: false,
+            hasRevealCoin: false,
+            hasOwnerCoin: false,
+            canOpen: { allowed: false, reason: null },
+            canBid: { allowed: false, reason: "Phase is CLOSED" },
+            canReveal: { allowed: false, reason: "No commitment" },
+            canRedeem: { allowed: false, reason: null },
+            canRegister: { allowed: false, reason: "owner coin not synced" },
+            canUpdate: { allowed: false, reason: "owner coin not synced" },
+            canTransfer: { allowed: false, reason: "owner coin not synced" },
+            canFinalize: { allowed: false, reason: "owner coin not synced" },
+            canCancelTransfer: { allowed: false, reason: "owner coin not synced" },
+            canRenew: { allowed: false, reason: "owner coin not synced" },
+            canRevoke: { allowed: false, reason: "owner coin not synced" },
+            nextActionKey: null,
+            nextActionLabel: "Manage",
+            nextActionReason: null,
+            countdownLabel: null,
+            countdownBlocks: null,
+            countdownHours: null,
+          },
+        },
+      ),
     );
-    render(<NameActionsModal name="autoexpandname" open onClose={() => {}} />, { wrapper: wrapper() });
+    render(<NameActionsModal name="autoexpandname" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
 
     // No click on the "Manage actions" toggle — management controls should already be visible.
     const transferBtn = await screen.findByRole("button", { name: /^Transfer$/i });
@@ -582,9 +664,18 @@ describe("NameActionsModal — write-capability gating", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: profile.id, unlocked: false, unlockedUntilEpochMs: null });
+          return Promise.resolve({
+            walletProfileId: profile.id,
+            unlocked: false,
+            unlockedUntilEpochMs: null,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: "Wallet is locked" });
+          return Promise.resolve({
+            signerUnlocked: false,
+            broadcasterAvailable: false,
+            canWrite: false,
+            reason: "Wallet is locked",
+          });
         case "read_name_info":
           return Promise.resolve({
             name: "gatedname",
@@ -604,7 +695,9 @@ describe("NameActionsModal — write-capability gating", () => {
     render(<NameActionsModal name="gatedname" open onClose={() => {}} />, { wrapper: wrapper() });
 
     // Wait until the blocked banner appears, then assert the guided action is disabled.
-    expect(await screen.findByTestId("name-actions-blocked")).toHaveTextContent(/name actions unavailable/i);
+    expect(await screen.findByTestId("name-actions-blocked")).toHaveTextContent(
+      /name actions unavailable/i,
+    );
 
     await waitFor(() => {
       const btn = screen.getByRole("button", { name: /Open/i });

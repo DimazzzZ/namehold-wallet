@@ -87,9 +87,7 @@ function baseRoutes(o: {
   return (cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "get_names_action_capabilities") {
       const names = (args as { names?: string[] })?.names ?? [];
-      return Promise.resolve(
-        names.map((n) => o.capsByName?.[n] ?? baseCaps(n, {})),
-      );
+      return Promise.resolve(names.map((n) => o.capsByName?.[n] ?? baseCaps(n, {})));
     }
     switch (cmd) {
       case "list_wallet_profiles":
@@ -180,9 +178,7 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
       const call = invokeMock.mock.calls.find((c) => c[0] === "read_name_info");
       expect(call?.[1]).toEqual({ name: "xn--e1adigm" });
     });
-    const capsCall = invokeMock.mock.calls.find(
-      (c) => c[0] === "get_name_action_capabilities",
-    );
+    const capsCall = invokeMock.mock.calls.find((c) => c[0] === "get_name_action_capabilities");
     expect(capsCall?.[1]).toMatchObject({ name: "xn--e1adigm" });
   });
 
@@ -209,9 +205,7 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
     expect(screen.queryByText(".ownedname")).not.toBeInTheDocument();
     expect(screen.getByText(/Active Auctions \(0\)/i)).toBeInTheDocument();
     // Deduped BEFORE the caps batch — never even requested.
-    expect(
-      invokeMock.mock.calls.some((c) => c[0] === "get_names_action_capabilities"),
-    ).toBe(false);
+    expect(invokeMock.mock.calls.some((c) => c[0] === "get_names_action_capabilities")).toBe(false);
   });
 
   it("does NOT show a position whose live caps say unavailableOther (nothing to do)", async () => {

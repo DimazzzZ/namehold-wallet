@@ -32,7 +32,14 @@ import { loadSettings } from "../../test/fixtures/settings";
 import { renderSettings } from "../../test/fixtures/renderSettings";
 import { routeSettingsCommand } from "../../test/fixtures/settingsRoute";
 
-const reachable = { reachable: true, height: 4242, headers: 4242, synced: true, network: "main", error: null };
+const reachable = {
+  reachable: true,
+  height: 4242,
+  headers: 4242,
+  synced: true,
+  network: "main",
+  error: null,
+};
 
 beforeEach(() => {
   invokeMock.mockReset();

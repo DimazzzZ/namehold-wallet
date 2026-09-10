@@ -32,7 +32,11 @@ vi.mock("../../lib/runtime", () => ({
   isTauri: () => true,
   isBrowser: () => false,
 }));
-vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({
+  enable: vi.fn().mockResolvedValue(undefined),
+  disable: vi.fn().mockResolvedValue(undefined),
+  isEnabled: vi.fn().mockResolvedValue(false),
+}));
 
 import { UpdatesSettings } from "../UpdatesSettings";
 import { useAppUpdate } from "../../hooks/useAppUpdate";
@@ -65,9 +69,7 @@ describe("Settings — Updates card", () => {
     });
     render(<UpdatesSettings />, { wrapper: wrapper() });
     // Wait for the useCurrentVersion query to resolve, then read the label.
-    await waitFor(() =>
-      expect(screen.getByTestId("current-version")).toHaveTextContent("v0.4.0"),
-    );
+    await waitFor(() => expect(screen.getByTestId("current-version")).toHaveTextContent("v0.4.0"));
   });
 
   it("idle → checking → up-to-date when the endpoint reports no update", async () => {
@@ -79,9 +81,7 @@ describe("Settings — Updates card", () => {
     render(<UpdatesSettings />, { wrapper: wrapper() });
     const btn = await screen.findByTestId("check-for-updates");
     fireEvent.click(btn);
-    await waitFor(() =>
-      expect(screen.getByTestId("update-uptodate")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByTestId("update-uptodate")).toBeInTheDocument());
   });
 
   it("shows the Install button and progress bar when an update is available", async () => {
@@ -115,12 +115,8 @@ describe("Settings — Updates card", () => {
     expect(screen.queryByText(/New features/)).not.toBeInTheDocument();
 
     fireEvent.click(installBtn);
-    await waitFor(() =>
-      expect(screen.getByTestId("update-progress")).toBeInTheDocument(),
-    );
-    await waitFor(() =>
-      expect(screen.getByTestId("update-installed")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByTestId("update-progress")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("update-installed")).toBeInTheDocument());
   });
 
   it("shows an error + Retry when the check throws", async () => {

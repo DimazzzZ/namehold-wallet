@@ -44,9 +44,7 @@ export function WatchlistToggle({ name, size = "sm" }: WatchlistToggleProps) {
 
   const toggleMutation = useMutation({
     mutationFn: () =>
-      watched
-        ? invoke("remove_from_watchlist", { name })
-        : invoke("add_to_watchlist", { name }),
+      watched ? invoke("remove_from_watchlist", { name }) : invoke("add_to_watchlist", { name }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["watchlist"] });
       showToast(

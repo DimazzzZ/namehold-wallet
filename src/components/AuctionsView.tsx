@@ -88,7 +88,8 @@ export function AuctionsView() {
   // We fetch capabilities for each name to determine the task state.
   const activeTasks = names.filter((n) => {
     const { phase } = auctionPhase(n.state);
-    if (phase === "OPENING" || phase === "BIDDING" || phase === "REVEAL" || phase === "TRANSFER") return true;
+    if (phase === "OPENING" || phase === "BIDDING" || phase === "REVEAL" || phase === "TRANSFER")
+      return true;
     // CLOSED names: only include as a candidate when `registered` is
     // EXPLICITLY false (recently won, not yet registered). `registered`
     // being undefined/absent means "unknown, likely already registered"
@@ -118,9 +119,7 @@ export function AuctionsView() {
     [...activeTasks.map((n) => n.name), ...dedupedPositionNames],
     activeProfileId,
   );
-  const capsByName = new Map<string, NameActionCapabilities>(
-    capsList.map((c) => [c.name, c]),
-  );
+  const capsByName = new Map<string, NameActionCapabilities>(capsList.map((c) => [c.name, c]));
 
   // Only show a position once its live caps land in an active-auction task
   // state — this is what makes the list self-clean by lifecycle (a won and
@@ -173,9 +172,7 @@ export function AuctionsView() {
   // Render a task row from the pre-fetched batch capabilities (no per-row
   // fetch — see `capsByName` above).
   const TaskRow = ({ name: n }: { name: HsdName }) => {
-    const summary: AuctionTaskSummary | null = taskSummaryFromCapabilities(
-      capsByName.get(n.name),
-    );
+    const summary: AuctionTaskSummary | null = taskSummaryFromCapabilities(capsByName.get(n.name));
 
     // A confirmed-open position whose live caps haven't caught up to a real
     // phase yet (node/explorer not synced) still reads as `availableToOpen`
@@ -218,15 +215,14 @@ export function AuctionsView() {
         <td className="py-1 pr-4">
           <Badge variant={displayVariant}>{displayLabel}</Badge>
         </td>
-        <td className="py-1 pr-4 text-xs text-gray-500" title={summary?.countdownLabel ?? undefined}>
+        <td
+          className="py-1 pr-4 text-xs text-gray-500"
+          title={summary?.countdownLabel ?? undefined}
+        >
           {countdownText ?? "—"}
         </td>
         <td className="py-1 text-right">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => handleOpenManagement(n.name)}
-          >
+          <Button size="sm" variant="ghost" onClick={() => handleOpenManagement(n.name)}>
             {isPendingPhaseOpen ||
             nextLabel === "Wait for Bidding" ||
             nextLabel === "Owned" ||
@@ -273,12 +269,7 @@ export function AuctionsView() {
               data-testid="auctions-lookup-input"
             />
           </div>
-          <Button
-            size="md"
-            variant="primary"
-            disabled={!lookupName.trim()}
-            onClick={handleLookup}
-          >
+          <Button size="md" variant="primary" disabled={!lookupName.trim()} onClick={handleLookup}>
             Look up
           </Button>
           {!isWatchOnly && (
@@ -296,9 +287,7 @@ export function AuctionsView() {
 
       {/* Actionable auction tasks */}
       <div className="bg-white rounded p-4 border border-gray-200">
-        <div className="text-sm text-gray-500 mb-2">
-          Active Auctions ({totalActiveCount})
-        </div>
+        <div className="text-sm text-gray-500 mb-2">Active Auctions ({totalActiveCount})</div>
         {totalActiveCount > 0 ? (
           <div className="max-h-60 overflow-auto">
             <table className="w-full text-sm">
@@ -336,11 +325,7 @@ export function AuctionsView() {
       )}
 
       {infoName && (
-        <NameInfoModal
-          name={infoName}
-          open={!!infoName}
-          onClose={() => setInfoName(null)}
-        />
+        <NameInfoModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
       )}
 
       <BatchBidModal

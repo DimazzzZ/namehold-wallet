@@ -103,9 +103,10 @@ export function DataTable<T extends { id: number }>({
       const newSelection =
         typeof updater === "function"
           ? updater(
-              Object.fromEntries(
-                Array.from(selectedIds || []).map((id) => [id, true]),
-              ) as Record<string, boolean>,
+              Object.fromEntries(Array.from(selectedIds || []).map((id) => [id, true])) as Record<
+                string,
+                boolean
+              >,
             )
           : updater;
       const ids = new Set(
@@ -152,19 +153,13 @@ export function DataTable<T extends { id: number }>({
                     onClick={h.column.getToggleSortingHandler()}
                   >
                     {flexRender(h.column.columnDef.header, h.getContext())}
-                    {
-                      { asc: " \u2191", desc: " \u2193" }[
-                        h.column.getIsSorted() as string
-                      ]
-                    }
+                    {{ asc: " \u2191", desc: " \u2193" }[h.column.getIsSorted() as string]}
                   </th>
                 ))}
               </tr>
             ))}
           </thead>
-          <tbody
-            style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}
-          >
+          <tbody style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}>
             {virtualizer.getVirtualItems().map((vi) => {
               const row = rows[vi.index]!;
               return (
@@ -191,9 +186,7 @@ export function DataTable<T extends { id: number }>({
           </tbody>
         </table>
       </div>
-      <div className="text-xs text-gray-500">
-        {rows.length} rows
-      </div>
+      <div className="text-xs text-gray-500">{rows.length} rows</div>
     </div>
   );
 }

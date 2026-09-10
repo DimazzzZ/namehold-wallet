@@ -54,9 +54,7 @@ export function NameBidsPanel({
 
   return (
     <div className="text-sm" data-testid="name-bids">
-      <div className="text-xs font-medium text-gray-600 mb-1">
-        Bids for {displayName(name)}
-      </div>
+      <div className="text-xs font-medium text-gray-600 mb-1">Bids for {displayName(name)}</div>
 
       {!isRevealPhase && (
         <div className="text-xs text-gray-500 mb-1">
@@ -65,9 +63,7 @@ export function NameBidsPanel({
       )}
 
       {isRevealPhase && data?.highest != null && (
-        <div className="text-xs text-gray-500 mb-1">
-          High bid: {formatHns(data.highest)} HNS
-        </div>
+        <div className="text-xs text-gray-500 mb-1">High bid: {formatHns(data.highest)} HNS</div>
       )}
 
       <ul className="space-y-1">

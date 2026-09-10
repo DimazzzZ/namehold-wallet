@@ -42,7 +42,14 @@ describe("totalBalanceDoos", () => {
 describe("normalizeTransaction", () => {
   it("classifies a flat explorer-style receive", () => {
     const row = normalizeTransaction(
-      { hash: "tx1", value: 500000, direction: "receive", address: "hs1qx", confirmed: true, height: 10 },
+      {
+        hash: "tx1",
+        value: 500000,
+        direction: "receive",
+        address: "hs1qx",
+        confirmed: true,
+        height: 10,
+      },
       0,
     );
     expect(row.hash).toBe("tx1");

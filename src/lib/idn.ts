@@ -75,7 +75,7 @@ export function punycodeDecode(input: string): string | null {
     let bias = INITIAL_BIAS;
     const inputLength = input.length;
 
-    for (let index = basicEnd > 0 ? basicEnd + 1 : 0; index < inputLength; ) {
+    for (let index = basicEnd > 0 ? basicEnd + 1 : 0; index < inputLength;) {
       const oldI = i;
       let w = 1;
       for (let k = BASE; ; k += BASE) {

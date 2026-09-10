@@ -31,7 +31,7 @@ export function TxInfoModal({ txid, open, onClose, isMainnet }: TxInfoModalProps
 
   const indexDisabled = isTxInfoError(result);
   // Narrow to the tx object (excludes the error shape) for content rendering.
-  const tx = indexDisabled ? null : result ?? null;
+  const tx = indexDisabled ? null : (result ?? null);
   const confirmed = tx != null && tx.confirmations > 0;
 
   return (
@@ -76,8 +76,8 @@ export function TxInfoModal({ txid, open, onClose, isMainnet }: TxInfoModalProps
             data-testid="tx-info-index-disabled"
           >
             This node has transaction indexing disabled. Enable{" "}
-            <code className="font-mono">--index-tx</code> on your hsd node to
-            view transaction details.
+            <code className="font-mono">--index-tx</code> on your hsd node to view transaction
+            details.
           </div>
         )}
 
@@ -94,10 +94,7 @@ export function TxInfoModal({ txid, open, onClose, isMainnet }: TxInfoModalProps
             {/* Full txid */}
             <div className="space-y-1">
               <div className="text-gray-600">Transaction ID</div>
-              <div
-                className="font-mono break-all bg-gray-50 rounded p-1.5"
-                data-testid="tx-hash"
-              >
+              <div className="font-mono break-all bg-gray-50 rounded p-1.5" data-testid="tx-hash">
                 {tx.txid}
               </div>
             </div>
@@ -134,9 +131,7 @@ export function TxInfoModal({ txid, open, onClose, isMainnet }: TxInfoModalProps
             <div className="flex justify-between">
               <span className="text-gray-600">Timestamp</span>
               <span data-testid="tx-time">
-                {tx.time > 0
-                  ? formatDate(new Date(tx.time * 1000).toISOString())
-                  : "—"}
+                {tx.time > 0 ? formatDate(new Date(tx.time * 1000).toISOString()) : "—"}
               </span>
             </div>
 

@@ -81,11 +81,7 @@ export function useImportCsv() {
 
 export function useExportCsv() {
   return useMutation({
-    mutationFn: (args: {
-      path: string;
-      status?: string;
-      is_staked?: boolean;
-      search?: string;
-    }) => invoke<number>("export_csv", args as Record<string, unknown>),
+    mutationFn: (args: { path: string; status?: string; is_staked?: boolean; search?: string }) =>
+      invoke<number>("export_csv", args as Record<string, unknown>),
   });
 }

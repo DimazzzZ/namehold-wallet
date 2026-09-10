@@ -16,12 +16,7 @@ interface DisclosureProps {
  * and screen readers can find it, and expanding is instant) while still hiding
  * it visually. `aria-expanded` reflects the open state.
  */
-export function Disclosure({
-  summary,
-  children,
-  defaultOpen = false,
-  className,
-}: DisclosureProps) {
+export function Disclosure({ summary, children, defaultOpen = false, className }: DisclosureProps) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div className={className}>

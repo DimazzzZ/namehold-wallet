@@ -113,7 +113,14 @@ function routeInvoke(o: Overrides = {}) {
       case "read_names":
         return Promise.resolve(
           o.names ?? [
-            { name: "example", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
+            {
+              name: "example",
+              state: "CLOSED",
+              height: 100,
+              renewal: 200,
+              owner: { hash: "tx1", index: 0 },
+              stats: null,
+            },
           ],
         );
       case "build_send_hns_draft":
@@ -221,7 +228,9 @@ describe("WalletView (non-custodial)", () => {
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");
-    expect(screen.getByText(/Unlock with your passphrase \(in a secure window\)/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Unlock with your passphrase \(in a secure window\)/i),
+    ).toBeInTheDocument();
   });
 
   it("send dialog collects only address + amount (no passphrase field)", async () => {
@@ -249,9 +258,7 @@ describe("WalletView (non-custodial)", () => {
     fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: /Review/i }));
 
-    await waitFor(() =>
-      expect(screen.getByText(/Sign & Broadcast/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Sign & Broadcast/i)).toBeInTheDocument());
     expect(screen.getByText(/Fee/i)).toBeInTheDocument();
     expect(screen.getByText(/Change/i)).toBeInTheDocument();
   });
@@ -287,7 +294,12 @@ describe("WalletView (non-custodial)", () => {
   it("needs-node-sync callout shows Open Settings link when start_hsd fails", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "start_hsd") return Promise.reject(new Error("binary not found"));
-      return routeInvoke({ unlocked: true, canWrite: true, spendableDoos: 0, confirmedDoos: 1_400_000 })(cmd);
+      return routeInvoke({
+        unlocked: true,
+        canWrite: true,
+        spendableDoos: 0,
+        confirmedDoos: 1_400_000,
+      })(cmd);
     });
     render(<WalletView />, { wrapper: wrapper() });
 
@@ -368,9 +380,7 @@ describe("WalletView (non-custodial)", () => {
     // carried value.
     expect(within(updateRow).getByText("0.000000")).toBeInTheDocument();
     expect(
-      within(updateRow).getByTitle(
-        /Name value 222\.000000 HNS is carried to your own new coin/i,
-      ),
+      within(updateRow).getByTitle(/Name value 222\.000000 HNS is carried to your own new coin/i),
     ).toBeInTheDocument();
     // A real send still shows its outgoing amount. `send_hns` isn't in
     // ACTION_META so it renders as the FALLBACK_META "Other" badge; find the
@@ -380,10 +390,31 @@ describe("WalletView (non-custodial)", () => {
   });
 
   const multiNames = [
-    { name: "example", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
-    { name: "another", state: "CLOSED", height: 101, renewal: 201, owner: { hash: "tx2", index: 0 }, stats: null },
+    {
+      name: "example",
+      state: "CLOSED",
+      height: 100,
+      renewal: 200,
+      owner: { hash: "tx1", index: 0 },
+      stats: null,
+    },
+    {
+      name: "another",
+      state: "CLOSED",
+      height: 101,
+      renewal: 201,
+      owner: { hash: "tx2", index: 0 },
+      stats: null,
+    },
     // "козёл" (Russian for "goat") — its ACE/raw form is xn--g1afek0h.
-    { name: "xn--g1afek0h", state: "CLOSED", height: 102, renewal: 202, owner: { hash: "tx3", index: 0 }, stats: null },
+    {
+      name: "xn--g1afek0h",
+      state: "CLOSED",
+      height: 102,
+      renewal: 202,
+      owner: { hash: "tx3", index: 0 },
+      stats: null,
+    },
   ];
 
   it("Owned Names filter: narrows by ASCII substring, unicode substring, and clears back to full list", async () => {
@@ -564,9 +595,9 @@ describe("WalletView multi-wallet management", () => {
     });
     // …then re-activates the remaining wallet (p2).
     await waitFor(() => {
-      expect(
-        invokeMock.mock.calls.find((c) => c[0] === "set_active_wallet_profile")?.[1],
-      ).toEqual({ walletProfileId: "p2" });
+      expect(invokeMock.mock.calls.find((c) => c[0] === "set_active_wallet_profile")?.[1]).toEqual({
+        walletProfileId: "p2",
+      });
     });
   });
 
@@ -633,7 +664,11 @@ describe("WalletView — sync Stop button + honest progress", () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "get_sync_status") {
         return Promise.resolve(
-          baseSyncStatus({ running: true, step: "repair", progressLabel: "Repairing owned names…" }),
+          baseSyncStatus({
+            running: true,
+            step: "repair",
+            progressLabel: "Repairing owned names…",
+          }),
         );
       }
       if (cmd === "cancel_full_sync") return Promise.resolve(null);
@@ -669,7 +704,11 @@ describe("WalletView — sync Stop button + honest progress", () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "get_sync_status") {
         return Promise.resolve(
-          baseSyncStatus({ running: true, step: "node", progressLabel: "Syncing with local node…" }),
+          baseSyncStatus({
+            running: true,
+            step: "node",
+            progressLabel: "Syncing with local node…",
+          }),
         );
       }
       return base(cmd);
@@ -760,9 +799,7 @@ describe("WalletView — punycode display (Task 4)", () => {
       const call = invokeMock.mock.calls.find((c) => c[0] === "read_name_info");
       expect(call?.[1]).toEqual({ name: "xn--e1adigm" });
     });
-    const capsCall = invokeMock.mock.calls.find(
-      (c) => c[0] === "get_name_action_capabilities",
-    );
+    const capsCall = invokeMock.mock.calls.find((c) => c[0] === "get_name_action_capabilities");
     expect(capsCall?.[1]).toMatchObject({ name: "xn--e1adigm" });
 
     // The modal title shows the decoded name with the raw ACE form alongside
@@ -806,9 +843,7 @@ describe("WalletView — expiring-soon renewal banner (Task 3 / C3)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^Renew$/i }));
     await waitFor(() => {
-      const call = invokeMock.mock.calls.find(
-        (c) => c[0] === "get_name_action_capabilities",
-      );
+      const call = invokeMock.mock.calls.find((c) => c[0] === "get_name_action_capabilities");
       expect(call?.[1]).toMatchObject({ name: "urgentname" });
     });
   });
@@ -965,9 +1000,7 @@ describe("WalletView — Account public key (xpub) card for Namebase", () => {
 
     await screen.findByText("Primary");
     const card = await screen.findByTestId("account-xpub-card");
-    expect(
-      within(card).getByText(/For Namebase \/ xpub-import payees only/i),
-    ).toBeInTheDocument();
+    expect(within(card).getByText(/For Namebase \/ xpub-import payees only/i)).toBeInTheDocument();
     expect(within(card).getByText(/single-signature wallet/i)).toBeInTheDocument();
   });
 
@@ -1016,7 +1049,7 @@ describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () =
     expect(screen.getByTestId("copy-xpub")).toBeInTheDocument();
   });
 
-  it('the Details footer disclosure is collapsed by default and hides the profile diagnostic', async () => {
+  it("the Details footer disclosure is collapsed by default and hides the profile diagnostic", async () => {
     invokeMock.mockImplementation(routeInvoke());
     render(<WalletView />, { wrapper: wrapper() });
 
@@ -1107,14 +1140,14 @@ describe("WalletView — density cleanup (Disclosure + CopyField regroup)", () =
     // Alignment with the drafts card: the BID row (with self-homed
     // valueDoos=0) shows "0.000000" byte-identical to the drafts card, and
     // is colored NEUTRAL (gray) — a self-homed name action is not a loss.
-    const zeroSpans = screen
-      .getAllByText("0.000000")
-      .filter((el) => el.tagName === "SPAN");
+    const zeroSpans = screen.getAllByText("0.000000").filter((el) => el.tagName === "SPAN");
     expect(zeroSpans.some((el) => el.className.includes("text-gray-700"))).toBe(true);
     expect(zeroSpans.some((el) => el.className.includes("text-red-600"))).toBe(false);
     // The receive row (positive inflow) is green with a leading "+".
     const incomeSpan = screen
-      .getAllByText((_, el) => el?.tagName === "SPAN" && /^\+100\.000000$/.test(el.textContent ?? ""))
+      .getAllByText(
+        (_, el) => el?.tagName === "SPAN" && /^\+100\.000000$/.test(el.textContent ?? ""),
+      )
       .find((el) => el.className.includes("text-green-600"));
     expect(incomeSpan).toBeTruthy();
     // Long-form date with time: the row's Date cell reads
@@ -1168,9 +1201,7 @@ describe("WalletView — canonical table design", () => {
         counterparty: null,
       },
     ];
-    invokeMock.mockImplementation(
-      routeInvoke({ unlocked: true, canWrite: true, drafts, history }),
-    );
+    invokeMock.mockImplementation(routeInvoke({ unlocked: true, canWrite: true, drafts, history }));
     render(<WalletView />, { wrapper: wrapper() });
 
     await screen.findByText("Primary");
@@ -1264,7 +1295,18 @@ describe("WalletView — Recent transactions Badge labels", () => {
         walletProfileId: baseProfile.id,
         action: "open",
         status: "broadcasted",
-        summary: { action: "open", sendTotalDoos: 0, feeDoos: 1000, changeDoos: 0, inputTotalDoos: 1000, numInputs: 1, recipientAddress: null, txid: null, warnings: [], name: "hello" },
+        summary: {
+          action: "open",
+          sendTotalDoos: 0,
+          feeDoos: 1000,
+          changeDoos: 0,
+          inputTotalDoos: 1000,
+          numInputs: 1,
+          recipientAddress: null,
+          txid: null,
+          warnings: [],
+          name: "hello",
+        },
         errorMessage: null,
         txid: null,
         createdAt: "2026-07-22",
@@ -1274,7 +1316,18 @@ describe("WalletView — Recent transactions Badge labels", () => {
         walletProfileId: baseProfile.id,
         action: "bid",
         status: "broadcasted",
-        summary: { action: "bid", sendTotalDoos: 5_000_000, feeDoos: 2000, changeDoos: 0, inputTotalDoos: 5_002_000, numInputs: 1, recipientAddress: null, txid: null, warnings: [], name: "hello" },
+        summary: {
+          action: "bid",
+          sendTotalDoos: 5_000_000,
+          feeDoos: 2000,
+          changeDoos: 0,
+          inputTotalDoos: 5_002_000,
+          numInputs: 1,
+          recipientAddress: null,
+          txid: null,
+          warnings: [],
+          name: "hello",
+        },
         errorMessage: null,
         txid: null,
         createdAt: "2026-07-22",
@@ -1284,7 +1337,17 @@ describe("WalletView — Recent transactions Badge labels", () => {
         walletProfileId: baseProfile.id,
         action: "some_future_action",
         status: "broadcasted",
-        summary: { action: "some_future_action", sendTotalDoos: 0, feeDoos: 500, changeDoos: 0, inputTotalDoos: 500, numInputs: 1, recipientAddress: null, txid: null, warnings: [] },
+        summary: {
+          action: "some_future_action",
+          sendTotalDoos: 0,
+          feeDoos: 500,
+          changeDoos: 0,
+          inputTotalDoos: 500,
+          numInputs: 1,
+          recipientAddress: null,
+          txid: null,
+          warnings: [],
+        },
         errorMessage: null,
         txid: null,
         createdAt: "2026-07-22",
@@ -1320,7 +1383,9 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
     useUiStore.getState().clearToast();
 
     // Dispatch the same action the hotkey hook would fire.
-    act(() => { dispatchAction("wallet:send"); });
+    act(() => {
+      dispatchAction("wallet:send");
+    });
 
     // The handler should have enqueued a toast with the reason.
     const queue = useUiStore.getState().toastQueue;
@@ -1341,16 +1406,18 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
     await screen.findByText("Primary");
 
     useUiStore.getState().clearToast();
-    act(() => { dispatchAction("wallet:send"); });
+    act(() => {
+      dispatchAction("wallet:send");
+    });
 
     // The Send modal should open (it has a "Recipient address" placeholder).
     await waitFor(() => {
       expect(screen.getByPlaceholderText(/rs1q/i)).toBeInTheDocument();
     });
 
-   // No toast should have been shown.
-   expect(useUiStore.getState().toastQueue.length).toBe(0);
- });
+    // No toast should have been shown.
+    expect(useUiStore.getState().toastQueue.length).toBe(0);
+  });
 
   describe("action-bus handlers", () => {
     it("wallet:toggleQr shows and hides the QR code", async () => {
@@ -1364,13 +1431,17 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       expect(showQrBtn).toBeInTheDocument();
 
       // Dispatch toggleQr action
-      act(() => { dispatchAction("wallet:toggleQr"); });
+      act(() => {
+        dispatchAction("wallet:toggleQr");
+      });
       await waitFor(() => {
         expect(screen.getByRole("button", { name: "Hide QR" })).toBeInTheDocument();
       });
 
       // Dispatch again to hide
-      act(() => { dispatchAction("wallet:toggleQr"); });
+      act(() => {
+        dispatchAction("wallet:toggleQr");
+      });
       await waitFor(() => {
         expect(screen.getByRole("button", { name: "Show QR" })).toBeInTheDocument();
       });
@@ -1384,7 +1455,9 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       const filterInput = await screen.findByTestId("wallet-name-filter");
       expect(document.activeElement).not.toBe(filterInput);
 
-      act(() => { dispatchAction("wallet:focusFilter"); });
+      act(() => {
+        dispatchAction("wallet:focusFilter");
+      });
       await waitFor(() => {
         expect(document.activeElement).toBe(filterInput);
       });
@@ -1395,9 +1468,30 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       invokeMock.mockImplementation(
         routeInvoke({
           names: [
-            { name: "name1", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
-            { name: "name2", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
-            { name: "name3", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
+            {
+              name: "name1",
+              state: "CLOSED",
+              height: 100,
+              renewal: 200,
+              owner: { hash: "tx1", index: 0 },
+              stats: null,
+            },
+            {
+              name: "name2",
+              state: "CLOSED",
+              height: 100,
+              renewal: 200,
+              owner: { hash: "tx1", index: 0 },
+              stats: null,
+            },
+            {
+              name: "name3",
+              state: "CLOSED",
+              height: 100,
+              renewal: 200,
+              owner: { hash: "tx1", index: 0 },
+              stats: null,
+            },
           ],
         }),
       );
@@ -1414,7 +1508,9 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       expect(getSelectedRow()).toBeUndefined();
 
       // Dispatch list:next — first row should be selected
-      act(() => { dispatchAction("wallet:list:next"); });
+      act(() => {
+        dispatchAction("wallet:list:next");
+      });
       await waitFor(() => {
         const selected = getSelectedRow();
         expect(selected).toBeDefined();
@@ -1422,7 +1518,9 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       });
 
       // Dispatch again — second row should be selected
-      act(() => { dispatchAction("wallet:list:next"); });
+      act(() => {
+        dispatchAction("wallet:list:next");
+      });
       await waitFor(() => {
         const selected = getSelectedRow();
         expect(selected?.textContent).toContain("name2");
@@ -1434,8 +1532,22 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       invokeMock.mockImplementation(
         routeInvoke({
           names: [
-            { name: "name1", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
-            { name: "name2", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
+            {
+              name: "name1",
+              state: "CLOSED",
+              height: 100,
+              renewal: 200,
+              owner: { hash: "tx1", index: 0 },
+              stats: null,
+            },
+            {
+              name: "name2",
+              state: "CLOSED",
+              height: 100,
+              renewal: 200,
+              owner: { hash: "tx1", index: 0 },
+              stats: null,
+            },
           ],
         }),
       );
@@ -1448,13 +1560,17 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       };
 
       // Move to index 1 first
-      act(() => { dispatchAction("wallet:list:next"); });
+      act(() => {
+        dispatchAction("wallet:list:next");
+      });
       await waitFor(() => {
         expect(getSelectedRow()?.textContent).toContain("name1");
       });
 
       // Move back to index 0
-      act(() => { dispatchAction("wallet:list:prev"); });
+      act(() => {
+        dispatchAction("wallet:list:prev");
+      });
       await waitFor(() => {
         // After prev from index 1, should clamp to 0 (no row selected since we started at -1)
         const selected = getSelectedRow();
@@ -1467,7 +1583,14 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       invokeMock.mockImplementation(
         routeInvoke({
           names: [
-            { name: "example", state: "CLOSED", height: 100, renewal: 200, owner: { hash: "tx1", index: 0 }, stats: null },
+            {
+              name: "example",
+              state: "CLOSED",
+              height: 100,
+              renewal: 200,
+              owner: { hash: "tx1", index: 0 },
+              stats: null,
+            },
           ],
         }),
       );
@@ -1475,10 +1598,14 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
 
       // Wait for the name to render, then select it
       await screen.findByText(/\.example/);
-      act(() => { dispatchAction("wallet:list:next"); });
+      act(() => {
+        dispatchAction("wallet:list:next");
+      });
 
       // Dispatch list:open
-      act(() => { dispatchAction("wallet:list:open"); });
+      act(() => {
+        dispatchAction("wallet:list:open");
+      });
 
       // NameActionsModal should render and call read_name_info
       await waitFor(() => {
@@ -1496,7 +1623,9 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       expect(lockBtn.textContent).toMatch(/Lock/i);
 
       // Dispatch toggleLock
-      act(() => { dispatchAction("wallet:toggleLock"); });
+      act(() => {
+        dispatchAction("wallet:toggleLock");
+      });
 
       // Lock command should be invoked
       await waitFor(() => {
@@ -1513,7 +1642,9 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
       await screen.findByText(/Signer locked/);
 
       // Dispatch toggleLock
-      act(() => { dispatchAction("wallet:toggleLock"); });
+      act(() => {
+        dispatchAction("wallet:toggleLock");
+      });
 
       // Unlock command should be invoked
       await waitFor(() => {

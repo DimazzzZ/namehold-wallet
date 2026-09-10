@@ -41,9 +41,6 @@ describe("Disclosure", () => {
         <span>Visible</span>
       </Disclosure>,
     );
-    expect(screen.getByRole("button", { name: /Open/i })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
+    expect(screen.getByRole("button", { name: /Open/i })).toHaveAttribute("aria-expanded", "true");
   });
 });

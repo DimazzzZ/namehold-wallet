@@ -148,15 +148,21 @@ describe("hnsToDollarydoos / doosToHns", () => {
 
 describe("taskStateUrgencyRank (Task 12 / F5 — AuctionsView sort order)", () => {
   it("ranks readyToReveal first", () => {
-    expect(taskStateUrgencyRank("readyToReveal")).toBeLessThan(taskStateUrgencyRank("wonNeedsRegister"));
+    expect(taskStateUrgencyRank("readyToReveal")).toBeLessThan(
+      taskStateUrgencyRank("wonNeedsRegister"),
+    );
   });
 
   it("ranks wonNeedsRegister ahead of lostNeedsRedeem", () => {
-    expect(taskStateUrgencyRank("wonNeedsRegister")).toBeLessThan(taskStateUrgencyRank("lostNeedsRedeem"));
+    expect(taskStateUrgencyRank("wonNeedsRegister")).toBeLessThan(
+      taskStateUrgencyRank("lostNeedsRedeem"),
+    );
   });
 
   it("ranks lostNeedsRedeem ahead of expiringSoon", () => {
-    expect(taskStateUrgencyRank("lostNeedsRedeem")).toBeLessThan(taskStateUrgencyRank("expiringSoon"));
+    expect(taskStateUrgencyRank("lostNeedsRedeem")).toBeLessThan(
+      taskStateUrgencyRank("expiringSoon"),
+    );
   });
 
   it("ranks everything else last, and equally", () => {

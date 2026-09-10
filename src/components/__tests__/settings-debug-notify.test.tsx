@@ -100,4 +100,4 @@ describe("Settings — Debug notifications panel", () => {
     });
     expect(await screen.findByTestId("debug-notify-status")).toHaveTextContent(/Fired: bidding/i);
   });
-})
+});

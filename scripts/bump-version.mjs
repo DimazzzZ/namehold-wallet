@@ -80,7 +80,9 @@ if (check.error) {
   fail(`failed to run cargo: ${check.error.message}`);
 }
 if (check.status !== 0) {
-  fail(`cargo check exited with code ${check.status}. Config files were updated, but Cargo.lock may be stale — fix the build and re-run cargo check.`);
+  fail(
+    `cargo check exited with code ${check.status}. Config files were updated, but Cargo.lock may be stale — fix the build and re-run cargo check.`,
+  );
 }
 
 console.log(`✓ Cargo.lock updated. Version is now ${next} everywhere.`);

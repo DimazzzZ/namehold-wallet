@@ -47,12 +47,7 @@ export interface Asset {
   updated_at: string;
 }
 
-export type BatchStatus =
-  | "planned"
-  | "in_progress"
-  | "completed"
-  | "paused"
-  | "cancelled";
+export type BatchStatus = "planned" | "in_progress" | "completed" | "paused" | "cancelled";
 
 export interface Batch {
   id: number;
@@ -222,9 +217,7 @@ export interface TxInfoError {
 }
 
 /** Narrows a `read_tx_info` result to the error shape. */
-export function isTxInfoError(
-  v: TxInfo | TxInfoError | null | undefined,
-): v is TxInfoError {
+export function isTxInfoError(v: TxInfo | TxInfoError | null | undefined): v is TxInfoError {
   return v != null && typeof v === "object" && "error" in v;
 }
 
@@ -399,10 +392,7 @@ export interface Settings {
 
 export type WalletNetwork = "mainnet" | "testnet" | "regtest";
 export type WalletProfileKind =
-  | "mnemonic_hot"
-  | "xpriv_hot"
-  | "watch_only_xpub"
-  | "ledger_hardware";
+  "mnemonic_hot" | "xpriv_hot" | "watch_only_xpub" | "ledger_hardware";
 
 export interface WalletProfileSummary {
   id: string;
@@ -459,13 +449,7 @@ export interface TxDraftSummary {
   walletProfileId: string;
   action: string;
   status:
-    | "draft"
-    | "signed"
-    | "broadcast_pending"
-    | "broadcasted"
-    | "confirmed"
-    | "dropped"
-    | "failed";
+    "draft" | "signed" | "broadcast_pending" | "broadcasted" | "confirmed" | "dropped" | "failed";
   summary: TxSummary | null;
   errorMessage: string | null;
   txid: string | null;
@@ -527,12 +511,7 @@ export interface WalletReadModel {
 // ---------------------------------------------------------------------------
 
 export type AppRouteKey =
-  | "migration"
-  | "wallet"
-  | "auctions"
-  | "activity"
-  | "settings"
-  | "watchlist";
+  "migration" | "wallet" | "auctions" | "activity" | "settings" | "watchlist";
 
 export type MigrationSectionKey = "namebase" | "sync";
 

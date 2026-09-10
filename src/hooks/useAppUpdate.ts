@@ -11,13 +11,7 @@ import { relaunchApp } from "../queries/updates";
  * in the other — mirroring the single pending-update slot on the Rust side.
  */
 export type UpdatePhase =
-  | "idle"
-  | "checking"
-  | "upToDate"
-  | "available"
-  | "installing"
-  | "installed"
-  | "error";
+  "idle" | "checking" | "upToDate" | "available" | "installing" | "installed" | "error";
 
 interface AppUpdateState {
   phase: UpdatePhase;

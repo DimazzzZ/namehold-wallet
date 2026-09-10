@@ -80,7 +80,13 @@ export function NamebaseDashboard() {
 
   const { data: nbStatus, isLoading: statusLoading } = useQuery({
     queryKey: ["namebase", "status"],
-    queryFn: () => invoke<{ connected: boolean; has_cookie: boolean; account?: NamebaseAccount; error?: string }>("get_namebase_status"),
+    queryFn: () =>
+      invoke<{
+        connected: boolean;
+        has_cookie: boolean;
+        account?: NamebaseAccount;
+        error?: string;
+      }>("get_namebase_status"),
     retry: false,
     // Keep-alive: while connected, poll every ~10 minutes so leaving this
     // dashboard open extends the Namebase session and picks up any
@@ -191,10 +197,7 @@ export function NamebaseDashboard() {
   const grossHns = Number.isFinite(amountNet) ? Number((amountNet + feeHns).toFixed(6)) : 0;
   const overBalance = Number.isFinite(amountNet) && amountNet > 0 && grossHns > availableHns;
   const amountValid =
-    Number.isFinite(amountNet) &&
-    amountNet > 0 &&
-    grossHns <= availableHns &&
-    grossHns >= minHns;
+    Number.isFinite(amountNet) && amountNet > 0 && grossHns <= availableHns && grossHns >= minHns;
 
   return (
     <div className="space-y-6">
@@ -217,8 +220,8 @@ export function NamebaseDashboard() {
           <h3 className="text-sm font-semibold mb-3">Connect to Namebase</h3>
           <p className="text-xs text-gray-500 mb-3">
             Paste your <code>nb-sunset</code> cookie from the Namebase Sunset site. Open{" "}
-            <strong>sunset.namebase.io</strong> → F12 → Network → find any request →
-            copy the <code>Cookie</code> header value (or just the <code>nb-sunset=...</code> part).
+            <strong>sunset.namebase.io</strong> → F12 → Network → find any request → copy the{" "}
+            <code>Cookie</code> header value (or just the <code>nb-sunset=...</code> part).
           </p>
           <Input
             label="Session Cookie"
@@ -236,16 +239,14 @@ export function NamebaseDashboard() {
               {statusLoading ? "Connecting..." : "Connect"}
             </Button>
           </div>
-          {nbStatus?.error && (
-            <div className="mt-2 text-sm text-red-600">{nbStatus.error}</div>
-          )}
+          {nbStatus?.error && <div className="mt-2 text-sm text-red-600">{nbStatus.error}</div>}
         </div>
       ) : (
         <>
           {/* Account Balance (custodial — held by Namebase, not the on-chain wallet) */}
           <div className="text-xs text-gray-400 mb-1">
-          Custodial balance held by Namebase — separate from your on-chain wallet
-            (the external explorer balance).
+            Custodial balance held by Namebase — separate from your on-chain wallet (the external
+            explorer balance).
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-white rounded p-4 border border-gray-200">
@@ -272,9 +273,7 @@ export function NamebaseDashboard() {
               Withdraw HNS
             </Button>
             {availableHns <= feeHns && (
-              <span className="ml-2 text-xs text-gray-400">
-                Not enough balance to withdraw.
-              </span>
+              <span className="ml-2 text-xs text-gray-400">Not enough balance to withdraw.</span>
             )}
           </div>
 
@@ -286,14 +285,18 @@ export function NamebaseDashboard() {
             </div>
             <div className="bg-white rounded p-4 border border-gray-200">
               <div className="text-sm text-gray-500">Staked Domains</div>
-              <div className="text-2xl font-bold text-purple-700">{formatCount(stakedDomains.length)}</div>
+              <div className="text-2xl font-bold text-purple-700">
+                {formatCount(stakedDomains.length)}
+              </div>
             </div>
           </div>
 
           {/* Staked domains table — enriched with withdrawable status */}
           {stakedDomains.length > 0 && (
             <div className="bg-white rounded p-4 border border-gray-200">
-              <h3 className="text-sm font-semibold mb-3">Staked Domains ({formatCount(stakedDomains.length)})</h3>
+              <h3 className="text-sm font-semibold mb-3">
+                Staked Domains ({formatCount(stakedDomains.length)})
+              </h3>
               <p className="text-xs text-gray-500 mb-3">
                 These domains are staked for subdomains and cannot be transferred until unstaked.
               </p>
@@ -315,7 +318,9 @@ export function NamebaseDashboard() {
                         <tr key={d.name} className="border-t border-gray-100 hover:bg-gray-50">
                           <td className="py-1 pr-4 text-xs font-mono">.{displayName(d.name)}</td>
                           <td className="py-1 pr-4">
-                            <Badge variant={d.status === "locked_for_subdomains" ? "info" : "default"}>
+                            <Badge
+                              variant={d.status === "locked_for_subdomains" ? "info" : "default"}
+                            >
                               {d.status.replace(/_/g, " ")}
                             </Badge>
                           </td>
@@ -327,7 +332,9 @@ export function NamebaseDashboard() {
                             )}
                           </td>
                           <td className="py-1 pr-4">{d.auto_renew_active ? "Yes" : "No"}</td>
-                          <td className="py-1 text-xs text-gray-500">{d.owned_since?.slice(0, 10)}</td>
+                          <td className="py-1 text-xs text-gray-500">
+                            {d.owned_since?.slice(0, 10)}
+                          </td>
                         </tr>
                       );
                     })}
@@ -343,11 +350,12 @@ export function NamebaseDashboard() {
               className="bg-white rounded p-4 border border-gray-200"
               data-testid="namebase-expiring"
             >
-              <h3 className="text-sm font-semibold mb-1">Expiring soon ({formatCount(renewals.length)})</h3>
+              <h3 className="text-sm font-semibold mb-1">
+                Expiring soon ({formatCount(renewals.length)})
+              </h3>
               <p className="text-xs text-gray-500 mb-3">
-                These custodial domains expire soonest — renew on Namebase or move them
-                out before they lapse. Names with auto-renew <strong>off</strong> are the
-                highest risk.
+                These custodial domains expire soonest — renew on Namebase or move them out before
+                they lapse. Names with auto-renew <strong>off</strong> are the highest risk.
               </p>
               <div className="max-h-72 overflow-auto">
                 <table className="w-full text-sm">
@@ -375,7 +383,9 @@ export function NamebaseDashboard() {
                               </span>
                             )}
                           </td>
-                          <td className="py-1 pr-4 text-xs text-gray-500 font-mono">#{r.expire_block}</td>
+                          <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
+                            #{r.expire_block}
+                          </td>
                           <td className="py-1">
                             {autoRenew === false ? (
                               <Badge variant="error">Off</Badge>
@@ -398,7 +408,9 @@ export function NamebaseDashboard() {
               above that table (not above the Expiring-soon panel). */}
           {selectedDomains.size > 0 && (
             <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded px-3 py-2">
-              <span className="text-sm text-blue-700">{formatCount(selectedDomains.size)} selected</span>
+              <span className="text-sm text-blue-700">
+                {formatCount(selectedDomains.size)} selected
+              </span>
               <Button size="sm" variant="primary" onClick={() => setBulkTransferOpen(true)}>
                 Transfer Selected
               </Button>
@@ -411,7 +423,9 @@ export function NamebaseDashboard() {
           {/* Domain List */}
           {domains.length > 0 && (
             <div className="bg-white rounded p-4 border border-gray-200">
-              <h3 className="text-sm font-semibold mb-3">Your Domains ({formatCount(domains.length)})</h3>
+              <h3 className="text-sm font-semibold mb-3">
+                Your Domains ({formatCount(domains.length)})
+              </h3>
               <div className="max-h-96 overflow-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -451,7 +465,9 @@ export function NamebaseDashboard() {
                             )}
                           </td>
                           <td className="py-1 pr-4">{d.auto_renew_active ? "Yes" : "No"}</td>
-                          <td className="py-1 pr-4 text-xs text-gray-500">{d.owned_since?.slice(0, 10)}</td>
+                          <td className="py-1 pr-4 text-xs text-gray-500">
+                            {d.owned_since?.slice(0, 10)}
+                          </td>
                           <td className="py-1">
                             {transferByDomain.has(d.name) ? (
                               (() => {
@@ -459,7 +475,9 @@ export function NamebaseDashboard() {
                                 const status = transferByDomain.get(d.name)!;
                                 const { label, tone } = namebaseStatus(status);
                                 return (
-                                  <Badge variant={tone} title={status}>{label}</Badge>
+                                  <Badge variant={tone} title={status}>
+                                    {label}
+                                  </Badge>
                                 );
                               })()
                             ) : (
@@ -516,16 +534,18 @@ export function NamebaseDashboard() {
           </div>
           {isThirdParty && (
             <div className="bg-amber-50 border border-amber-300 rounded p-2 text-xs text-amber-800">
-              Transferring to an address <strong>outside this wallet</strong>. Double-check
-              it — Namebase withdrawals are irreversible.
+              Transferring to an address <strong>outside this wallet</strong>. Double-check it —
+              Namebase withdrawals are irreversible.
             </div>
           )}
           <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
-            This will initiate a transfer on Namebase. The domain will appear at the
-            destination after blockchain confirmation.
+            This will initiate a transfer on Namebase. The domain will appear at the destination
+            after blockchain confirmation.
           </div>
           <div className="flex gap-2 justify-end">
-            <Button variant="ghost" onClick={() => setTransferTarget(null)}>Cancel</Button>
+            <Button variant="ghost" onClick={() => setTransferTarget(null)}>
+              Cancel
+            </Button>
             <Button
               variant="primary"
               disabled={!dest || transferPending}
@@ -533,8 +553,14 @@ export function NamebaseDashboard() {
                 if (!transferTarget || !dest) return;
                 setTransferPending(true);
                 try {
-                  await invoke("namebase_transfer_domain", { name: transferTarget.name, address: dest });
-                  showToast(`Transfer initiated for .${displayName(transferTarget.name)}`, "success");
+                  await invoke("namebase_transfer_domain", {
+                    name: transferTarget.name,
+                    address: dest,
+                  });
+                  showToast(
+                    `Transfer initiated for .${displayName(transferTarget.name)}`,
+                    "success",
+                  );
                   setTransferTarget(null);
                   qc.invalidateQueries({ queryKey: ["namebase-withdrawals"] });
                   qc.invalidateQueries({ queryKey: ["namebase-domain-withdrawals"] });
@@ -559,11 +585,12 @@ export function NamebaseDashboard() {
       >
         <div className="space-y-3">
           <p className="text-sm text-gray-600">
-            Transfer <strong>{formatCount(selectedDomains.size)}</strong> domains from Namebase to an HNS address.
+            Transfer <strong>{formatCount(selectedDomains.size)}</strong> domains from Namebase to
+            an HNS address.
           </p>
           <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
-            ⚠️ Beta — transfers are irreversible. Move <strong>one</strong> domain first
-            and confirm it arrives before transferring the rest.
+            ⚠️ Beta — transfers are irreversible. Move <strong>one</strong> domain first and confirm
+            it arrives before transferring the rest.
           </div>
           <div>
             <Input
@@ -587,14 +614,18 @@ export function NamebaseDashboard() {
           </div>
           {isThirdParty && (
             <div className="bg-amber-50 border border-amber-300 rounded p-2 text-xs text-amber-800">
-              Transferring to an address <strong>outside this wallet</strong>. Double-check
-              it — Namebase withdrawals are irreversible.
+              Transferring to an address <strong>outside this wallet</strong>. Double-check it —
+              Namebase withdrawals are irreversible.
             </div>
           )}
           <div className="text-sm text-gray-600">
-            <p className="mb-2"><strong>Selected domains ({formatCount(selectedDomains.size)}):</strong></p>
+            <p className="mb-2">
+              <strong>Selected domains ({formatCount(selectedDomains.size)}):</strong>
+            </p>
             <div className="max-h-32 overflow-auto bg-gray-50 rounded p-2 text-xs font-mono">
-              {Array.from(selectedDomains).map((name) => `.${displayName(name)}`).join(", ")}
+              {Array.from(selectedDomains)
+                .map((name) => `.${displayName(name)}`)
+                .join(", ")}
             </div>
           </div>
           <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
@@ -602,7 +633,9 @@ export function NamebaseDashboard() {
             destination after blockchain confirmation.
           </div>
           <div className="flex gap-2 justify-end">
-            <Button variant="ghost" onClick={() => setBulkTransferOpen(false)}>Cancel</Button>
+            <Button variant="ghost" onClick={() => setBulkTransferOpen(false)}>
+              Cancel
+            </Button>
             <Button
               variant="primary"
               disabled={!dest || transferPending}
@@ -630,7 +663,9 @@ export function NamebaseDashboard() {
                 qc.invalidateQueries({ queryKey: ["namebase-domain-withdrawals"] });
               }}
             >
-              {transferPending ? "Transferring..." : `Transfer ${formatCount(selectedDomains.size)} Domains`}
+              {transferPending
+                ? "Transferring..."
+                : `Transfer ${formatCount(selectedDomains.size)} Domains`}
             </Button>
           </div>
         </div>
@@ -653,8 +688,8 @@ export function NamebaseDashboard() {
             />
             <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
               <span>
-                The recipient receives this amount; the {formatCount(feeHns)} HNS network fee is added
-                on top. Available: {formatCount(availableHns)} HNS.
+                The recipient receives this amount; the {formatCount(feeHns)} HNS network fee is
+                added on top. Available: {formatCount(availableHns)} HNS.
               </span>
               <button
                 type="button"
@@ -687,8 +722,8 @@ export function NamebaseDashboard() {
           )}
           {overBalance && (
             <div className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800">
-              Not enough balance — need {formatCount(grossHns)} HNS including the {formatCount(feeHns)} HNS fee
-              (available {formatCount(availableHns)} HNS).
+              Not enough balance — need {formatCount(grossHns)} HNS including the{" "}
+              {formatCount(feeHns)} HNS fee (available {formatCount(availableHns)} HNS).
             </div>
           )}
           <div>
@@ -713,12 +748,14 @@ export function NamebaseDashboard() {
           </div>
           {isThirdParty && (
             <div className="bg-amber-50 border border-amber-300 rounded p-2 text-xs text-amber-800">
-              Withdrawing to an address <strong>outside this wallet</strong>. Double-check
-              it — Namebase withdrawals are irreversible.
+              Withdrawing to an address <strong>outside this wallet</strong>. Double-check it —
+              Namebase withdrawals are irreversible.
             </div>
           )}
           <div className="flex gap-2 justify-end">
-            <Button variant="ghost" onClick={() => setWithdrawOpen(false)}>Cancel</Button>
+            <Button variant="ghost" onClick={() => setWithdrawOpen(false)}>
+              Cancel
+            </Button>
             <Button
               variant="primary"
               disabled={!amountValid || !dest || withdrawHns.isPending}
@@ -789,23 +826,13 @@ function Pager({
         Rows {startRow}–{endRow} of {totalRows}
       </div>
       <div className="flex items-center gap-4">
-        <button
-          type="button"
-          className={btn}
-          disabled={!canPrev}
-          onClick={() => onGoTo(page - 1)}
-        >
+        <button type="button" className={btn} disabled={!canPrev} onClick={() => onGoTo(page - 1)}>
           ← Prev
         </button>
         <span className="text-gray-600">
           Page {page} of {totalPages}
         </span>
-        <button
-          type="button"
-          className={btn}
-          disabled={!canNext}
-          onClick={() => onGoTo(page + 1)}
-        >
+        <button type="button" className={btn} disabled={!canNext} onClick={() => onGoTo(page + 1)}>
           Next →
         </button>
       </div>
@@ -833,13 +860,14 @@ function RecentActivity() {
         // form of the domain — the user sees `.сбер` (via `displayName`),
         // so typing "сбер" MUST find the row even when the stored value
         // is `xn--90ai7ab`.
-        nameMatches(t.domain, q) ||
-        (t.destination_address ?? "").toLowerCase().includes(q),
+        nameMatches(t.domain, q) || (t.destination_address ?? "").toLowerCase().includes(q),
     );
   }, [domainTransfers, search]);
 
-  const { page, setPage, pageRows, totalRows, totalPages, pageStart, pageEnd } =
-    usePagination(filtered, RECENT_ACTIVITY_PAGE_SIZE);
+  const { page, setPage, pageRows, totalRows, totalPages, pageStart, pageEnd } = usePagination(
+    filtered,
+    RECENT_ACTIVITY_PAGE_SIZE,
+  );
 
   return (
     <div className="bg-white rounded p-4 border border-gray-200">
@@ -889,7 +917,10 @@ function RecentActivity() {
                 {pageRows.map((t) => {
                   const { label, tone } = namebaseStatus(t.status);
                   return (
-                    <tr key={t.id ?? t.domain} className="border-t border-gray-100 hover:bg-gray-50">
+                    <tr
+                      key={t.id ?? t.domain}
+                      className="border-t border-gray-100 hover:bg-gray-50"
+                    >
                       <td className="py-1 pr-4 text-xs font-mono">.{displayName(t.domain)}</td>
                       <td className="py-1 pr-4 font-mono text-xs text-gray-500">
                         {truncate(t.destination_address, 16)}
@@ -943,8 +974,10 @@ function HnsWithdrawals() {
     [withdrawals],
   );
 
-  const { page, setPage, pageRows, totalRows, totalPages, pageStart, pageEnd } =
-    usePagination(hnsWithdrawals, RECENT_ACTIVITY_PAGE_SIZE);
+  const { page, setPage, pageRows, totalRows, totalPages, pageStart, pageEnd } = usePagination(
+    hnsWithdrawals,
+    RECENT_ACTIVITY_PAGE_SIZE,
+  );
 
   return (
     <div className="bg-white rounded p-4 border border-gray-200">
@@ -972,7 +1005,9 @@ function HnsWithdrawals() {
                 const { label, tone } = namebaseStatus(w.status);
                 return (
                   <tr key={w.id} className="border-t border-gray-100 hover:bg-gray-50">
-                    <td className="py-1 pr-4 text-xs font-mono">{formatHnsAmount(Number(w.amount) || 0)} HNS</td>
+                    <td className="py-1 pr-4 text-xs font-mono">
+                      {formatHnsAmount(Number(w.amount) || 0)} HNS
+                    </td>
                     <td className="py-1 pr-4 font-mono text-xs text-gray-500">
                       {truncate(w.destination_address, 16)}
                       {!!myAddress && w.destination_address === myAddress && (

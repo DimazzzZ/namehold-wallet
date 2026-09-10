@@ -98,8 +98,7 @@ describe("useAppUpdate — simulateUpdateFlow()", () => {
   it("falls back to a bumped version when fetch_latest_release_meta rejects", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "current_version") return Promise.resolve("0.5.0");
-      if (cmd === "fetch_latest_release_meta")
-        return Promise.reject(new Error("network error"));
+      if (cmd === "fetch_latest_release_meta") return Promise.reject(new Error("network error"));
       return Promise.reject(new Error(`unexpected command: ${cmd}`));
     });
 

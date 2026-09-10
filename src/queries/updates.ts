@@ -44,9 +44,7 @@ export function useCheckForUpdate() {
  * is desktop-only), so this bypasses the web-QA mock and talks to the real
  * backend directly, passing an IPC `Channel` the mock can't model.
  */
-export function useInstallUpdate(opts?: {
-  onProgress?: (event: DownloadEvent) => void;
-}) {
+export function useInstallUpdate(opts?: { onProgress?: (event: DownloadEvent) => void }) {
   return useMutation<void>({
     mutationFn: async () => {
       if (!isTauri()) {

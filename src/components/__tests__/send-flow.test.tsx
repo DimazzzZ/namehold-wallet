@@ -206,9 +206,7 @@ describe("WalletView send flow (asset safety)", () => {
 
     // The dialog stays open (recipient still visible) and offers a retry.
     expect(screen.getByTestId("send-recipient")).toHaveTextContent(RECIPIENT);
-    expect(
-      screen.getByRole("button", { name: /Retry Sign & Broadcast/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Retry Sign & Broadcast/i })).toBeInTheDocument();
 
     // Broadcast was attempted (so the failure is real, not a pre-check).
     expect(invokeMock.mock.calls.map((c) => c[0])).toContain("broadcast_tx_draft");
@@ -254,7 +252,9 @@ describe("WalletView send flow (asset safety)", () => {
     });
     fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "1" } });
 
-    expect(await screen.findByTestId("send-address-error")).toHaveTextContent(/valid regtest address/i);
+    expect(await screen.findByTestId("send-address-error")).toHaveTextContent(
+      /valid regtest address/i,
+    );
     expect(screen.getByRole("button", { name: /Review/i })).toBeDisabled();
   });
 
@@ -266,7 +266,9 @@ describe("WalletView send flow (asset safety)", () => {
     fireEvent.change(screen.getByPlaceholderText(/rs1q/i), { target: { value: RECIPIENT } });
     fireEvent.change(screen.getByPlaceholderText("1.0"), { target: { value: "10" } }); // > 5 HNS
 
-    expect(await screen.findByTestId("send-amount-error")).toHaveTextContent(/exceeds your spendable/i);
+    expect(await screen.findByTestId("send-amount-error")).toHaveTextContent(
+      /exceeds your spendable/i,
+    );
     expect(screen.getByRole("button", { name: /Review/i })).toBeDisabled();
   });
 

@@ -68,8 +68,7 @@ export function useWalletBalances() {
   return useQuery({
     queryKey: ["wallet", "balances", profileId],
     enabled: profileId != null,
-    queryFn: () =>
-      invoke<WalletBalances>("get_wallet_balances", { walletProfileId: profileId }),
+    queryFn: () => invoke<WalletBalances>("get_wallet_balances", { walletProfileId: profileId }),
     staleTime: 15_000,
     refetchInterval: nodeLive ? 20_000 : false,
     retry: false,
@@ -142,11 +141,7 @@ export function useDraftConfirmationWatcher() {
       // Only the TRUE broadcasted→confirmed edge counts. A first-poll
       // `was === undefined` must NOT fire, or we'd re-invalidate on every app
       // start for every historical confirmed draft.
-      if (
-        d.status === "confirmed" &&
-        was === "broadcasted" &&
-        isRecordWritingAction(d.action)
-      ) {
+      if (d.status === "confirmed" && was === "broadcasted" && isRecordWritingAction(d.action)) {
         anyRecordDraftConfirmed = true;
       }
       if (
@@ -168,14 +163,8 @@ export function useDraftConfirmationWatcher() {
     // A reveal confirmed → toast + advance the auctions row/modal.
     if (confirmedReveals.length > 0) {
       for (const d of confirmedReveals) {
-        const where =
-          d.confirmationHeight != null
-            ? ` in block ${d.confirmationHeight}`
-            : "";
-        showToast(
-          `Reveal for ${draftDisplayName(d)} confirmed${where}.`,
-          "success",
-        );
+        const where = d.confirmationHeight != null ? ` in block ${d.confirmationHeight}` : "";
+        showToast(`Reveal for ${draftDisplayName(d)} confirmed${where}.`, "success");
       }
       qc.invalidateQueries({ queryKey: ["read", "namesCapabilities"] });
       qc.invalidateQueries({ queryKey: ["read", "auctionPositions"] });
@@ -183,14 +172,10 @@ export function useDraftConfirmationWatcher() {
   }, [drafts, qc, showToast]);
 }
 
-function useWalletMutation<TArgs>(
-  cmd: string,
-  args?: (a: TArgs) => Record<string, unknown>,
-) {
+function useWalletMutation<TArgs>(cmd: string, args?: (a: TArgs) => Record<string, unknown>) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (a: TArgs) =>
-      invoke(cmd, args ? args(a) : (a as Record<string, unknown>)),
+    mutationFn: (a: TArgs) => invoke(cmd, args ? args(a) : (a as Record<string, unknown>)),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["wallet"] });
       qc.invalidateQueries({ queryKey: ["read"] });
@@ -209,9 +194,7 @@ export function useSecureImportWallet() {
 }
 
 export function useImportLedgerWallet() {
-  return useWalletMutation<{ label: string; network: string }>(
-    "import_ledger_profile",
-  );
+  return useWalletMutation<{ label: string; network: string }>("import_ledger_profile");
 }
 
 export function useRevealBackupPhrase() {
@@ -356,8 +339,7 @@ export function useSignNameMessage() {
 export function useNameAction(command: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: Record<string, unknown>) =>
-      invoke<TxDraftSummary>(command, args),
+    mutationFn: (args: Record<string, unknown>) => invoke<TxDraftSummary>(command, args),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["wallet"] }),
   });
 }

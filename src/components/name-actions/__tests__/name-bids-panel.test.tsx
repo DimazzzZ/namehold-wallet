@@ -130,7 +130,9 @@ describe("NameBidsPanel — phase-aware honest bid display (Task 2)", () => {
     });
 
     expect(await screen.findByText(/bid: 0\.013000 HNS/i)).toBeInTheDocument();
-    expect(screen.getByText((_, el) => el?.textContent === "bid: 0.020000 HNS")).toBeInTheDocument();
+    expect(
+      screen.getByText((_, el) => el?.textContent === "bid: 0.020000 HNS"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Winner")).toBeInTheDocument();
     expect(screen.getByText("You")).toBeInTheDocument();
     expect(screen.getByText(/High bid: 0\.020000 HNS/i)).toBeInTheDocument();

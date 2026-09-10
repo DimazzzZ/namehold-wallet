@@ -12,13 +12,7 @@ export type HotkeyCategory = "nav" | "modal" | "action" | "palette" | "list";
  * Route strings must match the `to` values in PRIMARY_ROUTES.
  */
 export type RouteScope =
-  | "/"
-  | "/activity"
-  | "/auctions"
-  | "/watchlist"
-  | "/migration"
-  | "/settings"
-  | "*";
+  "/" | "/activity" | "/auctions" | "/watchlist" | "/migration" | "/settings" | "*";
 
 export interface HotkeyBinding {
   keys: string; // react-hotkeys-hook format, e.g. "1", "shift+?"
@@ -47,29 +41,140 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
   { keys: "6", label: "6", description: "Go to Settings", category: "nav", scope: "*" },
 
   // --- Dialogs (global) ---
-  { keys: "shift+?", label: "Shift + ?", description: "Open keyboard shortcuts", category: "modal", scope: "*" },
-  { keys: "escape", label: "Esc", description: "Close dialog / modal", category: "modal", scope: "*" },
+  {
+    keys: "shift+?",
+    label: "Shift + ?",
+    description: "Open keyboard shortcuts",
+    category: "modal",
+    scope: "*",
+  },
+  {
+    keys: "escape",
+    label: "Esc",
+    description: "Close dialog / modal",
+    category: "modal",
+    scope: "*",
+  },
 
   // --- Command palette (global) ---
-  { keys: "meta+k,ctrl+k", label: "⌘K / Ctrl+K", description: "Open command palette", category: "palette", scope: "*" },
+  {
+    keys: "meta+k,ctrl+k",
+    label: "⌘K / Ctrl+K",
+    description: "Open command palette",
+    category: "palette",
+    scope: "*",
+  },
 
   // --- Action shortcuts (route-scoped) ---
-  { keys: "s", label: "S", description: "Open Send", category: "action", scope: "/", actionId: "wallet:send", requiresWrite: true },
-  { keys: "r", label: "R", description: "Sync / Refresh", category: "action", scope: "/", actionId: "wallet:sync" },
-  { keys: "u", label: "U", description: "Unlock / Lock wallet", category: "action", scope: "/", actionId: "wallet:toggleLock" },
-  { keys: "q", label: "Q", description: "Toggle receive QR", category: "action", scope: "/", actionId: "wallet:toggleQr" },
-  { keys: "/", label: "/", description: "Focus name filter", category: "action", scope: "/", actionId: "wallet:focusFilter" },
+  {
+    keys: "s",
+    label: "S",
+    description: "Open Send",
+    category: "action",
+    scope: "/",
+    actionId: "wallet:send",
+    requiresWrite: true,
+  },
+  {
+    keys: "r",
+    label: "R",
+    description: "Sync / Refresh",
+    category: "action",
+    scope: "/",
+    actionId: "wallet:sync",
+  },
+  {
+    keys: "u",
+    label: "U",
+    description: "Unlock / Lock wallet",
+    category: "action",
+    scope: "/",
+    actionId: "wallet:toggleLock",
+  },
+  {
+    keys: "q",
+    label: "Q",
+    description: "Toggle receive QR",
+    category: "action",
+    scope: "/",
+    actionId: "wallet:toggleQr",
+  },
+  {
+    keys: "/",
+    label: "/",
+    description: "Focus name filter",
+    category: "action",
+    scope: "/",
+    actionId: "wallet:focusFilter",
+  },
 
-  { keys: "/", label: "/", description: "Focus name lookup", category: "action", scope: "/auctions", actionId: "auctions:focusLookup" },
-  { keys: "b", label: "B", description: "Open batch bid", category: "action", scope: "/auctions", actionId: "auctions:batchBid", requiresWrite: true },
+  {
+    keys: "/",
+    label: "/",
+    description: "Focus name lookup",
+    category: "action",
+    scope: "/auctions",
+    actionId: "auctions:focusLookup",
+  },
+  {
+    keys: "b",
+    label: "B",
+    description: "Open batch bid",
+    category: "action",
+    scope: "/auctions",
+    actionId: "auctions:batchBid",
+    requiresWrite: true,
+  },
 
-  { keys: "a", label: "A", description: "Focus add name", category: "action", scope: "/watchlist", actionId: "watchlist:focusAdd" },
-  { keys: "e", label: "E", description: "Export CSV", category: "action", scope: "/watchlist", actionId: "watchlist:exportCsv" },
+  {
+    keys: "a",
+    label: "A",
+    description: "Focus add name",
+    category: "action",
+    scope: "/watchlist",
+    actionId: "watchlist:focusAdd",
+  },
+  {
+    keys: "e",
+    label: "E",
+    description: "Export CSV",
+    category: "action",
+    scope: "/watchlist",
+    actionId: "watchlist:exportCsv",
+  },
 
-  { keys: "/", label: "/", description: "Focus search", category: "action", scope: "/activity", actionId: "activity:focusSearch" },
+  {
+    keys: "/",
+    label: "/",
+    description: "Focus search",
+    category: "action",
+    scope: "/activity",
+    actionId: "activity:focusSearch",
+  },
 
   // --- List navigation (Wallet owned-names list) ---
-  { keys: "j,down", label: "J / ↓", description: "Next name in list", category: "list", scope: "/", actionId: "wallet:list:next" },
-  { keys: "k,up", label: "K / ↑", description: "Previous name in list", category: "list", scope: "/", actionId: "wallet:list:prev" },
-  { keys: "enter", label: "Enter", description: "Open selected name", category: "list", scope: "/", actionId: "wallet:list:open" },
+  {
+    keys: "j,down",
+    label: "J / ↓",
+    description: "Next name in list",
+    category: "list",
+    scope: "/",
+    actionId: "wallet:list:next",
+  },
+  {
+    keys: "k,up",
+    label: "K / ↑",
+    description: "Previous name in list",
+    category: "list",
+    scope: "/",
+    actionId: "wallet:list:prev",
+  },
+  {
+    keys: "enter",
+    label: "Enter",
+    description: "Open selected name",
+    category: "list",
+    scope: "/",
+    actionId: "wallet:list:open",
+  },
 ];

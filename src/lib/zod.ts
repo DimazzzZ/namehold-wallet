@@ -11,13 +11,7 @@ export const MigrationStatus = z.enum([
   "do_not_touch_staked",
 ]);
 
-export const BatchStatus = z.enum([
-  "planned",
-  "in_progress",
-  "completed",
-  "paused",
-  "cancelled",
-]);
+export const BatchStatus = z.enum(["planned", "in_progress", "completed", "paused", "cancelled"]);
 
 export const AssetSchema = z.object({
   id: z.number(),

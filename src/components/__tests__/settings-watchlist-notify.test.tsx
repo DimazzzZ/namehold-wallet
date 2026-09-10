@@ -22,7 +22,11 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   isPermissionGranted: vi.fn().mockResolvedValue(false),
   requestPermission: vi.fn().mockResolvedValue("granted"),
 }));
-vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({
+  enable: vi.fn().mockResolvedValue(undefined),
+  disable: vi.fn().mockResolvedValue(undefined),
+  isEnabled: vi.fn().mockResolvedValue(false),
+}));
 
 import { loadSettings } from "../../test/fixtures/settings";
 import { renderSettings } from "../../test/fixtures/renderSettings";
@@ -67,9 +71,7 @@ describe("Settings — Watchlist notifications", () => {
     await waitFor(() => {
       const findCall = (key: string) =>
         invokeMock.mock.calls.find(
-          (c) =>
-            c[0] === "update_setting" &&
-            (c[1] as { key?: string })?.key === key,
+          (c) => c[0] === "update_setting" && (c[1] as { key?: string })?.key === key,
         );
       expect(findCall("watchlist_notify_enabled")?.[1]).toEqual({
         key: "watchlist_notify_enabled",

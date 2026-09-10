@@ -27,7 +27,11 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   isPermissionGranted: (...a: unknown[]) => isPermissionGrantedMock(...a),
   requestPermission: (...a: unknown[]) => requestPermissionMock(...a),
 }));
-vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({
+  enable: vi.fn().mockResolvedValue(undefined),
+  disable: vi.fn().mockResolvedValue(undefined),
+  isEnabled: vi.fn().mockResolvedValue(false),
+}));
 
 import { loadSettings } from "../../test/fixtures/settings";
 import { renderSettings } from "../../test/fixtures/renderSettings";
@@ -69,7 +73,12 @@ function route(cmd: string) {
     case "get_signer_session":
       return Promise.resolve({ walletProfileId: null, unlocked: false, unlockedUntilEpochMs: 0 });
     case "get_write_capability":
-      return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: null });
+      return Promise.resolve({
+        signerUnlocked: false,
+        broadcasterAvailable: false,
+        canWrite: false,
+        reason: null,
+      });
     default:
       return Promise.resolve(null);
   }

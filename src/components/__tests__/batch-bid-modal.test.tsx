@@ -165,9 +165,7 @@ describe("BatchBidModal", () => {
     fireEvent.click(screen.getByTestId("batch-bid-build-draft-btn"));
 
     // Confirm modal appears.
-    await waitFor(() =>
-      expect(screen.getByText(/Confirm batch bid/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Confirm batch bid/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /Confirm/i }));
 
     await waitFor(() => {
@@ -211,9 +209,6 @@ describe("BatchBidModal", () => {
         "error",
       );
     });
-    expect(showToast).not.toHaveBeenCalledWith(
-      expect.stringContaining("[object Object]"),
-      "error",
-    );
+    expect(showToast).not.toHaveBeenCalledWith(expect.stringContaining("[object Object]"), "error");
   });
 });

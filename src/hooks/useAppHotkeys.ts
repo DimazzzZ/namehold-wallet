@@ -57,10 +57,7 @@ const ACTION_KEY_MAP: Array<{ keys: string; entries: ScopedAction[] }> = (() => 
  * contenteditable element (react-hotkeys-hook default behavior). Action/list
  * keys are additionally suppressed while a modal/palette is open.
  */
-export function useAppHotkeys({
-  setCheatsheetOpen,
-  setPaletteOpen,
-}: UseAppHotkeysOptions) {
+export function useAppHotkeys({ setCheatsheetOpen, setPaletteOpen }: UseAppHotkeysOptions) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
 

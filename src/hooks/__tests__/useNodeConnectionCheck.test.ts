@@ -8,8 +8,22 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { useNodeConnectionCheck } from "../useNodeConnectionCheck";
 
-const reachable = { reachable: true, height: 100, headers: 100, synced: true, network: "main", error: null };
-const unreachable = { reachable: false, height: null, headers: null, synced: false, network: null, error: "connection refused" };
+const reachable = {
+  reachable: true,
+  height: 100,
+  headers: 100,
+  synced: true,
+  network: "main",
+  error: null,
+};
+const unreachable = {
+  reachable: false,
+  height: null,
+  headers: null,
+  synced: false,
+  network: null,
+  error: "connection refused",
+};
 
 beforeEach(() => invokeMock.mockReset());
 

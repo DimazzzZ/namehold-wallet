@@ -114,73 +114,72 @@ export function GuidedAction({
 
   const content = ((): ReactNode => {
     switch (badge.phase) {
-    case "AVAILABLE":
-      return (
-        <div className="space-y-2">
-          <div className="text-sm text-gray-700">{guide.description}</div>
-          {actionReason(caps?.canOpen) && (
-            <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-              {actionReason(caps?.canOpen)}
-            </div>
-          )}
-          <Button
-            variant="primary"
-            disabled={actionDisabled("OPEN", caps?.canOpen)}
-            onClick={onOpen}
-          >
-            {busy === "OPEN" ? "Opening…" : guide.action}
-          </Button>
-        </div>
-      );
-
-    case "OPENING":
-      return (
-        <div className="text-sm text-gray-600">
-          {guide.description}
-          {countdown && (
-            <div className="mt-1 font-medium">
-              {countdown.label} {formatCountdown(countdown)}
-            </div>
-          )}
-        </div>
-      );
-
-    case "BIDDING":
-      return (
-        <BidForm
-          variant="guided"
-          bidHns={bidHns}
-          onBidChange={onBidChange}
-          lockupHns={lockupHns}
-          onLockupChange={onLockupChange}
-          bidError={bidError}
-          lockupError={lockupError}
-          forfeitLockupText={forfeitLockupText}
-          disabled={actionDisabled("BID", caps?.canBid) || !bidFormValid}
-          busy={busy === "BID"}
-          onSubmit={onBid}
-          idleLabel={guide.action}
-          busyLabel="Placing bid…"
-          description={guide.description}
-          reasonBanner={
-            actionReason(caps?.canBid) && (
+      case "AVAILABLE":
+        return (
+          <div className="space-y-2">
+            <div className="text-sm text-gray-700">{guide.description}</div>
+            {actionReason(caps?.canOpen) && (
               <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                {actionReason(caps?.canBid)}
+                {actionReason(caps?.canOpen)}
               </div>
-            )
-          }
-        />
-      );
+            )}
+            <Button
+              variant="primary"
+              disabled={actionDisabled("OPEN", caps?.canOpen)}
+              onClick={onOpen}
+            >
+              {busy === "OPEN" ? "Opening…" : guide.action}
+            </Button>
+          </div>
+        );
 
-    case "REVEAL":
-      // Reveal has three UI states before the auction closes:
-      //   1. In-flight / done   — a pending-confirmation or done card (no button)
-      //   2. Confirm panel      — user clicked Reveal, hasn't confirmed yet
-      //   3. Default            — the Reveal button (+ Recover-bid widget)
-      // The card path is chosen from BOTH the derived taskState (surviving
-      // reload / cross-device) AND our local optimistic revealTxid (so a
-      // fresh broadcast shows the card immediately, before the caps poll).
-      {
+      case "OPENING":
+        return (
+          <div className="text-sm text-gray-600">
+            {guide.description}
+            {countdown && (
+              <div className="mt-1 font-medium">
+                {countdown.label} {formatCountdown(countdown)}
+              </div>
+            )}
+          </div>
+        );
+
+      case "BIDDING":
+        return (
+          <BidForm
+            variant="guided"
+            bidHns={bidHns}
+            onBidChange={onBidChange}
+            lockupHns={lockupHns}
+            onLockupChange={onLockupChange}
+            bidError={bidError}
+            lockupError={lockupError}
+            forfeitLockupText={forfeitLockupText}
+            disabled={actionDisabled("BID", caps?.canBid) || !bidFormValid}
+            busy={busy === "BID"}
+            onSubmit={onBid}
+            idleLabel={guide.action}
+            busyLabel="Placing bid…"
+            description={guide.description}
+            reasonBanner={
+              actionReason(caps?.canBid) && (
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                  {actionReason(caps?.canBid)}
+                </div>
+              )
+            }
+          />
+        );
+
+      case "REVEAL": {
+        // Reveal has three UI states before the auction closes:
+        //   1. In-flight / done   — a pending-confirmation or done card (no button)
+        //   2. Confirm panel      — user clicked Reveal, hasn't confirmed yet
+        //   3. Default            — the Reveal button (+ Recover-bid widget)
+        // The card path is chosen from BOTH the derived taskState (surviving
+        // reload / cross-device) AND our local optimistic revealTxid (so a
+        // fresh broadcast shows the card immediately, before the caps poll).
         const showCard =
           !!optimisticRevealTxid ||
           caps?.taskState === "revealBroadcastPending" ||
@@ -189,10 +188,7 @@ export function GuidedAction({
           const isConfirmed = caps?.taskState === "revealDoneWaitingForClose";
           const txid = optimisticRevealTxid ?? caps?.revealTxid ?? null;
           return (
-            <div
-              className="space-y-2 rounded border p-3"
-              data-testid="reveal-status-card"
-            >
+            <div className="space-y-2 rounded border p-3" data-testid="reveal-status-card">
               <div
                 className={
                   isConfirmed
@@ -212,9 +208,7 @@ export function GuidedAction({
               {txid && (
                 <div className="text-xs">
                   <CopyField
-                    label={
-                      <span className="text-gray-600">Reveal txid</span>
-                    }
+                    label={<span className="text-gray-600">Reveal txid</span>}
                     value={txid}
                     display={`${txid.slice(0, 10)}…${txid.slice(-6)}`}
                     toastLabel="Reveal txid"
@@ -233,8 +227,8 @@ export function GuidedAction({
               {/* Two-clocks copy: reveal confirmation vs auction close. */}
               {countdown && !isConfirmed && (
                 <div className="text-xs text-gray-500">
-                  Auction closes in {formatCountdown(countdown)} (separate from
-                  this reveal's confirmation).
+                  Auction closes in {formatCountdown(countdown)} (separate from this reveal's
+                  confirmation).
                 </div>
               )}
               {countdown && isConfirmed && (
@@ -247,17 +241,14 @@ export function GuidedAction({
         }
 
         if (revealConfirming) {
-          const bidText =
-            caps?.bidValueDoos != null ? formatHns(caps.bidValueDoos) : null;
+          const bidText = caps?.bidValueDoos != null ? formatHns(caps.bidValueDoos) : null;
           const substate = revealSubstate;
           return (
             <div
               className="space-y-2 rounded border border-blue-200 bg-blue-50 p-3"
               data-testid="reveal-confirm-panel"
             >
-              <div className="text-sm font-medium text-blue-900">
-                Confirm reveal
-              </div>
+              <div className="text-sm font-medium text-blue-900">Confirm reveal</div>
               <div className="text-xs text-blue-900">
                 You're about to reveal
                 {bidText ? (
@@ -268,8 +259,7 @@ export function GuidedAction({
                 ) : (
                   " your bid"
                 )}{" "}
-                for <b>{caps?.name ?? "this name"}</b>. Once broadcast this
-                cannot be undone.
+                for <b>{caps?.name ?? "this name"}</b>. Once broadcast this cannot be undone.
               </div>
               <div className="flex gap-2">
                 <Button
@@ -280,11 +270,7 @@ export function GuidedAction({
                 >
                   {substate ?? "Confirm & reveal"}
                 </Button>
-                <Button
-                  variant="secondary"
-                  disabled={!!substate}
-                  onClick={onRevealConfirmCancel}
-                >
+                <Button variant="secondary" disabled={!!substate} onClick={onRevealConfirmCancel}>
                   Cancel
                 </Button>
               </div>
@@ -306,8 +292,8 @@ export function GuidedAction({
                 data-testid="recover-bid"
               >
                 <div className="text-xs text-gray-600">
-                  Lost your bid commitment? If you remember the exact amount
-                  you bid, you can recover it from the on-chain bid coin.
+                  Lost your bid commitment? If you remember the exact amount you bid, you can
+                  recover it from the on-chain bid coin.
                 </div>
                 <div className="flex items-end gap-2">
                   <div className="flex-1">
@@ -369,92 +355,94 @@ export function GuidedAction({
         );
       }
 
-    case "CLOSED":
-      // Task-driven guidance: the appropriate copy depends on capability state.
-      if (caps?.taskState === "wonNeedsRegister") {
-        return (
-          <div className="space-y-3">
-            <div className="text-sm text-green-800">
-              {caps.nextActionReason ?? "You won the auction! Register the name to finalize ownership."}
-            </div>
-            {actionReason(caps?.canRegister) && (
-              <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                {actionReason(caps?.canRegister)}
+      case "CLOSED":
+        // Task-driven guidance: the appropriate copy depends on capability state.
+        if (caps?.taskState === "wonNeedsRegister") {
+          return (
+            <div className="space-y-3">
+              <div className="text-sm text-green-800">
+                {caps.nextActionReason ??
+                  "You won the auction! Register the name to finalize ownership."}
               </div>
-            )}
-            <DnsRecordsEditor
-              variant="guided"
-              rows={rows}
-              onRowChange={onRowChange}
-              onAddRow={onAddRow}
-              onRemoveRow={onRemoveRow}
-            />
-            <Button
-              variant="primary"
-              disabled={actionDisabled("REGISTER", caps?.canRegister)}
-              onClick={onRegister}
-            >
-              {busy === "REGISTER" ? "Registering…" : "Register"}
-            </Button>
-          </div>
-        );
-      }
-      if (caps?.taskState === "lostNeedsRedeem") {
-        return (
-          <div className="space-y-2">
-            <div className="text-sm text-red-800">
-              {caps.nextActionReason ?? "Your bid lost. Redeem your reveal coin to reclaim the funds."}
+              {actionReason(caps?.canRegister) && (
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                  {actionReason(caps?.canRegister)}
+                </div>
+              )}
+              <DnsRecordsEditor
+                variant="guided"
+                rows={rows}
+                onRowChange={onRowChange}
+                onAddRow={onAddRow}
+                onRemoveRow={onRemoveRow}
+              />
+              <Button
+                variant="primary"
+                disabled={actionDisabled("REGISTER", caps?.canRegister)}
+                onClick={onRegister}
+              >
+                {busy === "REGISTER" ? "Registering…" : "Register"}
+              </Button>
             </div>
-            <Button
-              variant="primary"
-              disabled={actionDisabled("REDEEM", caps?.canRedeem)}
-              onClick={onRedeem}
-            >
-              {busy === "REDEEM" ? "…" : "Redeem"}
-            </Button>
-          </div>
-        );
-      }
-      // Owned registered name — no auction urgency, just manage.
-      if (caps?.ownsName) {
-        // Explorer-confirmed ownership but no local node-synced owner coin:
-        // every spend-capable action (register/update/transfer/finalize/
-        // cancelTransfer/renew/revoke) is force-disabled by the backend.
-        // Surface that reason here so the user isn't left staring at
-        // buttons that quietly do nothing.
-        const ownerCoinNotSynced = caps.hasOwnerCoin === false;
-        const notSyncedReason =
-          caps.canUpdate?.reason ?? caps.canRenew?.reason ?? caps.canTransfer?.reason ?? null;
+          );
+        }
+        if (caps?.taskState === "lostNeedsRedeem") {
+          return (
+            <div className="space-y-2">
+              <div className="text-sm text-red-800">
+                {caps.nextActionReason ??
+                  "Your bid lost. Redeem your reveal coin to reclaim the funds."}
+              </div>
+              <Button
+                variant="primary"
+                disabled={actionDisabled("REDEEM", caps?.canRedeem)}
+                onClick={onRedeem}
+              >
+                {busy === "REDEEM" ? "…" : "Redeem"}
+              </Button>
+            </div>
+          );
+        }
+        // Owned registered name — no auction urgency, just manage.
+        if (caps?.ownsName) {
+          // Explorer-confirmed ownership but no local node-synced owner coin:
+          // every spend-capable action (register/update/transfer/finalize/
+          // cancelTransfer/renew/revoke) is force-disabled by the backend.
+          // Surface that reason here so the user isn't left staring at
+          // buttons that quietly do nothing.
+          const ownerCoinNotSynced = caps.hasOwnerCoin === false;
+          const notSyncedReason =
+            caps.canUpdate?.reason ?? caps.canRenew?.reason ?? caps.canTransfer?.reason ?? null;
+          return (
+            <div className="space-y-2">
+              <div className="text-sm text-gray-700">
+                You own this name. Use the controls below to update DNS, transfer, or renew.
+              </div>
+              {ownerCoinNotSynced && (
+                <div
+                  className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2"
+                  data-testid="owner-coin-not-synced"
+                >
+                  This name is yours, but its owner coin hasn&apos;t synced locally yet.{" "}
+                  {notSyncedReason ?? "Connect a node and Refresh to manage it."}
+                </div>
+              )}
+            </div>
+          );
+        }
+        // Third-party CLOSED name — not owned by us.
         return (
           <div className="space-y-2">
             <div className="text-sm text-gray-700">
-              You own this name. Use the controls below to update DNS, transfer, or renew.
+              This name is already registered by another wallet. No actions are available for you on
+              this name.
             </div>
-            {ownerCoinNotSynced && (
-              <div
-                className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2"
-                data-testid="owner-coin-not-synced"
-              >
-                This name is yours, but its owner coin hasn&apos;t synced locally yet.{" "}
-                {notSyncedReason ?? "Connect a node and Refresh to manage it."}
-              </div>
-            )}
           </div>
         );
-      }
-      // Third-party CLOSED name — not owned by us.
-      return (
-        <div className="space-y-2">
-          <div className="text-sm text-gray-700">
-            This name is already registered by another wallet. No actions are available
-            for you on this name.
-          </div>
-        </div>
-      );
 
-    default:
-      return null;
-  }
+      default:
+        return null;
+    }
   })();
 
   return (

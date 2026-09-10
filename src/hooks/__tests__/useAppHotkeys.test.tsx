@@ -74,9 +74,7 @@ describe("HOTKEY_BINDINGS table", () => {
 
   it("has expected categories (nav, modal, action, palette, list)", () => {
     const categories = new Set(HOTKEY_BINDINGS.map((b) => b.category));
-    expect(categories).toEqual(
-      new Set(["nav", "modal", "action", "palette", "list"]),
-    );
+    expect(categories).toEqual(new Set(["nav", "modal", "action", "palette", "list"]));
   });
 
   it("every action/list binding has an actionId and a route (non-'*') scope", () => {
@@ -84,10 +82,7 @@ describe("HOTKEY_BINDINGS table", () => {
       if (b.category === "action" || b.category === "list") {
         expect(b.actionId, `${b.keys} needs an actionId`).toBeTruthy();
         const scopes = Array.isArray(b.scope) ? b.scope : [b.scope];
-        expect(
-          scopes.includes("*"),
-          `${b.keys} must be route-scoped, not global`,
-        ).toBe(false);
+        expect(scopes.includes("*"), `${b.keys} must be route-scoped, not global`).toBe(false);
       }
     }
   });
@@ -167,8 +162,7 @@ describe("useAppHotkeys — behavior via real keydown events", () => {
 // Subscribe a spy to the action bus; returns collected events + stop().
 function spyOnActionBus() {
   const events: ActionEventDetail[] = [];
-  const listener = (e: Event) =>
-    events.push((e as CustomEvent<ActionEventDetail>).detail);
+  const listener = (e: Event) => events.push((e as CustomEvent<ActionEventDetail>).detail);
   window.addEventListener(ACTION_EVENT_NAME, listener);
   return {
     events,

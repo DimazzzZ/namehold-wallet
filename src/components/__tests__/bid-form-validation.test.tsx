@@ -64,9 +64,18 @@ function route() {
       case "list_wallet_profiles":
         return Promise.resolve([profile]);
       case "get_signer_session":
-        return Promise.resolve({ walletProfileId: "p1", unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+        return Promise.resolve({
+          walletProfileId: "p1",
+          unlocked: true,
+          unlockedUntilEpochMs: Date.now() + 60000,
+        });
       case "get_write_capability":
-        return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+        return Promise.resolve({
+          signerUnlocked: true,
+          broadcasterAvailable: true,
+          canWrite: true,
+          reason: null,
+        });
       case "read_name_info":
         return Promise.resolve({
           name: "bidname",
@@ -187,7 +196,11 @@ describe("NameActionsModal — guided bid form validation (F4)", () => {
 
     await waitFor(() => {
       const call = invokeMock.mock.calls.find((c) => c[0] === "build_bid_draft");
-      expect(call?.[1]).toMatchObject({ name: "bidname", bidValue: 10_000_000, lockup: 12_000_000 });
+      expect(call?.[1]).toMatchObject({
+        name: "bidname",
+        bidValue: 10_000_000,
+        lockup: 12_000_000,
+      });
     });
   });
 });
@@ -215,7 +228,9 @@ describe("NameActionsModal — advanced bid form validation (F4, duplicated form
     fireEvent.change(lockupInputs[lockupInputs.length - 1]!, { target: { value: "5" } });
 
     await waitFor(() => {
-      expect(screen.getByTestId("lockup-error-advanced")).toHaveTextContent(/lockup must be at least/i);
+      expect(screen.getByTestId("lockup-error-advanced")).toHaveTextContent(
+        /lockup must be at least/i,
+      );
     });
   });
 });

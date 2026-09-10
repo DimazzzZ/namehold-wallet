@@ -123,8 +123,7 @@ describe("Settings — Fee rate override", () => {
     await waitFor(() => {
       const feeRateCall = invokeMock.mock.calls.find(
         (c) =>
-          c[0] === "update_setting" &&
-          (c[1] as { key?: string })?.key === "fee_rate_doos_per_kvb",
+          c[0] === "update_setting" && (c[1] as { key?: string })?.key === "fee_rate_doos_per_kvb",
       );
       expect(feeRateCall?.[1]).toEqual({
         key: "fee_rate_doos_per_kvb",
@@ -149,8 +148,7 @@ describe("Settings — Fee rate override", () => {
     await waitFor(() => {
       const feeRateCall = invokeMock.mock.calls.find(
         (c) =>
-          c[0] === "update_setting" &&
-          (c[1] as { key?: string })?.key === "fee_rate_doos_per_kvb",
+          c[0] === "update_setting" && (c[1] as { key?: string })?.key === "fee_rate_doos_per_kvb",
       );
       expect(feeRateCall?.[1]).toEqual({
         key: "fee_rate_doos_per_kvb",

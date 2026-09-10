@@ -63,9 +63,7 @@ export function dispatchAction(actionId: ActionId): void {
  *   handlerRef.current = handler;
  *   useEffect(() => subscribeAction((id) => handlerRef.current(id)), []);
  */
-export function subscribeAction(
-  handler: (actionId: ActionId) => void,
-): () => void {
+export function subscribeAction(handler: (actionId: ActionId) => void): () => void {
   if (typeof window === "undefined") return () => {};
   const listener = (e: Event) => {
     const detail = (e as CustomEvent<ActionEventDetail>).detail;

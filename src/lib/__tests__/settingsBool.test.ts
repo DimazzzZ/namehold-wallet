@@ -32,8 +32,7 @@ describe("boolToSetting", () => {
 });
 
 describe("hasStoredSecret", () => {
-  const withMarker = (value: string) =>
-    ({ __has_node_rpc_api_key: value }) as unknown as Settings;
+  const withMarker = (value: string) => ({ __has_node_rpc_api_key: value }) as unknown as Settings;
 
   it("reads the __has_<key> marker the backend sends alongside a write-only secret", () => {
     expect(hasStoredSecret(withMarker("true"), "node_rpc_api_key")).toBe(true);

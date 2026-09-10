@@ -70,7 +70,7 @@ describe("ReceiveAddressList", () => {
 
     render(<ReceiveAddressList />);
     expect(
-      screen.getByText("No addresses derived yet. Generate one or run a sync.")
+      screen.getByText("No addresses derived yet. Generate one or run a sync."),
     ).toBeInTheDocument();
   });
 

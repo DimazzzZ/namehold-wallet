@@ -35,8 +35,8 @@ export function Onboarding() {
       <div className="bg-white rounded-lg shadow-lg max-w-lg w-full p-8">
         <h1 className="text-2xl font-bold text-gray-900 mb-2">Welcome to Namehold</h1>
         <p className="text-gray-500 mb-6">
-          A non-custodial wallet for moving and managing Handshake names. Your keys never
-          leave this device, and your recovery phrase is only ever shown in a secure window.
+          A non-custodial wallet for moving and managing Handshake names. Your keys never leave this
+          device, and your recovery phrase is only ever shown in a secure window.
         </p>
         <AddWalletForm defaultLabel="Primary" onDone={finish} />
       </div>
@@ -84,9 +84,9 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
       <div className="bg-white rounded-lg shadow-lg max-w-2xl w-full p-8">
         <h1 className="text-2xl font-bold text-gray-900 mb-2">How do you want to connect?</h1>
         <p className="text-gray-500 mb-6">
-          Your keys stay on this device. Choose how the wallet reads and sends transactions.
-          Remote and SPV are a privacy/trust tradeoff, not custody — your recovery phrase
-          never leaves this device.
+          Your keys stay on this device. Choose how the wallet reads and sends transactions. Remote
+          and SPV are a privacy/trust tradeoff, not custody — your recovery phrase never leaves this
+          device.
         </p>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

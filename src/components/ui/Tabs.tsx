@@ -8,17 +8,9 @@ interface TabsProps<T extends string> {
   className?: string;
 }
 
-export function Tabs<T extends string>({
-  tabs,
-  active,
-  onChange,
-  className,
-}: TabsProps<T>) {
+export function Tabs<T extends string>({ tabs, active, onChange, className }: TabsProps<T>) {
   return (
-    <div
-      role="tablist"
-      className={cn("inline-flex flex-wrap items-center gap-1.5", className)}
-    >
+    <div role="tablist" className={cn("inline-flex flex-wrap items-center gap-1.5", className)}>
       {tabs.map((tab) => {
         const isActive = tab.key === active;
         return (

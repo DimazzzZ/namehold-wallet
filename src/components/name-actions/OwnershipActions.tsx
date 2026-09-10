@@ -85,7 +85,12 @@ export function OwnershipActions({
   return (
     <section className="space-y-2">
       <div className="font-medium text-gray-700">Ownership</div>
-      <Input label="Transfer to address" value={recipient} onChange={(e) => onRecipientChange(e.target.value)} placeholder="hs1q… / rs1q…" />
+      <Input
+        label="Transfer to address"
+        value={recipient}
+        onChange={(e) => onRecipientChange(e.target.value)}
+        placeholder="hs1q… / rs1q…"
+      />
       <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
@@ -121,7 +126,8 @@ export function OwnershipActions({
           {busy === "RENEW" ? "…" : "Renew"}
         </Button>
         <Button
-          size="sm" variant="danger"
+          size="sm"
+          variant="danger"
           disabled={actionDisabled("REVOKE", caps?.canRevoke)}
           title={actionReason(caps?.canRevoke) ?? ""}
           onClick={onRevoke}
@@ -165,11 +171,7 @@ export function OwnershipActions({
             >
               Confirm & build draft
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setShowPayForm(false)}
-            >
+            <Button size="sm" variant="ghost" onClick={() => setShowPayForm(false)}>
               Cancel
             </Button>
           </div>
@@ -212,11 +214,7 @@ export function OwnershipActions({
             >
               Create offer & transfer
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setShowSellForm(false)}
-            >
+            <Button size="sm" variant="ghost" onClick={() => setShowSellForm(false)}>
               Cancel
             </Button>
           </div>

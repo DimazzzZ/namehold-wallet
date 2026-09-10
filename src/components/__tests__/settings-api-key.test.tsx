@@ -23,7 +23,11 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   isPermissionGranted: vi.fn().mockResolvedValue(false),
   requestPermission: vi.fn().mockResolvedValue("default"),
 }));
-vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({
+  enable: vi.fn().mockResolvedValue(undefined),
+  disable: vi.fn().mockResolvedValue(undefined),
+  isEnabled: vi.fn().mockResolvedValue(false),
+}));
 
 import { loadSettings } from "../../test/fixtures/settings";
 import { renderSettings } from "../../test/fixtures/renderSettings";
@@ -64,16 +68,12 @@ describe("Settings — Node RPC api-key (write-only)", () => {
 
     await waitFor(() => {
       // Some update_setting call must have fired (other fields are saved).
-      expect(
-        invokeMock.mock.calls.some((c) => c[0] === "update_setting"),
-      ).toBe(true);
+      expect(invokeMock.mock.calls.some((c) => c[0] === "update_setting")).toBe(true);
     });
 
     // None of the update_setting calls should be for the api-key key.
     const apiKeyCall = invokeMock.mock.calls.find(
-      (c) =>
-        c[0] === "update_setting" &&
-        (c[1] as { key?: string })?.key === "node_rpc_api_key",
+      (c) => c[0] === "update_setting" && (c[1] as { key?: string })?.key === "node_rpc_api_key",
     );
     expect(apiKeyCall).toBeUndefined();
   });
@@ -89,9 +89,7 @@ describe("Settings — Node RPC api-key (write-only)", () => {
 
     await waitFor(() => {
       const apiKeyCall = invokeMock.mock.calls.find(
-        (c) =>
-          c[0] === "update_setting" &&
-          (c[1] as { key?: string })?.key === "node_rpc_api_key",
+        (c) => c[0] === "update_setting" && (c[1] as { key?: string })?.key === "node_rpc_api_key",
       );
       expect(apiKeyCall?.[1]).toEqual({
         key: "node_rpc_api_key",
@@ -112,9 +110,7 @@ describe("Settings — Node RPC api-key (write-only)", () => {
 
     await waitFor(() => {
       const apiKeyCall = invokeMock.mock.calls.find(
-        (c) =>
-          c[0] === "update_setting" &&
-          (c[1] as { key?: string })?.key === "node_rpc_api_key",
+        (c) => c[0] === "update_setting" && (c[1] as { key?: string })?.key === "node_rpc_api_key",
       );
       expect(apiKeyCall?.[1]).toEqual({ key: "node_rpc_api_key", value: "" });
     });
