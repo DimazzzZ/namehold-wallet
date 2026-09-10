@@ -686,6 +686,47 @@ pub struct BlockchainInfo {
     pub bestblockhash: Option<String>,
 }
 
+impl BlockchainInfo {
+    /// Whether the node has reached the chain tip. See [`chain_synced`] for
+    /// the rule and the meaning of `assume_when_unknown`.
+    pub fn is_synced(&self, assume_when_unknown: bool) -> bool {
+        chain_synced(
+            self.blocks,
+            self.headers,
+            self.verification_progress,
+            assume_when_unknown,
+        )
+    }
+}
+
+/// The one "is this node synced?" rule, shared by the read/write gates, the
+/// node-status probe and the remote-node connection check.
+///
+/// `verificationprogress` is the most reliable signal when present — a node
+/// can report `blocks == headers` while only ~8% verified if it is far behind
+/// the real tip — so it always wins. Without it, fall back to
+/// `blocks >= headers`; a reported header height of 0 means the node has no
+/// sync target yet and is never "synced". When the node reports neither
+/// (older builds, or regtest with a single miner), the answer is
+/// `assume_when_unknown`: callers gating spends on a configured node pass
+/// `true` so regtest keeps working, while a first-contact probe of an unknown
+/// remote node passes `false`.
+pub fn chain_synced(
+    blocks: i64,
+    headers: Option<i64>,
+    verification_progress: Option<f64>,
+    assume_when_unknown: bool,
+) -> bool {
+    match verification_progress {
+        Some(p) => p >= 0.9999,
+        None => match headers {
+            Some(h) if h > 0 => blocks >= h,
+            Some(_) => false,
+            None => assume_when_unknown,
+        },
+    }
+}
+
 /// Minimal typed view of a node coin from `GET /coin/address/:addr`.
 ///
 /// Only the fields the UTXO sync / draft builder depends on are typed; the rest
@@ -764,6 +805,38 @@ mod tests {
         // The broadcast boundary refuses it too (defense-in-depth), not just
         // the UI write-capability gate.
         assert!(!ChainSource::SpvNode.can_broadcast());
+    }
+
+    #[test]
+    fn chain_synced_prefers_progress_then_headers_then_callers_default() {
+        // verificationprogress wins even when blocks == headers.
+        assert!(!chain_synced(1_000, Some(1_000), Some(0.08), true));
+        assert!(chain_synced(1_000, Some(1_000), Some(0.9999), false));
+        // No progress: fall back to the headers rule.
+        assert!(chain_synced(1_000, Some(1_000), None, false));
+        assert!(!chain_synced(500, Some(1_000), None, true));
+        // headers == 0 means "no sync target yet" — never synced.
+        assert!(!chain_synced(0, Some(0), None, true));
+        // Nothing reported at all: the caller decides.
+        assert!(chain_synced(10, None, None, true));
+        assert!(!chain_synced(10, None, None, false));
+    }
+
+    #[test]
+    fn blockchain_info_is_synced_delegates_to_chain_synced() {
+        let info = BlockchainInfo {
+            blocks: 500,
+            headers: Some(1_000),
+            verification_progress: None,
+            chain: Some("main".to_string()),
+            bestblockhash: None,
+        };
+        assert!(!info.is_synced(true));
+        let info = BlockchainInfo {
+            verification_progress: Some(1.0),
+            ..info
+        };
+        assert!(info.is_synced(false));
     }
 
     #[test]

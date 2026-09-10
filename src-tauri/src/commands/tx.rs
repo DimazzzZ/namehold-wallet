@@ -1885,18 +1885,10 @@ pub(crate) async fn apply_node_write_probe_with_client(
             cap.reason = Some(format!("Start your local node ({node_url}) to send."));
         }
         Ok(info) => {
-            // "Synced" means the chain tip is reached (applied blocks caught up
-            // to the best known header). When `verification_progress` is
-            // available it is the most reliable signal — a node can report
-            // height == headers while still only ~8% verified if it is far
-            // behind the real chain tip. Always gate on progress when present.
-            let synced = match info.verification_progress {
-                Some(p) => p >= 0.9999,
-                None => match info.headers {
-                    Some(h) if h > 0 => info.blocks >= h,
-                    _ => true,
-                },
-            };
+            // "Synced" = applied blocks caught up to the best known header; see
+            // `chain_synced` for why verificationprogress wins. No metadata at
+            // all counts as synced (regtest).
+            let synced = info.is_synced(true);
             if !synced {
                 let pct = match info.verification_progress {
                     Some(p) => (p * 100.0).floor() as i64,

@@ -189,19 +189,9 @@ pub(crate) async fn node_tip_height_if_synced_with_client(
             }
         }
     }
-    // Connected — now check if synced.
-    // When verification_progress is available it is the most reliable signal —
-    // a node can report height == headers while still only ~8% verified if it
-    // is far behind the real chain tip. Always gate on progress when present.
-    let synced = if let Some(progress) = info.verification_progress {
-        progress >= 0.9999
-    } else if let Some(headers) = info.headers {
-        headers > 0 && info.blocks >= headers
-    } else {
-        // No sync metadata: assume synced (e.g. regtest with a single miner).
-        true
-    };
-    synced.then_some(info.blocks)
+    // Connected — now check if synced. No sync metadata at all (e.g. regtest
+    // with a single miner) counts as synced.
+    info.is_synced(true).then_some(info.blocks)
 }
 
 /// True when two network names refer to the same Handshake network, tolerating

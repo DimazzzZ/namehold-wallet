@@ -285,19 +285,16 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         // SPV node: synced when connected (header sync is fast).
         probe.is_some()
     } else {
+        // Shared tip rule; with no sync metadata at all assume synced (regtest).
         probe
             .as_ref()
             .map(|p| {
-                // When verification_progress is available, it is the most reliable signal.
-                // A node can report height == headers while still only ~8% verified if it
-                // is far behind the real chain tip. Always gate on progress when present.
-                if let Some(progress) = p.verification_progress {
-                    progress >= 0.9999
-                } else if let Some(headers) = p.headers {
-                    headers > 0 && p.height >= headers
-                } else {
-                    true
-                }
+                crate::noncustodial::rpc::chain_synced(
+                    p.height,
+                    p.headers,
+                    p.verification_progress,
+                    true,
+                )
             })
             .unwrap_or(false)
     };
@@ -710,25 +707,16 @@ pub(crate) async fn check_node_connection_with_client(
     client: &dyn crate::noncustodial::node_rpc::NodeRpc,
 ) -> NodeConnectionCheck {
     match client.get_blockchain_info().await {
-        Ok(info) => {
-            let synced = if let Some(progress) = info.verification_progress {
-                progress >= 0.9999
-            } else if let Some(headers) = info.headers {
-                headers > 0 && info.blocks >= headers
-            } else {
-                // Node didn't report headers or progress — treat non-zero
-                // height as "answering, but sync unknown" rather than synced.
-                false
-            };
-            NodeConnectionCheck {
-                reachable: true,
-                height: Some(info.blocks),
-                headers: info.headers,
-                synced,
-                network: info.chain,
-                error: None,
-            }
-        }
+        Ok(info) => NodeConnectionCheck {
+            reachable: true,
+            height: Some(info.blocks),
+            headers: info.headers,
+            // Unknown remote node with no sync metadata: "answering, but sync
+            // unknown" is reported as not synced rather than synced.
+            synced: info.is_synced(false),
+            network: info.chain,
+            error: None,
+        },
         Err(e) => NodeConnectionCheck {
             reachable: false,
             height: None,
