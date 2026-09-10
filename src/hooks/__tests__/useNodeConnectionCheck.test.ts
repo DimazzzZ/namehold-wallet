@@ -78,4 +78,77 @@ describe("useNodeConnectionCheck", () => {
     expect(result.current.result).toBeNull();
     expect(result.current.error).toBeNull();
   });
+
+  it("a stale response arriving after reset() mid-flight is dropped, not applied", async () => {
+    let resolveA: (v: typeof reachable) => void;
+    invokeMock.mockReturnValueOnce(
+      new Promise((r) => {
+        resolveA = r;
+      }),
+    );
+    const { result } = renderHook(() => useNodeConnectionCheck());
+
+    // Kick off a probe for URL A but don't await it — it's still in flight.
+    let runPromise!: Promise<void>;
+    act(() => {
+      runPromise = result.current.run("https://a.example.com:12037");
+    });
+    expect(result.current.testing).toBe(true);
+
+    // User edits the field before A responds.
+    act(() => result.current.reset());
+    // Editing mid-probe must not leave the Test button stuck disabled.
+    expect(result.current.testing).toBe(false);
+
+    // Now A's response finally arrives.
+    await act(async () => {
+      resolveA(reachable);
+      await runPromise;
+    });
+
+    expect(result.current.result).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(result.current.ok).toBe(false);
+  });
+
+  it("a superseded run() (A) never overwrites the outcome of the newest run() (B)", async () => {
+    let resolveA: (v: typeof reachable) => void;
+    let resolveB: (v: typeof unreachable) => void;
+    invokeMock
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          resolveA = r;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          resolveB = r;
+        }),
+      );
+    const { result } = renderHook(() => useNodeConnectionCheck());
+
+    let runAPromise!: Promise<void>;
+    act(() => {
+      runAPromise = result.current.run("https://a.example.com:12037");
+    });
+    let runBPromise!: Promise<void>;
+    act(() => {
+      runBPromise = result.current.run("https://b.example.com:12037");
+    });
+
+    // B resolves first, then the stale A resolves after — A must not win.
+    await act(async () => {
+      resolveB(unreachable);
+      await runBPromise;
+    });
+    await act(async () => {
+      resolveA(reachable);
+      await runAPromise;
+    });
+
+    expect(result.current.result).toEqual(unreachable);
+    expect(result.current.error).toBe("connection refused");
+    expect(result.current.ok).toBe(false);
+    expect(result.current.testing).toBe(false);
+  });
 });
