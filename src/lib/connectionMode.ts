@@ -40,3 +40,13 @@ export function fromConnectionMode(
       return { chain_source: "explorer", node_mode: "full" };
   }
 }
+
+/**
+ * Settings booleans are persisted as the strings `"true"`/`"false"` (the DB
+ * stores every setting as text). These two helpers are the single place that
+ * converts between that on-the-wire form and a real boolean, so UI code isn't
+ * littered with `=== "true"` / `? "true" : "false"` rewrapping.
+ */
+export const settingIsTrue = (value: string | undefined): boolean => value === "true";
+
+export const boolToSetting = (value: boolean): "true" | "false" => (value ? "true" : "false");

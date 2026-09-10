@@ -1888,7 +1888,7 @@ pub(crate) async fn apply_node_write_probe_with_client(
             // "Synced" = applied blocks caught up to the best known header; see
             // `chain_synced` for why verificationprogress wins. No metadata at
             // all counts as synced (regtest).
-            let synced = info.is_synced(true);
+            let synced = info.is_synced(/* assume_when_unknown */ true);
             if !synced {
                 let pct = match info.verification_progress {
                     Some(p) => (p * 100.0).floor() as i64,

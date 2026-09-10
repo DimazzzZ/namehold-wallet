@@ -191,7 +191,7 @@ pub(crate) async fn node_tip_height_if_synced_with_client(
     }
     // Connected — now check if synced. No sync metadata at all (e.g. regtest
     // with a single miner) counts as synced.
-    info.is_synced(true).then_some(info.blocks)
+    info.is_synced(/* assume_when_unknown */ true).then_some(info.blocks)
 }
 
 /// True when two network names refer to the same Handshake network, tolerating

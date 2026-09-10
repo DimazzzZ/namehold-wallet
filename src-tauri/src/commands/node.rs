@@ -282,10 +282,14 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     // source is active. In SPV mode, always use explorer (SPV nodes don't have
     // full-chain indexes).
     let node_synced = if node_mode.is_spv() {
-        // SPV node: synced when connected (header sync is fast).
+        // SPV node: "connected" is the best signal we have — an SPV node has no
+        // full-chain tip to compare against, so the shared `chain_synced` tip
+        // rule doesn't apply here. Header sync is fast, so connected == synced.
         probe.is_some()
     } else {
-        // Shared tip rule; with no sync metadata at all assume synced (regtest).
+        // Full/remote node: use the shared tip rule. With no sync metadata at
+        // all, assume synced (regtest with a single miner) — same convention as
+        // the read/write spend gates.
         probe
             .as_ref()
             .map(|p| {
@@ -293,7 +297,7 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
                     p.height,
                     p.headers,
                     p.verification_progress,
-                    true,
+                    /* assume_when_unknown */ true,
                 )
             })
             .unwrap_or(false)
@@ -714,7 +718,7 @@ pub(crate) async fn check_node_connection_with_client(
             headers: info.headers,
             // Unknown remote node with no sync metadata: "answering, but sync
             // unknown" is reported as not synced rather than synced.
-            synced: info.is_synced(false),
+            synced: info.is_synced(/* assume_when_unknown */ false),
             network: info.chain,
             error: None,
         },

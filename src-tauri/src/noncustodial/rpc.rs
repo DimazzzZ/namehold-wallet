@@ -56,7 +56,15 @@ impl ChainSource {
         }
     }
 
-    /// Build the chain source considering both chain_source and node_mode settings.
+    /// Build the chain source considering both `chain_source` and `node_mode` settings.
+    ///
+    /// This is the inverse of `fromConnectionMode` in `src/lib/connectionMode.ts`:
+    /// the frontend flattens the four UI `ConnectionMode`s (`local_full` /
+    /// `local_spv` / `remote_node` / `explorer`) into the persisted
+    /// `(chain_source, node_mode)` pair, and this match expands that pair back
+    /// into a `ChainSource`. Keep the two in lockstep — adding a mode requires
+    /// editing both, since there is no shared source across the TS/Rust
+    /// boundary. The arms below mirror the mapping table in `connectionMode.ts`.
     pub fn from_settings(settings: &std::collections::HashMap<String, String>) -> Self {
         let chain_source = settings
             .get("chain_source")

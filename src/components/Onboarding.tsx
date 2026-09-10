@@ -2,11 +2,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useSettingsStore } from "../stores/settings";
 import { AddWalletForm } from "./AddWalletForm";
 import { useState } from "react";
-import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
-import { ConnectionCheckStatus } from "./ui/ConnectionCheckStatus";
 import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
-import { fromConnectionMode } from "../lib/connectionMode";
+import { boolToSetting, fromConnectionMode } from "../lib/connectionMode";
+import { RemoteNodeFields } from "./ui/RemoteNodeFields";
 
 /**
  * Wallet-first, non-custodial onboarding (first run, zero profiles).
@@ -74,7 +73,7 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
       ...fromConnectionMode("remote_node"),
       node_rpc_url: remoteUrl.trim(),
       node_rpc_api_key: remoteApiKey,
-      allow_remote_broadcast: allowRemoteBroadcast ? "true" : "false",
+      allow_remote_broadcast: boolToSetting(allowRemoteBroadcast),
     });
     onNext();
   };
@@ -109,34 +108,23 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
               Point to a remote hsd RPC. Fast setup, no local chain. Keys stay local.
             </p>
             <div className="mt-3 space-y-2">
-              <Input
-                placeholder="https://node.example.com:12037"
-                value={remoteUrl}
-                onChange={(e) => {
-                  setRemoteUrl(e.target.value);
+              <RemoteNodeFields
+                url={remoteUrl}
+                apiKey={remoteApiKey}
+                onUrlChange={(v) => {
+                  setRemoteUrl(v);
                   probe.reset();
                 }}
-                data-testid="remote-url-input"
-              />
-              <Input
-                type="password"
-                placeholder="API key (optional)"
-                value={remoteApiKey}
-                onChange={(e) => {
-                  setRemoteApiKey(e.target.value);
+                onApiKeyChange={(v) => {
+                  setRemoteApiKey(v);
                   probe.reset();
                 }}
-                data-testid="remote-api-key-input"
+                probe={probe}
+                urlPlaceholder="https://node.example.com:12037"
+                apiKeyPlaceholder="API key (optional)"
+                urlTestId="remote-url-input"
+                apiKeyTestId="remote-api-key-input"
               />
-              <Button
-                size="sm"
-                onClick={() => probe.run(remoteUrl, remoteApiKey)}
-                disabled={probe.testing}
-                data-testid="test-connection-button"
-              >
-                {probe.testing ? "Testing…" : "Test Connection"}
-              </Button>
-              <ConnectionCheckStatus result={probe.result} error={probe.error} />
               <label className="flex items-center gap-2 text-xs">
                 <input
                   type="checkbox"

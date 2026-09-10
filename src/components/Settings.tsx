@@ -13,12 +13,14 @@ import {
 import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
-import { ConnectionCheckStatus } from "./ui/ConnectionCheckStatus";
+import { RemoteNodeFields } from "./ui/RemoteNodeFields";
 import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
 import type { ChainSource, NodeMode } from "../types";
 import {
   CONNECTION_MODE_LABELS,
+  boolToSetting,
   fromConnectionMode,
+  settingIsTrue,
   toConnectionMode,
   type ConnectionMode,
 } from "../lib/connectionMode";
@@ -292,43 +294,27 @@ export function Settings() {
             balances/names from the explorer; switching to or from SPV needs an hsd restart (use
             "Re-sync node data" below if it misbehaves).
           </div>
-          <Input
-            label="Node RPC URL (sending)"
-            value={form.node_rpc_url ?? ""}
-            onChange={(e) => {
-              updateField("node_rpc_url", e.target.value);
+          <RemoteNodeFields
+            url={form.node_rpc_url ?? ""}
+            apiKey={form.node_rpc_api_key ?? ""}
+            onUrlChange={(v) => {
+              updateField("node_rpc_url", v);
               nodeProbe.reset();
             }}
-            placeholder="http://127.0.0.1:12037"
-            data-testid="node-rpc-url-input"
-          />
-          <Input
-            label="Node RPC API key"
-            type="password"
-            value={form.node_rpc_api_key ?? ""}
-            onChange={(e) => {
-              updateField("node_rpc_api_key", e.target.value);
+            onApiKeyChange={(v) => {
+              updateField("node_rpc_api_key", v);
               nodeProbe.reset();
             }}
-            placeholder={
+            probe={nodeProbe}
+            urlLabel="Node RPC URL (sending)"
+            urlPlaceholder="http://127.0.0.1:12037"
+            apiKeyPlaceholder={
               (settings as unknown as Record<string, string>)["__has_node_rpc_api_key"] === "true"
                 ? "•••••• (stored — leave blank to keep)"
                 : "(optional)"
             }
-            data-testid="node-rpc-api-key-input"
+            buttonLabel="Test connection"
           />
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => nodeProbe.run(form.node_rpc_url ?? "", form.node_rpc_api_key)}
-              disabled={nodeProbe.testing}
-              data-testid="test-connection-button"
-            >
-              {nodeProbe.testing ? "Testing…" : "Test connection"}
-            </Button>
-            <ConnectionCheckStatus result={nodeProbe.result} error={nodeProbe.error} />
-          </div>
           <div className="text-xs text-gray-500">
             Needed only to send or do name actions. Run hsd with{" "}
             <code>--index-address</code>. See NODE_SETUP.md. "Test connection" reuses your
@@ -338,9 +324,9 @@ export function Settings() {
             <label className="flex items-center gap-2 text-sm pt-2">
               <input
                 type="checkbox"
-                checked={(form.allow_remote_broadcast ?? "false") === "true"}
+                checked={settingIsTrue(form.allow_remote_broadcast)}
                 onChange={(e) =>
-                  updateField("allow_remote_broadcast", e.target.checked ? "true" : "false")
+                  updateField("allow_remote_broadcast", boolToSetting(e.target.checked))
                 }
                 data-testid="allow-remote-broadcast-checkbox"
               />
