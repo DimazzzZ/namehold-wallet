@@ -10,10 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
-import type { ReactNode } from "react";
+import { screen, waitFor, fireEvent } from "@testing-library/react";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
@@ -32,8 +29,8 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 }));
 vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
 
-import { Settings } from "../Settings";
 import { loadSettings } from "../../test/fixtures/settings";
+import { renderSettings } from "../../test/fixtures/renderSettings";
 
 const profile = {
   id: "p1",
@@ -78,17 +75,6 @@ function route(cmd: string) {
   }
 }
 
-function wrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
-      </QueryClientProvider>
-    );
-  };
-}
-
 beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockImplementation(route);
@@ -99,7 +85,7 @@ beforeEach(() => {
 
 describe("Settings — deadline notifications (I1 / Task 4)", () => {
   it("is off by default and hides lead-time inputs", async () => {
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
     const toggle = await screen.findByTestId("deadline-notify-toggle");
     expect(toggle).not.toBeChecked();
     expect(screen.queryByText(/Reveal window lead time/i)).toBeNull();
@@ -108,7 +94,7 @@ describe("Settings — deadline notifications (I1 / Task 4)", () => {
   it("requests OS permission the moment the toggle is turned on, and shows lead-time inputs once granted", async () => {
     isPermissionGrantedMock.mockResolvedValue(false);
     requestPermissionMock.mockResolvedValue("granted");
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
 
     const toggle = await screen.findByTestId("deadline-notify-toggle");
     fireEvent.click(toggle);
@@ -121,7 +107,7 @@ describe("Settings — deadline notifications (I1 / Task 4)", () => {
   it("shows a non-blocking warning (not a crash) when the OS denies permission", async () => {
     isPermissionGrantedMock.mockResolvedValue(false);
     requestPermissionMock.mockResolvedValue("denied");
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
 
     const toggle = await screen.findByTestId("deadline-notify-toggle");
     fireEvent.click(toggle);
@@ -141,7 +127,7 @@ describe("Settings — deadline notifications (I1 / Task 4)", () => {
     // warning as an explicit denial. It must not.
     loadSettings({ deadline_notify_enabled: "true" });
     isPermissionGrantedMock.mockResolvedValue(null);
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
 
     await screen.findByText(/Reveal window lead time/i);
     expect(screen.queryByTestId("notification-permission-denied")).toBeNull();
@@ -150,7 +136,7 @@ describe("Settings — deadline notifications (I1 / Task 4)", () => {
   it("does not prompt for permission again if already granted", async () => {
     loadSettings({ deadline_notify_enabled: "true" });
     isPermissionGrantedMock.mockResolvedValue(true);
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
 
     await screen.findByText(/Reveal window lead time/i);
     expect(requestPermissionMock).not.toHaveBeenCalled();
@@ -159,7 +145,7 @@ describe("Settings — deadline notifications (I1 / Task 4)", () => {
   it("turning the toggle off does not request permission", async () => {
     loadSettings({ deadline_notify_enabled: "true" });
     isPermissionGrantedMock.mockResolvedValue(true);
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
 
     const toggle = await screen.findByTestId("deadline-notify-toggle");
     await waitFor(() => expect(toggle).toBeChecked());

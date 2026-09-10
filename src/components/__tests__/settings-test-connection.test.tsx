@@ -8,10 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
-import type { ReactNode } from "react";
+import { screen, fireEvent, waitFor } from "@testing-library/react";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
@@ -31,22 +28,11 @@ vi.mock("@tauri-apps/plugin-autostart", () => ({
   isEnabled: vi.fn().mockResolvedValue(false),
 }));
 
-import { Settings } from "../Settings";
 import { loadSettings } from "../../test/fixtures/settings";
+import { renderSettings } from "../../test/fixtures/renderSettings";
 import { routeSettingsCommand } from "../../test/fixtures/settingsRoute";
 
 const reachable = { reachable: true, height: 4242, headers: 4242, synced: true, network: "main", error: null };
-
-function wrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
-      </QueryClientProvider>
-    );
-  };
-}
 
 beforeEach(() => {
   invokeMock.mockReset();
@@ -58,7 +44,7 @@ beforeEach(() => {
 
 describe("Settings — Test connection", () => {
   it("probes the saved URL with no key when the key field is blank", async () => {
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
     fireEvent.click(await screen.findByTestId("test-connection-button"));
     await waitFor(() =>
       expect(screen.getByTestId("connection-success")).toHaveTextContent(/height 4242/),
@@ -70,7 +56,7 @@ describe("Settings — Test connection", () => {
   });
 
   it("drops a successful result when the URL is edited", async () => {
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
     fireEvent.click(await screen.findByTestId("test-connection-button"));
     await waitFor(() => expect(screen.getByTestId("connection-success")).toBeInTheDocument());
 

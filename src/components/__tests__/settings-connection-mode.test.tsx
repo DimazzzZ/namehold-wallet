@@ -7,10 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
-import type { ReactNode } from "react";
+import { screen, fireEvent, waitFor } from "@testing-library/react";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
@@ -30,20 +27,9 @@ vi.mock("@tauri-apps/plugin-autostart", () => ({
   isEnabled: vi.fn().mockResolvedValue(false),
 }));
 
-import { Settings } from "../Settings";
 import { loadSettings } from "../../test/fixtures/settings";
+import { renderSettings } from "../../test/fixtures/renderSettings";
 import { routeSettingsCommand } from "../../test/fixtures/settingsRoute";
-
-function wrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
-      </QueryClientProvider>
-    );
-  };
-}
 
 beforeEach(() => {
   invokeMock.mockReset();
@@ -53,7 +39,7 @@ beforeEach(() => {
 describe("Settings — Chain source (connection mode)", () => {
   it("shows SPV as the selected mode when node_mode is spv", async () => {
     loadSettings({ chain_source: "local_node", node_mode: "spv" });
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
     const select = (await screen.findByTestId("chain-source-select")) as HTMLSelectElement;
     expect(select.value).toBe("local_spv");
     // The old standalone Node-mode dropdown is gone.
@@ -62,7 +48,7 @@ describe("Settings — Chain source (connection mode)", () => {
 
   it("selecting Remote node saves chain_source=remote_node AND node_mode=full", async () => {
     loadSettings({ chain_source: "local_node", node_mode: "spv" });
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
     fireEvent.change(await screen.findByTestId("chain-source-select"), {
       target: { value: "remote_node" },
     });
@@ -81,7 +67,7 @@ describe("Settings — Chain source (connection mode)", () => {
 
   it("selecting SPV saves chain_source=local_node AND node_mode=spv, and hides the remote opt-in", async () => {
     loadSettings({ chain_source: "remote_node", node_mode: "full", allow_remote_broadcast: "true" });
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
     fireEvent.change(await screen.findByTestId("chain-source-select"), {
       target: { value: "local_spv" },
     });

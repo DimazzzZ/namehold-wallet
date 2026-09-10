@@ -7,10 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
-import type { ReactNode } from "react";
+import { screen, waitFor, fireEvent } from "@testing-library/react";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
@@ -30,55 +27,9 @@ vi.mock("@tauri-apps/plugin-autostart", () => ({
   isEnabled: vi.fn().mockResolvedValue(false),
 }));
 
-import { Settings } from "../Settings";
 import { loadSettings } from "../../test/fixtures/settings";
-
-function route(cmd: string) {
-  switch (cmd) {
-    case "node_status":
-      return Promise.resolve({
-        binary: null,
-        binary_found: false,
-        version: null,
-        data_dir: null,
-        network: "main",
-        process_alive: false,
-        connected: false,
-        height: null,
-        verification_progress: null,
-        headers: null,
-        last_error: null,
-        index_mismatch: false,
-        read_source: "explorer",
-      });
-    case "list_wallet_profiles":
-      return Promise.resolve([]);
-    case "get_signer_session":
-      return Promise.resolve({ walletProfileId: null, unlocked: false, unlockedUntilEpochMs: 0 });
-    case "get_write_capability":
-      return Promise.resolve({
-        signerUnlocked: false,
-        broadcasterAvailable: false,
-        canWrite: false,
-        reason: null,
-      });
-    case "update_setting":
-      return Promise.resolve(null);
-    default:
-      return Promise.resolve(null);
-  }
-}
-
-function wrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
-      </QueryClientProvider>
-    );
-  };
-}
+import { renderSettings } from "../../test/fixtures/renderSettings";
+import { routeSettingsCommand } from "../../test/fixtures/settingsRoute";
 
 function feeRateInput(): HTMLInputElement {
   return screen.getByTestId("settings-fee-rate") as HTMLInputElement;
@@ -86,13 +37,13 @@ function feeRateInput(): HTMLInputElement {
 
 beforeEach(() => {
   invokeMock.mockReset();
-  invokeMock.mockImplementation(route);
+  invokeMock.mockImplementation(routeSettingsCommand);
 });
 
 describe("Settings — Fee rate override", () => {
   it("renders fee-rate input with correct initial value", async () => {
     loadSettings({ fee_rate_doos_per_kvb: "5000" });
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
 
     const input = await screen.findByTestId("settings-fee-rate");
     expect(input).toHaveValue("5000");
@@ -100,7 +51,7 @@ describe("Settings — Fee rate override", () => {
 
   it("shows error when input is non-numeric", async () => {
     loadSettings();
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
 
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "abc" } });
@@ -113,7 +64,7 @@ describe("Settings — Fee rate override", () => {
 
   it("clears error when input is valid", async () => {
     loadSettings();
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
 
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "abc" } });
@@ -132,7 +83,7 @@ describe("Settings — Fee rate override", () => {
 
   it("disables Save button when error is present", async () => {
     loadSettings();
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
 
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "not-a-number" } });
@@ -149,7 +100,7 @@ describe("Settings — Fee rate override", () => {
 
   it("enables Save button when input is valid", async () => {
     loadSettings();
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
 
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "4000" } });
@@ -161,7 +112,7 @@ describe("Settings — Fee rate override", () => {
 
   it("sends update_setting call when saving valid fee rate", async () => {
     loadSettings();
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
 
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "3500" } });
@@ -184,7 +135,7 @@ describe("Settings — Fee rate override", () => {
 
   it("allows empty fee rate (clears the override)", async () => {
     loadSettings({ fee_rate_doos_per_kvb: "5000" });
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
 
     const input = feeRateInput();
     fireEvent.change(input, { target: { value: "" } });

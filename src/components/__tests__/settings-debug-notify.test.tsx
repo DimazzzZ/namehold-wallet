@@ -8,10 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
-import type { ReactNode } from "react";
+import { screen, waitFor, fireEvent } from "@testing-library/react";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
@@ -31,8 +28,8 @@ vi.mock("@tauri-apps/plugin-autostart", () => ({
   isEnabled: vi.fn().mockResolvedValue(false),
 }));
 
-import { Settings } from "../Settings";
 import { loadSettings } from "../../test/fixtures/settings";
+import { renderSettings } from "../../test/fixtures/renderSettings";
 
 function route(cmd: string) {
   switch (cmd) {
@@ -72,17 +69,6 @@ function route(cmd: string) {
   }
 }
 
-function wrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
-      </QueryClientProvider>
-    );
-  };
-}
-
 beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockImplementation(route);
@@ -97,7 +83,7 @@ afterEach(() => {
 
 describe("Settings — Debug notifications panel", () => {
   it("renders the dev-only panel with a button per kind", async () => {
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
     expect(await screen.findByTestId("debug-notifications-panel")).toBeInTheDocument();
     for (const kind of ["reveal", "renewal", "bidding", "reopened", "bidding_soon", "highbid"]) {
       expect(screen.getByTestId(`sim-notify-${kind}`)).toBeInTheDocument();
@@ -105,7 +91,7 @@ describe("Settings — Debug notifications panel", () => {
   });
 
   it("invokes simulate_notification with the clicked kind", async () => {
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
     const btn = await screen.findByTestId("sim-notify-bidding");
     fireEvent.click(btn);
     await waitFor(() => {
