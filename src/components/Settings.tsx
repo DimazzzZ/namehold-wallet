@@ -350,7 +350,8 @@ export function Settings() {
           </div>
           <div className="text-xs text-gray-500">
             Needed only to send or do name actions. Run hsd with{" "}
-            <code>--index-address</code>. See NODE_SETUP.md.
+            <code>--index-address</code>. See NODE_SETUP.md. "Test connection" reuses your
+            stored API key when the URL matches the saved node.
           </div>
           {(form.chain_source ?? "local_node") === "remote_node" && (
             <label className="flex items-center gap-2 text-sm pt-2">

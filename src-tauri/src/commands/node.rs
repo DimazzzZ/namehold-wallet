@@ -740,6 +740,34 @@ pub(crate) async fn check_node_connection_with_client(
     }
 }
 
+/// Pick the API key for a connectivity probe.
+///
+/// An explicit, non-blank key from the form always wins. Without one, the
+/// stored `node_rpc_api_key` (or the hsd.conf fallback via
+/// `resolve_node_api_key`) is reused ONLY when the probed URL is the saved
+/// `node_rpc_url` — the Settings API-key field is write-only, so "Test
+/// connection" against the saved node would otherwise always fail auth. Any
+/// other URL gets no key: the stored secret must never be sent to an
+/// endpoint the user just typed.
+pub(crate) fn resolve_probe_api_key(
+    url: &str,
+    explicit: Option<&str>,
+    settings: &std::collections::HashMap<String, String>,
+) -> String {
+    if let Some(key) = explicit.map(str::trim).filter(|k| !k.is_empty()) {
+        return key.to_string();
+    }
+    let normalize = |u: &str| u.trim().trim_end_matches('/').to_string();
+    let saved = settings
+        .get("node_rpc_url")
+        .map(|s| normalize(s))
+        .unwrap_or_default();
+    if !saved.is_empty() && saved == normalize(url) {
+        return crate::noncustodial::rpc::resolve_node_api_key(settings);
+    }
+    String::new()
+}
+
 /// Probe a candidate node RPC URL without persisting anything. Powers the
 /// "Test connection" button in the onboarding "How do you want to connect?"
 /// step and in Settings, so a user can validate a remote hsd RPC before
@@ -752,6 +780,7 @@ pub(crate) async fn check_node_connection_with_client(
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn check_node_connection(
+    state: State<'_, AppState>,
     url: String,
     api_key: Option<String>,
 ) -> Result<NodeConnectionCheck, AppError> {
@@ -761,7 +790,13 @@ pub async fn check_node_connection(
             "node RPC URL is required".to_string(),
         ));
     }
-    let key = api_key.unwrap_or_default();
+    // Resolve the key inside a block so the DB lock is released before the
+    // network round-trip below.
+    let key = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let settings = db::queries::get_settings(&conn)?;
+        resolve_probe_api_key(url, api_key.as_deref(), &settings)
+    };
     // `try_new` enforces the plaintext-key / non-loopback guard. Any failure
     // there is a configuration error, not a connectivity error, and is
     // returned distinctly so the UI can say "fix your URL/key first".

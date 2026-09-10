@@ -1167,7 +1167,8 @@ use crate::commands::node::check_node_connection_with_client;
 // Reuses the shared `info(blocks, progress, headers, chain)` helper above.
 #[tokio::test]
 async fn check_node_connection_reports_reachable_and_synced() {
-    let mock = MockNodeRpc::new().with_blockchain_info(info(100, Some(1.0), Some(100), Some("main")));
+    let mock =
+        MockNodeRpc::new().with_blockchain_info(info(100, Some(1.0), Some(100), Some("main")));
     let out = check_node_connection_with_client(&mock).await;
     assert!(out.reachable);
     assert_eq!(out.height, Some(100));
@@ -1185,7 +1186,10 @@ async fn check_node_connection_reports_not_synced_when_behind_headers() {
     assert!(out.reachable);
     assert_eq!(out.height, Some(500));
     assert_eq!(out.headers, Some(1_000));
-    assert!(!out.synced, "half-synced node must not be reported as synced");
+    assert!(
+        !out.synced,
+        "half-synced node must not be reported as synced"
+    );
     assert!(out.error.is_none());
 }
 
@@ -1213,5 +1217,54 @@ async fn check_node_connection_surfaces_rpc_error() {
             .unwrap_or(false),
         "error message should carry the node's failure reason, got {:?}",
         out.error
+    );
+}
+
+// ------- resolve_probe_api_key ----------------------------------------------
+
+use crate::commands::node::resolve_probe_api_key;
+
+fn probe_settings(saved_url: &str, saved_key: &str) -> std::collections::HashMap<String, String> {
+    let mut s = std::collections::HashMap::new();
+    s.insert("node_rpc_url".to_string(), saved_url.to_string());
+    s.insert("node_rpc_api_key".to_string(), saved_key.to_string());
+    s
+}
+
+#[test]
+fn probe_key_explicit_key_wins_over_stored() {
+    let s = probe_settings("https://node.example.com:12037", "stored");
+    assert_eq!(
+        resolve_probe_api_key("https://node.example.com:12037", Some("typed"), &s),
+        "typed"
+    );
+    // Whitespace-only explicit key counts as "not provided".
+    assert_eq!(
+        resolve_probe_api_key("https://node.example.com:12037", Some("   "), &s),
+        "stored"
+    );
+}
+
+#[test]
+fn probe_key_reuses_stored_key_only_for_the_saved_url() {
+    let s = probe_settings("https://node.example.com:12037", "stored");
+    // Same node (trailing slash tolerated) → stored key.
+    assert_eq!(
+        resolve_probe_api_key("https://node.example.com:12037/", None, &s),
+        "stored"
+    );
+    // A different URL must NOT receive the stored secret.
+    assert_eq!(
+        resolve_probe_api_key("https://evil.example.com:12037", None, &s),
+        ""
+    );
+}
+
+#[test]
+fn probe_key_empty_when_nothing_stored() {
+    let s = std::collections::HashMap::new();
+    assert_eq!(
+        resolve_probe_api_key("http://127.0.0.1:12037", None, &s),
+        ""
     );
 }
