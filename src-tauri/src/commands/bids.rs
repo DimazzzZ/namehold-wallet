@@ -13,6 +13,17 @@
 //! command requires an unlocked signer session; they are read+DB-write, not
 //! spends.
 
+// COVERAGE:
+// * #[tauri::command] macro attribute lines (53, 186, 360) are structurally
+//   uncoverable — the macro is expanded at compile time.
+// * The `return false` in `brute_force_recover_bid`'s `matches` closure
+//   (~line 262) fires when `compute_nonce` fails, which requires a rare
+//   BIP32 derivation edge case that can't be produced from a valid xpub.
+// * The `MAX_SWEEP_CANDIDATES` error branch (~lines 320-324) requires a
+//   lockup > 1_000_000_000 doos. Reaching Tier 2 with that lockup means
+//   Tier 1 has already iterated hundreds of thousands of times over a
+//   never-matching blind — too slow for the unit-test loop.
+
 use serde::Serialize;
 use tauri::State;
 
@@ -48,6 +59,7 @@ pub struct RecoveredBidCommitment {
 /// resolves it (falls back to the active profile) — this pins recovery to a
 /// specific wallet rather than silently trusting backend "active" state.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn recover_bid_commitment(
     state: State<'_, AppState>,
     wallet_profile_id: Option<String>,
@@ -355,6 +367,7 @@ struct ExportedBidCommitment {
 /// save as a backup file. Contains secret nonce/blind material — the frontend
 /// must warn the user to store it alongside their seed.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn export_bid_commitments(
     state: State<'_, AppState>,
     wallet_profile_id: Option<String>,

@@ -1,0 +1,21 @@
+{
+  "name": "namehold-wallet-e2e",
+  "version": "0.5.0",
+  "description": "End-to-end tests for Namehold Wallet (Tauri app)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "wdio run wdio.conf.ts",
+    "test:debug": "wdio run wdio.conf.ts --debug"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@wdio/cli": "^9.31.7",
+    "@wdio/local-runner": "^9.31.7",
+    "@wdio/mocha-framework": "^9.31.7",
+    "@wdio/spec-reporter": "^9.31.2",
+    "tsx": "^4.23.13",
+    "typescript": "~5.7.3",
+    "webdriverio": "^9.31.7"
+  }
+}

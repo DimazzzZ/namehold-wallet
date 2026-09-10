@@ -422,4 +422,130 @@ mod tests {
             "missing name should be Protocol error, got: {err:?}"
         );
     }
+
+    // --- Coverage-driven tests below: exercise guard branches in
+    // build_parse_blob for change path depth, txid parsing, and covenant support.
+
+    /// `build_parse_blob` rejects a change path deeper than 10 levels.
+    #[test]
+    fn parse_blob_rejects_change_path_too_deep() {
+        let plan = simple_send_plan();
+        let change = ChangeInfo {
+            output_index: 0,
+            address_version: 0,
+            path: vec![0u32; 11], // 11 levels, exceeds max 10
+        };
+        let err = build_parse_blob(&plan, Network::Main, Some(&change), &[]).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("too deep")),
+            "got {err:?}"
+        );
+    }
+
+    /// `build_parse_blob` rejects an input with malformed (non-hex) txid.
+    #[test]
+    fn parse_blob_rejects_malformed_txid_hex() {
+        let mut plan = simple_send_plan();
+        plan.inputs[0].txid = "not-valid-hex".to_string();
+        let err = build_parse_blob(&plan, Network::Main, None, &[]).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("bad input txid hex")),
+            "got {err:?}"
+        );
+    }
+
+    /// `build_parse_blob` rejects an input with txid that decodes to the wrong length.
+    #[test]
+    fn parse_blob_rejects_wrong_length_txid() {
+        let mut plan = simple_send_plan();
+        // "aabb" decodes to 2 bytes, not 32.
+        plan.inputs[0].txid = "aabb".to_string();
+        let err = build_parse_blob(&plan, Network::Main, None, &[]).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("32 bytes")),
+            "got {err:?}"
+        );
+    }
+
+    /// `build_parse_blob` rejects an output with an unsupported covenant type.
+    #[test]
+    fn parse_blob_rejects_unsupported_covenant_type() {
+        let mut plan = simple_send_plan();
+        // Use a covenant type that is not supported by the Ledger app.
+        // Supported types are defined in covenant_serializer::is_supported.
+        // Use type 255 which is almost certainly not supported.
+        plan.outputs[0].covenant_type = 255;
+        let err = build_parse_blob(&plan, Network::Main, None, &[]).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("unsupported covenant type")),
+            "got {err:?}"
+        );
+    }
+
+    /// `build_parse_blob` propagates errors from `output_address_from_string`
+    /// when an output carries a malformed address string.
+    #[test]
+    fn parse_blob_rejects_bad_output_address() {
+        let mut plan = simple_send_plan();
+        plan.outputs[0].address = "not-a-valid-address".into();
+        let err = build_parse_blob(&plan, Network::Main, None, &[]).unwrap_err();
+        // A non-bech32 string fails inside address::decode, surfaced as Crypto.
+        assert!(
+            matches!(&err, AppError::Crypto(msg) if msg.contains("bech32 decode failed")),
+            "got {err:?}"
+        );
+    }
+
+    /// `build_parse_blob` rejects an output whose covenant items contain
+    /// non-hex characters (exercises `decode_covenant_items`).
+    #[test]
+    fn parse_blob_rejects_bad_covenant_item_hex() {
+        let mut plan = simple_send_plan();
+        // Use a supported covenant type so we get past the is_supported check,
+        // then hand it an item that isn't valid hex.
+        plan.outputs[0].covenant_items_hex = vec!["zz".into()];
+        let err = build_parse_blob(&plan, Network::Main, None, &[]).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("bad covenant item hex")),
+            "got {err:?}"
+        );
+    }
+
+    /// `build_parse_blob` propagates errors from `write_name_marker` when the
+    /// caller supplies a non-ASCII name for a name-bearing covenant.
+    #[test]
+    fn parse_blob_rejects_non_ascii_name_marker() {
+        use crate::noncustodial::sync::COV_TRANSFER;
+        let plan = DraftPlan {
+            version: 0,
+            locktime: 0,
+            account: 0,
+            network: "main".into(),
+            inputs: vec![crate::noncustodial::actions::PlanInput {
+                txid: "aa".repeat(32),
+                vout: 0,
+                value: 100_000_000,
+                branch: 0,
+                child_index: 0,
+                sighash_type: 1,
+            }],
+            outputs: vec![crate::noncustodial::actions::PlanOutput {
+                value: 99_000_000,
+                address: "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx".into(),
+                covenant_type: COV_TRANSFER,
+                covenant_items_hex: vec!["bb".repeat(32)],
+            }],
+            change_output_index: None,
+        };
+        // Name is not ASCII, so write_name_marker returns Protocol.
+        let names = vec![OutputName {
+            output_index: 0,
+            name: "wörld".into(),
+        }];
+        let err = build_parse_blob(&plan, Network::Main, None, &names).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Protocol(msg) if msg.contains("not ASCII")),
+            "got {err:?}"
+        );
+    }
 }

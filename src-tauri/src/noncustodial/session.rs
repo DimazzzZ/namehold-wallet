@@ -152,4 +152,17 @@ mod tests {
         assert!(s.is_unlocked());
         assert!(s.master().is_ok());
     }
+
+    /// `touch()` is a no-op on a locked session (does not panic or error).
+    #[test]
+    fn touch_on_locked_session_is_noop() {
+        let mut s = SignerSession::unlock("p1".to_string(), Network::Main, test_master(), 60_000);
+        s.lock();
+        assert!(!s.is_unlocked());
+        let expiry_before = s.unlocked_until_ms();
+        s.touch(60_000);
+        // Expiry should remain 0 (locked).
+        assert_eq!(s.unlocked_until_ms(), expiry_before);
+        assert_eq!(s.unlocked_until_ms(), 0);
+    }
 }

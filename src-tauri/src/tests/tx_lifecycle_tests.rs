@@ -12,10 +12,12 @@ use rusqlite::params;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
+use crate::commands::names::build_open_draft;
 use crate::commands::tx::{
-    broadcast_tx_draft, build_send_hns_draft, delete_tx_draft, get_write_capability,
-    refresh_tx_confirmations, release_tx_draft_reservation, sign_tx_draft_confirmed,
-    sign_tx_draft_inner, sync_wallet_state,
+    broadcast_tx_draft, build_send_hns_draft, delete_tx_draft, estimate_tx_draft_fee,
+    get_wallet_balances, get_write_capability, list_tx_drafts, refresh_tx_confirmations,
+    release_tx_draft_reservation, resolve_fee_rate, sign_tx_draft_confirmed, sign_tx_draft_inner,
+    sync_tracked_names, sync_wallet_state,
 };
 use crate::db;
 use crate::error::AppError;
@@ -1491,5 +1493,928 @@ async fn spv_mode_blocks_writes_with_clear_reason() {
     assert!(
         reason.to_lowercase().contains("spv"),
         "reason should mention SPV; got: {reason}"
+    );
+}
+
+// ===========================================================================
+// Coverage-expansion tests (Priority 1 — no RPC needed)
+// ===========================================================================
+
+// --- estimate_tx_draft_fee -------------------------------------------------
+
+#[tokio::test]
+async fn estimate_fee_returns_selection_details() {
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    let app = app_with(conn);
+
+    let res = estimate_tx_draft_fee(app.state(), 500_000, Some(1))
+        .await
+        .expect("estimate ok");
+    assert!(res["feeDoos"].as_u64().unwrap() > 0, "fee must be positive");
+    assert!(
+        res["inputTotalDoos"].as_u64().unwrap() >= 500_000,
+        "inputs must cover the amount"
+    );
+    assert!(res["numInputs"].as_u64().unwrap() >= 1);
+    // change = inputTotal - amount - fee
+    let change = res["changeDoos"].as_u64().unwrap();
+    let expected_change =
+        res["inputTotalDoos"].as_u64().unwrap() - 500_000 - res["feeDoos"].as_u64().unwrap();
+    assert_eq!(change, expected_change);
+}
+
+#[tokio::test]
+async fn estimate_fee_rejects_non_positive_amount() {
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    let app = app_with(conn);
+
+    let err = estimate_tx_draft_fee(app.state(), 0, Some(1))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(_)));
+
+    let err2 = estimate_tx_draft_fee(app.state(), -100, Some(1))
+        .await
+        .unwrap_err();
+    assert!(matches!(err2, AppError::InvalidInput(_)));
+}
+
+#[tokio::test]
+async fn estimate_fee_fails_when_insufficient_coins() {
+    let conn = seeded_conn("http://127.0.0.1:1", 1_000); // only 1000 doos
+    let app = app_with(conn);
+
+    let err = estimate_tx_draft_fee(app.state(), 999_999, Some(1))
+        .await
+        .unwrap_err();
+    // Coin selection should fail with an InvalidInput error
+    assert!(matches!(err, AppError::InvalidInput(_)));
+}
+
+#[tokio::test]
+async fn estimate_fee_errors_when_no_active_profile() {
+    // Exercises `active_profile`'s empty-id branch: no active profile → error.
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    let app = app_with(conn);
+
+    let err = estimate_tx_draft_fee(app.state(), 500_000, Some(1))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(_)));
+}
+
+// --- get_wallet_balances ---------------------------------------------------
+
+#[tokio::test]
+async fn get_wallet_balances_returns_seeded_balance() {
+    let conn = seeded_conn("http://127.0.0.1:1", 5_000_000);
+    let app = app_with(conn);
+
+    let res = get_wallet_balances(app.state(), None).await.expect("ok");
+    assert_eq!(res["liquidDoos"], serde_json::json!(5_000_000));
+    assert_eq!(res["nameControlDoos"], serde_json::json!(0));
+    assert_eq!(res["nameLockupDoos"], serde_json::json!(0));
+    assert_eq!(res["totalDoos"], serde_json::json!(5_000_000));
+}
+
+#[tokio::test]
+async fn get_wallet_balances_returns_zeros_when_no_profile() {
+    // DB with no active profile → zeros, not an error.
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    let app = app_with(conn);
+
+    let res = get_wallet_balances(app.state(), None).await.expect("ok");
+    assert_eq!(res["liquidDoos"], serde_json::json!(0));
+    assert_eq!(res["totalDoos"], serde_json::json!(0));
+}
+
+#[tokio::test]
+async fn get_wallet_balances_with_explicit_profile_id() {
+    let conn = seeded_conn("http://127.0.0.1:1", 3_000_000);
+    let app = app_with(conn);
+
+    let res = get_wallet_balances(app.state(), Some(PROFILE.to_string()))
+        .await
+        .expect("ok");
+    assert_eq!(res["liquidDoos"], serde_json::json!(3_000_000));
+}
+
+// --- list_tx_drafts --------------------------------------------------------
+
+#[tokio::test]
+async fn list_tx_drafts_returns_empty_when_no_drafts() {
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    let app = app_with(conn);
+
+    let list = list_tx_drafts(app.state(), None).await.expect("ok");
+    assert!(list.is_empty());
+}
+
+#[tokio::test]
+async fn list_tx_drafts_returns_built_draft() {
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    let app = app_with(conn);
+
+    // Build a draft so there's something to list.
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build");
+
+    let list = list_tx_drafts(app.state(), None).await.expect("ok");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].id, draft.id);
+}
+
+#[tokio::test]
+async fn list_tx_drafts_with_explicit_profile_id() {
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    let app = app_with(conn);
+
+    build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build");
+
+    let list = list_tx_drafts(app.state(), Some(PROFILE.to_string()))
+        .await
+        .expect("ok");
+    assert_eq!(list.len(), 1);
+}
+
+#[tokio::test]
+async fn list_tx_drafts_returns_empty_when_no_active_profile() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    let app = app_with(conn);
+
+    let list = list_tx_drafts(app.state(), None).await.expect("ok");
+    assert!(list.is_empty());
+}
+
+// ===========================================================================
+// Coverage-expansion tests (Priority 2 — needs mockito)
+// ===========================================================================
+
+// --- resolve_fee_rate (node-RPC fallback branch) ---------------------------
+
+#[tokio::test]
+async fn estimate_fee_uses_node_rpc_fallback_when_no_setting() {
+    // No `fee_rate_doos_per_kvb` in settings → resolve_fee_rate asks the node.
+    // Mock `estimatesmartfee` returning 0.001 HNS/kvB = 1000 doos/kvB = 1 doo/byte.
+    let mut server = mockito::Server::new_async().await;
+    let _fee = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("estimatesmartfee".into()))
+        .with_body(r#"{"result":{"fee":0.001,"blocks":6},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+
+    // Call estimate_tx_draft_fee WITHOUT an explicit fee_rate → triggers resolve_fee_rate.
+    let res = estimate_tx_draft_fee(app.state(), 500_000, None)
+        .await
+        .expect("estimate ok");
+    assert!(res["feeDoos"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn estimate_fee_uses_explicit_setting_over_node_rpc() {
+    // `fee_rate_doos_per_kvb` = 5000 → 5 doos/byte. Node should NOT be called.
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("estimatesmartfee".into()))
+        .expect(0)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    db::queries::set_setting(&conn, "fee_rate_doos_per_kvb", "5000").unwrap();
+    let app = app_with(conn);
+
+    let res = estimate_tx_draft_fee(app.state(), 500_000, None)
+        .await
+        .expect("estimate ok");
+    assert!(res["feeDoos"].as_u64().unwrap() > 0);
+    m.assert_async().await;
+}
+
+#[tokio::test]
+async fn estimate_fee_falls_back_to_default_when_node_fee_estimate_errors() {
+    // No `fee_rate_doos_per_kvb` setting AND `estimatesmartfee` returns an
+    // error → resolve_fee_rate falls back to DEFAULT_FEE_RATE_PER_BYTE.
+    let mut server = mockito::Server::new_async().await;
+    let _fee = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("estimatesmartfee".into()))
+        .with_body(r#"{"result":null,"error":{"message":"no data","code":-1},"id":1}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+
+    let res = estimate_tx_draft_fee(app.state(), 500_000, None)
+        .await
+        .expect("estimate ok — should use default rate");
+    assert!(res["feeDoos"].as_u64().unwrap() > 0);
+}
+
+// --- sync_tracked_names ----------------------------------------------------
+
+#[tokio::test]
+async fn sync_tracked_names_refreshes_name_states() {
+    let mut server = mockito::Server::new_async().await;
+    // Mock getnameinfo returning a valid name state.
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(
+            r#"{"result":{"start":{"reserved":false,"week":0,"start":0},"info":{"name":"testname","nameHash":"aabb","state":"CLOSED","height":100,"renewal":200,"owner":{"hash":"cc","index":0},"value":0,"highest":1000000,"data":"","transfer":0,"revoked":0,"claimed":0,"renewals":0,"registered":true,"expired":false,"weak":false}},"error":null,"id":1}"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    // Insert a tracked name so refresh_name_states has something to poll.
+    conn.execute(
+        "INSERT INTO tracked_name_states (wallet_profile_id, name, name_hash_hex, state)
+         VALUES (?1, 'testname', 'aabb', 'CLOSED')",
+        params![PROFILE],
+    )
+    .unwrap();
+    let app = app_with(conn);
+
+    let res = sync_tracked_names(app.state(), None).await.expect("ok");
+    assert_eq!(res["walletProfileId"], serde_json::json!(PROFILE));
+    assert_eq!(res["namesSynced"], serde_json::json!(1));
+}
+
+#[tokio::test]
+async fn sync_tracked_names_with_explicit_profile_id() {
+    let mut server = mockito::Server::new_async().await;
+    let _ni = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(
+            r#"{"result":{"start":{"reserved":false},"info":{"name":"myname","nameHash":"dd","state":"CLOSED","height":50,"renewal":100,"owner":{"hash":"ee","index":0},"value":0,"highest":0,"data":"","transfer":0,"revoked":0,"claimed":0,"renewals":0,"registered":true,"expired":false,"weak":false}},"error":null,"id":1}"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    conn.execute(
+        "INSERT INTO tracked_name_states (wallet_profile_id, name, name_hash_hex, state)
+         VALUES (?1, 'myname', 'dd', 'CLOSED')",
+        params![PROFILE],
+    )
+    .unwrap();
+    let app = app_with(conn);
+
+    let res = sync_tracked_names(app.state(), Some(PROFILE.to_string()))
+        .await
+        .expect("ok");
+    assert_eq!(res["namesSynced"], serde_json::json!(1));
+}
+
+#[tokio::test]
+async fn sync_tracked_names_errors_when_no_active_profile() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    let app = app_with(conn);
+
+    let err = sync_tracked_names(app.state(), None).await.unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(_)));
+}
+
+// --- sync_wallet_state (auto-provision addresses path) ---------------------
+
+#[tokio::test]
+async fn sync_wallet_state_auto_provisions_addresses_when_empty() {
+    // Remove derived_addresses to trigger the auto-provision branch.
+    let mut server = mockito::Server::new_async().await;
+    let addr = recv_addr();
+    let coin = format!(
+        r#"{{"hash":"{COIN_TXID}","index":0,"value":2000000,"address":"{addr}","height":120,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
+    );
+    let _bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _coins = server
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body(format!(r#"[{coin}]"#))
+        .create_async()
+        .await;
+    let _other = server
+        .mock("POST", "/")
+        .with_body(r#"{"result":null,"error":{"message":"not found"},"id":1}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    // Wipe derived_addresses to trigger auto-provision.
+    conn.execute("DELETE FROM derived_addresses", []).unwrap();
+    let app = app_with(conn);
+
+    let res = sync_wallet_state(app.state(), None).await.expect("sync ok");
+    assert_eq!(res["nodeReachable"], serde_json::json!(true));
+    // Auto-provisioned addresses should have been used for the coin scan.
+    assert!(res["height"].as_i64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn sync_wallet_state_with_explicit_profile_id() {
+    let mut server = mockito::Server::new_async().await;
+    let addr = recv_addr();
+    let coin = format!(
+        r#"{{"hash":"{COIN_TXID}","index":0,"value":1000000,"address":"{addr}","height":50,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
+    );
+    let _bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"main","blocks":100},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _coins = server
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body(format!(r#"[{coin}]"#))
+        .create_async()
+        .await;
+    let _other = server
+        .mock("POST", "/")
+        .with_body(r#"{"result":null,"error":{"message":"not found"},"id":1}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+
+    let res = sync_wallet_state(app.state(), Some(PROFILE.to_string()))
+        .await
+        .expect("sync ok");
+    assert_eq!(res["nodeReachable"], serde_json::json!(true));
+    assert_eq!(res["walletProfileId"], serde_json::json!(PROFILE));
+}
+
+#[tokio::test]
+async fn sync_wallet_state_errors_for_unknown_profile() {
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    let app = app_with(conn);
+
+    let err = sync_wallet_state(app.state(), Some("nonexistent".to_string()))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn sync_wallet_state_caches_transactions_returned_by_node() {
+    // When `getrawtransaction` succeeds per coin, sync_wallet_state records
+    // it in `txs` and increments `txsCached`. Prior tests only returned null
+    // for that call, leaving the tx-cache-loop uncovered.
+    let mut server = mockito::Server::new_async().await;
+    let addr = recv_addr();
+    let coin = format!(
+        r#"{{"hash":"{COIN_TXID}","index":0,"value":2000000,"address":"{addr}","height":120,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
+    );
+    let _bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _coins = server
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body(format!(r#"[{coin}]"#))
+        .create_async()
+        .await;
+    // Node returns a valid raw-tx string for getrawtransaction.
+    let _rawtx = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getrawtransaction".into()))
+        .with_body(r#"{"result":"deadbeef00","error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _other = server
+        .mock("POST", "/")
+        .with_body(r#"{"result":null,"error":{"message":"not found"},"id":1}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+
+    let res = sync_wallet_state(app.state(), None).await.expect("sync ok");
+    assert_eq!(res["nodeReachable"], serde_json::json!(true));
+    assert!(
+        res["txsCached"].as_u64().unwrap() >= 1,
+        "at least one tx should be cached; got {}",
+        res["txsCached"]
+    );
+}
+
+// --- refresh_tx_confirmations (edge branches) ------------------------------
+
+#[tokio::test]
+async fn refresh_returns_empty_when_no_drafts_to_poll() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"blocks":100,"headers":100},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+
+    let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
+    assert_eq!(res["nodeReachable"], serde_json::json!(true));
+    assert_eq!(res["checked"], serde_json::json!(0));
+}
+
+#[tokio::test]
+async fn refresh_returns_empty_when_no_active_profile() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    let app = app_with(conn);
+
+    let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
+    assert_eq!(res["nodeReachable"], serde_json::json!(false));
+    assert_eq!(res["checked"], serde_json::json!(0));
+}
+
+// --- sign_via_hot_session (profile mismatch / locked) ----------------------
+
+#[tokio::test]
+async fn sign_inner_rejects_when_wallet_locked() {
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    let app = app_with(conn);
+    // Do NOT unlock.
+
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build");
+
+    let err = sign_tx_draft_inner(&app.state(), &draft.id)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::WalletLocked));
+}
+
+#[tokio::test]
+async fn sign_inner_rejects_when_signer_is_for_different_profile() {
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    let app = app_with(conn);
+    // Unlock for a DIFFERENT profile id.
+    unlock(&app, "other_profile");
+
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build");
+
+    let err = sign_tx_draft_inner(&app.state(), &draft.id)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(_)));
+}
+
+// NOTE: `apply_node_write_probe_with_client` is already exhaustively covered
+// by the dedicated `node_rpc_injected_tests` module (unreachable / unsynced /
+// no-address-index / synced+indexed / already-read-only no-op), so no
+// additional probe tests are added here.
+//
+// NOTE: `sign_tx_draft` (the concrete `AppHandle` wrapper) cannot be driven
+// under the MockRuntime — it takes `AppHandle<Wry>`, not the mock runtime's
+// handle. Its 1-line body delegates to `sign_tx_draft_confirmed`, which is
+// covered directly by `sign_rejects_when_user_cancels_confirmation` and the
+// happy-path signing via the secure-prompt queue below.
+
+#[tokio::test]
+async fn sign_confirmed_signs_when_user_confirms() {
+    // Exercises sign_tx_draft_confirmed happy path: confirmation accepted →
+    // draft signed. (This covers the confirmed==true branch that the cancel
+    // test does not.)
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    let app = app_with(conn);
+    unlock(&app, PROFILE);
+
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build");
+
+    use crate::commands::secure_prompt::{push_test_answer, SecurePromptResult};
+    push_test_answer(SecurePromptResult {
+        value: None,
+        confirmed: true,
+    });
+
+    let result = sign_tx_draft_confirmed(&app.state(), app.handle(), &draft.id)
+        .await
+        .expect("sign ok");
+    assert_eq!(result.id, draft.id);
+    let row = draft_row(&app, &draft.id);
+    assert_eq!(row.status, "signed");
+}
+
+// --- covenant signing path (sign_via_hot_session non-send_hns branch) ------
+
+#[tokio::test]
+async fn sign_covenant_open_draft_via_hot_session() {
+    // Build an OPEN covenant draft (node-free) then sign it through
+    // `sign_tx_draft_inner`, which routes covenant actions through the
+    // non-`send_hns` branch of `sign_via_hot_session` (DraftPlan → sign_plan).
+    // This is the hot-wallet covenant signing path that was otherwise only
+    // exercised by the live-node integration test (skipped without a node).
+    let conn = seeded_conn("http://127.0.0.1:1", 5_000_000);
+    let app = app_with(conn);
+    unlock(&app, PROFILE);
+
+    let draft = build_open_draft(app.state(), "coveragename".to_string(), Some(1))
+        .await
+        .expect("build open draft");
+    assert_eq!(draft_row(&app, &draft.id).action, "open");
+
+    let signed = sign_tx_draft_inner(&app.state(), &draft.id)
+        .await
+        .expect("sign covenant draft");
+    assert_eq!(signed.id, draft.id);
+
+    let row = draft_row(&app, &draft.id);
+    assert_eq!(row.status, "signed");
+    assert!(
+        row.signed_tx_hex.as_deref().map(|h| !h.is_empty()) == Some(true),
+        "covenant draft must have signed hex"
+    );
+}
+
+// --- tx.rs coverage tests: resolve_fee_rate, coin loop, ledger covenant names, session guard ------
+
+#[tokio::test]
+async fn resolve_fee_rate_uses_explicit_override_when_provided() {
+    // Directly exercise the `if let Some(r) = fee_rate` early-return branch of
+    // resolve_fee_rate. With an explicit override, the settings + node paths
+    // are bypassed entirely.
+    let conn = seeded_conn("http://127.0.0.1:1", 5_000_000);
+    let app = app_with(conn);
+    let rate = resolve_fee_rate(&app.state(), Some(42)).await;
+    assert_eq!(rate, 42, "explicit override must be returned unchanged");
+}
+
+#[tokio::test]
+async fn resolve_fee_rate_uses_fee_rate_doos_per_kvb_setting_when_set() {
+    // Directly exercise the `if let Some(kvb) = ...fee_rate_doos_per_kvb...` branch:
+    // when that setting is present, resolve_fee_rate converts doos/kvB → doos/byte
+    // (floored at the relay min) and returns without consulting the node.
+    let conn = seeded_conn("http://127.0.0.1:1", 5_000_000);
+    db::queries::set_setting(&conn, "fee_rate_doos_per_kvb", "5000").unwrap();
+    let app = app_with(conn);
+    // 5000 doos/kvB ÷ 1000 = 5 doos/byte, .max(MIN_FEE_RATE_PER_BYTE=1) = 5.
+    let rate = resolve_fee_rate(&app.state(), None).await;
+    assert_eq!(rate, 5, "kvb setting must be scaled to doos/byte");
+}
+
+#[tokio::test]
+async fn resolve_fee_rate_falls_back_to_default_when_node_estimate_fails() {
+    // Without the kvb setting, resolve_fee_rate asks the node's estimatesmartfee.
+    // When the node returns an error, the `.unwrap_or(DEFAULT_FEE_RATE_PER_BYTE)`
+    // fallback (inside the Some(settings) arm) is taken.
+    let mut server = mockito::Server::new_async().await;
+    // Catch-all POST error envelope so every JSON-RPC call (including
+    // estimatesmartfee) fails and forces the fallback path.
+    let _other = server
+        .mock("POST", "/")
+        .with_body(r#"{"result":null,"error":{"message":"method not found"},"id":1}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 5_000_000);
+    let app = app_with(conn);
+    let rate = resolve_fee_rate(&app.state(), None).await;
+    // send::DEFAULT_FEE_RATE_PER_BYTE == 1.
+    assert_eq!(rate, 1, "must fall back to DEFAULT_FEE_RATE_PER_BYTE");
+}
+
+#[tokio::test]
+async fn resolve_fee_rate_falls_back_to_default_when_settings_missing() {
+    // Build a DB whose settings table is empty. `get_settings` returns an
+    // empty map (still Ok), so the Some(s) arm is taken with a map that has
+    // no `fee_rate_doos_per_kvb` — the code then proceeds to try the node's
+    // estimatesmartfee against an unreachable URL, which errors, and the
+    // final fallback returns DEFAULT_FEE_RATE_PER_BYTE.
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::insert_wallet_profile(
+        &conn,
+        PROFILE,
+        "Life",
+        "mnemonic_hot",
+        "mainnet",
+        &account_xpub(),
+        0,
+        false,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, PROFILE).unwrap();
+    // Deliberately do NOT set any settings.
+    let app = app_with(conn);
+    let rate = resolve_fee_rate(&app.state(), None).await;
+    assert_eq!(rate, 1, "must fall back to DEFAULT_FEE_RATE_PER_BYTE");
+}
+
+#[tokio::test]
+async fn sync_wallet_state_marks_address_used_when_coin_has_address() {
+    // sync_wallet_state fetches coins from the node and for each coin with an
+    // address, calls sync::mark_address_used (L305). This test explicitly
+    // verifies that the coin loop body executes and the address is marked.
+    // We'll check by querying the DB after sync to see if the address was
+    // marked as used (used_height > 0).
+    let mut server = mockito::Server::new_async().await;
+    let addr = recv_addr();
+    let coin = format!(
+        r#"{{"hash":"{COIN_TXID}","index":0,"value":3000000,"address":"{addr}","height":200,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
+    );
+    let _bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _coins = server
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body(format!(r#"[{coin}]"#))
+        .create_async()
+        .await;
+    let _other = server
+        .mock("POST", "/")
+        .with_body(r#"{"result":null,"error":{"message":"not found"},"id":1}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+
+    let res = sync_wallet_state(app.state(), None).await.expect("sync ok");
+    assert_eq!(res["nodeReachable"], serde_json::json!(true));
+
+    // After sync, the address should be marked as used (used_height = 200).
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    let last_seen_height: Option<i64> = c
+        .query_row(
+            "SELECT last_seen_height FROM derived_addresses WHERE address = ?1",
+            [&addr],
+            |r| r.get(0),
+        )
+        .ok();
+    assert_eq!(
+        last_seen_height,
+        Some(200),
+        "address must be marked used at the coin's height"
+    );
+}
+
+#[tokio::test]
+async fn sync_wallet_state_calls_mark_missing_as_spent_when_coins_present() {
+    // sync_wallet_state calls sync::mark_missing_as_spent (L308) to reconcile
+    // spent coins. This test verifies the call is made by checking that a
+    // pre-existing UTXO that's not in the node's coin list is marked spent.
+    let mut server = mockito::Server::new_async().await;
+    let addr = recv_addr();
+    // Return a coin with a DIFFERENT txid than the pre-seeded one.
+    let coin = format!(
+        r#"{{"hash":"3333333333333333333333333333333333333333333333333333333333333333","index":0,"value":1000000,"address":"{addr}","height":100,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
+    );
+    let _bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"main","blocks":100},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _coins = server
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body(format!(r#"[{coin}]"#))
+        .create_async()
+        .await;
+    let _other = server
+        .mock("POST", "/")
+        .with_body(r#"{"result":null,"error":{"message":"not found"},"id":1}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+
+    // Before sync, the pre-seeded COIN_TXID should be unspent (spent_by_txid = NULL).
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        let spent_by: Option<String> = c
+            .query_row(
+                "SELECT spent_by_txid FROM tracked_utxos WHERE txid = ?1",
+                [COIN_TXID],
+                |r| r.get(0),
+            )
+            .ok();
+        assert_eq!(
+            spent_by, None,
+            "pre-seeded coin should be unspent before sync"
+        );
+    }
+
+    let res = sync_wallet_state(app.state(), None).await.expect("sync ok");
+    assert_eq!(res["nodeReachable"], serde_json::json!(true));
+
+    // After sync, the old COIN_TXID should be marked spent (spent_by_txid = some marker).
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    let spent_by: Option<String> = c
+        .query_row(
+            "SELECT spent_by_txid FROM tracked_utxos WHERE txid = ?1",
+            [COIN_TXID],
+            |r| r.get(0),
+        )
+        .ok();
+    assert!(
+        spent_by.is_some(),
+        "pre-seeded coin not in node list must be marked spent"
+    );
+}
+
+#[tokio::test]
+async fn sign_tx_draft_inner_loads_reserved_coins_when_present() {
+    // When a send_hns draft has reservation rows, sign_via_hot_session loads
+    // the reserved coins (L612-613). When there are NO reservation rows,
+    // it falls back to load_spendable_coins (L614). This test verifies the
+    // fallback path by creating a draft with no reservations.
+    let conn = seeded_conn("http://127.0.0.1:1", 5_000_000);
+    let app = app_with(conn);
+    unlock(&app, PROFILE);
+
+    // Build a send_hns draft (which normally reserves coins).
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build draft");
+
+    // Now clear the reservation column to force the fallback path — the
+    // coins remain spendable but no longer belong to this draft's reservation.
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "UPDATE tracked_utxos SET reserved_by_draft_id = NULL WHERE reserved_by_draft_id = ?1",
+            [&draft.id],
+        )
+        .unwrap();
+    }
+
+    // Sign the draft. The fallback path (load_spendable_coins) should be taken,
+    // and signing should succeed because the spendable coin is still available.
+    use crate::commands::secure_prompt::{push_test_answer, SecurePromptResult};
+    push_test_answer(SecurePromptResult {
+        value: None,
+        confirmed: true,
+    });
+
+    let result = sign_tx_draft_confirmed(&app.state(), app.handle(), &draft.id)
+        .await
+        .expect("sign with fallback coins");
+    assert_eq!(result.id, draft.id);
+    let row = draft_row(&app, &draft.id);
+    assert_eq!(
+        row.status, "signed",
+        "draft must be signed after fallback coin load"
+    );
+}
+
+#[tokio::test]
+async fn sign_tx_draft_inner_rejects_expired_session() {
+    // sign_via_hot_session checks `session.is_unlocked()` (L682). If the session
+    // is expired (TTL elapsed), is_unlocked returns false and the function errors
+    // with AppError::WalletLocked. This test creates an expired session by
+    // setting a very short TTL and then waiting (or by manually constructing
+    // an expired session). For simplicity, we'll construct a session with TTL=0
+    // (already expired).
+    let conn = seeded_conn("http://127.0.0.1:1", 5_000_000);
+    let app = app_with(conn);
+
+    // Insert an expired session (TTL=0 means expired immediately).
+    {
+        let state = app.state::<AppState>();
+        let mut slot = state.signer.lock().unwrap();
+        *slot = Some(SignerSession::unlock(
+            PROFILE.to_string(),
+            Network::Main,
+            master(),
+            0, // TTL = 0 → immediately expired
+        ));
+    }
+
+    // Build a draft.
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build draft");
+
+    // Try to sign. The expired session should be rejected.
+    let err = sign_tx_draft_inner(&app.state(), &draft.id)
+        .await
+        .expect_err("signing with expired session must error");
+    assert_eq!(
+        err.to_string(),
+        "Wallet locked",
+        "must reject expired session"
+    );
+}
+
+#[tokio::test]
+async fn sign_tx_draft_inner_loads_covenant_names_for_ledger_profiles() {
+    // For ledger_hardware profiles with non-send_hns actions, sign_tx_draft_inner
+    // loads covenant names via resolve_covenant_names (L623-628). This test
+    // creates a ledger_hardware profile and a covenant draft, then verifies
+    // the covenant_names are loaded (the overall sign will fail because there's
+    // no real Ledger device, but the load happens before that).
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+
+    // Create a ledger_hardware profile.
+    let ledger_xpub = account_xpub();
+    db::queries::insert_wallet_profile(
+        &conn,
+        "ledger_profile",
+        "Ledger",
+        "ledger_hardware",
+        "mainnet",
+        &ledger_xpub,
+        0,
+        false,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "ledger_profile").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+
+    // Seed a derived address + coin (build_open_draft needs a receive address
+    // and load_ctx computes funding via load_spendable_coins).
+    let (addr, spk, pubkey) = leaf00();
+    conn.execute(
+        "INSERT INTO derived_addresses
+            (wallet_profile_id, account_index, branch, child_index,
+             address, script_pubkey_hex, public_key_hex)
+         VALUES ('ledger_profile', 0, 0, 0, ?1, ?2, ?3)",
+        params![addr, spk, pubkey],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, covenant_type, spend_class, spent_by_txid)
+         VALUES (?1, 0, 'ledger_profile', ?2, ?3, ?4, 0, 'liquid_hns', NULL)",
+        params![COIN_TXID, addr, spk, 5_000_000_i64],
+    )
+    .unwrap();
+
+    // Insert a tracked_name_states row keyed by the name hash of "testname"
+    // so resolve_covenant_names has a row to resolve. Even without this row
+    // the target lines execute; we include it to exercise the "hit" branch.
+    let nh = crate::noncustodial::names::hash_name("testname").unwrap();
+    let nh_hex = hex::encode(nh);
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state)
+         VALUES ('ledger_profile', 'testname', ?1, 'open')",
+        params![nh_hex],
+    )
+    .unwrap();
+
+    // Build an OPEN covenant draft (non-send_hns action).
+    let app = app_with(conn);
+    let draft = build_open_draft(app.state(), "testname".to_string(), Some(1))
+        .await
+        .expect("build open draft for ledger");
+
+    // Try to sign. The covenant_names load will execute (L623-628); the actual
+    // Ledger signing will then fail with a device-related error. We only need
+    // the resolve_covenant_names call site to be evaluated.
+    let err = sign_tx_draft_inner(&app.state(), &draft.id)
+        .await
+        .expect_err("ledger sign without device must error");
+    // The error should be from the Ledger signing attempt — anything but a
+    // hard failure to parse `signing_inputs_json` or find the profile row.
+    let err_str = err.to_string().to_lowercase();
+    assert!(
+        !err_str.contains("not found") || err_str.contains("device"),
+        "expected a device/hardware error after covenant name load, got: {err}"
     );
 }

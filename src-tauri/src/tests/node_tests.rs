@@ -341,4 +341,127 @@ fn test_version_prerelease_of_min_is_accepted() {
     assert!(found >= node::HSD_MIN_VERSION);
 }
 
+// --- hsd_candidates: nvm-managed node discovery loop -------------------------
+
+#[test]
+fn test_hsd_candidates_discovers_nvm_managed_hsd() {
+    // The nvm branch (`~/.nvm/versions/node/<ver>/bin/hsd`) only runs when that
+    // directory tree exists AND contains an hsd binary — otherwise the loop is
+    // skipped. Build the tree under a throwaway HOME so the discovery loop is
+    // exercised deterministically without depending on the dev's real nvm setup.
+    let home = std::env::temp_dir().join("namehold_nvm_discovery_test");
+    let _ = std::fs::remove_dir_all(&home);
+    let bin = home.join(".nvm/versions/node/v20.11.0/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("hsd"), b"#!/bin/sh\n").unwrap();
+
+    // hsd_candidates reads $HOME; override it for the duration of the call.
+    let prev = std::env::var("HOME").ok();
+    std::env::set_var("HOME", &home);
+    let candidates = node::hsd_candidates();
+    match prev {
+        Some(h) => std::env::set_var("HOME", h),
+        None => std::env::remove_var("HOME"),
+    }
+
+    let expected = bin.join("hsd").to_string_lossy().to_string();
+    assert!(
+        candidates.contains(&expected),
+        "nvm-managed hsd not discovered: {candidates:?}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+// --- find_hsd_binary: which/PATH fallback (no matching candidate) ------------
+
+#[test]
+fn test_find_hsd_binary_none_override_returns_nonempty() {
+    // With no override and (typically) no installed hsd on a CI box, this walks
+    // candidates → `which hsd` → the bare "hsd" fallback. Whichever branch wins,
+    // the result is always a non-empty binary name/path.
+    let result = node::find_hsd_binary(None);
+    assert!(!result.is_empty());
+}
+
+// --- get_hsd_version: spawns `<binary> --version` ----------------------------
+
+#[test]
+fn test_get_hsd_version_none_for_missing_binary() {
+    // A path that can't be spawned → `Command::output()` errors → None (the
+    // `.ok()?` short-circuit). Covers the version-probe helper's failure arm.
+    assert!(node::get_hsd_version("/nonexistent/definitely/not/hsd").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_get_hsd_version_reads_stdout_of_runnable_binary() {
+    use std::os::unix::fs::PermissionsExt;
+    // A runnable stub that prints a version string exercises the success arm
+    // (status.success() && non-empty stdout → Some(version)).
+    let dir = std::env::temp_dir().join("namehold_get_version_ok");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let stub = dir.join("hsd");
+    std::fs::write(&stub, "#!/bin/sh\necho \"8.3.1\"\n").unwrap();
+    let mut perms = std::fs::metadata(&stub).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&stub, perms).unwrap();
+
+    let v = node::get_hsd_version(&stub.to_string_lossy());
+    assert_eq!(v.as_deref(), Some("8.3.1"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_get_hsd_version_none_when_exit_nonzero() {
+    use std::os::unix::fs::PermissionsExt;
+    // Runs but exits non-zero → None (the !status.success() arm).
+    let dir = std::env::temp_dir().join("namehold_get_version_fail");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let stub = dir.join("hsd");
+    std::fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
+    let mut perms = std::fs::metadata(&stub).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&stub, perms).unwrap();
+
+    assert!(node::get_hsd_version(&stub.to_string_lossy()).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- parse_hsd_version: additional edge cases --------------------------------
+
+#[test]
+fn test_parse_hsd_version_prerelease_and_build_suffix() {
+    assert_eq!(
+        node::parse_hsd_version("8.0.0-rc.1+build.5"),
+        Some((8, 0, 0))
+    );
+}
+
+#[test]
+fn test_parse_hsd_version_v_prefix_with_prerelease() {
+    assert_eq!(node::parse_hsd_version("v8.1.2-beta"), Some((8, 1, 2)));
+}
+
+// --- read_log_tail: only the last 8 lines are kept ---------------------------
+
+#[test]
+fn test_read_log_tail_keeps_only_last_eight_lines() {
+    let dir = std::env::temp_dir().join("namehold_log_tail_eight");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let body: String = (0..20).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(dir.join("hsd.log"), body).unwrap();
+
+    let tail = node::read_log_tail(&dir.join("hsd.log"));
+    assert!(tail.contains("line 19"));
+    assert!(tail.contains("line 12"));
+    // Line 11 and earlier are dropped (only the last 8 are retained).
+    assert!(!tail.contains("line 11"));
+    assert!(!tail.contains("line 0\n"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // --- (reserve section for future tests) ---

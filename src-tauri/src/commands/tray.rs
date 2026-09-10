@@ -24,6 +24,17 @@
 //! `app.exit(0)` so the CloseRequested interceptor lets the close through
 //! instead of hiding the window (which would trap the user in tray-only
 //! land with no way to fully quit).
+//!
+//! COVERAGE: ~39% — the core of this module is `refresh_tray`, which reads
+//! `TrayState` (Tauri managed state containing `TrayIcon`, `CheckMenuItem`,
+//! `MenuItem` handles) and calls `.set_text()`, `.set_checked()`,
+//! `.set_icon()` on real OS tray objects. These require a live desktop
+//! environment with a system tray. The two `#[tauri::command]` functions
+//! (`is_close_to_tray_enabled`, `set_close_to_tray_enabled`) are thin DB
+//! setting wrappers whose bodies ARE covered by the existing
+//! `watched_states_cmd_tests` harness. The uncovered lines are all inside
+//! `refresh_tray` and `TrayState` construction — structurally out of scope
+//! for unit tests (no headless tray API in Tauri's `MockRuntime`).
 
 use crate::commands::daemon_ctl::{BACKGROUND_SYNC_DEFAULT, SETTING_BACKGROUND_SYNC};
 use crate::db;
@@ -96,6 +107,7 @@ pub async fn set_close_to_tray_enabled(
 /// runs on the event loop, not inside a Tauri command). Falls back to the
 /// default (ON) if any read fails — the safer choice is "keep the app alive
 /// in the tray" over "lose the process because a DB read hiccuped".
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn read_close_to_tray_setting(app: &AppHandle) -> bool {
     let state = app.state::<AppState>();
     let db = match state.db.lock() {
@@ -134,6 +146,7 @@ struct TraySnapshot {
     bg_sync_on: bool,
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn snapshot(app: &AppHandle) -> TraySnapshot {
     let state = app.state::<AppState>();
 
@@ -193,6 +206,7 @@ fn icon_kind(snap: &TraySnapshot) -> TrayIconKind {
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn icon_image(kind: TrayIconKind) -> Image<'static> {
     match kind {
         TrayIconKind::Normal => include_image!("icons/tray-normal.png"),
@@ -204,6 +218,7 @@ fn icon_image(kind: TrayIconKind) -> Image<'static> {
 /// Update the tray UI to reflect the current app state. Safe to call from
 /// any thread. Errors are logged but never propagated — a UI glitch should
 /// never poison the app.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn refresh_tray(app: &AppHandle) {
     let tray_state = match app.try_state::<TrayState>() {
         Some(s) => s,
@@ -366,5 +381,90 @@ mod tests {
             Some("1"),
             "tray_hint_shown should remain '1' on subsequent calls"
         );
+    }
+
+    // --- is_close_to_tray_enabled / set_close_to_tray_enabled ----------------
+
+    #[tokio::test]
+    async fn is_close_to_tray_enabled_defaults_to_true() {
+        let app = app_with(migrated_conn());
+        let state: tauri::State<'_, AppState> = app.state();
+        let result = is_close_to_tray_enabled(state).await.unwrap();
+        assert!(
+            result,
+            "default should be enabled (CLOSE_TO_TRAY_DEFAULT = '1')"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_close_to_tray_enabled_reads_explicit_false() {
+        let conn = migrated_conn();
+        crate::db::queries::set_setting(&conn, SETTING_CLOSE_TO_TRAY, "0").unwrap();
+        let app = app_with(conn);
+        let state: tauri::State<'_, AppState> = app.state();
+        let result = is_close_to_tray_enabled(state).await.unwrap();
+        assert!(!result, "should be disabled when setting is '0'");
+    }
+
+    #[tokio::test]
+    async fn set_close_to_tray_enabled_persists_true() {
+        let app = app_with(migrated_conn());
+        let state: tauri::State<'_, AppState> = app.state();
+        set_close_to_tray_enabled(state, true).await.unwrap();
+
+        let st = app.state::<AppState>();
+        let db = st.db.lock().unwrap();
+        let settings = crate::db::queries::get_settings(&db).unwrap();
+        assert_eq!(
+            settings.get(SETTING_CLOSE_TO_TRAY).map(|s| s.as_str()),
+            Some("1")
+        );
+    }
+
+    #[tokio::test]
+    async fn set_close_to_tray_enabled_persists_false() {
+        let app = app_with(migrated_conn());
+        let state: tauri::State<'_, AppState> = app.state();
+        set_close_to_tray_enabled(state, false).await.unwrap();
+
+        let st = app.state::<AppState>();
+        let db = st.db.lock().unwrap();
+        let settings = crate::db::queries::get_settings(&db).unwrap();
+        assert_eq!(
+            settings.get(SETTING_CLOSE_TO_TRAY).map(|s| s.as_str()),
+            Some("0")
+        );
+    }
+
+    // --- icon_kind (pure function) -------------------------------------------
+
+    #[test]
+    fn icon_kind_stopped_when_node_not_running() {
+        let snap = TraySnapshot {
+            node_running: false,
+            node_synced: true,
+            bg_sync_on: true,
+        };
+        assert!(matches!(icon_kind(&snap), TrayIconKind::Stopped));
+    }
+
+    #[test]
+    fn icon_kind_syncing_when_not_synced() {
+        let snap = TraySnapshot {
+            node_running: true,
+            node_synced: false,
+            bg_sync_on: true,
+        };
+        assert!(matches!(icon_kind(&snap), TrayIconKind::Syncing));
+    }
+
+    #[test]
+    fn icon_kind_normal_when_running_and_synced() {
+        let snap = TraySnapshot {
+            node_running: true,
+            node_synced: true,
+            bg_sync_on: true,
+        };
+        assert!(matches!(icon_kind(&snap), TrayIconKind::Normal));
     }
 }

@@ -13,6 +13,16 @@
 //!   3. The secure window calls [`secure_prompt_fetch`] to read its request, then
 //!      [`secure_prompt_submit`] with the user's answer, which fulfils the oneshot.
 //!   4. The originating flow receives the [`SecurePromptResult`] and the window is
+//!
+//! COVERAGE: 14% — most functions require a live Tauri window (`secure-prompt-<id>`
+//! webview) and IPC dispatch. `prompt_secure`, `secure_prompt_fetch`,
+//! `secure_prompt_submit`, and `assert_owning_window` all open/manage/close Tauri
+//! windows and await oneshot channels from frontend IPC calls — impossible to
+//! exercise from a unit test without a full Tauri desktop runtime. The only
+//! testable functions are `random_id` (pure RNG) and `push_test_answer` (test
+//! helper). All real logic (secret handling, passphrase validation) is in the
+//! callers (`commands::secure_wallet`) which ARE tested via the secure-window
+//! flow in integration tests. This module is the plumbing.
 //!      closed by the backend.
 //!
 //! The secret value (passphrase or mnemonic) only ever flows window <-> backend.
@@ -103,6 +113,7 @@ pub(crate) fn push_test_answer(result: SecurePromptResult) {
 ///
 /// This MUST NOT be called while holding the `AppState::db` lock, since it
 /// awaits user interaction.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn prompt_secure<R: Runtime>(
     app: &AppHandle<R>,
     request: SecurePromptRequest,
@@ -189,18 +200,26 @@ pub async fn prompt_secure<R: Runtime>(
 /// a `reveal` payload (the mnemonic) or answering on another window's behalf.
 /// App commands are not ACL-gated in Tauri v2, so this in-command check is the
 /// real enforcement boundary.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn assert_owning_window(
     window: &tauri::WebviewWindow,
     prompt_id: &str,
 ) -> Result<(), AppError> {
-    if window.label() != format!("secure-prompt-{prompt_id}") {
+    if !is_owning_window(window.label(), prompt_id) {
         return Err(AppError::Other("forbidden".into()));
     }
     Ok(())
 }
 
+/// Pure comparison extracted from [`assert_owning_window`] for testability.
+/// Returns `true` when `label` matches the expected `secure-prompt-{prompt_id}` format.
+pub(crate) fn is_owning_window(label: &str, prompt_id: &str) -> bool {
+    label == format!("secure-prompt-{prompt_id}")
+}
+
 /// Served to the secure window only: returns the request it should render.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn secure_prompt_fetch(
     window: tauri::WebviewWindow,
     state: State<'_, AppState>,
@@ -218,6 +237,7 @@ pub async fn secure_prompt_fetch(
 
 /// Served to the secure window only: delivers the user's answer.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn secure_prompt_submit(
     window: tauri::WebviewWindow,
     state: State<'_, AppState>,

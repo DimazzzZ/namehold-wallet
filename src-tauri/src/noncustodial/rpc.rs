@@ -868,6 +868,12 @@ mod tests {
         assert!(guard_transport("ws://127.0.0.1:12037", "secret").is_err());
     }
 
+    #[test]
+    fn guard_transport_rejects_http_with_no_host() {
+        // A URL with no host (e.g. `http:///path`) is not loopback → rejected.
+        assert!(guard_transport("http:///path", "secret").is_err());
+    }
+
     #[tokio::test]
     async fn explorer_source_refuses_broadcast() {
         let client = NodeRpcClient::new("http://127.0.0.1:12037", "", ChainSource::Explorer);
@@ -1017,6 +1023,55 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn txs_by_address_flags_index_disabled_variant_wordings() {
+        // Cover each of the three substring matches independently: the
+        // `--index-address` phrasing and the bare `address index` phrasing.
+        for phrasing in [
+            "please pass --index-address to enable this",
+            "The address index is not turned on.",
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            let body = format!(r#"{{"error":{{"message":"{phrasing}"}}}}"#);
+            let _m = server
+                .mock("GET", "/tx/address/hs1qw")
+                .with_status(400)
+                .with_body(body)
+                .create_async()
+                .await;
+            let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+            let err = client.get_txs_by_address("hs1qw").await.unwrap_err();
+            match err {
+                AppError::Rpc(msg) => assert!(
+                    msg.contains("address index not enabled"),
+                    "phrasing `{phrasing}` did not normalize: {msg}"
+                ),
+                other => panic!("expected Rpc, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn txs_by_address_surfaces_unrelated_errors_verbatim() {
+        // Non-index-related error must NOT be rewritten as "address index...".
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/tx/address/hs1qerr")
+            .with_status(500)
+            .with_body(r#"{"error":{"message":"internal explosion"}}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client.get_txs_by_address("hs1qerr").await.unwrap_err();
+        match err {
+            AppError::Rpc(msg) => {
+                assert!(msg.contains("internal explosion"));
+                assert!(!msg.contains("address index not enabled"));
+            }
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+
     // ── get_tx_by_hash (REST /tx/:hash) ──────────────────────────────────
 
     #[tokio::test]
@@ -1098,5 +1153,680 @@ mod tests {
             }
             other => panic!("expected Rpc, got {other:?}"),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Coverage-focused tests: hsd.conf api-key parsing, guard_transport,
+    // RPC method wrappers, node REST error paths.
+    // ------------------------------------------------------------------
+
+    /// Create a fresh empty directory under `std::env::temp_dir()` and
+    /// return its path. Cleanup is best-effort; not required for correctness
+    /// of the tests.
+    fn fresh_tmp_dir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("namehold-rpc-test-{tag}-{pid}-{nanos}-{n}"));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn write_hsd_conf(dir: &std::path::Path, content: &str) {
+        std::fs::write(dir.join("hsd.conf"), content).unwrap();
+    }
+
+    #[test]
+    fn read_hsd_conf_api_key_parses_colon_and_whitespace_forms() {
+        let dir = fresh_tmp_dir("colon");
+        write_hsd_conf(&dir, "api-key: colonform\n");
+        assert_eq!(
+            read_hsd_conf_api_key(dir.to_str().unwrap()),
+            Some("colonform".to_string())
+        );
+
+        let dir = fresh_tmp_dir("ws");
+        write_hsd_conf(&dir, "api-key wsform\n");
+        assert_eq!(
+            read_hsd_conf_api_key(dir.to_str().unwrap()),
+            Some("wsform".to_string())
+        );
+    }
+
+    #[test]
+    fn read_hsd_conf_api_key_skips_comments_and_other_keys() {
+        let dir = fresh_tmp_dir("skip");
+        // Comments and near-miss keys must be ignored; the real value later
+        // in the file wins.
+        write_hsd_conf(
+            &dir,
+            "# api-key: commented\napi-keys: notmine\napi-key-foo: nope\napi-key: real\n",
+        );
+        assert_eq!(
+            read_hsd_conf_api_key(dir.to_str().unwrap()),
+            Some("real".to_string())
+        );
+    }
+
+    #[test]
+    fn read_hsd_conf_api_key_returns_none_when_empty_or_absent() {
+        // Missing file entirely.
+        let dir = fresh_tmp_dir("missing");
+        assert_eq!(read_hsd_conf_api_key(dir.to_str().unwrap()), None);
+
+        // File present but no api-key line.
+        let dir = fresh_tmp_dir("nokey");
+        write_hsd_conf(&dir, "network: main\n");
+        assert_eq!(read_hsd_conf_api_key(dir.to_str().unwrap()), None);
+
+        // api-key with empty value → None.
+        let dir = fresh_tmp_dir("empty");
+        write_hsd_conf(&dir, "api-key: \n");
+        assert_eq!(read_hsd_conf_api_key(dir.to_str().unwrap()), None);
+    }
+
+    #[test]
+    fn resolve_node_api_key_prefers_explicit_setting() {
+        let mut settings = HashMap::new();
+        settings.insert("node_rpc_api_key".to_string(), "explicit".to_string());
+        assert_eq!(resolve_node_api_key(&settings), "explicit");
+    }
+
+    #[test]
+    fn resolve_node_api_key_falls_back_to_hsd_conf_when_prefix_set() {
+        let dir = fresh_tmp_dir("resolve");
+        write_hsd_conf(&dir, "api-key: fromconf\n");
+
+        let mut settings = HashMap::new();
+        settings.insert("hsd_prefix".to_string(), dir.to_str().unwrap().to_string());
+        assert_eq!(resolve_node_api_key(&settings), "fromconf");
+    }
+
+    #[test]
+    fn resolve_node_api_key_empty_when_no_prefix_and_no_explicit() {
+        // Bare settings must NOT touch the filesystem — determinism.
+        let settings = HashMap::new();
+        assert_eq!(resolve_node_api_key(&settings), "");
+    }
+
+    #[test]
+    fn resolve_node_api_key_empty_when_prefix_missing_file() {
+        let dir = fresh_tmp_dir("nofile");
+        // No hsd.conf written.
+        let mut settings = HashMap::new();
+        settings.insert("hsd_prefix".to_string(), dir.to_str().unwrap().to_string());
+        assert_eq!(resolve_node_api_key(&settings), "");
+    }
+
+    #[test]
+    fn try_new_rejects_remote_http_with_key() {
+        // Fallible constructor surfaces the guard error instead of blanking.
+        let result =
+            NodeRpcClient::try_new("http://10.0.0.5:13037", "secret", ChainSource::RemoteNode);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn try_new_accepts_loopback_and_https() {
+        assert!(
+            NodeRpcClient::try_new("http://127.0.0.1:12037", "secret", ChainSource::LocalNode)
+                .is_ok()
+        );
+        assert!(NodeRpcClient::try_new(
+            "https://10.0.0.5:13037",
+            "secret",
+            ChainSource::RemoteNode
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn source_returns_configured_chain_source() {
+        let client = NodeRpcClient::new("http://127.0.0.1:12037", "", ChainSource::Explorer);
+        assert_eq!(client.source(), ChainSource::Explorer);
+
+        let client = NodeRpcClient::new("http://127.0.0.1:12037", "", ChainSource::SpvNode);
+        assert_eq!(client.source(), ChainSource::SpvNode);
+    }
+
+    // --- call() error branches ---
+
+    #[tokio::test]
+    async fn call_surfaces_rpc_error_envelope() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":null,"error":{"message":"boom","code":-32601},"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client.get_info().await.unwrap_err();
+        match err {
+            AppError::Rpc(msg) => {
+                assert!(msg.contains("boom"));
+                assert!(msg.contains("-32601"));
+            }
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn call_errors_on_non_json_body() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body("<<not json>>")
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client.get_info().await.unwrap_err();
+        match err {
+            AppError::Rpc(msg) => assert!(msg.contains("non-JSON")),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn call_errors_on_malformed_envelope() {
+        let mut server = mockito::Server::new_async().await;
+        // Valid JSON but not the RPC envelope shape: `error` is a bare string
+        // instead of `{message, code}` (RpcEnvelope will fail to deserialize).
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":null,"error":"just a string","id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client.get_info().await.unwrap_err();
+        match err {
+            AppError::Rpc(msg) => assert!(msg.contains("malformed RPC envelope")),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn call_errors_on_missing_result_and_no_error() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":null,"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client.get_info().await.unwrap_err();
+        match err {
+            AppError::Rpc(msg) => assert!(msg.contains("returned no result")),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+
+    // --- RPC method wrappers (POST /) ---
+
+    #[tokio::test]
+    async fn get_info_returns_result_value() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":{"version":"3.0.0","network":"main"},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let info = client.get_info().await.unwrap();
+        assert_eq!(info["version"], "3.0.0");
+    }
+
+    #[tokio::test]
+    async fn get_blockchain_info_deserializes_response() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(
+                r#"{"result":{"blocks":42,"headers":42,"verificationprogress":1.0,
+                              "chain":"main","bestblockhash":"cafe"},
+                    "error":null,"id":1}"#,
+            )
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let info = client.get_blockchain_info().await.unwrap();
+        assert_eq!(info.blocks, 42);
+        assert_eq!(info.chain.as_deref(), Some("main"));
+    }
+
+    #[tokio::test]
+    async fn get_name_info_returns_name_state() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(
+                r#"{"result":{"info":{"name":"example","state":"CLOSED"}},"error":null,"id":1}"#,
+            )
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let v = client.get_name_info("example").await.unwrap();
+        assert_eq!(v["info"]["state"], "CLOSED");
+    }
+
+    #[tokio::test]
+    async fn get_name_by_hash_returns_some_on_string_result() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":"resolvedname","error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let name = client.get_name_by_hash("aa11").await.unwrap();
+        assert_eq!(name, Some("resolvedname".to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_name_by_hash_returns_none_on_empty_string_result() {
+        // Empty string → treated as None per the `!name.is_empty()` guard.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":"","error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        assert_eq!(client.get_name_by_hash("dead").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn get_name_by_hash_returns_none_on_non_string_result() {
+        // Numeric result → non-string arm of the match → Ok(None).
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":42,"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        assert_eq!(client.get_name_by_hash("dead").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn get_name_by_hash_swallows_rpc_error_as_none() {
+        // "Method not found" surfaces as Rpc; downgraded to Ok(None).
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":null,"error":{"message":"unknown hash","code":-8},"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        assert_eq!(client.get_name_by_hash("dead").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn get_name_by_hash_propagates_transport_error() {
+        // A transport-level failure (not Rpc) must propagate as Err.
+        let client = NodeRpcClient::new("http://127.0.0.1:1", "", ChainSource::LocalNode);
+        let result = client.get_name_by_hash("dead").await;
+        assert!(result.is_err());
+        // Verify it's NOT swallowed as None.
+        match result.unwrap_err() {
+            AppError::Http(_) => {} // expected
+            other => panic!("expected Http, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_name_resource_returns_dns_resource() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":{"records":[]},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let v = client.get_name_resource("example").await.unwrap();
+        assert!(v["records"].is_array());
+    }
+
+    #[tokio::test]
+    async fn get_tx_out_returns_option() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":{"value":100000000,"address":"hs1qx"},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let out = client.get_tx_out("aa", 0).await.unwrap();
+        assert!(out.is_some());
+        assert_eq!(out.unwrap()["value"], 100000000);
+    }
+
+    #[tokio::test]
+    async fn get_raw_transaction_returns_verbose_tx() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":{"hash":"aa","hex":"deadbeef"},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let v = client.get_raw_transaction("aa").await.unwrap();
+        assert_eq!(v["hex"], "deadbeef");
+    }
+
+    #[tokio::test]
+    async fn get_block_hash_returns_hash_string() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":"cafebabe","error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        assert_eq!(client.get_block_hash(100).await.unwrap(), "cafebabe");
+    }
+
+    #[tokio::test]
+    async fn get_block_returns_decoded_block() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":{"hash":"cafe","height":10,"tx":[]},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let block = client.get_block("cafe").await.unwrap();
+        assert_eq!(block["height"], 10);
+    }
+
+    #[tokio::test]
+    async fn generate_to_address_returns_block_hashes() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":["hash1","hash2"],"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let hashes = client.generate_to_address(2, "hs1qminer").await.unwrap();
+        assert_eq!(hashes.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn stop_treats_transport_error_as_success() {
+        // Point at an unbound port — the transport error is mapped to Ok(())
+        // because a node that shuts down mid-request typically drops the conn.
+        let client = NodeRpcClient::new("http://127.0.0.1:1", "", ChainSource::LocalNode);
+        assert!(client.stop().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn stop_propagates_rpc_errors() {
+        // `result:null + error:null` → "no result" Rpc error; stop() only
+        // swallows Ok and Http errors, so Rpc propagates.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":null,"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let result = client.stop().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn stop_returns_ok_on_success_body() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":"Stopping.","error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        assert!(client.stop().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn send_raw_transaction_succeeds_when_broadcast_allowed() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/")
+            .with_body(r#"{"result":"deadbeeftxid","error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let txid = client.send_raw_transaction("aabbcc").await.unwrap();
+        assert_eq!(txid, "deadbeeftxid");
+    }
+
+    // --- get_coins_by_address (REST endpoint) ---
+
+    #[tokio::test]
+    async fn get_coins_by_address_returns_empty_on_empty_array() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/coin/address/hs1qempty")
+            .with_body("[]")
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let coins = client.get_coins_by_address("hs1qempty").await.unwrap();
+        assert!(coins.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_coins_by_address_returns_decoded_coins() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/coin/address/hs1qhas")
+            .with_body(
+                r#"[{"version":0,"height":100,"value":5000,"address":"hs1qhas",
+                     "hash":"aa","index":0,"script":"0014","coinbase":false,
+                     "confirmations":6}]"#,
+            )
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let coins = client.get_coins_by_address("hs1qhas").await.unwrap();
+        assert_eq!(coins.len(), 1);
+        assert_eq!(coins[0].txid, "aa");
+        assert_eq!(coins[0].value, 5000);
+    }
+
+    #[tokio::test]
+    async fn get_coins_by_address_errors_on_non_success() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/coin/address/hs1qbad")
+            .with_status(400)
+            .with_body(r#"{"error":{"message":"Address indexing not enabled."}}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client.get_coins_by_address("hs1qbad").await.unwrap_err();
+        match err {
+            AppError::Rpc(msg) => assert!(msg.contains("Address indexing not enabled")),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_coins_by_address_errors_on_non_json() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/coin/address/hs1qgarbage")
+            .with_body("<<garbage>>")
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client
+            .get_coins_by_address("hs1qgarbage")
+            .await
+            .unwrap_err();
+        match err {
+            AppError::Rpc(msg) => assert!(msg.contains("non-JSON")),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+
+    // --- get_txs_by_address extra branches: result-wrapper acceptance ---
+
+    #[tokio::test]
+    async fn txs_by_address_accepts_result_wrapper() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/tx/address/hs1qwrap")
+            .with_body(r#"{"result":[{"hash":"aa"}]}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let txs = client.get_txs_by_address("hs1qwrap").await.unwrap();
+        assert_eq!(txs.len(), 1);
+        assert_eq!(txs[0]["hash"], "aa");
+    }
+
+    #[tokio::test]
+    async fn txs_by_address_rejects_non_array_body() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/tx/address/hs1qbad")
+            .with_body(r#"{"unexpected":"shape"}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client.get_txs_by_address("hs1qbad").await.unwrap_err();
+        match err {
+            AppError::Rpc(msg) => assert!(msg.contains("non-array")),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn txs_by_address_rejects_bare_scalar_body() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/tx/address/hs1qscalar")
+            .with_body("42")
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client.get_txs_by_address("hs1qscalar").await.unwrap_err();
+        match err {
+            AppError::Rpc(msg) => assert!(msg.contains("non-array")),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn txs_by_address_errors_on_non_json_body() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/tx/address/hs1qgarbage")
+            .with_body("<<not json>>")
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client.get_txs_by_address("hs1qgarbage").await.unwrap_err();
+        match err {
+            AppError::Rpc(msg) => assert!(msg.contains("non-JSON")),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+
+    // --- get_tx_by_hash extra branches: result wrapper + bare object ---
+
+    #[tokio::test]
+    async fn tx_by_hash_accepts_result_wrapper() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/tx/wrapped")
+            .with_body(r#"{"result":{"hash":"wr","confirmations":1}}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let v = client.get_tx_by_hash("wrapped").await.unwrap();
+        assert_eq!(v["hash"], "wr");
+    }
+
+    #[tokio::test]
+    async fn tx_by_hash_returns_bare_scalar() {
+        // Non-object bodies pass through untouched.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/tx/scalar")
+            .with_body("42")
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let v = client.get_tx_by_hash("scalar").await.unwrap();
+        assert_eq!(v, serde_json::json!(42));
+    }
+
+    #[tokio::test]
+    async fn tx_by_hash_errors_on_non_json_body() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/tx/badbody")
+            .with_body("<<bad>>")
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client.get_tx_by_hash("badbody").await.unwrap_err();
+        match err {
+            AppError::Rpc(msg) => assert!(msg.contains("non-JSON")),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tx_by_hash_surfaces_non_index_errors_verbatim() {
+        // Non-index-related error message must NOT be rewritten as
+        // "tx index not enabled".
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/tx/errcase")
+            .with_status(500)
+            .with_body(r#"{"error":{"message":"internal explosion"}}"#)
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+        let err = client.get_tx_by_hash("errcase").await.unwrap_err();
+        match err {
+            AppError::Rpc(msg) => {
+                assert!(msg.contains("internal explosion"));
+                assert!(!msg.contains("tx index not enabled"));
+            }
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+}
+
+/// When the RPC error envelope has `code: null`, the `unwrap_or_default()`
+/// fallback should produce an empty suffix (no "(code …)" fragment).
+#[tokio::test]
+async fn call_rpc_error_without_code_omits_code_suffix() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .with_body(r#"{"result":null,"error":{"message":"just a message","code":null},"id":1}"#)
+        .create_async()
+        .await;
+    let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+    let err = client.get_info().await.unwrap_err();
+    match err {
+        AppError::Rpc(msg) => {
+            assert!(msg.contains("just a message"), "got: {msg}");
+            // No "(code ...)" fragment because code was null.
+            assert!(
+                !msg.contains("(code"),
+                "code suffix should be absent: {msg}"
+            );
+        }
+        other => panic!("expected Rpc, got {other:?}"),
     }
 }

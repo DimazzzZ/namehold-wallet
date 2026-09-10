@@ -244,3 +244,158 @@ async fn get_audit_log_survives_malformed_detail_json() {
     let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
     assert_eq!(detail, "this is not json");
 }
+
+// --- get_audit_log branch coverage for structured-but-unexpected details ----
+
+#[tokio::test]
+async fn get_audit_log_leaves_valid_json_without_key_field_untouched() {
+    // Covers the `parsed.get("key")` -> None branch: valid JSON with no "key".
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('some_action', ?1)",
+        [serde_json::json!({"count": 3, "note": "no key field"}).to_string()],
+    )
+    .unwrap();
+    let app = app_with(conn);
+
+    let log = get_audit_log(app.state(), Some(10)).await.unwrap();
+    let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
+    // Passes through verbatim; no redaction applied.
+    assert!(detail.contains("\"count\":3"));
+    assert!(detail.contains("\"no key field\""));
+    assert!(!detail.contains("***"));
+}
+
+#[tokio::test]
+async fn get_audit_log_leaves_json_with_nonstring_key_untouched() {
+    // Covers the `key.as_str()` -> None branch: "key" is present but not a string.
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('some_action', ?1)",
+        [serde_json::json!({"key": 42, "value": "irrelevant"}).to_string()],
+    )
+    .unwrap();
+    let app = app_with(conn);
+
+    let log = get_audit_log(app.state(), Some(10)).await.unwrap();
+    let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
+    // Non-string key skips the sensitive-key check; value passes through.
+    assert!(detail.contains("\"key\":42"));
+    assert!(detail.contains("irrelevant"));
+    assert!(!detail.contains("***"));
+}
+
+#[tokio::test]
+async fn get_audit_log_leaves_json_with_nonsensitive_key_untouched() {
+    // Covers the `is_sensitive_key(&key)` -> false branch when key IS a string.
+    // (The `leaves_non_sensitive_details_untouched` test above uses "hsd_prefix"
+    // which also covers this, but this asserts the passthrough explicitly.)
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO audit_log (action, detail) VALUES ('setting_change', ?1)",
+        [serde_json::json!({"key": "some_public_key", "value": "public-value"}).to_string()],
+    )
+    .unwrap();
+    let app = app_with(conn);
+
+    let log = get_audit_log(app.state(), Some(10)).await.unwrap();
+    let detail = log.as_array().unwrap()[0]["detail"].as_str().unwrap();
+    assert!(detail.contains("public-value"));
+    assert!(!detail.contains("***"));
+}
+
+#[tokio::test]
+async fn get_audit_log_defaults_limit_to_20_when_none() {
+    // Covers the `limit.unwrap_or(20)` branch when limit is None.
+    let conn = migrated_conn();
+    for i in 0..25 {
+        conn.execute(
+            "INSERT INTO audit_log (action, detail) VALUES ('setting_change', ?1)",
+            [serde_json::json!({"key": "hsd_prefix", "value": format!("v{i}")}).to_string()],
+        )
+        .unwrap();
+    }
+    let app = app_with(conn);
+
+    let log = get_audit_log(app.state(), None).await.unwrap();
+    // Default limit is 20; we inserted 25 rows, so at most 20 come back.
+    assert_eq!(log.as_array().unwrap().len(), 20);
+}
+
+// --- get_wallet_snapshots -------------------------------------------------
+
+use crate::commands::settings::get_wallet_snapshots;
+
+#[tokio::test]
+async fn get_wallet_snapshots_returns_empty_when_no_rows() {
+    let conn = migrated_conn();
+    let app = app_with(conn);
+
+    let snaps = get_wallet_snapshots(app.state(), Some(10)).await.unwrap();
+    assert_eq!(snaps.as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn get_wallet_snapshots_returns_rows_in_reverse_id_order() {
+    let conn = migrated_conn();
+    for (name, bal, addr, nc) in [
+        ("wallet_a", 100_i64, Some("hs1qaaa"), 2_i64),
+        ("wallet_b", 250, Some("hs1qbbb"), 5),
+        ("wallet_c", 999, None, 0),
+    ] {
+        conn.execute(
+            "INSERT INTO wallet_snapshots (wallet_name, balance, address, name_count) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![name, bal, addr, nc],
+        )
+        .unwrap();
+    }
+    let app = app_with(conn);
+
+    let snaps = get_wallet_snapshots(app.state(), Some(10)).await.unwrap();
+    let arr = snaps.as_array().unwrap();
+    assert_eq!(arr.len(), 3);
+    // Newest first (highest id → last inserted).
+    assert_eq!(arr[0]["wallet_name"], "wallet_c");
+    assert_eq!(arr[0]["balance"], 999);
+    // Nullable address preserved as null.
+    assert!(arr[0]["address"].is_null());
+    assert_eq!(arr[1]["wallet_name"], "wallet_b");
+    assert_eq!(arr[1]["address"], "hs1qbbb");
+    assert_eq!(arr[2]["wallet_name"], "wallet_a");
+    assert_eq!(arr[2]["name_count"], 2);
+}
+
+#[tokio::test]
+async fn get_wallet_snapshots_respects_limit() {
+    let conn = migrated_conn();
+    for i in 0..15 {
+        conn.execute(
+            "INSERT INTO wallet_snapshots (wallet_name, balance, address, name_count) VALUES (?1, ?2, NULL, 0)",
+            rusqlite::params![format!("w{i}"), i],
+        )
+        .unwrap();
+    }
+    let app = app_with(conn);
+
+    // Explicit limit
+    let snaps = get_wallet_snapshots(app.state(), Some(5)).await.unwrap();
+    assert_eq!(snaps.as_array().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn get_wallet_snapshots_defaults_limit_to_10_when_none() {
+    // Covers the `limit.unwrap_or(10)` branch when limit is None.
+    let conn = migrated_conn();
+    for i in 0..15 {
+        conn.execute(
+            "INSERT INTO wallet_snapshots (wallet_name, balance, address, name_count) VALUES (?1, ?2, NULL, 0)",
+            rusqlite::params![format!("w{i}"), i],
+        )
+        .unwrap();
+    }
+    let app = app_with(conn);
+
+    let snaps = get_wallet_snapshots(app.state(), None).await.unwrap();
+    // Default limit is 10.
+    assert_eq!(snaps.as_array().unwrap().len(), 10);
+}

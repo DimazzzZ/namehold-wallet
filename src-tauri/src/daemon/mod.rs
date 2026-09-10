@@ -3,6 +3,18 @@
 //! Runs continuously, syncing all wallet profiles every 60 seconds.
 //! Coordinates with the Tauri app via the `sync_locks` table to avoid
 //! concurrent syncs of the same profile.
+//!
+//! COVERAGE: 0% — every function in this module is an IO shell driven by a
+//! standalone process context: `run()` is an infinite tokio loop with signal
+//! handling that never returns; `sync_all_profiles`/`sync_profile` open the
+//! real on-disk DB by path and call sync commands that require live node RPC;
+//! `write_pid_file`/`cleanup` mutate `~/.namehold/syncd.pid` on the developer's
+//! actual home directory (unit-testing them would risk deleting or overwriting
+//! a live daemon's PID file). The sync logic itself is fully covered inside
+//! `commands::sync` (which this module thinly wraps); the DB-lock coordination
+//! is covered inside `db::sync_lock`. What remains here is pure orchestration
+//! against a real filesystem + tokio runtime + hsd node, structurally out of
+//! scope for unit tests.
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -1,4 +1,13 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![allow(dead_code)]
+
+// COVERAGE: 0% — this file is the Tauri application entrypoint (run(), setup(),
+// menu/tray construction, window-event handlers). It cannot be unit-tested
+// because it requires a live Tauri runtime with real OS windows, system tray,
+// and plugin initialization. All testable logic is extracted into the
+// `commands::*`, `noncustodial::*`, `db::*`, and `daemon::*` modules which
+// are independently covered. Integration testing of lib.rs would require a
+// full E2E harness (e.g. WebDriver + Tauri's test utilities for desktop apps).
 
 pub mod commands;
 pub mod daemon;

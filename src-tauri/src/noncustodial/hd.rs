@@ -551,6 +551,209 @@ mod tests {
         let err = ExtendedPubKey::from_xpub(Network::Main, &serialized).unwrap_err();
         assert!(matches!(err, AppError::InvalidInput(_)));
     }
+
+    // --- Coverage-driven tests below: exercise the guard branches in
+    // from_xpub / base58check_decode / base58_encode / base58_decode that
+    // were previously unreachable. Each test targets a specific rejection
+    // path or edge-case code path.
+
+    /// `from_xpub` rejects a payload whose decoded length is not 78 bytes
+    /// (lines 235-238). We craft a valid base58check string that decodes to
+    /// fewer than 78 bytes.
+    #[test]
+    fn from_xpub_rejects_wrong_payload_length() {
+        // Encode a short payload (10 bytes) as valid base58check.
+        let short_payload = [0u8; 10];
+        let encoded = base58check_encode(&short_payload);
+        let err = ExtendedPubKey::from_xpub(Network::Main, &encoded).unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(ref m) if m.contains("78 bytes")),
+            "got {err:?}"
+        );
+    }
+
+    /// `from_xpub` rejects a valid 78-byte payload whose 4-byte version prefix
+    /// doesn't match the requested network (lines 242-247).
+    #[test]
+    fn from_xpub_rejects_network_version_mismatch() {
+        // All Handshake networks share the same xpub_version (0x0488_b21e), so
+        // we manually craft a 78-byte payload with a wrong version prefix and
+        // encode it as base58check.
+        let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+        let master = ExtendedPrivKey::from_seed(&seed).expect("master");
+        let xpub = ExtendedPubKey::from_priv(&master);
+
+        // Build a 78-byte payload with a bogus version (0xDEADBEEF).
+        let mut payload = Vec::with_capacity(78);
+        payload.extend_from_slice(&0xDEAD_BEEFu32.to_be_bytes());
+        payload.push(0); // depth
+        payload.extend_from_slice(&[0u8; 4]); // parent fingerprint
+        payload.extend_from_slice(&[0u8; 4]); // child number
+        payload.extend_from_slice(&xpub.chain_code);
+        payload.extend_from_slice(&xpub.public.serialize());
+        let wrong_version_xpub = base58check_encode(&payload);
+
+        let err = ExtendedPubKey::from_xpub(Network::Main, &wrong_version_xpub).unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(ref m) if m.contains("does not match")),
+            "got {err:?}"
+        );
+    }
+
+    /// `base58check_decode` rejects a string that decodes to fewer than 4
+    /// bytes (line 265) — the minimum for a checksum.
+    #[test]
+    fn base58check_decode_too_short_rejected() {
+        // "1" decodes to a single zero byte — well under the 4-byte minimum.
+        let err = base58check_decode("1").unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(ref m) if m.contains("too short")),
+            "got {err:?}"
+        );
+    }
+
+    /// `base58_encode` handles leading zero bytes by emitting leading '1'
+    /// characters (lines 305-306).
+    #[test]
+    fn base58_encode_leading_zeros() {
+        // Two leading zero bytes should produce two leading '1's.
+        let data = [0u8, 0, 0x01];
+        let encoded = base58_encode(&data);
+        assert!(
+            encoded.starts_with("11"),
+            "expected leading '11', got {encoded:?}"
+        );
+        // Round-trip through decode.
+        let decoded = base58_decode(&encoded).unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    /// `base58_decode` rejects an empty string (line 331).
+    #[test]
+    fn base58_decode_empty_string_rejected() {
+        let err = base58_decode("").unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(ref m) if m.contains("empty")),
+            "got {err:?}"
+        );
+    }
+
+    /// `base58_decode` maps leading '1' characters to leading zero bytes
+    /// (lines 355-356).
+    #[test]
+    fn base58_decode_leading_ones_become_zero_bytes() {
+        // "111" should decode to [0, 0, 0] (three leading zero bytes, no
+        // non-zero payload).
+        let decoded = base58_decode("111").unwrap();
+        assert_eq!(decoded, vec![0u8, 0, 0]);
+    }
+
+    /// `base58_decode` rejects characters not in the Bitcoin base58 alphabet.
+    #[test]
+    fn base58_decode_invalid_char_rejected() {
+        // '0' (zero), 'O', 'I', 'l' are not in the Bitcoin base58 alphabet.
+        let err = base58_decode("0abc").unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(ref m) if m.contains("invalid base58 char")),
+            "got {err:?}"
+        );
+    }
+
+    /// `from_parts` constructs an `ExtendedPubKey` from raw 33-byte pubkey +
+    /// 32-byte chain code and derives children correctly.
+    #[test]
+    fn from_parts_constructs_valid_xpub() {
+        let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+        let master = ExtendedPrivKey::from_seed(&seed).expect("master");
+        let xpub = ExtendedPubKey::from_priv(&master);
+
+        let pubkey_bytes: [u8; 33] = xpub.compressed_pubkey();
+        let chain_code = xpub.chain_code;
+        let reconstructed = ExtendedPubKey::from_parts(&pubkey_bytes, &chain_code).unwrap();
+
+        // Derived children must match.
+        let child_orig = xpub.derive_child(7).unwrap();
+        let child_recon = reconstructed.derive_child(7).unwrap();
+        assert_eq!(
+            child_orig.compressed_pubkey(),
+            child_recon.compressed_pubkey()
+        );
+    }
+
+    /// `from_parts` rejects an invalid compressed public key (e.g. wrong
+    /// prefix byte).
+    #[test]
+    fn from_parts_rejects_invalid_pubkey() {
+        let bad_pubkey = [0x05u8; 33]; // 0x05 is not a valid SEC1 prefix
+        let chain_code = [0u8; 32];
+        let err = ExtendedPubKey::from_parts(&bad_pubkey, &chain_code).unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
+    }
+
+    /// `to_base58check` produces a string that round-trips through
+    /// `from_xpub` for each network.
+    #[test]
+    fn to_base58check_round_trips_all_networks() {
+        let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+        let master = ExtendedPrivKey::from_seed(&seed).expect("master");
+        let xpub = ExtendedPubKey::from_priv(&master);
+
+        for network in [
+            Network::Main,
+            Network::Testnet,
+            Network::Regtest,
+            Network::Simnet,
+        ] {
+            let encoded = xpub.to_base58check(network);
+            let parsed = ExtendedPubKey::from_xpub(network, &encoded).unwrap();
+            assert_eq!(
+                parsed.compressed_pubkey(),
+                xpub.compressed_pubkey(),
+                "round-trip failed for {network:?}"
+            );
+            assert_eq!(parsed.chain_code, xpub.chain_code);
+        }
+    }
+
+    /// `derive_path` with an empty path returns the same key unchanged.
+    #[test]
+    fn derive_path_empty_is_identity() {
+        let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+        let master = ExtendedPrivKey::from_seed(&seed).expect("master");
+        let same = master.derive_path(&[]).expect("empty path");
+        assert_eq!(master.secret.secret_bytes(), same.secret.secret_bytes());
+        assert_eq!(master.chain_code, same.chain_code);
+    }
+
+    /// `ExtendedPubKey::derive_path` with an empty path returns the same key.
+    #[test]
+    fn pub_derive_path_empty_is_identity() {
+        let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+        let master = ExtendedPrivKey::from_seed(&seed).expect("master");
+        let xpub = ExtendedPubKey::from_priv(&master);
+        let same = xpub.derive_path(&[]).expect("empty path");
+        assert_eq!(xpub.compressed_pubkey(), same.compressed_pubkey());
+        assert_eq!(xpub.chain_code, same.chain_code);
+    }
+
+    /// `seed_from_mnemonic` rejects an invalid mnemonic phrase.
+    #[test]
+    fn seed_from_mnemonic_rejects_invalid_phrase() {
+        let err = seed_from_mnemonic("not a valid mnemonic phrase at all", "").unwrap_err();
+        assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
+    }
+
+    /// `bip44_path` saturates an out-of-range account number defensively.
+    #[test]
+    fn bip44_path_saturates_oversize_account() {
+        // An account number at or above HARDENED_OFFSET should be clamped to
+        // HARDENED_OFFSET - 1 before adding the offset, so the result is
+        // always u32::MAX (the maximum valid hardened index).
+        let path = bip44_path(Network::Main, HARDENED_OFFSET, 0, 0);
+        assert_eq!(path[2], u32::MAX);
+        let path2 = bip44_path(Network::Main, u32::MAX, 0, 0);
+        assert_eq!(path2[2], u32::MAX);
+    }
 }
 
 #[test]

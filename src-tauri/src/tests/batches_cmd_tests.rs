@@ -379,3 +379,103 @@ async fn test_cmd_remove_from_batch() {
         .unwrap();
     assert_eq!(batch.assets.len(), 1);
 }
+
+// ── Command-layer error propagation ─────────────────────────────────────
+// These exercise the `?` error-propagation region inside each command body,
+// which is otherwise unreached by happy-path-only tests. Every DB-layer
+// error must surface as an `Err(AppError::*)` from the command.
+
+#[tokio::test]
+async fn test_cmd_get_batch_with_assets_missing_id_errors() {
+    let state = create_test_state();
+    let app = mock_app_with(state);
+
+    let err = commands::batches::get_batch_with_assets(app.state::<AppState>(), 99_999)
+        .await
+        .expect_err("missing batch id must error");
+    // The exact variant depends on how rusqlite::Error is mapped; assert
+    // only that it's an error, not the specific variant.
+    let _ = err;
+}
+
+#[tokio::test]
+async fn test_cmd_update_batch_no_op_when_all_fields_none() {
+    // update_batch with all Nones is legal at the command layer; the DB
+    // layer must not fail. Verifies the command's `?` on the Ok path.
+    let state = create_test_state();
+    let app = mock_app_with(state);
+
+    let id = commands::batches::create_batch(
+        app.state::<AppState>(),
+        "Unchanged".to_string(),
+        None,
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    // All-None update should succeed without modifying anything.
+    commands::batches::update_batch(app.state::<AppState>(), id, None, None, None)
+        .await
+        .unwrap();
+
+    let batches = commands::batches::list_batches(app.state::<AppState>())
+        .await
+        .unwrap();
+    assert_eq!(batches[0].name, "Unchanged");
+}
+
+#[tokio::test]
+async fn test_cmd_delete_batch_nonexistent_id_is_ok() {
+    // Deleting a nonexistent id should be a no-op at the DB layer (DELETE
+    // affects 0 rows) — but the command's error-propagation region is still
+    // touched on the Ok path.
+    let state = create_test_state();
+    let app = mock_app_with(state);
+
+    commands::batches::delete_batch(app.state::<AppState>(), 99_999)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_cmd_add_to_batch_empty_ids_returns_zero() {
+    // Exercises the empty-asset-ids branch of add_to_batch through the
+    // command layer.
+    let state = create_test_state();
+    let app = mock_app_with(state);
+
+    let batch_id = commands::batches::create_batch(
+        app.state::<AppState>(),
+        "EmptyAdd".to_string(),
+        None,
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let added = commands::batches::add_to_batch(app.state::<AppState>(), batch_id, vec![])
+        .await
+        .unwrap();
+    assert_eq!(added, 0);
+}
+
+#[tokio::test]
+async fn test_cmd_remove_from_batch_empty_ids_returns_zero() {
+    let state = create_test_state();
+    let app = mock_app_with(state);
+
+    let batch_id = commands::batches::create_batch(
+        app.state::<AppState>(),
+        "EmptyRemove".to_string(),
+        None,
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let removed = commands::batches::remove_from_batch(app.state::<AppState>(), batch_id, vec![])
+        .await
+        .unwrap();
+    assert_eq!(removed, 0);
+}

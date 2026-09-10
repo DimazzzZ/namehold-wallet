@@ -1113,4 +1113,114 @@ mod tests {
         // Fee absorbs the entire leftover.
         assert_eq!(fee, 200);
     }
+
+    // --- Coverage-driven tests ---
+
+    /// `outpoint_hash` rejects a txid that decodes but isn't 32 bytes.
+    #[test]
+    fn outpoint_hash_rejects_wrong_length() {
+        // 31 bytes (62 hex chars) instead of 32.
+        let short_txid = hex::encode([0xaa; 31]);
+        let err = outpoint_hash(&short_txid).unwrap_err();
+        assert!(err.to_string().contains("32 bytes"));
+    }
+
+    /// `build_batch_plan` rejects an empty primaries list.
+    #[test]
+    fn build_batch_plan_rejects_empty_primaries() {
+        let name_inputs = vec![NameInputSpec {
+            txid: hex::encode([0xa1; 32]),
+            vout: 0,
+            value: 1_000_000,
+            branch: 0,
+            child_index: 0,
+            sighash_type: sighash::ALL,
+        }];
+        let err = build_batch_plan(
+            Network::Main,
+            0,
+            &name_inputs,
+            &[], // empty primaries
+            &[coin(1, 1_000_000, 0)],
+            ADDR,
+            1,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("at least one output"));
+    }
+
+    /// `build_batch_plan` with tight funding produces no change output
+    /// (change folded into fee).
+    #[test]
+    fn batch_finalize_no_change_when_dust_folded_into_fee() {
+        let nh = [0x11; 32];
+        let name_inputs = vec![NameInputSpec {
+            txid: hex::encode([0xa1; 32]),
+            vout: 0,
+            value: 1_000_000,
+            branch: 0,
+            child_index: 0,
+            sighash_type: sighash::ALL,
+        }];
+        let primaries = vec![PrimaryOutput {
+            value: 1_000_000,
+            address: ADDR.into(),
+            covenant: covenants::finalize(&nh, 100, &[], 0, 0, 0, &[0xbb; 32]),
+        }];
+        // Funding just barely covers the fee; change will be folded into fee.
+        let funding = vec![coin(1, 500, 0)];
+        let res = build_batch_plan(
+            Network::Main,
+            0,
+            &name_inputs,
+            &primaries,
+            &funding,
+            ADDR,
+            1,
+        )
+        .unwrap();
+        // Only the finalize output (no change output).
+        assert_eq!(res.plan.outputs.len(), 1);
+        assert_eq!(res.change, 0);
+    }
+
+    /// `build_finalize_with_payment_plan` with tight funding produces no change
+    /// output (change folded into fee).
+    #[test]
+    fn finalize_with_payment_no_change_when_dust_folded_into_fee() {
+        let nh = [0xaa; 32];
+        let name = NameInputSpec {
+            txid: hex::encode([0xcc; 32]),
+            vout: 0,
+            // Name value covers the finalize output, so funding only needs to
+            // cover payment_value + fee.
+            value: 2_000_000,
+            branch: 0,
+            child_index: 0,
+            sighash_type: sighash::ALL,
+        };
+        // payment_value = 1_000. With 2 inputs (name + 1 funding), 2 primary
+        // outputs (finalize + payment), the fee is ~350 doos at rate 1.
+        // Funding of 1_500 covers payment + fee with leftover < DUST_THRESHOLD.
+        let funding = vec![coin(1, 1_500, 1)];
+        let res = build_finalize_with_payment_plan(
+            Network::Main,
+            0,
+            name,
+            PrimaryOutput {
+                value: 2_000_000,
+                address: ADDR.into(),
+                covenant: covenants::finalize(&nh, 100, &[], 0, 0, 0, &[0xbb; 32]),
+            },
+            ADDR.into(),
+            1_000,
+            &funding,
+            ADDR,
+            1,
+        )
+        .unwrap();
+        // Finalize + payment outputs, no change.
+        assert_eq!(res.plan.outputs.len(), 2);
+        assert_eq!(res.change, 0);
+    }
 }

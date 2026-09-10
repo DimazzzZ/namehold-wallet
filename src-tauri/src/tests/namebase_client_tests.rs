@@ -717,3 +717,89 @@ async fn test_get_account_history_429_is_rate_limited() {
     }
     m.assert_async().await;
 }
+
+/// A 429 with no `Retry-After` header falls back to the default 60 s.
+#[tokio::test]
+async fn test_get_account_history_429_without_retry_after_defaults_to_60() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/account/history/export")
+        .with_status(429)
+        .with_body("rate limited")
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    let err = client
+        .get_account_history()
+        .await
+        .expect_err("429 should surface as NamebaseRateLimited");
+    match err {
+        AppError::NamebaseRateLimited { retry_after_secs } => {
+            assert_eq!(retry_after_secs, 60);
+        }
+        other => panic!("expected NamebaseRateLimited, got: {other:?}"),
+    }
+    m.assert_async().await;
+}
+
+/// A non-success, non-429 status (e.g. 500) on the CSV export surfaces as a
+/// generic `AppError::Other` carrying the status.
+#[tokio::test]
+async fn test_get_account_history_500_is_generic_error() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("GET", "/api/account/history/export")
+        .with_status(500)
+        .with_body("boom")
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    let err = client
+        .get_account_history()
+        .await
+        .expect_err("500 should surface as a generic error");
+    match err {
+        AppError::Other(msg) => assert!(msg.contains("500"), "got {msg}"),
+        other => panic!("expected Other, got: {other:?}"),
+    }
+    m.assert_async().await;
+}
+
+// ---------------------------------------------------------------------------
+// base_url() getter + IPv6 loopback validation (Phase 4A.2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn base_url_getter_returns_configured_url() {
+    let client = NamebaseClient::with_base_url("test_cookie", "http://127.0.0.1:9090")
+        .expect("client construction");
+    assert_eq!(client.base_url(), "http://127.0.0.1:9090");
+}
+
+#[test]
+fn base_url_getter_returns_trimmed_url() {
+    // Verify base_url reflects the trailing-slash trim.
+    let client =
+        NamebaseClient::with_base_url("c", "http://127.0.0.1:8080/").expect("client construction");
+    assert_eq!(client.base_url(), "http://127.0.0.1:8080");
+}
+
+#[test]
+fn validate_base_url_allows_ipv6_loopback_bracket_notation() {
+    // Exercises the `url::Host::Ipv6(a) => a.is_loopback()` branch at
+    // src/namebase/client.rs:215.
+    let client = NamebaseClient::with_base_url("test_cookie", "http://[::1]:8080")
+        .expect("IPv6 loopback should be allowed in test builds");
+    assert_eq!(client.base_url(), "http://[::1]:8080");
+}
+
+#[test]
+fn validate_base_url_rejects_non_loopback_non_namebase_host() {
+    let result = NamebaseClient::with_base_url("test_cookie", "https://evil.example.com");
+    assert!(
+        result.is_err(),
+        "arbitrary non-namebase, non-loopback host must be rejected"
+    );
+}

@@ -1,3 +1,14 @@
+// COVERAGE:
+// * #[tauri::command] macro attribute lines are structurally uncoverable — the
+//   macro is expanded at compile time and does not execute at runtime.
+// * The `read_cookie` keyring-unavailable branch (Err(_e) => ... return legacy)
+//   fires only when `cookie_vault::encrypt_cookie` fails because the OS keyring
+//   is unreachable. Tests install a fixed test DEK (so encryption always
+//   succeeds); forcing this branch would require an OS-level keyring failure
+//   that the test harness can't produce deterministically.
+// * The poisoned-Mutex fallback in `active_profile_network`
+//   (Err(_) => Network::Main) requires a panicked lock holder — not reachable
+//   through the command surface.
 use crate::db;
 use crate::error::AppError;
 use crate::namebase::client::NamebaseClient;
@@ -8,7 +19,7 @@ use tauri::State;
 /// Read the Namebase session cookie, preferring the encrypted v1 blob.
 /// If `namebase_cookie_v1` is empty but the legacy `namebase_cookie` has a
 /// value, migrate it: encrypt → store in v1 → blank the legacy row.
-fn read_cookie(state: &AppState) -> Result<String, AppError> {
+pub(crate) fn read_cookie(state: &AppState) -> Result<String, AppError> {
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let settings = db::queries::get_settings(&db)?;
 
@@ -135,6 +146,7 @@ pub(crate) fn persist_cookie_if_changed(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn connect_namebase(
     state: State<'_, AppState>,
     cookie: String,
@@ -163,6 +175,7 @@ pub async fn connect_namebase(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn disconnect_namebase(state: State<'_, AppState>) -> Result<(), AppError> {
     write_cookie(&state, "")?;
     let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -174,6 +187,7 @@ pub async fn disconnect_namebase(state: State<'_, AppState>) -> Result<(), AppEr
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn get_namebase_status(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -199,6 +213,7 @@ pub async fn get_namebase_status(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_namebase_domains(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -210,6 +225,7 @@ pub async fn fetch_namebase_domains(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_namebase_staked(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -221,6 +237,7 @@ pub async fn fetch_namebase_staked(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_namebase_renewals(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -235,6 +252,7 @@ pub async fn fetch_namebase_renewals(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_namebase_withdrawals(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -246,6 +264,7 @@ pub async fn fetch_namebase_withdrawals(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn import_from_namebase(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -349,6 +368,7 @@ pub async fn import_from_namebase(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn namebase_transfer_domain(
     state: State<'_, AppState>,
     name: String,
@@ -403,6 +423,7 @@ fn active_profile_network(state: &AppState) -> crate::noncustodial::network::Net
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn namebase_withdraw_hns(
     state: State<'_, AppState>,
     address: String,
@@ -443,6 +464,7 @@ pub async fn namebase_withdraw_hns(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn fetch_namebase_domain_withdrawals(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {

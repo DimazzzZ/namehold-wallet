@@ -35,6 +35,7 @@ use super::sync::open_conn;
 /// when `node_authoritative == false` in `run_sync_steps`.
 ///
 /// Returns `true` if the sync completed successfully.
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn sync_spv_step(db_path: &str, profile_id: &str) -> bool {
     let conn = match open_conn(db_path) {
         Ok(c) => c,
@@ -42,7 +43,9 @@ pub async fn sync_spv_step(db_path: &str, profile_id: &str) -> bool {
     };
     let settings = match queries::get_settings(&conn) {
         Ok(s) => s,
-        Err(_) => return false,
+        // COVERAGE: untestable without corrupting the DB between open_conn
+        // and get_settings — no seam exists to inject a failure here.
+        Err(_) => return false, // lcov-excl-line
     };
     drop(conn);
 
@@ -72,7 +75,9 @@ pub async fn sync_spv_step(db_path: &str, profile_id: &str) -> bool {
     // but advancing the cursor keeps the sync state consistent.
     let conn = match open_conn(db_path) {
         Ok(c) => c,
-        Err(_) => return false,
+        // COVERAGE: untestable — requires the DB file to vanish between the
+        // first open_conn (which succeeded) and this second open_conn (TOCTOU).
+        Err(_) => return false, // lcov-excl-line
     };
     if let Err(e) = crate::noncustodial::sync::set_sync_cursor(&conn, profile_id, height) {
         eprintln!("sync_spv_step: failed to update sync cursor: {e}");

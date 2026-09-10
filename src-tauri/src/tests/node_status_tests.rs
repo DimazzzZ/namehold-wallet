@@ -558,3 +558,393 @@ async fn synced_with_no_chain_in_response_skips_check() {
         "missing chain in response → conservatively allow"
     );
 }
+
+// ===========================================================================
+// node_status against a *connected* node — the read_source / node_synced
+// decision tree (previously only the disconnected path was covered). The RPC
+// is mocked with mockito so no live hsd is needed.
+// ===========================================================================
+
+/// A blank in-memory DB (no node_rpc_url yet — the caller sets it to the
+/// mockito URL), so we can point the probe at a controllable server.
+fn blank_conn() -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    conn
+}
+
+/// Synced full node (verification_progress ≥ 0.9999) → read_source = "local".
+#[tokio::test]
+async fn node_status_synced_full_node_uses_local_read_source() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":1000,"headers":1000,"verificationprogress":0.9999},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    let app = app_with(conn);
+    let v = node_status(app.state()).await.expect("node_status ok");
+
+    assert_eq!(v["connected"], serde_json::json!(true));
+    assert_eq!(v["read_source"], serde_json::json!("local"));
+    assert_eq!(v["height"], serde_json::json!(1000));
+    assert_eq!(v["node_mode"], serde_json::json!("full"));
+}
+
+/// Partially synced (verification_progress below the 0.9999 gate) → the node
+/// answers but reads still fall back to the explorer.
+#[tokio::test]
+async fn node_status_partial_sync_uses_explorer_read_source() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":500,"headers":1000,"verificationprogress":0.5},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    let app = app_with(conn);
+    let v = node_status(app.state()).await.expect("node_status ok");
+
+    assert_eq!(v["connected"], serde_json::json!(true));
+    assert_eq!(v["read_source"], serde_json::json!("explorer"));
+    assert_eq!(v["verification_progress"], serde_json::json!(0.5));
+}
+
+/// verification_progress absent → falls back to `height >= headers` (synced).
+#[tokio::test]
+async fn node_status_no_progress_falls_back_to_headers_synced() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"blocks":1000,"headers":1000},"error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    let app = app_with(conn);
+    let v = node_status(app.state()).await.expect("node_status ok");
+
+    assert_eq!(v["connected"], serde_json::json!(true));
+    assert_eq!(v["read_source"], serde_json::json!("local"));
+    assert_eq!(v["verification_progress"], serde_json::Value::Null);
+}
+
+/// verification_progress absent AND height < headers → still catching up, so
+/// reads stay on the explorer.
+#[tokio::test]
+async fn node_status_height_below_headers_uses_explorer() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"blocks":100,"headers":1000},"error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    let app = app_with(conn);
+    let v = node_status(app.state()).await.expect("node_status ok");
+
+    assert_eq!(v["connected"], serde_json::json!(true));
+    assert_eq!(v["read_source"], serde_json::json!("explorer"));
+}
+
+/// Neither progress nor headers reported (regtest single miner) → assume synced.
+#[tokio::test]
+async fn node_status_no_metadata_assumes_synced() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"blocks":42},"error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    let app = app_with(conn);
+    let v = node_status(app.state()).await.expect("node_status ok");
+
+    assert_eq!(v["connected"], serde_json::json!(true));
+    assert_eq!(v["read_source"], serde_json::json!("local"));
+    assert_eq!(v["height"], serde_json::json!(42));
+}
+
+/// SPV mode: even a fully-synced node reads via the explorer (no address index),
+/// and node_synced is true purely because RPC answered.
+#[tokio::test]
+async fn node_status_spv_mode_always_explorer() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    db::queries::set_setting(&conn, "node_mode", "spv").unwrap();
+    let app = app_with(conn);
+    let v = node_status(app.state()).await.expect("node_status ok");
+
+    assert_eq!(v["connected"], serde_json::json!(true));
+    assert_eq!(v["read_source"], serde_json::json!("explorer"));
+    assert_eq!(v["node_mode"], serde_json::json!("spv"));
+}
+
+/// probe_and_update clears node_rpc_alive when RPC is unreachable (the false
+/// branch of the probe, complementing the true-branch test above).
+#[tokio::test]
+async fn probe_and_update_clears_flag_when_unreachable() {
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+    // Pretend it was alive; the probe must flip it false.
+    state
+        .node_rpc_alive
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let alive = crate::commands::node::probe_and_update(&state).await;
+    assert!(!alive);
+    assert!(!state
+        .node_rpc_alive
+        .load(std::sync::atomic::Ordering::Relaxed));
+}
+
+// ===========================================================================
+// stop_hsd: the mockable half (RPC stop() + node_rpc_alive flip + audit log).
+// The child.kill()/child.wait() path is documented as an IO shell in node.rs
+// and exercised only by integration tests with a real hsd.
+// ===========================================================================
+
+use crate::commands::node::stop_hsd;
+
+/// stop_hsd with no reachable node still succeeds (best-effort RPC stop),
+/// flips node_rpc_alive → false, and records an audit log row.
+#[tokio::test]
+async fn stop_hsd_soft_succeeds_when_no_node_reachable() {
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+    // Pretend it was alive; stop_hsd must flip it false regardless of RPC outcome.
+    state
+        .node_rpc_alive
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    stop_hsd(app.state())
+        .await
+        .expect("stop_hsd is best-effort");
+
+    assert!(
+        !state
+            .node_rpc_alive
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "node_rpc_alive must be cleared eagerly for the tray/UI to flip"
+    );
+
+    // The audit log row is written.
+    let db = state.db.lock().unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'stop_hsd'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "one stop_hsd audit row per stop");
+}
+
+/// stop_hsd against a live (mocked) RPC — the stop RPC is invoked; the flag
+/// still ends up false; the audit row is written. Best-effort semantics:
+/// success/failure of the RPC call is opaque to the caller.
+#[tokio::test]
+async fn stop_hsd_calls_rpc_stop_and_clears_flag() {
+    let mut server = mockito::Server::new_async().await;
+    // The node accepts the RPC stop call.
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("stop".into()))
+        .with_body(r#"{"result":"Stopping","error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+    state
+        .node_rpc_alive
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    stop_hsd(app.state()).await.expect("stop_hsd ok");
+
+    assert!(!state
+        .node_rpc_alive
+        .load(std::sync::atomic::Ordering::Relaxed));
+}
+
+// ===========================================================================
+// start_hsd: "adopt a running node" path — pure RPC, no child spawn. When the
+// probe answers before we get to Command::spawn(), start_hsd returns the
+// adopted-node shape. This exercises lines 409-424 without needing a real hsd.
+// ===========================================================================
+
+#[tokio::test]
+async fn start_hsd_adopts_already_running_node() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":777,"headers":777,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+
+    let v = start_hsd(app.state()).await.expect("adoption path");
+    assert_eq!(v["connected"], serde_json::json!(true));
+    assert_eq!(v["height"], serde_json::json!(777));
+    // No child was spawned — the adoption path returns immediately.
+    assert!(state.hsd_child.lock().unwrap().is_none());
+    // The alive flag was set as a side-effect.
+    assert!(state
+        .node_rpc_alive
+        .load(std::sync::atomic::Ordering::Relaxed));
+}
+
+// ===========================================================================
+// active_profile_network via node_status: with a real wallet profile seeded,
+// the `Ok(Some(p))` arm of get_wallet_profile is exercised and the returned
+// network flows into the JSON payload.
+// ===========================================================================
+
+#[tokio::test]
+async fn node_status_reflects_seeded_profile_network_regtest() {
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    // Seed a regtest profile and mark it active. This drives the
+    // `active_profile_network` branch where get_wallet_profile returns
+    // Some(p) and network_from_profile succeeds.
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p1",
+        "test",
+        "watch_only_xpub",
+        "regtest",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p1").unwrap();
+
+    let app = app_with(conn);
+    let v = node_status(app.state()).await.expect("node_status ok");
+    assert_eq!(v["network"], serde_json::json!("regtest"));
+}
+
+#[tokio::test]
+async fn node_status_reflects_seeded_profile_network_testnet() {
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p1",
+        "test",
+        "watch_only_xpub",
+        "testnet",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p1").unwrap();
+
+    let app = app_with(conn);
+    let v = node_status(app.state()).await.expect("node_status ok");
+    assert_eq!(v["network"], serde_json::json!("testnet"));
+}
+
+// ===========================================================================
+// resolve_data_dir HOME fallback: when hsd_prefix is unset, the code uses
+// $HOME/.hsd (or "./.hsd" if HOME is also missing). Cover the HOME path.
+// ===========================================================================
+
+#[tokio::test]
+async fn node_status_data_dir_defaults_to_home_dot_hsd_when_prefix_unset() {
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    // Do NOT set hsd_prefix — resolve_data_dir must fall back to $HOME/.hsd.
+    let app = app_with(conn);
+    let v = node_status(app.state()).await.expect("node_status ok");
+    let data_dir = v["data_dir"].as_str().unwrap();
+    // HOME is always set in the test env; the fallback path should end in ".hsd".
+    assert!(
+        data_dir.ends_with(".hsd"),
+        "expected HOME/.hsd fallback, got: {data_dir}"
+    );
+}
+
+#[tokio::test]
+async fn node_status_data_dir_respects_hsd_prefix_setting() {
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    db::queries::set_setting(&conn, "hsd_prefix", "/custom/hsd/data").unwrap();
+    let app = app_with(conn);
+    let v = node_status(app.state()).await.expect("node_status ok");
+    assert_eq!(v["data_dir"], serde_json::json!("/custom/hsd/data"));
+}
+
+// ===========================================================================
+// active_profile_network fallback: active profile ID set but the profile row
+// doesn't exist → should fall back to Network::Main (node.rs L176).
+// ===========================================================================
+
+#[tokio::test]
+async fn node_status_falls_back_to_mainnet_for_missing_profile_row() {
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    // Set active profile to a non-existent ID — triggers Ok(None) from
+    // get_wallet_profile, exercising the `_ => Network::Main` arm.
+    db::queries::set_setting(&conn, "active_wallet_profile_id", "ghost_id").unwrap();
+    let app = app_with(conn);
+    let v = node_status(app.state()).await.expect("node_status ok");
+    assert_eq!(
+        v["network"],
+        serde_json::json!("main"),
+        "missing profile should default to mainnet"
+    );
+}

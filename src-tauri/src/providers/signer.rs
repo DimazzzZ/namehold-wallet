@@ -235,4 +235,23 @@ mod tests {
         assert!(!WriteCapability::evaluate(true, ChainSource::RemoteNode, false).can_write);
         assert!(WriteCapability::evaluate(true, ChainSource::RemoteNode, true).can_write);
     }
+
+    #[test]
+    fn write_capability_locked_and_no_broadcaster_mentions_both() {
+        // Locked signer AND a non-broadcasting source (explorer): the reason
+        // should ask the user to both unlock and configure a broadcasting node.
+        let c = WriteCapability::evaluate(false, ChainSource::Explorer, false);
+        assert!(!c.can_write);
+        assert!(!c.broadcaster_available);
+        let reason = c.reason.expect("reason present when both gates fail");
+        let lower = reason.to_lowercase();
+        assert!(
+            lower.contains("unlock"),
+            "reason should mention unlocking: {reason}"
+        );
+        assert!(
+            lower.contains("node"),
+            "reason should mention a node: {reason}"
+        );
+    }
 }

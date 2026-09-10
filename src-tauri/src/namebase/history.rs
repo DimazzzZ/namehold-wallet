@@ -418,4 +418,63 @@ mod tests {
         assert_eq!(e.verb, "stake-domain");
         assert_eq!(e.name.as_deref(), Some("ecology"));
     }
+
+    // --- Coverage-driven tests ---
+
+    /// `usd_cents` returns None when the nested money object's asset is not
+    /// USD (guards against reading an HNS object as cents).
+    #[test]
+    fn usd_key_with_hns_asset_is_ignored() {
+        // deliveredAmountUsd carries asset "HNS" (malformed / atypical) — the
+        // parser must NOT read it as USD cents.
+        let csv = wrap(
+            "188784786,2026-01-27T06:25:25.161Z,subdomains:confirm-transfer:2,\"{\"\"domain\"\":\"\"shot\"\",\"\"subdomain\"\":\"\"moon\"\",\"\"deliveredAmountUsd\"\":{\"\"amountString\"\":\"\"2900\"\",\"\"asset\"\":\"\"HNS\"\"}}\"\n",
+        );
+        let e = &parse_history_csv(&csv).unwrap()[0];
+        assert_eq!(e.usd_cents, None);
+    }
+
+    /// `hns_from_obj` returns None when the nested money object's asset is
+    /// not HNS.
+    #[test]
+    fn hns_key_with_usd_asset_is_ignored() {
+        // deliveredAmountHns carries asset "USD" (mismatched) — must be None.
+        let csv = wrap(
+            "188784787,2026-01-27T06:25:25.161Z,subdomains:confirm-transfer:2,\"{\"\"domain\"\":\"\"shot\"\",\"\"subdomain\"\":\"\"moon\"\",\"\"deliveredAmountHns\"\":{\"\"amountString\"\":\"\"4832721250\"\",\"\"asset\"\":\"\"USD\"\"}}\"\n",
+        );
+        let e = &parse_history_csv(&csv).unwrap()[0];
+        assert_eq!(e.hns_doos, None);
+    }
+
+    /// Rows with an unparseable id are skipped rather than aborting the parse.
+    #[test]
+    fn row_with_unparseable_id_is_skipped() {
+        // The first row has a non-numeric id ("notanumber") → skipped. The
+        // second row parses normally.
+        let csv = wrap(
+            "notanumber,2026-01-17T12:37:54.492Z,auctions:place-bid:4,\"{\"\"domainName\"\":\"\"diver\"\"}\"\n188679284,2026-01-17T12:37:54.492Z,auctions:place-bid:4,\"{\"\"domainName\"\":\"\"diver\"\"}\"\n",
+        );
+        let events = parse_history_csv(&csv).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, 188679284);
+    }
+
+    /// Rows whose data column is not valid JSON are still emitted, with an
+    /// empty object stand-in (parser is resilient — never aborts on one bad row).
+    #[test]
+    fn row_with_invalid_json_data_uses_empty_object() {
+        // Second column data is "not json {{{" (invalid). Row should still
+        // appear with default empty-object semantics: no name, no fees, etc.
+        let csv =
+            wrap("188679284,2026-01-17T12:37:54.492Z,auctions:place-bid:4,\"not json {{{\"\n");
+        let events = parse_history_csv(&csv).unwrap();
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        assert_eq!(e.id, 188679284);
+        assert_eq!(e.family, "auctions");
+        assert_eq!(e.verb, "place-bid");
+        // With an empty data object, no name / fees are extracted.
+        assert_eq!(e.name, None);
+        assert_eq!(e.fee_doos, None);
+    }
 }

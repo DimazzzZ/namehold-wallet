@@ -667,4 +667,125 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(height, 11);
     }
+
+    // --- Coverage-driven tests ---
+
+    /// The `Unsupported` spend class stringifies to "unsupported".
+    #[test]
+    fn spend_class_unsupported_as_str() {
+        assert_eq!(SpendClass::Unsupported.as_str(), "unsupported");
+    }
+
+    /// A coin bearing an unsupported covenant (e.g. REVOKE) is tracked with
+    /// spend_class = "unsupported" and does NOT contribute to any spendable
+    /// balance bucket (exercises the `_ => {}` arm in `compute_balances`).
+    #[test]
+    fn unsupported_covenant_tracked_but_not_spendable() {
+        let conn = mem_db();
+        // Liquid coin so the balances struct isn't entirely empty.
+        upsert_utxo(&conn, "p1", &coin("aa", 0, 1_000_000, None)).unwrap();
+        // Unsupported-covenant coin.
+        upsert_utxo(
+            &conn,
+            "p1",
+            &coin("zz", 0, 9_000_000, Some(cov(COV_REVOKE))),
+        )
+        .unwrap();
+
+        // Row was stored with spend_class "unsupported".
+        let stored: String = conn
+            .query_row(
+                "SELECT spend_class FROM tracked_utxos
+                 WHERE wallet_profile_id = 'p1' AND txid = 'zz'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "unsupported");
+
+        let bal = compute_balances(&conn, "p1").unwrap();
+        assert_eq!(bal.liquid, 1_000_000);
+        assert_eq!(bal.name_control, 0);
+        assert_eq!(bal.name_lockup, 0);
+        // The unsupported 9_000_000 is excluded from total spendable balance.
+        assert_eq!(bal.total(), 1_000_000);
+    }
+
+    /// `mark_address_used` flips `used` and stamps the seen heights.
+    #[test]
+    fn mark_address_used_sets_flags() {
+        let conn = mem_db();
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index,
+                 address, script_pubkey_hex, public_key_hex)
+             VALUES ('p1', 0, 0, 0, 'hs1qexample', '0014abcd', 'aabb')",
+            [],
+        )
+        .unwrap();
+
+        mark_address_used(&conn, "p1", "hs1qexample", Some(123)).unwrap();
+
+        let (used, first, last): (i64, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT used, first_seen_height, last_seen_height
+                 FROM derived_addresses
+                 WHERE wallet_profile_id = 'p1' AND address = 'hs1qexample'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(used, 1);
+        assert_eq!(first, Some(123));
+        assert_eq!(last, Some(123));
+    }
+
+    /// The DB helpers surface a `Db` error (rather than panicking) when their
+    /// backing tables are missing. Exercises the `?`-failure propagation in
+    /// each helper's SQL call.
+    #[test]
+    fn db_helpers_propagate_errors_when_tables_missing() {
+        // A bare connection with no migrations applied.
+        let conn = Connection::open_in_memory().unwrap();
+
+        assert!(matches!(
+            upsert_utxo(&conn, "p1", &coin("aa", 0, 1, None)),
+            Err(AppError::Db(_))
+        ));
+        assert!(matches!(
+            mark_missing_as_spent(&conn, "p1", &[]),
+            Err(AppError::Db(_))
+        ));
+        assert!(matches!(
+            compute_balances(&conn, "p1"),
+            Err(AppError::Db(_))
+        ));
+        assert!(matches!(
+            cache_transaction(&conn, "p1", "tx", Some(1), Some("t"), "{}"),
+            Err(AppError::Db(_))
+        ));
+        assert!(matches!(
+            set_sync_cursor(&conn, "p1", 1),
+            Err(AppError::Db(_))
+        ));
+        assert!(matches!(
+            mark_address_used(&conn, "p1", "addr", Some(1)),
+            Err(AppError::Db(_))
+        ));
+        // Null-info branch: hits the first execute in upsert_name_state.
+        assert!(matches!(
+            upsert_name_state(&conn, "p1", "name", &serde_json::json!({ "info": null })),
+            Err(AppError::Db(_))
+        ));
+        // Populated-info branch: hits the second execute in upsert_name_state.
+        assert!(matches!(
+            upsert_name_state(
+                &conn,
+                "p1",
+                "name",
+                &serde_json::json!({ "info": { "state": "OPENING" } })
+            ),
+            Err(AppError::Db(_))
+        ));
+    }
 }

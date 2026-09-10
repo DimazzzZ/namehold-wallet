@@ -184,6 +184,44 @@ mod tests {
         assert!(!is_valid(Network::Testnet, &addr));
         assert!(is_valid(Network::Main, &addr));
     }
+
+    // --- Coverage-driven tests below: exercise the wrong-length rejection in
+    // `address_from_pubkey` (mirror of the covered branch in
+    // `script_pubkey_from_pubkey`) and the malformed-bech32 path in `decode`.
+
+    /// `address_from_pubkey` rejects a pubkey that isn't exactly 33 bytes.
+    #[test]
+    fn address_from_pubkey_rejects_wrong_length() {
+        let err = address_from_pubkey(Network::Main, &[]).unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("33-byte")),
+            "empty case: got {err:?}"
+        );
+
+        let err = address_from_pubkey(Network::Main, &[0x02u8; 32]).unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("33-byte")),
+            "32-byte case: got {err:?}"
+        );
+
+        let err = address_from_pubkey(Network::Main, &[0x02u8; 34]).unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("33-byte")),
+            "34-byte case: got {err:?}"
+        );
+    }
+
+    /// `decode` propagates bech32 parse failures as `AppError::Crypto`.
+    #[test]
+    fn decode_rejects_malformed_bech32() {
+        let err = decode(Network::Main, "not-a-valid-bech32-address").unwrap_err();
+        assert!(
+            matches!(err, AppError::Crypto(ref m) if m.contains("bech32 decode failed")),
+            "got {err:?}"
+        );
+        // And `is_valid` returns false for the same input.
+        assert!(!is_valid(Network::Main, "not-a-valid-bech32-address"));
+    }
 }
 
 #[test]

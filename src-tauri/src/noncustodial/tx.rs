@@ -785,6 +785,11 @@ mod tests {
         // structure re-serializes to the identical bytes (no asymmetric framing).
         let (sk, h160) = test_key();
         let mut tx = two_in_two_out();
+        // Add a covenant with items to exercise covenant parsing in the Reader.
+        tx.outputs[0].covenant = Covenant {
+            covenant_type: 1,
+            items: vec![vec![0xaa; 10], vec![0xbb; 20]],
+        };
         tx.locktime = 42;
         tx.sign_p2wpkh_input(0, &sk, &h160, 1_000_000, sighash::ALL)
             .unwrap();
@@ -852,6 +857,138 @@ mod tests {
             "round-trip must be byte-identical"
         );
         assert_eq!(rebuilt.txid(), tx.txid());
+    }
+
+    // --- Coverage-driven tests ---
+
+    /// `Transaction::default()` creates an empty transaction (same as `new()`).
+    #[test]
+    fn transaction_default_creates_empty_tx() {
+        let tx = Transaction::default();
+        assert_eq!(tx.version, 0);
+        assert!(tx.inputs.is_empty());
+        assert!(tx.outputs.is_empty());
+        assert_eq!(tx.locktime, 0);
+    }
+
+    /// `signature_hash` rejects an out-of-range input index.
+    #[test]
+    fn signature_hash_rejects_out_of_range_index() {
+        let tx = two_in_two_out();
+        let code = p2wpkh_script_code(&[0x11; 20]);
+        let err = tx.signature_hash(2, &code, 1000, sighash::ALL).unwrap_err();
+        assert!(format!("{err}").contains("out of range"), "got {err}");
+    }
+
+    /// `signature_hash` with `ANYONECANPAY` zeroes the prevouts and sequences hashes.
+    #[test]
+    fn signature_hash_anyonecanpay_zeroes_shared_hashes() {
+        let tx = two_in_two_out();
+        let code = p2wpkh_script_code(&[0x11; 20]);
+        let sh_all = tx.signature_hash(0, &code, 1000, sighash::ALL).unwrap();
+        let sh_acp = tx
+            .signature_hash(0, &code, 1000, sighash::ANYONECANPAY)
+            .unwrap();
+        // The hashes must differ because ANYONECANPAY changes the preimage.
+        assert_ne!(sh_all, sh_acp, "ANYONECANPAY must produce a different hash");
+    }
+
+    /// `signature_hash` with `SINGLE` uses the output at the same index.
+    #[test]
+    fn signature_hash_single_uses_output_at_index() {
+        let tx = two_in_two_out();
+        let code = p2wpkh_script_code(&[0x11; 20]);
+        // SINGLE with index 0 should hash output[0].
+        let sh_single_0 = tx.signature_hash(0, &code, 1000, sighash::SINGLE).unwrap();
+        // SINGLE with index 1 should hash output[1], producing a different hash.
+        let sh_single_1 = tx.signature_hash(1, &code, 1000, sighash::SINGLE).unwrap();
+        assert_ne!(sh_single_0, sh_single_1);
+    }
+
+    /// `signature_hash` with `SINGLE`/`SINGLEREVERSE` and an input index beyond
+    /// the outputs count falls back to ZERO_HASH for the outputs sub-digest
+    /// (rather than panicking). Uses a tx with more inputs than outputs.
+    #[test]
+    fn signature_hash_single_index_beyond_outputs_uses_zero_hash() {
+        // 2 inputs, 1 output: input index 1 is a valid input but >= outputs.len().
+        let mut tx = Transaction::new();
+        tx.inputs.push(Input::new(Outpoint {
+            hash: [0x11; 32],
+            index: 0,
+        }));
+        tx.inputs.push(Input::new(Outpoint {
+            hash: [0x22; 32],
+            index: 1,
+        }));
+        tx.outputs.push(out(500_000, 0xaa, Covenant::default()));
+        let code = p2wpkh_script_code(&[0x11; 20]);
+
+        // SINGLE at input index 1 (>= 1 output) -> ZERO_HASH outputs branch.
+        let sh_single = tx.signature_hash(1, &code, 1000, sighash::SINGLE).unwrap();
+        // SINGLEREVERSE at input index 1 -> ZERO_HASH outputs branch.
+        let sh_srev = tx
+            .signature_hash(1, &code, 1000, sighash::SINGLEREVERSE)
+            .unwrap();
+        // Both compute a valid 32-byte digest (no panic); they differ from ALL.
+        let sh_all = tx.signature_hash(1, &code, 1000, sighash::ALL).unwrap();
+        assert_ne!(sh_single, sh_all);
+        assert_ne!(sh_srev, sh_all);
+    }
+
+    /// `signature_hash` with `SINGLEREVERSE` hashes the output at reversed index.
+    #[test]
+    fn signature_hash_singlereverse_uses_reversed_index() {
+        let tx = two_in_two_out();
+        let code = p2wpkh_script_code(&[0x11; 20]);
+        // SINGLEREVERSE with index 0 should hash output[len-1-0] = output[1].
+        let sh_sr_0 = tx
+            .signature_hash(0, &code, 1000, sighash::SINGLEREVERSE)
+            .unwrap();
+        // SINGLEREVERSE with index 1 should hash output[len-1-1] = output[0].
+        let sh_sr_1 = tx
+            .signature_hash(1, &code, 1000, sighash::SINGLEREVERSE)
+            .unwrap();
+        assert_ne!(sh_sr_0, sh_sr_1);
+    }
+
+    /// `signature_hash` with `NONE` zeroes the outputs hash.
+    #[test]
+    fn signature_hash_none_zeroes_outputs() {
+        let tx = two_in_two_out();
+        let code = p2wpkh_script_code(&[0x11; 20]);
+        let sh_all = tx.signature_hash(0, &code, 1000, sighash::ALL).unwrap();
+        let sh_none = tx.signature_hash(0, &code, 1000, sighash::NONE).unwrap();
+        assert_ne!(sh_all, sh_none);
+    }
+
+    /// `signature_hash` with `NOINPUT` zeroes the per-input fields.
+    #[test]
+    fn signature_hash_noinput_zeroes_per_input_fields() {
+        let tx = two_in_two_out();
+        let code = p2wpkh_script_code(&[0x11; 20]);
+        let sh_all = tx.signature_hash(0, &code, 1000, sighash::ALL).unwrap();
+        let sh_noinput = tx.signature_hash(0, &code, 1000, sighash::NOINPUT).unwrap();
+        assert_ne!(sh_all, sh_noinput);
+    }
+
+    /// Reader's `read_varint` handles multi-byte varints (0xfd, 0xfe, 0xff).
+    #[test]
+    fn reader_read_varint_handles_multi_byte_varints() {
+        // Construct minimal bytes with large varints.
+        // 0xfd prefix + u16 LE: 0xfd 0x00 0x01 = 256
+        let mut buf = vec![0xfdu8, 0x00, 0x01];
+        let mut r = Reader::new(&buf);
+        assert_eq!(r.read_varint(), 256);
+
+        // 0xfe prefix + u32 LE: 0xfe 0x00 0x00 0x01 0x00 = 65536
+        buf = vec![0xfeu8, 0x00, 0x00, 0x01, 0x00];
+        r = Reader::new(&buf);
+        assert_eq!(r.read_varint(), 65536);
+
+        // 0xff prefix + u64 LE: byte 6 (0-indexed) set -> 2^48.
+        buf = vec![0xffu8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00];
+        r = Reader::new(&buf);
+        assert_eq!(r.read_varint(), 0x0001_0000_0000_0000);
     }
 
     /// Minimal LE reader mirroring `Writer`, used only by the round-trip test.

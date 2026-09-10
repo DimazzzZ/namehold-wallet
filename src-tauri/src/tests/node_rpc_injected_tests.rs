@@ -210,6 +210,56 @@ async fn name_records_non_object_non_null_degrades_to_empty() {
     assert_eq!(out["records"].as_array().unwrap().len(), 0);
 }
 
+#[tokio::test]
+async fn name_records_with_multiple_record_types() {
+    // Comprehensive test: verify the code handles all Handshake record types
+    // (A, AAAA, CNAME, DS, GLUE, SYNTH, NS, TXT, etc.) without panicking or
+    // filtering. The call recorder also ensures the code asked for the right
+    // name, not a different one.
+    let resource = json!({
+        "records": [
+            { "type": "A", "address": "1.2.3.4" },
+            { "type": "AAAA", "address": "::1" },
+            { "type": "CNAME", "target": "example.com." },
+            { "type": "DS", "keyTag": 12345, "algorithm": 8, "digestType": 2, "digest": "abcd" },
+            { "type": "GLUE4", "ns": "ns1.example.com.", "address": "5.6.7.8" },
+            { "type": "GLUE6", "ns": "ns2.example.com.", "address": "::2" },
+            { "type": "SYNTH4", "address": "9.10.11.12" },
+            { "type": "SYNTH6", "address": "::3" },
+            { "type": "NS", "ns": "ns.example.com." },
+            { "type": "TXT", "txt": ["v=spf1 -all"] },
+            { "type": "MX", "preference": 10, "exchange": "mail.example.com." },
+            { "type": "SRV", "priority": 10, "weight": 60, "port": 5060, "target": "sipserver.example.com." },
+        ],
+        "ttl": 3600,
+    });
+    let mock = MockNodeRpc::new().with_name_resource(resource.clone());
+    let out = read_name_records_with_client(&mock, "multirecord").await;
+
+    // All 12 record types must be preserved verbatim (no filtering, no
+    // transformation beyond the outer shape).
+    let records = out["records"].as_array().expect("records must be an array");
+    assert_eq!(records.len(), 12, "all record types must be preserved");
+
+    // Spot-check a few record types to ensure they're intact.
+    assert_eq!(records[0]["type"], "A");
+    assert_eq!(records[0]["address"], "1.2.3.4");
+    assert_eq!(records[2]["type"], "CNAME");
+    assert_eq!(records[2]["target"], "example.com.");
+    assert_eq!(records[9]["type"], "TXT");
+    assert_eq!(records[9]["txt"], json!(["v=spf1 -all"]));
+
+    // Call recorder: verify the code asked for the right name.
+    use crate::tests::mock_node_rpc::RpcCall;
+    let calls = mock.calls();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c == &RpcCall::NameResource("multirecord".to_string())),
+        "read_name_records_with_client must call get_name_resource('multirecord'), got: {calls:?}"
+    );
+}
+
 // ------- node_tip_height_if_synced_with_client ----------------------------
 
 fn info(
@@ -808,6 +858,57 @@ async fn write_probe_synced_and_indexed_keeps_write_capable() {
     )
     .await;
     assert!(cap.can_write);
+    assert!(cap.reason.is_none());
+}
+
+#[tokio::test]
+async fn write_probe_unsynced_no_verification_progress_uses_headers_ratio() {
+    // verification_progress=None → fall back to blocks/headers ratio.
+    // 500000/600000 = 83.3% → floor → 83%. Covers tx.rs:1867 + 1875-1877.
+    let mock = MockNodeRpc::new().with_blockchain_info(BlockchainInfo {
+        chain: Some("main".to_string()),
+        blocks: 500_000,
+        headers: Some(600_000),
+        verification_progress: None,
+        bestblockhash: None,
+    });
+    let mut cap = writable_cap();
+    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
+        .await;
+    assert!(!cap.can_write);
+    let reason = cap.reason.as_deref().unwrap();
+    assert!(
+        reason.contains("83%"),
+        "expected 83% in reason, got: {reason}"
+    );
+    assert!(reason.contains("still syncing"));
+}
+
+#[tokio::test]
+async fn write_probe_synced_no_verification_progress_via_headers() {
+    // verification_progress=None but blocks >= headers → considered synced.
+    // Covers tx.rs:1867 (the `info.blocks >= h` true branch).
+    let mock = MockNodeRpc::new()
+        .with_blockchain_info(BlockchainInfo {
+            chain: Some("main".to_string()),
+            blocks: 600_000,
+            headers: Some(600_000),
+            verification_progress: None,
+            bestblockhash: None,
+        })
+        .with_coins_by_address(vec![]);
+    let mut cap = writable_cap();
+    crate::commands::tx::apply_node_write_probe_with_client(
+        &mock,
+        &mut cap,
+        "http://x",
+        Some("hs1qprobe"),
+    )
+    .await;
+    assert!(
+        cap.can_write,
+        "blocks>=headers with no progress should be synced"
+    );
     assert!(cap.reason.is_none());
 }
 

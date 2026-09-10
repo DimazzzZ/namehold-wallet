@@ -6,6 +6,7 @@ use tauri::State;
 
 /// Check if update notifications are enabled.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn is_update_notify_enabled(state: State<'_, AppState>) -> bool {
     match state.db.lock() {
         Ok(db) => match queries::get_settings(&db) {
@@ -20,6 +21,7 @@ pub fn is_update_notify_enabled(state: State<'_, AppState>) -> bool {
 
 /// Enable or disable update notifications.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn set_update_notify_enabled(enabled: bool, state: State<'_, AppState>) -> Result<(), String> {
     match state.db.lock() {
         Ok(db) => {

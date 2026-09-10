@@ -944,6 +944,46 @@ mod tests {
     }
 
     #[test]
+    fn normalize_name_maps_all_optional_auction_stats_and_flags() {
+        // Every optional stats field present (the explorer's fullest shape),
+        // plus `expired` as a bool and `revoked` as an unsigned number — this
+        // exercises the `.and_then(as_u64/as_i64/as_f64/as_bool)` arms and the
+        // `revoked` `.or_else(|| v.as_u64()...)` fallback that the minimal
+        // fixtures leave uncovered.
+        let entry = json!({
+            "name": "fulltld",
+            "state": "OPENING",
+            "expired": true,
+            "revoked": 1u64,
+            "stats": {
+                "openPeriodStart": 10u64,
+                "openPeriodEnd": 20u64,
+                "revealPeriodStart": 30u64,
+                "revealPeriodEnd": 40u64,
+                "blocksUntilOpen": 5i64,
+                "blocksUntilBidding": 6i64,
+                "blocksUntilClose": 8i64,
+                "hoursUntilOpen": 0.5f64,
+                "hoursUntilClose": 2.5f64,
+            }
+        });
+        let name = normalize_name(&entry).expect("should normalize");
+        let stats = name.stats.expect("stats present");
+        assert_eq!(stats.open_period_start, Some(10));
+        assert_eq!(stats.open_period_end, Some(20));
+        assert_eq!(stats.reveal_period_start, Some(30));
+        assert_eq!(stats.reveal_period_end, Some(40));
+        assert_eq!(stats.blocks_until_open, Some(5));
+        assert_eq!(stats.blocks_until_bidding, Some(6));
+        assert_eq!(stats.blocks_until_close, Some(8));
+        assert_eq!(stats.hours_until_open, Some(0.5));
+        assert_eq!(stats.hours_until_close, Some(2.5));
+        assert_eq!(name.expired, Some(true));
+        // `revoked: 1` (unsigned) normalizes to true via the u64 fallback.
+        assert_eq!(name.revoked, Some(true));
+    }
+
+    #[test]
     fn normalize_name_treats_zero_transfer_as_none() {
         let entry = json!({ "name": "x", "transfer": 0, "revoked": 1 });
         let name = normalize_name(&entry).expect("should normalize");
@@ -1074,5 +1114,198 @@ mod tests {
             extract_amount(&body, &["unconfirmed", "unconfirmedBalance", "pending"]),
             0
         );
+    }
+
+    // --- Coverage: pure helper functions and error conversions ---
+
+    #[test]
+    fn explorer_error_http_converts_to_app_error_other() {
+        // Covers line 34: ExplorerError::Http(status) → AppError::Other.
+        let err: AppError = ExplorerError::Http(503).into();
+        match err {
+            AppError::Other(msg) => assert!(msg.contains("503"), "msg was: {msg}"),
+            other => panic!("expected AppError::Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn looks_like_empty_payload_covers_all_branches() {
+        // null / empty object / empty array → true.
+        assert!(looks_like_empty_payload(&json!(null)));
+        assert!(looks_like_empty_payload(&json!({})));
+        assert!(looks_like_empty_payload(&json!([])));
+        // Non-empty object / array → false.
+        assert!(!looks_like_empty_payload(&json!({"a": 1})));
+        assert!(!looks_like_empty_payload(&json!([1])));
+        // Scalar (string/number/bool) → false; covers the `_ => false` arm.
+        assert!(!looks_like_empty_payload(&json!("hello")));
+        assert!(!looks_like_empty_payload(&json!(42)));
+        assert!(!looks_like_empty_payload(&json!(true)));
+    }
+
+    #[test]
+    fn has_array_field_checks_key_shape() {
+        assert!(has_array_field(&json!({"list": []}), "list"));
+        assert!(has_array_field(&json!({"list": [1, 2]}), "list"));
+        assert!(!has_array_field(&json!({"list": "not array"}), "list"));
+        assert!(!has_array_field(&json!({}), "list"));
+    }
+
+    #[test]
+    fn history_shape_recognized_accepts_result_array_or_bare_array() {
+        assert!(history_shape_recognized(&json!({"result": []})));
+        assert!(history_shape_recognized(&json!([])));
+        assert!(history_shape_recognized(&json!([{"txid": "x"}])));
+        assert!(!history_shape_recognized(&json!({})));
+        assert!(!history_shape_recognized(&json!({"result": "not array"})));
+    }
+
+    #[test]
+    fn normalize_name_accepts_boolean_revoked() {
+        // `revoked` may be numeric (0/1) — already covered — or a bare boolean.
+        let entry = json!({ "name": "x", "revoked": true });
+        let name = normalize_name(&entry).expect("should normalize");
+        assert_eq!(name.revoked, Some(true));
+
+        let entry = json!({ "name": "x", "revoked": false });
+        let name = normalize_name(&entry).expect("should normalize");
+        assert_eq!(name.revoked, Some(false));
+    }
+
+    #[test]
+    fn extract_amount_handles_negative_and_rounding() {
+        // Round-half-up on positive floats.
+        assert_eq!(extract_amount(&json!({"c": 0.5}), &["c"]), 1);
+        // Negative floats round toward zero (Rust's f64::round is half-away-from-zero).
+        assert_eq!(extract_amount(&json!({"c": -1.4}), &["c"]), -1);
+        assert_eq!(extract_amount(&json!({"c": -1.5}), &["c"]), -2);
+        // Integer negative preserved.
+        assert_eq!(extract_amount(&json!({"c": -100}), &["c"]), -100);
+    }
+
+    #[tokio::test]
+    async fn get_name_info_optional_returns_error_on_http_failure() {
+        // A 4xx status (other than 404) surfaces the "HNSFans name lookup failed"
+        // AppError::Other branch. Covers hnsfans.rs L282-286: 5xx is handled by
+        // get_with_fallback (returns before ever reaching this branch); 4xx
+        // codes flow through as an Ok(resp) here.
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/names/testname")
+            .with_status(403)
+            .with_body("Forbidden")
+            .create_async()
+            .await;
+
+        let client = HnsFansClient::new(&server.url());
+        let result = client.get_name_info_optional("testname").await;
+        match result {
+            Err(AppError::Other(msg)) => {
+                assert!(msg.contains("HNSFans name lookup failed"), "got: {msg}");
+                assert!(
+                    msg.contains("403"),
+                    "status code should be in message: {msg}"
+                );
+            }
+            other => panic!("expected AppError::Other, got: {other:?}"),
+        }
+    }
+
+    // --- Coverage: reachable branches flagged uncovered in Phase 4 ----------
+
+    /// Item 9 (hnsfans.rs:183): `get_balance` skips empty/whitespace addresses
+    /// via `continue`, so passing only empty addresses results in `attempted=0`
+    /// and returns `Ok` with zero balance (not an error).
+    #[tokio::test]
+    async fn get_balance_skips_empty_addresses() {
+        let client = HnsFansClient::new("https://e.hnsfans.com");
+        let addrs = vec!["".to_string(), "   ".to_string(), "\t".to_string()];
+        let result = client.get_balance(&addrs).await;
+        assert!(result.is_ok(), "empty addresses should not error");
+        let balance = result.unwrap();
+        assert_eq!(balance.confirmed, 0);
+        assert_eq!(balance.unconfirmed, 0);
+    }
+
+    /// Item 10 (hnsfans.rs:605): `extract_amount` with a float value calls
+    /// `as_f64()` and rounds. This is already covered by the existing
+    /// `extract_amount_rounds_floats_and_defaults_to_zero` test, but we verify
+    /// it here explicitly.
+    #[test]
+    fn extract_amount_handles_float_via_as_f64() {
+        let body = json!({ "confirmed": 12.7 });
+        assert_eq!(extract_amount(&body, &["confirmed"]), 13);
+    }
+
+    /// Item 11 (hnsfans.rs:697): `normalize_name` handles `transfer` field
+    /// that is neither a Number nor Null (e.g., a string or boolean).
+    #[test]
+    fn normalize_name_handles_transfer_non_number_non_null() {
+        // A name entry where `transfer` is a string (unexpected shape).
+        let entry = json!({
+            "name": "testname",
+            "hash": "abcd1234",
+            "transfer": "unexpected_string",
+            "revoked": false,
+        });
+        let result = normalize_name(&entry);
+        // The function should still normalize it successfully, carrying the
+        // unexpected `transfer` value through.
+        assert!(
+            result.is_some(),
+            "should handle non-number transfer gracefully"
+        );
+        let name = result.unwrap();
+        assert_eq!(name.name, "testname");
+    }
+
+    /// When stats fields are present but have the wrong JSON type (e.g. strings
+    /// instead of numbers), the `and_then(|v| v.as_u64())` closures return None.
+    /// This covers the None arms on lines 663–676 and 729.
+    #[test]
+    fn normalize_name_wrong_type_stats_fields_yield_none() {
+        let entry = json!({
+            "name": "wrongtypes",
+            "expired": "not_a_bool",
+            "stats": {
+                "openPeriodStart": "nope",
+                "openPeriodEnd": "nope",
+                "revealPeriodStart": "nope",
+                "revealPeriodEnd": "nope",
+                "blocksUntilOpen": "nope",
+                "blocksUntilBidding": "nope",
+                "blocksUntilClose": "nope",
+                "hoursUntilOpen": "nope",
+                "hoursUntilClose": "nope",
+            }
+        });
+        let name = normalize_name(&entry).expect("should still normalize");
+        let stats = name.stats.expect("stats object present");
+        // Every typed accessor returns None because the values are strings.
+        assert_eq!(stats.open_period_start, None);
+        assert_eq!(stats.open_period_end, None);
+        assert_eq!(stats.reveal_period_start, None);
+        assert_eq!(stats.reveal_period_end, None);
+        assert_eq!(stats.blocks_until_open, None);
+        assert_eq!(stats.blocks_until_bidding, None);
+        assert_eq!(stats.blocks_until_close, None);
+        assert_eq!(stats.hours_until_open, None);
+        assert_eq!(stats.hours_until_close, None);
+        assert_eq!(name.expired, None);
+    }
+
+    /// The `revoked` field's third fallback `.or_else(|| v.as_u64().map(…))`
+    /// is only reached when `as_bool()` and `as_i64()` both return None.
+    /// In serde_json, `as_i64()` fails for values > i64::MAX, so we use one.
+    #[test]
+    fn normalize_name_revoked_u64_overflow_hits_as_u64_fallback() {
+        let big = (i64::MAX as u64) + 1; // 2^63 — too large for as_i64()
+        let entry = json!({
+            "name": "bigrevoke",
+            "revoked": big,
+        });
+        let name = normalize_name(&entry).expect("should normalize");
+        // big != 0, so revoked normalizes to true via the u64 fallback.
+        assert_eq!(name.revoked, Some(true));
     }
 }

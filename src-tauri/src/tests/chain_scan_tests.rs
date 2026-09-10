@@ -304,3 +304,646 @@ fn merge_indexed_bids_never_marks_bid_from_a_different_name_as_mine() {
     assert_eq!(bids[0]["mine"], false);
     assert_eq!(out["myBidCount"], 0);
 }
+
+// =============================================================================
+// scan_block tests — exercises the full covenant-parsing + DB-upsert path using
+// MockNodeRpc and a file-backed temp DB.
+// =============================================================================
+
+use crate::commands::chain_scan::{scan_block, set_scan_cursor};
+use crate::noncustodial::sync::{COV_BID, COV_REVEAL};
+use crate::tests::mock_node_rpc::MockNodeRpc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Create a file-backed temp DB (scan_block takes a `&str` path, not a Connection).
+fn temp_db() -> (std::path::PathBuf, rusqlite::Connection) {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let pid = std::process::id();
+    let path = std::env::temp_dir().join(format!("namehold_chain_scan_test_{pid}_{n}.db"));
+    let _ = std::fs::remove_file(&path);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    (path, conn)
+}
+
+// --- Error propagation -------------------------------------------------------
+
+#[tokio::test]
+async fn scan_block_propagates_get_block_hash_error() {
+    let (path, _conn) = temp_db();
+    let mock = MockNodeRpc::new().with_block_hash_err("hash rpc down");
+    let result = scan_block(&mock, path.to_str().unwrap(), 1).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn scan_block_propagates_get_block_error() {
+    let (path, _conn) = temp_db();
+    let mock = MockNodeRpc::new()
+        .with_block_hash("abc123".to_string())
+        .with_block_err("block rpc down");
+    let result = scan_block(&mock, path.to_str().unwrap(), 1).await;
+    assert!(result.is_err());
+}
+
+// --- Empty / malformed blocks ------------------------------------------------
+
+#[tokio::test]
+async fn scan_block_ok_when_block_has_no_tx_field() {
+    let (path, _conn) = temp_db();
+    // Block JSON without a "tx" key → early Ok(())
+    let mock = MockNodeRpc::new()
+        .with_block_hash("abc".to_string())
+        .with_block(serde_json::json!({"height": 1}));
+    let result = scan_block(&mock, path.to_str().unwrap(), 1).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn scan_block_ok_when_tx_array_is_empty() {
+    let (path, _conn) = temp_db();
+    let mock = MockNodeRpc::new()
+        .with_block_hash("abc".to_string())
+        .with_block(serde_json::json!({"tx": []}));
+    let result = scan_block(&mock, path.to_str().unwrap(), 1).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn scan_block_ok_when_tx_has_no_outputs() {
+    let (path, _conn) = temp_db();
+    let mock = MockNodeRpc::new()
+        .with_block_hash("abc".to_string())
+        .with_block(serde_json::json!({"tx": [{"hash": "tx1"}]}));
+    let result = scan_block(&mock, path.to_str().unwrap(), 1).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn scan_block_ok_when_outputs_have_no_covenant() {
+    let (path, _conn) = temp_db();
+    let mock = MockNodeRpc::new()
+        .with_block_hash("abc".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "tx1",
+                "outputs": [{"value": 100, "address": "rs1qabc"}]
+            }]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 1).await;
+    assert!(result.is_ok());
+}
+
+// --- BID covenant insertion --------------------------------------------------
+
+#[tokio::test]
+async fn scan_block_inserts_bid_covenant() {
+    let (path, conn) = temp_db();
+    let name_hash = "aabbccdd";
+    // COV_BID items: [nameHash, start_height_u32, rawName_hex, blind]
+    // "namehold" in hex = 6e616d65686f6c64
+    let raw_name_hex = hex::encode("namehold");
+    let mock = MockNodeRpc::new()
+        .with_block_hash("blockhash1".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txid_bid_1",
+                "outputs": [{
+                    "value": 5_000_000_u64,
+                    "address": "rs1qbidder",
+                    "covenant": {
+                        "type": COV_BID as u64,
+                        "items": [name_hash, "00000001", &raw_name_hex, "blindhex"]
+                    }
+                }]
+            }]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 100).await;
+    assert!(result.is_ok());
+
+    // Verify the row was inserted
+    let bids = read_indexed_bids(&conn, name_hash).unwrap();
+    assert_eq!(bids.len(), 1);
+    assert_eq!(bids[0].txid.as_deref(), Some("txid_bid_1"));
+    assert_eq!(bids[0].index, Some(0));
+    assert_eq!(bids[0].lockup, Some(5_000_000));
+    assert_eq!(bids[0].revealed, Some(false));
+    assert_eq!(bids[0].value, None);
+
+    // Call-recorder assertion: `scan_block` must ask the node for the block
+    // hash at the height we passed (100), then fetch that specific hash. A
+    // regression that queried the wrong height — or queried a different hash
+    // than the one just returned — would leave the DB "correct by accident"
+    // (the mock returns canned data regardless of args). The recorder makes
+    // that class of bug visible.
+    use crate::tests::mock_node_rpc::RpcCall;
+    let calls = mock.calls();
+    assert_eq!(
+        calls,
+        vec![
+            RpcCall::BlockHash(100),
+            RpcCall::Block("blockhash1".to_string()),
+        ],
+        "scan_block must (1) resolve height→hash then (2) fetch that hash: {calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn scan_block_calls_get_block_hash_with_correct_height() {
+    // Regression test: verify `scan_block` queries the exact height passed,
+    // not off-by-one or a different value. The call recorder makes this
+    // assertion possible — without it, the mock would return the same canned
+    // block regardless of the height argument, so a bug here would pass silently.
+    let (path, _conn) = temp_db();
+    let mock = MockNodeRpc::new()
+        .with_block_hash("hash_at_999".to_string())
+        .with_block(serde_json::json!({ "tx": [] }));
+
+    let result = scan_block(&mock, path.to_str().unwrap(), 999).await;
+    assert!(result.is_ok());
+
+    use crate::tests::mock_node_rpc::RpcCall;
+    let calls = mock.calls();
+    assert!(
+        calls.iter().any(|c| c == &RpcCall::BlockHash(999)),
+        "scan_block(height=999) must call get_block_hash(999), got: {calls:?}"
+    );
+    // Verify it did NOT query a different height (e.g. 998 or 1000).
+    assert!(
+        !calls
+            .iter()
+            .any(|c| matches!(c, RpcCall::BlockHash(h) if *h != 999)),
+        "scan_block must not query other heights: {calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn scan_block_inserts_bid_with_undecoded_name() {
+    // When rawName hex is not valid UTF-8, name should be None
+    let (path, conn) = temp_db();
+    let name_hash = "deadbeef";
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txbad",
+                "outputs": [{
+                    "value": 1_000_000_u64,
+                    "address": "rs1qx",
+                    "covenant": {
+                        "type": COV_BID as u64,
+                        "items": [name_hash, "00000001", "ff80fe", "blind"]
+                    }
+                }]
+            }]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 50).await;
+    assert!(result.is_ok());
+
+    let bids = read_indexed_bids(&conn, name_hash).unwrap();
+    assert_eq!(bids.len(), 1);
+    assert_eq!(bids[0].lockup, Some(1_000_000));
+}
+
+// --- REVEAL covenant insertion -----------------------------------------------
+
+#[tokio::test]
+async fn scan_block_inserts_reveal_and_matches_to_existing_bid() {
+    let (path, conn) = temp_db();
+    let name_hash = "11223344";
+
+    // Pre-seed a BID row so the REVEAL can match it
+    seed_bid(
+        &conn,
+        "txbid1",
+        0,
+        name_hash,
+        Some("test"),
+        3_000_000,
+        90,
+        None,
+        None,
+    );
+
+    // Now scan a block containing a REVEAL for the same name_hash
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh2".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txreveal1",
+                "outputs": [{
+                    "value": 2_000_000_u64,
+                    "address": "rs1qrev",
+                    "covenant": {
+                        "type": COV_REVEAL as u64,
+                        "items": [name_hash, "0000005a", "nonce123"]
+                    }
+                }]
+            }]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 100).await;
+    assert!(result.is_ok());
+
+    // The BID row should now have reveal_txid and reveal_value_doos set
+    let bids = read_indexed_bids(&conn, name_hash).unwrap();
+    assert_eq!(bids.len(), 1);
+    assert_eq!(bids[0].revealed, Some(true));
+    assert_eq!(bids[0].value, Some(2_000_000));
+}
+
+#[tokio::test]
+async fn scan_block_reveal_without_matching_bid_is_noop() {
+    // REVEAL for a name_hash that has no BID row → UPDATE matches 0 rows → Ok
+    let (path, _conn) = temp_db();
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh3".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txrev_orphan",
+                "outputs": [{
+                    "value": 1_000_000_u64,
+                    "address": "rs1qx",
+                    "covenant": {
+                        "type": COV_REVEAL as u64,
+                        "items": ["no_such_hash", "00000001", "nonce"]
+                    }
+                }]
+            }]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 200).await;
+    assert!(result.is_ok());
+}
+
+// --- Mixed BID + REVEAL in same block ----------------------------------------
+
+#[tokio::test]
+async fn scan_block_processes_bid_and_reveal_in_same_block() {
+    let (path, conn) = temp_db();
+    let name_hash = "aabb0011";
+    let raw_name_hex = hex::encode("mixed");
+
+    // Block contains a BID then a REVEAL for the same name in the same tx
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bhmixed".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txmixed",
+                "outputs": [
+                    {
+                        "value": 4_000_000_u64,
+                        "address": "rs1qbid",
+                        "covenant": {
+                            "type": COV_BID as u64,
+                            "items": [name_hash, "00000001", &raw_name_hex, "blind"]
+                        }
+                    },
+                    {
+                        "value": 2_500_000_u64,
+                        "address": "rs1qrev",
+                        "covenant": {
+                            "type": COV_REVEAL as u64,
+                            "items": [name_hash, "00000064", "nonce"]
+                        }
+                    }
+                ]
+            }]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 150).await;
+    assert!(result.is_ok());
+
+    // BID inserted and REVEAL matched to it
+    let bids = read_indexed_bids(&conn, name_hash).unwrap();
+    assert_eq!(bids.len(), 1);
+    assert_eq!(bids[0].txid.as_deref(), Some("txmixed"));
+    assert_eq!(bids[0].lockup, Some(4_000_000));
+    assert_eq!(bids[0].revealed, Some(true));
+    assert_eq!(bids[0].value, Some(2_500_000));
+}
+
+// --- Malformed output edge cases ---------------------------------------------
+
+#[tokio::test]
+async fn scan_block_skips_tx_with_empty_hash() {
+    let (path, conn) = temp_db();
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "",
+                "outputs": [{
+                    "value": 1_000_000_u64,
+                    "address": "rs1q",
+                    "covenant": {
+                        "type": COV_BID as u64,
+                        "items": ["aabb", "00000001", "6e616d65", "blind"]
+                    }
+                }]
+            }]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 10).await;
+    assert!(result.is_ok());
+    // Nothing inserted because txid was empty
+    let bids = read_indexed_bids(&conn, "aabb").unwrap();
+    assert!(bids.is_empty());
+}
+
+#[tokio::test]
+async fn scan_block_skips_covenant_with_empty_items() {
+    let (path, _conn) = temp_db();
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txvalid",
+                "outputs": [{
+                    "value": 1_000_000_u64,
+                    "address": "rs1q",
+                    "covenant": {
+                        "type": COV_BID as u64,
+                        "items": []
+                    }
+                }]
+            }]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 10).await;
+    assert!(result.is_ok());
+    // Empty items → skipped
+}
+
+#[tokio::test]
+async fn scan_block_skips_covenant_with_empty_name_hash() {
+    let (path, _conn) = temp_db();
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txvalid",
+                "outputs": [{
+                    "value": 1_000_000_u64,
+                    "address": "rs1q",
+                    "covenant": {
+                        "type": COV_BID as u64,
+                        "items": ["", "00000001", "6e616d65", "blind"]
+                    }
+                }]
+            }]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 10).await;
+    assert!(result.is_ok());
+    // Empty name_hash → skipped
+}
+
+#[tokio::test]
+async fn scan_block_skips_unknown_covenant_type() {
+    let (path, conn) = temp_db();
+    // Covenant type 99 is neither BID nor REVEAL → ignored
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txvalid",
+                "outputs": [{
+                    "value": 1_000_000_u64,
+                    "address": "rs1q",
+                    "covenant": {
+                        "type": 99_u64,
+                        "items": ["aabb", "00000001", "6e616d65", "blind"]
+                    }
+                }]
+            }]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 10).await;
+    assert!(result.is_ok());
+    let bids = read_indexed_bids(&conn, "aabb").unwrap();
+    assert!(bids.is_empty());
+}
+
+#[tokio::test]
+async fn scan_block_handles_missing_tx_hash_field() {
+    // tx object without "hash" at all → unwrap_or_default → empty → skipped
+    let (path, _conn) = temp_db();
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "outputs": [{
+                    "value": 1_000_000_u64,
+                    "covenant": {
+                        "type": COV_BID as u64,
+                        "items": ["aabb", "00000001", "6e616d65", "blind"]
+                    }
+                }]
+            }]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 10).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn scan_block_handles_output_without_address_or_value() {
+    // Missing "address" and "value" → address=None, value=0 — still inserts
+    let (path, conn) = temp_db();
+    let name_hash = "ccdd0011";
+    let raw_name_hex = hex::encode("noaddr");
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txnoaddr",
+                "outputs": [{
+                    "covenant": {
+                        "type": COV_BID as u64,
+                        "items": [name_hash, "00000001", &raw_name_hex, "blind"]
+                    }
+                }]
+            }]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 10).await;
+    assert!(result.is_ok());
+    let bids = read_indexed_bids(&conn, name_hash).unwrap();
+    assert_eq!(bids.len(), 1);
+    assert_eq!(bids[0].lockup, Some(0)); // value defaults to 0
+}
+
+// --- ON CONFLICT (upsert) path -----------------------------------------------
+
+#[tokio::test]
+async fn scan_block_upsert_updates_name_on_conflict() {
+    let (path, conn) = temp_db();
+    let name_hash = "upserthash";
+
+    // First insert: BID without a decodable name (invalid hex for rawName)
+    let mock1 = MockNodeRpc::new()
+        .with_block_hash("bh1".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txupsert",
+                "outputs": [{
+                    "value": 2_000_000_u64,
+                    "address": "rs1q",
+                    "covenant": {
+                        "type": COV_BID as u64,
+                        "items": [name_hash, "00000001", "zzzz", "blind"]
+                    }
+                }]
+            }]
+        }));
+    scan_block(&mock1, path.to_str().unwrap(), 10)
+        .await
+        .unwrap();
+
+    // Second insert: same (txid, vout) but now with a valid name
+    let raw_name_hex = hex::encode("upserted");
+    let mock2 = MockNodeRpc::new()
+        .with_block_hash("bh2".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txupsert",
+                "outputs": [{
+                    "value": 2_000_000_u64,
+                    "address": "rs1q",
+                    "covenant": {
+                        "type": COV_BID as u64,
+                        "items": [name_hash, "00000001", &raw_name_hex, "blind"]
+                    }
+                }]
+            }]
+        }));
+    scan_block(&mock2, path.to_str().unwrap(), 11)
+        .await
+        .unwrap();
+
+    // The row should still be 1 (upserted, not duplicated)
+    let bids = read_indexed_bids(&conn, name_hash).unwrap();
+    assert_eq!(bids.len(), 1);
+}
+
+// --- Multiple transactions in one block --------------------------------------
+
+#[tokio::test]
+async fn scan_block_processes_multiple_txs() {
+    let (path, conn) = temp_db();
+    let nh1 = "multihash1";
+    let nh2 = "multihash2";
+    let raw1 = hex::encode("name1");
+    let raw2 = hex::encode("name2");
+
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bhmulti".to_string())
+        .with_block(serde_json::json!({
+            "tx": [
+                {
+                    "hash": "tx_a",
+                    "outputs": [{
+                        "value": 1_000_000_u64,
+                        "address": "rs1qa",
+                        "covenant": {
+                            "type": COV_BID as u64,
+                            "items": [nh1, "00000001", &raw1, "blind1"]
+                        }
+                    }]
+                },
+                {
+                    "hash": "tx_b",
+                    "outputs": [{
+                        "value": 2_000_000_u64,
+                        "address": "rs1qb",
+                        "covenant": {
+                            "type": COV_BID as u64,
+                            "items": [nh2, "00000001", &raw2, "blind2"]
+                        }
+                    }]
+                }
+            ]
+        }));
+    let result = scan_block(&mock, path.to_str().unwrap(), 300).await;
+    assert!(result.is_ok());
+
+    assert_eq!(read_indexed_bids(&conn, nh1).unwrap().len(), 1);
+    assert_eq!(read_indexed_bids(&conn, nh2).unwrap().len(), 1);
+}
+
+// --- set_scan_cursor ---------------------------------------------------------
+
+#[tokio::test]
+async fn set_scan_cursor_persists_height() {
+    let (_path, conn) = temp_db();
+    assert_eq!(scan_cursor_height(&conn), 0);
+    set_scan_cursor(&conn, 42).unwrap();
+    assert_eq!(scan_cursor_height(&conn), 42);
+    set_scan_cursor(&conn, 9999).unwrap();
+    assert_eq!(scan_cursor_height(&conn), 9999);
+}
+
+// --- name_hash lowercasing in scan_block -------------------------------------
+
+#[tokio::test]
+async fn scan_block_lowercases_name_hash_from_covenant() {
+    let (path, conn) = temp_db();
+    // Items contain uppercase name_hash — scan_block lowercases it
+    let raw_name_hex = hex::encode("lower");
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txlower",
+                "outputs": [{
+                    "value": 500_000_u64,
+                    "address": "rs1q",
+                    "covenant": {
+                        "type": COV_BID as u64,
+                        "items": ["AABBCCDD", "00000001", &raw_name_hex, "blind"]
+                    }
+                }]
+            }]
+        }));
+    scan_block(&mock, path.to_str().unwrap(), 5).await.unwrap();
+
+    // Query with lowercase should find it
+    let bids = read_indexed_bids(&conn, "aabbccdd").unwrap();
+    assert_eq!(bids.len(), 1);
+}
+
+// --- Multiple outputs per tx (vout indexing) ---------------------------------
+
+#[tokio::test]
+async fn scan_block_assigns_correct_vout_index() {
+    let (path, conn) = temp_db();
+    let nh = "vouthash";
+    let raw_name_hex = hex::encode("vout");
+
+    // Two BID outputs in the same tx at vout 0 and vout 1
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "hash": "txvout",
+                "outputs": [
+                    {
+                        "value": 1_000_000_u64,
+                        "address": "rs1qa",
+                        "covenant": {
+                            "type": COV_BID as u64,
+                            "items": [nh, "00000001", &raw_name_hex, "blind"]
+                        }
+                    },
+                    {
+                        "value": 2_000_000_u64,
+                        "address": "rs1qb",
+                        "covenant": {
+                            "type": COV_BID as u64,
+                            "items": [nh, "00000001", &raw_name_hex, "blind"]
+                        }
+                    }
+                ]
+            }]
+        }));
+    scan_block(&mock, path.to_str().unwrap(), 20).await.unwrap();
+
+    let bids = read_indexed_bids(&conn, nh).unwrap();
+    assert_eq!(bids.len(), 2);
+    assert_eq!(bids[0].index, Some(0));
+    assert_eq!(bids[1].index, Some(1));
+}

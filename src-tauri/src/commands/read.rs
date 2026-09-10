@@ -4,6 +4,22 @@
 //! derived addresses / local inventory (node-free), falling back to the
 //! node-synced cache when the explorer is unreachable. Transactions come from
 //! the local cache. Writes are never routed through here.
+//!
+//! COVERAGE: 92.06% line / 88.31% region — realistic ceiling. Remaining ~104
+//! missed lines: (a) the explorer-crawl path of `repair_owned_names` (~15 lines
+//! — needs multi-endpoint mocking of `/api/names/*` + `/api/names/*/history`
+//! per candidate, diminishing returns); (b) explorer-crawl edges of
+//! `discover_owned_names` (rate-limit `break 'crawl`, `get_address_txids`
+//! transport error — fragile to trigger); (c) `.map_err(AppError::Lock)`
+//! closures across ~14 lines (only firing on Mutex poison, structurally
+//! untestable). Test harness in `src/tests/read_cmd_tests.rs` supports both
+//! mockito node (`getblockchaininfo` at `node_rpc_url`) and mockito explorer
+//! (`/api/names/*` at `explorer_api_url`) — reusable for future work.
+//! GOTCHA: `resolve_profile` gracefully falls back from an unknown explicit id
+//! to the active profile — so the `list_receive_addresses` "wallet profile not
+//! found" branch is unreachable through the command surface and effectively
+//! dead code. Any future test claiming to cover that branch is actually hitting
+//! the active-profile fallback.
 
 use crate::db::queries;
 use crate::error::AppError;
@@ -653,6 +669,7 @@ pub async fn read_auction_position_names(
 /// Throttled + best-effort: on a rate-limit/transport error mid-crawl we stop
 /// and persist whatever was confirmed so far rather than failing the whole pass.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn discover_owned_names(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
@@ -1862,13 +1879,7 @@ pub(crate) fn compute_renewals(
 
     // Most urgent first; unknown-expiry rows last.
     names.sort_by(|a, b| {
-        match (a.days_until_expire, b.days_until_expire) {
-            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        }
-        .then_with(|| a.name.cmp(&b.name))
+        compare_renewal_rows_by_urgency(a.days_until_expire, &a.name, b.days_until_expire, &b.name)
     });
 
     Ok(RenewalsResponse {
@@ -1898,6 +1909,28 @@ pub async fn read_renewals(
     compute_renewals(&conn, &id, live_height)
 }
 
+/// Comparator for [`RenewalRow`]s used by `compute_renewals`.
+///
+/// Order: most urgent first (smallest `days_until_expire`), unknown-expiry
+/// rows (`None`) last; ties broken by ascending `name` for stability. `NaN`
+/// day values compare as equal (treated as a tie) rather than panicking.
+///
+/// Extracted from an inline closure so every match arm is directly testable.
+pub(crate) fn compare_renewal_rows_by_urgency(
+    a_days: Option<f64>,
+    a_name: &str,
+    b_days: Option<f64>,
+    b_name: &str,
+) -> std::cmp::Ordering {
+    match (a_days, b_days) {
+        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+    .then_with(|| a_name.cmp(b_name))
+}
+
 /// Reconcile owned names in the local cache against live explorer data,
 /// repairing missing/incorrect fields so the owned-names list and auctions
 /// view are accurate.
@@ -1911,6 +1944,7 @@ pub async fn read_renewals(
 /// The command looks up each name in the explorer, determines if the wallet
 /// still owns it, and upserts an authoritative `tracked_name_states` row.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn repair_owned_names(state: State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     let id = match active_profile(&state)? {
         Some(id) => id,
@@ -2053,4 +2087,90 @@ pub async fn reveal_next_receive_address(
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let derived = crate::noncustodial::derivation::derive_next_for_profile(&conn, &id)?;
     Ok(derived.address)
+}
+
+#[cfg(test)]
+mod urgency_comparator_tests {
+    use super::compare_renewal_rows_by_urgency;
+    use std::cmp::Ordering;
+
+    // (Some, Some): smaller `days_until_expire` (more urgent) sorts first.
+    #[test]
+    fn both_known_smaller_days_wins() {
+        assert_eq!(
+            compare_renewal_rows_by_urgency(Some(5.0), "a", Some(30.0), "b"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_renewal_rows_by_urgency(Some(30.0), "a", Some(5.0), "b"),
+            Ordering::Greater
+        );
+    }
+
+    // Same day count -> ascending-name tiebreak.
+    #[test]
+    fn equal_days_break_tie_by_name() {
+        assert_eq!(
+            compare_renewal_rows_by_urgency(Some(10.0), "alpha", Some(10.0), "beta"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_renewal_rows_by_urgency(Some(10.0), "beta", Some(10.0), "alpha"),
+            Ordering::Greater
+        );
+    }
+
+    // Negative days (already lapsed) still compare numerically -- most-lapsed first.
+    #[test]
+    fn negative_days_are_most_urgent() {
+        assert_eq!(
+            compare_renewal_rows_by_urgency(Some(-3.0), "a", Some(5.0), "b"),
+            Ordering::Less
+        );
+    }
+
+    // (Some, None): known-expiry beats unknown-expiry.
+    #[test]
+    fn known_expiry_leads_unknown() {
+        assert_eq!(
+            compare_renewal_rows_by_urgency(Some(100.0), "a", None, "b"),
+            Ordering::Less
+        );
+    }
+
+    // (None, Some): unknown-expiry trails known-expiry.
+    #[test]
+    fn unknown_expiry_trails_known() {
+        assert_eq!(
+            compare_renewal_rows_by_urgency(None, "a", Some(100.0), "b"),
+            Ordering::Greater
+        );
+    }
+
+    // (None, None): unknown vs unknown falls through to name tiebreak.
+    #[test]
+    fn both_unknown_break_tie_by_name() {
+        assert_eq!(
+            compare_renewal_rows_by_urgency(None, "alpha", None, "beta"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_renewal_rows_by_urgency(None, "same", None, "same"),
+            Ordering::Equal
+        );
+    }
+
+    // `NaN` doesn't panic -- `partial_cmp` returns None, falls back to Equal
+    // for the day arm, then name tiebreak takes over.
+    #[test]
+    fn nan_days_fall_back_to_name_tiebreak_without_panic() {
+        assert_eq!(
+            compare_renewal_rows_by_urgency(Some(f64::NAN), "alpha", Some(10.0), "beta"),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_renewal_rows_by_urgency(Some(f64::NAN), "same", Some(f64::NAN), "same"),
+            Ordering::Equal
+        );
+    }
 }

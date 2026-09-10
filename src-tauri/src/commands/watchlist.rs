@@ -1,5 +1,7 @@
 //! Watchlist CRUD commands: track names you don't own for monitoring.
 
+// COVERAGE: #[tauri::command] macro attribute lines are structurally uncoverable.
+
 use crate::error::AppError;
 use crate::AppState;
 use rusqlite::params;
@@ -319,4 +321,215 @@ pub fn import_watchlist_csv(
         }
     }
     Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for private pure helpers (`csv_escape`, `csv_split_row`).
+//
+// The Tauri-command surface is tested in `src/tests/watchlist_cmd_tests.rs`
+// (which cannot reach these private helpers). This inline module pins the
+// branch behaviour of each helper directly, exhaustively covering:
+//   * every `needs_quote` predicate branch in `csv_escape`
+//   * every quoting-state transition in `csv_split_row`, including
+//     doubled-quote escapes, embedded commas, empty and trailing fields,
+//     bare quotes in the middle of an unquoted field (treated as literal),
+//     and an unbalanced trailing quote (graceful fallback: consumed input
+//     ends up in the final field).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod pure_helper_tests {
+    use super::{csv_escape, csv_split_row};
+
+    // --- csv_escape --------------------------------------------------------
+
+    #[test]
+    fn csv_escape_passthrough_when_no_special_chars() {
+        // No comma, no quote, no newline, no CR → returned verbatim.
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("with spaces and.dots"), "with spaces and.dots");
+        assert_eq!(csv_escape("café-utf8"), "café-utf8");
+    }
+
+    #[test]
+    fn csv_escape_empty_string_is_passthrough() {
+        // Empty string has no special chars → returned as-is (not quoted).
+        assert_eq!(csv_escape(""), "");
+    }
+
+    #[test]
+    fn csv_escape_wraps_comma() {
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+    }
+
+    #[test]
+    fn csv_escape_wraps_and_doubles_quote() {
+        // Internal quote must be doubled, then the whole cell wrapped.
+        assert_eq!(csv_escape("he said \"hi\""), "\"he said \"\"hi\"\"\"");
+        // A cell that is a single quote character.
+        assert_eq!(csv_escape("\""), "\"\"\"\"");
+    }
+
+    #[test]
+    fn csv_escape_wraps_newline() {
+        assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
+    }
+
+    #[test]
+    fn csv_escape_wraps_carriage_return() {
+        // The `\r` branch of the `needs_quote` predicate.
+        assert_eq!(csv_escape("line1\rline2"), "\"line1\rline2\"");
+    }
+
+    #[test]
+    fn csv_escape_all_special_chars_at_once() {
+        // Combines every triggering branch and the internal-quote doubling.
+        let out = csv_escape("a,\"b\"\nc\rd");
+        assert_eq!(out, "\"a,\"\"b\"\"\nc\rd\"");
+    }
+
+    // --- csv_split_row -----------------------------------------------------
+
+    #[test]
+    fn csv_split_row_simple_comma_separated() {
+        assert_eq!(
+            csv_split_row("a,b,c"),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn csv_split_row_empty_input_yields_one_empty_field() {
+        // The trailing `out.push(cur)` after the loop guarantees at least
+        // one field even for an empty row.
+        assert_eq!(csv_split_row(""), vec!["".to_string()]);
+    }
+
+    #[test]
+    fn csv_split_row_single_field_no_commas() {
+        assert_eq!(csv_split_row("solo"), vec!["solo".to_string()]);
+    }
+
+    #[test]
+    fn csv_split_row_trailing_empty_field() {
+        // Trailing comma → a final empty field is pushed.
+        assert_eq!(
+            csv_split_row("a,b,"),
+            vec!["a".to_string(), "b".to_string(), "".to_string()]
+        );
+    }
+
+    #[test]
+    fn csv_split_row_consecutive_commas_yield_empty_middle_fields() {
+        assert_eq!(
+            csv_split_row("a,,b"),
+            vec!["a".to_string(), "".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn csv_split_row_quoted_field_preserves_content() {
+        // A quoted field keeps its inner value; the surrounding quotes are
+        // stripped by the state machine.
+        assert_eq!(
+            csv_split_row("\"hello\",world"),
+            vec!["hello".to_string(), "world".to_string()]
+        );
+    }
+
+    #[test]
+    fn csv_split_row_embedded_comma_inside_quoted_field() {
+        // Commas inside quotes must NOT split the row.
+        assert_eq!(
+            csv_split_row("\"a,b\",c"),
+            vec!["a,b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn csv_split_row_doubled_quote_inside_quoted_field() {
+        // `""` inside a quoted field decodes to a single `"`.
+        assert_eq!(
+            csv_split_row("\"he said \"\"hi\"\"\",tail"),
+            vec!["he said \"hi\"".to_string(), "tail".to_string()]
+        );
+    }
+
+    #[test]
+    fn csv_split_row_quote_transitions_out_and_back_in_unquoted_context() {
+        // After a closing quote (in_quote flips false), a following char that
+        // is not a comma is appended to `cur` via the trailing `else` arm.
+        // `"x"y,z` → cur becomes `xy` after the closing quote's peek-branch,
+        // then `y` from the unquoted branch (`c == '"' && cur.is_empty()` is
+        // false because cur == "x"), then split at comma.
+        assert_eq!(
+            csv_split_row("\"x\"y,z"),
+            vec!["xy".to_string(), "z".to_string()]
+        );
+    }
+
+    #[test]
+    fn csv_split_row_bare_quote_mid_unquoted_field_is_literal() {
+        // When cur is non-empty and we hit `"`, neither the "start quote"
+        // arm nor the "comma" arm matches → the quote is appended literally
+        // via the trailing `else` arm.
+        assert_eq!(
+            csv_split_row("ab\"cd,ef"),
+            vec!["ab\"cd".to_string(), "ef".to_string()]
+        );
+    }
+
+    #[test]
+    fn csv_split_row_unbalanced_quote_falls_back_gracefully() {
+        // No terminating quote: the parser stays in_quote until EOF and
+        // returns whatever it accumulated as the last field — no panic.
+        assert_eq!(
+            csv_split_row("\"unterminated,still here"),
+            vec!["unterminated,still here".to_string()]
+        );
+    }
+
+    #[test]
+    fn csv_split_row_empty_quoted_field() {
+        // A pair of quotes with nothing inside → empty field.
+        assert_eq!(
+            csv_split_row("\"\",b"),
+            vec!["".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn csv_split_row_quoted_field_with_newline_inside() {
+        // Newlines are just data inside a quoted field.
+        assert_eq!(
+            csv_split_row("\"line1\nline2\",tail"),
+            vec!["line1\nline2".to_string(), "tail".to_string()]
+        );
+    }
+
+    // --- round-trip contract: escape then split reverses cleanly -----------
+
+    #[test]
+    fn csv_escape_then_split_round_trip_preserves_cells() {
+        // Assembling a single-row CSV from escaped cells and re-splitting it
+        // must yield the original vector, even when cells contain commas,
+        // quotes, and newlines.
+        let cells = [
+            "plain",
+            "",
+            "with,comma",
+            "with \"quote\"",
+            "with\nnewline",
+            "café",
+        ];
+        let row = cells
+            .iter()
+            .map(|c| csv_escape(c))
+            .collect::<Vec<_>>()
+            .join(",");
+        let parsed = csv_split_row(&row);
+        assert_eq!(
+            parsed,
+            cells.iter().map(|c| c.to_string()).collect::<Vec<_>>()
+        );
+    }
 }

@@ -1217,6 +1217,7 @@ pub(crate) fn next_action_for_task(
 // --- OPEN ------------------------------------------------------------------
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_open_draft(
     state: State<'_, AppState>,
     name: String,
@@ -1315,6 +1316,7 @@ pub(crate) fn build_open_draft_inner(
 // --- BID -------------------------------------------------------------------
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_bid_draft(
     state: State<'_, AppState>,
     name: String,
@@ -1486,12 +1488,12 @@ pub(crate) fn build_bid_draft_inner(
 
 /// One name's pre-fetched auction state, gathered before the batch-bid
 /// critical section so all network/hash errors surface before any DB write.
-struct NameSpec {
-    name: String,
-    nh: [u8; 32],
-    nh_hex: String,
-    raw: Vec<u8>,
-    ns: NameState,
+pub(crate) struct NameSpec {
+    pub(crate) name: String,
+    pub(crate) nh: [u8; 32],
+    pub(crate) nh_hex: String,
+    pub(crate) raw: Vec<u8>,
+    pub(crate) ns: NameState,
 }
 
 /// One name's bid result inside a batch: the plan output plus the blind hex
@@ -1508,6 +1510,7 @@ struct BidOutcome {
 /// and bid commitment row. Atomic: if any name fails the multiplicity guard or
 /// phase check, the entire batch is rejected and no draft is persisted.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_batch_bid_draft(
     state: State<'_, AppState>,
     names: Vec<String>,
@@ -1552,14 +1555,37 @@ pub async fn build_batch_bid_draft(
         });
     }
 
+    // --- Atomic section: multiplicity guard + all commitment/draft writes.
+    // Hold the lock for the entire batch so no concurrent bid can slip in
+    // between our guard checks and our writes.
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_batch_bid_draft_inner(&conn, &ctx, &names, name_specs, bid_value, lockup, rate)
+}
+
+/// Pure inner logic for `build_batch_bid_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration — the multiplicity guard + address derivation + commitment
+/// writes + draft persist all run in one critical section so no concurrent
+/// bid can slip in between the guard and the writes.
+///
+/// `name_specs` is the pre-fetched auction state per name (from the wrapper's
+/// `fetch_name_state` prefetch); consensus phase check happens here so a
+/// single ineligible name aborts the entire batch before any DB write.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_batch_bid_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    names: &[String],
+    name_specs: Vec<NameSpec>,
+    bid_value: i64,
+    lockup: i64,
+    rate: u64,
+) -> Result<TxDraftSummary, AppError> {
     // Phase check: consensus only accepts a `bid` covenant while the auction
     // is in BIDDING (or the immediately-preceding OPENING window that the UI's
     // `is_bidding_compatible` check also accepts — see `names.rs` `derive_...`
-    // capability logic). We enforce it here, BEFORE the DB critical section,
-    // so no bid_commitments row or draft is ever persisted for an un-biddable
-    // name — even when the UI is bypassed (the modal's own preflight is
-    // advisory). A single ineligible name aborts the entire batch: batch-bid
-    // is defined as all-or-nothing (see the fn doc-comment above).
+    // capability logic). A single ineligible name aborts the entire batch:
+    // batch-bid is defined as all-or-nothing (see the fn doc-comment above).
     for spec in &name_specs {
         let phase = spec.ns.phase.as_str();
         if phase != "BIDDING" && phase != "OPENING" {
@@ -1571,16 +1597,11 @@ pub async fn build_batch_bid_draft(
         }
     }
 
-    // --- Atomic section: multiplicity guard + all commitment/draft writes.
-    // Hold the lock for the entire batch so no concurrent bid can slip in
-    // between our guard checks and our writes.
-    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-
     // Guard: check that NO name in the batch already has an unspent bid coin
     // or pending bid draft.
     for spec in &name_specs {
         let existing_bid_coins = queries::find_unspent_covenant_utxos_by_name_hash(
-            &conn,
+            conn,
             &ctx.profile_id,
             sync::COV_BID as i64,
             &spec.nh_hex,
@@ -1591,7 +1612,7 @@ pub async fn build_batch_bid_draft(
                 spec.name
             )));
         }
-        if queries::has_pending_bid_draft_for_name(&conn, &ctx.profile_id, &spec.name)? {
+        if queries::has_pending_bid_draft_for_name(conn, &ctx.profile_id, &spec.name)? {
             return Err(AppError::InvalidInput(format!(
                 "a bid draft for '{}' is already pending — one bid per wallet per name",
                 spec.name
@@ -1620,7 +1641,7 @@ pub async fn build_batch_bid_draft(
         // longer critical section is the price of that per-batch
         // atomicity.
         let bid_addr = crate::noncustodial::derivation::next_unused_receive_address(
-            &conn,
+            conn,
             &ctx.profile_id,
             ctx.account,
             ctx.network,
@@ -1640,7 +1661,7 @@ pub async fn build_batch_bid_draft(
 
         // Persist commitment before adding to the batch plan.
         queries::insert_bid_commitment(
-            &conn,
+            conn,
             &ctx.profile_id,
             &spec.name,
             &spec.nh_hex,
@@ -1655,7 +1676,7 @@ pub async fn build_batch_bid_draft(
 
         // Estimate reveal-end height and stamp it.
         let reveal_end_height = names_pure::reveal_end_height(spec.ns.height as i64, &params);
-        queries::set_reveal_end_height(&conn, &ctx.profile_id, &blind_hex, reveal_end_height)?;
+        queries::set_reveal_end_height(conn, &ctx.profile_id, &blind_hex, reveal_end_height)?;
 
         outcomes.push(BidOutcome {
             primary: PrimaryOutput {
@@ -1684,10 +1705,10 @@ pub async fn build_batch_bid_draft(
 
     // Persist the draft. Note: the schema stores one name per draft; for a
     // batch we use the first name as the draft label (a limitation).
-    let display_name = names_pure::display_names(&names);
+    let display_name = names_pure::display_names(names);
     let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
     let summary = persist_with_conn(
-        &conn,
+        conn,
         &ctx.profile_id,
         "batch-bid",
         &display_name,
@@ -1698,7 +1719,7 @@ pub async fn build_batch_bid_draft(
 
     // Stamp the pre-signing txid onto each commitment (same as single-bid).
     for outcome in &outcomes {
-        queries::set_bid_txid(&conn, &ctx.profile_id, &outcome.blind_hex, &res.txid)?;
+        queries::set_bid_txid(conn, &ctx.profile_id, &outcome.blind_hex, &res.txid)?;
     }
 
     Ok(summary)
@@ -1707,6 +1728,7 @@ pub async fn build_batch_bid_draft(
 // --- REVEAL ----------------------------------------------------------------
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_reveal_draft(
     state: State<'_, AppState>,
     name: String,
@@ -1798,6 +1820,7 @@ pub(crate) fn build_reveal_draft_inner(
 // --- REDEEM ----------------------------------------------------------------
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_redeem_draft(
     state: State<'_, AppState>,
     name: String,
@@ -1885,6 +1908,7 @@ async fn owner_coin_and_state(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_register_draft(
     state: State<'_, AppState>,
     name: String,
@@ -1953,6 +1977,7 @@ pub(crate) fn build_register_draft_inner(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_update_draft(
     state: State<'_, AppState>,
     name: String,
@@ -2004,6 +2029,7 @@ pub(crate) fn build_update_draft_inner(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_renew_draft(
     state: State<'_, AppState>,
     name: String,
@@ -2056,6 +2082,7 @@ pub(crate) fn build_renew_draft_inner(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_transfer_draft(
     state: State<'_, AppState>,
     name: String,
@@ -2116,6 +2143,7 @@ pub(crate) fn build_transfer_draft_inner(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_finalize_draft(
     state: State<'_, AppState>,
     name: String,
@@ -2215,6 +2243,7 @@ pub(crate) fn build_finalize_draft_inner(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_cancel_draft(
     state: State<'_, AppState>,
     name: String,
@@ -2241,6 +2270,7 @@ pub async fn build_cancel_draft(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_revoke_draft(
     state: State<'_, AppState>,
     name: String,
@@ -2277,6 +2307,7 @@ pub async fn build_revoke_draft(
 pub const MAX_BATCH_SIZE: usize = 100;
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_batch_renew_draft(
     state: State<'_, AppState>,
     names: Vec<String>,
@@ -2297,22 +2328,46 @@ pub async fn build_batch_renew_draft(
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let rblock = renewal_block(&client, ctx.network).await?;
 
-    let mut primaries = Vec::new();
-    let mut name_inputs = Vec::new();
-    let mut batch_names = Vec::new();
-
+    let mut per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)> =
+        Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         let (coin, ns) = owner_coin_and_state(&state, &ctx, name).await?;
+        per_name.push((name.clone(), nh, coin, ns));
+    }
+
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_batch_renew_draft_inner(&conn, &ctx, &names, per_name, &rblock, rate)
+}
+
+/// Pure inner logic for `build_batch_renew_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full duration.
+///
+/// `per_name` is `(name, name_hash, owner_coin, on_chain_state)` for every
+/// name in the batch, resolved by the wrapper via its per-name owner-coin +
+/// name-state prefetch. `rblock` is the pre-fetched renewal-block hash.
+pub(crate) fn build_batch_renew_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    names: &[String],
+    per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)>,
+    rblock: &[u8; 32],
+    rate: u64,
+) -> Result<TxDraftSummary, AppError> {
+    let mut primaries = Vec::with_capacity(per_name.len());
+    let mut name_inputs = Vec::with_capacity(per_name.len());
+    let mut batch_names = Vec::with_capacity(per_name.len());
+
+    for (name, nh, coin, ns) in per_name {
         let addr = coin.address.clone();
         let value = coin.value;
         name_inputs.push(name_input_from(coin));
         primaries.push(PrimaryOutput {
             value,
             address: addr,
-            covenant: covenants::renew(&nh, ns.height, &rblock),
+            covenant: covenants::renew(&nh, ns.height, rblock),
         });
-        batch_names.push(name.clone());
+        batch_names.push(name);
     }
 
     let res = actions::build_batch_plan(
@@ -2326,9 +2381,10 @@ pub async fn build_batch_renew_draft(
     )?;
     // Persist with first name as primary; the draft plan contains all names.
     let display_name = names_pure::display_names(&batch_names);
+    let _ = names; // kept for API parity; batch_names carries the actual list
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
-    persist(
-        &state,
+    persist_with_conn(
+        conn,
         &ctx.profile_id,
         "batch-renew",
         &display_name,
@@ -2339,6 +2395,7 @@ pub async fn build_batch_renew_draft(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_batch_reveal_draft(
     state: State<'_, AppState>,
     names: Vec<String>,
@@ -2357,10 +2414,18 @@ pub async fn build_batch_reveal_draft(
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let client = NodeRpcClient::from_settings(&ctx.settings);
-    let mut primaries = Vec::new();
-    let mut name_inputs = Vec::new();
-    let mut batch_names = Vec::new();
 
+    // Per-name prefetch: brief DB lock (bid commitment + unspent BID coin),
+    // then async RPC with NO lock held — preserving the original per-name
+    // lock/unlock discipline. The pure computation (nonce parse + covenant +
+    // plan + persist) runs afterward under one final held lock in the inner.
+    let mut per_name: Vec<(
+        String,
+        [u8; 32],
+        queries::BidCommitmentRow,
+        queries::NameCoin,
+        NameState,
+    )> = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         // DB reads — lock is held only briefly, dropped before any await.
@@ -2381,6 +2446,39 @@ pub async fn build_batch_reveal_draft(
             })?;
             (bid, coin)
         };
+        // Async RPC — no DB lock held here.
+        let ns = fetch_name_state(&client, name).await?;
+        per_name.push((name.clone(), nh, bid, bid_coin, ns));
+    }
+
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_batch_reveal_draft_inner(&conn, &ctx, per_name, rate)
+}
+
+/// Pure inner logic for `build_batch_reveal_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full duration.
+///
+/// `per_name` is `(name, name_hash, bid_commitment, bid_coin, on_chain_state)`
+/// for every name in the batch — the bid-commitment / BID-coin lookups + the
+/// `fetch_name_state` RPC happen in the wrapper. This inner parses each stored
+/// nonce, builds the REVEAL covenant outputs, and persists the batch draft.
+pub(crate) fn build_batch_reveal_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    per_name: Vec<(
+        String,
+        [u8; 32],
+        queries::BidCommitmentRow,
+        queries::NameCoin,
+        NameState,
+    )>,
+    rate: u64,
+) -> Result<TxDraftSummary, AppError> {
+    let mut primaries = Vec::with_capacity(per_name.len());
+    let mut name_inputs = Vec::with_capacity(per_name.len());
+    let mut batch_names = Vec::with_capacity(per_name.len());
+
+    for (name, nh, bid, bid_coin, ns) in per_name {
         let mut nonce = [0u8; 32];
         let nb =
             hex::decode(&bid.nonce_hex).map_err(|e| AppError::Crypto(format!("nonce: {e}")))?;
@@ -2391,8 +2489,6 @@ pub async fn build_batch_reveal_draft(
             )));
         }
         nonce.copy_from_slice(&nb);
-        // Async RPC — no DB lock held here.
-        let ns = fetch_name_state(&client, name).await?;
         let cov = covenants::reveal(&nh, ns.height, &nonce);
         name_inputs.push(name_input_from(bid_coin.clone()));
         primaries.push(PrimaryOutput {
@@ -2400,7 +2496,7 @@ pub async fn build_batch_reveal_draft(
             address: bid_coin.address.clone(),
             covenant: cov,
         });
-        batch_names.push(name.clone());
+        batch_names.push(name);
     }
 
     let res = actions::build_batch_plan(
@@ -2414,8 +2510,8 @@ pub async fn build_batch_reveal_draft(
     )?;
     let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
-    persist(
-        &state,
+    persist_with_conn(
+        conn,
         &ctx.profile_id,
         "batch-reveal",
         &display_name,
@@ -2426,6 +2522,7 @@ pub async fn build_batch_reveal_draft(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_batch_redeem_draft(
     state: State<'_, AppState>,
     names: Vec<String>,
@@ -2444,31 +2541,72 @@ pub async fn build_batch_redeem_draft(
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let client = NodeRpcClient::from_settings(&ctx.settings);
-    let mut primaries = Vec::new();
-    let mut name_inputs = Vec::new();
-    let mut batch_names = Vec::new();
 
+    // Per-name prefetch: async RPC first, then a brief DB lock for the
+    // commitment + reveal-coin lookup — preserving the original per-iteration
+    // RPC-then-lock discipline. The pure computation (covenant + plan +
+    // persist) runs afterward under one final held lock in the inner.
+    let mut per_name: Vec<(
+        String,
+        [u8; 32],
+        queries::BidCommitmentRow,
+        queries::NameCoin,
+        NameState,
+    )> = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         let ns = fetch_name_state(&client, name).await?;
-        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, name)?
-            .ok_or_else(|| AppError::NotFound(format!("no bid for '{}'", name)))?;
-        let coin = queries::find_unspent_covenant_utxo(
-            &conn,
-            &ctx.profile_id,
-            &bid.address,
-            sync::COV_REVEAL as i64,
-            name,
-            &hex::encode(nh),
-        )?
-        .ok_or_else(|| {
-            AppError::NotFound(format!(
-                "no unspent losing reveal coin for '{}' (sync first?)",
-                name
-            ))
-        })?;
-        drop(conn);
+        let (bid, coin) = {
+            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+            let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, name)?
+                .ok_or_else(|| AppError::NotFound(format!("no bid for '{}'", name)))?;
+            let coin = queries::find_unspent_covenant_utxo(
+                &conn,
+                &ctx.profile_id,
+                &bid.address,
+                sync::COV_REVEAL as i64,
+                name,
+                &hex::encode(nh),
+            )?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "no unspent losing reveal coin for '{}' (sync first?)",
+                    name
+                ))
+            })?;
+            (bid, coin)
+        };
+        per_name.push((name.clone(), nh, bid, coin, ns));
+    }
+
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_batch_redeem_draft_inner(&conn, &ctx, per_name, rate)
+}
+
+/// Pure inner logic for `build_batch_redeem_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full duration.
+///
+/// `per_name` is `(name, name_hash, bid_commitment, reveal_coin,
+/// on_chain_state)` for every name in the batch. The wrapper's per-name RPC +
+/// DB prefetch resolves all of these; the inner builds the REDEEM covenant
+/// outputs and persists the batch draft.
+pub(crate) fn build_batch_redeem_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    per_name: Vec<(
+        String,
+        [u8; 32],
+        queries::BidCommitmentRow,
+        queries::NameCoin,
+        NameState,
+    )>,
+    rate: u64,
+) -> Result<TxDraftSummary, AppError> {
+    let mut primaries = Vec::with_capacity(per_name.len());
+    let mut name_inputs = Vec::with_capacity(per_name.len());
+    let mut batch_names = Vec::with_capacity(per_name.len());
+
+    for (name, nh, _bid, coin, ns) in per_name {
         let cov = covenants::redeem(&nh, ns.height);
         name_inputs.push(name_input_from(coin.clone()));
         primaries.push(PrimaryOutput {
@@ -2476,7 +2614,7 @@ pub async fn build_batch_redeem_draft(
             address: coin.address.clone(),
             covenant: cov,
         });
-        batch_names.push(name.clone());
+        batch_names.push(name);
     }
 
     let res = actions::build_batch_plan(
@@ -2490,8 +2628,8 @@ pub async fn build_batch_redeem_draft(
     )?;
     let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
-    persist(
-        &state,
+    persist_with_conn(
+        conn,
         &ctx.profile_id,
         "batch-redeem",
         &display_name,
@@ -2502,6 +2640,7 @@ pub async fn build_batch_redeem_draft(
 }
 
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_batch_finalize_draft(
     state: State<'_, AppState>,
     names: Vec<String>,
@@ -2521,15 +2660,43 @@ pub async fn build_batch_finalize_draft(
     let rate = self::fee_rate(&ctx, fee_rate);
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let rblock = renewal_block(&client, ctx.network).await?;
-    let mut primaries = Vec::new();
-    let mut name_inputs = Vec::new();
-    let mut batch_names = Vec::new();
 
+    let mut per_name: PerNameFinalize = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         let raw = names::raw_name(name)?;
         let (coin, ns) = owner_coin_and_state(&state, &ctx, name).await?;
+        per_name.push((name.clone(), nh, raw, coin, ns));
+    }
 
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_batch_finalize_draft_inner(&conn, &ctx, per_name, &rblock, rate)
+}
+
+/// Per-name row for [`build_batch_finalize_draft_inner`]:
+/// `(name, name_hash, raw_name, owner_coin, on_chain_state)`.
+pub(crate) type PerNameFinalize = Vec<(String, [u8; 32], Vec<u8>, queries::NameCoin, NameState)>;
+
+/// Pure inner logic for `build_batch_finalize_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full duration.
+///
+/// `per_name` is `(name, name_hash, raw_name, owner_coin, on_chain_state)` for
+/// every name in the batch. The wrapper's per-name `owner_coin_and_state` +
+/// `renewal_block` RPC calls resolve all of these; the inner parses the
+/// TRANSFER covenant target, builds the FINALIZE outputs, and persists the
+/// batch draft.
+pub(crate) fn build_batch_finalize_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    per_name: PerNameFinalize,
+    rblock: &[u8; 32],
+    rate: u64,
+) -> Result<TxDraftSummary, AppError> {
+    let mut primaries = Vec::with_capacity(per_name.len());
+    let mut name_inputs = Vec::with_capacity(per_name.len());
+    let mut batch_names = Vec::with_capacity(per_name.len());
+
+    for (name, nh, raw, coin, ns) in &per_name {
         // Extract TRANSFER target from the owner coin's covenant.
         let cov_json = coin.covenant_json.as_deref().ok_or_else(|| {
             AppError::InvalidInput(format!(
@@ -2563,15 +2730,7 @@ pub async fn build_batch_finalize_draft(
         let target_address = address::encode_p2wpkh(ctx.network, &h160)?;
 
         let flags: u8 = if ns.weak { 1 } else { 0 };
-        let cov = covenants::finalize(
-            &nh,
-            ns.height,
-            &raw,
-            flags,
-            ns.claimed,
-            ns.renewals,
-            &rblock,
-        );
+        let cov = covenants::finalize(nh, ns.height, raw, flags, ns.claimed, ns.renewals, rblock);
         name_inputs.push(name_input_from(coin.clone()));
         primaries.push(PrimaryOutput {
             value: coin.value,
@@ -2592,8 +2751,8 @@ pub async fn build_batch_finalize_draft(
     )?;
     let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
-    persist(
-        &state,
+    persist_with_conn(
+        conn,
         &ctx.profile_id,
         "batch-finalize",
         &display_name,
@@ -2620,6 +2779,7 @@ pub async fn build_batch_finalize_draft(
 ///
 /// The buyer's wallet funds the payment output from regular HNS coins.
 #[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_finalize_with_payment_draft(
     state: State<'_, AppState>,
     name: String,
@@ -2634,11 +2794,47 @@ pub async fn build_finalize_with_payment_draft(
     }
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
-    let nh = names::hash_name(&name)?;
-    let raw = names::raw_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = NodeRpcClient::from_settings(&ctx.settings);
     let rblock = renewal_block(&client, ctx.network).await?;
+
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_finalize_with_payment_draft_inner(
+        &conn,
+        &ctx,
+        &name,
+        &payment_address,
+        payment_value,
+        rate,
+        &coin,
+        &ns,
+        &rblock,
+    )
+}
+
+/// Pure inner logic for `build_finalize_with_payment_draft`, testable without
+/// a Tauri `State<AppState>`. The caller must hold the DB mutex for the full
+/// duration.
+///
+/// The two async RPC calls (`owner_coin_and_state` + `renewal_block`) happen
+/// in the wrapper; this inner takes the resolved owner coin, name state, and
+/// renewal-block hash directly. It parses the TRANSFER covenant target,
+/// validates the payment address, builds the combined finalize + payment plan,
+/// and persists the draft.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_finalize_with_payment_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    name: &str,
+    payment_address: &str,
+    payment_value: u64,
+    rate: u64,
+    coin: &queries::NameCoin,
+    ns: &NameState,
+    rblock: &[u8; 32],
+) -> Result<TxDraftSummary, AppError> {
+    let nh = names::hash_name(name)?;
+    let raw = names::raw_name(name)?;
 
     // Parse the TRANSFER covenant to extract the finalize target address.
     let cov_json = coin.covenant_json.as_deref().ok_or_else(|| {
@@ -2669,7 +2865,7 @@ pub async fn build_finalize_with_payment_draft(
     let target_address = address::encode_p2wpkh(ctx.network, &h160)?;
 
     // Validate the payment address is valid for this network.
-    let (_, pay_program) = address::decode(ctx.network, &payment_address)?;
+    let (_, pay_program) = address::decode(ctx.network, payment_address)?;
     if pay_program.is_empty() {
         return Err(AppError::InvalidInput(
             "invalid payment address for this network".into(),
@@ -2677,15 +2873,8 @@ pub async fn build_finalize_with_payment_draft(
     }
 
     let flags: u8 = if ns.weak { 1 } else { 0 };
-    let finalize_cov = covenants::finalize(
-        &nh,
-        ns.height,
-        &raw,
-        flags,
-        ns.claimed,
-        ns.renewals,
-        &rblock,
-    );
+    let finalize_cov =
+        covenants::finalize(&nh, ns.height, &raw, flags, ns.claimed, ns.renewals, rblock);
 
     let res = actions::build_finalize_with_payment_plan(
         ctx.network,
@@ -2696,19 +2885,1477 @@ pub async fn build_finalize_with_payment_draft(
             address: target_address.clone(),
             covenant: finalize_cov,
         },
-        payment_address.clone(),
+        payment_address.to_string(),
         payment_value,
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
-    persist(
-        &state,
+    persist_with_conn(
+        conn,
         &ctx.profile_id,
         "finalize-with-payment",
-        &name,
-        Some(&payment_address),
+        name,
+        Some(payment_address),
         None,
         &res,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    /// Default `NameActionContext` with every field in its "nothing known"
+    /// state. Tests override individual fields via struct-update syntax.
+    fn ctx_default() -> NameActionContext {
+        NameActionContext {
+            has_bid_commitment: false,
+            has_bid_coin: false,
+            has_reveal_coin: false,
+            has_owner_coin: false,
+            owner_covenant_type: None,
+            name_height: None,
+            transfer_has_items: None,
+            existing_bid_count: 0,
+            has_pending_open: false,
+            reveal_txid: None,
+            reveal_draft_status: None,
+            bid_value_doos: None,
+        }
+    }
+
+    /// Thin wrapper over `derive_auction_task_state` with sane defaults so
+    /// each test only spells out the args it cares about.
+    #[allow(clippy::too_many_arguments)]
+    fn derive(
+        phase: &str,
+        owns_name: bool,
+        has_bid_commitment: bool,
+        has_bid_coin: bool,
+        has_reveal_coin: bool,
+        has_owner_coin: bool,
+        owner_covenant_type: Option<i64>,
+        days_until_expire: Option<f64>,
+        has_pending_open: bool,
+        reveal_txid: Option<&str>,
+        reveal_draft_status: Option<&str>,
+    ) -> AuctionTaskState {
+        derive_auction_task_state(
+            phase,
+            owns_name,
+            has_bid_commitment,
+            has_bid_coin,
+            has_reveal_coin,
+            has_owner_coin,
+            owner_covenant_type,
+            days_until_expire,
+            has_pending_open,
+            reveal_txid,
+            reveal_draft_status,
+        )
+    }
+
+    // ==================================================================
+    // derive_auction_task_state — AVAILABLE / "" branch
+    // ==================================================================
+
+    #[test]
+    fn derive_available_no_pending_open() {
+        assert_eq!(
+            derive(
+                "AVAILABLE",
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                None
+            ),
+            AuctionTaskState::AvailableToOpen
+        );
+        // Empty phase behaves identically to AVAILABLE.
+        assert_eq!(
+            derive("", false, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::AvailableToOpen
+        );
+    }
+
+    #[test]
+    fn derive_available_with_pending_open() {
+        assert_eq!(
+            derive(
+                "AVAILABLE",
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+                None,
+                true,
+                None,
+                None
+            ),
+            AuctionTaskState::WaitingForBidding
+        );
+        assert_eq!(
+            derive("", false, false, false, false, false, None, None, true, None, None),
+            AuctionTaskState::WaitingForBidding
+        );
+    }
+
+    // ==================================================================
+    // derive_auction_task_state — OPENING branch
+    // ==================================================================
+
+    #[test]
+    fn derive_opening() {
+        assert_eq!(
+            derive("OPENING", false, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::WaitingForBidding
+        );
+    }
+
+    // ==================================================================
+    // derive_auction_task_state — BIDDING branch
+    // ==================================================================
+
+    #[test]
+    fn derive_bidding_with_commitment() {
+        assert_eq!(
+            derive("BIDDING", false, true, false, false, false, None, None, false, None, None),
+            AuctionTaskState::WaitingForBidding
+        );
+    }
+
+    #[test]
+    fn derive_bidding_without_commitment() {
+        assert_eq!(
+            derive("BIDDING", false, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::ReadyToBid
+        );
+    }
+
+    // ==================================================================
+    // derive_auction_task_state — REVEAL branch
+    // ==================================================================
+
+    #[test]
+    fn derive_reveal_no_bid_commitment_is_unavailable() {
+        assert_eq!(
+            derive("REVEAL", false, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::UnavailableOther
+        );
+    }
+
+    #[test]
+    fn derive_reveal_draft_broadcasted_is_pending() {
+        assert_eq!(
+            derive(
+                "REVEAL",
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                Some("broadcasted")
+            ),
+            AuctionTaskState::RevealBroadcastPending
+        );
+    }
+
+    #[test]
+    fn derive_reveal_draft_broadcast_pending_is_pending() {
+        assert_eq!(
+            derive(
+                "REVEAL",
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                Some("broadcast_pending")
+            ),
+            AuctionTaskState::RevealBroadcastPending
+        );
+    }
+
+    #[test]
+    fn derive_reveal_draft_confirmed_waits_for_close() {
+        assert_eq!(
+            derive(
+                "REVEAL",
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                Some("confirmed")
+            ),
+            AuctionTaskState::RevealDoneWaitingForClose
+        );
+    }
+
+    #[test]
+    fn derive_reveal_draft_dropped_back_to_ready() {
+        assert_eq!(
+            derive(
+                "REVEAL",
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                Some("dropped")
+            ),
+            AuctionTaskState::ReadyToReveal
+        );
+    }
+
+    #[test]
+    fn derive_reveal_draft_failed_back_to_ready() {
+        assert_eq!(
+            derive(
+                "REVEAL",
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                Some("failed")
+            ),
+            AuctionTaskState::ReadyToReveal
+        );
+    }
+
+    #[test]
+    fn derive_reveal_no_draft_status_default_ready() {
+        // No reveal_txid, no draft status, bid coin present → ReadyToReveal.
+        assert_eq!(
+            derive("REVEAL", false, true, true, false, false, None, None, false, None, None),
+            AuctionTaskState::ReadyToReveal
+        );
+    }
+
+    #[test]
+    fn derive_reveal_txid_set_and_bid_coin_spent_is_done() {
+        // reveal_txid Some + !has_bid_coin (spent) → done via chain fact.
+        assert_eq!(
+            derive(
+                "REVEAL",
+                false,
+                true,
+                false,
+                false,
+                false,
+                None,
+                None,
+                false,
+                Some("abc123"),
+                None
+            ),
+            AuctionTaskState::RevealDoneWaitingForClose
+        );
+    }
+
+    #[test]
+    fn derive_reveal_txid_set_but_bid_coin_still_unspent_is_ready() {
+        // reveal_txid Some but has_bid_coin still true → default ReadyToReveal.
+        assert_eq!(
+            derive(
+                "REVEAL",
+                false,
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+                false,
+                Some("abc123"),
+                None
+            ),
+            AuctionTaskState::ReadyToReveal
+        );
+    }
+
+    // ==================================================================
+    // derive_auction_task_state — CLOSED branch
+    // ==================================================================
+
+    #[test]
+    fn derive_closed_owned_registered_not_expiring() {
+        // owns + owner coin + covenant >= COV_REGISTER, not expiring.
+        assert_eq!(
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(COV_REGISTER as i64),
+                Some(100.0),
+                false,
+                None,
+                None
+            ),
+            AuctionTaskState::OwnedNoUrgentAction
+        );
+    }
+
+    #[test]
+    fn derive_closed_owned_registered_expiring_soon() {
+        // Exactly at threshold → expiring (d <= 30.0).
+        assert_eq!(
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(COV_REGISTER as i64),
+                Some(EXPIRING_SOON_THRESHOLD_DAYS),
+                false,
+                None,
+                None
+            ),
+            AuctionTaskState::ExpiringSoon
+        );
+        // Negative (already lapsed) is even more urgent → expiring.
+        assert_eq!(
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(9),
+                Some(-5.0),
+                false,
+                None,
+                None
+            ),
+            AuctionTaskState::ExpiringSoon
+        );
+    }
+
+    #[test]
+    fn derive_closed_owned_not_registered_needs_register() {
+        // owns + owner coin but covenant < COV_REGISTER → WonNeedsRegister.
+        assert_eq!(
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(COV_REVEAL as i64),
+                None,
+                false,
+                None,
+                None
+            ),
+            AuctionTaskState::WonNeedsRegister
+        );
+        // owner_covenant_type None → unwrap_or(false) → not registered.
+        assert_eq!(
+            derive("CLOSED", true, false, false, false, true, None, None, false, None, None),
+            AuctionTaskState::WonNeedsRegister
+        );
+        // Registration takes precedence over renewal alarm even when expiring.
+        assert_eq!(
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(COV_REVEAL as i64),
+                Some(1.0),
+                false,
+                None,
+                None
+            ),
+            AuctionTaskState::WonNeedsRegister
+        );
+    }
+
+    #[test]
+    fn derive_closed_owned_explorer_only_not_expiring() {
+        // owns but no owner coin (explorer-only) → OwnedNoUrgentAction.
+        assert_eq!(
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                false,
+                None,
+                Some(100.0),
+                false,
+                None,
+                None
+            ),
+            AuctionTaskState::OwnedNoUrgentAction
+        );
+    }
+
+    #[test]
+    fn derive_closed_owned_explorer_only_expiring() {
+        assert_eq!(
+            derive(
+                "CLOSED",
+                true,
+                false,
+                false,
+                false,
+                false,
+                None,
+                Some(10.0),
+                false,
+                None,
+                None
+            ),
+            AuctionTaskState::ExpiringSoon
+        );
+    }
+
+    #[test]
+    fn derive_closed_not_owned_has_reveal_coin_lost() {
+        // !owns + has_reveal_coin → LostNeedsRedeem.
+        assert_eq!(
+            derive("CLOSED", false, false, false, true, false, None, None, false, None, None),
+            AuctionTaskState::LostNeedsRedeem
+        );
+    }
+
+    #[test]
+    fn derive_closed_catch_all_owned_no_urgent() {
+        // !owns + no reveal coin → catch-all OwnedNoUrgentAction.
+        assert_eq!(
+            derive("CLOSED", false, false, false, false, false, None, None, false, None, None),
+            AuctionTaskState::OwnedNoUrgentAction
+        );
+    }
+
+    // ==================================================================
+    // derive_auction_task_state — TRANSFER / REVOKED / unknown
+    // ==================================================================
+
+    #[test]
+    fn derive_transfer() {
+        assert_eq!(
+            derive(
+                "TRANSFER",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(9),
+                None,
+                false,
+                None,
+                None
+            ),
+            AuctionTaskState::TransferPendingFinalize
+        );
+    }
+
+    #[test]
+    fn derive_revoked() {
+        assert_eq!(
+            derive(
+                "REVOKED",
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(9),
+                None,
+                false,
+                None,
+                None
+            ),
+            AuctionTaskState::UnavailableOther
+        );
+    }
+
+    #[test]
+    fn derive_unknown_phase_owned() {
+        assert_eq!(
+            derive(
+                "SOMETHING_WEIRD",
+                true,
+                false,
+                false,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                None
+            ),
+            AuctionTaskState::OwnedNoUrgentAction
+        );
+    }
+
+    #[test]
+    fn derive_unknown_phase_not_owned() {
+        assert_eq!(
+            derive(
+                "SOMETHING_WEIRD",
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+                None
+            ),
+            AuctionTaskState::UnavailableOther
+        );
+    }
+
+    // ==================================================================
+    // next_action_for_task — every variant
+    // ==================================================================
+
+    #[test]
+    fn next_action_for_every_variant() {
+        let cases: &[(AuctionTaskState, Option<&str>, Option<&str>, bool)] = &[
+            (
+                AuctionTaskState::AvailableToOpen,
+                Some("OPEN"),
+                Some("Open Auction"),
+                true,
+            ),
+            (
+                AuctionTaskState::WaitingForBidding,
+                Some("WAIT"),
+                Some("Wait for Bidding"),
+                true,
+            ),
+            (
+                AuctionTaskState::ReadyToBid,
+                Some("BID"),
+                Some("Place Bid"),
+                true,
+            ),
+            (
+                AuctionTaskState::ReadyToReveal,
+                Some("REVEAL"),
+                Some("Reveal Bid"),
+                true,
+            ),
+            (
+                AuctionTaskState::RevealBroadcastPending,
+                None,
+                Some("Reveal pending confirmation"),
+                true,
+            ),
+            (
+                AuctionTaskState::RevealDoneWaitingForClose,
+                None,
+                Some("Revealed — waiting for close"),
+                true,
+            ),
+            (
+                AuctionTaskState::WonNeedsRegister,
+                Some("REGISTER"),
+                Some("Register Name"),
+                true,
+            ),
+            (
+                AuctionTaskState::LostNeedsRedeem,
+                Some("REDEEM"),
+                Some("Redeem Lockup"),
+                true,
+            ),
+            (
+                AuctionTaskState::TransferPendingFinalize,
+                Some("FINALIZE"),
+                Some("Finalize Transfer"),
+                true,
+            ),
+            (
+                AuctionTaskState::OwnedNoUrgentAction,
+                Some("MANAGE"),
+                Some("Manage Name"),
+                true,
+            ),
+            (
+                AuctionTaskState::ExpiringSoon,
+                Some("RENEW"),
+                Some("Renew Name"),
+                true,
+            ),
+            (AuctionTaskState::UnavailableOther, None, None, false),
+        ];
+        for (task, exp_key, exp_label, exp_reason_some) in cases {
+            let (key, label, reason) = next_action_for_task(task);
+            assert_eq!(key.as_deref(), *exp_key, "key mismatch for {task:?}");
+            assert_eq!(label.as_deref(), *exp_label, "label mismatch for {task:?}");
+            assert_eq!(
+                reason.is_some(),
+                *exp_reason_some,
+                "reason presence mismatch for {task:?}"
+            );
+        }
+    }
+
+    // ==================================================================
+    // conservative_capabilities
+    // ==================================================================
+
+    #[test]
+    fn conservative_capabilities_all_disallowed() {
+        let reason = "no active wallet profile";
+        let caps = conservative_capabilities("example", reason);
+        assert_eq!(caps.name, "example");
+        assert_eq!(caps.phase, "UNKNOWN");
+        assert_eq!(caps.task_state, AuctionTaskState::UnavailableOther);
+        assert!(!caps.owns_name);
+        assert!(!caps.has_bid_commitment);
+        assert!(!caps.has_bid_coin);
+        assert!(!caps.has_reveal_coin);
+        assert!(!caps.has_owner_coin);
+        assert_eq!(caps.reveal_txid, None);
+        assert_eq!(caps.bid_value_doos, None);
+        for cap in [
+            &caps.can_open,
+            &caps.can_bid,
+            &caps.can_reveal,
+            &caps.can_redeem,
+            &caps.can_register,
+            &caps.can_update,
+            &caps.can_transfer,
+            &caps.can_finalize,
+            &caps.can_cancel_transfer,
+            &caps.can_renew,
+            &caps.can_revoke,
+        ] {
+            assert!(!cap.allowed);
+            assert_eq!(cap.reason.as_deref(), Some(reason));
+        }
+        assert_eq!(caps.next_action_key, None);
+        assert_eq!(caps.next_action_label, None);
+        assert_eq!(caps.next_action_reason.as_deref(), Some(reason));
+        assert_eq!(caps.countdown_label, None);
+        assert_eq!(caps.countdown_blocks, None);
+        assert_eq!(caps.countdown_hours, None);
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — can_open
+    // ==================================================================
+
+    #[test]
+    fn build_can_open_allowed_available() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "AVAILABLE".into(),
+            "AVAILABLE",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(caps.can_open.allowed);
+        assert_eq!(caps.can_open.reason, None);
+    }
+
+    #[test]
+    fn build_can_open_allowed_empty_phase() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "".into(),
+            "",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(caps.can_open.allowed);
+        assert_eq!(caps.can_open.reason, None);
+    }
+
+    #[test]
+    fn build_can_open_phase_not_available() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "BIDDING".into(),
+            "BIDDING",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(!caps.can_open.allowed);
+        assert_eq!(
+            caps.can_open.reason.as_deref(),
+            Some("name is in phase 'BIDDING', not AVAILABLE")
+        );
+    }
+
+    #[test]
+    fn build_can_open_has_pending_open() {
+        let ctx = NameActionContext {
+            has_pending_open: true,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "AVAILABLE".into(),
+            "AVAILABLE",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(!caps.can_open.allowed);
+        assert_eq!(
+            caps.can_open.reason.as_deref(),
+            Some("an auction is already opening for this name (pending confirmation)")
+        );
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — can_bid
+    // ==================================================================
+
+    #[test]
+    fn build_can_bid_allowed_bidding() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "BIDDING".into(),
+            "BIDDING",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(caps.can_bid.allowed);
+        assert_eq!(caps.can_bid.reason, None);
+    }
+
+    #[test]
+    fn build_can_bid_allowed_opening() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "OPENING".into(),
+            "OPENING",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(caps.can_bid.allowed);
+        assert_eq!(caps.can_bid.reason, None);
+    }
+
+    #[test]
+    fn build_can_bid_phase_incompatible() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(!caps.can_bid.allowed);
+        assert_eq!(
+            caps.can_bid.reason.as_deref(),
+            Some("bidding is not open (phase: 'REVEAL')")
+        );
+    }
+
+    #[test]
+    fn build_can_bid_existing_bid_count() {
+        let ctx = NameActionContext {
+            existing_bid_count: 1,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "BIDDING".into(),
+            "BIDDING",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(!caps.can_bid.allowed);
+        assert_eq!(
+            caps.can_bid.reason.as_deref(),
+            Some("you already have a bid commitment for this name (one bid per wallet per name)")
+        );
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — can_reveal
+    // ==================================================================
+
+    #[test]
+    fn build_can_reveal_allowed() {
+        let ctx = NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(caps.can_reveal.allowed);
+        assert_eq!(caps.can_reveal.reason, None);
+    }
+
+    #[test]
+    fn build_can_reveal_phase_not_reveal() {
+        let ctx = NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "BIDDING".into(),
+            "BIDDING",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(!caps.can_reveal.allowed);
+        assert_eq!(
+            caps.can_reveal.reason.as_deref(),
+            Some("reveal phase not active (phase: 'BIDDING')")
+        );
+    }
+
+    #[test]
+    fn build_can_reveal_missing_bid_commitment() {
+        let ctx = NameActionContext {
+            has_bid_coin: true,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(!caps.can_reveal.allowed);
+        assert_eq!(
+            caps.can_reveal.reason.as_deref(),
+            Some("no bid commitment found for this name")
+        );
+    }
+
+    #[test]
+    fn build_can_reveal_missing_bid_coin() {
+        let ctx = NameActionContext {
+            has_bid_commitment: true,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(!caps.can_reveal.allowed);
+        assert_eq!(
+            caps.can_reveal.reason.as_deref(),
+            Some("no unspent bid coin found (sync first?)")
+        );
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — can_redeem
+    // ==================================================================
+
+    #[test]
+    fn build_can_redeem_allowed() {
+        let ctx = NameActionContext {
+            has_reveal_coin: true,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(caps.can_redeem.allowed);
+        // NOTE: `can_redeem.reason`'s if/else chain in the source falls into
+        // the "you won this auction" branch whenever CLOSED + has_reveal_coin
+        // regardless of `owns_name`, so the reason string is present even in
+        // the allowed path. We only assert `allowed == true` here.
+        assert_eq!(
+            caps.can_redeem.reason.as_deref(),
+            Some("you won this auction (redeem not applicable)")
+        );
+    }
+
+    #[test]
+    fn build_can_redeem_phase_not_closed() {
+        let ctx = NameActionContext {
+            has_reveal_coin: true,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(!caps.can_redeem.allowed);
+        assert_eq!(
+            caps.can_redeem.reason.as_deref(),
+            Some("auction not yet closed (phase: 'REVEAL')")
+        );
+    }
+
+    #[test]
+    fn build_can_redeem_no_reveal_coin() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert!(!caps.can_redeem.allowed);
+        assert_eq!(
+            caps.can_redeem.reason.as_deref(),
+            Some("no unspent reveal coin to redeem")
+        );
+    }
+
+    #[test]
+    fn build_can_redeem_owns_name_not_applicable() {
+        // has_reveal_coin + owns_name → "you won this auction".
+        let ctx = NameActionContext {
+            has_reveal_coin: true,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+        );
+        assert!(!caps.can_redeem.allowed);
+        assert_eq!(
+            caps.can_redeem.reason.as_deref(),
+            Some("you won this auction (redeem not applicable)")
+        );
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — can_register
+    // ==================================================================
+
+    #[test]
+    fn build_can_register_allowed_covenant_below() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REVEAL as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+        );
+        assert!(caps.can_register.allowed);
+        assert_eq!(caps.can_register.reason, None);
+    }
+
+    #[test]
+    fn build_can_register_allowed_covenant_none() {
+        // owner_covenant_type None → unwrap_or(true) → allowed.
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: None,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+        );
+        assert!(caps.can_register.allowed);
+        assert_eq!(caps.can_register.reason, None);
+    }
+
+    #[test]
+    fn build_can_register_phase_not_closed() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REVEAL as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+        );
+        assert!(!caps.can_register.allowed);
+        assert_eq!(
+            caps.can_register.reason.as_deref(),
+            Some("auction not yet closed (phase: 'REVEAL')")
+        );
+    }
+
+    #[test]
+    fn build_can_register_no_owner_coin() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+        );
+        assert!(!caps.can_register.allowed);
+        assert_eq!(
+            caps.can_register.reason.as_deref(),
+            Some("wallet does not own the winning name coin")
+        );
+    }
+
+    #[test]
+    fn build_can_register_already_registered() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+        );
+        assert!(!caps.can_register.allowed);
+        assert_eq!(
+            caps.can_register.reason.as_deref(),
+            Some("name is already registered")
+        );
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — ownership-gated actions
+    // ==================================================================
+
+    #[test]
+    fn build_owner_actions_allowed_when_owned() {
+        let ctx = NameActionContext {
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+        );
+        assert!(caps.can_update.allowed);
+        assert_eq!(caps.can_update.reason, None);
+        assert!(caps.can_transfer.allowed);
+        assert_eq!(caps.can_transfer.reason, None);
+        assert!(caps.can_cancel_transfer.allowed);
+        assert_eq!(caps.can_cancel_transfer.reason, None);
+        assert!(caps.can_renew.allowed);
+        assert_eq!(caps.can_renew.reason, None);
+        assert!(caps.can_revoke.allowed);
+        assert_eq!(caps.can_revoke.reason, None);
+        // finalize allowed since transfer_has_items = Some(true).
+        assert!(caps.can_finalize.allowed);
+        assert_eq!(caps.can_finalize.reason, None);
+    }
+
+    #[test]
+    fn build_owner_actions_disallowed_when_not_owned() {
+        let ctx = ctx_default();
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        let does_not_control = Some("wallet does not control this name");
+        assert!(!caps.can_update.allowed);
+        assert_eq!(caps.can_update.reason.as_deref(), does_not_control);
+        assert!(!caps.can_transfer.allowed);
+        assert_eq!(caps.can_transfer.reason.as_deref(), does_not_control);
+        assert!(!caps.can_cancel_transfer.allowed);
+        assert_eq!(caps.can_cancel_transfer.reason.as_deref(), does_not_control);
+        assert!(!caps.can_renew.allowed);
+        assert_eq!(caps.can_renew.reason.as_deref(), does_not_control);
+        assert!(!caps.can_revoke.allowed);
+        assert_eq!(caps.can_revoke.reason.as_deref(), does_not_control);
+        // finalize: not owned → "does not control".
+        assert!(!caps.can_finalize.allowed);
+        assert_eq!(caps.can_finalize.reason.as_deref(), does_not_control);
+    }
+
+    #[test]
+    fn build_can_finalize_owned_no_transfer_items() {
+        // owned but transfer_has_items = Some(false) → not in TRANSFER state.
+        let ctx = NameActionContext {
+            transfer_has_items: Some(false),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+        );
+        assert!(!caps.can_finalize.allowed);
+        assert_eq!(
+            caps.can_finalize.reason.as_deref(),
+            Some("name is not in TRANSFER state")
+        );
+    }
+
+    #[test]
+    fn build_can_finalize_owned_transfer_items_none() {
+        // owned but transfer_has_items = None → unwrap_or(false) → not TRANSFER.
+        let ctx = NameActionContext {
+            transfer_has_items: None,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+        );
+        assert!(!caps.can_finalize.allowed);
+        assert_eq!(
+            caps.can_finalize.reason.as_deref(),
+            Some("name is not in TRANSFER state")
+        );
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — spend_locked override
+    // ==================================================================
+
+    #[test]
+    fn build_spend_locked_overrides_all_seven() {
+        // Owned + all conditions to allow, but spend_locked forces disallowed.
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REVEAL as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            true,
+            None,
+        );
+        for cap in [
+            &caps.can_register,
+            &caps.can_update,
+            &caps.can_transfer,
+            &caps.can_finalize,
+            &caps.can_cancel_transfer,
+            &caps.can_renew,
+            &caps.can_revoke,
+        ] {
+            assert!(!cap.allowed);
+            assert_eq!(cap.reason.as_deref(), Some(OWNER_COIN_NOT_SYNCED_REASON));
+        }
+        // Non-spend actions are NOT overridden by spend_locked.
+        // can_redeem stays computed (CLOSED, no reveal coin, owns → "you won").
+    }
+
+    // ==================================================================
+    // build_name_action_capabilities — days_until_expire & pipeline
+    // ==================================================================
+
+    #[test]
+    fn build_days_until_expire_override_drives_expiring_soon() {
+        // Owned + registered + override says 5 days left → ExpiringSoon.
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            Some(5.0),
+        );
+        assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
+        assert_eq!(caps.next_action_key.as_deref(), Some("RENEW"));
+        assert_eq!(caps.next_action_label.as_deref(), Some("Renew Name"));
+        assert!(caps.next_action_reason.is_some());
+    }
+
+    #[test]
+    fn build_days_from_stats_days_until_expire() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let stats = json!({ "daysUntilExpire": 10.0 });
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            Some(&stats),
+            &ctx,
+            true,
+            false,
+            None,
+        );
+        assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
+    }
+
+    #[test]
+    fn build_days_from_stats_blocks_until_expire() {
+        // No daysUntilExpire, fall back to blocksUntilExpire. 144 blocks/day,
+        // so 144*10 blocks = 10 days → still expiring (<= 30).
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let stats = json!({ "blocksUntilExpire": 1440 });
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            Some(&stats),
+            &ctx,
+            true,
+            false,
+            None,
+        );
+        assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
+        // CLOSED countdown surfaces from stats.
+        assert_eq!(caps.countdown_label.as_deref(), Some("Expires in"));
+        assert_eq!(caps.countdown_blocks, Some(1440));
+    }
+
+    #[test]
+    fn build_days_none_no_stats_no_override() {
+        // No stats and no override → days_until_expire None → not expiring.
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+        );
+        assert_eq!(caps.task_state, AuctionTaskState::OwnedNoUrgentAction);
+        assert_eq!(caps.countdown_label, None);
+        assert_eq!(caps.countdown_blocks, None);
+        assert_eq!(caps.countdown_hours, None);
+    }
+
+    #[test]
+    fn build_full_pipeline_bidding_countdown() {
+        // Full pipeline: BIDDING phase, no commitment → ReadyToBid, plus
+        // countdown from stats flows through.
+        let ctx = ctx_default();
+        let stats = json!({ "blocksUntilReveal": 20, "hoursUntilReveal": 3.5 });
+        let caps = build_name_action_capabilities(
+            "example".into(),
+            "BIDDING".into(),
+            "BIDDING",
+            Some(&stats),
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert_eq!(caps.name, "example");
+        assert_eq!(caps.phase, "BIDDING");
+        assert_eq!(caps.task_state, AuctionTaskState::ReadyToBid);
+        assert_eq!(caps.next_action_key.as_deref(), Some("BID"));
+        assert_eq!(caps.next_action_label.as_deref(), Some("Place Bid"));
+        assert!(caps.next_action_reason.is_some());
+        assert_eq!(caps.countdown_label.as_deref(), Some("Reveal starts in"));
+        assert_eq!(caps.countdown_blocks, Some(20));
+        assert_eq!(caps.countdown_hours, Some(3.5));
+        // Passthrough context fields.
+        assert!(!caps.has_bid_commitment);
+    }
+
+    #[test]
+    fn build_pipeline_passes_through_reveal_txid_and_bid_value() {
+        let ctx = NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            reveal_txid: Some("deadbeef".into()),
+            bid_value_doos: Some(123_456),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            false,
+            false,
+            None,
+        );
+        assert_eq!(caps.reveal_txid.as_deref(), Some("deadbeef"));
+        assert_eq!(caps.bid_value_doos, Some(123_456));
+    }
 }

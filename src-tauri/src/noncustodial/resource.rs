@@ -542,4 +542,123 @@ mod tests {
         assert_eq!(back[0]["algorithm"], 255);
         assert_eq!(back[0]["digestType"], 255);
     }
+
+    // --- Coverage-driven tests: encode/decode length + truncation guards ---
+
+    /// `encode` rejects a TXT record with more than 255 strings.
+    #[test]
+    fn encode_rejects_too_many_txt_strings() {
+        let txt: Vec<serde_json::Value> = (0..256).map(|_| serde_json::json!("x")).collect();
+        let recs = vec![serde_json::json!({ "type": "TXT", "txt": txt })];
+        let err = encode(&recs).unwrap_err();
+        assert!(
+            format!("{err}").contains("too many TXT strings"),
+            "got {err}"
+        );
+    }
+
+    /// `encode` rejects a single TXT string longer than 255 bytes.
+    #[test]
+    fn encode_rejects_txt_string_too_long() {
+        let long = "a".repeat(256);
+        let recs = vec![serde_json::json!({ "type": "TXT", "txt": [long] })];
+        let err = encode(&recs).unwrap_err();
+        assert!(
+            format!("{err}").contains("TXT string too long"),
+            "got {err}"
+        );
+    }
+
+    /// `encode` rejects a DS digest longer than 255 bytes.
+    #[test]
+    fn encode_rejects_ds_digest_too_long() {
+        let digest = "ab".repeat(256); // 256 bytes decoded
+        let recs = vec![
+            serde_json::json!({ "type": "DS", "keyTag": 1, "algorithm": 8, "digestType": 2, "digest": digest }),
+        ];
+        let err = encode(&recs).unwrap_err();
+        assert!(format!("{err}").contains("digest too long"), "got {err}");
+    }
+
+    /// `decode` rejects a name whose label length exceeds 63 bytes.
+    #[test]
+    fn decode_rejects_bad_dns_label() {
+        // version 0, NS type, then a label claiming length 64 (> 63).
+        let mut buf = vec![0u8, TYPE_NS, 64u8];
+        buf.extend(std::iter::repeat_n(b'a', 64));
+        buf.push(0); // name terminator (unreached)
+        let err = decode(&buf).unwrap_err();
+        assert!(format!("{err}").contains("bad DNS label"), "got {err}");
+    }
+
+    /// `decode` rejects a name that is truncated (no terminator).
+    #[test]
+    fn decode_rejects_truncated_name() {
+        // version 0, NS type, label len 3 but only 1 byte follows.
+        let buf = vec![0u8, TYPE_NS, 3u8, b'a'];
+        let err = decode(&buf).unwrap_err();
+        // Either "bad DNS label" (len overruns) or "truncated name".
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("bad DNS label") || msg.contains("truncated name"),
+            "got {msg}"
+        );
+    }
+
+    /// `decode` rejects a TXT record whose string bytes are truncated.
+    #[test]
+    fn decode_rejects_truncated_txt_bytes() {
+        // version 0, TXT, count=1, len=5, but only 2 bytes follow.
+        let buf = vec![0u8, TYPE_TXT, 1u8, 5u8, b'h', b'i'];
+        let err = decode(&buf).unwrap_err();
+        assert!(
+            format!("{err}").contains("truncated TXT bytes"),
+            "got {err}"
+        );
+    }
+
+    /// `decode` rejects a GLUE4 record whose IP bytes are truncated.
+    #[test]
+    fn decode_rejects_truncated_glue_ip() {
+        // version 0, GLUE4, name = "ns." (len1 'n' ... actually root), then
+        // fewer than 4 IP bytes. Use an empty name (single 0) then 2 IP bytes.
+        let buf = vec![0u8, TYPE_GLUE4, 0u8, 1u8, 2u8];
+        let err = decode(&buf).unwrap_err();
+        assert!(format!("{err}").contains("truncated glue IP"), "got {err}");
+    }
+
+    /// `decode` rejects a SYNTH4 record whose IP bytes are truncated.
+    #[test]
+    fn decode_rejects_truncated_synth_ip() {
+        // version 0, SYNTH4, then only 2 IP bytes (needs 4).
+        let buf = vec![0u8, TYPE_SYNTH4, 1u8, 2u8];
+        let err = decode(&buf).unwrap_err();
+        assert!(format!("{err}").contains("truncated synth IP"), "got {err}");
+    }
+
+    /// `decode` rejects a DS record whose digest bytes are truncated.
+    #[test]
+    fn decode_rejects_truncated_ds_digest() {
+        // version 0, DS, keyTag(2)+algo(1)+digestType(1)+dlen(1)=5 header,
+        // dlen claims 8 but no digest bytes follow.
+        let buf = vec![0u8, TYPE_DS, 0u8, 1u8, 8u8, 2u8, 8u8];
+        let err = decode(&buf).unwrap_err();
+        assert!(
+            format!("{err}").contains("truncated DS digest"),
+            "got {err}"
+        );
+    }
+
+    /// `encode` rejects a GLUE4 record whose ns label is too long (> 63).
+    #[test]
+    fn encode_rejects_glue_label_too_long() {
+        let long_label = "a".repeat(64);
+        let recs = vec![serde_json::json!({
+            "type": "GLUE4",
+            "ns": format!("{long_label}.example."),
+            "address": "1.2.3.4"
+        })];
+        let err = encode(&recs).unwrap_err();
+        assert!(format!("{err}").contains("label too long"), "got {err}");
+    }
 }
