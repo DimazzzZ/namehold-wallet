@@ -42,6 +42,11 @@ pub enum ChainSource {
 }
 
 impl ChainSource {
+    /// Parse a bare `chain_source` value. Test-only: production code must use
+    /// [`ChainSource::from_settings`], which also consults `node_mode` — this
+    /// single-setting form would classify an SPV node as `LocalNode` and thus
+    /// broadcast-capable.
+    #[cfg(test)]
     pub fn from_setting(value: &str) -> Self {
         match value {
             "remote_node" => ChainSource::RemoteNode,
