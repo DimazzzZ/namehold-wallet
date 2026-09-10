@@ -35,6 +35,11 @@ describe("Onboarding (secure, non-custodial)", () => {
   it("create flow has NO mnemonic/passphrase inputs and delegates to the secure command", async () => {
     const { container } = render(<Onboarding />, { wrapper: wrapper() });
 
+    // First, choose a connection (the new ConnectionChoice step).
+    fireEvent.click(screen.getByTestId("select-local-button"));
+    // Now the AddWalletForm is rendered.
+    await waitFor(() => screen.getByText(/Create a new wallet/i));
+
     fireEvent.click(screen.getByText(/Create a new wallet/i));
     // No secret entry surfaces in React.
     expect(container.querySelector("textarea")).toBeNull();
@@ -53,6 +58,11 @@ describe("Onboarding (secure, non-custodial)", () => {
 
   it("import flow uses secure_import_wallet with mnemonic_hot and no React seed entry", async () => {
     const { container } = render(<Onboarding />, { wrapper: wrapper() });
+
+    // First, choose a connection (the new ConnectionChoice step).
+    fireEvent.click(screen.getByTestId("select-local-button"));
+    // Now the AddWalletForm is rendered.
+    await waitFor(() => screen.getByText(/Import your wallet/i));
 
     fireEvent.click(screen.getByText(/Import your wallet/i));
     expect(container.querySelector("textarea")).toBeNull();

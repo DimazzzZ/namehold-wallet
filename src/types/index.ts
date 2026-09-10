@@ -11,6 +11,19 @@ export type MigrationStatus =
 /** Node operating mode — determines sync behavior and data sources. */
 export type NodeMode = "full" | "spv";
 
+/** Chain data source — determines how the wallet reads and writes. */
+export type ChainSource = "local_node" | "remote_node" | "explorer";
+
+/** Result of a connectivity check against a candidate remote node RPC. */
+export interface NodeConnectionCheck {
+  reachable: boolean;
+  height: number | null;
+  headers: number | null;
+  synced: boolean;
+  network: string | null;
+  error: string | null;
+}
+
 export interface Asset {
   id: number;
   tld: string;
@@ -330,7 +343,13 @@ export interface Settings {
    * "local_node" | "remote_node" | "explorer" — which data source to use.
    * Determines whether node_mode dropdown is visible.
    */
-  chain_source: string;
+  chain_source: ChainSource;
+  /**
+   * "true" | "false" — allow sending via a remote node. Only relevant when
+   * chain_source is "remote_node". Default "false" (safe default). When false,
+   * RemoteNode sources are read-only even if the wallet is unlocked.
+   */
+  allow_remote_broadcast: string;
   /**
    * "1" | "0" — closing the main window hides it to the system tray (menu bar
    * on macOS) instead of quitting the app. Default "1" (on). Turn off to get

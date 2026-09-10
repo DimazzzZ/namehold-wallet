@@ -44,6 +44,27 @@ hsd --index-address --index-tx --api-key=<your-key>
 While the node is down you can still view balance/names (explorer); the app shows
 "Start your local node to send" and disables spend actions until it's reachable.
 
+## Remote node (point at someone else's hsd)
+
+Instead of running hsd locally, you can point the wallet at an existing hsd RPC:
+
+- **On first run:** the "How do you want to connect?" step offers "Remote node" as a choice.
+  Enter the RPC URL (e.g., `https://node.example.com:12037`) and optional API key, then
+  click "Test connection" to validate it before committing.
+- **In Settings:** go to Connections → Chain source → select "Remote node", enter the URL
+  and API key, and click "Test connection" to verify.
+- **To send:** enable "Allow sending via remote node" (off by default for safety). This
+  sets the `allow_remote_broadcast` flag, which gates the broadcast path. Your recovery
+  phrase never leaves this device — remote is a privacy/trust tradeoff, not custody.
+- **Plaintext-key guard:** the app refuses to send an API key over plaintext HTTP to a
+  non-loopback host (e.g., `http://example.com`). Use `https://` for remote nodes or
+  `http://127.0.0.1` for local testing.
+
+Remote nodes are ideal for:
+- Quick setup without syncing 15GB locally.
+- Running the wallet on a low-power device (phone, tablet, old laptop).
+- Trusting a node operator you know (family, friend, business partner).
+
 ## Regtest (for testing the full send/name flows)
 
 See `REGTEST_TESTING.md` — run `hsd --network=regtest --index-address --index-tx

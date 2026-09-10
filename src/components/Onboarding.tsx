@@ -1,6 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useSettingsStore } from "../stores/settings";
 import { AddWalletForm } from "./AddWalletForm";
+import { useState } from "react";
+import { invoke } from "../lib/invoke";
+import { useUiStore } from "../stores/ui";
+import { Input } from "./ui/Input";
+import { Button } from "./ui/Button";
+import type { NodeConnectionCheck } from "../types";
 
 /**
  * Wallet-first, non-custodial onboarding (first run, zero profiles).
@@ -12,12 +18,17 @@ import { AddWalletForm } from "./AddWalletForm";
 export function Onboarding() {
   const qc = useQueryClient();
   const saveAll = useSettingsStore((s) => s.saveAll);
+  const [step, setStep] = useState<"connection" | "wallet">("connection");
 
   const finish = async () => {
     await saveAll({ onboarding_complete: "true" });
     qc.invalidateQueries({ queryKey: ["wallet"] });
     qc.invalidateQueries({ queryKey: ["read"] });
   };
+
+  if (step === "connection") {
+    return <ConnectionChoice onNext={() => setStep("wallet")} />;
+  }
 
   return (
     <div className="flex h-screen items-center justify-center bg-gray-100 p-6">
@@ -28,6 +39,169 @@ export function Onboarding() {
           leave this device, and your recovery phrase is only ever shown in a secure window.
         </p>
         <AddWalletForm defaultLabel="Primary" onDone={finish} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * First-run connection choice: "How do you want to connect?"
+ * Three options: Local full node (default), Remote node, or SPV.
+ * Persists chain_source, node_mode, and node_rpc_url, then advances to wallet creation.
+ */
+function ConnectionChoice({ onNext }: { onNext: () => void }) {
+  const saveAll = useSettingsStore((s) => s.saveAll);
+  // showToast reserved for future inline error surfacing; kept minimal here.
+  useUiStore((s) => s.showToast);
+  const [remoteUrl, setRemoteUrl] = useState("");
+  const [remoteApiKey, setRemoteApiKey] = useState("");
+  const [allowRemoteBroadcast, setAllowRemoteBroadcast] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [testResult, setTestResult] = useState<NodeConnectionCheck | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+
+  const selectLocal = async () => {
+    await saveAll({ chain_source: "local_node", node_mode: "full" });
+    onNext();
+  };
+
+  const selectSpv = async () => {
+    await saveAll({ chain_source: "local_node", node_mode: "spv" });
+    onNext();
+  };
+
+  const testRemoteConnection = async () => {
+    if (!remoteUrl.trim()) {
+      setTestError("Enter a node RPC URL");
+      return;
+    }
+    setTestingConnection(true);
+    setTestError(null);
+    setTestResult(null);
+    try {
+      const result = await invoke<NodeConnectionCheck>("check_node_connection", {
+        url: remoteUrl,
+        api_key: remoteApiKey || undefined,
+      });
+      setTestResult(result);
+      if (!result.reachable) {
+        setTestError(result.error || "Node unreachable");
+      }
+    } catch (e) {
+      setTestError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const selectRemote = async () => {
+    if (!testResult?.reachable) {
+      setTestError("Test the connection first");
+      return;
+    }
+    await saveAll({
+      chain_source: "remote_node",
+      node_rpc_url: remoteUrl,
+      node_rpc_api_key: remoteApiKey,
+      allow_remote_broadcast: allowRemoteBroadcast ? "true" : "false",
+    });
+    onNext();
+  };
+
+  return (
+    <div className="flex h-screen items-center justify-center bg-gray-100 p-6">
+      <div className="bg-white rounded-lg shadow-lg max-w-2xl w-full p-8">
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">How do you want to connect?</h1>
+        <p className="text-gray-500 mb-6">
+          Your keys stay on this device. Choose how the wallet reads and sends transactions.
+          Remote and SPV are a privacy/trust tradeoff, not custody — your recovery phrase
+          never leaves this device.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Local full node */}
+          <button
+            onClick={selectLocal}
+            className="border-2 border-gray-300 rounded-lg p-4 text-left hover:border-blue-500 hover:bg-blue-50 transition"
+            data-testid="select-local-button"
+          >
+            <h3 className="font-bold text-gray-900">Local Full Node</h3>
+            <p className="text-xs text-gray-600 mt-2">
+              Start hsd on this device. ~15GB chain, full indexes. Best privacy.
+            </p>
+          </button>
+
+          {/* Remote node */}
+          <div className="border-2 border-gray-300 rounded-lg p-4 hover:border-blue-500 transition">
+            <h3 className="font-bold text-gray-900">Remote Node</h3>
+            <p className="text-xs text-gray-600 mt-2">
+              Point to a remote hsd RPC. Fast setup, no local chain. Keys stay local.
+            </p>
+            <div className="mt-3 space-y-2">
+              <Input
+                placeholder="http://127.0.0.1:12037"
+                value={remoteUrl}
+                onChange={(e) => setRemoteUrl(e.target.value)}
+                data-testid="remote-url-input"
+              />
+              <Input
+                type="password"
+                placeholder="API key (optional)"
+                value={remoteApiKey}
+                onChange={(e) => setRemoteApiKey(e.target.value)}
+                data-testid="remote-api-key-input"
+              />
+              <Button
+                size="sm"
+                onClick={testRemoteConnection}
+                disabled={testingConnection}
+                data-testid="test-connection-button"
+              >
+                {testingConnection ? "Testing…" : "Test Connection"}
+              </Button>
+              {testError && (
+                <p className="text-xs text-red-600" data-testid="test-error">
+                  {testError}
+                </p>
+              )}
+              {testResult?.reachable && (
+                <div className="text-xs text-green-600" data-testid="test-success">
+                  ✓ Connected (height: {testResult.height},{" "}
+                  {testResult.synced ? "synced" : "syncing"})
+                </div>
+              )}
+              <label className="flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={allowRemoteBroadcast}
+                  onChange={(e) => setAllowRemoteBroadcast(e.target.checked)}
+                  data-testid="allow-remote-broadcast-checkbox"
+                />
+                Allow sending via remote node
+              </label>
+              <Button
+                size="sm"
+                onClick={selectRemote}
+                disabled={!testResult?.reachable}
+                data-testid="select-remote-button"
+              >
+                Continue
+              </Button>
+            </div>
+          </div>
+
+          {/* SPV */}
+          <button
+            onClick={selectSpv}
+            className="border-2 border-gray-300 rounded-lg p-4 text-left hover:border-blue-500 hover:bg-blue-50 transition"
+            data-testid="select-spv-button"
+          >
+            <h3 className="font-bold text-gray-900">SPV (Lightweight)</h3>
+            <p className="text-xs text-gray-600 mt-2">
+              Headers only, ~1MB. Fast sync. Uses explorer for data. Read-only.
+            </p>
+          </button>
+        </div>
       </div>
     </div>
   );

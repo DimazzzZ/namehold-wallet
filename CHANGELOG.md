@@ -13,8 +13,10 @@
 ## [Unreleased]
 
 ### Added
+- **Remote-node onboarding** — the first-run flow now opens with a "How do you want to connect?" step offering three choices: **Local full node** (default; start hsd on this device), **Remote node** (point at an existing hsd RPC, with a "Test connection" button that probes the node before you commit), and **SPV** (lightweight headers-only, read-only). Choosing a source persists `chain_source` / `node_mode` / `node_rpc_url` up front so a new user reaches a working read+send wallet without waiting for a full local sync. Your recovery phrase never leaves the device — remote/SPV is a privacy/trust tradeoff, not custody. New Tauri command `check_node_connection` validates a candidate RPC (reachable / height / synced / network) without persisting anything, honoring the existing plaintext-key / non-loopback transport guard. Settings gained a matching chain-source selector, the same "Test connection" affordance, and an "Allow sending via remote node" toggle (`allow_remote_broadcast`, off by default).
 
 ### Fixed
+- **SPV mode can no longer broadcast, even past the UI gate.** `ChainSource::SpvNode` is now refused at the RPC broadcast boundary (`can_broadcast()` returns `false`) and up-front in `broadcast_tx_draft`, not only by the UI write-capability gate. A signed draft attempted against an SPV source fails cleanly with a read-only error and is left untouched (neither `failed` nor `broadcast_pending`) — nothing is sent over the wire. Defense-in-depth for the documented "SPV = read-only" product intent.
 
 ### Changed
 

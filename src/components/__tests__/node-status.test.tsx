@@ -116,6 +116,7 @@ function loadSettings(over: Partial<Record<string, string>> = {}) {
       node_mode: "full",
       explorer_fallback_url: "",
       chain_source: "local_node",
+      allow_remote_broadcast: "false",
       close_to_tray: "1",
       tray_hint_shown: "0",
       launch_at_login: "0",

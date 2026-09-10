@@ -13,6 +13,7 @@ import {
 import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
+import type { NodeConnectionCheck } from "../types";
 import { useUiStore } from "../stores/ui";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { useAppUpdate } from "../hooks/useAppUpdate";
@@ -57,6 +58,10 @@ export function Settings() {
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  // Node connectivity check (Test connection button, shared by remote-node flow).
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [connectionResult, setConnectionResult] = useState<NodeConnectionCheck | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (settings) {
@@ -71,6 +76,7 @@ export function Settings() {
         explorer_api_url: settings.explorer_api_url,
         explorer_fallback_url: settings.explorer_fallback_url,
         chain_source: settings.chain_source,
+        allow_remote_broadcast: settings.allow_remote_broadcast,
         address_gap_limit: settings.address_gap_limit,
         signer_session_timeout_seconds: settings.signer_session_timeout_seconds,
         deadline_notify_enabled: settings.deadline_notify_enabled,
@@ -135,6 +141,39 @@ export function Settings() {
     feeRateRaw && parseDoosPerKvb(feeRateRaw) === null
       ? "Fee rate must be a whole number of doos/kvB"
       : null;
+
+  /**
+   * Probe the currently-typed Node RPC URL + API key (no persistence). Used by
+   * the "Test connection" button in the Node RPC block. Backed by the
+   * `check_node_connection` command; surfaces `reachable` / `synced` /
+   * `height` inline so the user validates before switching `chain_source` to
+   * remote_node.
+   */
+  const testNodeConnection = async () => {
+    const url = (form.node_rpc_url ?? "").trim();
+    if (!url) {
+      setConnectionError("Enter a Node RPC URL first");
+      setConnectionResult(null);
+      return;
+    }
+    setTestingConnection(true);
+    setConnectionError(null);
+    setConnectionResult(null);
+    try {
+      const result = await invoke<NodeConnectionCheck>("check_node_connection", {
+        url,
+        api_key: form.node_rpc_api_key || undefined,
+      });
+      setConnectionResult(result);
+      if (!result.reachable) {
+        setConnectionError(result.error || "Node unreachable");
+      }
+    } catch (e) {
+      setConnectionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTestingConnection(false);
+    }
+  };
 
   // Pick the hsd data directory with the native folder browser (Finder).
   const pickDataDir = async () => {
@@ -254,6 +293,21 @@ export function Settings() {
         </div>
 
         <div className="space-y-2 pt-2 border-t border-gray-100">
+          <label className="text-sm font-medium">Chain source</label>
+          <select
+            value={form.chain_source ?? "local_node"}
+            onChange={(e) => updateField("chain_source", e.target.value)}
+            className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+            data-testid="chain-source-select"
+          >
+            <option value="local_node">Local node (this device runs hsd)</option>
+            <option value="remote_node">Remote node (point at someone else's hsd)</option>
+            <option value="explorer">Explorer only (read-only)</option>
+          </select>
+          <div className="text-xs text-gray-500">
+            Where the wallet reads chain data. Remote/SPV are a privacy/trust tradeoff, not
+            custody — your keys never leave this device.
+          </div>
           <Input
             label="Node RPC URL (sending)"
             value={form.node_rpc_url ?? ""}
@@ -271,10 +325,51 @@ export function Settings() {
                 : "(optional)"
             }
           />
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={testNodeConnection}
+              disabled={testingConnection}
+              data-testid="test-connection-button"
+            >
+              {testingConnection ? "Testing…" : "Test connection"}
+            </Button>
+            {connectionResult?.reachable && (
+              <span className="text-xs text-green-600" data-testid="connection-success">
+                ✓ Connected · height {connectionResult.height} ·{" "}
+                {connectionResult.synced ? "synced" : "syncing"}
+                {connectionResult.network ? ` · ${connectionResult.network}` : ""}
+              </span>
+            )}
+            {connectionError && (
+              <span className="text-xs text-red-600" data-testid="connection-error">
+                {connectionError}
+              </span>
+            )}
+          </div>
           <div className="text-xs text-gray-500">
             Needed only to send or do name actions. Run hsd with{" "}
             <code>--index-address</code>. See NODE_SETUP.md.
           </div>
+          {(form.chain_source ?? "local_node") === "remote_node" && (
+            <label className="flex items-center gap-2 text-sm pt-2">
+              <input
+                type="checkbox"
+                checked={(form.allow_remote_broadcast ?? "false") === "true"}
+                onChange={(e) =>
+                  updateField("allow_remote_broadcast", e.target.checked ? "true" : "false")
+                }
+                data-testid="allow-remote-broadcast-checkbox"
+              />
+              <span>
+                Allow sending via remote node
+                <div className="text-xs text-gray-500 font-normal">
+                  Off by default. Required to broadcast when chain source is Remote node.
+                </div>
+              </span>
+            </label>
+          )}
         </div>
 
         <div className="space-y-2 pt-2 border-t border-gray-100">

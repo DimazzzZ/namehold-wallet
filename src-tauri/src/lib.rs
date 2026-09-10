@@ -625,6 +625,7 @@ pub fn run() {
             commands::node::resync_hsd_chain,
             commands::node::start_hsd,
             commands::node::stop_hsd,
+            commands::node::check_node_connection,
             commands::read::read_balance,
             commands::read::read_names,
             commands::read::read_auction_position_names,

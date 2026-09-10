@@ -10,7 +10,7 @@
 use crate::db;
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
-use crate::noncustodial::rpc::NodeRpcClient;
+use crate::noncustodial::rpc::{ChainSource, NodeRpcClient};
 use crate::AppState;
 use std::process::{Command, Stdio};
 use tauri::State;
@@ -677,4 +677,94 @@ pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::
 
     // 3. Start hsd fresh — it re-syncs with the required indexes.
     start_hsd(state).await
+}
+
+// --- Remote-node connectivity check ----------------------------------------
+
+/// Result of a one-shot `getblockchaininfo`-style probe against a candidate
+/// node RPC. Returned by [`check_node_connection`] and rendered by the
+/// onboarding / Settings UI so a user can validate a remote-node URL before
+/// committing it as `chain_source = "remote_node"`.
+#[derive(Debug, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeConnectionCheck {
+    /// True if the endpoint answered a `getblockchaininfo` call.
+    pub reachable: bool,
+    /// Best chain height as reported by the node (`blocks`).
+    pub height: Option<i64>,
+    /// Peers' best header height, when the node exposes it.
+    pub headers: Option<i64>,
+    /// Verification progress ratio 0.0..=1.0 when available, else derived
+    /// from `height >= headers`. Used by the UI to say "not fully synced yet".
+    pub synced: bool,
+    /// Network reported by the node: "main" / "testnet" / "regtest" / "simnet".
+    pub network: Option<String>,
+    /// Non-empty human-readable reason when `reachable` is false.
+    pub error: Option<String>,
+}
+
+/// Testable core of [`check_node_connection`]. Given a probe client, returns
+/// the same [`NodeConnectionCheck`] the Tauri command surfaces. Split out so
+/// unit tests can inject a mock `NodeRpc` without a live server.
+pub(crate) async fn check_node_connection_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+) -> NodeConnectionCheck {
+    match client.get_blockchain_info().await {
+        Ok(info) => {
+            let synced = if let Some(progress) = info.verification_progress {
+                progress >= 0.9999
+            } else if let Some(headers) = info.headers {
+                headers > 0 && info.blocks >= headers
+            } else {
+                // Node didn't report headers or progress — treat non-zero
+                // height as "answering, but sync unknown" rather than synced.
+                false
+            };
+            NodeConnectionCheck {
+                reachable: true,
+                height: Some(info.blocks),
+                headers: info.headers,
+                synced,
+                network: info.chain,
+                error: None,
+            }
+        }
+        Err(e) => NodeConnectionCheck {
+            reachable: false,
+            height: None,
+            headers: None,
+            synced: false,
+            network: None,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+/// Probe a candidate node RPC URL without persisting anything. Powers the
+/// "Test connection" button in the onboarding "How do you want to connect?"
+/// step and in Settings, so a user can validate a remote hsd RPC before
+/// switching `chain_source` to `remote_node`.
+///
+/// The `RemoteNode` chain source is used for the probe so the plaintext-key /
+/// loopback guards in `NodeRpcClient::try_new` apply — an attempt to send an
+/// API key over plaintext HTTP to a non-loopback host is rejected up-front
+/// instead of leaking the key.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn check_node_connection(
+    url: String,
+    api_key: Option<String>,
+) -> Result<NodeConnectionCheck, AppError> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(AppError::InvalidInput(
+            "node RPC URL is required".to_string(),
+        ));
+    }
+    let key = api_key.unwrap_or_default();
+    // `try_new` enforces the plaintext-key / non-loopback guard. Any failure
+    // there is a configuration error, not a connectivity error, and is
+    // returned distinctly so the UI can say "fix your URL/key first".
+    let client = NodeRpcClient::try_new(url, &key, ChainSource::RemoteNode)?;
+    Ok(check_node_connection_with_client(&client).await)
 }
