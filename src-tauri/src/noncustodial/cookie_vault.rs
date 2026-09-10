@@ -387,16 +387,43 @@ mod tests {
         assert_ne!(tampered, blob_hex, "mutation must actually change the blob");
         assert!(decrypt_with_dek(&tampered, &dek).is_err());
 
-        // Also exercise the other arm of the `flip` closure explicitly so both
-        // branches are covered deterministically on every run: pick a source
-        // char that forces the opposite arm from the one above.
-        let forced_src = if orig == '0' { 'a' } else { '0' };
+        // Cover both arms of `flip` directly, so the assertion does not depend
+        // on which hex digits the random nonce happened to produce. The earlier
+        // spelling forced position 21 to a known source and then flipped THAT,
+        // which yields a fixed final digit ('0' when orig == '0', else '1') —
+        // a no-op whenever the nonce already carried that digit at 21, so the
+        // "tampered" blob equalled the original and decrypt succeeded. That
+        // made this test fail about one run in sixteen.
+        assert_eq!(flip('0'), '1');
+        assert_eq!(flip('a'), '0');
+
+        // Second tamper, at another nonce position. `flip(c) != c` for every
+        // input, so flipping the ACTUAL character is always a real change.
         let mut tampered2: String = blob_hex.clone();
-        // Set position 21 (also inside the nonce) to a known source, then flip.
-        tampered2.replace_range(21..22, &forced_src.to_string());
-        let after_force: Vec<char> = tampered2.chars().collect();
-        tampered2.replace_range(21..22, &flip(after_force[21]).to_string());
+        tampered2.replace_range(21..22, &flip(chars[21]).to_string());
+        assert_ne!(
+            tampered2, blob_hex,
+            "second mutation must actually change the blob"
+        );
         assert!(decrypt_with_dek(&tampered2, &dek).is_err());
+    }
+
+    /// Regression guard for the nonce-dependent failure above: the tampering
+    /// strategy must change the blob for EVERY hex digit the random nonce can
+    /// produce, not merely for most of them. Checks all 256 (pos-20, pos-21)
+    /// digit pairs, which is strictly stronger than any single encrypt run.
+    #[test]
+    fn flip_tamper_strategy_never_produces_a_noop() {
+        let flip = |c: char| if c == '0' { '1' } else { '0' };
+        const HEX: &[u8] = b"0123456789abcdef";
+        for &c20 in HEX {
+            for &c21 in HEX {
+                let c20 = c20 as char;
+                let c21 = c21 as char;
+                assert_ne!(flip(c20), c20, "flip must change {c20}");
+                assert_ne!(flip(c21), c21, "flip must change {c21}");
+            }
+        }
     }
 
     #[test]
