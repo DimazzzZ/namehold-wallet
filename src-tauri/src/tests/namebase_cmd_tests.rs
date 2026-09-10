@@ -660,8 +660,14 @@ async fn disconnect_writes_audit_log_entry() {
 #[serial(cookie_vault)]
 async fn transfer_domain_sets_asset_status_to_transfer_requested() {
     let mut server = Server::new_async().await;
-    let _m = server
+    let m = server
         .mock("POST", "/api/domains/exampletld/withdraw")
+        // Tighten: assert the request carries the destination address, so a
+        // regression that dropped or mangled the address body is caught here
+        // rather than passing on a bare status match.
+        .match_body(mockito::Matcher::PartialJsonString(
+            serde_json::json!({ "address": good_addr() }).to_string(),
+        ))
         .with_status(200)
         .with_body("{}")
         .create_async()
@@ -688,6 +694,7 @@ async fn transfer_domain_sets_asset_status_to_transfer_requested() {
         .expect("asset should exist");
     assert_eq!(asset.status.as_str(), "namebase_transfer_requested");
     assert!(!asset.updated_at.is_empty());
+    m.assert_async().await;
 }
 
 // =========================================================================
@@ -698,8 +705,23 @@ async fn transfer_domain_sets_asset_status_to_transfer_requested() {
 #[serial(cookie_vault)]
 async fn withdraw_hns_stores_address_and_amount_in_audit_log() {
     let mut server = Server::new_async().await;
-    let _m = server
+    let m = server
         .mock("POST", "/api/withdrawals")
+        // Tighten: assert the request body carries the currency, amount, and
+        // address the client is supposed to send. The audit-log assertion
+        // below only proves what we WROTE locally; this proves what actually
+        // went over the wire to Namebase matches.
+        .match_body(mockito::Matcher::AllOf(vec![
+            mockito::Matcher::PartialJsonString(
+                serde_json::json!({ "currency": "hns" }).to_string(),
+            ),
+            mockito::Matcher::PartialJsonString(
+                serde_json::json!({ "amount": "3.5" }).to_string(),
+            ),
+            mockito::Matcher::PartialJsonString(
+                serde_json::json!({ "address": good_addr() }).to_string(),
+            ),
+        ]))
         .with_status(200)
         .with_body("{}")
         .create_async()
@@ -725,6 +747,8 @@ async fn withdraw_hns_stores_address_and_amount_in_audit_log() {
         serde_json::from_str(&detail).expect("audit detail should be valid JSON");
     assert_eq!(parsed["address"], good_addr());
     assert_eq!(parsed["amount"], "3.5");
+    drop(db);
+    m.assert_async().await;
 }
 
 // =========================================================================
@@ -763,46 +787,66 @@ async fn namebase_client_trims_whitespace_from_base_url() {
 #[tokio::test]
 #[serial(cookie_vault)]
 async fn transfer_domain_falls_back_to_mainnet_when_no_profile() {
+    // With NO active profile, `active_profile_network` must fall back to
+    // Network::Main. A mainnet `hs1q…` address must therefore PASS validation
+    // AND the request must actually land on the server. The previous version
+    // pointed at `http://localhost:1` and accepted any error, so it would have
+    // passed silently even if validation had started rejecting the address.
+    let mut server = Server::new_async().await;
+    let m = server
+        .mock("POST", "/api/domains/exampletld/withdraw")
+        .match_body(mockito::Matcher::PartialJsonString(
+            serde_json::json!({ "address": good_addr() }).to_string(),
+        ))
+        .with_status(200)
+        .with_body("{}")
+        .create_async()
+        .await;
+
+    install_test_dek();
     let conn = conn_without_profile();
-    db::queries::set_setting(&conn, "namebase_base_url", "http://localhost:1").unwrap();
+    db::queries::set_setting(&conn, "namebase_base_url", &server.url()).unwrap();
+    db::queries::set_setting(&conn, "namebase_cookie", COOKIE).unwrap();
     let app = app_with(conn);
 
-    let res =
-        namebase_transfer_domain(app.state::<AppState>(), "exampletld".into(), good_addr()).await;
-    match res {
-        Ok(()) => {}
-        Err(AppError::InvalidInput(m)) => {
-            assert!(
-                !m.contains("HNS address"),
-                "valid address wrongly rejected: {m}"
-            );
-        }
-        Err(_) => {}
-    }
+    namebase_transfer_domain(app.state::<AppState>(), "exampletld".into(), good_addr())
+        .await
+        .expect("mainnet fallback should accept a valid mainnet address and reach the server");
+    m.assert_async().await;
 }
 
 #[tokio::test]
 #[serial(cookie_vault)]
 async fn withdraw_hns_falls_back_to_mainnet_when_no_profile() {
+    // No active profile → mainnet fallback. Both address validation and amount
+    // parsing must pass, and the POST must land on the mock server carrying the
+    // exact address + amount the caller supplied.
+    let mut server = Server::new_async().await;
+    let m = server
+        .mock("POST", "/api/withdrawals")
+        .match_body(mockito::Matcher::AllOf(vec![
+            mockito::Matcher::PartialJsonString(
+                serde_json::json!({ "address": good_addr() }).to_string(),
+            ),
+            mockito::Matcher::PartialJsonString(
+                serde_json::json!({ "amount": "1.0" }).to_string(),
+            ),
+        ]))
+        .with_status(200)
+        .with_body("{}")
+        .create_async()
+        .await;
+
+    install_test_dek();
     let conn = conn_without_profile();
-    db::queries::set_setting(&conn, "namebase_base_url", "http://localhost:1").unwrap();
+    db::queries::set_setting(&conn, "namebase_base_url", &server.url()).unwrap();
+    db::queries::set_setting(&conn, "namebase_cookie", COOKIE).unwrap();
     let app = app_with(conn);
 
-    let res = namebase_withdraw_hns(app.state::<AppState>(), good_addr(), "1.0".into()).await;
-    match res {
-        Ok(()) => {}
-        Err(AppError::InvalidInput(m)) => {
-            assert!(
-                !m.contains("HNS address"),
-                "valid address wrongly rejected: {m}"
-            );
-            assert!(
-                !m.contains("positive"),
-                "valid amount wrongly rejected: {m}"
-            );
-        }
-        Err(_) => {}
-    }
+    namebase_withdraw_hns(app.state::<AppState>(), good_addr(), "1.0".into())
+        .await
+        .expect("mainnet fallback should accept valid inputs and reach the server");
+    m.assert_async().await;
 }
 
 // =========================================================================
@@ -944,8 +988,15 @@ async fn namebase_client_with_cookie_falls_back_to_default_host() {
 
     let client =
         crate::commands::namebase::namebase_client_with_cookie(&state, "some-cookie").unwrap();
-    let result = client.check_session().await;
-    let _ = result;
+    // With no `namebase_base_url` override set, the client must target the real
+    // Sunset host. Assert on the constructed base URL rather than firing a live
+    // `check_session()` at the real Namebase server (which the previous version
+    // did, then discarded the result — a test that could never fail).
+    assert_eq!(
+        client.base_url(),
+        "https://sunset.namebase.io",
+        "no override → client must fall back to the default Namebase host"
+    );
 }
 
 // =========================================================================
@@ -957,23 +1008,34 @@ async fn namebase_client_with_cookie_falls_back_to_default_host() {
 #[tokio::test]
 #[serial(cookie_vault)]
 async fn transfer_domain_falls_back_to_mainnet_for_missing_profile_row() {
+    // Active profile ID points at a row that doesn't exist →
+    // `active_profile_network` must still fall back to Network::Main, so the
+    // mainnet address passes validation and the request reaches the server.
+    let mut server = Server::new_async().await;
+    let m = server
+        .mock("POST", "/api/domains/testdomain/withdraw")
+        .match_body(mockito::Matcher::PartialJsonString(
+            serde_json::json!({ "address": good_addr() }).to_string(),
+        ))
+        .with_status(200)
+        .with_body("{}")
+        .create_async()
+        .await;
+
     install_test_dek();
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
     // Set active profile to an ID that has no matching wallet_profiles row.
     db::queries::set_setting(&conn, "active_wallet_profile_id", "ghost_profile").unwrap();
-    db::queries::set_setting(&conn, "namebase_base_url", "http://localhost:1").unwrap();
+    db::queries::set_setting(&conn, "namebase_base_url", &server.url()).unwrap();
+    db::queries::set_setting(&conn, "namebase_cookie", COOKIE).unwrap();
     let app = app_with(conn);
 
-    let res =
-        namebase_transfer_domain(app.state::<AppState>(), "testdomain".into(), good_addr()).await;
-    if let Err(AppError::InvalidInput(m)) = res {
-        assert!(
-            !m.contains("HNS address"),
-            "valid mainnet address should not be rejected: {m}"
-        );
-    }
+    namebase_transfer_domain(app.state::<AppState>(), "testdomain".into(), good_addr())
+        .await
+        .expect("missing-profile-row must fall back to mainnet and reach the server");
+    m.assert_async().await;
 }
 
 // =========================================================================

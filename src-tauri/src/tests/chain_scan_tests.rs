@@ -431,6 +431,49 @@ async fn scan_block_inserts_bid_covenant() {
     assert_eq!(bids[0].lockup, Some(5_000_000));
     assert_eq!(bids[0].revealed, Some(false));
     assert_eq!(bids[0].value, None);
+
+    // Call-recorder assertion: `scan_block` must ask the node for the block
+    // hash at the height we passed (100), then fetch that specific hash. A
+    // regression that queried the wrong height — or queried a different hash
+    // than the one just returned — would leave the DB "correct by accident"
+    // (the mock returns canned data regardless of args). The recorder makes
+    // that class of bug visible.
+    use crate::tests::mock_node_rpc::RpcCall;
+    let calls = mock.calls();
+    assert_eq!(
+        calls,
+        vec![
+            RpcCall::BlockHash(100),
+            RpcCall::Block("blockhash1".to_string()),
+        ],
+        "scan_block must (1) resolve height→hash then (2) fetch that hash: {calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn scan_block_calls_get_block_hash_with_correct_height() {
+    // Regression test: verify `scan_block` queries the exact height passed,
+    // not off-by-one or a different value. The call recorder makes this
+    // assertion possible — without it, the mock would return the same canned
+    // block regardless of the height argument, so a bug here would pass silently.
+    let (path, _conn) = temp_db();
+    let mock = MockNodeRpc::new()
+        .with_block_hash("hash_at_999".to_string())
+        .with_block(serde_json::json!({ "tx": [] }));
+
+    let result = scan_block(&mock, path.to_str().unwrap(), 999).await;
+    assert!(result.is_ok());
+
+    use crate::tests::mock_node_rpc::RpcCall;
+    let calls = mock.calls();
+    assert!(
+        calls.iter().any(|c| c == &RpcCall::BlockHash(999)),
+        "scan_block(height=999) must call get_block_hash(999), got: {calls:?}"
+    );
+    // Verify it did NOT query a different height (e.g. 998 or 1000).
+    assert!(!calls.iter().any(|c| matches!(c, RpcCall::BlockHash(h) if *h != 999)),
+        "scan_block must not query other heights: {calls:?}"
+    );
 }
 
 #[tokio::test]

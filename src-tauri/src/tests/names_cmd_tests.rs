@@ -1,6 +1,7 @@
 use crate::commands::names;
 use crate::db;
 use crate::db::queries::NameCoin;
+use crate::error::AppError;
 use crate::AppState;
 use tauri::Manager;
 
@@ -657,11 +658,23 @@ async fn test_build_open_draft_invalid_name_errors() {
         insert_valid_profile(&conn, "regtest");
     }
     let app = mock_app_with(state);
-    // A name with invalid characters should error at hash_name
-    let result = names::build_open_draft(app.state(), "".into(), None).await;
-    // Empty name may or may not error depending on hash_name validation,
-    // but the call should at least not panic.
-    let _ = result;
+    // `hash_name` rejects empty (and non-`[a-z0-9_-]`) names before any I/O,
+    // so both an empty name AND an invalid-charset name must produce
+    // `InvalidInput`. We assert on the concrete variant + message shape so a
+    // regression that swallows the validation error (or converts it into a
+    // different variant like `Rpc` / `Db`) fails loudly instead of silently.
+    for bad in ["", "UPPERCASE", "has space", "leading-", "-leading", "trailing_"] {
+        let err = names::build_open_draft(app.state(), bad.into(), None)
+            .await
+            .expect_err(&format!("build_open_draft({bad:?}) must reject invalid name"));
+        match err {
+            AppError::InvalidInput(msg) => assert!(
+                msg.contains("invalid name"),
+                "expected 'invalid name' in InvalidInput, got: {msg}"
+            ),
+            other => panic!("expected AppError::InvalidInput for {bad:?}, got {other:?}"),
+        }
+    }
 }
 
 #[tokio::test]

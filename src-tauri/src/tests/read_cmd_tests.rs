@@ -294,30 +294,42 @@ async fn discover_owned_names_no_active_profile_returns_zero() {
 // setup/assertion) — not duplicated here.
 
 // ---------------------------------------------------------------------------
-// read_name_info — exercises the full code path (node + explorer fallback).
-// In CI the explorer may be reachable, so we accept either Ok or Err.
+// read_name_info — exercises the full code path with a mockito explorer so the
+// test is deterministic and can actually pin the response shape. The previous
+// version hit the real Namebase explorer and accepted Ok OR Err, which meant
+// the assertion carried no signal — a regression in the fallback path would
+// have passed silently. Now we seed a mock explorer, set the explorer base URL
+// override, and assert on the resolved JSON shape.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn read_name_info_exercises_code_path() {
+async fn read_name_info_uses_explorer_response_deterministically() {
+    let mut server = mockito::Server::new_async().await;
+    // A CLOSED name the explorer knows about — modeled on the HsdName shape the
+    // `/api/names/*` endpoint returns. No node is mocked, so `read_name_info`
+    // falls through to the explorer path.
+    let ex = server
+        .mock("GET", "/api/names/nonexistent12345")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"name":"nonexistent12345","state":"CLOSED","height":100}"#)
+        .create_async()
+        .await;
+
     let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
     let app = app_with(conn);
-    let result = read_name_info(app.state(), "nonexistent12345".into()).await;
-    // The function either returns name info from the explorer or an error
-    // if the explorer is unreachable. Both are valid outcomes — the important
-    // thing is that the code path is exercised for coverage.
-    match result {
-        Ok(val) => {
-            // If the explorer is reachable, we get a name object back.
-            assert!(
-                val.get("name").is_some(),
-                "expected name field in response: {val:?}"
-            );
-        }
-        Err(_) => {
-            // Explorer unreachable — also a valid outcome.
-        }
-    }
+
+    let val = read_name_info(app.state(), "nonexistent12345".into())
+        .await
+        .expect("read_name_info should resolve from mock explorer");
+    // The explorer's CLOSED response must be surfaced verbatim, not synthesized
+    // to AVAILABLE — a regression in the explorer branch would flip this.
+    assert_eq!(val["name"], "nonexistent12345");
+    assert_eq!(val["state"], "CLOSED");
+    ex.assert_async().await;
 }
 
 // ---------------------------------------------------------------------------
