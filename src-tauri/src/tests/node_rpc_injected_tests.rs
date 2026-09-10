@@ -253,7 +253,9 @@ async fn name_records_with_multiple_record_types() {
     use crate::tests::mock_node_rpc::RpcCall;
     let calls = mock.calls();
     assert!(
-        calls.iter().any(|c| c == &RpcCall::NameResource("multirecord".to_string())),
+        calls
+            .iter()
+            .any(|c| c == &RpcCall::NameResource("multirecord".to_string())),
         "read_name_records_with_client must call get_name_resource('multirecord'), got: {calls:?}"
     );
 }

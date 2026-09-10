@@ -685,15 +685,20 @@ async fn transfer_domain_sets_asset_status_to_transfer_requested() {
         .await
         .expect("transfer should succeed");
 
-    let state = app.state::<AppState>();
-    let db = state.db.lock().unwrap();
-    let asset = db::queries::get_assets_by_tlds(&db, &["exampletld".to_string()])
-        .unwrap()
-        .into_iter()
-        .next()
-        .expect("asset should exist");
-    assert_eq!(asset.status.as_str(), "namebase_transfer_requested");
-    assert!(!asset.updated_at.is_empty());
+    // Scope the DB guard so it is dropped before the `.await` below (clippy's
+    // `await_holding_lock` would fire otherwise — the guard is not async-safe).
+    let (status, updated_at) = {
+        let state = app.state::<AppState>();
+        let db = state.db.lock().unwrap();
+        let asset = db::queries::get_assets_by_tlds(&db, &["exampletld".to_string()])
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("asset should exist");
+        (asset.status.clone(), asset.updated_at.clone())
+    };
+    assert_eq!(status.as_str(), "namebase_transfer_requested");
+    assert!(!updated_at.is_empty());
     m.assert_async().await;
 }
 
@@ -715,9 +720,7 @@ async fn withdraw_hns_stores_address_and_amount_in_audit_log() {
             mockito::Matcher::PartialJsonString(
                 serde_json::json!({ "currency": "hns" }).to_string(),
             ),
-            mockito::Matcher::PartialJsonString(
-                serde_json::json!({ "amount": "3.5" }).to_string(),
-            ),
+            mockito::Matcher::PartialJsonString(serde_json::json!({ "amount": "3.5" }).to_string()),
             mockito::Matcher::PartialJsonString(
                 serde_json::json!({ "address": good_addr() }).to_string(),
             ),
@@ -735,19 +738,21 @@ async fn withdraw_hns_stores_address_and_amount_in_audit_log() {
         .await
         .expect("withdraw should succeed");
 
-    let db = state.db.lock().unwrap();
-    let detail: String = db
-        .query_row(
+    // Scope the DB guard so it is dropped before the `.await` below (clippy's
+    // `await_holding_lock` fires even with an explicit `drop`, so use a block).
+    let detail: String = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
             "SELECT detail FROM audit_log WHERE action = 'namebase_withdraw_hns' LIMIT 1",
             [],
             |row| row.get(0),
         )
-        .unwrap();
+        .unwrap()
+    };
     let parsed: serde_json::Value =
         serde_json::from_str(&detail).expect("audit detail should be valid JSON");
     assert_eq!(parsed["address"], good_addr());
     assert_eq!(parsed["amount"], "3.5");
-    drop(db);
     m.assert_async().await;
 }
 
@@ -828,9 +833,7 @@ async fn withdraw_hns_falls_back_to_mainnet_when_no_profile() {
             mockito::Matcher::PartialJsonString(
                 serde_json::json!({ "address": good_addr() }).to_string(),
             ),
-            mockito::Matcher::PartialJsonString(
-                serde_json::json!({ "amount": "1.0" }).to_string(),
-            ),
+            mockito::Matcher::PartialJsonString(serde_json::json!({ "amount": "1.0" }).to_string()),
         ]))
         .with_status(200)
         .with_body("{}")

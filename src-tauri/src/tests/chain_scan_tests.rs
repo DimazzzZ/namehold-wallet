@@ -471,7 +471,10 @@ async fn scan_block_calls_get_block_hash_with_correct_height() {
         "scan_block(height=999) must call get_block_hash(999), got: {calls:?}"
     );
     // Verify it did NOT query a different height (e.g. 998 or 1000).
-    assert!(!calls.iter().any(|c| matches!(c, RpcCall::BlockHash(h) if *h != 999)),
+    assert!(
+        !calls
+            .iter()
+            .any(|c| matches!(c, RpcCall::BlockHash(h) if *h != 999)),
         "scan_block must not query other heights: {calls:?}"
     );
 }

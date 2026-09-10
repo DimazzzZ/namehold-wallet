@@ -663,10 +663,19 @@ async fn test_build_open_draft_invalid_name_errors() {
     // `InvalidInput`. We assert on the concrete variant + message shape so a
     // regression that swallows the validation error (or converts it into a
     // different variant like `Rpc` / `Db`) fails loudly instead of silently.
-    for bad in ["", "UPPERCASE", "has space", "leading-", "-leading", "trailing_"] {
+    for bad in [
+        "",
+        "UPPERCASE",
+        "has space",
+        "leading-",
+        "-leading",
+        "trailing_",
+    ] {
         let err = names::build_open_draft(app.state(), bad.into(), None)
             .await
-            .expect_err(&format!("build_open_draft({bad:?}) must reject invalid name"));
+            .expect_err(&format!(
+                "build_open_draft({bad:?}) must reject invalid name"
+            ));
         match err {
             AppError::InvalidInput(msg) => assert!(
                 msg.contains("invalid name"),
