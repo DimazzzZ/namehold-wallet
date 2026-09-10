@@ -43,6 +43,9 @@ jobs:
       - name: Lint secure window imports
         run: pnpm lint:secure-imports
 
+      - name: Format check
+        run: pnpm lint:format
+
   rust-lint:
     name: Rust lint (fmt · clippy)
     runs-on: ubuntu-latest
