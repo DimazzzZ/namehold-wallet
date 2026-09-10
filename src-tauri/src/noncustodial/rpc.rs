@@ -35,8 +35,9 @@ pub enum ChainSource {
     RemoteNode,
     /// A read-only block explorer. Broadcast is disabled in this mode.
     Explorer,
-    /// An SPV (Simplified Payment Verification) node. Can broadcast but
-    /// cannot serve full-chain queries (no --index-address/--index-tx).
+    /// An SPV (headers-only) node. Read-only in Namehold: no
+    /// `--index-address` means no UTXO tracking, so `can_broadcast()` is
+    /// false and reads come from the explorer.
     SpvNode,
 }
 

@@ -691,8 +691,9 @@ pub struct NodeConnectionCheck {
     pub height: Option<i64>,
     /// Peers' best header height, when the node exposes it.
     pub headers: Option<i64>,
-    /// Verification progress ratio 0.0..=1.0 when available, else derived
-    /// from `height >= headers`. Used by the UI to say "not fully synced yet".
+    /// True when the node is at the chain tip per `chain_synced` (progress
+    /// ≥ 0.9999, else `blocks >= headers`; unknown → false for a first-contact
+    /// probe). The UI uses it to say "connected, but still syncing".
     pub synced: bool,
     /// Network reported by the node: "main" / "testnet" / "regtest" / "simnet".
     pub network: Option<String>,

@@ -350,10 +350,10 @@ export interface Settings {
   chain_source: ChainSource;
   /**
    * "true" | "false" — allow sending via a remote node. Only relevant when
-   * chain_source is "remote_node". Default "false" (safe default). When false,
-   * RemoteNode sources are read-only even if the wallet is unlocked.
+   * chain_source is "remote_node". Default "false". Enforced by the backend in
+   * `broadcast_tx_draft`, not just by the UI write-capability gate.
    */
-  allow_remote_broadcast: string;
+  allow_remote_broadcast: "true" | "false";
   /**
    * "1" | "0" — closing the main window hides it to the system tray (menu bar
    * on macOS) instead of quitting the app. Default "1" (on). Turn off to get
