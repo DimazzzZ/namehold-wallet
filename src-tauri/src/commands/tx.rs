@@ -1426,10 +1426,18 @@ pub async fn broadcast_tx_draft(
         (signed, settings)
     };
 
-    // Any configured node (local OR remote) can broadcast — configuring a Node
-    // RPC URL is the opt-in. The only refusal is a read-only Explorer source,
-    // which `send_raw_transaction` rejects internally.
+    // A full local node or a configured remote node can broadcast — configuring
+    // a Node RPC URL is the opt-in. Read-only sources (Explorer and SPV) are
+    // rejected up-front so the draft status is not left in an ambiguous
+    // `broadcast_pending` state; the same read-only check inside
+    // `send_raw_transaction` (via `can_broadcast()`) is the second line of
+    // defense, and the UI-facing `WriteCapability` gate is the first.
     let client = NodeRpcClient::from_settings(&settings);
+    if !client.source().can_broadcast() {
+        return Err(AppError::InvalidInput(
+            "chain source is read-only; broadcasting is disabled".to_string(),
+        ));
+    }
     let outcome = classify_broadcast_outcome_with_client(&client, &signed_hex).await;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     match outcome {

@@ -275,6 +275,63 @@ async fn broadcast_failure_marks_draft_failed_and_errors() {
     );
 }
 
+// --- SPV read-only source: broadcast refused at the RPC boundary -----------
+
+/// Defense-in-depth: even if the UI `WriteCapability` gate were bypassed,
+/// `broadcast_tx_draft` must refuse to broadcast when the chain source is SPV
+/// (read-only in Namehold). The draft stays in `signed` status — it was never
+/// attempted, so it is neither `failed` nor `broadcast_pending`.
+#[tokio::test]
+async fn broadcast_refused_in_spv_mode() {
+    // A mock server whose endpoint would ordinarily succeed. If the guard is
+    // broken, the RPC layer would be hit and this mock would match — the
+    // `expect(0)` on the mock proves nothing was sent over the wire.
+    let mut server = mockito::Server::new_async().await;
+    let node_txid = "abc0000000000000000000000000000000000000000000000000000000000def";
+    let m = server
+        .mock("POST", "/")
+        .with_header("content-type", "application/json")
+        .with_body(format!(r#"{{"result":"{node_txid}","error":null,"id":1}}"#))
+        .expect(0)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    // Flip the chain source to SPV by setting node_mode=spv. `from_settings`
+    // (rpc.rs:63-70) maps (_, "spv") → ChainSource::SpvNode.
+    db::queries::set_setting(&conn, "node_mode", "spv").unwrap();
+    let app = app_with(conn);
+    let to = recv_addr();
+
+    // Build + sign as usual (SPV blocks sending, not building/signing).
+    let draft = build_send_hns_draft(app.state(), to, 500_000, Some(1), None)
+        .await
+        .expect("build draft");
+    unlock(&app, PROFILE);
+    sign_tx_draft_inner(&app.state(), &draft.id)
+        .await
+        .expect("sign");
+
+    // Broadcast must be refused with a read-only error.
+    let err = broadcast_tx_draft(app.state(), draft.id.clone())
+        .await
+        .expect_err("SPV broadcast must be refused");
+    assert!(
+        matches!(&err, AppError::InvalidInput(msg) if msg.contains("read-only")),
+        "expected InvalidInput read-only error, got {err:?}"
+    );
+
+    // Nothing was sent to the mock node.
+    m.assert_async().await;
+
+    // The draft is untouched (still `signed`), not `failed` and not
+    // `broadcast_pending` — nothing was attempted on the wire.
+    let row = draft_row(&app, &draft.id);
+    assert_eq!(row.status, "signed");
+    assert!(row.signed_tx_hex.is_some());
+    assert!(row.txid.is_none());
+}
+
 // --- confirmation tracking (broadcasted -> confirmed / dropped) ------------
 
 const DRAFT_TXID: &str = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0";

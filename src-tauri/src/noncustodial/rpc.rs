@@ -73,7 +73,7 @@ impl ChainSource {
     pub fn can_broadcast(self) -> bool {
         matches!(
             self,
-            ChainSource::LocalNode | ChainSource::RemoteNode | ChainSource::SpvNode
+            ChainSource::LocalNode | ChainSource::RemoteNode
         )
     }
 }
@@ -752,7 +752,9 @@ mod tests {
         assert!(ChainSource::RemoteNode.can_broadcast());
         assert!(!ChainSource::Explorer.can_broadcast());
         // SPV mode is read-only in Namehold — no UTXO tracking, no sending.
-        assert!(ChainSource::SpvNode.can_broadcast());
+        // The broadcast boundary refuses it too (defense-in-depth), not just
+        // the UI write-capability gate.
+        assert!(!ChainSource::SpvNode.can_broadcast());
     }
 
     #[test]
