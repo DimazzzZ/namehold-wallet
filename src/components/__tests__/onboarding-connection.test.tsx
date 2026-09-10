@@ -146,4 +146,59 @@ describe("Onboarding — Connection choice", () => {
       value: "http://example.com:12037",
     });
   });
+
+  it("failed probe shows the node's reason and keeps Continue disabled", async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "check_node_connection"
+        ? Promise.resolve({
+            reachable: false,
+            height: null,
+            headers: null,
+            synced: false,
+            network: null,
+            error: "connection refused",
+          })
+        : Promise.resolve(undefined),
+    );
+    render(<Onboarding />, { wrapper: wrapper() });
+    fireEvent.change(screen.getByTestId("remote-url-input"), {
+      target: { value: "https://node.example.com:12037" },
+    });
+    fireEvent.click(screen.getByTestId("test-connection-button"));
+    await waitFor(() =>
+      expect(screen.getByTestId("connection-error")).toHaveTextContent("connection refused"),
+    );
+    expect(screen.getByTestId("select-remote-button")).toBeDisabled();
+    expect(invokeMock).not.toHaveBeenCalledWith("update_setting", expect.anything());
+  });
+
+  it("editing the URL after a successful probe invalidates it and disables Continue", async () => {
+    render(<Onboarding />, { wrapper: wrapper() });
+    fireEvent.change(screen.getByTestId("remote-url-input"), {
+      target: { value: "https://a.example.com:12037" },
+    });
+    fireEvent.click(screen.getByTestId("test-connection-button"));
+    await waitFor(() => expect(screen.getByTestId("connection-success")).toBeInTheDocument());
+    const continueBtn = screen.getByTestId("select-remote-button");
+    expect(continueBtn).not.toBeDisabled();
+
+    fireEvent.change(screen.getByTestId("remote-url-input"), {
+      target: { value: "https://b.example.com:12037" },
+    });
+    expect(screen.queryByTestId("connection-success")).toBeNull();
+    expect(continueBtn).toBeDisabled();
+  });
+
+  it("editing the API key after a successful probe invalidates it too", async () => {
+    render(<Onboarding />, { wrapper: wrapper() });
+    fireEvent.change(screen.getByTestId("remote-url-input"), {
+      target: { value: "https://a.example.com:12037" },
+    });
+    fireEvent.click(screen.getByTestId("test-connection-button"));
+    await waitFor(() => expect(screen.getByTestId("connection-success")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId("remote-api-key-input"), { target: { value: "k2" } });
+    expect(screen.queryByTestId("connection-success")).toBeNull();
+    expect(screen.getByTestId("select-remote-button")).toBeDisabled();
+  });
 });

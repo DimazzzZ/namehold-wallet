@@ -276,19 +276,27 @@ export function Settings() {
           <Input
             label="Node RPC URL (sending)"
             value={form.node_rpc_url ?? ""}
-            onChange={(e) => updateField("node_rpc_url", e.target.value)}
+            onChange={(e) => {
+              updateField("node_rpc_url", e.target.value);
+              nodeProbe.reset();
+            }}
             placeholder="http://127.0.0.1:12037"
+            data-testid="node-rpc-url-input"
           />
           <Input
             label="Node RPC API key"
             type="password"
             value={form.node_rpc_api_key ?? ""}
-            onChange={(e) => updateField("node_rpc_api_key", e.target.value)}
+            onChange={(e) => {
+              updateField("node_rpc_api_key", e.target.value);
+              nodeProbe.reset();
+            }}
             placeholder={
               (settings as unknown as Record<string, string>)["__has_node_rpc_api_key"] === "true"
                 ? "•••••• (stored — leave blank to keep)"
                 : "(optional)"
             }
+            data-testid="node-rpc-api-key-input"
           />
           <div className="flex items-center gap-2">
             <Button

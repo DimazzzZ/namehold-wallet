@@ -109,16 +109,22 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
             </p>
             <div className="mt-3 space-y-2">
               <Input
-                placeholder="http://127.0.0.1:12037"
+                placeholder="https://node.example.com:12037"
                 value={remoteUrl}
-                onChange={(e) => setRemoteUrl(e.target.value)}
+                onChange={(e) => {
+                  setRemoteUrl(e.target.value);
+                  probe.reset();
+                }}
                 data-testid="remote-url-input"
               />
               <Input
                 type="password"
                 placeholder="API key (optional)"
                 value={remoteApiKey}
-                onChange={(e) => setRemoteApiKey(e.target.value)}
+                onChange={(e) => {
+                  setRemoteApiKey(e.target.value);
+                  probe.reset();
+                }}
                 data-testid="remote-api-key-input"
               />
               <Button
