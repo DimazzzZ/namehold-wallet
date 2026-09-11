@@ -166,7 +166,8 @@ pub(crate) async fn node_tip_height_if_synced_from_settings(
 ///
 /// This is the guard that prevents a regtest node from being treated as
 /// authoritative for a mainnet wallet (or any other cross-network mismatch).
-/// The comparison normalizes both sides through [`network_name_matches`] so
+/// The comparison normalizes both sides through
+/// [`crate::noncustodial::network::network_name_matches`] so
 /// `"mainnet"` (profile) and `"main"` (hsd) count as equal.
 pub(crate) async fn node_tip_height_if_synced_from_settings_with_network(
     settings: &std::collections::HashMap<String, String>,
@@ -185,33 +186,19 @@ pub(crate) async fn node_tip_height_if_synced_with_client(
     expected_network: Option<&str>,
 ) -> Option<i64> {
     let info = client.get_blockchain_info().await.ok()?;
-    // Reject the node when its reported chain doesn't match the wallet's
-    // network. When the node doesn't report `chain` at all (older builds), we
-    // conservatively allow it — the SPV gate and other checks still apply.
-    if let Some(want) = expected_network {
-        if let Some(got) = info.chain.as_deref() {
-            if !network_name_matches(want, got) {
-                return None;
-            }
-        }
+    // Reject the node only on a POSITIVE mismatch. `network_check` returns
+    // `None` when either side is unknown (no profile, or a node that doesn't
+    // report `chain` — older builds); we conservatively allow that, and the
+    // SPV gate and other checks still apply.
+    if crate::noncustodial::network::network_check(expected_network, info.chain.as_deref())
+        == Some(false)
+    {
+        return None;
     }
     // Connected — now check if synced. No sync metadata at all (e.g. regtest
     // with a single miner) counts as synced.
     info.is_synced(/* assume_when_unknown */ true)
         .then_some(info.blocks)
-}
-
-/// True when two network names refer to the same Handshake network, tolerating
-/// the `"main"` ↔ `"mainnet"` spelling difference between hsd
-/// (`getblockchaininfo.chain`) and the wallet profile schema.
-pub(crate) fn network_name_matches(profile_network: &str, node_chain: &str) -> bool {
-    fn canonical(s: &str) -> &str {
-        match s {
-            "mainnet" => "main",
-            other => other,
-        }
-    }
-    canonical(profile_network) == canonical(node_chain)
 }
 
 /// Client-injected RPC phase of owned-name discovery. Resolves each

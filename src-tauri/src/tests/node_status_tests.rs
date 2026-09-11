@@ -427,7 +427,7 @@ async fn probe_and_update_sets_flag_true_when_node_answers() {
 // --- network_name_matches (the guard that prevents a regtest node from being
 //     treated as authoritative for a mainnet wallet) ---------------------------
 
-use crate::commands::read::network_name_matches;
+use crate::noncustodial::network::network_name_matches;
 
 #[test]
 fn network_name_matches_same_network() {

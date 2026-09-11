@@ -1238,7 +1238,7 @@ async fn check_node_connection_flags_a_cross_network_node() {
 #[tokio::test]
 async fn check_node_connection_matches_network_across_spellings() {
     // Profile networks say "mainnet"; hsd's getblockchaininfo says "main" —
-    // `network_name_matches` normalizes the pair (read.rs).
+    // `network_name_matches` normalizes the pair (noncustodial/network.rs).
     let mock =
         MockNodeRpc::new().with_blockchain_info(info(100, Some(1.0), Some(100), Some("main")));
     let out = check_node_connection_with_client(&mock, Some("mainnet")).await;

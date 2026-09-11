@@ -721,15 +721,13 @@ pub(crate) async fn check_node_connection_with_client(
 ) -> NodeConnectionCheck {
     match client.get_blockchain_info().await {
         Ok(info) => {
-            // Same conservative rule as the read gate (read.rs): compare only
-            // when both sides are known. No profile yet (onboarding) or a node
-            // that doesn't report `chain` means "can't validate", not mismatch.
-            let network_matches = match (expected_network, info.chain.as_deref()) {
-                (Some(want), Some(got)) => {
-                    Some(crate::commands::read::network_name_matches(want, got))
-                }
-                _ => None,
-            };
+            // Same rule as the read gate: `None` when either side is unknown
+            // (no profile yet — onboarding — or a node that doesn't report
+            // `chain`) means "can't validate", not mismatch.
+            let network_matches = crate::noncustodial::network::network_check(
+                expected_network,
+                info.chain.as_deref(),
+            );
             NodeConnectionCheck {
                 reachable: true,
                 height: Some(info.blocks),

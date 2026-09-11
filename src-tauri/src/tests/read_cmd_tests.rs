@@ -2057,35 +2057,6 @@ fn merge_indexed_bids_marks_own_bids_and_aggregates_highest() {
 // depends on).
 
 // ---------------------------------------------------------------------------
-// network_name_matches — both canonical directions, mismatches
-// ---------------------------------------------------------------------------
-
-#[test]
-fn network_name_matches_canonicalizes_mainnet_both_sides() {
-    use crate::commands::read::network_name_matches;
-    // Exact matches (each canonical form pairs with itself).
-    assert!(network_name_matches("main", "main"));
-    assert!(network_name_matches("testnet", "testnet"));
-    assert!(network_name_matches("regtest", "regtest"));
-    assert!(network_name_matches("simnet", "simnet"));
-    // `mainnet` ↔ `main` normalization (the profile-schema vs hsd-chain gap).
-    assert!(network_name_matches("mainnet", "main"));
-    assert!(network_name_matches("main", "mainnet"));
-    assert!(network_name_matches("mainnet", "mainnet"));
-    // Non-matching canonical forms — every cross-pair.
-    assert!(!network_name_matches("main", "testnet"));
-    assert!(!network_name_matches("mainnet", "testnet"));
-    assert!(!network_name_matches("testnet", "regtest"));
-    assert!(!network_name_matches("regtest", "simnet"));
-    assert!(!network_name_matches("main", "regtest"));
-    // Unknown strings only match themselves (no canonicalization outside `mainnet`).
-    assert!(network_name_matches("weirdnet", "weirdnet"));
-    assert!(!network_name_matches("weirdnet", "main"));
-    // Empty vs known network is a mismatch (defensive — no accidental match).
-    assert!(!network_name_matches("", "main"));
-}
-
-// ---------------------------------------------------------------------------
 // synthesize_available_name — every field of the AVAILABLE contract
 // ---------------------------------------------------------------------------
 
