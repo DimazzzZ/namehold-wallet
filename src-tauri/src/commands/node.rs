@@ -701,33 +701,54 @@ pub struct NodeConnectionCheck {
     pub synced: bool,
     /// Network reported by the node: "main" / "testnet" / "regtest" / "simnet".
     pub network: Option<String>,
+    /// `Some(false)` when the node reports a chain that doesn't match the
+    /// active wallet profile's network (e.g. a testnet node answering for a
+    /// mainnet wallet) — reads and sends via that node would be refused.
+    /// `None` when there is nothing to compare against: no active profile
+    /// yet (onboarding), or the node didn't report `chain`.
+    pub network_matches: Option<bool>,
     /// Non-empty human-readable reason when `reachable` is false.
     pub error: Option<String>,
 }
 
-/// Testable core of [`check_node_connection`]. Given a probe client, returns
-/// the same [`NodeConnectionCheck`] the Tauri command surfaces. Split out so
-/// unit tests can inject a mock `NodeRpc` without a live server.
+/// Testable core of [`check_node_connection`]. Given a probe client and the
+/// active profile's expected network (if any), returns the same
+/// [`NodeConnectionCheck`] the Tauri command surfaces. Split out so unit
+/// tests can inject a mock `NodeRpc` without a live server.
 pub(crate) async fn check_node_connection_with_client(
     client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    expected_network: Option<&str>,
 ) -> NodeConnectionCheck {
     match client.get_blockchain_info().await {
-        Ok(info) => NodeConnectionCheck {
-            reachable: true,
-            height: Some(info.blocks),
-            headers: info.headers,
-            // Unknown remote node with no sync metadata: "answering, but sync
-            // unknown" is reported as not synced rather than synced.
-            synced: info.is_synced(/* assume_when_unknown */ false),
-            network: info.chain,
-            error: None,
-        },
+        Ok(info) => {
+            // Same conservative rule as the read gate (read.rs): compare only
+            // when both sides are known. No profile yet (onboarding) or a node
+            // that doesn't report `chain` means "can't validate", not mismatch.
+            let network_matches = match (expected_network, info.chain.as_deref()) {
+                (Some(want), Some(got)) => {
+                    Some(crate::commands::read::network_name_matches(want, got))
+                }
+                _ => None,
+            };
+            NodeConnectionCheck {
+                reachable: true,
+                height: Some(info.blocks),
+                headers: info.headers,
+                // Unknown remote node with no sync metadata: "answering, but sync
+                // unknown" is reported as not synced rather than synced.
+                synced: info.is_synced(/* assume_when_unknown */ false),
+                network: info.chain,
+                network_matches,
+                error: None,
+            }
+        }
         Err(e) => NodeConnectionCheck {
             reachable: false,
             height: None,
             headers: None,
             synced: false,
             network: None,
+            network_matches: None,
             error: Some(e.to_string()),
         },
     }
@@ -770,6 +791,11 @@ pub(crate) fn resolve_probe_api_key(
 /// loopback guards in `NodeRpcClient::try_new` apply — an attempt to send an
 /// API key over plaintext HTTP to a non-loopback host is rejected up-front
 /// instead of leaking the key.
+///
+/// When an active wallet profile exists, the node's reported network is also
+/// compared against the profile's (`network_matches`); during onboarding there
+/// is no profile yet, so that check is skipped — the same None-skips rule the
+/// read gate uses.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn check_node_connection(
@@ -783,16 +809,18 @@ pub async fn check_node_connection(
             "node RPC URL is required".to_string(),
         ));
     }
-    // Resolve the key inside a block so the DB lock is released before the
-    // network round-trip below.
-    let key = {
+    // Resolve the key AND the expected network inside a block so the DB lock
+    // is released before the network round-trip below.
+    let (key, expected_network) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
-        resolve_probe_api_key(url, api_key.as_deref(), &settings)
+        let key = resolve_probe_api_key(url, api_key.as_deref(), &settings);
+        let expected = crate::commands::read::expected_network_for_active_profile(&conn);
+        (key, expected)
     };
     // `try_new` enforces the plaintext-key / non-loopback guard. Any failure
     // there is a configuration error, not a connectivity error, and is
     // returned distinctly so the UI can say "fix your URL/key first".
     let client = NodeRpcClient::try_new(url, &key, ChainSource::RemoteNode)?;
-    Ok(check_node_connection_with_client(&client).await)
+    Ok(check_node_connection_with_client(&client, expected_network.as_deref()).await)
 }

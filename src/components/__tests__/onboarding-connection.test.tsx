@@ -46,6 +46,7 @@ beforeEach(() => {
         headers: 100,
         synced: true,
         network: "main",
+        networkMatches: null,
         error: null,
       });
     }
@@ -124,6 +125,7 @@ describe("Onboarding — Connection choice", () => {
       headers: 100,
       synced: true,
       network: "main",
+      networkMatches: null,
       error: null,
     });
 
@@ -160,6 +162,7 @@ describe("Onboarding — Connection choice", () => {
             headers: null,
             synced: false,
             network: null,
+            networkMatches: null,
             error: "connection refused",
           })
         : Promise.resolve(undefined),
@@ -172,6 +175,35 @@ describe("Onboarding — Connection choice", () => {
     await waitFor(() =>
       expect(screen.getByTestId("connection-error")).toHaveTextContent("connection refused"),
     );
+    expect(screen.getByTestId("select-remote-button")).toBeDisabled();
+    expect(invokeMock).not.toHaveBeenCalledWith("update_setting", expect.anything());
+  });
+
+  it("a reachable node on the wrong network keeps Continue disabled", async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "check_node_connection"
+        ? Promise.resolve({
+            reachable: true,
+            height: 100,
+            headers: 100,
+            synced: true,
+            network: "testnet",
+            networkMatches: false,
+            error: null,
+          })
+        : Promise.resolve(undefined),
+    );
+    render(<Onboarding />, { wrapper: wrapper() });
+    fireEvent.change(screen.getByTestId("remote-url-input"), {
+      target: { value: "https://node.example.com:12037" },
+    });
+    fireEvent.click(screen.getByTestId("test-connection-button"));
+    // Reachable — the green line shows — but the mismatch warning must appear
+    // and Continue must stay closed.
+    await waitFor(() =>
+      expect(screen.getByTestId("connection-network-mismatch")).toHaveTextContent(/mismatch/i),
+    );
+    expect(screen.getByTestId("connection-success")).toBeInTheDocument();
     expect(screen.getByTestId("select-remote-button")).toBeDisabled();
     expect(invokeMock).not.toHaveBeenCalledWith("update_setting", expect.anything());
   });

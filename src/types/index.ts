@@ -25,6 +25,13 @@ export interface NodeConnectionCheck {
   headers: number | null;
   synced: boolean;
   network: string | null;
+  /**
+   * `false` when the node reports a chain that doesn't match the active
+   * wallet's network — reads and sends via it would be refused. `null` when
+   * there is nothing to compare (no wallet profile yet, or the node didn't
+   * report its chain).
+   */
+  networkMatches: boolean | null;
   error: string | null;
 }
 

@@ -53,9 +53,18 @@ Instead of running hsd locally, you can point the wallet at an existing hsd RPC:
   click "Test connection" to validate it before committing.
 - **In Settings:** go to Connections → Chain source → select "Remote node", enter the URL
   and API key, and click "Test connection" to verify.
-- **To send:** enable "Allow sending via remote node" (off by default for safety). This
-  sets the `allow_remote_broadcast` flag, which gates the broadcast path. Your recovery
-  phrase never leaves this device — remote is a privacy/trust tradeoff, not custody.
+- **Stored API key:** the Settings API-key field is write-only (a stored key is never shown
+  back), so "Test connection" reuses your stored key when the URL you probe matches the
+  saved node. A freshly typed URL is probed without the stored key — the secret is never
+  sent to an endpoint you just typed.
+- **Network mismatch:** once a wallet profile exists, "Test connection" compares the node's
+  reported network with your wallet's and flags a mismatch (e.g. a testnet node for a
+  mainnet wallet) — reads and sends via that node would be refused. During first-run
+  onboarding there is no wallet yet, so that comparison starts applying in Settings.
+- **To send:** enable "Allow sending via remote node" (off by default for safety; shown in
+  the onboarding Remote step and in Settings → Connections). This sets the
+  `allow_remote_broadcast` flag, which gates the broadcast path. Your recovery phrase
+  never leaves this device — remote is a privacy/trust tradeoff, not custody.
 - **Plaintext-key guard:** the app refuses to send an API key over plaintext HTTP to a
   non-loopback host (e.g., `http://example.com`). Use `https://` for remote nodes or
   `http://127.0.0.1` for local testing.

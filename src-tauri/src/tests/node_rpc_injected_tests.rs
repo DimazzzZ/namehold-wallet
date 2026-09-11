@@ -1169,12 +1169,14 @@ use crate::commands::node::check_node_connection_with_client;
 async fn check_node_connection_reports_reachable_and_synced() {
     let mock =
         MockNodeRpc::new().with_blockchain_info(info(100, Some(1.0), Some(100), Some("main")));
-    let out = check_node_connection_with_client(&mock).await;
+    // No expected network (no wallet profile) → the network check is skipped.
+    let out = check_node_connection_with_client(&mock, None).await;
     assert!(out.reachable);
     assert_eq!(out.height, Some(100));
     assert_eq!(out.headers, Some(100));
     assert!(out.synced);
     assert_eq!(out.network.as_deref(), Some("main"));
+    assert_eq!(out.network_matches, None);
     assert!(out.error.is_none());
 }
 
@@ -1182,7 +1184,7 @@ async fn check_node_connection_reports_reachable_and_synced() {
 async fn check_node_connection_reports_not_synced_when_behind_headers() {
     // Progress absent → fall back to `blocks >= headers`; here blocks < headers.
     let mock = MockNodeRpc::new().with_blockchain_info(info(500, None, Some(1_000), Some("main")));
-    let out = check_node_connection_with_client(&mock).await;
+    let out = check_node_connection_with_client(&mock, None).await;
     assert!(out.reachable);
     assert_eq!(out.height, Some(500));
     assert_eq!(out.headers, Some(1_000));
@@ -1198,7 +1200,7 @@ async fn check_node_connection_treats_low_progress_as_not_synced() {
     // Progress present and low — beats a naive `blocks == headers` check.
     let mock =
         MockNodeRpc::new().with_blockchain_info(info(1_000, Some(0.08), Some(1_000), Some("main")));
-    let out = check_node_connection_with_client(&mock).await;
+    let out = check_node_connection_with_client(&mock, None).await;
     assert!(out.reachable);
     assert!(!out.synced, "progress=0.08 must not be reported as synced");
 }
@@ -1206,10 +1208,11 @@ async fn check_node_connection_treats_low_progress_as_not_synced() {
 #[tokio::test]
 async fn check_node_connection_surfaces_rpc_error() {
     let mock = MockNodeRpc::new().with_blockchain_info_err("connection refused");
-    let out = check_node_connection_with_client(&mock).await;
+    let out = check_node_connection_with_client(&mock, None).await;
     assert!(!out.reachable);
     assert_eq!(out.height, None);
     assert!(!out.synced);
+    assert_eq!(out.network_matches, None);
     assert!(
         out.error
             .as_deref()
@@ -1218,6 +1221,39 @@ async fn check_node_connection_surfaces_rpc_error() {
         "error message should carry the node's failure reason, got {:?}",
         out.error
     );
+}
+
+#[tokio::test]
+async fn check_node_connection_flags_a_cross_network_node() {
+    // A testnet node answering for a mainnet wallet: reachable, but the
+    // mismatch must be flagged so the UI refuses to treat it as usable.
+    let mock =
+        MockNodeRpc::new().with_blockchain_info(info(100, Some(1.0), Some(100), Some("testnet")));
+    let out = check_node_connection_with_client(&mock, Some("main")).await;
+    assert!(out.reachable);
+    assert_eq!(out.network.as_deref(), Some("testnet"));
+    assert_eq!(out.network_matches, Some(false));
+}
+
+#[tokio::test]
+async fn check_node_connection_matches_network_across_spellings() {
+    // Profile networks say "mainnet"; hsd's getblockchaininfo says "main" —
+    // `network_name_matches` normalizes the pair (read.rs).
+    let mock =
+        MockNodeRpc::new().with_blockchain_info(info(100, Some(1.0), Some(100), Some("main")));
+    let out = check_node_connection_with_client(&mock, Some("mainnet")).await;
+    assert_eq!(out.network_matches, Some(true));
+}
+
+#[tokio::test]
+async fn check_node_connection_skips_network_check_when_node_reports_no_chain() {
+    // A node that doesn't report `chain` can't be validated — "unknown" is
+    // not a mismatch, mirroring the read gate's conservative allow.
+    let mock = MockNodeRpc::new().with_blockchain_info(info(100, Some(1.0), Some(100), None));
+    let out = check_node_connection_with_client(&mock, Some("main")).await;
+    assert!(out.reachable);
+    assert_eq!(out.network, None);
+    assert_eq!(out.network_matches, None);
 }
 
 // ------- resolve_probe_api_key ----------------------------------------------

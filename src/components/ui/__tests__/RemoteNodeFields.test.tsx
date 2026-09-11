@@ -105,6 +105,7 @@ describe("RemoteNodeFields", () => {
           headers: 42,
           synced: true,
           network: "regtest",
+          networkMatches: null,
           error: null,
         },
       }),

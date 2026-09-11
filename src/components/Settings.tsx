@@ -69,6 +69,12 @@ export function Settings() {
   const [dirty, setDirty] = useState(false);
   const nodeProbe = useNodeConnectionCheck();
 
+  // The persisted pair the Chain source selector reads and writes, resolved
+  // once so the selector and the remote-broadcast toggle below agree on the
+  // mode without re-casting the untyped form at every use.
+  const chainSource = (form.chain_source ?? "local_node") as ChainSource;
+  const nodeMode = (form.node_mode ?? "full") as NodeMode;
+
   useEffect(() => {
     if (settings) {
       setForm({
@@ -267,10 +273,7 @@ export function Settings() {
         <div className="space-y-2 pt-2 border-t border-gray-100">
           <label className="text-sm font-medium">Chain source</label>
           <select
-            value={toConnectionMode(
-              (form.chain_source ?? "local_node") as ChainSource,
-              (form.node_mode ?? "full") as NodeMode,
-            )}
+            value={toConnectionMode(chainSource, nodeMode)}
             onChange={(e) => {
               const next = fromConnectionMode(e.target.value as ConnectionMode);
               updateField("chain_source", next.chain_source);
@@ -312,7 +315,7 @@ export function Settings() {
             NODE_SETUP.md. "Test connection" reuses your stored API key when the URL matches the
             saved node.
           </div>
-          {(form.chain_source ?? "local_node") === "remote_node" && (
+          {chainSource === "remote_node" && (
             <label className="flex items-center gap-2 text-sm pt-2">
               <input
                 type="checkbox"

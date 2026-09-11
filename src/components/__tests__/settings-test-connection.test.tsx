@@ -38,6 +38,7 @@ const reachable = {
   headers: 4242,
   synced: true,
   network: "main",
+  networkMatches: null,
   error: null,
 };
 
@@ -71,5 +72,20 @@ describe("Settings — Test connection", () => {
       target: { value: "https://other.example.com:12037" },
     });
     expect(screen.queryByTestId("connection-success")).toBeNull();
+  });
+
+  it("flags a cross-network node next to the green Connected line", async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "check_node_connection"
+        ? Promise.resolve({ ...reachable, network: "testnet", networkMatches: false })
+        : routeSettingsCommand(cmd),
+    );
+    renderSettings();
+    fireEvent.click(await screen.findByTestId("test-connection-button"));
+    await waitFor(() =>
+      expect(screen.getByTestId("connection-network-mismatch")).toHaveTextContent(/mismatch/i),
+    );
+    // Still reachable — the green summary stays; the warning is additive.
+    expect(screen.getByTestId("connection-success")).toBeInTheDocument();
   });
 });

@@ -96,7 +96,9 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
             className="border-2 border-gray-300 rounded-lg p-4 text-left hover:border-blue-500 hover:bg-blue-50 transition"
             data-testid="select-local-button"
           >
-            <h3 className="font-bold text-gray-900">Local Full Node</h3>
+            <h3 className="font-bold text-gray-900">
+              Local Full Node <span className="font-normal text-gray-500">(default)</span>
+            </h3>
             <p className="text-xs text-gray-600 mt-2">
               Start hsd on this device. ~15GB chain, full indexes. Best privacy.
             </p>

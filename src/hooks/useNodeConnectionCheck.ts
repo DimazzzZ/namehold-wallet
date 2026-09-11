@@ -9,7 +9,7 @@ export interface NodeConnectionCheckState {
   result: NodeConnectionCheck | null;
   /** Human-readable failure: empty URL, unreachable node, or a thrown guard. */
   error: string | null;
-  /** True only after a probe that actually reached the node. */
+  /** True only after a probe that reached the node on the wallet's network. */
   ok: boolean;
   /** Probe `url` with an optional API key. An empty URL sets `error` without a backend call. */
   run: (url: string, apiKey?: string) => Promise<void>;
@@ -74,5 +74,11 @@ export function useNodeConnectionCheck(): NodeConnectionCheckState {
     }
   };
 
-  return { testing, result, error, ok: result?.reachable === true, run, reset };
+  // A reachable node on the WRONG network is not a usable node, so `ok` gates
+  // on the mismatch flag too. `networkMatches` is null when there is nothing
+  // to compare — no wallet profile yet (onboarding), or a node that didn't
+  // report its chain — and null must not block.
+  const ok = result?.reachable === true && result.networkMatches !== false;
+
+  return { testing, result, error, ok, run, reset };
 }

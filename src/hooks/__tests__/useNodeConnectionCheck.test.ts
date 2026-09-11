@@ -14,6 +14,7 @@ const reachable = {
   headers: 100,
   synced: true,
   network: "main",
+  networkMatches: null,
   error: null,
 };
 const unreachable = {
@@ -22,6 +23,7 @@ const unreachable = {
   headers: null,
   synced: false,
   network: null,
+  networkMatches: null,
   error: "connection refused",
 };
 
@@ -62,6 +64,28 @@ describe("useNodeConnectionCheck", () => {
     });
     expect(result.current.ok).toBe(false);
     expect(result.current.error).toBe("connection refused");
+  });
+
+  it("ok is false for a reachable node on a different network than the wallet", async () => {
+    invokeMock.mockResolvedValue({ ...reachable, network: "testnet", networkMatches: false });
+    const { result } = renderHook(() => useNodeConnectionCheck());
+    await act(async () => {
+      await result.current.run("https://n.example.com:12037");
+    });
+    expect(result.current.result?.networkMatches).toBe(false);
+    // Reachable, but not usable — the Continue gate must stay closed.
+    expect(result.current.ok).toBe(false);
+    // A mismatch is not an error: the warning line renders from `result`.
+    expect(result.current.error).toBeNull();
+  });
+
+  it("ok stays true when networkMatches is null (nothing to compare)", async () => {
+    invokeMock.mockResolvedValue({ ...reachable, networkMatches: null });
+    const { result } = renderHook(() => useNodeConnectionCheck());
+    await act(async () => {
+      await result.current.run("https://n.example.com:12037");
+    });
+    expect(result.current.ok).toBe(true);
   });
 
   it("surfaces a thrown backend error (e.g. the plaintext-key guard)", async () => {
