@@ -74,22 +74,6 @@ pub(crate) fn resolve_profile(
     active_profile(state)
 }
 
-/// The active wallet profile's stored network string ("main" / "mainnet" /
-/// "testnet" / …), or `None` when there is no active profile — e.g. during
-/// onboarding, before any wallet exists. Read gates and the connection probe
-/// use this to reject a node answering on a different chain; `None` means the
-/// check is skipped, not passed.
-pub(crate) fn expected_network_for_active_profile(conn: &rusqlite::Connection) -> Option<String> {
-    let id = queries::get_active_profile_id(conn).ok()?;
-    if id.is_empty() {
-        return None;
-    }
-    queries::get_wallet_profile(conn, &id)
-        .ok()
-        .flatten()
-        .map(|p| p.network)
-}
-
 /// Check if the local hsd node is connected AND fully synced, making local
 /// cached data the preferred read source. Returns `true` when the node RPC
 /// answers and the chain is caught up (height ≥ headers, or progress ≥ 0.9999).
@@ -110,7 +94,11 @@ pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -
         let mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
         // Resolve the active profile's network so we can reject a node on a
         // different chain (e.g. regtest node vs mainnet wallet).
-        let net = expected_network_for_active_profile(&db);
+        // A DB failure here degrades to "no network to compare" — the read
+        // gate is a routing decision, not a security boundary, and the SPV /
+        // sync gates below still apply. The connection probe (commands/node.rs)
+        // propagates the same error instead.
+        let net = queries::get_active_profile_network(&db).ok().flatten();
         (mode, net)
     };
     if node_mode.is_spv() {

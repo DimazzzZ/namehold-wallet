@@ -813,7 +813,9 @@ pub async fn check_node_connection(
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
         let key = resolve_probe_api_key(url, api_key.as_deref(), &settings);
-        let expected = crate::commands::read::expected_network_for_active_profile(&conn);
+        // A DB error is a real failure the user must see, not a silent skip of
+        // the network check — `?` turns it into AppError::Db.
+        let expected = db::queries::get_active_profile_network(&conn)?;
         (key, expected)
     };
     // `try_new` enforces the plaintext-key / non-loopback guard. Any failure

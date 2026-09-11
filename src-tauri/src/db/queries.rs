@@ -849,6 +849,20 @@ pub fn get_active_profile_id(conn: &rusqlite::Connection) -> Result<String, AppE
     Ok(id.unwrap_or_default())
 }
 
+/// The active wallet profile's stored network string (`"main"` / `"mainnet"` /
+/// `"testnet"` / `"regtest"` / `"simnet"`). `Ok(None)` when there is no active
+/// profile — e.g. during onboarding, before any wallet exists — or when the
+/// active id points at a profile that no longer exists. `Err` only for a real
+/// DB failure; callers decide whether that is fatal (the connection probe) or
+/// a conservative skip (the read gate).
+pub fn get_active_profile_network(conn: &rusqlite::Connection) -> Result<Option<String>, AppError> {
+    let id = get_active_profile_id(conn)?;
+    if id.is_empty() {
+        return Ok(None);
+    }
+    Ok(get_wallet_profile(conn, &id)?.map(|p| p.network))
+}
+
 /// Mark a profile active (persisted in settings).
 pub fn set_active_profile(conn: &rusqlite::Connection, profile_id: &str) -> Result<(), AppError> {
     set_setting(conn, "active_wallet_profile_id", profile_id)
@@ -2689,6 +2703,37 @@ mod noncustodial_query_tests {
 
         // Missing profile -> None.
         assert!(get_wallet_profile(&conn, "nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn active_profile_network_is_none_without_an_active_profile() {
+        let conn = db();
+        // No profile at all.
+        assert_eq!(get_active_profile_network(&conn).unwrap(), None);
+        // A profile exists but nothing is marked active.
+        seed_profile(&conn, "p1");
+        assert_eq!(get_active_profile_network(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn active_profile_network_returns_the_stored_string() {
+        let conn = db();
+        seed_profile(&conn, "p1"); // network = "regtest"
+        set_active_profile(&conn, "p1").unwrap();
+        assert_eq!(
+            get_active_profile_network(&conn).unwrap().as_deref(),
+            Some("regtest")
+        );
+    }
+
+    #[test]
+    fn active_profile_network_is_none_when_active_id_points_at_a_deleted_profile() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        set_active_profile(&conn, "p1").unwrap();
+        delete_wallet_profile(&conn, "p1").unwrap();
+        // The dangling active id must not error — it is simply "no profile".
+        assert_eq!(get_active_profile_network(&conn).unwrap(), None);
     }
 
     #[test]
