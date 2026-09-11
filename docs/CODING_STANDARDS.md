@@ -22,10 +22,13 @@ Locally `cargo test` is enough; CI uses nextest for its two-lane split (see
 
 - `src-tauri/src/commands/*` are **IO shells**: they lock the DB, build clients,
   call Tauri. They import from `db::queries`, `noncustodial::*`, `providers::*`
-  and shared helpers. A command module must **not** import helpers from a
-  sibling command module — if two commands need the same thing, it belongs in
+  and shared helpers. **New** code must not import helpers from a sibling
+  command module; if two commands need the same thing it belongs in
   `db::queries` (data), `noncustodial::*` (pure domain logic), or a small
   dedicated helper module under `commands/` (e.g. `commands/active_profile.rs`).
+  Existing imports of `commands::read` (profile resolution, node readiness),
+  `commands::sync::open_conn`, `commands::namebase` and
+  `commands::secure_prompt` are legacy shared layers — do not add to them.
 - **Pure logic is split from IO** so it can be unit-tested without a live node
   or a Tauri `State`: the `*_with_client(&dyn NodeRpc, ...)` pattern for RPC
   code, `*_from_conn(&Connection)` for DB code, `*_pure.rs` modules for
@@ -58,9 +61,11 @@ Locally `cargo test` is enough; CI uses nextest for its two-lane split (see
 
 ## TypeScript ↔ Rust bridge
 
-- Every struct returned to the frontend derives `serde::Serialize` with
-  `#[serde(rename_all = "camelCase")]`; command **arguments** stay snake_case
-  (`api_key`), matching Tauri's argument mapping.
+- A Rust struct and its TS mirror must agree field-for-field on spelling. New
+  structs use `#[serde(rename_all = "camelCase")]` (e.g. `NodeConnectionCheck`);
+  a few legacy models (`Asset`, `Settings`) are snake_case on both sides — do
+  not "fix" them, the frontend depends on the spelling. Command **arguments**
+  stay snake_case (`api_key`), matching Tauri's argument mapping.
 - The TS mirror lives in `src/types/index.ts`. Adding a field means: Rust
   struct + TS interface + **every** test fixture that builds that object (grep
   the tests for a neighbouring field, e.g. `synced:`).

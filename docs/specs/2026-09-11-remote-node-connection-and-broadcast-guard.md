@@ -145,7 +145,9 @@ frontend fixture that builds a `NodeConnectionCheck` includes `networkMatches`.
 - **`chain_source` does not route reads.** Reads come from the node when it
   is synced and on the right network (R8), else from the explorer, regardless
   of the selector. The "Read-only (never send)" label describes send
-  capability only.
+  capability only. Exception: with `node_mode = spv` the node is never
+  authoritative for reads (`is_node_ready_for_local_reads` returns false), so
+  SPV reads always come from the explorer.
 - **The read gate does not fail closed on a DB error.** A failure to load the
   profile network degrades to "no network to compare" (routing decision, not
   a security boundary). The probe (R7) does fail loudly.
