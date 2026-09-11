@@ -1,3 +1,4 @@
+pub mod active_profile;
 pub mod assets;
 pub mod batches;
 pub mod bids;

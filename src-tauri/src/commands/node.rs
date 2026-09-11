@@ -7,6 +7,7 @@
 //! (`node_rpc_api_key` + the active profile's network), so "the node the app
 //! starts" and "the node the app talks to" are the same node.
 
+use crate::commands::active_profile::active_profile_network;
 use crate::db;
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
@@ -157,27 +158,6 @@ fn resolve_data_dir(state: &AppState) -> Result<String, AppError> {
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     Ok(format!("{home}/.hsd"))
-}
-
-/// The active profile's network, defaulting to mainnet — matches the network the
-/// rest of the app operates on (and the default RPC port).
-#[cfg_attr(coverage_nightly, coverage(off))]
-fn active_profile_network(state: &AppState) -> Network {
-    let conn = match state.db.lock() {
-        Ok(c) => c,
-        // IO shell: mutex-poisoned branch — only reachable if a panic occurred
-        // while holding the db lock. Cannot be triggered in unit tests safely.
-        Err(_) => return Network::Main,
-    };
-    let id = db::queries::get_active_profile_id(&conn).unwrap_or_default();
-    if id.is_empty() {
-        return Network::Main;
-    }
-    match db::queries::get_wallet_profile(&conn, &id) {
-        Ok(Some(p)) => crate::noncustodial::derivation::network_from_profile(&p.network)
-            .unwrap_or(Network::Main),
-        _ => Network::Main,
-    }
 }
 
 /// Whether the hsd we started this session is still alive. Reaps a child that has
