@@ -7,10 +7,11 @@
 //! (`node_rpc_api_key` + the active profile's network), so "the node the app
 //! starts" and "the node the app talks to" are the same node.
 
+use crate::commands::active_profile::active_profile_network;
 use crate::db;
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
-use crate::noncustodial::rpc::NodeRpcClient;
+use crate::noncustodial::rpc::{ChainSource, NodeRpcClient};
 use crate::AppState;
 use std::process::{Command, Stdio};
 use tauri::State;
@@ -159,27 +160,6 @@ fn resolve_data_dir(state: &AppState) -> Result<String, AppError> {
     Ok(format!("{home}/.hsd"))
 }
 
-/// The active profile's network, defaulting to mainnet — matches the network the
-/// rest of the app operates on (and the default RPC port).
-#[cfg_attr(coverage_nightly, coverage(off))]
-fn active_profile_network(state: &AppState) -> Network {
-    let conn = match state.db.lock() {
-        Ok(c) => c,
-        // IO shell: mutex-poisoned branch — only reachable if a panic occurred
-        // while holding the db lock. Cannot be triggered in unit tests safely.
-        Err(_) => return Network::Main,
-    };
-    let id = db::queries::get_active_profile_id(&conn).unwrap_or_default();
-    if id.is_empty() {
-        return Network::Main;
-    }
-    match db::queries::get_wallet_profile(&conn, &id) {
-        Ok(Some(p)) => crate::noncustodial::derivation::network_from_profile(&p.network)
-            .unwrap_or(Network::Main),
-        _ => Network::Main,
-    }
-}
-
 /// Whether the hsd we started this session is still alive. Reaps a child that has
 /// exited (clearing the handle) so the status reflects reality.
 // The `Some(child)` arm calls child.try_wait() on a real OS process handle,
@@ -282,22 +262,23 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     // source is active. In SPV mode, always use explorer (SPV nodes don't have
     // full-chain indexes).
     let node_synced = if node_mode.is_spv() {
-        // SPV node: synced when connected (header sync is fast).
+        // SPV node: "connected" is the best signal we have — an SPV node has no
+        // full-chain tip to compare against, so the shared `chain_synced` tip
+        // rule doesn't apply here. Header sync is fast, so connected == synced.
         probe.is_some()
     } else {
+        // Full/remote node: use the shared tip rule. With no sync metadata at
+        // all, assume synced (regtest with a single miner) — same convention as
+        // the read/write spend gates.
         probe
             .as_ref()
             .map(|p| {
-                // When verification_progress is available, it is the most reliable signal.
-                // A node can report height == headers while still only ~8% verified if it
-                // is far behind the real chain tip. Always gate on progress when present.
-                if let Some(progress) = p.verification_progress {
-                    progress >= 0.9999
-                } else if let Some(headers) = p.headers {
-                    headers > 0 && p.height >= headers
-                } else {
-                    true
-                }
+                crate::noncustodial::rpc::chain_synced(
+                    p.height,
+                    p.headers,
+                    p.verification_progress,
+                    /* assume_when_unknown */ true,
+                )
             })
             .unwrap_or(false)
     };
@@ -677,4 +658,151 @@ pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::
 
     // 3. Start hsd fresh — it re-syncs with the required indexes.
     start_hsd(state).await
+}
+
+// --- Remote-node connectivity check ----------------------------------------
+
+/// Result of a one-shot `getblockchaininfo`-style probe against a candidate
+/// node RPC. Returned by [`check_node_connection`] and rendered by the
+/// onboarding / Settings UI so a user can validate a remote-node URL before
+/// committing it as `chain_source = "remote_node"`.
+#[derive(Debug, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeConnectionCheck {
+    /// True if the endpoint answered a `getblockchaininfo` call.
+    pub reachable: bool,
+    /// Best chain height as reported by the node (`blocks`).
+    pub height: Option<i64>,
+    /// Peers' best header height, when the node exposes it.
+    pub headers: Option<i64>,
+    /// True when the node is at the chain tip per `chain_synced` (progress
+    /// ≥ 0.9999, else `blocks >= headers`; unknown → false for a first-contact
+    /// probe). The UI uses it to say "connected, but still syncing".
+    pub synced: bool,
+    /// Network reported by the node: "main" / "testnet" / "regtest" / "simnet".
+    pub network: Option<String>,
+    /// `Some(false)` when the node reports a chain that doesn't match the
+    /// active wallet profile's network (e.g. a testnet node answering for a
+    /// mainnet wallet) — the read gate refuses such a node. Sends are not
+    /// network-gated by the app; a cross-chain tx is rejected by the node.
+    /// `None` when there is nothing to compare against: no active profile
+    /// yet (onboarding), or the node didn't report `chain`.
+    pub network_matches: Option<bool>,
+    /// Non-empty human-readable reason when `reachable` is false.
+    pub error: Option<String>,
+}
+
+/// Testable core of [`check_node_connection`]. Given a probe client and the
+/// active profile's expected network (if any), returns the same
+/// [`NodeConnectionCheck`] the Tauri command surfaces. Split out so unit
+/// tests can inject a mock `NodeRpc` without a live server.
+pub(crate) async fn check_node_connection_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    expected_network: Option<&str>,
+) -> NodeConnectionCheck {
+    match client.get_blockchain_info().await {
+        Ok(info) => {
+            // Same rule as the read gate: `None` when either side is unknown
+            // (no profile yet — onboarding — or a node that doesn't report
+            // `chain`) means "can't validate", not mismatch.
+            let network_matches = crate::noncustodial::network::network_check(
+                expected_network,
+                info.chain.as_deref(),
+            );
+            NodeConnectionCheck {
+                reachable: true,
+                height: Some(info.blocks),
+                headers: info.headers,
+                // Unknown remote node with no sync metadata: "answering, but sync
+                // unknown" is reported as not synced rather than synced.
+                synced: info.is_synced(/* assume_when_unknown */ false),
+                network: info.chain,
+                network_matches,
+                error: None,
+            }
+        }
+        Err(e) => NodeConnectionCheck {
+            reachable: false,
+            height: None,
+            headers: None,
+            synced: false,
+            network: None,
+            network_matches: None,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+/// Pick the API key for a connectivity probe.
+///
+/// An explicit, non-blank key from the form always wins. Without one, the
+/// stored `node_rpc_api_key` (or the hsd.conf fallback via
+/// `resolve_node_api_key`) is reused ONLY when the probed URL is the saved
+/// `node_rpc_url` — the Settings API-key field is write-only, so "Test
+/// connection" against the saved node would otherwise always fail auth. Any
+/// other URL gets no key: the stored secret must never be sent to an
+/// endpoint the user just typed.
+pub(crate) fn resolve_probe_api_key(
+    url: &str,
+    explicit: Option<&str>,
+    settings: &std::collections::HashMap<String, String>,
+) -> String {
+    if let Some(key) = explicit.map(str::trim).filter(|k| !k.is_empty()) {
+        return key.to_string();
+    }
+    let normalize = |u: &str| u.trim().trim_end_matches('/').to_string();
+    let saved = settings
+        .get("node_rpc_url")
+        .map(|s| normalize(s))
+        .unwrap_or_default();
+    if !saved.is_empty() && saved == normalize(url) {
+        return crate::noncustodial::rpc::resolve_node_api_key(settings);
+    }
+    String::new()
+}
+
+/// Probe a candidate node RPC URL without persisting anything. Powers the
+/// "Test connection" button in the onboarding "How do you want to connect?"
+/// step and in Settings, so a user can validate a remote hsd RPC before
+/// switching `chain_source` to `remote_node`.
+///
+/// The `RemoteNode` chain source is used for the probe so the plaintext-key /
+/// loopback guards in `NodeRpcClient::try_new` apply — an attempt to send an
+/// API key over plaintext HTTP to a non-loopback host is rejected up-front
+/// instead of leaking the key.
+///
+/// When an active wallet profile exists, the node's reported network is also
+/// compared against the profile's (`network_matches`); during onboarding there
+/// is no profile yet, so that check is skipped — the same None-skips rule the
+/// read gate uses. Unlike the read gate, a DB error while loading the profile
+/// is returned to the caller here rather than degrading to "nothing to compare".
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn check_node_connection(
+    state: State<'_, AppState>,
+    url: String,
+    api_key: Option<String>,
+) -> Result<NodeConnectionCheck, AppError> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(AppError::InvalidInput(
+            "node RPC URL is required".to_string(),
+        ));
+    }
+    // Resolve the key AND the expected network inside a block so the DB lock
+    // is released before the network round-trip below.
+    let (key, expected_network) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let settings = db::queries::get_settings(&conn)?;
+        let key = resolve_probe_api_key(url, api_key.as_deref(), &settings);
+        // A DB error is a real failure the user must see, not a silent skip of
+        // the network check — `?` turns it into AppError::Db.
+        let expected = db::queries::get_active_profile_network(&conn)?;
+        (key, expected)
+    };
+    // `try_new` enforces the plaintext-key / non-loopback guard. Any failure
+    // there is a configuration error, not a connectivity error, and is
+    // returned distinctly so the UI can say "fix your URL/key first".
+    let client = NodeRpcClient::try_new(url, &key, ChainSource::RemoteNode)?;
+    Ok(check_node_connection_with_client(&client, expected_network.as_deref()).await)
 }

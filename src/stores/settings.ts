@@ -10,7 +10,7 @@ interface SettingsState {
   saveAll: (partial: Partial<Settings>) => Promise<void>;
 }
 
-const DEFAULT_SETTINGS: Settings = {
+export const DEFAULT_SETTINGS: Settings = {
   // Sending node (hsd RPC); reads come from the explorer below.
   node_rpc_url: "http://127.0.0.1:12037",
   node_rpc_api_key: "",
@@ -32,6 +32,7 @@ const DEFAULT_SETTINGS: Settings = {
   explorer_fallback_url: "",
   chain_source: "local_node",
   close_to_tray: "1",
+  allow_remote_broadcast: "false",
   tray_hint_shown: "0",
   launch_at_login: "0",
   fee_rate_doos_per_kvb: "",

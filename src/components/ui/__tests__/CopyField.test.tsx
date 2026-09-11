@@ -22,14 +22,7 @@ describe("CopyField", () => {
   });
 
   it("shows the display string but copies the full value", async () => {
-    render(
-      <CopyField
-        value="the-full-value"
-        display="the…value"
-        valueTestId="v"
-        copyTestId="c"
-      />,
-    );
+    render(<CopyField value="the-full-value" display="the…value" valueTestId="v" copyTestId="c" />);
     expect(screen.getByTestId("v")).toHaveTextContent("the…value");
     fireEvent.click(screen.getByTestId("c"));
     await waitFor(() => {

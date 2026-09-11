@@ -100,9 +100,18 @@ describe("WalletView — auction UX", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+          return Promise.resolve({
+            walletProfileId: profile.id,
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 60000,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+          return Promise.resolve({
+            signerUnlocked: true,
+            broadcasterAvailable: true,
+            canWrite: true,
+            reason: null,
+          });
         case "get_wallet_balances":
           return Promise.resolve({
             liquidDoos: 5_000_000,
@@ -111,16 +120,19 @@ describe("WalletView — auction UX", () => {
             totalDoos: 5_000_000 + (opts.lockupDoos ?? 0),
           });
         case "read_balance":
-          return Promise.resolve({ confirmed: 0, unconfirmed: 0, locked_confirmed: 0, locked_unconfirmed: 0 });
+          return Promise.resolve({
+            confirmed: 0,
+            unconfirmed: 0,
+            locked_confirmed: 0,
+            locked_unconfirmed: 0,
+          });
         case "list_tx_drafts":
           return Promise.resolve(opts.drafts ?? []);
         case "read_names":
           return Promise.resolve(opts.names ?? []);
         case "get_names_action_capabilities": {
           const requested = (args as { names?: string[] })?.names ?? [];
-          return Promise.resolve(
-            requested.map((n) => opts.caps?.[n] ?? fallbackCaps(n)),
-          );
+          return Promise.resolve(requested.map((n) => opts.caps?.[n] ?? fallbackCaps(n)));
         }
         default:
           return Promise.resolve(null);
@@ -145,9 +157,19 @@ describe("WalletView — auction UX", () => {
     invokeMock.mockImplementation(
       routeWallet({
         drafts: [
-          draft({ id: "a", txid: "aaa0000000000001", status: "confirmed", confirmationHeight: 437 }),
+          draft({
+            id: "a",
+            txid: "aaa0000000000001",
+            status: "confirmed",
+            confirmationHeight: 437,
+          }),
           draft({ id: "b", txid: "bbb0000000000002", status: "broadcasted" }),
-          draft({ id: "c", txid: "ccc0000000000003", status: "dropped", errorMessage: "never confirmed" }),
+          draft({
+            id: "c",
+            txid: "ccc0000000000003",
+            status: "dropped",
+            errorMessage: "never confirmed",
+          }),
         ],
       }),
     );
@@ -183,7 +205,16 @@ describe("WalletView — auction UX", () => {
   it("raises a reveal-required alert for names the capability model marks readyToReveal", async () => {
     invokeMock.mockImplementation(
       routeWallet({
-        names: [{ name: "examplename", state: "REVEAL", height: 1, renewal: 2, owner: { hash: "t", index: 0 }, stats: null }],
+        names: [
+          {
+            name: "examplename",
+            state: "REVEAL",
+            height: 1,
+            renewal: 2,
+            owner: { hash: "t", index: 0 },
+            stats: null,
+          },
+        ],
         caps: {
           examplename: {
             ...fallbackCaps("examplename"),
@@ -213,7 +244,9 @@ describe("WalletView — auction UX", () => {
     // alert. The capability model must be the only source of truth.
     invokeMock.mockImplementation(
       routeWallet({
-        names: [{ name: "notmine", state: "REVEAL", height: 1, renewal: 2, owner: null, stats: null }],
+        names: [
+          { name: "notmine", state: "REVEAL", height: 1, renewal: 2, owner: null, stats: null },
+        ],
         caps: {
           notmine: {
             ...fallbackCaps("notmine"),
@@ -235,7 +268,9 @@ describe("WalletView — auction UX", () => {
     // trigger the banner.
     invokeMock.mockImplementation(
       routeWallet({
-        names: [{ name: "neverbidon", state: "CLOSED", height: 1, renewal: 2, owner: null, stats: null }],
+        names: [
+          { name: "neverbidon", state: "CLOSED", height: 1, renewal: 2, owner: null, stats: null },
+        ],
         caps: {
           neverbidon: {
             ...fallbackCaps("neverbidon"),
@@ -256,7 +291,9 @@ describe("WalletView — auction UX", () => {
         return Promise.reject(new Error("db locked"));
       }
       return routeWallet({
-        names: [{ name: "examplename", state: "REVEAL", height: 1, renewal: 2, owner: null, stats: null }],
+        names: [
+          { name: "examplename", state: "REVEAL", height: 1, renewal: 2, owner: null, stats: null },
+        ],
       })(cmd, args);
     });
     render(<WalletView />, { wrapper: wrapper() });
@@ -271,20 +308,28 @@ describe("WalletView — auction UX", () => {
   it("shows no degraded notice when the batch capabilities query succeeds", async () => {
     invokeMock.mockImplementation(
       routeWallet({
-        names: [{ name: "examplename", state: "OPEN", height: 1, renewal: 2, owner: null, stats: null }],
+        names: [
+          { name: "examplename", state: "OPEN", height: 1, renewal: 2, owner: null, stats: null },
+        ],
       }),
     );
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
     // Give the (successful) capabilities query a tick to settle.
-    await waitFor(() => expect(invokeMock.mock.calls.some((c) => c[0] === "get_names_action_capabilities")).toBe(true));
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some((c) => c[0] === "get_names_action_capabilities")).toBe(
+        true,
+      ),
+    );
     expect(screen.queryByTestId("urgent-tasks-degraded")).toBeNull();
   });
 
   it("raises the redeem alert only when the capability model says lostNeedsRedeem", async () => {
     invokeMock.mockImplementation(
       routeWallet({
-        names: [{ name: "lostbid", state: "CLOSED", height: 1, renewal: 2, owner: null, stats: null }],
+        names: [
+          { name: "lostbid", state: "CLOSED", height: 1, renewal: 2, owner: null, stats: null },
+        ],
         caps: {
           lostbid: {
             ...fallbackCaps("lostbid"),
@@ -338,9 +383,18 @@ describe("NameActionsModal — phase header + DNS editor", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+          return Promise.resolve({
+            walletProfileId: profile.id,
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 60000,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+          return Promise.resolve({
+            signerUnlocked: true,
+            broadcasterAvailable: true,
+            canWrite: true,
+            reason: null,
+          });
         case "read_name_info":
           return Promise.resolve({
             name: "cuatesttld",
@@ -396,10 +450,7 @@ describe("NameActionsModal — phase header + DNS editor", () => {
 });
 
 describe("NameActionsModal — recover bid commitment (Task 2 / C2)", () => {
-  function routeReveal(
-    captured: { recover?: Record<string, unknown> },
-    hasBidCommitment: boolean,
-  ) {
+  function routeReveal(captured: { recover?: Record<string, unknown> }, hasBidCommitment: boolean) {
     return (cmd: string, args?: Record<string, unknown>) => {
       if (cmd === "get_name_action_capabilities") {
         return Promise.resolve({
@@ -438,9 +489,18 @@ describe("NameActionsModal — recover bid commitment (Task 2 / C2)", () => {
         case "list_wallet_profiles":
           return Promise.resolve([profile]);
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: profile.id, unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+          return Promise.resolve({
+            walletProfileId: profile.id,
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 60000,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+          return Promise.resolve({
+            signerUnlocked: true,
+            broadcasterAvailable: true,
+            canWrite: true,
+            reason: null,
+          });
         case "read_name_info":
           return Promise.resolve({
             name: "lostbidname",

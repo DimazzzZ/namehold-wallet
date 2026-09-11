@@ -94,17 +94,11 @@ pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -
         let mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
         // Resolve the active profile's network so we can reject a node on a
         // different chain (e.g. regtest node vs mainnet wallet).
-        let net = crate::db::queries::get_active_profile_id(&db)
-            .ok()
-            .and_then(|id| {
-                if id.is_empty() {
-                    return None;
-                }
-                crate::db::queries::get_wallet_profile(&db, &id)
-                    .ok()
-                    .flatten()
-                    .map(|p| p.network)
-            });
+        // A DB failure here degrades to "no network to compare" — the read
+        // gate is a routing decision, not a security boundary, and the SPV /
+        // sync gates below still apply. The connection probe (commands/node.rs)
+        // propagates the same error instead.
+        let net = queries::get_active_profile_network(&db).ok().flatten();
         (mode, net)
     };
     if node_mode.is_spv() {
@@ -155,12 +149,14 @@ pub(crate) async fn node_tip_height_if_synced_from_settings(
 /// Same as [`node_tip_height_if_synced_from_settings`], but additionally
 /// rejects (returns `None`) when the node's reported `chain` disagrees with
 /// `expected_network`. Set `expected_network` to the active profile's stored
-/// network string (`"main"` / `"mainnet"` / `"testnet"` / `"regtest"` /
-/// `"simnet"`); leave it `None` to skip the network check.
+/// network string — the schema allows only `"mainnet"`, `"testnet"` and
+/// `"regtest"`; `"main"` and `"simnet"` are accepted defensively by the
+/// comparison. Leave it `None` to skip the network check.
 ///
 /// This is the guard that prevents a regtest node from being treated as
 /// authoritative for a mainnet wallet (or any other cross-network mismatch).
-/// The comparison normalizes both sides through [`network_name_matches`] so
+/// The comparison normalizes both sides through
+/// [`crate::noncustodial::network::network_name_matches`] so
 /// `"mainnet"` (profile) and `"main"` (hsd) count as equal.
 pub(crate) async fn node_tip_height_if_synced_from_settings_with_network(
     settings: &std::collections::HashMap<String, String>,
@@ -179,42 +175,19 @@ pub(crate) async fn node_tip_height_if_synced_with_client(
     expected_network: Option<&str>,
 ) -> Option<i64> {
     let info = client.get_blockchain_info().await.ok()?;
-    // Reject the node when its reported chain doesn't match the wallet's
-    // network. When the node doesn't report `chain` at all (older builds), we
-    // conservatively allow it — the SPV gate and other checks still apply.
-    if let Some(want) = expected_network {
-        if let Some(got) = info.chain.as_deref() {
-            if !network_name_matches(want, got) {
-                return None;
-            }
-        }
+    // Reject the node only on a POSITIVE mismatch. `network_check` returns
+    // `None` when either side is unknown (no profile, or a node that doesn't
+    // report `chain` — older builds); we conservatively allow that, and the
+    // SPV gate and other checks still apply.
+    if crate::noncustodial::network::network_check(expected_network, info.chain.as_deref())
+        == Some(false)
+    {
+        return None;
     }
-    // Connected — now check if synced.
-    // When verification_progress is available it is the most reliable signal —
-    // a node can report height == headers while still only ~8% verified if it
-    // is far behind the real chain tip. Always gate on progress when present.
-    let synced = if let Some(progress) = info.verification_progress {
-        progress >= 0.9999
-    } else if let Some(headers) = info.headers {
-        headers > 0 && info.blocks >= headers
-    } else {
-        // No sync metadata: assume synced (e.g. regtest with a single miner).
-        true
-    };
-    synced.then_some(info.blocks)
-}
-
-/// True when two network names refer to the same Handshake network, tolerating
-/// the `"main"` ↔ `"mainnet"` spelling difference between hsd
-/// (`getblockchaininfo.chain`) and the wallet profile schema.
-pub(crate) fn network_name_matches(profile_network: &str, node_chain: &str) -> bool {
-    fn canonical(s: &str) -> &str {
-        match s {
-            "mainnet" => "main",
-            other => other,
-        }
-    }
-    canonical(profile_network) == canonical(node_chain)
+    // Connected — now check if synced. No sync metadata at all (e.g. regtest
+    // with a single miner) counts as synced.
+    info.is_synced(/* assume_when_unknown */ true)
+        .then_some(info.blocks)
 }
 
 /// Client-injected RPC phase of owned-name discovery. Resolves each

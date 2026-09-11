@@ -18,9 +18,7 @@ export function dollarydoosToHns(dollarydoos: number): string {
  * value being re-homed to your own coin, not a cost. `sendTotalDoos` (the
  * primary output value) is only a real outflow when it goes to a recipient.
  */
-export function netSpendDoos(
-  s: Pick<TxSummary, "sendTotalDoos" | "recipientAddress">,
-): number {
+export function netSpendDoos(s: Pick<TxSummary, "sendTotalDoos" | "recipientAddress">): number {
   return s.recipientAddress != null ? s.sendTotalDoos : 0;
 }
 
@@ -186,7 +184,7 @@ export function amountTone(row: {
  */
 export function latestTimestamp(
   a: string | null | undefined,
-  b: string | null | undefined
+  b: string | null | undefined,
 ): string | null {
   const at = a?.trim();
   const bt = b?.trim();

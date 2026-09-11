@@ -87,7 +87,12 @@ export function namebaseStatus(status: string): { label: string; tone: StatusTon
   if (s === "finalize_completed") return { label: "Completed", tone: "success" };
   if (s === "transfer_completed") return { label: "Transfer sent — finalizing", tone: "info" };
   if (s === "completed" || s === "complete") return { label: "Completed", tone: "success" };
-  if (s.includes("pending") || s.includes("progress") || s.includes("processing") || s.includes("waiting"))
+  if (
+    s.includes("pending") ||
+    s.includes("progress") ||
+    s.includes("processing") ||
+    s.includes("waiting")
+  )
     return { label: humanizeStatus(s), tone: "info" };
   return { label: humanizeStatus(s), tone: "default" };
 }
@@ -138,8 +143,7 @@ export function useNamebaseStatus() {
 export function useNamebaseDomains(enabled: boolean) {
   return useQuery({
     queryKey: ["namebase", "domains"],
-    queryFn: () =>
-      invoke<{ domains: NamebaseDomain[] }>("fetch_namebase_domains"),
+    queryFn: () => invoke<{ domains: NamebaseDomain[] }>("fetch_namebase_domains"),
     enabled,
   });
 }
@@ -147,8 +151,7 @@ export function useNamebaseDomains(enabled: boolean) {
 export function useNamebaseStakedDomains(enabled: boolean) {
   return useQuery({
     queryKey: ["namebase", "staked"],
-    queryFn: () =>
-      invoke<{ stakedDomains: NamebaseDomain[] }>("fetch_namebase_staked"),
+    queryFn: () => invoke<{ stakedDomains: NamebaseDomain[] }>("fetch_namebase_staked"),
     enabled,
   });
 }
@@ -156,8 +159,7 @@ export function useNamebaseStakedDomains(enabled: boolean) {
 export function useConnectNamebase() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (cookie: string) =>
-      invoke("connect_namebase", { cookie: cookie.trim() }),
+    mutationFn: (cookie: string) => invoke("connect_namebase", { cookie: cookie.trim() }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["namebase"] });
       qc.invalidateQueries({ queryKey: ["sync"] });
@@ -288,11 +290,7 @@ export interface NamebaseHistorySummary {
 }
 
 /** List imported Namebase history with optional filters. */
-export function useNamebaseHistory(filters?: {
-  name?: string;
-  family?: string;
-  search?: string;
-}) {
+export function useNamebaseHistory(filters?: { name?: string; family?: string; search?: string }) {
   return useQuery<NamebaseHistoryRow[]>({
     queryKey: ["namebase-history", filters],
     queryFn: async () => {
@@ -313,14 +311,16 @@ export function useNamebaseHistorySummary() {
     queryKey: ["namebase-history-summary"],
     queryFn: async () => {
       const result = await invoke<NamebaseHistorySummary>("get_namebase_history_summary");
-      return result ?? {
-        eventCount: 0,
-        nameCount: 0,
-        totalFeeDoos: 0,
-        totalUsdCents: 0,
-        earliest: null,
-        latest: null,
-      };
+      return (
+        result ?? {
+          eventCount: 0,
+          nameCount: 0,
+          totalFeeDoos: 0,
+          totalUsdCents: 0,
+          earliest: null,
+          latest: null,
+        }
+      );
     },
     retry: false,
   });
@@ -343,8 +343,7 @@ export function useImportNamebaseHistoryFile() {
 export function useImportNamebaseHistoryLive() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () =>
-      invoke<NamebaseHistoryImportResult>("import_namebase_history_live"),
+    mutationFn: () => invoke<NamebaseHistoryImportResult>("import_namebase_history_live"),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["namebase-history"] });
       qc.invalidateQueries({ queryKey: ["namebase-history-summary"] });

@@ -1,8 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  namebaseEventToActionRow,
-  verbToAction,
-} from "./namebase-to-action-row";
+import { namebaseEventToActionRow, verbToAction } from "./namebase-to-action-row";
 import type { NamebaseHistoryRow } from "../queries/namebase";
 
 function makeRow(overrides: Partial<NamebaseHistoryRow> = {}): NamebaseHistoryRow {

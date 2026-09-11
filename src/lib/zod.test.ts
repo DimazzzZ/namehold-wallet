@@ -1,11 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  MigrationStatus,
-  BatchStatus,
-  AssetSchema,
-  BatchSchema,
-  HsdBalanceSchema,
-} from "./zod";
+import { MigrationStatus, BatchStatus, AssetSchema, BatchSchema, HsdBalanceSchema } from "./zod";
 
 describe("MigrationStatus", () => {
   it("accepts all valid statuses", () => {
@@ -109,7 +103,7 @@ describe("BatchSchema", () => {
         asset_count: 5,
         created_at: "2024-01-01",
         updated_at: "2024-01-01",
-      }).success
+      }).success,
     ).toBe(true);
   });
 
@@ -123,7 +117,7 @@ describe("BatchSchema", () => {
         asset_count: null,
         created_at: "2024-01-01",
         updated_at: "2024-01-01",
-      }).success
+      }).success,
     ).toBe(true);
   });
 
@@ -137,7 +131,7 @@ describe("BatchSchema", () => {
         asset_count: 0,
         created_at: "2024-01-01",
         updated_at: "2024-01-01",
-      }).success
+      }).success,
     ).toBe(false);
   });
 });
@@ -150,7 +144,7 @@ describe("HsdBalanceSchema", () => {
         unconfirmed: 500000,
         locked_unconfirmed: 0,
         locked_confirmed: 0,
-      }).success
+      }).success,
     ).toBe(true);
   });
 
@@ -161,7 +155,7 @@ describe("HsdBalanceSchema", () => {
         unconfirmed: 0,
         locked_unconfirmed: null,
         locked_confirmed: null,
-      }).success
+      }).success,
     ).toBe(true);
   });
 });

@@ -1426,10 +1426,30 @@ pub async fn broadcast_tx_draft(
         (signed, settings)
     };
 
-    // Any configured node (local OR remote) can broadcast — configuring a Node
-    // RPC URL is the opt-in. The only refusal is a read-only Explorer source,
-    // which `send_raw_transaction` rejects internally.
+    // A full local node or a configured remote node can broadcast — configuring
+    // a Node RPC URL is the opt-in. Read-only sources (Explorer and SPV) are
+    // rejected up-front so the draft status is not left in an ambiguous
+    // `broadcast_pending` state; the same read-only check inside
+    // `send_raw_transaction` (via `can_broadcast()`) is the second line of
+    // defense, and the UI-facing `WriteCapability` gate is the first.
     let client = NodeRpcClient::from_settings(&settings);
+    if !client.source().can_broadcast() {
+        return Err(AppError::InvalidInput(
+            "chain source is read-only; broadcasting is disabled".to_string(),
+        ));
+    }
+    // A remote node additionally needs the explicit "Allow sending via remote
+    // node" opt-in. The UI gate shows the same rule; enforcing it here too
+    // closes a code path that would otherwise skip that gate and broadcast
+    // through someone else's node.
+    if client.source() == ChainSource::RemoteNode
+        && !crate::noncustodial::rpc::remote_broadcast_allowed(&settings)
+    {
+        return Err(AppError::InvalidInput(
+            "sending via remote node is disabled; enable \"Allow sending via remote node\" in Settings → Connections"
+                .to_string(),
+        ));
+    }
     let outcome = classify_broadcast_outcome_with_client(&client, &signed_hex).await;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     match outcome {
@@ -1804,8 +1824,7 @@ pub async fn get_write_capability(
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
         let source = ChainSource::from_settings(&settings);
-        let allow_remote =
-            settings.get("allow_remote_broadcast").map(|s| s.as_str()) == Some("true");
+        let allow_remote = crate::noncustodial::rpc::remote_broadcast_allowed(&settings);
         // One address to probe the node's address index (if a profile exists).
         let probe_addr = active_profile(&conn)
             .ok()
@@ -1824,7 +1843,7 @@ pub async fn get_write_capability(
         cap.broadcaster_available = false;
         cap.can_write = false;
         cap.reason = Some(
-            "SPV mode cannot send transactions. Switch to Full node mode in Settings → Connections to enable sending."
+            "SPV mode cannot send transactions. Choose \"Local full node\" or a remote node under Settings → Connections → Chain source."
                 .to_string(),
         );
         return Ok(cap);
@@ -1866,18 +1885,10 @@ pub(crate) async fn apply_node_write_probe_with_client(
             cap.reason = Some(format!("Start your local node ({node_url}) to send."));
         }
         Ok(info) => {
-            // "Synced" means the chain tip is reached (applied blocks caught up
-            // to the best known header). When `verification_progress` is
-            // available it is the most reliable signal — a node can report
-            // height == headers while still only ~8% verified if it is far
-            // behind the real chain tip. Always gate on progress when present.
-            let synced = match info.verification_progress {
-                Some(p) => p >= 0.9999,
-                None => match info.headers {
-                    Some(h) if h > 0 => info.blocks >= h,
-                    _ => true,
-                },
-            };
+            // "Synced" = applied blocks caught up to the best known header; see
+            // `chain_synced` for why verificationprogress wins. No metadata at
+            // all counts as synced (regtest).
+            let synced = info.is_synced(/* assume_when_unknown */ true);
             if !synced {
                 let pct = match info.verification_progress {
                     Some(p) => (p * 100.0).floor() as i64,

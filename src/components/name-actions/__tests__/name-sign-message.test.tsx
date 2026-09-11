@@ -68,10 +68,9 @@ beforeEach(() => {
 
 describe("NameSignMessage — sign an arbitrary message with the owning key (Task 3)", () => {
   it("does not render for a name the wallet does not own", () => {
-    render(
-      <NameSignMessage name="notmine" profileId="p1" caps={capsFor("notmine", false)} />,
-      { wrapper: wrapper() },
-    );
+    render(<NameSignMessage name="notmine" profileId="p1" caps={capsFor("notmine", false)} />, {
+      wrapper: wrapper(),
+    });
     expect(screen.queryByTestId("name-sign-message")).not.toBeInTheDocument();
   });
 
@@ -94,10 +93,9 @@ describe("NameSignMessage — sign an arbitrary message with the owning key (Tas
       return Promise.resolve(null);
     });
 
-    render(
-      <NameSignMessage name="ecology" profileId="p1" caps={capsFor("ecology", true)} />,
-      { wrapper: wrapper() },
-    );
+    render(<NameSignMessage name="ecology" profileId="p1" caps={capsFor("ecology", true)} />, {
+      wrapper: wrapper(),
+    });
 
     fireEvent.change(screen.getByTestId("sign-message-input"), {
       target: {
@@ -152,10 +150,9 @@ describe("NameSignMessage — sign an arbitrary message with the owning key (Tas
       return Promise.resolve(null);
     });
 
-    render(
-      <NameSignMessage name="ecology" profileId="p1" caps={capsFor("ecology", true)} />,
-      { wrapper: wrapper() },
-    );
+    render(<NameSignMessage name="ecology" profileId="p1" caps={capsFor("ecology", true)} />, {
+      wrapper: wrapper(),
+    });
 
     fireEvent.change(screen.getByTestId("sign-message-input"), {
       target: { value: "verify me" },
@@ -179,11 +176,7 @@ describe("NameSignMessage — sign an arbitrary message with the owning key (Tas
     });
 
     render(
-      <NameSignMessage
-        name="xn--e1adigm"
-        profileId="p1"
-        caps={capsFor("xn--e1adigm", true)}
-      />,
+      <NameSignMessage name="xn--e1adigm" profileId="p1" caps={capsFor("xn--e1adigm", true)} />,
       { wrapper: wrapper() },
     );
 

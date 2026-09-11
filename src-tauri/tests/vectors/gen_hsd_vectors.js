@@ -1,4 +1,4 @@
-'use strict';
+"use strict";
 
 // Independent known-answer transaction vectors generated from canonical hsd
 // 8.0.0. Consumed by src-tauri/src/tests/hsd_parity_tests.rs to prove our Rust
@@ -9,22 +9,22 @@
 // signatures, so for identical inputs (same coins, output order, locktime,
 // sighash type) the FULL signed-tx hex is identical — not merely valid.
 
-const fs = require('fs');
-const path = require('path');
-const hsd = require('hsd');
-const { Mnemonic, HDPrivateKey } = require('hsd').hd;
+const fs = require("fs");
+const path = require("path");
+const hsd = require("hsd");
+const { Mnemonic, HDPrivateKey } = require("hsd").hd;
 const { KeyRing, MTX, Coin, Output, Address, Script, Covenant, Network } = hsd;
-const rules = require('hsd/lib/covenants/rules');
+const rules = require("hsd/lib/covenants/rules");
 
-const NETWORK = Network.get('main');
+const NETWORK = Network.get("main");
 const COIN_TYPE = NETWORK.keyPrefix.coinType; // 5353
 const ACCOUNT = 0;
 const HASH_ALL = Script.hashType.ALL; // 1
 
 const MNEMONIC =
-  'april coyote civil finger crane uncle situate moon choice wrong ' +
-  'goose client purse deer funny hobby shrug give anxiety truly rack ' +
-  'stand salad coach';
+  "april coyote civil finger crane uncle situate moon choice wrong " +
+  "goose client purse deer funny hobby shrug give anxiety truly rack " +
+  "stand salad coach";
 
 const master = HDPrivateKey.fromMnemonic(new Mnemonic(MNEMONIC));
 
@@ -38,7 +38,7 @@ function ring(branch, index) {
 }
 
 function addr(branch, index) {
-  return ring(branch, index).getAddress().toString('main');
+  return ring(branch, index).getAddress().toString("main");
 }
 
 // Fee formula MUST mirror src-tauri/src/noncustodial/send.rs exactly:
@@ -53,7 +53,7 @@ function estFee(nIn, nOut, rate) {
 // input's prevout hash, so there is no transformation: the funding txid == the
 // prevout hash bytes == hsd's Coin.hash.
 function prevoutHash(txidHex) {
-  return Buffer.from(txidHex, 'hex');
+  return Buffer.from(txidHex, "hex");
 }
 
 function mkCoin(txid, vout, value, fundingRing) {
@@ -80,9 +80,9 @@ function plainSend({ inputs, recipient, change, locktime = 0 }) {
     rings.push(r);
     mtx.addCoin(mkCoin(i.displayTxid, i.vout, i.value, r));
   }
-  mtx.addOutput(Address.fromString(recipient.address, 'main'), recipient.value);
+  mtx.addOutput(Address.fromString(recipient.address, "main"), recipient.value);
   if (change) {
-    mtx.addOutput(Address.fromString(change.address, 'main'), change.value);
+    mtx.addOutput(Address.fromString(change.address, "main"), change.value);
   }
 
   const signed = mtx.sign(rings);
@@ -94,7 +94,7 @@ function plainSend({ inputs, recipient, change, locktime = 0 }) {
   const sighashes = inputs.map((i, idx) => {
     const r = rings[idx];
     const prev = Script.fromPubkeyhash(r.getKeyHash());
-    return mtx.signatureHash(idx, prev, i.value, HASH_ALL).toString('hex');
+    return mtx.signatureHash(idx, prev, i.value, HASH_ALL).toString("hex");
   });
 
   return {
@@ -107,14 +107,14 @@ function plainSend({ inputs, recipient, change, locktime = 0 }) {
       value: i.value,
       branch: i.branch,
       index: i.index,
-      keyHash160: ring(i.branch, i.index).getKeyHash().toString('hex'),
+      keyHash160: ring(i.branch, i.index).getKeyHash().toString("hex"),
       sighashAll: sighashes[idx],
     })),
     recipient,
     change: change || null,
     locktime,
     txid: mtx.txid(),
-    signedHex: mtx.toRaw().toString('hex'),
+    signedHex: mtx.toRaw().toString("hex"),
   };
 }
 
@@ -129,17 +129,17 @@ function covenantTx({ input, covenantOutput, change, locktime = 0 }) {
 
   const out = new Output();
   out.value = covenantOutput.value;
-  out.address = Address.fromString(covenantOutput.address, 'main');
+  out.address = Address.fromString(covenantOutput.address, "main");
   out.covenant = covenantOutput.covenant;
   mtx.outputs.push(out);
 
-  mtx.addOutput(Address.fromString(change.address, 'main'), change.value);
+  mtx.addOutput(Address.fromString(change.address, "main"), change.value);
 
   const signed = mtx.sign([r]);
-  if (signed !== 1) throw new Error('covenantTx: input not signed');
+  if (signed !== 1) throw new Error("covenantTx: input not signed");
 
   const prev = Script.fromPubkeyhash(r.getKeyHash());
-  const sighash = mtx.signatureHash(0, prev, input.value, HASH_ALL).toString('hex');
+  const sighash = mtx.signatureHash(0, prev, input.value, HASH_ALL).toString("hex");
 
   return {
     input: {
@@ -149,18 +149,18 @@ function covenantTx({ input, covenantOutput, change, locktime = 0 }) {
       value: input.value,
       branch: input.branch,
       index: input.index,
-      keyHash160: r.getKeyHash().toString('hex'),
+      keyHash160: r.getKeyHash().toString("hex"),
       sighashAll: sighash,
     },
     covenantOutput: {
       value: covenantOutput.value,
       address: covenantOutput.address,
-      covenantRaw: Buffer.from(covenantOutput.covenant.encode()).toString('hex'),
+      covenantRaw: Buffer.from(covenantOutput.covenant.encode()).toString("hex"),
     },
     change,
     locktime,
     txid: mtx.txid(),
-    signedHex: mtx.toRaw().toString('hex'),
+    signedHex: mtx.toRaw().toString("hex"),
   };
 }
 
@@ -175,9 +175,9 @@ const T = rules.types;
 
 // --- fixed test material -------------------------------------------------
 
-const NAME = 'proofofconcept';
+const NAME = "proofofconcept";
 const NAME_HASH = rules.hashName(NAME); // 32 bytes
-const RAW_NAME = Buffer.from(NAME, 'ascii');
+const RAW_NAME = Buffer.from(NAME, "ascii");
 const BLIND_NONCE = Buffer.alloc(32, 0x07);
 const BLIND_VALUE = 1234567;
 const BLIND = rules.blind(BLIND_VALUE, BLIND_NONCE);
@@ -189,23 +189,23 @@ const HEIGHT = 200;
 const START = 100;
 
 // Distinct, non-palindromic funding txids (display order).
-const TXID_A = Buffer.from(Array.from({ length: 32 }, (_, i) => i + 1)).toString('hex');
-const TXID_B = Buffer.from(Array.from({ length: 32 }, (_, i) => 0x40 + i)).toString('hex');
-const TXID_C = Buffer.from(Array.from({ length: 32 }, (_, i) => 0x80 + i)).toString('hex');
+const TXID_A = Buffer.from(Array.from({ length: 32 }, (_, i) => i + 1)).toString("hex");
+const TXID_B = Buffer.from(Array.from({ length: 32 }, (_, i) => 0x40 + i)).toString("hex");
+const TXID_C = Buffer.from(Array.from({ length: 32 }, (_, i) => 0x80 + i)).toString("hex");
 
 // --- assemble vectors ----------------------------------------------------
 
 const vectors = {
   meta: {
-    generator: 'gen_hsd_vectors.js',
-    hsd: require('hsd/package.json').version,
-    network: 'main',
+    generator: "gen_hsd_vectors.js",
+    hsd: require("hsd/package.json").version,
+    network: "main",
     coinType: COIN_TYPE,
     account: ACCOUNT,
     mnemonic: MNEMONIC,
     note:
-      'Independent known-answer vectors. Rust must match signedHex/txid/sighash/' +
-      'covenantRaw byte-for-byte.',
+      "Independent known-answer vectors. Rust must match signedHex/txid/sighash/" +
+      "covenantRaw byte-for-byte.",
   },
 
   addresses: [
@@ -219,9 +219,9 @@ const vectors = {
       path: `m/44'/${COIN_TYPE}'/${ACCOUNT}'/${branch}/${index}`,
       branch,
       index,
-      address: r.getAddress().toString('main'),
-      keyHash160: r.getKeyHash().toString('hex'),
-      pubkey: r.publicKey.toString('hex'),
+      address: r.getAddress().toString("main"),
+      keyHash160: r.getKeyHash().toString("hex"),
+      pubkey: r.publicKey.toString("hex"),
     };
   }),
 
@@ -250,7 +250,8 @@ const vectors = {
 
   // Reproduced in Rust via build_send() forcing a 2-input selection.
   buildSend2: (() => {
-    const v0 = 600_000, v1 = 500_000;
+    const v0 = 600_000,
+      v1 = 500_000;
     const amount = 900_000;
     const rate = 1;
     const fee = estFee(2, 2, rate);
@@ -284,102 +285,176 @@ const vectors = {
         }),
       },
       change: { address: addr(1, 0), value: value - fee },
-      meta: { name: NAME, nameHash: NAME_HASH.toString('hex'), rawName: RAW_NAME.toString('hex') },
+      meta: { name: NAME, nameHash: NAME_HASH.toString("hex"), rawName: RAW_NAME.toString("hex") },
     });
   })(),
 
   openTxMeta: {
     name: NAME,
-    nameHash: NAME_HASH.toString('hex'),
-    rawName: RAW_NAME.toString('hex'),
+    nameHash: NAME_HASH.toString("hex"),
+    rawName: RAW_NAME.toString("hex"),
   },
 
   // Raw covenant serializations (type || varint(count) || varbytes items).
   covenants: [
     {
-      kind: 'open',
-      args: { nameHash: NAME_HASH.toString('hex'), rawName: RAW_NAME.toString('hex') },
-      raw: cov(T.OPEN, (c) => { c.pushHash(NAME_HASH); c.pushU32(0); c.push(RAW_NAME); }).encode(),
-    },
-    {
-      kind: 'bid',
-      args: {
-        nameHash: NAME_HASH.toString('hex'), start: START,
-        rawName: RAW_NAME.toString('hex'), blind: BLIND.toString('hex'),
-      },
-      raw: cov(T.BID, (c) => { c.pushHash(NAME_HASH); c.pushU32(START); c.push(RAW_NAME); c.pushHash(BLIND); }).encode(),
-    },
-    {
-      kind: 'reveal',
-      args: { nameHash: NAME_HASH.toString('hex'), height: HEIGHT, nonce: REVEAL_NONCE.toString('hex') },
-      raw: cov(T.REVEAL, (c) => { c.pushHash(NAME_HASH); c.pushU32(HEIGHT); c.pushHash(REVEAL_NONCE); }).encode(),
-    },
-    {
-      kind: 'redeem',
-      args: { nameHash: NAME_HASH.toString('hex'), height: HEIGHT },
-      raw: cov(T.REDEEM, (c) => { c.pushHash(NAME_HASH); c.pushU32(HEIGHT); }).encode(),
-    },
-    {
-      kind: 'register',
-      args: {
-        nameHash: NAME_HASH.toString('hex'), height: HEIGHT,
-        resource: RESOURCE.toString('hex'), renewalBlock: RENEWAL_BLOCK.toString('hex'),
-      },
-      raw: cov(T.REGISTER, (c) => { c.pushHash(NAME_HASH); c.pushU32(HEIGHT); c.push(RESOURCE); c.pushHash(RENEWAL_BLOCK); }).encode(),
-    },
-    {
-      kind: 'update',
-      args: { nameHash: NAME_HASH.toString('hex'), height: HEIGHT, resource: RESOURCE.toString('hex') },
-      raw: cov(T.UPDATE, (c) => { c.pushHash(NAME_HASH); c.pushU32(HEIGHT); c.push(RESOURCE); }).encode(),
-    },
-    {
-      kind: 'renew',
-      args: { nameHash: NAME_HASH.toString('hex'), height: HEIGHT, renewalBlock: RENEWAL_BLOCK.toString('hex') },
-      raw: cov(T.RENEW, (c) => { c.pushHash(NAME_HASH); c.pushU32(HEIGHT); c.pushHash(RENEWAL_BLOCK); }).encode(),
-    },
-    {
-      kind: 'transfer',
-      args: { nameHash: NAME_HASH.toString('hex'), height: HEIGHT, addrVersion: 0, addrHash: ADDR_HASH20.toString('hex') },
-      raw: cov(T.TRANSFER, (c) => { c.pushHash(NAME_HASH); c.pushU32(HEIGHT); c.pushU8(0); c.push(ADDR_HASH20); }).encode(),
-    },
-    {
-      kind: 'finalize',
-      args: {
-        nameHash: NAME_HASH.toString('hex'), height: HEIGHT, rawName: RAW_NAME.toString('hex'),
-        flags: 0, claimed: 0, renewals: 3, renewalBlock: RENEWAL_BLOCK.toString('hex'),
-      },
-      raw: cov(T.FINALIZE, (c) => {
-        c.pushHash(NAME_HASH); c.pushU32(HEIGHT); c.push(RAW_NAME);
-        c.pushU8(0); c.pushU32(0); c.pushU32(3); c.pushHash(RENEWAL_BLOCK);
+      kind: "open",
+      args: { nameHash: NAME_HASH.toString("hex"), rawName: RAW_NAME.toString("hex") },
+      raw: cov(T.OPEN, (c) => {
+        c.pushHash(NAME_HASH);
+        c.pushU32(0);
+        c.push(RAW_NAME);
       }).encode(),
     },
     {
-      kind: 'cancel',
-      args: { nameHash: NAME_HASH.toString('hex'), height: HEIGHT },
-      // hsd encodes CANCEL as an UPDATE covenant with an empty resource item.
-      raw: cov(T.UPDATE, (c) => { c.pushHash(NAME_HASH); c.pushU32(HEIGHT); c.push(Buffer.alloc(0)); }).encode(),
+      kind: "bid",
+      args: {
+        nameHash: NAME_HASH.toString("hex"),
+        start: START,
+        rawName: RAW_NAME.toString("hex"),
+        blind: BLIND.toString("hex"),
+      },
+      raw: cov(T.BID, (c) => {
+        c.pushHash(NAME_HASH);
+        c.pushU32(START);
+        c.push(RAW_NAME);
+        c.pushHash(BLIND);
+      }).encode(),
     },
     {
-      kind: 'revoke',
-      args: { nameHash: NAME_HASH.toString('hex'), height: HEIGHT },
-      raw: cov(T.REVOKE, (c) => { c.pushHash(NAME_HASH); c.pushU32(HEIGHT); }).encode(),
+      kind: "reveal",
+      args: {
+        nameHash: NAME_HASH.toString("hex"),
+        height: HEIGHT,
+        nonce: REVEAL_NONCE.toString("hex"),
+      },
+      raw: cov(T.REVEAL, (c) => {
+        c.pushHash(NAME_HASH);
+        c.pushU32(HEIGHT);
+        c.pushHash(REVEAL_NONCE);
+      }).encode(),
     },
-  ].map((c) => ({ ...c, raw: Buffer.from(c.raw).toString('hex') })),
+    {
+      kind: "redeem",
+      args: { nameHash: NAME_HASH.toString("hex"), height: HEIGHT },
+      raw: cov(T.REDEEM, (c) => {
+        c.pushHash(NAME_HASH);
+        c.pushU32(HEIGHT);
+      }).encode(),
+    },
+    {
+      kind: "register",
+      args: {
+        nameHash: NAME_HASH.toString("hex"),
+        height: HEIGHT,
+        resource: RESOURCE.toString("hex"),
+        renewalBlock: RENEWAL_BLOCK.toString("hex"),
+      },
+      raw: cov(T.REGISTER, (c) => {
+        c.pushHash(NAME_HASH);
+        c.pushU32(HEIGHT);
+        c.push(RESOURCE);
+        c.pushHash(RENEWAL_BLOCK);
+      }).encode(),
+    },
+    {
+      kind: "update",
+      args: {
+        nameHash: NAME_HASH.toString("hex"),
+        height: HEIGHT,
+        resource: RESOURCE.toString("hex"),
+      },
+      raw: cov(T.UPDATE, (c) => {
+        c.pushHash(NAME_HASH);
+        c.pushU32(HEIGHT);
+        c.push(RESOURCE);
+      }).encode(),
+    },
+    {
+      kind: "renew",
+      args: {
+        nameHash: NAME_HASH.toString("hex"),
+        height: HEIGHT,
+        renewalBlock: RENEWAL_BLOCK.toString("hex"),
+      },
+      raw: cov(T.RENEW, (c) => {
+        c.pushHash(NAME_HASH);
+        c.pushU32(HEIGHT);
+        c.pushHash(RENEWAL_BLOCK);
+      }).encode(),
+    },
+    {
+      kind: "transfer",
+      args: {
+        nameHash: NAME_HASH.toString("hex"),
+        height: HEIGHT,
+        addrVersion: 0,
+        addrHash: ADDR_HASH20.toString("hex"),
+      },
+      raw: cov(T.TRANSFER, (c) => {
+        c.pushHash(NAME_HASH);
+        c.pushU32(HEIGHT);
+        c.pushU8(0);
+        c.push(ADDR_HASH20);
+      }).encode(),
+    },
+    {
+      kind: "finalize",
+      args: {
+        nameHash: NAME_HASH.toString("hex"),
+        height: HEIGHT,
+        rawName: RAW_NAME.toString("hex"),
+        flags: 0,
+        claimed: 0,
+        renewals: 3,
+        renewalBlock: RENEWAL_BLOCK.toString("hex"),
+      },
+      raw: cov(T.FINALIZE, (c) => {
+        c.pushHash(NAME_HASH);
+        c.pushU32(HEIGHT);
+        c.push(RAW_NAME);
+        c.pushU8(0);
+        c.pushU32(0);
+        c.pushU32(3);
+        c.pushHash(RENEWAL_BLOCK);
+      }).encode(),
+    },
+    {
+      kind: "cancel",
+      args: { nameHash: NAME_HASH.toString("hex"), height: HEIGHT },
+      // hsd encodes CANCEL as an UPDATE covenant with an empty resource item.
+      raw: cov(T.UPDATE, (c) => {
+        c.pushHash(NAME_HASH);
+        c.pushU32(HEIGHT);
+        c.push(Buffer.alloc(0));
+      }).encode(),
+    },
+    {
+      kind: "revoke",
+      args: { nameHash: NAME_HASH.toString("hex"), height: HEIGHT },
+      raw: cov(T.REVOKE, (c) => {
+        c.pushHash(NAME_HASH);
+        c.pushU32(HEIGHT);
+      }).encode(),
+    },
+  ].map((c) => ({ ...c, raw: Buffer.from(c.raw).toString("hex") })),
 
-  nameHash: { name: NAME, hash: NAME_HASH.toString('hex') },
+  nameHash: { name: NAME, hash: NAME_HASH.toString("hex") },
 
   blind: {
     value: BLIND_VALUE,
-    nonce: BLIND_NONCE.toString('hex'),
-    blind: BLIND.toString('hex'),
+    nonce: BLIND_NONCE.toString("hex"),
+    blind: BLIND.toString("hex"),
   },
 };
 
-const outPath = path.join(__dirname, 'vectors.json');
-fs.writeFileSync(outPath, JSON.stringify(vectors, null, 2) + '\n');
+const outPath = path.join(__dirname, "vectors.json");
+fs.writeFileSync(outPath, JSON.stringify(vectors, null, 2) + "\n");
 console.log(`wrote ${outPath}`);
-console.log(`  hsd ${vectors.meta.hsd}, ${vectors.addresses.length} addresses, ` +
-  `${vectors.covenants.length} covenants`);
+console.log(
+  `  hsd ${vectors.meta.hsd}, ${vectors.addresses.length} addresses, ` +
+    `${vectors.covenants.length} covenants`,
+);
 console.log(`  addr(0,0) = ${vectors.addresses[0].address}`);
 console.log(`  buildSend1 txid = ${vectors.buildSend1.txid}`);
 console.log(`  openTx txid = ${vectors.openTx.txid}`);

@@ -51,10 +51,9 @@ describe("BlockInfoModal", () => {
       isError: false,
     } as any);
 
-    render(
-      <BlockInfoModal height={200_000} open onClose={vi.fn()} isMainnet />,
-      { wrapper: wrapper() },
-    );
+    render(<BlockInfoModal height={200_000} open onClose={vi.fn()} isMainnet />, {
+      wrapper: wrapper(),
+    });
 
     // Hash
     expect(screen.getByTestId("block-hash").textContent).toContain(
@@ -73,15 +72,12 @@ describe("BlockInfoModal", () => {
   it("shows 'requires synced node' when node is not live", () => {
     mockUseNodeLive.mockReturnValue(false);
 
-    render(
-      <BlockInfoModal height={100} open onClose={vi.fn()} isMainnet={false} />,
-      { wrapper: wrapper() },
-    );
+    render(<BlockInfoModal height={100} open onClose={vi.fn()} isMainnet={false} />, {
+      wrapper: wrapper(),
+    });
 
     expect(screen.getByTestId("block-info-no-node")).toBeInTheDocument();
-    expect(
-      screen.getByText(/Requires a synced local node/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Requires a synced local node/)).toBeInTheDocument();
   });
 
   it("shows 'requires synced node' when block data is null (node returned null)", () => {
@@ -92,10 +88,9 @@ describe("BlockInfoModal", () => {
       isError: false,
     } as any);
 
-    render(
-      <BlockInfoModal height={100} open onClose={vi.fn()} isMainnet={false} />,
-      { wrapper: wrapper() },
-    );
+    render(<BlockInfoModal height={100} open onClose={vi.fn()} isMainnet={false} />, {
+      wrapper: wrapper(),
+    });
 
     expect(screen.getByTestId("block-info-no-node")).toBeInTheDocument();
   });
@@ -116,10 +111,9 @@ describe("BlockInfoModal", () => {
     unmount();
 
     // Non-mainnet: link absent
-    render(
-      <BlockInfoModal height={200_000} open onClose={vi.fn()} isMainnet={false} />,
-      { wrapper: wrapper() },
-    );
+    render(<BlockInfoModal height={200_000} open onClose={vi.fn()} isMainnet={false} />, {
+      wrapper: wrapper(),
+    });
     expect(screen.queryByTestId("block-explorer-link")).not.toBeInTheDocument();
   });
 
@@ -144,10 +138,9 @@ describe("BlockInfoModal", () => {
       isError: false,
     } as any);
 
-    render(
-      <BlockInfoModal height={100} open onClose={vi.fn()} isMainnet />,
-      { wrapper: wrapper() },
-    );
+    render(<BlockInfoModal height={100} open onClose={vi.fn()} isMainnet />, {
+      wrapper: wrapper(),
+    });
     expect(screen.getByText("Loading block info...")).toBeInTheDocument();
   });
 });

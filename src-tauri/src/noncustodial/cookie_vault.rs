@@ -336,6 +336,18 @@ mod tests {
         (0..DEK_LEN as u8).collect()
     }
 
+    /// Flip a hex digit to a guaranteed-different one. Load-bearing for the
+    /// tampered-blob tests: a no-op "flip" once made
+    /// `decrypt_rejects_tampered_blob_covers_both_flip_branches` fail ~1 run
+    /// in 16 (see the regression guard below).
+    fn flip_hex_digit(c: char) -> char {
+        if c == '0' {
+            '1'
+        } else {
+            '0'
+        }
+    }
+
     #[test]
     fn encrypt_then_decrypt_roundtrips() {
         let plaintext = b"session=abc123; path=/; secure";
@@ -355,7 +367,7 @@ mod tests {
         // Flip a bit in the hex string (middle of the ciphertext).
         let mut tampered = blob_hex.clone();
         if let Some(c) = tampered.chars().nth(20) {
-            let flipped = if c == '0' { '1' } else { '0' };
+            let flipped = flip_hex_digit(c);
             tampered.replace_range(20..21, &flipped.to_string());
         }
         assert!(decrypt_with_dek(&tampered, &dek).is_err());
@@ -380,23 +392,45 @@ mod tests {
         // digit: '0' -> '1', anything else -> '0'. Because we branch on the
         // ACTUAL original char (not a forced value), the replacement is always
         // a real change, so the tampered blob is never identical to the input.
-        let flip = |c: char| if c == '0' { '1' } else { '0' };
         let mut tampered: String = blob_hex.clone();
         let orig = chars[20];
-        tampered.replace_range(20..21, &flip(orig).to_string());
+        tampered.replace_range(20..21, &flip_hex_digit(orig).to_string());
         assert_ne!(tampered, blob_hex, "mutation must actually change the blob");
         assert!(decrypt_with_dek(&tampered, &dek).is_err());
 
-        // Also exercise the other arm of the `flip` closure explicitly so both
-        // branches are covered deterministically on every run: pick a source
-        // char that forces the opposite arm from the one above.
-        let forced_src = if orig == '0' { 'a' } else { '0' };
+        // Cover both arms of `flip_hex_digit` directly, so the assertion does
+        // not depend on which hex digits the random nonce happened to produce.
+        // The earlier spelling forced position 21 to a known source and then
+        // flipped THAT, which yields a fixed final digit ('0' when orig == '0',
+        // else '1') — a no-op whenever the nonce already carried that digit at
+        // 21, so the "tampered" blob equalled the original and decrypt
+        // succeeded. That made this test fail about one run in sixteen.
+        assert_eq!(flip_hex_digit('0'), '1');
+        assert_eq!(flip_hex_digit('a'), '0');
+
+        // Second tamper, at another nonce position. `flip_hex_digit(c) != c`
+        // for every input, so flipping the ACTUAL character is always a real
+        // change.
         let mut tampered2: String = blob_hex.clone();
-        // Set position 21 (also inside the nonce) to a known source, then flip.
-        tampered2.replace_range(21..22, &forced_src.to_string());
-        let after_force: Vec<char> = tampered2.chars().collect();
-        tampered2.replace_range(21..22, &flip(after_force[21]).to_string());
+        tampered2.replace_range(21..22, &flip_hex_digit(chars[21]).to_string());
+        assert_ne!(
+            tampered2, blob_hex,
+            "second mutation must actually change the blob"
+        );
         assert!(decrypt_with_dek(&tampered2, &dek).is_err());
+    }
+
+    /// Regression guard for the nonce-dependent failure above: the tampering
+    /// strategy must change the blob for EVERY hex digit the random nonce can
+    /// produce, not merely for most of them. The two tamper positions are
+    /// independent, so one pass over the hex alphabet covers both.
+    #[test]
+    fn flip_tamper_strategy_never_produces_a_noop() {
+        const HEX: &[u8] = b"0123456789abcdef";
+        for &c in HEX {
+            let c = c as char;
+            assert_ne!(flip_hex_digit(c), c, "flip must change {c}");
+        }
     }
 
     #[test]

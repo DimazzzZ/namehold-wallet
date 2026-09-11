@@ -82,12 +82,7 @@ fn test_default_settings_seeded() {
     assert_eq!(node_url, "http://127.0.0.1:12037");
 
     // Legacy keys are removed by migration 010.
-    for key in [
-        "hsd_wallet_api_url",
-        "connection_mode",
-        "write_mode",
-        "chain_source",
-    ] {
+    for key in ["hsd_wallet_api_url", "connection_mode", "write_mode"] {
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM settings WHERE key = ?1",
@@ -96,6 +91,22 @@ fn test_default_settings_seeded() {
             )
             .unwrap();
         assert_eq!(n, 0, "legacy setting '{key}' should be deleted");
+    }
+
+    // `chain_source` and `allow_remote_broadcast` are seeded by migration 009
+    // and were once deleted by migration 010; they've since been reintroduced
+    // as live settings (remote-node support), so migration 010 no longer
+    // deletes them and they keep their seeded defaults.
+    for (key, expected) in [
+        ("chain_source", "local_node"),
+        ("allow_remote_broadcast", "false"),
+    ] {
+        let value: String = conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .unwrap_or_else(|_| panic!("'{key}' should still be seeded, not deleted"));
+        assert_eq!(value, expected);
     }
 
     // The hsd data directory is re-added by migration 011 (010 drops it, 011

@@ -275,6 +275,63 @@ async fn broadcast_failure_marks_draft_failed_and_errors() {
     );
 }
 
+// --- SPV read-only source: broadcast refused at the RPC boundary -----------
+
+/// Defense-in-depth: even if the UI `WriteCapability` gate were bypassed,
+/// `broadcast_tx_draft` must refuse to broadcast when the chain source is SPV
+/// (read-only in Namehold). The draft stays in `signed` status — it was never
+/// attempted, so it is neither `failed` nor `broadcast_pending`.
+#[tokio::test]
+async fn broadcast_refused_in_spv_mode() {
+    // A mock server whose endpoint would ordinarily succeed. If the guard is
+    // broken, the RPC layer would be hit and this mock would match — the
+    // `expect(0)` on the mock proves nothing was sent over the wire.
+    let mut server = mockito::Server::new_async().await;
+    let node_txid = "abc0000000000000000000000000000000000000000000000000000000000def";
+    let m = server
+        .mock("POST", "/")
+        .with_header("content-type", "application/json")
+        .with_body(format!(r#"{{"result":"{node_txid}","error":null,"id":1}}"#))
+        .expect(0)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    // Flip the chain source to SPV by setting node_mode=spv. `from_settings`
+    // (rpc.rs:63-70) maps (_, "spv") → ChainSource::SpvNode.
+    db::queries::set_setting(&conn, "node_mode", "spv").unwrap();
+    let app = app_with(conn);
+    let to = recv_addr();
+
+    // Build + sign as usual (SPV blocks sending, not building/signing).
+    let draft = build_send_hns_draft(app.state(), to, 500_000, Some(1), None)
+        .await
+        .expect("build draft");
+    unlock(&app, PROFILE);
+    sign_tx_draft_inner(&app.state(), &draft.id)
+        .await
+        .expect("sign");
+
+    // Broadcast must be refused with a read-only error.
+    let err = broadcast_tx_draft(app.state(), draft.id.clone())
+        .await
+        .expect_err("SPV broadcast must be refused");
+    assert!(
+        matches!(&err, AppError::InvalidInput(msg) if msg.contains("read-only")),
+        "expected InvalidInput read-only error, got {err:?}"
+    );
+
+    // Nothing was sent to the mock node.
+    m.assert_async().await;
+
+    // The draft is untouched (still `signed`), not `failed` and not
+    // `broadcast_pending` — nothing was attempted on the wire.
+    let row = draft_row(&app, &draft.id);
+    assert_eq!(row.status, "signed");
+    assert!(row.signed_tx_hex.is_some());
+    assert!(row.txid.is_none());
+}
+
 // --- confirmation tracking (broadcasted -> confirmed / dropped) ------------
 
 const DRAFT_TXID: &str = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0";
@@ -778,9 +835,9 @@ async fn sign_rejects_when_locked() {
 
 #[tokio::test]
 async fn remote_node_source_can_broadcast() {
-    // A configured REMOTE node must be able to broadcast (the old
-    // allow_remote_broadcast gate was removed — configuring the node is the
-    // opt-in). Same build→sign→broadcast flow, but chain_source = remote_node.
+    // A configured REMOTE node broadcasts once the user has opted in via
+    // `allow_remote_broadcast = "true"` (the Settings toggle). Same
+    // build→sign→broadcast flow, but chain_source = remote_node.
     let mut server = mockito::Server::new_async().await;
     let node_txid = "fee0000000000000000000000000000000000000000000000000000000000abc";
     let _m = server
@@ -791,6 +848,7 @@ async fn remote_node_source_can_broadcast() {
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     db::queries::set_setting(&conn, "chain_source", "remote_node").unwrap();
+    db::queries::set_setting(&conn, "allow_remote_broadcast", "true").unwrap();
     let app = app_with(conn);
 
     let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
@@ -843,6 +901,53 @@ async fn explorer_source_refuses_broadcast_before_any_rpc() {
     // The draft must NOT be recorded as broadcasted, and the node was never hit.
     assert_ne!(draft_row(&app, &draft.id).status, "broadcasted");
     m.assert_async().await;
+}
+
+/// Defense-in-depth for the remote-node opt-in: with `chain_source =
+/// remote_node` but no `allow_remote_broadcast = "true"`, `broadcast_tx_draft`
+/// must refuse BEFORE any RPC. The Settings toggle (via `get_write_capability`)
+/// is the first gate; this proves it is not the only one. The draft stays
+/// `signed` — nothing was attempted, so it is neither `failed` nor
+/// `broadcast_pending`.
+#[tokio::test]
+async fn broadcast_refused_for_remote_node_without_opt_in() {
+    let mut server = mockito::Server::new_async().await;
+    let m = server
+        .mock("POST", "/")
+        .with_body(r#"{"result":"deadbeef","error":null,"id":1}"#)
+        .expect(0) // must never be hit
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    db::queries::set_setting(&conn, "chain_source", "remote_node").unwrap();
+    // No opt-in is written here, so the row keeps migration 009's seeded
+    // `allow_remote_broadcast = "false"` (migration 010 no longer deletes it).
+    // The missing-key default itself is pinned separately by
+    // `remote_broadcast_allowed_defaults_off_and_requires_literal_true` in rpc.rs.
+    let app = app_with(conn);
+
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .expect("build");
+    unlock(&app, PROFILE);
+    sign_tx_draft_inner(&app.state(), &draft.id)
+        .await
+        .expect("sign");
+
+    let err = broadcast_tx_draft(app.state(), draft.id.clone())
+        .await
+        .expect_err("remote broadcast without opt-in must be refused");
+    assert!(
+        matches!(&err, AppError::InvalidInput(msg) if msg.contains("remote node")),
+        "expected remote-node InvalidInput, got {err:?}"
+    );
+    m.assert_async().await;
+
+    let row = draft_row(&app, &draft.id);
+    assert_eq!(row.status, "signed");
+    assert!(row.signed_tx_hex.is_some());
+    assert!(row.txid.is_none());
 }
 
 // --- sync_wallet_state against a mock node ---------------------------------

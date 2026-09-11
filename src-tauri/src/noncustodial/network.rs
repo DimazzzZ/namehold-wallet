@@ -73,6 +73,36 @@ impl Network {
     }
 }
 
+/// True when two network names refer to the same Handshake network, tolerating
+/// the `"main"` ↔ `"mainnet"` spelling difference between hsd
+/// (`getblockchaininfo.chain`) and the wallet profile schema.
+///
+/// Deliberately string-based rather than `Network::from_str_opt(a) ==
+/// Network::from_str_opt(b)`: two *different* unknown strings must not compare
+/// equal, and `""` must never match a known network.
+pub fn network_name_matches(profile_network: &str, node_chain: &str) -> bool {
+    fn canonical(s: &str) -> &str {
+        match s {
+            "mainnet" => "main",
+            other => other,
+        }
+    }
+    canonical(profile_network) == canonical(node_chain)
+}
+
+/// Compare the wallet profile's network (`expected`) with the chain a node
+/// reports (`reported`). `Some(bool)` only when both sides are known; `None`
+/// when either is missing — no active profile yet (onboarding), or a node that
+/// doesn't report `chain`. Callers treat `None` as "cannot validate", never as
+/// a mismatch. This is the single "None skips" rule shared by the read gate
+/// (`commands::read`) and the connection probe (`commands::node`).
+pub fn network_check(expected: Option<&str>, reported: Option<&str>) -> Option<bool> {
+    match (expected, reported) {
+        (Some(want), Some(got)) => Some(network_name_matches(want, got)),
+        _ => None,
+    }
+}
+
 /// Nominal blocks per day at Handshake's ~10-minute block target (hsd
 /// `networks.js` `pow.targetSpacing` = 600s). Used to convert block distances
 /// into human days; exact only in expectation.

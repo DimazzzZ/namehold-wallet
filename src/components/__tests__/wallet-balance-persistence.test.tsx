@@ -84,11 +84,21 @@ function makeBackend(initial: { A: number; B: number }) {
         });
       }
       case "read_balance":
-        return Promise.resolve({ confirmed: 0, unconfirmed: 0, locked_confirmed: 0, locked_unconfirmed: 0 });
+        return Promise.resolve({
+          confirmed: 0,
+          unconfirmed: 0,
+          locked_confirmed: 0,
+          locked_unconfirmed: 0,
+        });
       case "get_signer_session":
         return Promise.resolve({ walletProfileId: null, unlocked: false, unlockedUntilEpochMs: 0 });
       case "get_write_capability":
-        return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: null });
+        return Promise.resolve({
+          signerUnlocked: false,
+          broadcasterAvailable: false,
+          canWrite: false,
+          reason: null,
+        });
       case "list_tx_drafts":
         return Promise.resolve([]);
       case "read_names":
@@ -125,8 +135,12 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
 
     // get_wallet_balances was queried per-profile (A then B).
     const balCalls = invokeMock.mock.calls.filter((c) => c[0] === "get_wallet_balances");
-    expect(balCalls.some((c) => (c[1] as { walletProfileId?: string })?.walletProfileId === "A")).toBe(true);
-    expect(balCalls.some((c) => (c[1] as { walletProfileId?: string })?.walletProfileId === "B")).toBe(true);
+    expect(
+      balCalls.some((c) => (c[1] as { walletProfileId?: string })?.walletProfileId === "A"),
+    ).toBe(true);
+    expect(
+      balCalls.some((c) => (c[1] as { walletProfileId?: string })?.walletProfileId === "B"),
+    ).toBe(true);
   });
 
   it("does not auto-refetch — the balance changes only after an explicit invalidate", async () => {
@@ -138,7 +152,9 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
     expect(await screen.findByText("100.000000")).toBeInTheDocument();
     const callsForA = () =>
       invokeMock.mock.calls.filter(
-        (c) => c[0] === "get_wallet_balances" && (c[1] as { walletProfileId?: string })?.walletProfileId === "A",
+        (c) =>
+          c[0] === "get_wallet_balances" &&
+          (c[1] as { walletProfileId?: string })?.walletProfileId === "A",
       ).length;
     const initialCalls = callsForA();
 
@@ -220,11 +236,25 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
           });
         }
         case "get_wallet_balances":
-          return Promise.resolve({ liquidDoos: 0, nameControlDoos: 0, nameLockupDoos: 0, totalDoos: 0 });
+          return Promise.resolve({
+            liquidDoos: 0,
+            nameControlDoos: 0,
+            nameLockupDoos: 0,
+            totalDoos: 0,
+          });
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: null, unlocked: false, unlockedUntilEpochMs: 0 });
+          return Promise.resolve({
+            walletProfileId: null,
+            unlocked: false,
+            unlockedUntilEpochMs: 0,
+          });
         case "get_write_capability":
-          return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: null });
+          return Promise.resolve({
+            signerUnlocked: false,
+            broadcasterAvailable: false,
+            canWrite: false,
+            reason: null,
+          });
         case "list_tx_drafts":
           return Promise.resolve([]);
         case "read_names":
@@ -248,7 +278,9 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
     const rbCalls = invokeMock.mock.calls.filter((c) => c[0] === "read_balance");
     expect(rbCalls.length).toBeGreaterThan(0);
     expect(
-      rbCalls.every((c) => typeof (c[1] as { walletProfileId?: unknown })?.walletProfileId === "string"),
+      rbCalls.every(
+        (c) => typeof (c[1] as { walletProfileId?: unknown })?.walletProfileId === "string",
+      ),
     ).toBe(true);
   });
 });

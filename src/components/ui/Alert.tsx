@@ -20,11 +20,7 @@ export function Alert({ tone = "info", title, className, children }: AlertProps)
   return (
     <div
       role={tone === "error" ? "alert" : "status"}
-      className={cn(
-        "rounded-md border px-3 py-2 text-sm",
-        TONE_STYLES[tone],
-        className,
-      )}
+      className={cn("rounded-md border px-3 py-2 text-sm", TONE_STYLES[tone], className)}
     >
       {title && <div className="font-semibold mb-0.5">{title}</div>}
       {children && <div className="text-xs leading-relaxed">{children}</div>}

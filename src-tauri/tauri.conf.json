@@ -25,13 +25,8 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
-    "externalBin": [
-      "binaries/namehold-syncd"
-    ],
-    "icon": [
-      "icons/icon.png",
-      "icons/icon.ico"
-    ]
+    "externalBin": ["binaries/namehold-syncd"],
+    "icon": ["icons/icon.png", "icons/icon.ico"]
   },
   "plugins": {
     "updater": {

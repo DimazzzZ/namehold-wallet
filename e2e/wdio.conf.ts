@@ -62,7 +62,6 @@ export const config: WebdriverIO.Config = {
     } as WebdriverIO.Capabilities,
   ],
 
-
   // Hook: log test start/end.
   beforeTest: (test) => {
     console.log(`\n[TEST] ${test.title}`);

@@ -36,9 +36,7 @@ export function Layout() {
             <span
               className={cn(
                 "text-[10px] px-1.5 py-0.5 rounded",
-                canWrite
-                  ? "bg-green-100 text-green-700"
-                  : "bg-gray-100 text-gray-600",
+                canWrite ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600",
               )}
             >
               {canWrite ? "CAN SEND" : "READ-ONLY"}
@@ -55,8 +53,7 @@ export function Layout() {
               className={({ isActive }) =>
                 cn(
                   "block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100",
-                  isActive &&
-                    "bg-blue-50 text-blue-700 font-medium border-r-2 border-blue-700",
+                  isActive && "bg-blue-50 text-blue-700 font-medium border-r-2 border-blue-700",
                 )
               }
             >
@@ -99,16 +96,16 @@ export function Layout() {
             className="px-6 py-1.5 text-xs text-blue-900 bg-blue-100 border-b border-blue-200"
             data-testid="web-qa-banner"
           >
-            🌐 <strong>Browser QA mode</strong> — mock backend active. No real wallet or
-            node connected. UI and navigation work; data is simulated.
+            🌐 <strong>Browser QA mode</strong> — mock backend active. No real wallet or node
+            connected. UI and navigation work; data is simulated.
           </div>
         )}
         <div
           className="px-6 py-1.5 text-xs text-amber-900 bg-amber-100 border-b border-amber-200"
           data-testid="beta-banner"
         >
-          ⚠️ <strong>Beta software</strong> — it can make mistakes. Always test with a
-          single name or a small amount before transferring or sending everything.
+          ⚠️ <strong>Beta software</strong> — it can make mistakes. Always test with a single name
+          or a small amount before transferring or sending everything.
         </div>
         <header className="flex items-center justify-end gap-4 px-6 py-2 border-b border-gray-200 bg-white">
           <StatusStrip />

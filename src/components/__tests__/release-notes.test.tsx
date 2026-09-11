@@ -59,9 +59,7 @@ describe("ReleaseNotes", () => {
 
   it("renders links and intercepts clicks to call openExternal", () => {
     render(
-      <ReleaseNotes
-        notes='Check out [this PR](https://github.com/example/repo/pull/123) for details.'
-      />,
+      <ReleaseNotes notes="Check out [this PR](https://github.com/example/repo/pull/123) for details." />,
     );
     const link = screen.getByRole("link", { name: /this PR/ });
     expect(link).toHaveAttribute("href", "https://github.com/example/repo/pull/123");
@@ -81,7 +79,7 @@ describe("ReleaseNotes", () => {
     render(
       <ReleaseNotes
         version="0.6.0"
-        notes='See [docs/RECOVER_LOST_BIDS.md](docs/RECOVER_LOST_BIDS.md) for the full guide.'
+        notes="See [docs/RECOVER_LOST_BIDS.md](docs/RECOVER_LOST_BIDS.md) for the full guide."
       />,
     );
     const link = screen.getByRole("link", { name: /RECOVER_LOST_BIDS/ });
@@ -96,7 +94,7 @@ describe("ReleaseNotes", () => {
   });
 
   it("falls back to blob/HEAD when `version` is omitted", () => {
-    render(<ReleaseNotes notes='See [docs/x.md](docs/x.md).' />);
+    render(<ReleaseNotes notes="See [docs/x.md](docs/x.md)." />);
     const link = screen.getByRole("link", { name: /docs\/x\.md/ });
     expect(link).toHaveAttribute(
       "href",

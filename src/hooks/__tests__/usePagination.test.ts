@@ -25,10 +25,9 @@ describe("usePagination", () => {
   });
 
   it("clamps page to totalPages when items shrink", () => {
-    const { result, rerender } = renderHook(
-      ({ data }) => usePagination(data, 10),
-      { initialProps: { data: items } },
-    );
+    const { result, rerender } = renderHook(({ data }) => usePagination(data, 10), {
+      initialProps: { data: items },
+    });
     act(() => result.current.setPage(6)); // last page
     expect(result.current.page).toBe(6);
 

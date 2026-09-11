@@ -60,7 +60,11 @@ function route(canWrite: boolean, reason: string | null) {
       case "list_wallet_profiles":
         return Promise.resolve([profile]);
       case "get_signer_session":
-        return Promise.resolve({ walletProfileId: "p1", unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+        return Promise.resolve({
+          walletProfileId: "p1",
+          unlocked: true,
+          unlockedUntilEpochMs: Date.now() + 60000,
+        });
       case "get_write_capability":
         return Promise.resolve({
           signerUnlocked: true,
@@ -102,7 +106,10 @@ beforeEach(() => invokeMock.mockReset());
 describe("NameActionsModal — node-readiness gating", () => {
   it("blocks every name action with the reason when the node can't write", async () => {
     invokeMock.mockImplementation(
-      route(false, "Your local node is still syncing (40%). On-chain sends and transfers need a fully-synced node."),
+      route(
+        false,
+        "Your local node is still syncing (40%). On-chain sends and transfers need a fully-synced node.",
+      ),
     );
     render(<NameActionsModal name="examplename" open onClose={() => {}} />, { wrapper: wrapper() });
 

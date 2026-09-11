@@ -1,3 +1,4 @@
+mod active_profile_tests;
 mod assets_cmd_tests;
 mod auction_capabilities_tests;
 mod batches_cmd_tests;

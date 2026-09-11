@@ -327,6 +327,10 @@ testable logic is confirmed 100% covered by direct tests, or (b) the missed
 lines are structurally unreachable. No annotation hides genuinely-reachable
 logic from measurement.
 
+Coding conventions, layering rules and the pre-commit gates are in
+[docs/CODING_STANDARDS.md](./docs/CODING_STANDARDS.md); feature specs live in
+[docs/specs/](./docs/specs/).
+
 ## End-to-end tests
 
 The IO-shell paths excluded from the unit-coverage number above (app lifecycle

@@ -57,8 +57,8 @@ export function NameSignMessage({
     <section className="space-y-2" data-testid="name-sign-message">
       <div className="font-medium text-gray-700">Sign message for .{decoded}</div>
       <p className="text-xs text-gray-500">
-        Paste the exact text a third party (e.g. Namebase) gave you to verify
-        ownership of this name, then Sign with your wallet key.
+        Paste the exact text a third party (e.g. Namebase) gave you to verify ownership of this
+        name, then Sign with your wallet key.
       </p>
       <textarea
         className="w-full border border-gray-300 rounded px-2 py-1 font-mono text-xs h-16"

@@ -1,6 +1,6 @@
 //! Tests for `crate::noncustodial::network` — pure Network functions.
 
-use crate::noncustodial::network::{NameParams, Network};
+use crate::noncustodial::network::{network_check, network_name_matches, NameParams, Network};
 
 // ── address_hrp ──────────────────────────────────────────────────────
 
@@ -154,4 +154,65 @@ fn test_name_params_derives() {
     assert_eq!(p, p2); // PartialEq
     let _ = format!("{:?}", p); // Debug
     let _clone: NameParams = p; // Clone (Copy implies Clone; avoid clippy::clone_on_copy)
+}
+
+// ── network_name_matches / network_check ─────────────────────────────
+
+#[test]
+fn network_name_matches_canonicalizes_mainnet_both_sides() {
+    // Exact matches (each canonical form pairs with itself).
+    assert!(network_name_matches("main", "main"));
+    assert!(network_name_matches("testnet", "testnet"));
+    assert!(network_name_matches("regtest", "regtest"));
+    assert!(network_name_matches("simnet", "simnet"));
+    // `mainnet` ↔ `main` normalization (the profile-schema vs hsd-chain gap).
+    assert!(network_name_matches("mainnet", "main"));
+    assert!(network_name_matches("main", "mainnet"));
+    assert!(network_name_matches("mainnet", "mainnet"));
+    // Non-matching canonical forms — every cross-pair.
+    assert!(!network_name_matches("main", "testnet"));
+    assert!(!network_name_matches("mainnet", "testnet"));
+    assert!(!network_name_matches("testnet", "regtest"));
+    assert!(!network_name_matches("regtest", "simnet"));
+    assert!(!network_name_matches("main", "regtest"));
+    // Unknown strings only match themselves (no canonicalization outside `mainnet`).
+    assert!(network_name_matches("weirdnet", "weirdnet"));
+    assert!(!network_name_matches("weirdnet", "main"));
+    // Two DIFFERENT unknown strings must not compare equal — this is why the
+    // helper is string-based and not `Network::from_str_opt(a) == from_str_opt(b)`.
+    assert!(!network_name_matches("weirdnet", "othernet"));
+    // Empty vs known network is a mismatch (defensive — no accidental match).
+    assert!(!network_name_matches("", "main"));
+}
+
+#[test]
+fn network_name_matches_same_network() {
+    assert!(network_name_matches("main", "main"));
+    assert!(network_name_matches("mainnet", "main"));
+    assert!(network_name_matches("main", "mainnet"));
+    assert!(network_name_matches("mainnet", "mainnet"));
+    assert!(network_name_matches("testnet", "testnet"));
+    assert!(network_name_matches("regtest", "regtest"));
+    assert!(network_name_matches("simnet", "simnet"));
+}
+
+#[test]
+fn network_name_matches_different_network() {
+    assert!(!network_name_matches("mainnet", "regtest"));
+    assert!(!network_name_matches("main", "regtest"));
+    assert!(!network_name_matches("mainnet", "testnet"));
+    assert!(!network_name_matches("testnet", "regtest"));
+    assert!(!network_name_matches("regtest", "main"));
+}
+
+#[test]
+fn network_check_compares_only_when_both_sides_are_known() {
+    // Both known → a real answer.
+    assert_eq!(network_check(Some("main"), Some("main")), Some(true));
+    assert_eq!(network_check(Some("mainnet"), Some("main")), Some(true));
+    assert_eq!(network_check(Some("main"), Some("testnet")), Some(false));
+    // Either side unknown → "cannot validate", never a mismatch.
+    assert_eq!(network_check(None, Some("main")), None);
+    assert_eq!(network_check(Some("main"), None), None);
+    assert_eq!(network_check(None, None), None);
 }

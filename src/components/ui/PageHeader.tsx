@@ -10,13 +10,7 @@ interface PageHeaderProps {
   children?: React.ReactNode;
 }
 
-export function PageHeader({
-  title,
-  subtitle,
-  badges,
-  actions,
-  children,
-}: PageHeaderProps) {
+export function PageHeader({ title, subtitle, badges, actions, children }: PageHeaderProps) {
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between mb-5">
       <div className="min-w-0">

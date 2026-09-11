@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { useUiStore } from "../stores/ui";
-import { useSecureCreateWallet, useSecureImportWallet, useImportLedgerWallet } from "../queries/wallet";
+import {
+  useSecureCreateWallet,
+  useSecureImportWallet,
+  useImportLedgerWallet,
+} from "../queries/wallet";
 import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
 import { mapError } from "../lib/errors";
@@ -132,8 +136,7 @@ export function AddWalletForm({
         >
           <div className="font-medium text-gray-900">Connect a Ledger device</div>
           <div className="text-sm text-gray-500">
-            Import a hardware wallet. Keys stay on the device; every spend is
-            confirmed on-device.
+            Import a hardware wallet. Keys stay on the device; every spend is confirmed on-device.
           </div>
         </button>
 
@@ -156,11 +159,13 @@ export function AddWalletForm({
         <Input label="Wallet Name" value={label} onChange={(e) => setLabel(e.target.value)} />
         {NetworkPicker}
         <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800">
-          You'll enter your recovery phrase and a device passphrase in a separate secure
-          window. Namehold's main screen never sees them.
+          You'll enter your recovery phrase and a device passphrase in a separate secure window.
+          Namehold's main screen never sees them.
         </div>
         <div className="flex gap-2">
-          <Button variant="ghost" onClick={() => setPath("choose")}>Back</Button>
+          <Button variant="ghost" onClick={() => setPath("choose")}>
+            Back
+          </Button>
           <Button onClick={handleImport} disabled={busy}>
             {busy ? "Importing..." : "Import in secure window"}
           </Button>
@@ -175,11 +180,12 @@ export function AddWalletForm({
         <Input label="Wallet Name" value={label} onChange={(e) => setLabel(e.target.value)} />
         {NetworkPicker}
         <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800">
-          You'll paste an account-level xpub in a secure window. Watch-only wallets cannot
-          spend.
+          You'll paste an account-level xpub in a secure window. Watch-only wallets cannot spend.
         </div>
         <div className="flex gap-2">
-          <Button variant="ghost" onClick={() => setPath("choose")}>Back</Button>
+          <Button variant="ghost" onClick={() => setPath("choose")}>
+            Back
+          </Button>
           <Button onClick={handleWatchOnly} disabled={busy}>
             {busy ? "Adding..." : "Add watch-only wallet"}
           </Button>
@@ -194,12 +200,14 @@ export function AddWalletForm({
         <Input label="Wallet Name" value={label} onChange={(e) => setLabel(e.target.value)} />
         {NetworkPicker}
         <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-800">
-          Make sure your Ledger is connected via USB, unlocked, and the Handshake
-          app is open. Confirm the export prompt on the device when it appears —
-          only the account xpub is exported (no keys ever leave the device).
+          Make sure your Ledger is connected via USB, unlocked, and the Handshake app is open.
+          Confirm the export prompt on the device when it appears — only the account xpub is
+          exported (no keys ever leave the device).
         </div>
         <div className="flex gap-2">
-          <Button variant="ghost" onClick={() => setPath("choose")}>Back</Button>
+          <Button variant="ghost" onClick={() => setPath("choose")}>
+            Back
+          </Button>
           <Button onClick={handleLedger} disabled={busy}>
             {busy ? "Connecting to device..." : "Import from Ledger"}
           </Button>
@@ -214,11 +222,13 @@ export function AddWalletForm({
       <Input label="Wallet Name" value={label} onChange={(e) => setLabel(e.target.value)} />
       {NetworkPicker}
       <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-800">
-        A secure window will ask you to set a device passphrase, then show your recovery
-        phrase to back up. Write it down — it's the only way to recover your wallet.
+        A secure window will ask you to set a device passphrase, then show your recovery phrase to
+        back up. Write it down — it's the only way to recover your wallet.
       </div>
       <div className="flex gap-2">
-        <Button variant="ghost" onClick={() => setPath("choose")}>Back</Button>
+        <Button variant="ghost" onClick={() => setPath("choose")}>
+          Back
+        </Button>
         <Button onClick={handleCreate} disabled={busy}>
           {busy ? "Creating..." : "Create in secure window"}
         </Button>

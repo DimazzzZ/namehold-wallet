@@ -205,7 +205,8 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
               {biddableNames.length > 0 && (
                 <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm space-y-1">
                   <div>
-                    <strong>Total commitment:</strong> {biddableNames.length} × {lockupHns || bidHns} HNS lockup
+                    <strong>Total commitment:</strong> {biddableNames.length} ×{" "}
+                    {lockupHns || bidHns} HNS lockup
                   </div>
                   <div className="text-xs text-gray-600">
                     (Lockup is returned as change after reveal; only the fee is spent.)
@@ -227,7 +228,12 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
             <Button
               variant="primary"
               onClick={handleBuildDraft}
-              disabled={biddableNames.length === 0 || !bidFormValid || batchBidMutation.isPending || capsLoading}
+              disabled={
+                biddableNames.length === 0 ||
+                !bidFormValid ||
+                batchBidMutation.isPending ||
+                capsLoading
+              }
               data-testid="batch-bid-build-draft-btn"
             >
               {batchBidMutation.isPending ? "Building…" : "Build Draft"}

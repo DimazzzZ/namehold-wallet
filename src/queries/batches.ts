@@ -20,11 +20,8 @@ export function useBatchWithAssets(id: number) {
 export function useCreateBatch() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: {
-      name: string;
-      description?: string;
-      asset_ids: number[];
-    }) => invoke<number>("create_batch", args as Record<string, unknown>),
+    mutationFn: (args: { name: string; description?: string; asset_ids: number[] }) =>
+      invoke<number>("create_batch", args as Record<string, unknown>),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["batches"] }),
   });
 }
@@ -32,12 +29,8 @@ export function useCreateBatch() {
 export function useUpdateBatch() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: {
-      id: number;
-      name?: string;
-      description?: string;
-      status?: string;
-    }) => invoke("update_batch", args as Record<string, unknown>),
+    mutationFn: (args: { id: number; name?: string; description?: string; status?: string }) =>
+      invoke("update_batch", args as Record<string, unknown>),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["batches"] }),
   });
 }

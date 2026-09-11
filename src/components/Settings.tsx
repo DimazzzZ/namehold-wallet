@@ -13,6 +13,16 @@ import {
 import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
+import { RemoteNodeFields } from "./ui/RemoteNodeFields";
+import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
+import type { ChainSource, NodeMode } from "../types";
+import {
+  CONNECTION_MODE_LABELS,
+  fromConnectionMode,
+  toConnectionMode,
+  type ConnectionMode,
+} from "../lib/connectionMode";
+import { boolToSetting, hasStoredSecret, settingToBool } from "../lib/settingsBool";
 import { useUiStore } from "../stores/ui";
 import { UpdatesSettings } from "./UpdatesSettings";
 import { useAppUpdate } from "../hooks/useAppUpdate";
@@ -57,6 +67,13 @@ export function Settings() {
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const nodeProbe = useNodeConnectionCheck();
+
+  // The persisted pair the Chain source selector reads and writes, resolved
+  // once so the selector and the remote-broadcast toggle below agree on the
+  // mode without re-casting the untyped form at every use.
+  const chainSource = (form.chain_source ?? "local_node") as ChainSource;
+  const nodeMode = (form.node_mode ?? "full") as NodeMode;
 
   useEffect(() => {
     if (settings) {
@@ -71,6 +88,7 @@ export function Settings() {
         explorer_api_url: settings.explorer_api_url,
         explorer_fallback_url: settings.explorer_fallback_url,
         chain_source: settings.chain_source,
+        allow_remote_broadcast: settings.allow_remote_broadcast,
         address_gap_limit: settings.address_gap_limit,
         signer_session_timeout_seconds: settings.signer_session_timeout_seconds,
         deadline_notify_enabled: settings.deadline_notify_enabled,
@@ -170,8 +188,7 @@ export function Settings() {
     // is stored. Saving that empty value would clobber the stored secret.
     // Skip the field on save when it's still empty AND the backend reported a
     // stored value via the `__has_<key>` marker.
-    const hasStoredApiKey =
-      (settings as unknown as Record<string, string>)["__has_node_rpc_api_key"] === "true";
+    const hasStoredApiKey = hasStoredSecret(settings, "node_rpc_api_key");
     if (hasStoredApiKey && (normalized.node_rpc_api_key ?? "") === "") {
       delete normalized.node_rpc_api_key;
     }
@@ -236,9 +253,9 @@ export function Settings() {
             </div>
           ) : (
             <div className="text-xs text-gray-500">
-              Balance and names are read from this explorer when the node is not
-              synced. When the node is connected and fully synced, reads come from
-              the local node cache instead. Takes effect on the next Sync/read.
+              Balance and names are read from this explorer when the node is not synced. When the
+              node is connected and fully synced, reads come from the local node cache instead.
+              Takes effect on the next Sync/read.
             </div>
           )}
           <Input
@@ -254,27 +271,68 @@ export function Settings() {
         </div>
 
         <div className="space-y-2 pt-2 border-t border-gray-100">
-          <Input
-            label="Node RPC URL (sending)"
-            value={form.node_rpc_url ?? ""}
-            onChange={(e) => updateField("node_rpc_url", e.target.value)}
-            placeholder="http://127.0.0.1:12037"
-          />
-          <Input
-            label="Node RPC API key"
-            type="password"
-            value={form.node_rpc_api_key ?? ""}
-            onChange={(e) => updateField("node_rpc_api_key", e.target.value)}
-            placeholder={
-              (settings as unknown as Record<string, string>)["__has_node_rpc_api_key"] === "true"
+          <label className="text-sm font-medium">Chain source</label>
+          <select
+            value={toConnectionMode(chainSource, nodeMode)}
+            onChange={(e) => {
+              const next = fromConnectionMode(e.target.value as ConnectionMode);
+              updateField("chain_source", next.chain_source);
+              updateField("node_mode", next.node_mode);
+            }}
+            className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+            data-testid="chain-source-select"
+          >
+            {(Object.keys(CONNECTION_MODE_LABELS) as ConnectionMode[]).map((mode) => (
+              <option key={mode} value={mode}>
+                {CONNECTION_MODE_LABELS[mode]}
+              </option>
+            ))}
+          </select>
+          <div className="text-xs text-gray-500">
+            Where the wallet sends transactions. Reads come from your node when it is synced,
+            otherwise the explorer. Remote and SPV are a privacy/trust tradeoff, not custody — your
+            keys never leave this device. SPV downloads only block headers and reads balances/names
+            from the explorer; switching to or from SPV needs an hsd restart (use "Re-sync node
+            data" below if it misbehaves).
+          </div>
+          <RemoteNodeFields
+            url={form.node_rpc_url ?? ""}
+            apiKey={form.node_rpc_api_key ?? ""}
+            onUrlChange={(v) => updateField("node_rpc_url", v)}
+            onApiKeyChange={(v) => updateField("node_rpc_api_key", v)}
+            probe={nodeProbe}
+            urlLabel="Node RPC URL (sending)"
+            urlPlaceholder="http://127.0.0.1:12037"
+            apiKeyLabel="Node RPC API key"
+            apiKeyPlaceholder={
+              hasStoredSecret(settings, "node_rpc_api_key")
                 ? "•••••• (stored — leave blank to keep)"
                 : "(optional)"
             }
           />
           <div className="text-xs text-gray-500">
-            Needed only to send or do name actions. Run hsd with{" "}
-            <code>--index-address</code>. See NODE_SETUP.md.
+            Needed only to send or do name actions. Run hsd with <code>--index-address</code>. See
+            NODE_SETUP.md. "Test connection" reuses your stored API key when the URL matches the
+            saved node.
           </div>
+          {chainSource === "remote_node" && (
+            <label className="flex items-center gap-2 text-sm pt-2">
+              <input
+                type="checkbox"
+                checked={settingToBool(form.allow_remote_broadcast)}
+                onChange={(e) =>
+                  updateField("allow_remote_broadcast", boolToSetting(e.target.checked))
+                }
+                data-testid="allow-remote-broadcast-checkbox"
+              />
+              <span>
+                Allow sending via remote node
+                <div className="text-xs text-gray-500 font-normal">
+                  Off by default. Required to broadcast when chain source is Remote node.
+                </div>
+              </span>
+            </label>
+          )}
         </div>
 
         <div className="space-y-2 pt-2 border-t border-gray-100">
@@ -292,9 +350,8 @@ export function Settings() {
             </Button>
           </div>
           <div className="text-xs text-gray-500">
-            Where hsd stores the chain. Point this at e.g.{" "}
-            <code>/Volumes/WD/hsd-data</code> to keep the large chain off your home
-            disk. Empty uses hsd's default (<code>~/.hsd</code>).
+            Where hsd stores the chain. Point this at e.g. <code>/Volumes/WD/hsd-data</code> to keep
+            the large chain off your home disk. Empty uses hsd's default (<code>~/.hsd</code>).
           </div>
 
           <Input
@@ -304,47 +361,22 @@ export function Settings() {
             placeholder="(auto-detect: Homebrew / npm / nvm / PATH)"
           />
           <div className="text-xs text-gray-500">
-            Leave empty to auto-detect. Set this if the app can't find your hsd
-            install (e.g. <code>$(which hsd)</code>). Save settings to apply.
+            Leave empty to auto-detect. Set this if the app can't find your hsd install (e.g.{" "}
+            <code>$(which hsd)</code>). Save settings to apply.
           </div>
-
-          {/* Node mode dropdown: only visible when using a local or remote node.
-              When chain_source is "explorer", the node mode is irrelevant. */}
-          {(form.chain_source ?? "local_node") !== "explorer" && (
-            <div className="space-y-2 pt-2 border-t border-gray-100">
-              <label className="text-sm font-medium">Node mode</label>
-              <select
-                value={form.node_mode ?? "full"}
-                onChange={(e) => updateField("node_mode", e.target.value)}
-                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
-                data-testid="node-mode-select"
-              >
-                <option value="full">Full node (requires ~15GB, indexes all addresses)</option>
-                <option value="spv">Lightweight SPV (faster sync, uses explorer for data)</option>
-              </select>
-              <div className="text-xs text-gray-500">
-                SPV mode downloads only block headers. Faster initial sync, less disk space.
-                Balance and name data come from the explorer. Requires hsd restart to apply.
-                If switching causes issues, use "Re-sync node data" below.
-              </div>
-            </div>
-          )}
 
           <label className="flex items-center gap-2 text-sm pt-2">
             <input
               type="checkbox"
-              checked={form.autostart_hsd === "true"}
-              onChange={(e) =>
-                updateField("autostart_hsd", e.target.checked ? "true" : "false")
-              }
+              checked={settingToBool(form.autostart_hsd)}
+              onChange={(e) => updateField("autostart_hsd", boolToSetting(e.target.checked))}
               data-testid="autostart-hsd-checkbox"
             />
             Autostart HSD when the app launches
           </label>
           <div className="text-xs text-gray-500">
-            Starts hsd against your data dir on launch. If a node is already
-            running, Namehold adopts it instead of starting a duplicate. Change
-            takes effect on the next launch.
+            Starts hsd against your data dir on launch. If a node is already running, Namehold
+            adopts it instead of starting a duplicate. Change takes effect on the next launch.
           </div>
 
           <label className="flex items-center gap-2 text-sm pt-2">
@@ -377,10 +409,9 @@ export function Settings() {
             Sync in background (keep wallet up to date when app is closed)
           </label>
           <div className="text-xs text-gray-500">
-            Runs a lightweight sync process every 60 seconds. When enabled, the
-            local hsd node keeps running after you close the app so the daemon
-            can query it. The next app launch adopts the running node — no
-            duplicate is spawned.
+            Runs a lightweight sync process every 60 seconds. When enabled, the local hsd node keeps
+            running after you close the app so the daemon can query it. The next app launch adopts
+            the running node — no duplicate is spawned.
           </div>
 
           <NodeControl dirty={dirty} hsdPathConfigured={!!settings.hsd_path?.trim()} />
@@ -412,9 +443,9 @@ export function Settings() {
           Close to tray (keep running in background)
         </label>
         <div className="text-xs text-gray-500">
-          When enabled, closing the window hides Namehold to the menu bar
-          instead of quitting. The node and background sync keep running.
-          Click the tray icon to reopen, or use Quit from the tray menu.
+          When enabled, closing the window hides Namehold to the menu bar instead of quitting. The
+          node and background sync keep running. Click the tray icon to reopen, or use Quit from the
+          tray menu.
         </div>
 
         <label className="flex items-center gap-2 text-sm pt-2">
@@ -435,7 +466,10 @@ export function Settings() {
                 // on next load (the OS mechanism is the source of truth for
                 // whether it actually launches, but we need a local record for
                 // the checkbox state).
-                await invoke("update_setting", { key: "launch_at_login", value: enabled ? "1" : "0" });
+                await invoke("update_setting", {
+                  key: "launch_at_login",
+                  value: enabled ? "1" : "0",
+                });
               } catch (err) {
                 updateField("launch_at_login", enabled ? "0" : "1");
                 showToast(`Failed to toggle launch at login: ${err}`, "error");
@@ -448,12 +482,13 @@ export function Settings() {
         <div className="text-xs text-gray-500">
           {import.meta.env.DEV ? (
             <span className="text-amber-600">
-              Unavailable in dev builds — autostart would register the debug
-              binary path, breaking login-launch for the installed app.
+              Unavailable in dev builds — autostart would register the debug binary path, breaking
+              login-launch for the installed app.
             </span>
           ) : (
-            <>Start Namehold automatically when you log in. Pairs well with
-          &quot;Close to tray&quot; for an always-available menu-bar experience.
+            <>
+              Start Namehold automatically when you log in. Pairs well with &quot;Close to
+              tray&quot; for an always-available menu-bar experience.
             </>
           )}
         </div>
@@ -465,10 +500,9 @@ export function Settings() {
       <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
         <h3 className="text-sm font-semibold text-gray-700">Backup</h3>
         <div className="text-xs text-gray-500">
-          Your bid commitments (amount, blind, nonce) for open auctions live
-          only in this wallet&apos;s local database — the blockchain only ever
-          sees the blind. Export a backup and store it alongside your seed
-          phrase, in case this device is lost.
+          Your bid commitments (amount, blind, nonce) for open auctions live only in this
+          wallet&apos;s local database — the blockchain only ever sees the blind. Export a backup
+          and store it alongside your seed phrase, in case this device is lost.
         </div>
         <Button
           size="sm"
@@ -486,9 +520,8 @@ export function Settings() {
       <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
         <h3 className="text-sm font-semibold text-gray-700">Notifications</h3>
         <div className="text-xs text-gray-500">
-          Get an OS notification before a bid&apos;s reveal window closes
-          (miss it and the lockup is forfeit) or a name&apos;s renewal is due.
-          Checked on app start and every ~10 minutes.
+          Get an OS notification before a bid&apos;s reveal window closes (miss it and the lockup is
+          forfeit) or a name&apos;s renewal is due. Checked on app start and every ~10 minutes.
         </div>
         <NotificationSettings form={form} updateField={updateField} />
       </div>
@@ -499,10 +532,9 @@ export function Settings() {
       <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
         <h3 className="text-sm font-semibold text-gray-700">Watchlist notifications</h3>
         <div className="text-xs text-gray-500">
-          Get an OS notification when a name on your watchlist enters bidding,
-          becomes available again, is about to open for bidding, or when its
-          highest bid crosses a threshold. Handled by the background sync
-          daemon, so alerts fire even when the app is closed.
+          Get an OS notification when a name on your watchlist enters bidding, becomes available
+          again, is about to open for bidding, or when its highest bid crosses a threshold. Handled
+          by the background sync daemon, so alerts fire even when the app is closed.
         </div>
         <WatchlistNotificationSettings form={form} updateField={updateField} />
       </div>
@@ -510,9 +542,8 @@ export function Settings() {
       <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
         <h3 className="text-sm font-semibold text-gray-700">Update notifications</h3>
         <div className="text-xs text-gray-500">
-          Get an OS notification when a new version of Namehold is available.
-          Checked every ~4 hours in the background, so you will be alerted even
-          when the app is hidden in the system tray.
+          Get an OS notification when a new version of Namehold is available. Checked every ~4 hours
+          in the background, so you will be alerted even when the app is hidden in the system tray.
         </div>
         <UpdateNotificationSettings form={form} updateField={updateField} />
       </div>
@@ -528,13 +559,11 @@ export function Settings() {
           className="bg-white rounded p-4 border border-gray-200 space-y-3"
           data-testid="debug-notifications-panel"
         >
-          <h3 className="text-sm font-semibold text-gray-700">
-            Debug notifications (dev only)
-          </h3>
+          <h3 className="text-sm font-semibold text-gray-700">Debug notifications (dev only)</h3>
           <div className="text-xs text-gray-500">
-            Fires each real OS notification with a sample payload. Uses the
-            same code paths the deadline scanner and watchlist daemon use, so
-            what you see is what a real user would see.
+            Fires each real OS notification with a sample payload. Uses the same code paths the
+            deadline scanner and watchlist daemon use, so what you see is what a real user would
+            see.
           </div>
           <DebugNotificationsPanel />
         </div>
@@ -560,14 +589,11 @@ export function Settings() {
           className="bg-white rounded p-4 border border-gray-200 space-y-3"
           data-testid="debug-simulate-update-panel"
         >
-          <h3 className="text-sm font-semibold text-gray-700">
-            Simulate updates (dev only)
-          </h3>
+          <h3 className="text-sm font-semibold text-gray-700">Simulate updates (dev only)</h3>
           <div className="text-xs text-gray-500">
-            Shows the "update available" notice in the banner and Updates card
-            using the last GitHub release (or a synthetic version when
-            offline). It does not install automatically — click "Install now"
-            to run a fake download. No real download happens.
+            Shows the "update available" notice in the banner and Updates card using the last GitHub
+            release (or a synthetic version when offline). It does not install automatically — click
+            "Install now" to run a fake download. No real download happens.
           </div>
           <SimulateUpdatePanel />
         </div>
@@ -604,9 +630,8 @@ export function Settings() {
               <div className="text-xs text-red-600 mt-1">{feeRateError}</div>
             ) : (
               <div className="text-xs text-gray-500 mt-1">
-                Applied when a transaction is built without an explicit
-                Advanced &gt; Fee rate override. hsd&rsquo;s{" "}
-                <code>rate</code> convention: 1000 doos/kvB = 1 sat/byte.
+                Applied when a transaction is built without an explicit Advanced &gt; Fee rate
+                override. hsd&rsquo;s <code>rate</code> convention: 1000 doos/kvB = 1 sat/byte.
               </div>
             )}
           </div>
@@ -615,10 +640,7 @@ export function Settings() {
 
       {dirty && (
         <StickyFooter>
-          <Button
-            onClick={handleSave}
-            disabled={saving || !!explorerUrlError || !!feeRateError}
-          >
+          <Button onClick={handleSave} disabled={saving || !!explorerUrlError || !!feeRateError}>
             {saving ? "Saving…" : "Save settings"}
           </Button>
         </StickyFooter>
@@ -635,14 +657,14 @@ function UpdateNotificationSettings({
 }) {
   const [permission, setPermission] = useState<PermissionStatus | null>(null);
   const [requesting, setRequesting] = useState(false);
-  const enabled = form.update_notify_enabled === "true";
+  const enabled = settingToBool(form.update_notify_enabled);
 
   useEffect(() => {
     checkNotificationPermission().then(setPermission);
   }, []);
 
   const onToggle = async (checked: boolean) => {
-    updateField("update_notify_enabled", checked ? "true" : "false");
+    updateField("update_notify_enabled", boolToSetting(checked));
     if (!checked) return;
     setRequesting(true);
     try {
@@ -672,9 +694,8 @@ function UpdateNotificationSettings({
               className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2"
               data-testid="update-notification-permission-denied"
             >
-              OS notifications are blocked for this app. Enable them in your
-              system notification settings — otherwise you won&apos;t get an
-              alert when a new version is available.
+              OS notifications are blocked for this app. Enable them in your system notification
+              settings — otherwise you won&apos;t get an alert when a new version is available.
             </div>
           )}
           {permission === "unsupported" && (
@@ -682,15 +703,12 @@ function UpdateNotificationSettings({
               OS notifications aren&apos;t available outside the desktop app.
             </div>
           )}
-          {requesting && (
-            <div className="text-xs text-gray-500">Requesting permission…</div>
-          )}
+          {requesting && <div className="text-xs text-gray-500">Requesting permission…</div>}
         </>
       )}
     </div>
   );
 }
-
 
 /**
  * Dev-only debug panel: one button per real notification kind. Each button
@@ -701,13 +719,7 @@ function UpdateNotificationSettings({
  * kinds). Any delivery error returned by the OS is surfaced inline —
  * matching how the deadline scanner already reports `delivery_error`.
  */
-type SimKind =
-  | "reveal"
-  | "renewal"
-  | "bidding"
-  | "reopened"
-  | "bidding_soon"
-  | "highbid";
+type SimKind = "reveal" | "renewal" | "bidding" | "reopened" | "bidding_soon" | "highbid";
 
 const SIM_KINDS: Array<{ kind: SimKind; label: string; family: "Deadline" | "Watchlist" }> = [
   { kind: "reveal", label: "Reveal window closing", family: "Deadline" },
@@ -990,18 +1002,19 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
             ) : (
               <>
                 Syncing the chain — {pct}% · block {status?.height ?? "?"}
-                {headers != null && height != null && headers > height
-                  ? ` / ${headers}`
-                  : ""}
-                . Spendable balance and sending become available once it finishes.
+                {headers != null && height != null && headers > height ? ` / ${headers}` : ""}.
+                Spendable balance and sending become available once it finishes.
               </>
             )}
           </div>
         </div>
       )}
-        <div className="text-xs text-gray-500 space-y-0.5">
+      <div className="text-xs text-gray-500 space-y-0.5">
         <div>
-          Read source: <span className="font-medium">{status?.read_source === "local" ? "Local node cache" : "Explorer"}</span>
+          Read source:{" "}
+          <span className="font-medium">
+            {status?.read_source === "local" ? "Local node cache" : "Explorer"}
+          </span>
         </div>
         <div>
           Data dir: <code>{status?.data_dir ?? "…"}</code>
@@ -1067,14 +1080,14 @@ function NotificationSettings({
 }) {
   const [permission, setPermission] = useState<PermissionStatus | null>(null);
   const [requesting, setRequesting] = useState(false);
-  const enabled = form.deadline_notify_enabled === "true";
+  const enabled = settingToBool(form.deadline_notify_enabled);
 
   useEffect(() => {
     checkNotificationPermission().then(setPermission);
   }, []);
 
   const onToggle = async (checked: boolean) => {
-    updateField("deadline_notify_enabled", checked ? "true" : "false");
+    updateField("deadline_notify_enabled", boolToSetting(checked));
     if (!checked) return;
     setRequesting(true);
     try {
@@ -1104,10 +1117,9 @@ function NotificationSettings({
               className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2"
               data-testid="notification-permission-denied"
             >
-              OS notifications are blocked for this app. Enable them in your
-              system notification settings — deadlines will still show
-              in-app, but you won&apos;t get an alert when the app isn&apos;t
-              open.
+              OS notifications are blocked for this app. Enable them in your system notification
+              settings — deadlines will still show in-app, but you won&apos;t get an alert when the
+              app isn&apos;t open.
             </div>
           )}
           {permission === "unsupported" && (
@@ -1115,9 +1127,7 @@ function NotificationSettings({
               OS notifications aren&apos;t available outside the desktop app.
             </div>
           )}
-          {requesting && (
-            <div className="text-xs text-gray-500">Requesting permission…</div>
-          )}
+          {requesting && <div className="text-xs text-gray-500">Requesting permission…</div>}
 
           <div className="grid grid-cols-2 gap-3">
             <Input
@@ -1148,14 +1158,14 @@ function WatchlistNotificationSettings({
 }) {
   const [permission, setPermission] = useState<PermissionStatus | null>(null);
   const [requesting, setRequesting] = useState(false);
-  const enabled = form.watchlist_notify_enabled === "true";
+  const enabled = settingToBool(form.watchlist_notify_enabled);
 
   useEffect(() => {
     checkNotificationPermission().then(setPermission);
   }, []);
 
   const onToggle = async (checked: boolean) => {
-    updateField("watchlist_notify_enabled", checked ? "true" : "false");
+    updateField("watchlist_notify_enabled", boolToSetting(checked));
     if (!checked) return;
     setRequesting(true);
     try {
@@ -1185,9 +1195,8 @@ function WatchlistNotificationSettings({
               className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2"
               data-testid="watchlist-notification-permission-denied"
             >
-              OS notifications are blocked for this app. Enable them in your
-              system notification settings — otherwise watchlist alerts
-              won&apos;t reach you.
+              OS notifications are blocked for this app. Enable them in your system notification
+              settings — otherwise watchlist alerts won&apos;t reach you.
             </div>
           )}
           {permission === "unsupported" && (
@@ -1195,9 +1204,7 @@ function WatchlistNotificationSettings({
               OS notifications aren&apos;t available outside the desktop app.
             </div>
           )}
-          {requesting && (
-            <div className="text-xs text-gray-500">Requesting permission…</div>
-          )}
+          {requesting && <div className="text-xs text-gray-500">Requesting permission…</div>}
 
           <div className="grid grid-cols-2 gap-3">
             <Input

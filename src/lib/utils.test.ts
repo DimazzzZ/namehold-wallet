@@ -111,7 +111,7 @@ describe("formatHnsAmount", () => {
   });
 
   it("formats large decimal with 6 decimal places", () => {
-    expect(formatHnsAmount(120002.400000)).toBe("120,002.400000");
+    expect(formatHnsAmount(120002.4)).toBe("120,002.400000");
   });
 
   it("formats small number with 6 decimal places", () => {
@@ -282,15 +282,13 @@ describe("netSpendDoos", () => {
   it("returns 0 for a covenant name-action (value carried to your own coin)", () => {
     // e.g. a DNS UPDATE: sendTotalDoos is the name's locked value (222 HNS),
     // re-homed to your own new coin — nothing leaves the wallet beyond the fee.
-    expect(
-      netSpendDoos({ sendTotalDoos: 222_000_000, recipientAddress: null }),
-    ).toBe(0);
+    expect(netSpendDoos({ sendTotalDoos: 222_000_000, recipientAddress: null })).toBe(0);
   });
 
   it("returns the full amount for a real transfer to a recipient (send/transfer/finalize)", () => {
-    expect(
-      netSpendDoos({ sendTotalDoos: 1_000_000, recipientAddress: "hs1qexample" }),
-    ).toBe(1_000_000);
+    expect(netSpendDoos({ sendTotalDoos: 1_000_000, recipientAddress: "hs1qexample" })).toBe(
+      1_000_000,
+    );
   });
 });
 

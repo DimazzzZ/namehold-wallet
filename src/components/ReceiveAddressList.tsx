@@ -60,9 +60,7 @@ export function ReceiveAddressList() {
                 className="flex items-center gap-2 px-3 py-2 text-xs"
                 data-testid={`addr-row-${row.index}`}
               >
-                <span className="text-gray-400 w-6 text-right font-mono">
-                  {row.index}
-                </span>
+                <span className="text-gray-400 w-6 text-right font-mono">{row.index}</span>
                 <span className="font-mono text-gray-700 flex-1 truncate" title={row.address}>
                   {truncateMiddle(row.address, 10, 8)}
                 </span>

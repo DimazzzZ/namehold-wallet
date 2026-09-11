@@ -44,6 +44,38 @@ hsd --index-address --index-tx --api-key=<your-key>
 While the node is down you can still view balance/names (explorer); the app shows
 "Start your local node to send" and disables spend actions until it's reachable.
 
+## Remote node (point at someone else's hsd)
+
+Instead of running hsd locally, you can point the wallet at an existing hsd RPC:
+
+- **On first run:** the "How do you want to connect?" step offers "Remote node" as a choice.
+  Enter the RPC URL (e.g., `https://node.example.com:12037`) and optional API key, then
+  click "Test connection" to validate it before committing.
+- **In Settings:** go to Connections → Chain source → select "Remote node", enter the URL
+  and API key, and click "Test connection" to verify.
+- **Stored API key:** the Settings API-key field is write-only (a stored key is never shown
+  back), so "Test connection" reuses your stored key when the URL you probe matches the
+  saved node. A freshly typed URL is probed without the stored key — the secret is never
+  sent to an endpoint you just typed.
+- **Network mismatch:** once a wallet profile exists, "Test connection" compares the node's
+  reported network with your wallet's and flags a mismatch (e.g. a testnet node for a
+  mainnet wallet). The app will not read from a mismatched node. Sending is not
+  network-gated by the app — a transaction built for one chain is rejected by a node on
+  another. During first-run onboarding there is no wallet yet, so the comparison starts
+  applying in Settings.
+- **To send:** enable "Allow sending via remote node" (off by default for safety; shown in
+  the onboarding Remote step and in Settings → Connections). This sets the
+  `allow_remote_broadcast` flag, which gates the broadcast path. Your recovery phrase
+  never leaves this device — remote is a privacy/trust tradeoff, not custody.
+- **Plaintext-key guard:** the app refuses to send an API key over plaintext HTTP to a
+  non-loopback host (e.g., `http://example.com`). Use `https://` for remote nodes or
+  `http://127.0.0.1` for local testing.
+
+Remote nodes are ideal for:
+- Quick setup without syncing 15GB locally.
+- Running the wallet on a low-power device (phone, tablet, old laptop).
+- Trusting a node operator you know (family, friend, business partner).
+
 ## Regtest (for testing the full send/name flows)
 
 See `REGTEST_TESTING.md` — run `hsd --network=regtest --index-address --index-tx

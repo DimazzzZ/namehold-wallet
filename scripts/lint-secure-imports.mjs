@@ -58,7 +58,7 @@ for (const file of collectTsFiles(SECURE_DIR)) {
       if (rel.startsWith("..")) {
         const shortFile = relative(process.cwd(), file);
         console.error(
-          `ERROR: ${shortFile}:${i + 1} imports "${specifier}" which resolves outside src/secure/`
+          `ERROR: ${shortFile}:${i + 1} imports "${specifier}" which resolves outside src/secure/`,
         );
         violations++;
       }
@@ -69,7 +69,7 @@ for (const file of collectTsFiles(SECURE_DIR)) {
 if (violations > 0) {
   console.error(
     `\n${violations} import boundary violation(s) found. ` +
-      `The secure window must not import from the main React app.`
+      `The secure window must not import from the main React app.`,
   );
   process.exit(1);
 } else {

@@ -1,9 +1,6 @@
 import { useState } from "react";
 import { Input } from "./Input";
-import {
-  MIN_FEE_RATE_DOOS_PER_KVB,
-  parseDoosPerKvb,
-} from "../../lib/feeRate";
+import { MIN_FEE_RATE_DOOS_PER_KVB, parseDoosPerKvb } from "../../lib/feeRate";
 
 export interface FeeRateOverrideProps {
   /** Current raw text (kept in the parent so submit paths can read it). */
@@ -58,9 +55,7 @@ export function FeeRateOverride({
           {open ? "\u25BC" : "\u25B6"} {label}
         </span>
         {trimmed && !open ? (
-          <span className="text-gray-500">
-            fee rate: {trimmed} doos/kvB
-          </span>
+          <span className="text-gray-500">fee rate: {trimmed} doos/kvB</span>
         ) : null}
       </button>
       {open ? (

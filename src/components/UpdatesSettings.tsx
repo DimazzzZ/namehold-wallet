@@ -47,62 +47,59 @@ export function UpdatesSettings() {
         </div>
       )}
 
-      {(phase === "available" || phase === "installing" || phase === "installed") &&
-        available && (
-          <div className="rounded border border-blue-200 bg-blue-50 p-3 space-y-2">
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="text-sm font-medium text-blue-900">
-                Version {available.version} is available
-              </div>
-              {available.notes && (
-                <button
-                  type="button"
-                  className="text-xs text-blue-800/70 hover:text-blue-900 underline-offset-2 hover:underline cursor-pointer"
-                  onClick={() => setShowNotes(true)}
-                  data-testid="updates-settings-whats-new"
-                >
-                  What's new?
-                </button>
-              )}
+      {(phase === "available" || phase === "installing" || phase === "installed") && available && (
+        <div className="rounded border border-blue-200 bg-blue-50 p-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="text-sm font-medium text-blue-900">
+              Version {available.version} is available
             </div>
-
-            {phase === "available" && (
-              <Button
-                size="sm"
-                variant="primary"
-                onClick={() => install()}
-                data-testid="install-update"
+            {available.notes && (
+              <button
+                type="button"
+                className="text-xs text-blue-800/70 hover:text-blue-900 underline-offset-2 hover:underline cursor-pointer"
+                onClick={() => setShowNotes(true)}
+                data-testid="updates-settings-whats-new"
               >
-                Install now
-              </Button>
-            )}
-
-            {phase === "installing" && (
-              <div data-testid="update-progress">
-                <div className="h-2 w-full rounded bg-blue-100 overflow-hidden">
-                  <div
-                    className="h-full bg-blue-600 transition-all"
-                    style={{ width: pct != null ? `${pct}%` : "40%" }}
-                  />
-                </div>
-                <div className="mt-1 text-xs text-blue-800">
-                  {pct != null ? `Downloading… ${pct}%` : "Downloading…"}
-                </div>
-              </div>
-            )}
-
-            {phase === "installed" && (
-              <div className="space-y-2" data-testid="update-installed">
-                <div className="text-xs text-green-700">
-                  Update installed. Restart to finish.
-                </div>
-                <Button size="sm" variant="primary" onClick={() => relaunchApp()}>
-                  Restart now
-                </Button>
-              </div>
+                What's new?
+              </button>
             )}
           </div>
-        )}
+
+          {phase === "available" && (
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => install()}
+              data-testid="install-update"
+            >
+              Install now
+            </Button>
+          )}
+
+          {phase === "installing" && (
+            <div data-testid="update-progress">
+              <div className="h-2 w-full rounded bg-blue-100 overflow-hidden">
+                <div
+                  className="h-full bg-blue-600 transition-all"
+                  style={{ width: pct != null ? `${pct}%` : "40%" }}
+                />
+              </div>
+              <div className="mt-1 text-xs text-blue-800">
+                {pct != null ? `Downloading… ${pct}%` : "Downloading…"}
+              </div>
+            </div>
+          )}
+
+          {phase === "installed" && (
+            <div className="space-y-2" data-testid="update-installed">
+              <div className="text-xs text-green-700">Update installed. Restart to finish.</div>
+              <Button size="sm" variant="primary" onClick={() => relaunchApp()}>
+                Restart now
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
 
       {phase === "error" && (
         <div className="space-y-1" data-testid="update-error">

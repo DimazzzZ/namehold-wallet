@@ -1159,3 +1159,148 @@ async fn verify_paid_transfer_propagates_rpc_error() {
         other => panic!("expected Rpc error, got {other:?}"),
     }
 }
+
+// ------- check_node_connection_with_client --------------------------------
+
+use crate::commands::node::check_node_connection_with_client;
+
+// Reuses the shared `info(blocks, progress, headers, chain)` helper above.
+#[tokio::test]
+async fn check_node_connection_reports_reachable_and_synced() {
+    let mock =
+        MockNodeRpc::new().with_blockchain_info(info(100, Some(1.0), Some(100), Some("main")));
+    // No expected network (no wallet profile) → the network check is skipped.
+    let out = check_node_connection_with_client(&mock, None).await;
+    assert!(out.reachable);
+    assert_eq!(out.height, Some(100));
+    assert_eq!(out.headers, Some(100));
+    assert!(out.synced);
+    assert_eq!(out.network.as_deref(), Some("main"));
+    assert_eq!(out.network_matches, None);
+    assert!(out.error.is_none());
+}
+
+#[tokio::test]
+async fn check_node_connection_reports_not_synced_when_behind_headers() {
+    // Progress absent → fall back to `blocks >= headers`; here blocks < headers.
+    let mock = MockNodeRpc::new().with_blockchain_info(info(500, None, Some(1_000), Some("main")));
+    let out = check_node_connection_with_client(&mock, None).await;
+    assert!(out.reachable);
+    assert_eq!(out.height, Some(500));
+    assert_eq!(out.headers, Some(1_000));
+    assert!(
+        !out.synced,
+        "half-synced node must not be reported as synced"
+    );
+    assert!(out.error.is_none());
+}
+
+#[tokio::test]
+async fn check_node_connection_treats_low_progress_as_not_synced() {
+    // Progress present and low — beats a naive `blocks == headers` check.
+    let mock =
+        MockNodeRpc::new().with_blockchain_info(info(1_000, Some(0.08), Some(1_000), Some("main")));
+    let out = check_node_connection_with_client(&mock, None).await;
+    assert!(out.reachable);
+    assert!(!out.synced, "progress=0.08 must not be reported as synced");
+}
+
+#[tokio::test]
+async fn check_node_connection_surfaces_rpc_error() {
+    let mock = MockNodeRpc::new().with_blockchain_info_err("connection refused");
+    let out = check_node_connection_with_client(&mock, None).await;
+    assert!(!out.reachable);
+    assert_eq!(out.height, None);
+    assert!(!out.synced);
+    assert_eq!(out.network_matches, None);
+    assert!(
+        out.error
+            .as_deref()
+            .map(|m| m.contains("connection refused"))
+            .unwrap_or(false),
+        "error message should carry the node's failure reason, got {:?}",
+        out.error
+    );
+}
+
+#[tokio::test]
+async fn check_node_connection_flags_a_cross_network_node() {
+    // A testnet node answering for a mainnet wallet: reachable, but the
+    // mismatch must be flagged so the UI refuses to treat it as usable.
+    let mock =
+        MockNodeRpc::new().with_blockchain_info(info(100, Some(1.0), Some(100), Some("testnet")));
+    let out = check_node_connection_with_client(&mock, Some("main")).await;
+    assert!(out.reachable);
+    assert_eq!(out.network.as_deref(), Some("testnet"));
+    assert_eq!(out.network_matches, Some(false));
+}
+
+#[tokio::test]
+async fn check_node_connection_matches_network_across_spellings() {
+    // Profile networks say "mainnet"; hsd's getblockchaininfo says "main" —
+    // `network_name_matches` normalizes the pair (noncustodial/network.rs).
+    let mock =
+        MockNodeRpc::new().with_blockchain_info(info(100, Some(1.0), Some(100), Some("main")));
+    let out = check_node_connection_with_client(&mock, Some("mainnet")).await;
+    assert_eq!(out.network_matches, Some(true));
+}
+
+#[tokio::test]
+async fn check_node_connection_skips_network_check_when_node_reports_no_chain() {
+    // A node that doesn't report `chain` can't be validated — "unknown" is
+    // not a mismatch, mirroring the read gate's conservative allow.
+    let mock = MockNodeRpc::new().with_blockchain_info(info(100, Some(1.0), Some(100), None));
+    let out = check_node_connection_with_client(&mock, Some("main")).await;
+    assert!(out.reachable);
+    assert_eq!(out.network, None);
+    assert_eq!(out.network_matches, None);
+}
+
+// ------- resolve_probe_api_key ----------------------------------------------
+
+use crate::commands::node::resolve_probe_api_key;
+
+fn probe_settings(saved_url: &str, saved_key: &str) -> std::collections::HashMap<String, String> {
+    let mut s = std::collections::HashMap::new();
+    s.insert("node_rpc_url".to_string(), saved_url.to_string());
+    s.insert("node_rpc_api_key".to_string(), saved_key.to_string());
+    s
+}
+
+#[test]
+fn probe_key_explicit_key_wins_over_stored() {
+    let s = probe_settings("https://node.example.com:12037", "stored");
+    assert_eq!(
+        resolve_probe_api_key("https://node.example.com:12037", Some("typed"), &s),
+        "typed"
+    );
+    // Whitespace-only explicit key counts as "not provided".
+    assert_eq!(
+        resolve_probe_api_key("https://node.example.com:12037", Some("   "), &s),
+        "stored"
+    );
+}
+
+#[test]
+fn probe_key_reuses_stored_key_only_for_the_saved_url() {
+    let s = probe_settings("https://node.example.com:12037", "stored");
+    // Same node (trailing slash tolerated) → stored key.
+    assert_eq!(
+        resolve_probe_api_key("https://node.example.com:12037/", None, &s),
+        "stored"
+    );
+    // A different URL must NOT receive the stored secret.
+    assert_eq!(
+        resolve_probe_api_key("https://evil.example.com:12037", None, &s),
+        ""
+    );
+}
+
+#[test]
+fn probe_key_empty_when_nothing_stored() {
+    let s = std::collections::HashMap::new();
+    assert_eq!(
+        resolve_probe_api_key("http://127.0.0.1:12037", None, &s),
+        ""
+    );
+}

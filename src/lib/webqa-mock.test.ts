@@ -7,11 +7,7 @@
  * reveal sub-lifecycle (broadcasted -> confirmed) that PR2 relies on.
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  mockInvoke,
-  __resetChainForTests,
-  __mineForTests,
-} from "./webqa-mock";
+import { mockInvoke, __resetChainForTests, __mineForTests } from "./webqa-mock";
 
 type Caps = {
   name: string;
@@ -91,10 +87,9 @@ describe("webqa-mock lifecycle engine", () => {
     const draft = mockInvoke<{ id: string }>("build_reveal_draft", {
       name: "baz",
     });
-    const bcast = mockInvoke<{ txid: string; status: string }>(
-      "broadcast_tx_draft",
-      { draftId: draft.id },
-    );
+    const bcast = mockInvoke<{ txid: string; status: string }>("broadcast_tx_draft", {
+      draftId: draft.id,
+    });
     expect(bcast.status).toBe("broadcasted");
     expect(bcast.txid).toMatch(/^revealtxid/);
     c = caps("baz");

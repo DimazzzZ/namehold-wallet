@@ -67,7 +67,10 @@ export function BlockInfoModal({ height, open, onClose, isMainnet }: BlockInfoMo
             {/* Hash */}
             <div className="space-y-1">
               <div className="text-gray-600">Hash</div>
-              <div className="font-mono break-all bg-gray-50 rounded p-1.5" data-testid="block-hash">
+              <div
+                className="font-mono break-all bg-gray-50 rounded p-1.5"
+                data-testid="block-hash"
+              >
                 {block.hash}
               </div>
             </div>
@@ -76,9 +79,7 @@ export function BlockInfoModal({ height, open, onClose, isMainnet }: BlockInfoMo
             <div className="flex justify-between">
               <span className="text-gray-600">Timestamp</span>
               <span data-testid="block-time">
-                {block.time > 0
-                  ? formatDate(new Date(block.time * 1000).toISOString())
-                  : "—"}
+                {block.time > 0 ? formatDate(new Date(block.time * 1000).toISOString()) : "—"}
               </span>
             </div>
 

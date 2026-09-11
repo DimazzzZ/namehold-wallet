@@ -48,18 +48,36 @@ function routeInvoke(cmd: string) {
       return Promise.resolve({
         connected: true,
         has_cookie: true,
-        account: { balance: { hns: 100, btc: 0 }, has2fa: false, withdrawalFeeHns: 1, minimums: { hns: 1 } },
+        account: {
+          balance: { hns: 100, btc: 0 },
+          has2fa: false,
+          withdrawalFeeHns: 1,
+          minimums: { hns: 1 },
+        },
       });
     case "fetch_namebase_domains":
       return Promise.resolve({
         domains: [
-          { name: "exampletld", owner_id: "o1", owned_since: "2024-01-01", auto_renew_active: false, status: "active" },
+          {
+            name: "exampletld",
+            owner_id: "o1",
+            owned_since: "2024-01-01",
+            auto_renew_active: false,
+            status: "active",
+          },
         ],
       });
     case "fetch_namebase_staked":
       return Promise.resolve({
         stakedDomains: [
-          { name: "brewery", owner_id: "o1", owned_since: "2020-08-08T07:17:57.086Z", auto_renew_active: true, status: "locked_for_subdomains", withdrawable: false },
+          {
+            name: "brewery",
+            owner_id: "o1",
+            owned_since: "2020-08-08T07:17:57.086Z",
+            auto_renew_active: true,
+            status: "locked_for_subdomains",
+            withdrawable: false,
+          },
         ],
       });
     case "namebase_transfer_domain":

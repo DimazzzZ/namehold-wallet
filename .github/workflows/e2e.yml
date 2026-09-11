@@ -69,7 +69,7 @@ jobs:
       #     fail with "connection closed" / UND_ERR_SOCKET. dbus-x11 provides a
       #     session bus so the a11y/dbus lookups don't wedge either.
       - name: Install Tauri system dependencies
-        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9  # v1.6.3
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
         with:
           packages: >-
             libwebkit2gtk-4.1-dev

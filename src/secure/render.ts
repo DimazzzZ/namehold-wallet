@@ -108,7 +108,10 @@ export function render(
     };
     wrap.append(el("div", { className: "row end" }, [cancel, ok]));
   } else if (req.mode === "import") {
-    const ta = el("textarea", { placeholder: "Enter your 12 or 24 word recovery phrase", autofocus: true });
+    const ta = el("textarea", {
+      placeholder: "Enter your 12 or 24 word recovery phrase",
+      autofocus: true,
+    });
     wrap.append(ta, err);
     const ok = el("button", { className: "primary", textContent: "Import" });
     const cancel = el("button", { textContent: "Cancel" });

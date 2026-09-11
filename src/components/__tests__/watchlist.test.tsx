@@ -86,9 +86,7 @@ describe("Watchlist", () => {
     invokeMock.mockImplementation(route({ list_watchlist: [] }));
     render(<Watchlist />, { wrapper: wrapper() });
 
-    expect(
-      await screen.findByText(/No names on your watchlist yet/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/No names on your watchlist yet/)).toBeInTheDocument();
   });
 
   it("renders table with watched names", async () => {

@@ -11,6 +11,31 @@ export type MigrationStatus =
 /** Node operating mode — determines sync behavior and data sources. */
 export type NodeMode = "full" | "spv";
 
+/**
+ * Persisted `chain_source` setting. SPV is NOT a value here: the backend
+ * derives `ChainSource::SpvNode` from `chain_source` + `node_mode` — see
+ * `src/lib/connectionMode.ts` for the UI-facing mode that folds both together.
+ */
+export type ChainSource = "local_node" | "remote_node" | "explorer";
+
+/** Result of a connectivity check against a candidate remote node RPC. */
+export interface NodeConnectionCheck {
+  reachable: boolean;
+  height: number | null;
+  headers: number | null;
+  synced: boolean;
+  network: string | null;
+  /**
+   * `false` when the node reports a chain that doesn't match the active
+   * wallet's network — the read gate refuses such a node (sends are not
+   * network-gated by the app; the node itself rejects a cross-chain tx).
+   * `null` when there is nothing to compare (no wallet profile yet, or the
+   * node didn't report its chain).
+   */
+  networkMatches: boolean | null;
+  error: string | null;
+}
+
 export interface Asset {
   id: number;
   tld: string;
@@ -30,12 +55,7 @@ export interface Asset {
   updated_at: string;
 }
 
-export type BatchStatus =
-  | "planned"
-  | "in_progress"
-  | "completed"
-  | "paused"
-  | "cancelled";
+export type BatchStatus = "planned" | "in_progress" | "completed" | "paused" | "cancelled";
 
 export interface Batch {
   id: number;
@@ -205,9 +225,7 @@ export interface TxInfoError {
 }
 
 /** Narrows a `read_tx_info` result to the error shape. */
-export function isTxInfoError(
-  v: TxInfo | TxInfoError | null | undefined,
-): v is TxInfoError {
+export function isTxInfoError(v: TxInfo | TxInfoError | null | undefined): v is TxInfoError {
   return v != null && typeof v === "object" && "error" in v;
 }
 
@@ -328,9 +346,15 @@ export interface Settings {
   explorer_fallback_url: string;
   /**
    * "local_node" | "remote_node" | "explorer" — which data source to use.
-   * Determines whether node_mode dropdown is visible.
+   * Edited together with node_mode via the Chain source selector (see connectionMode.ts).
    */
-  chain_source: string;
+  chain_source: ChainSource;
+  /**
+   * "true" | "false" — allow sending via a remote node. Only relevant when
+   * chain_source is "remote_node". Default "false". Enforced by the backend in
+   * `broadcast_tx_draft`, not just by the UI write-capability gate.
+   */
+  allow_remote_broadcast: "true" | "false";
   /**
    * "1" | "0" — closing the main window hides it to the system tray (menu bar
    * on macOS) instead of quitting the app. Default "1" (on). Turn off to get
@@ -376,10 +400,7 @@ export interface Settings {
 
 export type WalletNetwork = "mainnet" | "testnet" | "regtest";
 export type WalletProfileKind =
-  | "mnemonic_hot"
-  | "xpriv_hot"
-  | "watch_only_xpub"
-  | "ledger_hardware";
+  "mnemonic_hot" | "xpriv_hot" | "watch_only_xpub" | "ledger_hardware";
 
 export interface WalletProfileSummary {
   id: string;
@@ -436,13 +457,7 @@ export interface TxDraftSummary {
   walletProfileId: string;
   action: string;
   status:
-    | "draft"
-    | "signed"
-    | "broadcast_pending"
-    | "broadcasted"
-    | "confirmed"
-    | "dropped"
-    | "failed";
+    "draft" | "signed" | "broadcast_pending" | "broadcasted" | "confirmed" | "dropped" | "failed";
   summary: TxSummary | null;
   errorMessage: string | null;
   txid: string | null;
@@ -504,12 +519,7 @@ export interface WalletReadModel {
 // ---------------------------------------------------------------------------
 
 export type AppRouteKey =
-  | "migration"
-  | "wallet"
-  | "auctions"
-  | "activity"
-  | "settings"
-  | "watchlist";
+  "migration" | "wallet" | "auctions" | "activity" | "settings" | "watchlist";
 
 export type MigrationSectionKey = "namebase" | "sync";
 

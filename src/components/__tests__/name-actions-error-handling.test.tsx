@@ -68,9 +68,18 @@ function route(overrides: Record<string, () => Promise<unknown>> = {}) {
       case "list_wallet_profiles":
         return Promise.resolve([profile]);
       case "get_signer_session":
-        return Promise.resolve({ walletProfileId: "p1", unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+        return Promise.resolve({
+          walletProfileId: "p1",
+          unlocked: true,
+          unlockedUntilEpochMs: Date.now() + 60000,
+        });
       case "get_write_capability":
-        return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+        return Promise.resolve({
+          signerUnlocked: true,
+          broadcasterAvailable: true,
+          canWrite: true,
+          reason: null,
+        });
       case "read_name_info":
         return Promise.resolve({
           name: "bidname",

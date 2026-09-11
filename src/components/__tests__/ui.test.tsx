@@ -160,7 +160,7 @@ describe("Dialog", () => {
     render(
       <Dialog open={true} onClose={() => {}} title="Test Dialog">
         <p>Content</p>
-      </Dialog>
+      </Dialog>,
     );
     expect(screen.getByText("Test Dialog")).toBeTruthy();
     expect(screen.getByText("Content")).toBeTruthy();
@@ -170,7 +170,7 @@ describe("Dialog", () => {
     render(
       <Dialog open={false} onClose={() => {}} title="Test Dialog">
         <p>Content</p>
-      </Dialog>
+      </Dialog>,
     );
     expect(screen.queryByText("Test Dialog")).toBeNull();
   });

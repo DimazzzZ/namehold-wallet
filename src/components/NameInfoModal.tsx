@@ -97,8 +97,7 @@ export function NameInfoModal({ name, open, onClose }: NameInfoModalProps) {
           `.${name}`
         ) : (
           <>
-            .{decodedName}{" "}
-            <span className="text-xs font-normal text-gray-400">(.{name})</span>
+            .{decodedName} <span className="text-xs font-normal text-gray-400">(.{name})</span>
           </>
         )
       }
@@ -138,12 +137,10 @@ export function NameInfoModal({ name, open, onClose }: NameInfoModalProps) {
             {/* State + flags */}
             <div className="flex items-center gap-2 flex-wrap">
               {badge && <Badge variant={badge.variant}>{badge.label}</Badge>}
-              {nameInfo.registered && (
-                <Badge variant="success">Registered</Badge>
-              )}
+              {nameInfo.registered && <Badge variant="success">Registered</Badge>}
               {nameInfo.expired &&
                 !["OPENING", "BIDDING", "REVEAL"].includes(
-                  (nameInfo.state ?? "").toUpperCase()
+                  (nameInfo.state ?? "").toUpperCase(),
                 ) && <Badge variant="error">Expired</Badge>}
             </div>
 
@@ -192,27 +189,28 @@ export function NameInfoModal({ name, open, onClose }: NameInfoModalProps) {
             )}
 
             {/* Auction values (CLOSED) */}
-            {nameInfo.state === "CLOSED" && (nameInfo.value !== null || nameInfo.highest !== null) && (
-              <div className="text-xs space-y-1 border-t border-gray-200 pt-2">
-                {nameInfo.value !== null && (
-                  <div className="flex justify-between">
-                    <span
-                      className="text-gray-600 cursor-help"
-                      title="Handshake uses a Vickrey second-price auction: the winner pays the second-highest bid, not their own bid."
-                    >
-                      Paid price (2nd-price):
-                    </span>
-                    <span className="font-mono">{formatHns(nameInfo.value)}</span>
-                  </div>
-                )}
-                {nameInfo.highest !== null && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Top bid:</span>
-                    <span className="font-mono">{formatHns(nameInfo.highest)}</span>
-                  </div>
-                )}
-              </div>
-            )}
+            {nameInfo.state === "CLOSED" &&
+              (nameInfo.value !== null || nameInfo.highest !== null) && (
+                <div className="text-xs space-y-1 border-t border-gray-200 pt-2">
+                  {nameInfo.value !== null && (
+                    <div className="flex justify-between">
+                      <span
+                        className="text-gray-600 cursor-help"
+                        title="Handshake uses a Vickrey second-price auction: the winner pays the second-highest bid, not their own bid."
+                      >
+                        Paid price (2nd-price):
+                      </span>
+                      <span className="font-mono">{formatHns(nameInfo.value)}</span>
+                    </div>
+                  )}
+                  {nameInfo.highest !== null && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Top bid:</span>
+                      <span className="font-mono">{formatHns(nameInfo.highest)}</span>
+                    </div>
+                  )}
+                </div>
+              )}
 
             {/* DNS records — node-only. */}
             <div className="text-xs space-y-2 border-t border-gray-200 pt-2">
@@ -248,9 +246,7 @@ export function NameInfoModal({ name, open, onClose }: NameInfoModalProps) {
                                 <Badge variant="default">{label}</Badge>
                               </td>
                               <td className="py-1 font-mono break-all">
-                                {value || (
-                                  <span className="text-gray-400">—</span>
-                                )}
+                                {value || <span className="text-gray-400">—</span>}
                               </td>
                             </tr>
                           );
@@ -273,18 +269,13 @@ export function NameInfoModal({ name, open, onClose }: NameInfoModalProps) {
                 </div>
                 <div className="space-y-1 max-h-32 overflow-y-auto">
                   {bids.bids.map((bid: NameBid, i: number) => (
-                    <div
-                      key={i}
-                      className="bg-gray-50 rounded p-1 flex justify-between"
-                    >
+                    <div key={i} className="bg-gray-50 rounded p-1 flex justify-between">
                       <span className="font-mono">
                         {bid.value !== null && bid.value !== undefined
                           ? formatHns(bid.value)
                           : "masked"}
                       </span>
-                      <span className="text-gray-500">
-                        {bid.revealed ? "revealed" : "masked"}
-                      </span>
+                      <span className="text-gray-500">{bid.revealed ? "revealed" : "masked"}</span>
                     </div>
                   ))}
                 </div>

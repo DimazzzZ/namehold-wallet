@@ -6,7 +6,11 @@ import { DataTable } from "../ui/DataTable";
 
 describe("StickyFooter", () => {
   it("renders children", () => {
-    render(<StickyFooter><span>Footer content</span></StickyFooter>);
+    render(
+      <StickyFooter>
+        <span>Footer content</span>
+      </StickyFooter>,
+    );
     expect(screen.getByText("Footer content")).toBeTruthy();
   });
 });

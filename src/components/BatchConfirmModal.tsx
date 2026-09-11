@@ -52,8 +52,8 @@ export function BatchConfirmModal({
         <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm space-y-2">
           <div>
             <span className="text-gray-700">
-              You&apos;re about to <strong>{actionLabel}</strong>{" "}
-              <strong>{names.length}</strong> name
+              You&apos;re about to <strong>{actionLabel}</strong> <strong>{names.length}</strong>{" "}
+              name
               {names.length !== 1 ? "s" : ""}.
             </span>
           </div>

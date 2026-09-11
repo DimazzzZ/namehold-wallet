@@ -87,10 +87,7 @@ export function Watchlist() {
   // Owned-by-active-profile set for the "Owned" badge. Same hook WalletView
   // uses; pinned to the active profile. Zero backend change.
   const { data: ownedList = [] } = useReadNames();
-  const ownedNames = useMemo(
-    () => new Set(ownedList.map((n) => n.name)),
-    [ownedList],
-  );
+  const ownedNames = useMemo(() => new Set(ownedList.map((n) => n.name)), [ownedList]);
 
   const addMutation = useMutation({
     mutationFn: (name: string) => invoke("add_to_watchlist", { name }),
@@ -265,7 +262,7 @@ export function Watchlist() {
           <div className="max-h-96 overflow-auto">
             <table className="w-full text-sm">
               <thead>
-               <tr className="text-left text-gray-500 border-b">
+                <tr className="text-left text-gray-500 border-b">
                   <th className="py-1 pr-4">Name</th>
                   <th className="py-1 pr-4">State</th>
                   <th className="py-1 pr-4">Countdown</th>
@@ -277,7 +274,7 @@ export function Watchlist() {
                 </tr>
               </thead>
               <tbody>
-              {watched.map((w) => {
+                {watched.map((w) => {
                   const state = getState(w.name);
                   const phase = state ? auctionPhase(state) : null;
                   const info = getInfo(w.name);
@@ -298,7 +295,9 @@ export function Watchlist() {
                           .{displayName(w.name)}
                         </button>
                         {ownedNames.has(w.name) && (
-                          <Badge variant="success" className="ml-1">Owned</Badge>
+                          <Badge variant="success" className="ml-1">
+                            Owned
+                          </Badge>
                         )}
                       </td>
                       <td className="py-1 pr-4">
@@ -329,9 +328,7 @@ export function Watchlist() {
                       <td
                         className={`py-1 pr-4 text-xs whitespace-nowrap ${expiryColor(daysUntilExpire)}`}
                       >
-                        {daysUntilExpire != null
-                          ? `${Math.floor(daysUntilExpire)}d`
-                          : "\u2014"}
+                        {daysUntilExpire != null ? `${Math.floor(daysUntilExpire)}d` : "\u2014"}
                       </td>
                       <td className="py-1 pr-4">
                         {editingTags === w.name ? (
@@ -372,7 +369,13 @@ export function Watchlist() {
                         )}
                       </td>
                       <td className="py-1 pr-4 text-xs text-gray-500">
-                        {w.addedAt ? new Date(w.addedAt).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }) : "\u2014"}
+                        {w.addedAt
+                          ? new Date(w.addedAt).toLocaleDateString("en-US", {
+                              year: "numeric",
+                              month: "short",
+                              day: "numeric",
+                            })
+                          : "\u2014"}
                       </td>
                       <td className="py-1 text-right">
                         <Button
@@ -393,11 +396,7 @@ export function Watchlist() {
       )}
 
       {infoName && (
-        <NameInfoModal
-          name={infoName}
-          open={!!infoName}
-          onClose={() => setInfoName(null)}
-        />
+        <NameInfoModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
       )}
     </div>
   );

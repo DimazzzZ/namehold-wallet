@@ -42,18 +42,9 @@ const REVEAL_BLOCKS = 5;
 /** Heuristic hsd-ish minutes per block, only for the *hoursUntil* display. */
 const MINUTES_PER_BLOCK = 10;
 
-type MockPhase =
-  | "AVAILABLE"
-  | "OPENING"
-  | "BIDDING"
-  | "REVEAL"
-  | "CLOSED";
+type MockPhase = "AVAILABLE" | "OPENING" | "BIDDING" | "REVEAL" | "CLOSED";
 
-type RevealDraftStatus =
-  | "none"
-  | "broadcasted"
-  | "confirmed"
-  | "dropped";
+type RevealDraftStatus = "none" | "broadcasted" | "confirmed" | "dropped";
 
 interface MockAuction {
   name: string;
@@ -295,10 +286,7 @@ function buildCapabilities(name: string): Record<string, unknown> {
     canOpen: cap(phase === "AVAILABLE"),
     canBid: cap(phase === "BIDDING" && !a.hasBid),
     canReveal: cap(
-      phase === "REVEAL" &&
-        a.hasBid &&
-        hasBidCoin &&
-        a.revealStatus !== "broadcasted",
+      phase === "REVEAL" && a.hasBid && hasBidCoin && a.revealStatus !== "broadcasted",
     ),
     canRedeem: cap(closed && !won && a.hasBid),
     canRegister: cap(won),
@@ -538,8 +526,7 @@ const handlers: Record<string, Handler> = {
   },
 
   // ── Auction capabilities / positions (lifecycle-engine driven) ────────
-  get_name_action_capabilities: (args) =>
-    buildCapabilities((args?.name as string) ?? "unknown"),
+  get_name_action_capabilities: (args) => buildCapabilities((args?.name as string) ?? "unknown"),
 
   get_names_action_capabilities: (args) => {
     const names = (args?.names as string[]) ?? [];
@@ -1107,9 +1094,7 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): T {
   if (handler) {
     return handler(args) as T;
   }
-  console.warn(
-    `[browser QA] No mock handler for invoke("${cmd}") — returning null.`,
-  );
+  console.warn(`[browser QA] No mock handler for invoke("${cmd}") — returning null.`);
   return null as unknown as T;
 }
 

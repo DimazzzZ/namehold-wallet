@@ -35,12 +35,18 @@ pub enum ChainSource {
     RemoteNode,
     /// A read-only block explorer. Broadcast is disabled in this mode.
     Explorer,
-    /// An SPV (Simplified Payment Verification) node. Can broadcast but
-    /// cannot serve full-chain queries (no --index-address/--index-tx).
+    /// An SPV (headers-only) node. Read-only in Namehold: no
+    /// `--index-address` means no UTXO tracking, so `can_broadcast()` is
+    /// false and reads come from the explorer.
     SpvNode,
 }
 
 impl ChainSource {
+    /// Parse a bare `chain_source` value. Test-only: production code must use
+    /// [`ChainSource::from_settings`], which also consults `node_mode` — this
+    /// single-setting form would classify an SPV node as `LocalNode` and thus
+    /// broadcast-capable.
+    #[cfg(test)]
     pub fn from_setting(value: &str) -> Self {
         match value {
             "remote_node" => ChainSource::RemoteNode,
@@ -50,7 +56,25 @@ impl ChainSource {
         }
     }
 
-    /// Build the chain source considering both chain_source and node_mode settings.
+    /// Build the chain source considering both `chain_source` and `node_mode` settings.
+    ///
+    /// This is the read side of the mapping `fromConnectionMode` in
+    /// `src/lib/connectionMode.ts` writes: the frontend flattens the four UI
+    /// `ConnectionMode`s (`local_full` / `local_spv` / `remote_node` /
+    /// `explorer`) into the persisted `(chain_source, node_mode)` pair, and
+    /// this match reads that pair back as a `ChainSource`. It is not that
+    /// function's inverse — the TS-side inverse is `toConnectionMode`, and
+    /// this one is lossy: both `("local_node", "spv")` and
+    /// `("remote_node", "spv")` collapse to `SpvNode`.
+    ///
+    /// Each of the four `ConnectionMode`s has a matching arm below, but the
+    /// arms are deliberately wider than what the frontend writes:
+    /// `("remote_node", "spv")` is unreachable via `fromConnectionMode` (it
+    /// always pairs `remote_node` with `node_mode: "full"`) and exists only to
+    /// stay read-only if a stale `node_mode: "spv"` survives a mode switch.
+    ///
+    /// Keep the two sides in lockstep — adding a UI mode requires editing
+    /// both, since there is no shared source across the TS/Rust boundary.
     pub fn from_settings(settings: &std::collections::HashMap<String, String>) -> Self {
         let chain_source = settings
             .get("chain_source")
@@ -71,10 +95,7 @@ impl ChainSource {
 
     /// Whether this source can broadcast transactions via node RPC.
     pub fn can_broadcast(self) -> bool {
-        matches!(
-            self,
-            ChainSource::LocalNode | ChainSource::RemoteNode | ChainSource::SpvNode
-        )
+        matches!(self, ChainSource::LocalNode | ChainSource::RemoteNode)
     }
 }
 
@@ -166,6 +187,18 @@ pub fn resolve_node_api_key(settings: &HashMap<String, String>) -> String {
         return String::new();
     }
     read_hsd_conf_api_key(prefix).unwrap_or_default()
+}
+
+/// Whether the user has opted in to broadcasting through a remote node.
+/// Mirrors the `allow_remote_broadcast` setting ("true" / "false", default
+/// off). Only meaningful when the chain source is [`ChainSource::RemoteNode`];
+/// both the UI gate (`get_write_capability`) and the broadcast boundary
+/// (`broadcast_tx_draft`) consult this same rule.
+pub fn remote_broadcast_allowed(settings: &HashMap<String, String>) -> bool {
+    settings
+        .get("allow_remote_broadcast")
+        .map(|s| s.trim() == "true")
+        .unwrap_or(false)
 }
 
 /// Parse `api-key: <value>` (or `api-key <value>`) from `<prefix>/hsd.conf`.
@@ -677,6 +710,47 @@ pub struct BlockchainInfo {
     pub bestblockhash: Option<String>,
 }
 
+impl BlockchainInfo {
+    /// Whether the node has reached the chain tip. See [`chain_synced`] for
+    /// the rule and the meaning of `assume_when_unknown`.
+    pub fn is_synced(&self, assume_when_unknown: bool) -> bool {
+        chain_synced(
+            self.blocks,
+            self.headers,
+            self.verification_progress,
+            assume_when_unknown,
+        )
+    }
+}
+
+/// The one "is this node synced?" rule, shared by the read/write gates, the
+/// node-status probe and the remote-node connection check.
+///
+/// `verificationprogress` is the most reliable signal when present — a node
+/// can report `blocks == headers` while only ~8% verified if it is far behind
+/// the real tip — so it always wins. Without it, fall back to
+/// `blocks >= headers`; a reported header height of 0 means the node has no
+/// sync target yet and is never "synced". When the node reports neither
+/// (older builds, or regtest with a single miner), the answer is
+/// `assume_when_unknown`: callers gating spends on a configured node pass
+/// `true` so regtest keeps working, while a first-contact probe of an unknown
+/// remote node passes `false`.
+pub fn chain_synced(
+    blocks: i64,
+    headers: Option<i64>,
+    verification_progress: Option<f64>,
+    assume_when_unknown: bool,
+) -> bool {
+    match verification_progress {
+        Some(p) => p >= 0.9999,
+        None => match headers {
+            Some(h) if h > 0 => blocks >= h,
+            Some(_) => false,
+            None => assume_when_unknown,
+        },
+    }
+}
+
 /// Minimal typed view of a node coin from `GET /coin/address/:addr`.
 ///
 /// Only the fields the UTXO sync / draft builder depends on are typed; the rest
@@ -752,7 +826,56 @@ mod tests {
         assert!(ChainSource::RemoteNode.can_broadcast());
         assert!(!ChainSource::Explorer.can_broadcast());
         // SPV mode is read-only in Namehold — no UTXO tracking, no sending.
-        assert!(ChainSource::SpvNode.can_broadcast());
+        // The broadcast boundary refuses it too (defense-in-depth), not just
+        // the UI write-capability gate.
+        assert!(!ChainSource::SpvNode.can_broadcast());
+    }
+
+    #[test]
+    fn chain_synced_prefers_progress_then_headers_then_callers_default() {
+        // verificationprogress wins even when blocks == headers.
+        assert!(!chain_synced(1_000, Some(1_000), Some(0.08), true));
+        assert!(chain_synced(1_000, Some(1_000), Some(0.9999), false));
+        // No progress: fall back to the headers rule.
+        assert!(chain_synced(1_000, Some(1_000), None, false));
+        assert!(!chain_synced(500, Some(1_000), None, true));
+        // headers == 0 means "no sync target yet" — never synced.
+        assert!(!chain_synced(0, Some(0), None, true));
+        // Nothing reported at all: the caller decides.
+        assert!(chain_synced(10, None, None, true));
+        assert!(!chain_synced(10, None, None, false));
+    }
+
+    #[test]
+    fn blockchain_info_is_synced_delegates_to_chain_synced() {
+        let info = BlockchainInfo {
+            blocks: 500,
+            headers: Some(1_000),
+            verification_progress: None,
+            chain: Some("main".to_string()),
+            bestblockhash: None,
+        };
+        assert!(!info.is_synced(true));
+        let info = BlockchainInfo {
+            verification_progress: Some(1.0),
+            ..info
+        };
+        assert!(info.is_synced(false));
+    }
+
+    #[test]
+    fn remote_broadcast_allowed_defaults_off_and_requires_literal_true() {
+        let mut s = HashMap::new();
+        assert!(!remote_broadcast_allowed(&s), "missing key must mean off");
+        s.insert("allow_remote_broadcast".to_string(), "false".to_string());
+        assert!(!remote_broadcast_allowed(&s));
+        s.insert("allow_remote_broadcast".to_string(), "1".to_string());
+        assert!(
+            !remote_broadcast_allowed(&s),
+            "only the literal \"true\" opts in"
+        );
+        s.insert("allow_remote_broadcast".to_string(), " true ".to_string());
+        assert!(remote_broadcast_allowed(&s), "whitespace is tolerated");
     }
 
     #[test]

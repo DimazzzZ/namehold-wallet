@@ -6,9 +6,10 @@
 //   is unreachable. Tests install a fixed test DEK (so encryption always
 //   succeeds); forcing this branch would require an OS-level keyring failure
 //   that the test harness can't produce deterministically.
-// * The poisoned-Mutex fallback in `active_profile_network`
+// * The poisoned-Mutex fallback in `commands::active_profile::active_profile_network`
 //   (Err(_) => Network::Main) requires a panicked lock holder — not reachable
 //   through the command surface.
+use crate::commands::active_profile::active_profile_network;
 use crate::db;
 use crate::error::AppError;
 use crate::namebase::client::NamebaseClient;
@@ -401,25 +402,6 @@ pub async fn namebase_transfer_domain(
     db::queries::set_asset_status_by_tld(&db, &name, "namebase_transfer_requested")?;
 
     Ok(())
-}
-
-/// The active profile's network, defaulting to mainnet (Namebase domains are
-/// mainnet HNS) when there is no active profile or it can't be parsed.
-fn active_profile_network(state: &AppState) -> crate::noncustodial::network::Network {
-    use crate::noncustodial::network::Network;
-    let conn = match state.db.lock() {
-        Ok(c) => c,
-        Err(_) => return Network::Main,
-    };
-    let id = db::queries::get_active_profile_id(&conn).unwrap_or_default();
-    if id.is_empty() {
-        return Network::Main;
-    }
-    match db::queries::get_wallet_profile(&conn, &id) {
-        Ok(Some(p)) => crate::noncustodial::derivation::network_from_profile(&p.network)
-            .unwrap_or(Network::Main),
-        _ => Network::Main,
-    }
 }
 
 #[tauri::command]

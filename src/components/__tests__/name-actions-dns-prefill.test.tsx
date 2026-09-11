@@ -73,9 +73,18 @@ function route(overrides: Record<string, (...args: unknown[]) => Promise<unknown
       case "list_wallet_profiles":
         return Promise.resolve([profile]);
       case "get_signer_session":
-        return Promise.resolve({ walletProfileId: "p1", unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
+        return Promise.resolve({
+          walletProfileId: "p1",
+          unlocked: true,
+          unlockedUntilEpochMs: Date.now() + 60000,
+        });
       case "get_write_capability":
-        return Promise.resolve({ signerUnlocked: true, broadcasterAvailable: true, canWrite: true, reason: null });
+        return Promise.resolve({
+          signerUnlocked: true,
+          broadcasterAvailable: true,
+          canWrite: true,
+          reason: null,
+        });
       case "read_name_info":
         return Promise.resolve({
           name: "myname",
@@ -93,7 +102,14 @@ function route(overrides: Record<string, (...args: unknown[]) => Promise<unknown
       case "read_name_records":
         return Promise.resolve(currentResource);
       case "read_name_bids":
-        return Promise.resolve({ name: "myname", state: null, highest: null, value: null, bids: [], myBidCount: 0 });
+        return Promise.resolve({
+          name: "myname",
+          state: null,
+          highest: null,
+          value: null,
+          bids: [],
+          myBidCount: 0,
+        });
       case "build_update_draft":
         return Promise.resolve({ id: "draft-u1" });
       case "sign_tx_draft":
@@ -211,9 +227,11 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
   });
 
   it("shows the empty-records hint when the fresh read returns no records", async () => {
-    invokeMock.mockImplementation(route({
-      read_name_records: () => Promise.resolve({ records: [] }),
-    }));
+    invokeMock.mockImplementation(
+      route({
+        read_name_records: () => Promise.resolve({ records: [] }),
+      }),
+    );
     render(<NameActionsModal name="myname" open onClose={vi.fn()} />, { wrapper: wrapper() });
 
     const hint = await screen.findByTestId("dns-records-hint");
@@ -222,9 +240,11 @@ describe("NameActionsModal — DNS records prefill (Manage DNS)", () => {
   });
 
   it("shows the stale banner and disables UPDATE when the fresh read errors", async () => {
-    invokeMock.mockImplementation(route({
-      read_name_records: () => Promise.reject(new Error("node not synced")),
-    }));
+    invokeMock.mockImplementation(
+      route({
+        read_name_records: () => Promise.reject(new Error("node not synced")),
+      }),
+    );
     render(<NameActionsModal name="myname" open onClose={vi.fn()} />, { wrapper: wrapper() });
 
     // The "can't read current records" banner appears...

@@ -69,9 +69,7 @@ export function PaidSwapClaim({ name }: { name: string }) {
           Received {dollarydoosToHns(offer.priceDoos)} HNS from buyer.
         </div>
         {offer.transferTxid && (
-          <div className="text-xs text-green-600 font-mono truncate">
-            TX: {offer.transferTxid}
-          </div>
+          <div className="text-xs text-green-600 font-mono truncate">TX: {offer.transferTxid}</div>
         )}
       </div>
     );

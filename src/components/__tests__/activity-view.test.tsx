@@ -123,14 +123,14 @@ describe("ActivityView", () => {
     expect(screen.getByText("0.000000")).toBeInTheDocument();
     // Color tone: zero-value BID (self-homed) must NOT be red. Receive
     // (positive net inflow) MUST be green.
-    const zeroSpans = screen
-      .getAllByText("0.000000")
-      .filter((el) => el.tagName === "SPAN");
+    const zeroSpans = screen.getAllByText("0.000000").filter((el) => el.tagName === "SPAN");
     expect(zeroSpans.length).toBeGreaterThan(0);
     expect(zeroSpans.some((el) => el.className.includes("text-gray-700"))).toBe(true);
     expect(zeroSpans.some((el) => el.className.includes("text-red-600"))).toBe(false);
     const receiveSpan = screen
-      .getAllByText((_, el) => el?.tagName === "SPAN" && /^\+100\.000000$/.test(el.textContent ?? ""))
+      .getAllByText(
+        (_, el) => el?.tagName === "SPAN" && /^\+100\.000000$/.test(el.textContent ?? ""),
+      )
       .find((el) => el.className.includes("text-green-600"));
     expect(receiveSpan).toBeTruthy();
   });
@@ -194,11 +194,7 @@ describe("ActivityView", () => {
       routes(new Error("address index not enabled on this hsd node: ... (status 400)")),
     );
     render(<ActivityView />, { wrapper: wrapper() });
-    await waitFor(() =>
-      expect(
-        screen.getByText(/Your node does not have/),
-      ).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/Your node does not have/)).toBeInTheDocument());
   });
 
   it("shows an empty state when there is no activity", async () => {
@@ -212,13 +208,9 @@ describe("ActivityView", () => {
   it("renders dates in long form with time (e.g. 'July 24, 2026 - 12:00:00')", async () => {
     // Unix seconds for 2026-07-24 12:00:00 UTC.
     const unix = Math.floor(Date.UTC(2026, 6, 24, 12) / 1000);
-    invokeMock.mockImplementation(
-      routes([row({ txid: "cc", time: unix, height: 500 })]),
-    );
+    invokeMock.mockImplementation(routes([row({ txid: "cc", time: unix, height: 500 })]));
     render(<ActivityView />, { wrapper: wrapper() });
-    await waitFor(() =>
-      expect(screen.getByText("July 24, 2026 - 12:00:00")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("July 24, 2026 - 12:00:00")).toBeInTheDocument());
     // And the compact "24/07/2026, 12:00:00" locale-string form is absent.
     expect(screen.queryByText(/^\d{1,2}\/\d{1,2}\/\d{4}/)).not.toBeInTheDocument();
   });
@@ -476,9 +468,7 @@ describe("ActivityView — inline draft actions", () => {
     invokeMock.mockImplementation(routeDrafts("broadcasted"));
     render(<ActivityView />, { wrapper: wrapper() });
     // Wait for the table to render (fee cell present).
-    await waitFor(() =>
-      expect(screen.getByText("Pending")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("Pending")).toBeInTheDocument());
     expect(screen.queryByTestId("activity-draft-execute")).not.toBeInTheDocument();
     expect(screen.queryByTestId("activity-draft-discard")).not.toBeInTheDocument();
   });
@@ -503,11 +493,19 @@ describe("ActivityView — inline draft actions", () => {
         case "list_tx_drafts":
           return Promise.resolve(draftPayload("draft"));
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: "p1", unlocked: true, unlockedUntilEpochMs: Date.now() + 3_600_000 });
+          return Promise.resolve({
+            walletProfileId: "p1",
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 3_600_000,
+          });
         case "sign_tx_draft":
           return Promise.resolve({ id: "draft-act-1", status: "signed" });
         case "broadcast_tx_draft":
-          return Promise.resolve({ draftId: "draft-act-1", txid: "abcdef012345", status: "broadcasted" });
+          return Promise.resolve({
+            draftId: "draft-act-1",
+            txid: "abcdef012345",
+            status: "broadcasted",
+          });
         default:
           return Promise.resolve(null);
       }
@@ -534,7 +532,11 @@ describe("ActivityView — inline draft actions", () => {
         case "list_tx_drafts":
           return Promise.resolve(draftPayload("draft"));
         case "get_signer_session":
-          return Promise.resolve({ walletProfileId: "p1", unlocked: true, unlockedUntilEpochMs: Date.now() + 3_600_000 });
+          return Promise.resolve({
+            walletProfileId: "p1",
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 3_600_000,
+          });
         case "delete_tx_draft":
           return Promise.resolve(null);
         default:

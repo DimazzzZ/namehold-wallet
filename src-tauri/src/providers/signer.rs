@@ -149,11 +149,12 @@ impl WriteCapability {
         } else if !broadcaster_available {
             Some(match source {
                 ChainSource::Explorer | ChainSource::SpvNode => {
-                    "The configured chain source cannot broadcast. Switch to Full node mode in Settings to enable sending."
+                    "The configured chain source cannot broadcast. Choose \"Local full node\" or a remote node under Settings → Connections → Chain source."
                         .to_string()
                 }
                 ChainSource::RemoteNode => {
-                    "Remote broadcast is disabled (enable allow_remote_broadcast).".to_string()
+                    "Remote broadcast is disabled. Enable \"Allow sending via remote node\" in Settings → Connections."
+                        .to_string()
                 }
                 ChainSource::LocalNode => unreachable!(),
             })

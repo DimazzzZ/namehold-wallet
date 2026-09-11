@@ -60,8 +60,7 @@ export function buildCommands(
   for (const b of HOTKEY_BINDINGS) {
     if (b.category !== "action" || !b.actionId) continue;
     const scopes = Array.isArray(b.scope) ? b.scope : [b.scope];
-    const onRoute =
-      scopes.includes("*") || scopes.includes(pathname as RouteScope);
+    const onRoute = scopes.includes("*") || scopes.includes(pathname as RouteScope);
     if (!onRoute) continue;
     if (b.requiresWrite && !canWrite) continue;
     const actionId = b.actionId;
@@ -203,9 +202,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
               )}
             </li>
           ))}
-          {filtered.length === 0 && (
-            <li className="px-4 py-2 text-sm text-gray-400">No results</li>
-          )}
+          {filtered.length === 0 && <li className="px-4 py-2 text-sm text-gray-400">No results</li>}
         </ul>
       </div>
     </div>

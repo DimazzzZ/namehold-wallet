@@ -72,10 +72,7 @@ export function NameActionsModal({
   const { data: signer } = useSignerSession();
   const { data: writeCap } = useWriteCapability();
   const { data: info, isLoading, isError, error } = useReadNameInfo(open ? name : null);
-  const { data: caps } = useNameActionCapabilities(
-    open ? name : null,
-    profile?.id ?? null,
-  );
+  const { data: caps } = useNameActionCapabilities(open ? name : null, profile?.id ?? null);
   const exec = useExecuteDraft();
   const recoverBid = useRecoverBidCommitment();
   const bruteForceRecover = useBruteForceRecoverBid();
@@ -122,16 +119,15 @@ export function NameActionsModal({
   // Fine-grained substate label during the reveal build→sign→broadcast.
   const isLedger = profile?.kind === "ledger_hardware";
 
-  const revealSubstate: string | null =
-    exec.unlock.isPending
-      ? "Unlocking…"
-      : exec.sign.isPending
-        ? isLedger
-          ? "Confirm on your Ledger…"
-          : "Signing…"
-        : exec.broadcast.isPending
-          ? "Broadcasting…"
-          : null;
+  const revealSubstate: string | null = exec.unlock.isPending
+    ? "Unlocking…"
+    : exec.sign.isPending
+      ? isLedger
+        ? "Confirm on your Ledger…"
+        : "Signing…"
+      : exec.broadcast.isPending
+        ? "Broadcasting…"
+        : null;
 
   // Ledger wallets don't use the local signer session — the device signs on
   // demand. Treat them as "unlocked" so exec.run() skips the unlock step and
@@ -144,7 +140,11 @@ export function NameActionsModal({
   // feeding the single `BidForm` component both the guided and advanced
   // sections render.
   const bidValidation = validateBidInputs(bidHns, lockupHns);
-  const { formValid: bidFormValid, bidError: bidInputError, lockupError: lockupInputError } = bidValidation;
+  const {
+    formValid: bidFormValid,
+    bidError: bidInputError,
+    lockupError: lockupInputError,
+  } = bidValidation;
   const bidNum = Number(bidHns);
   const lockupNum = Number(lockupHns);
   // What the forfeit warning shows as "X" — the raw lockup input as typed, so
@@ -266,15 +266,15 @@ export function NameActionsModal({
     caps?.taskState === "lostNeedsRedeem" ||
     caps?.taskState === "transferPendingFinalize" ||
     // Owned names have update/transfer/renew/revoke actions
-    (caps?.ownsName === true);
+    caps?.ownsName === true;
 
   // Show the advanced toggle only when there are meaningful extra actions behind it.
-  const showAdvancedToggle = hasRelevantActions && (
+  const showAdvancedToggle =
+    hasRelevantActions &&
     // Auction-phase advanced actions are always meaningful.
-    badge.phase !== "CLOSED" ||
-    // For CLOSED owned names: only show if there are ownership actions the user may want.
-    (caps?.ownsName === true)
-  );
+    (badge.phase !== "CLOSED" ||
+      // For CLOSED owned names: only show if there are ownership actions the user may want.
+      caps?.ownsName === true);
 
   // Use capabilities to determine if an action is disabled and why.
   const actionDisabled = (_actionKey: string, cap?: NameActionCapability): boolean => {
@@ -289,10 +289,7 @@ export function NameActionsModal({
     return null;
   };
 
-  const run = async (
-    label: string,
-    builder: () => Promise<{ id: string }>,
-  ) => {
+  const run = async (label: string, builder: () => Promise<{ id: string }>) => {
     if (!profile) return;
     setBusy(label);
     let draft: { id: string };
@@ -445,12 +442,11 @@ export function NameActionsModal({
           `.${name}`
         ) : (
           <>
-            .{decodedName}{" "}
-            <span className="text-xs font-normal text-gray-400">(.{name})</span>
+            .{decodedName} <span className="text-xs font-normal text-gray-400">(.{name})</span>
           </>
         )
       }
-      >
+    >
       <div className="space-y-4 text-sm">
         {/* Explorer link + watchlist toggle */}
         <div className="flex items-center justify-between gap-2">
@@ -511,7 +507,10 @@ export function NameActionsModal({
 
         {/* Ownership indicator — shown when the wallet controls this name */}
         {isOwned && (
-          <div className="bg-green-50 border border-green-200 rounded p-2 text-xs text-green-800" data-testid="ownership-indicator">
+          <div
+            className="bg-green-50 border border-green-200 rounded p-2 text-xs text-green-800"
+            data-testid="ownership-indicator"
+          >
             <span className="font-semibold">Owned by this wallet</span>
             {caps?.taskState === "ownedNoUrgentAction" && (
               <span> — This name is registered and controlled by your wallet.</span>
@@ -544,8 +543,13 @@ export function NameActionsModal({
             For CLOSED phase, only show when there is an actionable task
             (won/register, lost/redeem, or owned).
             Skip for third-party CLOSED names. */}
-        {!isLoading && !isError && guide && (
-          (badge.phase !== "CLOSED" || caps?.ownsName || caps?.taskState === "wonNeedsRegister" || caps?.taskState === "lostNeedsRedeem") ? (
+        {!isLoading &&
+          !isError &&
+          guide &&
+          (badge.phase !== "CLOSED" ||
+          caps?.ownsName ||
+          caps?.taskState === "wonNeedsRegister" ||
+          caps?.taskState === "lostNeedsRedeem" ? (
             <div className="bg-blue-50 border border-blue-200 rounded p-3">
               <div className="font-medium text-blue-900 mb-2">
                 {summary?.nextActionLabel ?? guide.title}
@@ -608,8 +612,7 @@ export function NameActionsModal({
                 </div>
               </div>
             </div>
-          ) : null
-        )}
+          ) : null)}
 
         <NameBidsPanel name={name} profileId={profile?.id ?? null} phase={badge.phase} />
 
@@ -626,8 +629,7 @@ export function NameActionsModal({
                 ? "Hide advanced actions"
                 : caps?.ownsName
                   ? "Manage actions"
-                  : "Show all actions"
-              }
+                  : "Show all actions"}
             </button>
           </div>
         )}
@@ -639,7 +641,8 @@ export function NameActionsModal({
               <div className="font-medium text-gray-700">Auction</div>
               <div className="flex flex-wrap gap-2">
                 <Button
-                  size="sm" variant="secondary"
+                  size="sm"
+                  variant="secondary"
                   disabled={actionDisabled("OPEN", caps?.canOpen)}
                   title={actionReason(caps?.canOpen) ?? ""}
                   onClick={() => run("OPEN", () => build.open.mutateAsync({ name }))}
@@ -647,7 +650,8 @@ export function NameActionsModal({
                   {busy === "OPEN" ? "…" : "Open"}
                 </Button>
                 <Button
-                  size="sm" variant="secondary"
+                  size="sm"
+                  variant="secondary"
                   disabled={actionDisabled("REVEAL", caps?.canReveal)}
                   title={actionReason(caps?.canReveal) ?? ""}
                   onClick={() => run("REVEAL", () => build.reveal.mutateAsync({ name }))}
@@ -655,7 +659,8 @@ export function NameActionsModal({
                   {busy === "REVEAL" ? "…" : "Reveal"}
                 </Button>
                 <Button
-                  size="sm" variant="secondary"
+                  size="sm"
+                  variant="secondary"
                   disabled={actionDisabled("REDEEM", caps?.canRedeem)}
                   title={actionReason(caps?.canRedeem) ?? ""}
                   onClick={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}
@@ -711,10 +716,9 @@ export function NameActionsModal({
                     data-testid="dns-records-stale-banner"
                   >
                     <span>
-                      Can&apos;t read this name&apos;s current on-chain records. The
-                      Update button is disabled to avoid overwriting your records from an
-                      incomplete view — make sure your node is running and fully synced,
-                      then retry.
+                      Can&apos;t read this name&apos;s current on-chain records. The Update button
+                      is disabled to avoid overwriting your records from an incomplete view — make
+                      sure your node is running and fully synced, then retry.
                     </span>
                     <button
                       type="button"
@@ -755,12 +759,13 @@ export function NameActionsModal({
 
                 <div className="flex gap-2">
                   <Button
-                    size="sm" variant="secondary"
+                    size="sm"
+                    variant="secondary"
                     disabled={actionDisabled("REGISTER", caps?.canRegister) || !recordsFresh}
                     title={
                       !recordsFresh
                         ? "Waiting for a fresh read of the current on-chain records"
-                        : actionReason(caps?.canRegister) ?? ""
+                        : (actionReason(caps?.canRegister) ?? "")
                     }
                     onClick={() => submitRecords("REGISTER")}
                   >
@@ -772,7 +777,7 @@ export function NameActionsModal({
                     title={
                       !recordsFresh
                         ? "Waiting for a fresh read of the current on-chain records"
-                        : actionReason(caps?.canUpdate) ?? ""
+                        : (actionReason(caps?.canUpdate) ?? "")
                     }
                     onClick={() => submitRecords("UPDATE")}
                   >
@@ -791,14 +796,18 @@ export function NameActionsModal({
                 onRecipientChange={setRecipient}
                 actionDisabled={actionDisabled}
                 actionReason={actionReason}
-                onTransfer={() => run("TRANSFER", () => build.transfer.mutateAsync({ name, recipient: recipient.trim() }))}
+                onTransfer={() =>
+                  run("TRANSFER", () =>
+                    build.transfer.mutateAsync({ name, recipient: recipient.trim() }),
+                  )
+                }
                 onFinalize={() => run("FINALIZE", () => build.finalize.mutateAsync({ name }))}
                 onCancelTransfer={() => run("CANCEL", () => build.cancel.mutateAsync({ name }))}
                 onRenew={() => run("RENEW", () => build.renew.mutateAsync({ name }))}
                 onRevoke={() => run("REVOKE", () => build.revoke.mutateAsync({ name }))}
                 onBuyWithPayment={(paymentAddress, paymentValue) =>
                   run("FINALIZE_WITH_PAYMENT", () =>
-                    build.finalizeWithPayment.mutateAsync({ name, paymentAddress, paymentValue })
+                    build.finalizeWithPayment.mutateAsync({ name, paymentAddress, paymentValue }),
                   )
                 }
                 onSellWithPayment={(buyerAddress, priceValue) =>
@@ -827,7 +836,9 @@ export function NameActionsModal({
         )}
 
         <div className="flex justify-end">
-          <Button variant="ghost" onClick={onClose} disabled={!!busy}>Close</Button>
+          <Button variant="ghost" onClick={onClose} disabled={!!busy}>
+            Close
+          </Button>
         </div>
       </div>
     </Dialog>

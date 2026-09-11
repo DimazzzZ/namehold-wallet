@@ -59,9 +59,7 @@ import {
 } from "../lib/utils";
 import { mergeActivity } from "../lib/activity";
 import { mapError } from "../lib/errors";
-import {
-  explorerAddressUrl,
-} from "../lib/openExternal";
+import { explorerAddressUrl } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
 import { ReceiveAddressList } from "./ReceiveAddressList";
@@ -241,9 +239,7 @@ export function WalletView() {
         filterInputRef.current?.focus();
         break;
       case "wallet:list:next":
-        setSelectedNameIndex((i) =>
-          Math.min(i + 1, filteredNames.length - 1),
-        );
+        setSelectedNameIndex((i) => Math.min(i + 1, filteredNames.length - 1));
         break;
       case "wallet:list:prev":
         setSelectedNameIndex((i) => Math.max(i - 1, 0));
@@ -549,8 +545,8 @@ export function WalletView() {
         <PageHeader title="Wallet" subtitle="No wallet profile yet." />
         <div className="bg-white border border-gray-200 rounded-lg p-6 space-y-4">
           <div className="text-sm text-gray-600">
-            No wallet profile is active. Create or import one — your recovery phrase
-            and passphrase are handled only in a secure window.
+            No wallet profile is active. Create or import one — your recovery phrase and passphrase
+            are handled only in a secure window.
           </div>
           <AddWalletForm defaultLabel="Primary" onDone={() => {}} />
         </div>
@@ -622,18 +618,28 @@ export function WalletView() {
       />
 
       {syncStatus.data?.running && manualSync && (
-        <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm text-blue-800" data-testid="sync-status">
+        <div
+          className="bg-blue-50 border border-blue-200 rounded p-3 text-sm text-blue-800"
+          data-testid="sync-status"
+        >
           <div className="font-medium">{syncStatus.data.progressLabel}</div>
           <div className="text-xs mt-1 space-y-0.5">
-            <div>Step: {syncStatus.data.step}{syncStatus.data.waiting ? " (waiting for explorer…)" : ""}</div>
+            <div>
+              Step: {syncStatus.data.step}
+              {syncStatus.data.waiting ? " (waiting for explorer…)" : ""}
+            </div>
             {syncStatus.data.repairCandidates > 0 && (
               <div>
-                Checked: {Math.max(0, syncStatus.data.repairCandidates - syncStatus.data.repairRemaining)}
-                {" "}· Owned: +{syncStatus.data.repaired} · Remaining: ~{syncStatus.data.repairRemaining}
+                Checked:{" "}
+                {Math.max(0, syncStatus.data.repairCandidates - syncStatus.data.repairRemaining)} ·
+                Owned: +{syncStatus.data.repaired} · Remaining: ~{syncStatus.data.repairRemaining}
               </div>
             )}
             {syncStatus.data.step === "discover" && syncStatus.data.discoverAddressesTotal > 0 && (
-              <div>Addresses: {syncStatus.data.discoverAddressesDone} / {syncStatus.data.discoverAddressesTotal}</div>
+              <div>
+                Addresses: {syncStatus.data.discoverAddressesDone} /{" "}
+                {syncStatus.data.discoverAddressesTotal}
+              </div>
             )}
             {syncStatus.data.step === "discover" && syncStatus.data.discoverTxsScanned > 0 && (
               <div>Transactions scanned: {syncStatus.data.discoverTxsScanned}</div>
@@ -778,9 +784,7 @@ export function WalletView() {
                 copyLabel="Copy Address"
                 toastLabel="Address"
                 externalUrl={
-                  profile.network === "mainnet"
-                    ? explorerAddressUrl(address)
-                    : undefined
+                  profile.network === "mainnet" ? explorerAddressUrl(address) : undefined
                 }
                 externalTestId="receive-address-explorer-link"
               />
@@ -829,16 +833,11 @@ export function WalletView() {
               copyLabel="Copy public key"
               toastLabel="Account public key"
             />
-            <Alert
-              tone="info"
-              title="For Namebase / xpub-import payees only"
-              className="mt-3"
-            >
-              Paste this into Namebase's "account public key (xpub)" field so
-              buyers pay your wallet directly. This is a single-signature wallet,
-              so the addresses derived from it are yours to spend. Anyone with
-              this key can see every address and balance you'll ever use, but
-              cannot move your funds.
+            <Alert tone="info" title="For Namebase / xpub-import payees only" className="mt-3">
+              Paste this into Namebase's "account public key (xpub)" field so buyers pay your wallet
+              directly. This is a single-signature wallet, so the addresses derived from it are
+              yours to spend. Anyone with this key can see every address and balance you'll ever
+              use, but cannot move your funds.
             </Alert>
           </Disclosure>
         </div>
@@ -870,9 +869,7 @@ export function WalletView() {
           </div>
           {(balances?.nameLockupDoos ?? 0) > 0 && (
             <div data-testid="balance-locked-auctions">
-              <div title="In-flight bids — returned on reveal/redeem">
-                Locked in Auctions
-              </div>
+              <div title="In-flight bids — returned on reveal/redeem">Locked in Auctions</div>
               <div className="text-sm text-gray-800 tabular-nums font-mono">
                 {formatHns(balances!.nameLockupDoos)}
               </div>
@@ -945,9 +942,11 @@ export function WalletView() {
           const lostNeeded = names.filter(
             (n) => capsByName.get(n.name)?.taskState === "lostNeedsRedeem",
           );
-          if (revealNeeded.length === 0 && wonNeeded.length === 0 && lostNeeded.length === 0) return null;
+          if (revealNeeded.length === 0 && wonNeeded.length === 0 && lostNeeded.length === 0)
+            return null;
 
-          const revealCountdown = revealNeeded.length > 0 ? countdownFragment(revealNeeded[0]!.name) : null;
+          const revealCountdown =
+            revealNeeded.length > 0 ? countdownFragment(revealNeeded[0]!.name) : null;
 
           return (
             <>
@@ -959,8 +958,8 @@ export function WalletView() {
                   <div>
                     <strong>Action required: reveal your bid</strong> —{" "}
                     {revealNeeded.map((n) => `.${displayName(n.name)}`).join(", ")}{" "}
-                    {revealNeeded.length === 1 ? "is" : "are"} in the reveal phase. Reveal
-                    before the window closes or your locked bid can't be reclaimed.
+                    {revealNeeded.length === 1 ? "is" : "are"} in the reveal phase. Reveal before
+                    the window closes or your locked bid can't be reclaimed.
                     {revealCountdown && <> Reveal ends in {revealCountdown}.</>}
                   </div>
                   <Button size="sm" onClick={() => setManageName(revealNeeded[0]!.name)}>
@@ -976,8 +975,8 @@ export function WalletView() {
                   <div>
                     <strong>Won! Register now</strong> —{" "}
                     {wonNeeded.map((n) => `.${displayName(n.name)}`).join(", ")}{" "}
-                    {wonNeeded.length === 1 ? "was" : "were"} won. Register to
-                    finalize ownership and set DNS records.
+                    {wonNeeded.length === 1 ? "was" : "were"} won. Register to finalize ownership
+                    and set DNS records.
                   </div>
                   <Button size="sm" onClick={() => setManageName(wonNeeded[0]!.name)}>
                     Register
@@ -992,8 +991,8 @@ export function WalletView() {
                   <div>
                     <strong>Lost bid — redeem lockup</strong> —{" "}
                     {lostNeeded.map((n) => `.${displayName(n.name)}`).join(", ")}{" "}
-                    {lostNeeded.length === 1 ? "was" : "were"} not won. Redeem your
-                    reveal coin to reclaim the funds.
+                    {lostNeeded.length === 1 ? "was" : "were"} not won. Redeem your reveal coin to
+                    reclaim the funds.
                   </div>
                   <Button size="sm" onClick={() => setManageName(lostNeeded[0]!.name)}>
                     Redeem
@@ -1018,10 +1017,10 @@ export function WalletView() {
               data-testid="expiring-alert"
             >
               <div>
-                <strong>Renew soon — name{expiring.length === 1 ? "" : "s"} expiring</strong>{" "}
-                — {expiring.map((r) => `.${displayName(r.name)}`).join(", ")}{" "}
-                {expiring.length === 1 ? "is" : "are"} close to the end of the renewal
-                window. Renew now — an expired Handshake name is lost forever.
+                <strong>Renew soon — name{expiring.length === 1 ? "" : "s"} expiring</strong> —{" "}
+                {expiring.map((r) => `.${displayName(r.name)}`).join(", ")}{" "}
+                {expiring.length === 1 ? "is" : "are"} close to the end of the renewal window. Renew
+                now — an expired Handshake name is lost forever.
               </div>
               <Button size="sm" onClick={() => setManageName(expiring[0]!.name)}>
                 Renew
@@ -1045,11 +1044,7 @@ export function WalletView() {
               >
                 Send HNS
               </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => navigate("/auctions")}
-              >
+              <Button size="sm" variant="secondary" onClick={() => navigate("/auctions")}>
                 Auctions
               </Button>
               {!canWrite && (
@@ -1065,8 +1060,7 @@ export function WalletView() {
               )}
             </div>
             <div className="text-xs text-gray-500">
-              Get a TLD: acquire new Handshake domains through the Vickrey
-              auction system.
+              Get a TLD: acquire new Handshake domains through the Vickrey auction system.
             </div>
             {needsNodeSync && (
               <div
@@ -1074,8 +1068,8 @@ export function WalletView() {
                 data-testid="needs-node-sync"
               >
                 <div>
-                  Your balance is read from the explorer, but spending requires a
-                  synced node. Start your node to load your spendable coins.
+                  Your balance is read from the explorer, but spending requires a synced node. Start
+                  your node to load your spendable coins.
                 </div>
                 <div className="flex items-center gap-3">
                   <Button
@@ -1111,7 +1105,7 @@ export function WalletView() {
             Owned Names ({filteredNames.length}
             {filteredNames.length !== names.length ? ` of ${names.length}` : ""})
           </div>
-         <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <Input
               ref={filterInputRef}
               inputSize="md"
@@ -1125,184 +1119,191 @@ export function WalletView() {
         </div>
         {names.length > 0 ? (
           filteredNames.length > 0 ? (
-          <>
-            <div className="max-h-60 overflow-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-gray-500 border-b">
-                    <th className="py-1 pr-4 w-8">
-                      <input
-                        type="checkbox"
-                        checked={selectedNames.size > 0 && selectedNames.size === filteredNames.length}
-                        ref={(el) => {
-                          if (el) el.indeterminate = selectedNames.size > 0 && selectedNames.size < filteredNames.length;
-                        }}
-                        onChange={(e) => {
-                          if (e.target.checked) setSelectedNames(new Set(filteredNames.map((n) => n.name)));
-                          else setSelectedNames(new Set());
-                        }}
-                        aria-label="Select all names"
-                      />
-                    </th>
-                    <th className="py-1 pr-4">Name</th>
-                    <th className="py-1 pr-4">State</th>
-                    <th className="py-1 pr-4">Height</th>
-                    <th className="py-1 pr-4">Renewal</th>
-                    <th className="py-1"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredNames.map((n) => (
-                    <tr
-                      key={n.name}
-                      ref={filteredNames.indexOf(n) === selectedNameIndex ? selectedRowRef : undefined}
-                      aria-selected={filteredNames.indexOf(n) === selectedNameIndex}
-                      tabIndex={filteredNames.indexOf(n) === selectedNameIndex ? 0 : -1}
-                      className={`border-t border-gray-100 hover:bg-gray-50 cursor-pointer ${
-                        filteredNames.indexOf(n) === selectedNameIndex
-                          ? "bg-blue-50 ring-1 ring-blue-300"
-                          : ""
-                      }`}
-                      onClick={() => setManageName(n.name)}
-                    >
-                      <td className="py-1 pr-4">
+            <>
+              <div className="max-h-60 overflow-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-gray-500 border-b">
+                      <th className="py-1 pr-4 w-8">
                         <input
                           type="checkbox"
-                          checked={selectedNames.has(n.name)}
-                          onChange={() => toggleName(n.name)}
-                          aria-label={`Select ${displayName(n.name)}`}
+                          checked={
+                            selectedNames.size > 0 && selectedNames.size === filteredNames.length
+                          }
+                          ref={(el) => {
+                            if (el)
+                              el.indeterminate =
+                                selectedNames.size > 0 && selectedNames.size < filteredNames.length;
+                          }}
+                          onChange={(e) => {
+                            if (e.target.checked)
+                              setSelectedNames(new Set(filteredNames.map((n) => n.name)));
+                            else setSelectedNames(new Set());
+                          }}
+                          aria-label="Select all names"
                         />
-                      </td>
-                      <td className="py-1 pr-4 text-xs font-mono">
-                        <button
-                          type="button"
-                          className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                          onClick={() => setInfoName(n.name)}
-                          title="View name info"
-                          data-testid="owned-name-info-link"
-                        >
-                          .{displayName(n.name)}
-                        </button>
-                      </td>
-                      <td className="py-1 pr-4">
-                        {n.state ? (
-                          <Badge variant={auctionPhase(n.state).variant}>
-                            {auctionPhase(n.state).label}
-                          </Badge>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
-                        {n.height ? (
-                          <button
-                            type="button"
-                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                            onClick={() => setInfoBlock(n.height!)}
-                            title="View block info"
-                            data-testid="owned-name-height-info-link"
-                          >
-                            #{n.height}
-                          </button>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
-                        {n.renewal ? (
-                          <button
-                            type="button"
-                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                            onClick={() => setInfoBlock(n.renewal!)}
-                            title="View block info"
-                            data-testid="owned-name-renewal-info-link"
-                          >
-                            #{n.renewal}
-                          </button>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td className="py-1 text-right">
-                        {!isWatchOnly && (
-                          <Button size="sm" variant="ghost" onClick={() => setManageName(n.name)}>
-                            Manage
-                          </Button>
-                        )}
-                      </td>
+                      </th>
+                      <th className="py-1 pr-4">Name</th>
+                      <th className="py-1 pr-4">State</th>
+                      <th className="py-1 pr-4">Height</th>
+                      <th className="py-1 pr-4">Renewal</th>
+                      <th className="py-1"></th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {selectedNames.size > 0 && !isWatchOnly && (
-              <>
-              <div
-                className="flex items-center gap-3 mt-3 p-2 bg-blue-50 border border-blue-200 rounded text-sm"
-                data-testid="batch-action-bar"
-              >
-                <span className="text-blue-800 font-medium">
-                  {selectedNames.size} selected
-                </span>
-                <Button size="sm" variant="primary" onClick={handleBatchRenew}>
-                  Renew Selected
-                </Button>
-                <Button
-                  size="sm"
-                  variant="primary"
-                  onClick={handleBatchReveal}
-                  disabled={!batchEligibility.canReveal}
-                  title={
-                    batchEligibility.canReveal
-                      ? undefined
-                      : "All selected names must be in the REVEAL phase"
-                  }
-                  data-testid="batch-reveal-btn"
-                >
-                  Reveal Selected
-                </Button>
-                <Button
-                  size="sm"
-                  variant="primary"
-                  onClick={handleBatchRedeem}
-                  disabled={!batchEligibility.canRedeem}
-                  title={
-                    batchEligibility.canRedeem
-                      ? undefined
-                      : "All selected names must have redeemable losing bids"
-                  }
-                  data-testid="batch-redeem-btn"
-                >
-                  Redeem Selected
-                </Button>
-                <Button
-                  size="sm"
-                  variant="primary"
-                  onClick={handleBatchFinalize}
-                  disabled={!batchEligibility.canFinalize}
-                  title={
-                    batchEligibility.canFinalize
-                      ? undefined
-                      : "All selected names must have a transfer ready to finalize"
-                  }
-                  data-testid="batch-finalize-btn"
-                >
-                  Finalize Selected
-                </Button>
-                <Button size="sm" variant="ghost" onClick={clearSelection}>
-                  Clear
-                </Button>
+                  </thead>
+                  <tbody>
+                    {filteredNames.map((n) => (
+                      <tr
+                        key={n.name}
+                        ref={
+                          filteredNames.indexOf(n) === selectedNameIndex
+                            ? selectedRowRef
+                            : undefined
+                        }
+                        aria-selected={filteredNames.indexOf(n) === selectedNameIndex}
+                        tabIndex={filteredNames.indexOf(n) === selectedNameIndex ? 0 : -1}
+                        className={`border-t border-gray-100 hover:bg-gray-50 cursor-pointer ${
+                          filteredNames.indexOf(n) === selectedNameIndex
+                            ? "bg-blue-50 ring-1 ring-blue-300"
+                            : ""
+                        }`}
+                        onClick={() => setManageName(n.name)}
+                      >
+                        <td className="py-1 pr-4">
+                          <input
+                            type="checkbox"
+                            checked={selectedNames.has(n.name)}
+                            onChange={() => toggleName(n.name)}
+                            aria-label={`Select ${displayName(n.name)}`}
+                          />
+                        </td>
+                        <td className="py-1 pr-4 text-xs font-mono">
+                          <button
+                            type="button"
+                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                            onClick={() => setInfoName(n.name)}
+                            title="View name info"
+                            data-testid="owned-name-info-link"
+                          >
+                            .{displayName(n.name)}
+                          </button>
+                        </td>
+                        <td className="py-1 pr-4">
+                          {n.state ? (
+                            <Badge variant={auctionPhase(n.state).variant}>
+                              {auctionPhase(n.state).label}
+                            </Badge>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
+                          {n.height ? (
+                            <button
+                              type="button"
+                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                              onClick={() => setInfoBlock(n.height!)}
+                              title="View block info"
+                              data-testid="owned-name-height-info-link"
+                            >
+                              #{n.height}
+                            </button>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
+                          {n.renewal ? (
+                            <button
+                              type="button"
+                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                              onClick={() => setInfoBlock(n.renewal!)}
+                              title="View block info"
+                              data-testid="owned-name-renewal-info-link"
+                            >
+                              #{n.renewal}
+                            </button>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="py-1 text-right">
+                          {!isWatchOnly && (
+                            <Button size="sm" variant="ghost" onClick={() => setManageName(n.name)}>
+                              Manage
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-              <div className="mt-2">
-                <FeeRateOverride
-                  value={batchFeeRate}
-                  onChange={setBatchFeeRate}
-                  label="Fee rate override"
-                />
-              </div>
-              </>
-            )}
-          </>
+              {selectedNames.size > 0 && !isWatchOnly && (
+                <>
+                  <div
+                    className="flex items-center gap-3 mt-3 p-2 bg-blue-50 border border-blue-200 rounded text-sm"
+                    data-testid="batch-action-bar"
+                  >
+                    <span className="text-blue-800 font-medium">{selectedNames.size} selected</span>
+                    <Button size="sm" variant="primary" onClick={handleBatchRenew}>
+                      Renew Selected
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={handleBatchReveal}
+                      disabled={!batchEligibility.canReveal}
+                      title={
+                        batchEligibility.canReveal
+                          ? undefined
+                          : "All selected names must be in the REVEAL phase"
+                      }
+                      data-testid="batch-reveal-btn"
+                    >
+                      Reveal Selected
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={handleBatchRedeem}
+                      disabled={!batchEligibility.canRedeem}
+                      title={
+                        batchEligibility.canRedeem
+                          ? undefined
+                          : "All selected names must have redeemable losing bids"
+                      }
+                      data-testid="batch-redeem-btn"
+                    >
+                      Redeem Selected
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={handleBatchFinalize}
+                      disabled={!batchEligibility.canFinalize}
+                      title={
+                        batchEligibility.canFinalize
+                          ? undefined
+                          : "All selected names must have a transfer ready to finalize"
+                      }
+                      data-testid="batch-finalize-btn"
+                    >
+                      Finalize Selected
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={clearSelection}>
+                      Clear
+                    </Button>
+                  </div>
+                  <div className="mt-2">
+                    <FeeRateOverride
+                      value={batchFeeRate}
+                      onChange={setBatchFeeRate}
+                      label="Fee rate override"
+                    />
+                  </div>
+                </>
+              )}
+            </>
           ) : (
             <div className="text-gray-400 text-sm py-4 text-center">
               No names match &quot;{nameQuery.trim()}&quot;
@@ -1363,9 +1364,7 @@ export function WalletView() {
             </table>
           </div>
         ) : (
-          <div className="text-gray-400 text-sm py-4 text-center">
-            No activity yet.
-          </div>
+          <div className="text-gray-400 text-sm py-4 text-center">No activity yet.</div>
         )}
       </div>
 
@@ -1373,8 +1372,8 @@ export function WalletView() {
           compete for attention on the main screen. */}
       <Disclosure summary="Details">
         <div className="text-xs text-gray-400">
-          Profile: {profile.id.slice(0, 8)}… | Last synced height:{" "}
-          {profile.lastSyncedHeight ?? "—"} | Last successful sync:{" "}
+          Profile: {profile.id.slice(0, 8)}… | Last synced height: {profile.lastSyncedHeight ?? "—"}{" "}
+          | Last successful sync:{" "}
           {formatDate(latestTimestamp(profile.lastSyncedAt, profile.lastExplorerSyncAt))} | xpub:{" "}
           {truncateMiddle(profile.accountXpub)}
         </div>
@@ -1400,11 +1399,7 @@ export function WalletView() {
       )}
 
       {infoName && (
-        <NameInfoModal
-          name={infoName}
-          open={!!infoName}
-          onClose={() => setInfoName(null)}
-        />
+        <NameInfoModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
       )}
 
       {infoBlock != null && (
@@ -1475,7 +1470,9 @@ export function WalletView() {
             </div>
             <FeeRateOverride value={sendFeeRate} onChange={setSendFeeRate} />
             <div className="flex gap-2 justify-end">
-              <Button variant="ghost" onClick={resetSend}>Cancel</Button>
+              <Button variant="ghost" onClick={resetSend}>
+                Cancel
+              </Button>
               <Button
                 variant="primary"
                 onClick={() => handleBuildDraft()}
@@ -1496,7 +1493,9 @@ export function WalletView() {
             <div className="bg-gray-50 rounded p-3 text-sm space-y-1">
               <div className="flex justify-between">
                 <span>Amount</span>
-                <span className="font-mono">{formatHns(draft.summary?.sendTotalDoos ?? 0)} HNS</span>
+                <span className="font-mono">
+                  {formatHns(draft.summary?.sendTotalDoos ?? 0)} HNS
+                </span>
               </div>
               <div className="flex justify-between text-gray-500">
                 <span>Fee</span>
@@ -1520,8 +1519,8 @@ export function WalletView() {
               </div>
             </div>
             <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
-              ⚠️ Beta — send a small test amount first and confirm it arrives before
-              sending larger amounts.
+              ⚠️ Beta — send a small test amount first and confirm it arrives before sending larger
+              amounts.
             </div>
             {sendError && (
               <div
@@ -1529,8 +1528,8 @@ export function WalletView() {
                 role="alert"
                 data-testid="send-error"
               >
-                <span className="font-semibold">Not sent.</span> {sendError} Your coins
-                were not moved. You can adjust and try again.
+                <span className="font-semibold">Not sent.</span> {sendError} Your coins were not
+                moved. You can adjust and try again.
               </div>
             )}
             {!unlocked && !sendError && (

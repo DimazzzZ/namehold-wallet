@@ -24,7 +24,10 @@ import { mergeActivity, type MergedRow } from "../lib/activity";
 import { subscribeAction } from "../lib/actionBus";
 
 // Action label + badge variant mapping.
-export const ACTION_META: Record<string, { label: string; variant: "default" | "success" | "warning" | "error" | "info" }> = {
+export const ACTION_META: Record<
+  string,
+  { label: string; variant: "default" | "success" | "warning" | "error" | "info" }
+> = {
   send: { label: "Send", variant: "warning" },
   receive: { label: "Receive", variant: "success" },
   open: { label: "Open", variant: "info" },
@@ -88,12 +91,15 @@ export function ActivityView() {
   // update — two separate setSearchParams calls in one handler race (both
   // read the same base snapshot, so the second clobbers the first).
   const setFilter = (key: string, value: string) => {
-    setSearchParams((prev) => {
-      if (value === "all" || value === "") prev.delete(key);
-      else prev.set(key, value);
-      prev.delete("page"); // any filter change → back to page 1
-      return prev;
-    }, { replace: true });
+    setSearchParams(
+      (prev) => {
+        if (value === "all" || value === "") prev.delete(key);
+        else prev.set(key, value);
+        prev.delete("page"); // any filter change → back to page 1
+        return prev;
+      },
+      { replace: true },
+    );
   };
 
   // Apply filters.
@@ -122,20 +128,26 @@ export function ActivityView() {
   // Both use replace so browser history doesn't fill up with pager churn.
   useEffect(() => {
     if (page > totalPages) {
-      setSearchParams((prev) => {
-        if (totalPages <= 1) prev.delete("page");
-        else prev.set("page", String(totalPages));
-        return prev;
-      }, { replace: true });
+      setSearchParams(
+        (prev) => {
+          if (totalPages <= 1) prev.delete("page");
+          else prev.set("page", String(totalPages));
+          return prev;
+        },
+        { replace: true },
+      );
     }
   }, [page, totalPages, setSearchParams]);
 
   const goToPage = (n: number) => {
-    setSearchParams((prev) => {
-      if (n <= 1) prev.delete("page");
-      else prev.set("page", String(n));
-      return prev;
-    }, { replace: true });
+    setSearchParams(
+      (prev) => {
+        if (n <= 1) prev.delete("page");
+        else prev.set("page", String(n));
+        return prev;
+      },
+      { replace: true },
+    );
   };
 
   const isIndexError =
@@ -197,8 +209,8 @@ export function ActivityView() {
       {isIndexError && (
         <div className="bg-yellow-50 border border-yellow-200 rounded p-4 mb-4 text-sm text-yellow-800">
           Your node does not have <code className="font-mono">--index-address</code> enabled.
-          Restart it with <code className="font-mono">--index-address --index-tx</code> to
-          enable full history. App-managed nodes already have both enabled.
+          Restart it with <code className="font-mono">--index-address --index-tx</code> to enable
+          full history. App-managed nodes already have both enabled.
         </div>
       )}
       {isError && !isIndexError && (
@@ -234,17 +246,17 @@ export function ActivityView() {
                 </tr>
               </thead>
               <tbody>
-              {pageRows.map((row) => (
-                <ActivityRow
-                  key={row.key}
-                  row={row}
-                  onNameClick={setInfoName}
-                  onBlockClick={setInfoBlock}
-                  onTxClick={setInfoTx}
-                  enableDraftActions
-                  profileId={profile?.id ?? null}
-                />
-              ))}
+                {pageRows.map((row) => (
+                  <ActivityRow
+                    key={row.key}
+                    row={row}
+                    onNameClick={setInfoName}
+                    onBlockClick={setInfoBlock}
+                    onTxClick={setInfoTx}
+                    enableDraftActions
+                    profileId={profile?.id ?? null}
+                  />
+                ))}
               </tbody>
             </table>
           </div>
@@ -262,11 +274,7 @@ export function ActivityView() {
       )}
 
       {infoName && (
-        <NameInfoModal
-          name={infoName}
-          open={!!infoName}
-          onClose={() => setInfoName(null)}
-        />
+        <NameInfoModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
       )}
 
       {infoBlock != null && (
@@ -313,7 +321,7 @@ function statusBadge(status: string): {
   if (status === "failed") {
     return { variant: "error", label: "Failed" };
   }
-// draft, signed, etc.
+  // draft, signed, etc.
   return { variant: "default", label: status };
 }
 
@@ -326,9 +334,10 @@ function statusBadge(status: string): {
  * - "execute" runs unlock → sign → broadcast (labelled per status).
  * - "discard" deletes the draft, freeing reserved coins.
  */
-export function draftActionsForStatus(
-  status: MergedRow["status"],
-): { execute: "Sign & broadcast" | "Broadcast" | "Retry" | null; discard: boolean } {
+export function draftActionsForStatus(status: MergedRow["status"]): {
+  execute: "Sign & broadcast" | "Broadcast" | "Retry" | null;
+  discard: boolean;
+} {
   switch (status) {
     case "draft":
       return { execute: "Sign & broadcast", discard: true };
@@ -408,36 +417,22 @@ export function ActivityRow({
   };
 
   const meta = ACTION_META[row.action] ?? FALLBACK_META;
-  const timeStr = row.sortTs > 0
-    ? formatDate(new Date(row.sortTs * 1000).toISOString())
-    : "Pending";
+  const timeStr =
+    row.sortTs > 0 ? formatDate(new Date(row.sortTs * 1000).toISOString()) : "Pending";
   const tone = amountTone(row);
   const toneClass =
-    tone === "income"
-      ? "text-green-600"
-      : tone === "spend"
-      ? "text-red-600"
-      : "text-gray-700";
+    tone === "income" ? "text-green-600" : tone === "spend" ? "text-red-600" : "text-gray-700";
   const sign = tone === "income" ? "+" : tone === "spend" ? "-" : "";
 
   const badge = statusBadge(row.status);
   // For onchain-only rows, use the confirmed/pending badge; for drafts,
   // use the status badge.
   const badgeVariant =
-    row.status === "onchain"
-      ? row.confirmed
-        ? "success"
-        : "warning"
-      : badge.variant;
+    row.status === "onchain" ? (row.confirmed ? "success" : "warning") : badge.variant;
   const badgeLabel =
-    row.status === "onchain"
-      ? row.confirmed
-        ? "Confirmed"
-        : "Pending"
-      : badge.label;
+    row.status === "onchain" ? (row.confirmed ? "Confirmed" : "Pending") : badge.label;
 
-  const linkClass =
-    "text-blue-500 hover:text-blue-700 hover:underline cursor-pointer";
+  const linkClass = "text-blue-500 hover:text-blue-700 hover:underline cursor-pointer";
 
   return (
     <tr className="border-t border-gray-100 hover:bg-gray-50">
@@ -496,8 +491,8 @@ export function ActivityRow({
           row.nameValueDoos != null
             ? `Name value ${formatHns(row.nameValueDoos)} HNS is carried to your own new coin — not spent; only the fee applies.`
             : row.valueDoos === 0 && row.direction !== "receive"
-            ? "Name's locked value is re-homed to your own coin — no HNS spent beyond the fee."
-            : undefined
+              ? "Name's locked value is re-homed to your own coin — no HNS spent beyond the fee."
+              : undefined
         }
       >
         <span className={toneClass}>
@@ -601,23 +596,13 @@ function Pager({
         Rows {startRow}–{endRow} of {totalRows}
       </div>
       <div className="flex items-center gap-4">
-        <button
-          type="button"
-          className={btn}
-          disabled={!canPrev}
-          onClick={() => onGoTo(page - 1)}
-        >
+        <button type="button" className={btn} disabled={!canPrev} onClick={() => onGoTo(page - 1)}>
           ← Prev
         </button>
         <span className="text-gray-600">
           Page {page} of {totalPages}
         </span>
-        <button
-          type="button"
-          className={btn}
-          disabled={!canNext}
-          onClick={() => onGoTo(page + 1)}
-        >
+        <button type="button" className={btn} disabled={!canNext} onClick={() => onGoTo(page + 1)}>
           Next →
         </button>
       </div>

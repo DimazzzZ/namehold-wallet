@@ -8,7 +8,8 @@ const ERROR_MAP: Record<string, string> = {
   forbidden: "The explorer is busy (rate-limited). Wait a moment and Refresh again.",
   // Explorer / network unreachable.
   hnsfans: "Couldn't reach the explorer. Check the Explorer URL in Settings and your connection.",
-  "connection refused": "Couldn't reach the configured endpoint. Check your connection and Settings.",
+  "connection refused":
+    "Couldn't reach the configured endpoint. Check your connection and Settings.",
   econnrefused: "Couldn't reach the configured endpoint. Check your connection and Settings.",
   "connection reset": "Connection lost. Please try again.",
   // Ledger-specific timeout — must precede the generic timeout entries so its
@@ -23,9 +24,10 @@ const ERROR_MAP: Record<string, string> = {
   // Ledger device state — the status-word hint from hid_transport.rs.
   "device locked — unlock it": "Your Ledger is locked — unlock the device and try again.",
   "handshake app": "Open the Handshake app on your Ledger and try again.",
-  "no ledger device found": "No Ledger detected. Plug it in, unlock it, and open the Handshake app.",
+  "no ledger device found":
+    "No Ledger detected. Plug it in, unlock it, and open the Handshake app.",
   // Node not address-indexed (getcoinsbyaddress unavailable) — blocks all spends.
-  "getcoinsbyaddress":
+  getcoinsbyaddress:
     "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start hsd) and let it finish syncing.",
   "index-address":
     "Your node isn't address-indexed. Restart hsd with address indexing (Settings → Start hsd) and let it finish syncing.",

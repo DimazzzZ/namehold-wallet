@@ -16,9 +16,8 @@ const { relaunchAppMock } = vi.hoisted(() => ({
   relaunchAppMock: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../../queries/updates", async () => {
-  const actual = await vi.importActual<typeof import("../../queries/updates")>(
-    "../../queries/updates",
-  );
+  const actual =
+    await vi.importActual<typeof import("../../queries/updates")>("../../queries/updates");
   return { ...actual, relaunchApp: relaunchAppMock };
 });
 

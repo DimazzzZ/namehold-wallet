@@ -32,7 +32,18 @@ const baseBroadcasted = {
   walletProfileId: "p1",
   action: "update",
   status: "broadcasted" as const,
-  summary: { action: "update", sendTotalDoos: 0, feeDoos: 0, changeDoos: 0, inputTotalDoos: 0, numInputs: 0, recipientAddress: null, txid: "tx1", warnings: [], name: "myname" },
+  summary: {
+    action: "update",
+    sendTotalDoos: 0,
+    feeDoos: 0,
+    changeDoos: 0,
+    inputTotalDoos: 0,
+    numInputs: 0,
+    recipientAddress: null,
+    txid: "tx1",
+    warnings: [],
+    name: "myname",
+  },
   errorMessage: null,
   txid: "tx1",
   confirmationHeight: null,
@@ -151,7 +162,9 @@ describe("useDraftConfirmationWatcher", () => {
         case "refresh_tx_confirmations":
           return Promise.resolve({});
         case "list_tx_drafts":
-          return Promise.resolve([{ ...sendBroadcasted, status: "confirmed", confirmationHeight: 100 }]);
+          return Promise.resolve([
+            { ...sendBroadcasted, status: "confirmed", confirmationHeight: 100 },
+          ]);
         default:
           return Promise.resolve(null);
       }

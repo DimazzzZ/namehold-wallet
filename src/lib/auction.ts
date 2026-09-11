@@ -9,14 +9,7 @@
 import type { HsdNameStats, AuctionTaskState, NameActionCapabilities } from "../types";
 
 export type AuctionPhase =
-  | "AVAILABLE"
-  | "OPENING"
-  | "BIDDING"
-  | "REVEAL"
-  | "CLOSED"
-  | "REVOKED"
-  | "TRANSFER"
-  | "OTHER";
+  "AVAILABLE" | "OPENING" | "BIDDING" | "REVEAL" | "CLOSED" | "REVOKED" | "TRANSFER" | "OTHER";
 
 export interface PhaseBadge {
   phase: AuctionPhase;
@@ -69,8 +62,7 @@ export function nextTransition(
     label: string,
     blocks: number | null | undefined,
     hours: number | null | undefined,
-  ): PhaseCountdown | null =>
-    blocks == null ? null : { label, blocks, hours: hours ?? null };
+  ): PhaseCountdown | null => (blocks == null ? null : { label, blocks, hours: hours ?? null });
 
   switch (phase) {
     case "OPENING":
@@ -91,9 +83,7 @@ export function formatCountdown(c: PhaseCountdown): string {
   const blocks = `${c.blocks} block${c.blocks === 1 ? "" : "s"}`;
   if (c.hours == null) return blocks;
   const time =
-    c.hours >= 1
-      ? `~${Math.round(c.hours)}h`
-      : `~${Math.max(1, Math.round(c.hours * 60))}m`;
+    c.hours >= 1 ? `~${Math.round(c.hours)}h` : `~${Math.max(1, Math.round(c.hours * 60))}m`;
   return `${blocks} (${time})`;
 }
 
@@ -142,15 +132,13 @@ export interface AuctionPhaseGuide {
 export const AUCTION_PHASE_GUIDE: Record<AuctionPhase, AuctionPhaseGuide | null> = {
   AVAILABLE: {
     title: "Open Auction",
-    description:
-      "Start a Vickrey auction for this name. The name enters a ~1-week bidding period.",
+    description: "Start a Vickrey auction for this name. The name enters a ~1-week bidding period.",
     action: "Open",
     actionHint: "Opens the auction on-chain. Costs a small network fee.",
   },
   OPENING: {
     title: "Waiting for Bidding",
-    description:
-      "The auction is in the pre-bid opening period. Bidding will start automatically.",
+    description: "The auction is in the pre-bid opening period. Bidding will start automatically.",
     action: "",
     actionHint: "No action needed — bidding opens soon.",
   },
@@ -163,15 +151,13 @@ export const AUCTION_PHASE_GUIDE: Record<AuctionPhase, AuctionPhaseGuide | null>
   },
   REVEAL: {
     title: "Reveal Your Bid",
-    description:
-      "Reveal your bid to the network. If you don't reveal, you lose your locked funds.",
+    description: "Reveal your bid to the network. If you don't reveal, you lose your locked funds.",
     action: "Reveal",
     actionHint: "Reveals your bid. Unrevealed bids forfeit their lockup.",
   },
   CLOSED: {
     title: "Register Name",
-    description:
-      "The auction is over. Register the name to make it yours and set DNS records.",
+    description: "The auction is over. Register the name to make it yours and set DNS records.",
     action: "Register",
     actionHint: "Finalizes ownership on-chain.",
   },
@@ -218,7 +204,6 @@ export function auctionGuidance(
 // ---------------------------------------------------------------------------
 // Task-driven auction UX helpers (capabilities-based)
 // ---------------------------------------------------------------------------
-
 
 /**
  * Human-readable label for a task state — shown as the primary badge/CTA

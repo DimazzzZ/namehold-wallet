@@ -73,7 +73,11 @@ describe("NameInfoModal", () => {
       } as any,
       transfer: 0,
     };
-    mockUseReadNameInfo.mockReturnValue({ data: nameInfo, isLoading: false, isError: false } as any);
+    mockUseReadNameInfo.mockReturnValue({
+      data: nameInfo,
+      isLoading: false,
+      isError: false,
+    } as any);
 
     render(<NameInfoModal name="example" open onClose={vi.fn()} />, { wrapper: wrapper() });
 
@@ -106,7 +110,11 @@ describe("NameInfoModal", () => {
       } as any,
       transfer: 0,
     };
-    mockUseReadNameInfo.mockReturnValue({ data: nameInfo, isLoading: false, isError: false } as any);
+    mockUseReadNameInfo.mockReturnValue({
+      data: nameInfo,
+      isLoading: false,
+      isError: false,
+    } as any);
 
     render(<NameInfoModal name="namehold" open onClose={vi.fn()} />, { wrapper: wrapper() });
 
@@ -130,7 +138,11 @@ describe("NameInfoModal", () => {
       stats: null,
       transfer: 0,
     };
-    mockUseReadNameInfo.mockReturnValue({ data: nameInfo, isLoading: false, isError: false } as any);
+    mockUseReadNameInfo.mockReturnValue({
+      data: nameInfo,
+      isLoading: false,
+      isError: false,
+    } as any);
 
     render(<NameInfoModal name="example" open onClose={vi.fn()} />, { wrapper: wrapper() });
 
@@ -157,7 +169,11 @@ describe("NameInfoModal", () => {
       stats: null,
       transfer: 0,
     };
-    mockUseReadNameInfo.mockReturnValue({ data: nameInfo, isLoading: false, isError: false } as any);
+    mockUseReadNameInfo.mockReturnValue({
+      data: nameInfo,
+      isLoading: false,
+      isError: false,
+    } as any);
 
     render(<NameInfoModal name="example" open onClose={vi.fn()} />, { wrapper: wrapper() });
 
@@ -179,7 +195,11 @@ describe("NameInfoModal", () => {
       stats: null,
       transfer: 500,
     };
-    mockUseReadNameInfo.mockReturnValue({ data: nameInfo, isLoading: false, isError: false } as any);
+    mockUseReadNameInfo.mockReturnValue({
+      data: nameInfo,
+      isLoading: false,
+      isError: false,
+    } as any);
 
     render(<NameInfoModal name="example" open onClose={vi.fn()} />, { wrapper: wrapper() });
 
@@ -201,7 +221,11 @@ describe("NameInfoModal", () => {
       stats: null,
       transfer: 0,
     };
-    mockUseReadNameInfo.mockReturnValue({ data: nameInfo, isLoading: false, isError: false } as any);
+    mockUseReadNameInfo.mockReturnValue({
+      data: nameInfo,
+      isLoading: false,
+      isError: false,
+    } as any);
     mockUseNameRecords.mockReturnValue({
       data: {
         records: [
@@ -237,7 +261,11 @@ describe("NameInfoModal", () => {
       stats: null,
       transfer: 0,
     };
-    mockUseReadNameInfo.mockReturnValue({ data: nameInfo, isLoading: false, isError: false } as any);
+    mockUseReadNameInfo.mockReturnValue({
+      data: nameInfo,
+      isLoading: false,
+      isError: false,
+    } as any);
     mockUseNodeLive.mockReturnValue(false);
 
     render(<NameInfoModal name="example" open onClose={vi.fn()} />, { wrapper: wrapper() });
@@ -261,7 +289,11 @@ describe("NameInfoModal", () => {
       stats: null,
       transfer: 0,
     };
-    mockUseReadNameInfo.mockReturnValue({ data: nameInfo, isLoading: false, isError: false } as any);
+    mockUseReadNameInfo.mockReturnValue({
+      data: nameInfo,
+      isLoading: false,
+      isError: false,
+    } as any);
 
     render(<NameInfoModal name="example" open onClose={vi.fn()} />, { wrapper: wrapper() });
 
@@ -285,9 +317,15 @@ describe("NameInfoModal", () => {
       stats: null,
       transfer: 0,
     };
-    mockUseReadNameInfo.mockReturnValue({ data: nameInfo, isLoading: false, isError: false } as any);
+    mockUseReadNameInfo.mockReturnValue({
+      data: nameInfo,
+      isLoading: false,
+      isError: false,
+    } as any);
 
-    render(<NameInfoModal name="xn--e1afmkfd.xn--p1ai" open onClose={vi.fn()} />, { wrapper: wrapper() });
+    render(<NameInfoModal name="xn--e1afmkfd.xn--p1ai" open onClose={vi.fn()} />, {
+      wrapper: wrapper(),
+    });
 
     // Verify the hook was called with the raw name
     expect(mockUseReadNameInfo).toHaveBeenCalledWith("xn--e1afmkfd.xn--p1ai");
@@ -340,7 +378,11 @@ describe("NameInfoModal", () => {
       ],
       myBidCount: 2,
     };
-    mockUseReadNameInfo.mockReturnValue({ data: nameInfo, isLoading: false, isError: false } as any);
+    mockUseReadNameInfo.mockReturnValue({
+      data: nameInfo,
+      isLoading: false,
+      isError: false,
+    } as any);
     mockUseNameBids.mockReturnValue({ data: bids, isLoading: false, isError: false } as any);
 
     render(<NameInfoModal name="example" open onClose={vi.fn()} />, { wrapper: wrapper() });

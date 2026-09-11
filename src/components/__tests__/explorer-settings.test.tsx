@@ -10,10 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
-import type { ReactNode } from "react";
+import { screen, waitFor, fireEvent } from "@testing-library/react";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
@@ -27,88 +24,20 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   isPermissionGranted: vi.fn().mockResolvedValue(false),
   requestPermission: vi.fn().mockResolvedValue("default"),
 }));
-vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn().mockResolvedValue(undefined), disable: vi.fn().mockResolvedValue(undefined), isEnabled: vi.fn().mockResolvedValue(false) }));
+vi.mock("@tauri-apps/plugin-autostart", () => ({
+  enable: vi.fn().mockResolvedValue(undefined),
+  disable: vi.fn().mockResolvedValue(undefined),
+  isEnabled: vi.fn().mockResolvedValue(false),
+}));
 
-import { Settings, validateExplorerUrl } from "../Settings";
-import { useSettingsStore } from "../../stores/settings";
-
-function route(cmd: string) {
-  switch (cmd) {
-    case "node_status":
-      return Promise.resolve({
-        binary: null,
-        binary_found: false,
-        version: null,
-        data_dir: null,
-        network: "main",
-        process_alive: false,
-        connected: false,
-        height: null,
-        verification_progress: null,
-        headers: null,
-        last_error: null,
-        index_mismatch: false,
-        read_source: "explorer",
-      });
-    case "list_wallet_profiles":
-      return Promise.resolve([]);
-    case "get_signer_session":
-      return Promise.resolve({ walletProfileId: null, unlocked: false, unlockedUntilEpochMs: 0 });
-    case "get_write_capability":
-      return Promise.resolve({ signerUnlocked: false, broadcasterAvailable: false, canWrite: false, reason: null });
-    case "update_setting":
-      return Promise.resolve(null);
-    default:
-      return Promise.resolve(null);
-  }
-}
-
-function wrapper() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <MemoryRouter>{children}</MemoryRouter>
-      </QueryClientProvider>
-    );
-  };
-}
-
-function loadSettings(over: Partial<Record<string, string>> = {}) {
-  useSettingsStore.setState({
-    loaded: true,
-    settings: {
-      node_rpc_url: "http://127.0.0.1:12037",
-      node_rpc_api_key: "",
-      hsd_prefix: "",
-      hsd_path: "",
-      autostart_hsd: "true",
-      explorer_api_url: "https://e.hnsfans.com",
-      address_gap_limit: "20",
-      signer_session_timeout_seconds: "900",
-      onboarding_complete: "true",
-      deadline_notify_enabled: "false",
-      deadline_notify_reveal_lead_blocks: "144",
-      deadline_notify_renewal_lead_days: "30",
-      watchlist_notify_enabled: "false",
-      watchlist_notify_bidding_soon_lead_blocks: "144",
-      watchlist_notify_highest_bid_threshold_hns: "",
-      background_sync_enabled: "1",
-      node_mode: "full",
-      explorer_fallback_url: "",
-      chain_source: "local_node",
-      close_to_tray: "1",
-      tray_hint_shown: "0",
-      launch_at_login: "0",
-      fee_rate_doos_per_kvb: "",
-      ...over,
-    },
-  });
-}
+import { validateExplorerUrl } from "../Settings";
+import { loadSettings } from "../../test/fixtures/settings";
+import { renderSettings } from "../../test/fixtures/renderSettings";
+import { routeSettingsCommand } from "../../test/fixtures/settingsRoute";
 
 beforeEach(() => {
   invokeMock.mockReset();
-  invokeMock.mockImplementation(route);
+  invokeMock.mockImplementation(routeSettingsCommand);
   loadSettings();
 });
 
@@ -134,7 +63,7 @@ describe("validateExplorerUrl (unit)", () => {
 
 describe("Settings — explorer base URL (Task 11 / S1)", () => {
   it("shows an inline error and disables Save for a malformed URL", async () => {
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
     const input = await screen.findByTestId("explorer-url-input");
 
     fireEvent.change(input, { target: { value: "not-a-url" } });
@@ -145,7 +74,7 @@ describe("Settings — explorer base URL (Task 11 / S1)", () => {
   });
 
   it("saves a normalized (no trailing slash) URL and clears dirty state", async () => {
-    render(<Settings />, { wrapper: wrapper() });
+    renderSettings();
     const input = await screen.findByTestId("explorer-url-input");
 
     fireEvent.change(input, { target: { value: "https://my.explorer.example/" } });

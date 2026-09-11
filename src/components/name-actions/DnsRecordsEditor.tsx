@@ -28,13 +28,7 @@ export interface DnsRecordsEditorProps {
 
 const inputClass = `flex-1 border border-gray-300 rounded font-mono min-w-0 ${inputSizes.sm}`;
 
-function RowFields({
-  row,
-  onChange,
-}: {
-  row: DnsRow;
-  onChange: (patch: Partial<DnsRow>) => void;
-}) {
+function RowFields({ row, onChange }: { row: DnsRow; onChange: (patch: Partial<DnsRow>) => void }) {
   switch (row.type) {
     case "TXT":
     case "NS":

@@ -73,13 +73,7 @@ interface PopoverItemProps {
 }
 
 /** A single clickable row inside a `Popover` panel. */
-export function PopoverItem({
-  onClick,
-  disabled,
-  children,
-  className,
-  ...rest
-}: PopoverItemProps) {
+export function PopoverItem({ onClick, disabled, children, className, ...rest }: PopoverItemProps) {
   return (
     <button
       type="button"

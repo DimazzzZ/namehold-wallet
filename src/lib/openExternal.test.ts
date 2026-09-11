@@ -21,17 +21,12 @@ describe("openExternal URL builders", () => {
   });
 
   it("explorerTxUrl builds /transaction/<txid>", () => {
-    const txid =
-      "3c91c37f649146dd159357f955f464d4d94a6d44a75e0c6f506d7a527af8ec38";
-    expect(explorerTxUrl(txid)).toBe(
-      `https://shakeshift.com/transaction/${txid}`,
-    );
+    const txid = "3c91c37f649146dd159357f955f464d4d94a6d44a75e0c6f506d7a527af8ec38";
+    expect(explorerTxUrl(txid)).toBe(`https://shakeshift.com/transaction/${txid}`);
   });
 
   it("explorerNameUrl builds /name/<name> for ASCII", () => {
-    expect(explorerNameUrl("namehold")).toBe(
-      "https://shakeshift.com/name/namehold",
-    );
+    expect(explorerNameUrl("namehold")).toBe("https://shakeshift.com/name/namehold");
   });
 
   it("explorerNameUrl percent-encodes non-ASCII (emoji / unicode) names", () => {
@@ -48,21 +43,15 @@ describe("openExternal URL builders", () => {
   it("explorerNameUrl leaves an already-punycode name untouched", () => {
     // `xn--wo8h` = 🐨 in IDNA punycode. Only `-` in the ASCII-safe set, so
     // encodeURIComponent is a no-op.
-    expect(explorerNameUrl("xn--wo8h")).toBe(
-      "https://shakeshift.com/name/xn--wo8h",
-    );
+    expect(explorerNameUrl("xn--wo8h")).toBe("https://shakeshift.com/name/xn--wo8h");
   });
 
   it("explorerAddressUrl builds /address/<hs1…>", () => {
     const addr = "hs1q7p94h09nqshcjuc5hpq06pz7mf40gpmjg6k6yk";
-    expect(explorerAddressUrl(addr)).toBe(
-      `https://shakeshift.com/address/${addr}`,
-    );
+    expect(explorerAddressUrl(addr)).toBe(`https://shakeshift.com/address/${addr}`);
   });
 
   it("explorerBlockUrl builds /block/<height>", () => {
-    expect(explorerBlockUrl(340052)).toBe(
-      "https://shakeshift.com/block/340052",
-    );
+    expect(explorerBlockUrl(340052)).toBe("https://shakeshift.com/block/340052");
   });
 });

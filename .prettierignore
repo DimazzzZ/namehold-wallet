@@ -1,0 +1,13 @@
+# Build output and generated files
+dist/
+coverage/
+src-tauri/target/
+src-tauri/gen/
+*.tsbuildinfo
+
+# Dependencies and lockfiles
+node_modules/
+pnpm-lock.yaml
+
+# Prose: reflowing Markdown is a separate call from formatting code
+*.md
