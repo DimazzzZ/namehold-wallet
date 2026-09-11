@@ -849,12 +849,13 @@ pub fn get_active_profile_id(conn: &rusqlite::Connection) -> Result<String, AppE
     Ok(id.unwrap_or_default())
 }
 
-/// The active wallet profile's stored network string (`"main"` / `"mainnet"` /
-/// `"testnet"` / `"regtest"` / `"simnet"`). `Ok(None)` when there is no active
-/// profile — e.g. during onboarding, before any wallet exists — or when the
-/// active id points at a profile that no longer exists. `Err` only for a real
-/// DB failure; callers decide whether that is fatal (the connection probe) or
-/// a conservative skip (the read gate).
+/// The active wallet profile's stored network string — the schema allows only
+/// `"mainnet"`, `"testnet"` and `"regtest"` (`CHECK (network IN (...))`);
+/// `"main"` and `"simnet"` are accepted defensively by the comparison.
+/// `Ok(None)` when there is no active profile — e.g. during onboarding, before
+/// any wallet exists — or when the active id points at a profile that no
+/// longer exists. `Err` only for a real DB failure; callers decide whether
+/// that is fatal (the connection probe) or a conservative skip (the read gate).
 pub fn get_active_profile_network(conn: &rusqlite::Connection) -> Result<Option<String>, AppError> {
     let id = get_active_profile_id(conn)?;
     if id.is_empty() {

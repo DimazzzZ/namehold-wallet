@@ -149,8 +149,9 @@ pub(crate) async fn node_tip_height_if_synced_from_settings(
 /// Same as [`node_tip_height_if_synced_from_settings`], but additionally
 /// rejects (returns `None`) when the node's reported `chain` disagrees with
 /// `expected_network`. Set `expected_network` to the active profile's stored
-/// network string (`"main"` / `"mainnet"` / `"testnet"` / `"regtest"` /
-/// `"simnet"`); leave it `None` to skip the network check.
+/// network string — the schema allows only `"mainnet"`, `"testnet"` and
+/// `"regtest"`; `"main"` and `"simnet"` are accepted defensively by the
+/// comparison. Leave it `None` to skip the network check.
 ///
 /// This is the guard that prevents a regtest node from being treated as
 /// authoritative for a mainnet wallet (or any other cross-network mismatch).

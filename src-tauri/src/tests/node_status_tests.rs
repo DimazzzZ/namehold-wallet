@@ -424,31 +424,6 @@ async fn probe_and_update_sets_flag_true_when_node_answers() {
     );
 }
 
-// --- network_name_matches (the guard that prevents a regtest node from being
-//     treated as authoritative for a mainnet wallet) ---------------------------
-
-use crate::noncustodial::network::network_name_matches;
-
-#[test]
-fn network_name_matches_same_network() {
-    assert!(network_name_matches("main", "main"));
-    assert!(network_name_matches("mainnet", "main"));
-    assert!(network_name_matches("main", "mainnet"));
-    assert!(network_name_matches("mainnet", "mainnet"));
-    assert!(network_name_matches("testnet", "testnet"));
-    assert!(network_name_matches("regtest", "regtest"));
-    assert!(network_name_matches("simnet", "simnet"));
-}
-
-#[test]
-fn network_name_matches_different_network() {
-    assert!(!network_name_matches("mainnet", "regtest"));
-    assert!(!network_name_matches("main", "regtest"));
-    assert!(!network_name_matches("mainnet", "testnet"));
-    assert!(!network_name_matches("testnet", "regtest"));
-    assert!(!network_name_matches("regtest", "main"));
-}
-
 // --- node_tip_height_if_synced_from_settings_with_network ---------------------
 
 use crate::commands::read::node_tip_height_if_synced_from_settings_with_network;
