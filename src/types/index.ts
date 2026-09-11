@@ -27,9 +27,10 @@ export interface NodeConnectionCheck {
   network: string | null;
   /**
    * `false` when the node reports a chain that doesn't match the active
-   * wallet's network — reads and sends via it would be refused. `null` when
-   * there is nothing to compare (no wallet profile yet, or the node didn't
-   * report its chain).
+   * wallet's network — the read gate refuses such a node (sends are not
+   * network-gated by the app; the node itself rejects a cross-chain tx).
+   * `null` when there is nothing to compare (no wallet profile yet, or the
+   * node didn't report its chain).
    */
   networkMatches: boolean | null;
   error: string | null;

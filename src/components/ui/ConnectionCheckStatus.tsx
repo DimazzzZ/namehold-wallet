@@ -14,8 +14,8 @@ export function ConnectionCheckStatus({ result, error }: Props) {
         {result.network ? ` · ${result.network}` : ""}
         {result.networkMatches === false && (
           <span className="block text-amber-600" data-testid="connection-network-mismatch">
-            Network mismatch — this wallet expects a different chain; reads and sends via this node
-            will be refused.
+            Network mismatch — this wallet expects a different chain. The app will not read from
+            this node.
           </span>
         )}
       </span>

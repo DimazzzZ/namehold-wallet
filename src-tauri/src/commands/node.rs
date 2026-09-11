@@ -683,7 +683,8 @@ pub struct NodeConnectionCheck {
     pub network: Option<String>,
     /// `Some(false)` when the node reports a chain that doesn't match the
     /// active wallet profile's network (e.g. a testnet node answering for a
-    /// mainnet wallet) — reads and sends via that node would be refused.
+    /// mainnet wallet) — the read gate refuses such a node. Sends are not
+    /// network-gated by the app; a cross-chain tx is rejected by the node.
     /// `None` when there is nothing to compare against: no active profile
     /// yet (onboarding), or the node didn't report `chain`.
     pub network_matches: Option<bool>,
@@ -773,7 +774,8 @@ pub(crate) fn resolve_probe_api_key(
 /// When an active wallet profile exists, the node's reported network is also
 /// compared against the profile's (`network_matches`); during onboarding there
 /// is no profile yet, so that check is skipped — the same None-skips rule the
-/// read gate uses.
+/// read gate uses. Unlike the read gate, a DB error while loading the profile
+/// is returned to the caller here rather than degrading to "nothing to compare".
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn check_node_connection(

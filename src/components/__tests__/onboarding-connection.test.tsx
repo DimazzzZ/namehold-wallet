@@ -179,6 +179,10 @@ describe("Onboarding — Connection choice", () => {
     expect(invokeMock).not.toHaveBeenCalledWith("update_setting", expect.anything());
   });
 
+  // During onboarding no wallet profile exists, so the real backend always
+  // returns `networkMatches: null` here (see App.tsx: Onboarding renders only
+  // when there is no profile). This test pins the shared hook/UI contract —
+  // `ok === false` on a mismatch — not a state onboarding can reach today.
   it("a reachable node on the wrong network keeps Continue disabled", async () => {
     invokeMock.mockImplementation((cmd: string) =>
       cmd === "check_node_connection"
