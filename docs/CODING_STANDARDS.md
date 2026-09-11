@@ -10,10 +10,13 @@ code-smell heuristics a reviewer might otherwise apply.
 |----------|-------------------------------------------------------------|
 | Rust     | `cargo fmt --check` (`src-tauri/`)                          |
 | Rust     | `cargo clippy --all-targets -- -D warnings` (`src-tauri/`)  |
-| Rust     | `cargo test` (`src-tauri/`)                                 |
+| Rust     | `cargo test` (`src-tauri/`) — CI runs the same tests via `cargo nextest run --manifest-path src-tauri/Cargo.toml --locked` |
 | Frontend | `npx tsc -b && npx vite build` (repo root)                  |
 | Frontend | `npx vitest run` (repo root)                                |
 | Frontend | `npm run lint:format` (prettier) and `npm run lint:secure-imports` |
+
+Locally `cargo test` is enough; CI uses nextest for its two-lane split (see
+`src-tauri/.config/nextest.toml`).
 
 ## Rust layering
 
