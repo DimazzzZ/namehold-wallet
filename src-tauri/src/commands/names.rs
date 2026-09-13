@@ -2396,6 +2396,104 @@ pub(crate) fn build_batch_renew_draft_inner(
 
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn build_batch_transfer_draft(
+    state: State<'_, AppState>,
+    names: Vec<String>,
+    recipient: String,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    if names.is_empty() {
+        return Err(AppError::InvalidInput("no names provided".into()));
+    }
+    if names.len() > MAX_BATCH_SIZE {
+        return Err(AppError::InvalidInput(format!(
+            "batch too large: {} names (max {})",
+            names.len(),
+            MAX_BATCH_SIZE
+        )));
+    }
+    let ctx = load_ctx(&state)?;
+    let rate = self::fee_rate(&ctx, fee_rate);
+    // Decode the shared recipient once, up front, so a bad address aborts the
+    // whole batch before any owner-coin prefetch or DB write.
+    let (version, program) = address::decode(ctx.network, &recipient)?;
+
+    let mut per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)> =
+        Vec::with_capacity(names.len());
+    for name in &names {
+        let nh = names::hash_name(name)?;
+        let (coin, ns) = owner_coin_and_state(&state, &ctx, name).await?;
+        per_name.push((name.clone(), nh, coin, ns));
+    }
+
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_batch_transfer_draft_inner(
+        &conn, &ctx, &names, per_name, &recipient, version, &program, rate,
+    )
+}
+
+/// Pure inner logic for `build_batch_transfer_draft`, testable without a Tauri
+/// `State<AppState>`. The caller must hold the DB mutex for the full duration —
+/// the coin-reservation + draft persist are atomic under that single held guard.
+///
+/// `per_name` is `(name, name_hash, owner_coin, on_chain_state)` for every name
+/// in the batch, resolved by the wrapper via its per-name owner-coin + name-state
+/// prefetch. `recipient`/`version`/`program` are the single shared destination,
+/// pre-decoded by the wrapper; the recipient lives in each name's TRANSFER
+/// covenant while the output value stays at the current owner address until
+/// FINALIZE moves it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_batch_transfer_draft_inner(
+    conn: &rusqlite::Connection,
+    ctx: &Ctx,
+    names: &[String],
+    per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)>,
+    recipient: &str,
+    version: u8,
+    program: &[u8],
+    rate: u64,
+) -> Result<TxDraftSummary, AppError> {
+    let mut primaries = Vec::with_capacity(per_name.len());
+    let mut name_inputs = Vec::with_capacity(per_name.len());
+    let mut batch_names = Vec::with_capacity(per_name.len());
+
+    for (name, nh, coin, ns) in per_name {
+        let addr = coin.address.clone();
+        let value = coin.value;
+        name_inputs.push(name_input_from(coin));
+        primaries.push(PrimaryOutput {
+            value,
+            address: addr,
+            covenant: covenants::transfer(&nh, ns.height, version, program),
+        });
+        batch_names.push(name);
+    }
+
+    let res = actions::build_batch_plan(
+        ctx.network,
+        ctx.account,
+        &name_inputs,
+        &primaries,
+        &ctx.funding,
+        &ctx.change_address,
+        rate,
+    )?;
+    let display_name = names_pure::display_names(&batch_names);
+    let _ = names; // kept for API parity; batch_names carries the actual list
+    let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
+    persist_with_conn(
+        conn,
+        &ctx.profile_id,
+        "batch-transfer",
+        &display_name,
+        Some(recipient),
+        Some(&name_refs),
+        &res,
+    )
+}
+
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_batch_reveal_draft(
     state: State<'_, AppState>,
     names: Vec<String>,

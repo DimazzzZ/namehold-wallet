@@ -8,6 +8,7 @@ mod build_batch_finalize_draft_tests;
 mod build_batch_redeem_draft_tests;
 mod build_batch_renew_draft_tests;
 mod build_batch_reveal_draft_tests;
+mod build_batch_transfer_draft_tests;
 mod build_bid_draft_tests;
 mod build_finalize_draft_tests;
 mod build_finalize_with_payment_draft_tests;

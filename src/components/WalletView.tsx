@@ -88,6 +88,8 @@ export function WalletView() {
   const batchRevealMutation = useNameAction("build_batch_reveal_draft");
   const batchRedeemMutation = useNameAction("build_batch_redeem_draft");
   const batchFinalizeMutation = useNameAction("build_batch_finalize_draft");
+  // Batch transfer mutation: transfers N selected names to one shared recipient.
+  const batchTransferMutation = useNameAction("build_batch_transfer_draft");
   // Substring filter for the Owned Names list. Matches on BOTH the raw ACE
   // name (as stored on-chain) and its decoded displayName, so a unicode
   // substring (e.g. from a `.козёл`-style label) still finds the underlying
@@ -131,6 +133,8 @@ export function WalletView() {
   // global setting default. Shared by the Send dialog and every batch action.
   const [sendFeeRate, setSendFeeRate] = useState("");
   const [batchFeeRate, setBatchFeeRate] = useState("");
+  // Shared recipient for a batch transfer (one address for the whole batch).
+  const [batchRecipient, setBatchRecipient] = useState("");
   const [draft, setDraft] = useState<TxDraftSummary | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // Toggle the QR alongside the receive address. Off by default — the address
@@ -153,10 +157,11 @@ export function WalletView() {
   // Batch confirmation modal state.
   const [batchModal, setBatchModal] = useState<{
     open: boolean;
-    action: "renew" | "reveal" | "redeem" | "finalize";
+    action: "renew" | "reveal" | "redeem" | "finalize" | "transfer";
     names: string[];
     feeDoos: number;
     draftId: string;
+    recipient?: string;
   } | null>(null);
   // Wallets manager modal (add / switch / delete). `addMode` opens it straight
   // to the add-wallet form.
@@ -282,25 +287,28 @@ export function WalletView() {
   // supports it (canX.allowed = true). Empty selection ⇒ false.
   const batchEligibility = useMemo(() => {
     if (selectedNames.size === 0 || nameCaps.length === 0) {
-      return { canReveal: false, canRedeem: false, canFinalize: false };
+      return { canReveal: false, canRedeem: false, canFinalize: false, canTransfer: false };
     }
     const capsByName = new Map(nameCaps.map((c) => [c.name, c]));
     let canReveal = true;
     let canRedeem = true;
     let canFinalize = true;
+    let canTransfer = true;
     for (const n of selectedNames) {
       const c = capsByName.get(n);
       if (!c) {
         canReveal = false;
         canRedeem = false;
         canFinalize = false;
+        canTransfer = false;
         break;
       }
       if (!c.canReveal.allowed) canReveal = false;
       if (!c.canRedeem.allowed) canRedeem = false;
       if (!c.canFinalize.allowed) canFinalize = false;
+      if (!c.canTransfer.allowed) canTransfer = false;
     }
-    return { canReveal, canRedeem, canFinalize };
+    return { canReveal, canRedeem, canFinalize, canTransfer };
   }, [selectedNames, nameCaps]);
 
   // Batch renew: build a single tx with multiple renewal covenants, sign, broadcast.
@@ -386,6 +394,31 @@ export function WalletView() {
     }
   };
 
+  const handleBatchTransfer = async () => {
+    const names = Array.from(selectedNames);
+    const recipient = batchRecipient.trim();
+    if (names.length === 0 || !recipient) return;
+    try {
+      showToast(`Building batch transfer draft…`, "info");
+      const draft = await batchTransferMutation.mutateAsync({
+        names,
+        recipient,
+        feeRate: batchFeeRateArg,
+      });
+      const feeDoos = draft.summary?.feeDoos ?? 0;
+      setBatchModal({
+        open: true,
+        action: "transfer",
+        names,
+        feeDoos,
+        draftId: draft.id,
+        recipient,
+      });
+    } catch (e) {
+      showToast(`Batch transfer failed: ${mapError(e)}`, "error");
+    }
+  };
+
   // Confirm a pending batch draft: unlock (if needed) → sign → broadcast.
   const handleBatchConfirm = async () => {
     if (!batchModal || !profile) return;
@@ -402,6 +435,7 @@ export function WalletView() {
       );
       setBatchModal(null);
       clearSelection();
+      setBatchRecipient("");
       qc.invalidateQueries({ queryKey: ["wallet"] });
     } catch (e) {
       showToast(`Batch ${action} failed: ${mapError(e)}`, "error");
@@ -1290,6 +1324,29 @@ export function WalletView() {
                     >
                       Finalize Selected
                     </Button>
+                    <Input
+                      className="w-56"
+                      placeholder="Transfer to hs1q… / rs1q…"
+                      value={batchRecipient}
+                      onChange={(e) => setBatchRecipient(e.target.value)}
+                      data-testid="batch-transfer-recipient-input"
+                    />
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={handleBatchTransfer}
+                      disabled={!batchEligibility.canTransfer || !batchRecipient.trim()}
+                      title={
+                        !batchEligibility.canTransfer
+                          ? "All selected names must be transferable (owned, not mid-transfer)"
+                          : !batchRecipient.trim()
+                            ? "Enter a recipient address"
+                            : undefined
+                      }
+                      data-testid="batch-transfer-btn"
+                    >
+                      Transfer Selected
+                    </Button>
                     <Button size="sm" variant="ghost" onClick={clearSelection}>
                       Clear
                     </Button>
@@ -1385,6 +1442,7 @@ export function WalletView() {
           action={batchModal.action}
           names={batchModal.names}
           estimatedFeeDoos={batchModal.feeDoos}
+          recipient={batchModal.recipient}
           onConfirm={handleBatchConfirm}
           onCancel={handleBatchCancel}
         />

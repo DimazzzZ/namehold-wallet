@@ -3190,6 +3190,148 @@ async fn build_batch_renew_draft_wrapper_rejects_missing_owner() {
     assert!(format!("{err}").contains("does not hold"));
 }
 
+// --- build_batch_transfer_draft: happy path + guards ------------------------
+
+#[tokio::test]
+async fn build_batch_transfer_draft_wrapper_happy_path() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    let recipient;
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"22".repeat(32));
+        // The shared recipient is a valid regtest address (the wallet own
+        // first derived address is a convenient, guaranteed-valid target).
+        recipient = first_derived_address(&conn, &id);
+        seed_owner_coin_at_derived(&conn, &id, "alpha", &"a1".repeat(32), 0, None);
+        seed_owner_coin_at_derived(&conn, &id, "bravo", &"b1".repeat(32), 0, None);
+    }
+    let app = mock_app_with(state);
+    let summary = names::build_batch_transfer_draft(
+        app.state(),
+        vec!["alpha".into(), "bravo".into()],
+        recipient.clone(),
+        None,
+    )
+    .await
+    .expect("batch transfer draft should build");
+    assert_eq!(summary.action, "batch-transfer");
+    assert_eq!(
+        summary
+            .summary
+            .get("recipientAddress")
+            .and_then(|v| v.as_str()),
+        Some(recipient.as_str()),
+    );
+}
+
+#[tokio::test]
+async fn build_batch_transfer_draft_rejects_empty() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let err = names::build_batch_transfer_draft(app.state(), vec![], "rs1qexample".into(), None)
+        .await
+        .expect_err("empty names must be rejected");
+    assert!(format!("{err}").contains("no names provided"));
+}
+
+#[tokio::test]
+async fn build_batch_transfer_draft_rejects_too_large() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        insert_valid_profile(&conn, "regtest");
+    }
+    let app = mock_app_with(state);
+    let too_many: Vec<String> = (0..=names::MAX_BATCH_SIZE)
+        .map(|i| format!("n{i}"))
+        .collect();
+    let err = names::build_batch_transfer_draft(app.state(), too_many, "rs1qexample".into(), None)
+        .await
+        .expect_err("oversize batch must be rejected");
+    assert!(format!("{err}").contains("batch too large"));
+}
+
+#[tokio::test]
+async fn build_batch_transfer_draft_rejects_bad_recipient() {
+    // A malformed recipient must abort at address::decode — before any owner
+    // coin is touched — leaving zero drafts (all-or-nothing).
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        seed_owner_coin_at_derived(&conn, &id, "alpha", &"a1".repeat(32), 0, None);
+    }
+    let app = mock_app_with(state);
+    let err = names::build_batch_transfer_draft(
+        app.state(),
+        vec!["alpha".into()],
+        "not-a-valid-address".into(),
+        None,
+    )
+    .await
+    .expect_err("bad recipient must be rejected");
+    assert!(matches!(
+        err,
+        AppError::InvalidInput(_) | AppError::Crypto(_) | AppError::Other(_)
+    ));
+    let drafts: i64 = app
+        .state::<AppState>()
+        .db
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM wallet_tx_drafts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        drafts, 0,
+        "no draft may persist when the recipient is invalid"
+    );
+}
+
+#[tokio::test]
+async fn build_batch_transfer_draft_aborts_on_unheld_name() {
+    // One name the wallet does not own -> owner_coin_and_state errors,
+    // aborting the whole batch before any write.
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc(&mut server).await;
+    let state = create_full_test_state();
+    let recipient;
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"22".repeat(32));
+        recipient = first_derived_address(&conn, &id);
+        // Only alpha is held; ghost is not.
+        seed_owner_coin_at_derived(&conn, &id, "alpha", &"a1".repeat(32), 0, None);
+    }
+    let app = mock_app_with(state);
+    let err = names::build_batch_transfer_draft(
+        app.state(),
+        vec!["alpha".into(), "ghost".into()],
+        recipient,
+        None,
+    )
+    .await
+    .expect_err("an unheld name must abort the batch");
+    assert!(format!("{err}").contains("does not hold"));
+    let drafts: i64 = app
+        .state::<AppState>()
+        .db
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM wallet_tx_drafts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(drafts, 0, "no draft may persist when a name is unheld");
+}
+
 // --- build_batch_reveal_draft: happy path + guards --------------------------
 
 #[tokio::test]
