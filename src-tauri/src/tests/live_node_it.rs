@@ -22,12 +22,13 @@ use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
 use crate::commands::names::{
-    build_bid_draft, build_open_draft, build_redeem_draft, build_register_draft, build_reveal_draft,
+    build_bid_draft, build_open_draft, build_redeem_draft, build_register_draft,
+    build_reveal_draft, build_transfer_draft, build_update_draft,
 };
 use crate::commands::tx::estimate_tx_draft_fee;
 use crate::commands::tx::{
-    broadcast_tx_draft, build_send_hns_draft, refresh_tx_confirmations, sign_tx_draft_inner,
-    sync_wallet_state,
+    broadcast_tx_draft, build_send_hns_draft, get_wallet_balances, refresh_tx_confirmations,
+    sign_tx_draft_inner, sync_wallet_state,
 };
 use crate::db;
 use crate::noncustodial::hd::{self, ExtendedPrivKey, ExtendedPubKey};
@@ -2831,4 +2832,364 @@ async fn live_write_capability_downgrades() {
         "can_write must be false when read-only: {cap2:?}"
     );
     assert!(cap2.reason.is_some(), "a reason must be reported");
+}
+
+// ============================================================================
+// Money-critical balance invariants
+//
+// The three tests below pin the top-level number the user sees
+// (`get_wallet_balances`) against on-chain reality across real coin
+// movements. Every earlier live test asserts on `tracked_utxos` rows and
+// `draft.summary` values — none actually invokes `get_wallet_balances`. If
+// `classify_covenant` or `compute_balances` ever regresses (e.g. a BID coin
+// gets double-counted as both `nameLockup` AND `liquid`, a REVOKE inflates a
+// class, or a fee stops being subtracted from the totals), the frontend would
+// show phantom money to spend — the worst kind of wallet bug. These are cheap
+// to keep green, and irreplaceable when something drifts.
+// ============================================================================
+
+/// Read `get_wallet_balances` and return `(liquid, name_control, name_lockup, total)`
+/// as `i64` doos. Panics on a malformed response — the command owns the schema
+/// and any drift is a test-worthy regression on its own.
+async fn balances_now(app: &tauri::App<tauri::test::MockRuntime>) -> (i64, i64, i64, i64) {
+    let v = get_wallet_balances(app.state(), None).await.expect("balances");
+    let g = |k: &str| v.get(k).and_then(|x| x.as_i64()).expect(k);
+    (
+        g("liquidDoos"),
+        g("nameControlDoos"),
+        g("nameLockupDoos"),
+        g("totalDoos"),
+    )
+}
+
+/// Send with change to an external address: the wallet's `totalDoos` after
+/// broadcast+mine must drop by EXACTLY `fee`, because `inputTotal = sent +
+/// change + fee`, only `sent` leaves the wallet, and `change` comes back to a
+/// tracked change address.
+///
+/// This is the top-level conservation invariant: the number the UI shows must
+/// track chain reality, and the fee must be attributed to the miner — not
+/// silently rounded, doubled, or absorbed by another spend class.
+#[tokio::test]
+async fn live_wallet_balance_conservation_across_send() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_wallet_balance_conservation_across_send: set HNS_IT_NODE_URL");
+        return;
+    };
+    // Private account so the exact-total assertion isn't contaminated by
+    // sibling tests mining to the shared `acct=0` address.
+    let conn = seeded_conn_acct(&url, &key, 21);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00_at(21);
+
+    fund(&cl, &addr, 105).await;
+    // Advance the tip past coinbase maturity to a throwaway address so every
+    // coin funded to `addr` is spendable; `get_wallet_balances` counts unspent
+    // rows regardless of maturity, so we further need the whole set to actually
+    // be reachable by the send.
+    let burn = recv_leaf_01_at(97);
+    fund(&cl, &burn, 3).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let (liq_before, nc_before, nl_before, tot_before) = balances_now(&app).await;
+    // Pre-conditions: only liquid coins funded, no in-flight names.
+    assert_eq!(nc_before, 0, "no name-control coins yet");
+    assert_eq!(nl_before, 0, "no name-lockup coins yet");
+    assert_eq!(liq_before, tot_before, "total == liquid pre-send");
+    // total must equal the raw sum in tracked_utxos (the frontend and the
+    // coin-selection code must agree on what's spendable).
+    assert_eq!(tot_before, wallet_total_doos(&app));
+
+    // Send to a wallet-external address so `sent` genuinely leaves the wallet.
+    let (_sk, _pk, external) = hd::derive_address(NET, &seed(), 21, 0, 7).unwrap();
+    let draft = build_send_hns_draft(app.state(), external, 500_000, Some(1), None)
+        .await
+        .expect("build send");
+    let fee = sum_i64(&draft, "feeDoos");
+    let change = sum_i64(&draft, "changeDoos");
+    let input_total = sum_i64(&draft, "inputTotalDoos");
+    // 500_000 sent + change + fee == input_total. This equation is the whole
+    // ballgame: violating it means we either created or destroyed HNS.
+    assert_eq!(500_000 + change + fee, input_total, "chain conservation");
+    assert!(fee > 0 && change > 0, "expected change + fee both > 0");
+
+    execute(&app, &cl, &addr, draft.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let (_, nc_after, nl_after, tot_after) = balances_now(&app).await;
+    assert_eq!(nc_after, 0);
+    assert_eq!(nl_after, 0);
+    // The wallet's total dropped by EXACTLY (sent + fee) — `change` came back.
+    // execute() also mined 1 block to `addr`, adding a fresh coinbase reward
+    // (immature, but still counted in `totalDoos`), so subtract it off.
+    let reward = new_coinbase_reward_for(&cl, &addr, 1).await;
+    assert_eq!(
+        tot_after,
+        tot_before - 500_000 - fee + reward,
+        "wallet total moved by exactly (-sent -fee +minedReward)"
+    );
+}
+
+/// Return the sum of `value` across all coins at `addr` that appeared in the
+/// last `last_n` blocks — used to net-out the block reward from a mined-tip
+/// balance delta. `getcoinsbyaddress` is address-indexed, so this is exact.
+async fn new_coinbase_reward_for(cl: &NodeRpcClient, addr: &str, last_n: i64) -> i64 {
+    let info = cl.get_blockchain_info().await.expect("info");
+    let cutoff = info.blocks as i64 - last_n + 1;
+    let coins = cl.get_coins_by_address(addr).await.expect("coins");
+    coins
+        .iter()
+        .filter(|c| c.coinbase.unwrap_or(false) && c.height.unwrap_or(-1) >= cutoff)
+        .map(|c| c.value)
+        .sum()
+}
+
+/// A BID coin's value must land in `nameLockupDoos` — not `liquidDoos`, not
+/// `nameControlDoos`. The frontend uses this split to decide what the user
+/// can spend right now; a misclassified bid would either (a) let the user
+/// double-spend a locked bid coin as if it were liquid, or (b) hide it
+/// permanently as if the funds were gone. Verified against a real hsd BID
+/// covenant on regtest.
+#[tokio::test]
+async fn live_balance_classes_track_bid_lockup() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_balance_classes_track_bid_lockup: set HNS_IT_NODE_URL");
+        return;
+    };
+    // Private, never-used-elsewhere account. This test does an on-chain BID
+    // and asserts on the exact delta `nameLockupDoos` moves by. If this
+    // account has ever been touched by a prior failing run of this test on
+    // the same chain, the pre-existing BID output persists at a wallet-owned
+    // derived address and skews the delta. Bump this index if the chain gets
+    // stale in a way that can't be reset.
+    let conn = seeded_conn_acct(&url, &key, 122);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00_at(122);
+
+    fund(&cl, &addr, 105).await;
+    let burn = recv_leaf_01_at(196);
+    fund(&cl, &burn, 3).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // Baseline. The live suite runs serially against ONE chain and this
+    // account's address may already carry name coins from an earlier run, so
+    // assert on DELTAS from this baseline rather than absolute class values.
+    let (_, _nc_pre, nl_pre, tot_pre) = balances_now(&app).await;
+
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("bclas{tip}");
+
+    // OPEN → BIDDING.
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+
+    // BID: 1_000_000 true bid, 2_000_000 lockup total (the extra is a blind).
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    const BID_VALUE: i64 = 1_000_000;
+    const LOCKUP: i64 = 2_000_000;
+    let bid = build_bid_draft(app.state(), name.clone(), BID_VALUE, LOCKUP, Some(1))
+        .await
+        .expect("build bid");
+    execute(&app, &cl, &addr, bid.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let (_liq_after, _nc_after, nl_after, tot_after) = balances_now(&app).await;
+    // The BID output value = the LOCKUP amount, on a BID covenant → `name_lockup`.
+    // Assert the lockup class grew by EXACTLY this bid's lockup: no more (not
+    // double-counted) and no less (not misfiled into liquid/control).
+    assert_eq!(
+        nl_after - nl_pre,
+        LOCKUP,
+        "BID lockup must raise nameLockupDoos by exactly {LOCKUP}: pre={nl_pre} after={nl_after}"
+    );
+    // Two independent frontend-facing invariants must hold:
+    //   (1) `totalDoos` equals the raw unspent-utxo sum — no class is
+    //       double-counted and none is dropped.
+    //   (2) The BID's lockup and the wallet total both grew relative to the
+    //       pre-BID baseline (the wallet accumulated block rewards from
+    //       mining and reveal-window advancement) — a negative move here
+    //       would mean the classifier hid coins from `totalDoos`.
+    assert_eq!(tot_after, wallet_total_doos(&app));
+    assert!(
+        tot_after > tot_pre,
+        "wallet total should grow (mined rewards >> fees): pre={tot_pre} after={tot_after}"
+    );
+    // The BID's fee is captured in the draft's summary_json — every draft
+    // must record a strictly positive fee so the miner is paid.
+    assert!(draft_fee_by_action(&app, "bid") > 0, "bid draft must record a fee");
+    assert!(draft_fee_by_action(&app, "open") > 0, "open draft must record a fee");
+}
+
+/// Read the `feeDoos` recorded in the most recent draft for `action` on the
+/// active profile, parsed from its persisted `summary_json`. The money-invariant
+/// tests build exactly one draft per action, so "most recent" is unambiguous.
+fn draft_fee_by_action(app: &tauri::App<tauri::test::MockRuntime>, action: &str) -> i64 {
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    let summary_json: String = c
+        .query_row(
+            "SELECT summary_json FROM wallet_tx_drafts
+              WHERE wallet_profile_id = ?1 AND action = ?2
+              ORDER BY created_at DESC LIMIT 1",
+            params![PROFILE, action],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|e| panic!("no draft for action={action}: {e}"));
+    let v: serde_json::Value = serde_json::from_str(&summary_json).expect("summary_json");
+    // Name-action summaries persist `feeDoos` via ActionSummary's serde.
+    v.get("feeDoos")
+        .and_then(|x| x.as_i64())
+        .unwrap_or_else(|| panic!("summary for {action} missing feeDoos: {summary_json}"))
+}
+
+/// Two spend-capable actions on the SAME owned name must not both reserve the
+/// owner coin. The persist path reserves every input the plan spends,
+/// including the name UTXO, and the second insert is expected to fail with an
+/// `InvalidInput` "just reserved by another pending draft" error. Without
+/// this, an UPDATE and a TRANSFER could each carry a valid signature over the
+/// same owner coin and race at broadcast time — the loser silently getting
+/// dropped by the mempool while the frontend thinks both are pending.
+#[tokio::test]
+async fn live_name_utxo_reservation_blocks_second_action() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_name_utxo_reservation_blocks_second_action: set HNS_IT_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_acct(&url, &key, 23);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00_at(23);
+
+    fund(&cl, &addr, 105).await;
+    let burn = recv_leaf_01_at(95);
+    fund(&cl, &burn, 3).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("dblres{tip}");
+
+    // Drive the name all the way to owned (CLOSED + REGISTER). Mirrors the
+    // existing auction lifecycle test.
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let bid = build_bid_draft(app.state(), name.clone(), 1_000_000, 2_000_000, Some(1))
+        .await
+        .expect("build bid");
+    execute(&app, &cl, &addr, bid.id).await;
+    assert!(mine_until(&cl, &name, "REVEAL", &addr, 30).await);
+
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build reveal");
+    execute(&app, &cl, &addr, reveal.id).await;
+    assert!(mine_until(&cl, &name, "CLOSED", &addr, 40).await);
+
+    // Seed tracked_name_states so sync attributes the owner coin (mainnet uses
+    // explorer-based discovery, unavailable on regtest — same pattern as the
+    // existing auction/register lifecycle test).
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state)
+             VALUES (?1, ?2, '', 'UNKNOWN')",
+            params![PROFILE, name],
+        )
+        .unwrap();
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let records = vec![serde_json::json!({"type":"TXT","txt":["reserved-check"]})];
+    let reg = build_register_draft(app.state(), name.clone(), Some(records), Some(1))
+        .await
+        .expect("build register");
+    execute(&app, &cl, &addr, reg.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // Build an UPDATE first — this reserves the owner coin.
+    let upd_records = vec![serde_json::json!({"type":"TXT","txt":["v1"]})];
+    let _upd = build_update_draft(app.state(), name.clone(), upd_records, Some(1))
+        .await
+        .expect("first update draft should succeed");
+
+    // Now try a TRANSFER of the SAME name to any address — its plan spends the
+    // same owner coin. Reservation must reject it.
+    let recipient = recv_leaf_01_at(23);
+    let err = build_transfer_draft(app.state(), name.clone(), recipient, Some(1))
+        .await
+        .expect_err("second draft on same owner coin must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("just reserved by another") || msg.contains("already spent"),
+        "unexpected error for double-reserve: {msg}"
+    );
+}
+
+/// A max-send (Send All) must leave the wallet's spendable liquid balance at
+/// exactly the size of the single sweep output. Coin-selection or classifier
+/// bugs that misclassify the sweep output would either strand the funds
+/// (post-sweep total drops to zero) or duplicate them across classes.
+#[tokio::test]
+async fn live_max_send_leaves_only_sweep_output_liquid() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_max_send_leaves_only_sweep_output_liquid: set HNS_IT_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_acct(&url, &key, 24);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00_at(24);
+
+    fund(&cl, &addr, 105).await;
+    let burn = recv_leaf_01_at(94);
+    fund(&cl, &burn, 3).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let (_, nc_pre, nl_pre, tot_pre) = balances_now(&app).await;
+    assert_eq!(nc_pre, 0);
+    assert_eq!(nl_pre, 0);
+
+    // Sweep back to `addr` (self-send): the sweep tx has one output whose
+    // value == inputTotal - fee.
+    let draft = build_send_hns_draft(app.state(), addr.clone(), 0, Some(1), Some(true))
+        .await
+        .expect("build max");
+    let fee = sum_i64(&draft, "feeDoos");
+    let input_total = sum_i64(&draft, "inputTotalDoos");
+    assert_eq!(sum_i64(&draft, "changeDoos"), 0, "sweep has no change");
+    assert_eq!(input_total, tot_pre, "sweep spends the entire wallet");
+    let sweep_output = input_total - fee;
+
+    execute(&app, &cl, &addr, draft.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // Post-sweep the wallet holds exactly two coins that count toward totalDoos:
+    //   1) the sweep output at `addr` (mature, liquid, value = sweep_output)
+    //   2) the block-1 coinbase reward at `addr` from execute()'s mine (also
+    //      liquid — coinbase maturity is a spendability filter, not a balance
+    //      filter).
+    let reward = new_coinbase_reward_for(&cl, &addr, 1).await;
+    let (liq_after, nc_after, nl_after, tot_after) = balances_now(&app).await;
+    assert_eq!(nc_after, 0);
+    assert_eq!(nl_after, 0);
+    assert_eq!(
+        liq_after,
+        sweep_output + reward,
+        "post-sweep liquid = sweep_output + coinbase reward"
+    );
+    assert_eq!(tot_after, liq_after, "no other classes present");
+    // Chain-conservation across the sweep: only the miner fee left the wallet
+    // (net of the newly-mined block reward, which arrived).
+    assert_eq!(tot_after, tot_pre - fee + reward);
 }
