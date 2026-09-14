@@ -13,7 +13,7 @@
 //! Covenant classification is verified against hsd `lib/covenants/rules.js`
 //! covenant type table.
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::AppError;
 use crate::noncustodial::rpc::{NodeCoin, NodeCovenant};
@@ -258,6 +258,11 @@ pub fn set_sync_cursor(conn: &Connection, profile_id: &str, height: i64) -> Resu
 }
 
 /// Read the last synced height for a profile (0 if never synced).
+///
+/// A missing cursor row means "never synced" and reads as 0. A genuine DB
+/// failure is returned as `AppError::Db` rather than collapsing into 0 — coin
+/// selection uses this height to decide coinbase maturity, so a silent 0 there
+/// would silently shrink the spendable set.
 pub fn get_sync_height(conn: &Connection, profile_id: &str) -> Result<i64, AppError> {
     let height: Option<i64> = conn
         .query_row(
@@ -265,7 +270,7 @@ pub fn get_sync_height(conn: &Connection, profile_id: &str) -> Result<i64, AppEr
             [profile_id],
             |row| row.get(0),
         )
-        .ok();
+        .optional()?;
     Ok(height.unwrap_or(0))
 }
 

@@ -36,6 +36,19 @@ impl Network {
         }
     }
 
+    /// Coinbase maturity: number of blocks a coinbase output must age before
+    /// it can be spent (hsd `coinbaseMaturity`). Spending an immature coinbase
+    /// is a consensus violation (`bad-txns-premature-spend-of-coinbase`), so
+    /// coin selection must exclude coinbase coins younger than this.
+    pub fn coinbase_maturity(self) -> i64 {
+        match self {
+            Network::Main => 100,
+            Network::Testnet => 100,
+            Network::Regtest => 2,
+            Network::Simnet => 6,
+        }
+    }
+
     /// BIP32 xprv version bytes (hsd `keyPrefix.xprivkey`).
     pub fn xprv_version(self) -> u32 {
         // hsd uses the same value across networks for the binary prefix; the

@@ -22,6 +22,20 @@ fn test_coin_type_all_variants() {
     assert_eq!(Network::Simnet.coin_type(), 5356);
 }
 
+// ── coinbase_maturity ────────────────────────────────────────────────
+
+/// Blocks a coinbase output must age before it can be spent. Values mirror
+/// hsd `lib/protocol/networks.js` (`main`/`testnet` 100, `regtest` 2,
+/// `simnet` 6); a wrong value here either blocks spendable funds or builds a
+/// tx the node rejects with `bad-txns-premature-spend-of-coinbase`.
+#[test]
+fn test_coinbase_maturity_all_variants() {
+    assert_eq!(Network::Main.coinbase_maturity(), 100);
+    assert_eq!(Network::Testnet.coinbase_maturity(), 100);
+    assert_eq!(Network::Regtest.coinbase_maturity(), 2);
+    assert_eq!(Network::Simnet.coinbase_maturity(), 6);
+}
+
 // ── xprv_version ─────────────────────────────────────────────────────
 
 #[test]

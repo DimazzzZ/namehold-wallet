@@ -70,7 +70,7 @@ pub(crate) fn load_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
         crate::noncustodial::derivation::BRANCH_CHANGE,
         0,
     )?;
-    let funding = send::load_spendable_coins(&conn, &id, None)?;
+    let funding = send::load_spendable_coins(&conn, &id, None, network)?;
     let settings = queries::get_settings(&conn)?;
     Ok(Ctx {
         profile_id: id,

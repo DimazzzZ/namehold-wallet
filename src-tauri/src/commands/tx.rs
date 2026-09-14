@@ -430,7 +430,7 @@ pub async fn build_send_hns_draft(
     // Validate destination early.
     crate::noncustodial::tx::output_address_from_string(network, &to_address)?;
 
-    let coins = send::load_spendable_coins(&conn, &profile.id, None)?;
+    let coins = send::load_spendable_coins(&conn, &profile.id, None, network)?;
     // Send Max sweeps all coins (output = inputTotal − fee, no change); otherwise
     // select to cover the requested amount + fee.
     let selection = if is_max {
@@ -525,7 +525,8 @@ pub async fn estimate_tx_draft_fee(
     let rate = resolve_fee_rate(&state, fee_rate).await;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let profile = active_profile(&conn)?;
-    let coins = send::load_spendable_coins(&conn, &profile.id, None)?;
+    let network = derivation::network_from_profile(&profile.network)?;
+    let coins = send::load_spendable_coins(&conn, &profile.id, None, network)?;
     let selection = send::select_coins(&coins, value_doos as u64, rate)?;
     Ok(serde_json::json!({
         "feeDoos": selection.fee,
@@ -617,7 +618,13 @@ pub(crate) async fn sign_tx_draft_inner(
             // before migration 015, or whose reservation TTL-expired.
             let reserved = send::load_reserved_coins(&conn, &draft.wallet_profile_id, draft_id)?;
             if reserved.is_empty() {
-                send::load_spendable_coins(&conn, &draft.wallet_profile_id, Some(draft_id))?
+                let network = derivation::network_from_profile(&profile.network)?;
+                send::load_spendable_coins(
+                    &conn,
+                    &draft.wallet_profile_id,
+                    Some(draft_id),
+                    network,
+                )?
             } else {
                 reserved
             }
