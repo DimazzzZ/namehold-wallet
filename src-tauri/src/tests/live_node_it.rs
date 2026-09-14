@@ -188,6 +188,30 @@ async fn execute(
         .expect("broadcast");
     assert_eq!(bc.status, "broadcasted");
     cl.generate_to_address(1, addr).await.expect("mine 1");
+    // Advance the just-mined draft to `confirmed` and free its coin
+    // reservation, in that order. Two things need to happen after a broadcast
+    // draft is mined before the next draft can select the same coins:
+    //   1. `refresh_tx_confirmations` promotes it to `confirmed`.
+    //   2. Its input reservation is released. In production this happens
+    //      transparently: once sync marks the input coin `spent_by_txid` (so
+    //      it drops out of `load_spendable_coins` on the "spent" clause) or
+    //      the reservation TTL (1h) elapses (`RESERVATION_TTL_SECS`), the
+    //      reservation stops mattering. Neither of those runs on a fast,
+    //      chained test — sync in this harness doesn't mark the change coin
+    //      spent before the next build, and waiting an hour is not viable.
+    //      `broadcast_tx_draft` deliberately keeps the reservation on
+    //      successful broadcast (real coins are in flight), so we release it
+    //      here to close the gap, mirroring the end-state the app reaches
+    //      once sync + time settle.
+    refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh confirmations");
+    {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        db::queries::release_reserved_utxos_for_draft(&conn, &draft_id)
+            .expect("release reservation");
+    }
 }
 
 #[tokio::test]
@@ -469,4 +493,158 @@ async fn live_auction_register_transfer_finalize() {
 
     // After finalize, the name is at the new address. Check state.
     assert_eq!(node_state(&cl, &name).await.as_deref(), Some("CLOSED"));
+}
+
+/// Acquire a fresh name end-to-end so the wallet owns it: OPEN → BID → REVEAL →
+/// REGISTER, mining through each phase and tracking the name so sync picks up
+/// the owner coin. Mirrors the single-name path in
+/// `live_auction_register_transfer_finalize`, factored out so multi-name tests
+/// (e.g. batch transfer) can reuse it. Funds are mined to `addr`; the caller
+/// must have already funded + synced the wallet.
+async fn acquire_name(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    cl: &NodeRpcClient,
+    addr: &str,
+    name: &str,
+) {
+    // OPEN → advance to BIDDING.
+    let open = build_open_draft(app.state(), name.to_string(), Some(1))
+        .await
+        .expect("build open");
+    execute(app, cl, addr, open.id).await;
+    assert!(
+        mine_until(cl, name, "BIDDING", addr, 30).await,
+        "name {name} did not reach BIDDING"
+    );
+
+    // BID → advance to REVEAL.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let bid = build_bid_draft(app.state(), name.to_string(), 1_000_000, 2_000_000, Some(1))
+        .await
+        .expect("build bid");
+    execute(app, cl, addr, bid.id).await;
+    assert!(
+        mine_until(cl, name, "REVEAL", addr, 30).await,
+        "name {name} did not reach REVEAL"
+    );
+
+    // REVEAL → advance to CLOSED.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let reveal = build_reveal_draft(app.state(), name.to_string(), Some(1))
+        .await
+        .expect("build reveal");
+    execute(app, cl, addr, reveal.id).await;
+    assert!(
+        mine_until(cl, name, "CLOSED", addr, 40).await,
+        "name {name} did not reach CLOSED"
+    );
+
+    // Track the name so sync picks up the owner coin.
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO tracked_name_states (wallet_profile_id, name, name_hash_hex, state) VALUES (?1, ?2, '', 'UNKNOWN')",
+            params![PROFILE, name],
+        )
+        .unwrap();
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // REGISTER the won name so the wallet owns it.
+    let records = vec![serde_json::json!({"type":"TXT","txt":["cua-agent-verified"]})];
+    let reg = build_register_draft(app.state(), name.to_string(), Some(records), Some(1))
+        .await
+        .expect("build register");
+    execute(app, cl, addr, reg.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+}
+
+/// Batch transfer: acquire TWO names, transfer BOTH to a single shared recipient
+/// in one `build_batch_transfer_draft` tx, and assert both names' TRANSFER
+/// covenants land on-chain, then finalize each. This is the multi-name analogue
+/// of `live_auction_register_transfer_finalize` and the only live-node coverage
+/// of the batch command (the single-transfer test predates the batch feature).
+#[tokio::test]
+async fn live_batch_transfer_two_names() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_batch_transfer_two_names: set HNS_IT_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+
+    // Fund the wallet.
+    cl.generate_to_address(101, &addr).await.expect("fund");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // Two per-run-unique names (avoid collisions with names already on the node).
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name_a = format!("batchtx{tip}a");
+    let name_b = format!("batchtx{tip}b");
+
+    // Acquire both names so the wallet owns them.
+    acquire_name(&app, &cl, &addr, &name_a).await;
+    acquire_name(&app, &cl, &addr, &name_b).await;
+
+    // Shared recipient (leaf 0/1).
+    let (_sk, _pk2, recipient) =
+        crate::noncustodial::hd::derive_address(NET, &seed(), 0, 0, 1).unwrap();
+
+    // BATCH TRANSFER both names to the shared recipient in one tx.
+    use crate::commands::names::{build_batch_transfer_draft, build_finalize_draft};
+    let batch = build_batch_transfer_draft(
+        app.state(),
+        vec![name_a.clone(), name_b.clone()],
+        recipient.clone(),
+        Some(1),
+    )
+    .await
+    .expect("build batch transfer");
+    execute(&app, &cl, &addr, batch.id.clone()).await;
+
+    // The batch draft broadcast, and BOTH names now show a pending transfer
+    // on-chain (the TRANSFER covenant sets `transfer` to the height it landed).
+    let row = draft_status(&app, &batch.id);
+    assert!(
+        matches!(row.status.as_str(), "broadcasted" | "confirmed"),
+        "batch draft status was {}",
+        row.status
+    );
+    for name in [&name_a, &name_b] {
+        let info = cl.get_name_info(name).await.expect("getnameinfo");
+        let transfer_height = info
+            .get("info")
+            .and_then(|i| i.get("transfer"))
+            .and_then(|t| t.as_u64());
+        assert!(
+            transfer_height.map(|h| h > 0).unwrap_or(false),
+            "name {name} has no pending TRANSFER covenant after batch transfer: {info}"
+        );
+    }
+
+    // Finalize each name after the transfer lockup elapses. FINALIZE is per-name
+    // (there is no batch finalize command); advance past the regtest transfer
+    // lockup (10 blocks) so each finalize is valid.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    cl.generate_to_address(11, &addr).await.expect("lockup");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    for name in [&name_a, &name_b] {
+        let finalize = build_finalize_draft(app.state(), name.clone(), Some(1))
+            .await
+            .expect("build finalize");
+        execute(&app, &cl, &addr, finalize.id).await;
+    }
+
+    // After finalize, both names are at the recipient address and CLOSED.
+    for name in [&name_a, &name_b] {
+        assert_eq!(
+            node_state(&cl, name).await.as_deref(),
+            Some("CLOSED"),
+            "name {name} not CLOSED after finalize"
+        );
+    }
 }

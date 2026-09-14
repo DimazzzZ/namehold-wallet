@@ -61,6 +61,9 @@ job-logs*.txt
 # Testing
 coverage/
 .qa/
+# Disposable regtest node data dir (created by scripts/regtest.sh) — throwaway
+# chain state, never committed.
+.regtest/
 
 # Rust
 **/*.rs.bk
