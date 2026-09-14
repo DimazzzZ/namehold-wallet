@@ -138,7 +138,17 @@ pub(crate) async fn fetch_name_state(
     })
 }
 
-/// `getRenewalBlock`: internal-order 32-byte hash at `height - 2*renewalMaturity`.
+/// `getRenewalBlock`: 32-byte block hash at `height - 2*renewalMaturity`.
+///
+/// Unlike Bitcoin, HSD does NOT reverse block hashes for RPC display — the hex
+/// returned by `getblockhash` is already in the raw internal byte order that
+/// HSD's `chaindb.getEntryByHash` (and, transitively, the `bad-register-renewal`
+/// consensus check in `chain.verifyRenewal`) uses to look the entry up. So we
+/// decode the hex as-is; reversing it would produce an unknown hash and the
+/// REGISTER / RENEW / FINALIZE covenants would be rejected as invalid on
+/// broadcast. Verified against regtest: block `N+1`'s `previousblockhash`
+/// equals block `N`'s `getblockhash` output byte-for-byte (see hsd
+/// `lib/primitives/headers.js`), whereas Bitcoin-style RPC would reverse it.
 pub(crate) async fn renewal_block(
     client: &dyn NodeRpc,
     network: Network,
@@ -154,7 +164,6 @@ pub(crate) async fn renewal_block(
     }
     let mut h = [0u8; 32];
     h.copy_from_slice(&bytes);
-    h.reverse(); // display -> internal
     Ok(h)
 }
 

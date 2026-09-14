@@ -567,7 +567,9 @@ mod rpc_injected_tests {
     async fn renewal_block_computes_correct_height() {
         // Regtest renewal_maturity = 50, so height = tip - 2*50 = tip - 100.
         // The mock returns the same hash for any height; we're testing that
-        // the RPC path completes and the hash is byte-reversed correctly.
+        // the RPC path completes and the hash is decoded as-is (HSD block
+        // hashes are NOT reversed for RPC display, so the covenant commits to
+        // the exact bytes `getblockhash` returns).
         let mock = MockNodeRpc::new()
             .with_blockchain_info(blockchain_info(1000))
             .with_block_hash(
@@ -575,10 +577,10 @@ mod rpc_injected_tests {
             );
 
         let result = renewal_block(&mock, Network::Regtest).await.unwrap();
-        // The hash "..01" is reversed (display -> internal), so the first
-        // byte becomes 0x01 and the rest zeros.
+        // The hash "0000..0001" is decoded as-is: the last byte is 0x01, the
+        // rest zero (no reversal — HSD RPC hashes are already internal order).
         let mut expected = [0u8; 32];
-        expected[0] = 1;
+        expected[31] = 1;
         assert_eq!(result, expected);
     }
 
@@ -595,7 +597,7 @@ mod rpc_injected_tests {
 
         let result = renewal_block(&mock, Network::Regtest).await.unwrap();
         let mut expected = [0u8; 32];
-        expected[0] = 2;
+        expected[31] = 2;
         assert_eq!(result, expected);
     }
 

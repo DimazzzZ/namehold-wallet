@@ -597,7 +597,10 @@ impl NodeRpcClient {
         }
     }
 
-    /// `getblockhash` — the block hash (display-order hex) at `height`.
+    /// `getblockhash` — the block hash at `height`, hex in hsd's internal byte
+    /// order. Unlike Bitcoin, hsd does not reverse hashes for RPC display, so
+    /// the hex is fed straight back to `getblock` or decoded as-is into a
+    /// covenant (see `commands::names::renewal_block`).
     pub async fn get_block_hash(&self, height: i64) -> Result<String, AppError> {
         self.call("getblockhash", serde_json::json!([height])).await
     }
