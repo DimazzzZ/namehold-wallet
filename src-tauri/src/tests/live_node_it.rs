@@ -76,6 +76,21 @@ fn leaf00() -> (String, String, String) {
     leaf00_at(0)
 }
 
+/// A private BIP44 account index that is guaranteed empty on EVERY run,
+/// including reruns against an already-used regtest chain. Keyed off the
+/// current chain height and pushed into a high range well clear of the fixed
+/// private accounts sibling tests use (0-24): two runs can only collide if the
+/// tip is byte-for-byte identical, which never recurs once any block is mined.
+///
+/// Use this for tests whose invariant depends on the account starting from a
+/// clean slate — a single fresh/immature coinbase, an empty post-reorg
+/// spendable set, or an address with no prior revoked-covenant coin (which
+/// trips hsd's addrindex 500 on `getcoinsbyaddress`). Tests that only assert on
+/// per-run DELTAS can keep a fixed private account.
+fn fresh_acct(tip: i64) -> u32 {
+    100_000 + (tip as u32)
+}
+
 /// Receive leaf `acct/0/0` — a unique on-chain address per account index.
 /// Used to give a test its OWN funding address so it never inherits the
 /// coin set that sibling tests pile onto the shared `acct 0` address (the
@@ -1035,15 +1050,19 @@ async fn live_send_immature_coinbase_rejected_then_matures() {
         eprintln!("skip live_send_immature_coinbase_rejected_then_matures: set HNS_IT_NODE_URL");
         return;
     };
-    // Private account (see `seeded_conn_acct`): this test asserts on the exact
-    // coin set / calls getcoinsbyaddress, so it needs an address that no other
-    // serial test funds.
-    let conn = seeded_conn_acct(&url, &key, 13);
-    let app = app_with(conn);
+    // REUSE-SAFETY: this test asserts that a freshly-mined coinbase is the
+    // ONLY coin and is immature, so a positive send must fail "insufficient
+    // funds". On a fixed account a prior run leaves mature coinbases behind and
+    // the send would succeed. A height-keyed fresh account (see `fresh_acct`)
+    // is guaranteed empty at the start of every run, so the single coinbase we
+    // mine is genuinely alone and immature.
     let cl = client(&url, &key);
-    let (addr, _, _) = leaf00_at(13);
+    let tip0 = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct = fresh_acct(tip0);
+    let conn = seeded_conn_acct(&url, &key, acct);
+    let app = app_with(conn);
+    let (addr, _, _) = leaf00_at(acct);
 
-    // Take the chain to a known baseline (avoid inheriting prior tests' state).
     // Mine ONE fresh coinbase — its coin is at height=tip; spend_height=tip+1;
     // maturity=2 means it becomes spendable when tip advances by another block.
     fund(&cl, &addr, 1).await;
@@ -1764,14 +1783,17 @@ async fn live_coinbase_reorg_immaturity() {
         eprintln!("skip live_coinbase_reorg_immaturity: set HNS_IT_NODE_URL");
         return;
     };
-    // Private account so the "one fresh coinbase, invalidate, remine ->
-    // immature" sequence is deterministic; the shared account 0 address
-    // already holds many mature coinbases from sibling tests, which would
-    // make the post-reorg spendable set non-empty.
-    let conn = seeded_conn_acct(&url, &key, 17);
-    let app = app_with(conn);
+    // REUSE-SAFETY: the "one fresh coinbase, invalidate, remine -> immature"
+    // sequence requires the account's spendable set to be EMPTY except for the
+    // single coinbase under test. A fixed account inherits mature coinbases
+    // from a prior run (or sibling tests), making the post-reorg send succeed.
+    // A height-keyed fresh account (see `fresh_acct`) is empty on every run.
     let cl = client(&url, &key);
-    let (addr, _, _) = leaf00_at(17);
+    let tip0 = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct = fresh_acct(tip0);
+    let conn = seeded_conn_acct(&url, &key, acct);
+    let app = app_with(conn);
+    let (addr, _, _) = leaf00_at(acct);
 
     // Mine ONE coinbase (C1) to this account, then advance the tip on a
     // THROWAWAY address so C1 clears maturity (regtest `coinbaseMaturity` = 2;
@@ -1780,7 +1802,9 @@ async fn live_coinbase_reorg_immaturity() {
     // that's the reorg boundary we'll roll back to.
     fund(&cl, &addr, 1).await; // C1 at height h = N+1, tip = N+1
     let c1_tip = cl.get_blockchain_info().await.expect("info").blocks;
-    let burn = recv_leaf_01_at(98);
+    // Throwaway address from this run's OWN fresh account (branch 1) so it
+    // never collides with a sibling test's throwaway.
+    let burn = recv_leaf_01_at(acct);
     cl.generate_to_address(1, &burn).await.expect("burn +1"); // tip = N+2 -> C1 mature
     let boundary = cl.get_block_hash(c1_tip + 1).await.expect("boundary hash");
     cl.generate_to_address(1, &burn).await.expect("burn +2"); // tip = N+3
@@ -1974,13 +1998,18 @@ async fn live_revoke_burns_control() {
         eprintln!("skip live_revoke_burns_control: set HNS_IT_NODE_URL");
         return;
     };
-    // Private account (see `seeded_conn_acct`): this test asserts on the exact
-    // coin set / calls getcoinsbyaddress, so it needs an address that no other
-    // serial test funds.
-    let conn = seeded_conn_acct(&url, &key, 14);
-    let app = app_with(conn);
+    // REUSE-SAFETY: a REVOKE leaves a burned revoked-covenant coin on `addr`,
+    // and hsd's addrindex asserts (500) on `getcoinsbyaddress` for an address
+    // holding one. On a fixed account, a prior run's revoked coin lingers and
+    // the sync inside `acquire_name` trips that 500 before this run even
+    // revokes. A height-keyed fresh account (see `fresh_acct`) starts with a
+    // clean address on every run.
     let cl = client(&url, &key);
-    let (addr, _, _) = leaf00_at(14);
+    let tip0 = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct = fresh_acct(tip0);
+    let conn = seeded_conn_acct(&url, &key, acct);
+    let app = app_with(conn);
+    let (addr, _, _) = leaf00_at(acct);
     fund(&cl, &addr, 101).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
     let tip = cl.get_blockchain_info().await.expect("info").blocks;
@@ -2969,7 +2998,7 @@ async fn live_balance_classes_track_bid_lockup() {
     // sibling tests (0-24).
     let cl = client(&url, &key);
     let tip0 = cl.get_blockchain_info().await.expect("info").blocks;
-    let acct: u32 = 100_000 + (tip0 as u32);
+    let acct = fresh_acct(tip0);
     let conn = seeded_conn_acct(&url, &key, acct);
     let app = app_with(conn);
     let (addr, _, _) = leaf00_at(acct);
