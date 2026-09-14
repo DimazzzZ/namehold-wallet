@@ -36,6 +36,25 @@ fn test_coinbase_maturity_all_variants() {
     assert_eq!(Network::Simnet.coinbase_maturity(), 6);
 }
 
+// ── default_rpc_port ─────────────────────────────────────────────────
+
+/// hsd listens on a different RPC port per network (`networks.js` `rpcPort`).
+/// `start_hsd` passes the network flag, so these are the ports the app must
+/// talk to; a wrong value here makes a local node unreachable.
+#[test]
+fn test_default_rpc_port_all_variants() {
+    assert_eq!(Network::Main.default_rpc_port(), 12037);
+    assert_eq!(Network::Testnet.default_rpc_port(), 13037);
+    assert_eq!(Network::Regtest.default_rpc_port(), 14037);
+    assert_eq!(Network::Simnet.default_rpc_port(), 15037);
+}
+
+#[test]
+fn test_default_rpc_url_is_loopback_on_the_networks_port() {
+    assert_eq!(Network::Main.default_rpc_url(), "http://127.0.0.1:12037");
+    assert_eq!(Network::Regtest.default_rpc_url(), "http://127.0.0.1:14037");
+}
+
 // ── xprv_version ─────────────────────────────────────────────────────
 
 #[test]

@@ -61,6 +61,24 @@ export function hnsAddressPrefix(network: string): string {
 }
 
 /**
+ * The loopback node RPC URL hsd listens on for a given network (its
+ * `networks.js` `rpcPort`). Mirrors `Network::default_rpc_url` in
+ * `src-tauri/src/noncustodial/network.rs`; keep the two in step.
+ */
+export function defaultNodeRpcUrl(network: string): string {
+  switch (network) {
+    case "testnet":
+      return "http://127.0.0.1:13037";
+    case "regtest":
+      return "http://127.0.0.1:14037";
+    case "simnet":
+      return "http://127.0.0.1:15037";
+    default:
+      return "http://127.0.0.1:12037"; // mainnet
+  }
+}
+
+/**
  * Lightweight, network-aware format check for inline UI feedback — verifies the
  * bech32 prefix matches the network and the shape is plausible. NOT a checksum;
  * the Rust `address::decode` remains the source of truth at build time.

@@ -126,6 +126,22 @@ applies it at both build paths. `src/lib/errors.ts` maps it ahead of the generic
 message stays generic when maturing would not close the gap — promising a wait
 that will not help would be a lie. Pinned by the three `shortfall_message_*` tests.
 
+### Connection defaults
+
+**N11 — The local node's RPC port follows the profile's network.**
+`Network::default_rpc_port` carries hsd's per-network `rpcPort` (12037 / 13037 /
+14037 / 15037). `start_hsd` launches hsd with the profile's network flag, so hsd
+listens on that port; before spawning it now realigns a stale `node_rpc_url` via
+`noncustodial/rpc.rs::realign_loopback_rpc_url`. Settings' URL placeholder uses
+the TS mirror `defaultNodeRpcUrl`. Pinned by
+`test_default_rpc_port_all_variants`, `realign_rewrites_a_stale_default_for_the_target_network`
+and `realign_leaves_deliberate_urls_untouched`.
+
+The rewrite is deliberately narrow: it fires only when the stored URL is both
+loopback **and** on a recognised default port for a *different* network, which
+makes it a leftover seed rather than a choice. A custom port, a remote host, or
+a URL already on the right port is never touched.
+
 ## 4. Explicitly not enforced
 
 - **The app does not verify the node is honest about its chain.** Every guard
@@ -138,6 +154,11 @@ that will not help would be a lie. Pinned by the three `shortfall_message_*` tes
 - **The network of an existing profile cannot be changed.** Not a guard, an
   absence: no command and no `UPDATE` writes the column. Changing network means
   creating another profile.
+- **`NodeRpcClient::from_settings` still falls back to the mainnet port.** Its
+  42 construction sites make threading a network through it a disproportionate
+  change, and the fallback only applies when `node_rpc_url` is absent — which
+  migration `009` makes impossible in practice. The setting itself is what N11
+  keeps correct.
 - **`Network::Simnet` is unreachable from the app.** The backend implements it
   for parity with hsd, but the TS `WalletNetwork` union, the only network
   `<select>` (`AddWalletForm.tsx`), `validate_network` and the SQL `CHECK` all

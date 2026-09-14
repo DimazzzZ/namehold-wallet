@@ -49,6 +49,25 @@ impl Network {
         }
     }
 
+    /// Default hsd RPC port (`networks.js` `rpcPort`). hsd picks this from the
+    /// network flag it was started with, so a wallet whose profile is regtest
+    /// must talk to 14037 even though the settings default is the mainnet
+    /// 12037 — see `commands::node::start_hsd`, which passes `--regtest`.
+    pub fn default_rpc_port(self) -> u16 {
+        match self {
+            Network::Main => 12037,
+            Network::Testnet => 13037,
+            Network::Regtest => 14037,
+            Network::Simnet => 15037,
+        }
+    }
+
+    /// Default node RPC URL for this network, on loopback — the address
+    /// `start_hsd` makes hsd listen on.
+    pub fn default_rpc_url(self) -> String {
+        format!("http://127.0.0.1:{}", self.default_rpc_port())
+    }
+
     /// BIP32 xprv version bytes (hsd `keyPrefix.xprivkey`).
     pub fn xprv_version(self) -> u32 {
         // hsd uses the same value across networks for the binary prefix; the

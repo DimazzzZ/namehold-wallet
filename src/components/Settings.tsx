@@ -4,6 +4,7 @@ import { useNodeStatus, useStartHsd, useStopHsd, useResyncHsd } from "../queries
 import { useActiveProfile, useExportBidCommitments } from "../queries/wallet";
 import { open, save } from "../lib/dialog";
 import { isTauri } from "../lib/runtime";
+import { defaultNodeRpcUrl } from "../lib/utils";
 import { invoke } from "../lib/invoke";
 import {
   checkNotificationPermission,
@@ -315,7 +316,7 @@ export function Settings() {
             onApiKeyChange={(v) => updateField("node_rpc_api_key", v)}
             probe={nodeProbe}
             urlLabel="Node RPC URL (sending)"
-            urlPlaceholder="http://127.0.0.1:12037"
+            urlPlaceholder={defaultNodeRpcUrl(profile?.network ?? "mainnet")}
             apiKeyLabel="Node RPC API key"
             apiKeyPlaceholder={
               hasStoredSecret(settings, "node_rpc_api_key")

@@ -380,6 +380,22 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     };
     let network = active_profile_network(&state);
 
+    // hsd will listen on this network's RPC port, but `node_rpc_url` keeps
+    // whatever was seeded — the mainnet 12037. Left alone, the wallet starts a
+    // regtest node and then talks to a port nothing is listening on. Realign a
+    // stale loopback default now; a custom port or a remote host is left as the
+    // user set it (see `realign_loopback_rpc_url`).
+    {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let current = db::queries::get_settings(&db)?
+            .get("node_rpc_url")
+            .cloned()
+            .unwrap_or_default();
+        if let Some(fixed) = crate::noncustodial::rpc::realign_loopback_rpc_url(&current, network) {
+            db::queries::set_setting(&db, "node_rpc_url", &fixed)?;
+        }
+    }
+
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| AppError::Other(format!("cannot create data dir {data_dir}: {e}")))?;
 
