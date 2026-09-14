@@ -399,6 +399,8 @@ const handlers: Record<string, Handler> = {
     liquidDoos: 5_000_000_000,
     nameControlDoos: 1_200_000_000,
     nameLockupDoos: 800_000_000,
+    immatureDoos: 0,
+    immatureInBlocks: null,
     totalDoos: 7_000_000_000,
   }),
 

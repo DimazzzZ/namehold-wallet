@@ -467,7 +467,7 @@ pub async fn read_balance(
     // Prefer local cache when the node is connected and synced.
     if is_node_ready_for_local_reads(&state).await {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        return queries::read_cached_balance(&conn, &id);
+        return queries::read_cached_balance(&conn, &id, profile_network(&conn, &id)?);
     }
 
     // Explorer fallback.
@@ -532,7 +532,20 @@ pub async fn read_balance(
         }
     }
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    queries::read_cached_balance(&conn, &id)
+    let network = profile_network(&conn, &id)?;
+    queries::read_cached_balance(&conn, &id, network)
+}
+
+/// The `Network` of one profile, for the cached read model. Errors rather than
+/// defaulting: a balance computed with the wrong coinbase maturity would report
+/// funds as spendable that coin selection refuses.
+fn profile_network(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<crate::noncustodial::network::Network, AppError> {
+    let profile = queries::get_wallet_profile(conn, profile_id)?
+        .ok_or_else(|| AppError::NotFound(format!("wallet profile {profile_id}")))?;
+    crate::noncustodial::derivation::network_from_profile(&profile.network)
 }
 
 /// Names this wallet actually OWNS on-chain — the union of node-free discovered

@@ -34,7 +34,10 @@ const ERROR_MAP: Record<string, string> = {
   // The name's coin isn't in the wallet's synced set yet.
   "does not hold":
     "This wallet hasn't synced this name's coin yet — make sure your node is fully synced and address-indexed (Settings), Refresh, then try again.",
-  // Sending.
+  // Sending. The maturity case is listed first: `mapError` scans in key order,
+  // and "insufficient funds" would otherwise swallow it and drop the reason.
+  "insufficient mature funds":
+    "Some of your balance is freshly mined and can't be spent yet. Coins from mining mature after a set number of blocks — wait for them, or send a smaller amount.",
   "insufficient funds": "Insufficient HNS balance for this transaction.",
 };
 

@@ -9,9 +9,10 @@ one. Two bugs shipped from that (a reversed renewal-block hash and an unfiltered
 immature coinbase), and a regtest end-to-end pass found both.
 
 This spec makes the active profile's network a first-class input. A node on
-another chain is refused everywhere rather than only on reads. The RPC port, the
-block-to-days conversions and the explorer follow the profile's network instead
-of assuming mainnet.
+another chain is refused everywhere rather than only on reads. Coin maturity is
+reflected in the balance the user sees, not only in coin selection. The RPC port,
+the block-to-days conversions and the explorer follow the profile's network
+instead of assuming mainnet.
 
 The user-visible result: the wallet works on regtest and testnet without manual
 fixups, and cannot be silently pointed at the wrong chain.
@@ -99,6 +100,32 @@ Pinned by `load_spendable_coins_excludes_immature_coinbase`,
 `sync_cursors` row the tip reads 0, so the predicate fails for every coinbase
 coin. Pinned by `load_spendable_coins_excludes_all_coinbase_when_never_synced`.
 
+**N8 — The balance shown as spendable is spendable.**
+`noncustodial/sync.rs::compute_balances` applies the N6 predicate with the same
+tip, so `Balances::liquid` counts only what coin selection would select. Immature
+coinbase value is reported in `Balances::immature` with
+`Balances::immature_in_blocks`, the wait until the earliest coin matures.
+`Balances::total` still counts it — the wallet owns it. Pinned by
+`compute_balances_splits_immature_coinbase_out_of_liquid`,
+`..._uses_the_networks_own_maturity` and
+`..._treats_all_coinbase_as_immature_before_a_sync`.
+
+**N9 — The send form offers only mature funds.** `WalletBalances.immatureDoos`
+and `immatureInBlocks` cross the bridge; `WalletView` derives `spendable` from
+`liquidDoos`, which now excludes immature value, so the Send button, the Max
+button and the amount validation all refuse what the backend would refuse. A
+non-zero immature balance renders its own cell with the block count. Pinned by
+`wallet-view.test.tsx` ("shows freshly mined coins as Immature…" and "hides the
+Immature cell…").
+
+**N10 — A shortfall caused by maturity says so.**
+`noncustodial/send.rs::shortfall_message` returns a distinct message when
+immature value alone would have covered the amount, and `commands/tx.rs::explain_shortfall`
+applies it at both build paths. `src/lib/errors.ts` maps it ahead of the generic
+"insufficient funds" entry, which `mapError` would otherwise match first. The
+message stays generic when maturing would not close the gap — promising a wait
+that will not help would be a lie. Pinned by the three `shortfall_message_*` tests.
+
 ## 4. Explicitly not enforced
 
 - **The app does not verify the node is honest about its chain.** Every guard
@@ -124,7 +151,16 @@ coin. Pinned by `load_spendable_coins_excludes_all_coinbase_when_never_synced`.
   (`read_cached_balance`). It is the closest of that shape's four buckets, but
   it is not literally unconfirmed. The mempool split that bucket was named for
   still does not exist.
-
+- `select_coins` itself has no view of the balance split, so the maturity-aware
+  message is assembled by its caller. A future caller that forgets
+  `explain_shortfall` gets the generic message, not a wrong one.
+- `shortfall_message` compares against the requested amount, not amount plus
+  fee, because the fee is not known at that point. Right at the boundary it can
+  therefore blame maturity for a gap the fee would reopen. The claim it makes
+  ("these coins cannot be spent until they mature") stays true either way.
+- Which of the two messages appears depends on the block reward, which halves as
+  a chain grows. The live test only asserts the build was refused; the wording
+  is pinned by unit tests that do not depend on chain state.
 - Settings blocks saving only a *tested* mismatched node. A user who never
   presses "Test connection" can still save a wrong-chain URL; the runtime guards
   then refuse it. Accepted rather than forcing a probe before every save.

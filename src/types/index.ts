@@ -497,9 +497,21 @@ export interface NameSignature {
 }
 
 export interface WalletBalances {
+  /** Spendable now — already excludes immature coinbase, like coin selection. */
   liquidDoos: number;
   nameControlDoos: number;
   nameLockupDoos: number;
+  /**
+   * Coinbase value the wallet owns but cannot spend yet (mined too recently for
+   * the network's `coinbaseMaturity`). Included in `totalDoos`, excluded from
+   * `liquidDoos`.
+   */
+  immatureDoos: number;
+  /**
+   * Blocks until the earliest immature coin becomes spendable, or `null` when
+   * there are none.
+   */
+  immatureInBlocks: number | null;
   totalDoos: number;
 }
 

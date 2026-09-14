@@ -392,6 +392,32 @@ pub fn select_coins(
     ))
 }
 
+/// The shortfall message for a build that could not be funded.
+///
+/// When immature coinbase value alone would have covered it, say so: the
+/// balance card shows that value in its own bucket, and "insufficient funds"
+/// against a visible balance reads like a bug rather than a wait. `available`
+/// is the spendable total, `immature` the value held back by coinbase maturity,
+/// and `blocks` how long until the earliest of it matures.
+pub fn shortfall_message(
+    needed: u64,
+    available: u64,
+    immature: i64,
+    blocks: Option<i64>,
+) -> String {
+    if immature > 0 && available.saturating_add(immature as u64) >= needed {
+        let wait = match blocks {
+            Some(b) if b > 0 => format!(" in about {b} block(s)"),
+            _ => String::new(),
+        };
+        return format!(
+            "insufficient mature funds: {immature} doos are freshly mined and cannot be spent \
+             until they mature{wait}"
+        );
+    }
+    "insufficient funds to cover amount and fee".to_string()
+}
+
 /// Sweep selection: spend ALL available coins into a single recipient output of
 /// `input_total - fee` (no change). Used by "Send Max". The recipient amount is
 /// `input_total - fee`; the caller reads it as `input_total - selection.fee`.
@@ -867,6 +893,42 @@ mod tests {
     /// On mainnet (maturity 100) a coin mined at height 500 is therefore
     /// spendable from tip 599 onward; at tip 598 the node would reject the tx
     /// with `bad-txns-premature-spend-of-coinbase`.
+    /// "Insufficient funds" against a balance card that plainly shows the money
+    /// reads like a bug. When immature coinbase alone closes the gap, the
+    /// message says so and how long the wait is.
+    #[test]
+    fn shortfall_message_names_immature_coinbase_when_it_explains_the_gap() {
+        let msg = shortfall_message(1_000_000, 200_000, 900_000, Some(42));
+        assert!(msg.contains("freshly mined"), "{msg}");
+        assert!(msg.contains("900000"), "{msg}");
+        assert!(msg.contains("42"), "{msg}");
+    }
+
+    /// With no immature value, or when maturing would still not cover the
+    /// amount, the plain message stands — claiming the wait would fix it would
+    /// be a lie.
+    #[test]
+    fn shortfall_message_stays_generic_when_maturity_would_not_help() {
+        assert_eq!(
+            shortfall_message(1_000_000, 200_000, 0, None),
+            "insufficient funds to cover amount and fee"
+        );
+        assert_eq!(
+            shortfall_message(1_000_000, 200_000, 100_000, Some(5)),
+            "insufficient funds to cover amount and fee",
+            "even fully matured, 300000 does not cover 1000000"
+        );
+    }
+
+    /// An unknown wait is still worth reporting: the reason matters more than
+    /// the countdown.
+    #[test]
+    fn shortfall_message_omits_the_countdown_when_it_is_unknown() {
+        let msg = shortfall_message(1_000_000, 0, 1_000_000, None);
+        assert!(msg.contains("freshly mined"), "{msg}");
+        assert!(!msg.contains("about"), "{msg}");
+    }
+
     #[test]
     fn load_spendable_coins_excludes_immature_coinbase() {
         let conn = mem_db();

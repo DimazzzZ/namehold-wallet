@@ -1077,7 +1077,14 @@ async fn live_send_immature_coinbase_rejected_then_matures() {
         "wallet sees the immature coinbase in tracked_utxos"
     );
     let res = build_send_hns_draft(app.state(), addr.clone(), 1_000_000, Some(1), None).await;
-    expect_err(res, "insufficient funds");
+    // Assert only that the build was refused, not which explanation it chose.
+    // The block reward halves as the chain grows, so on a fresh chain the one
+    // coinbase (~2000 HNS) dwarfs the 1 HNS request and the error names
+    // maturity, while on a long-lived chain (~0.97 HNS) maturity would not
+    // close the gap and the generic message is correct. Both start
+    // "insufficient"; the exact wording is pinned by the `shortfall_message`
+    // unit tests, which do not depend on chain state.
+    expect_err(res, "insufficient");
 
     // Advance the chain enough that the first coinbase clears `maturity` AND
     // is spendable given the fee for a 1-in-1-out. One extra block is enough
@@ -1826,7 +1833,7 @@ async fn live_coinbase_reorg_immaturity() {
         .await
         .expect("sync after reorg");
     let res = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None).await;
-    expect_err(res, "insufficient funds");
+    expect_err(res, "insufficient mature funds");
 
     // Restore the chain for later tests.
     cl.reconsider_block(&boundary).await.expect("reconsider");
@@ -2880,6 +2887,15 @@ async fn live_write_capability_downgrades() {
 /// Read `get_wallet_balances` and return `(liquid, name_control, name_lockup, total)`
 /// as `i64` doos. Panics on a malformed response — the command owns the schema
 /// and any drift is a test-worthy regression on its own.
+async fn immature_now(app: &tauri::App<tauri::test::MockRuntime>) -> i64 {
+    let v = get_wallet_balances(app.state(), None)
+        .await
+        .expect("balances");
+    v.get("immatureDoos")
+        .and_then(|x| x.as_i64())
+        .expect("immatureDoos")
+}
+
 async fn balances_now(app: &tauri::App<tauri::test::MockRuntime>) -> (i64, i64, i64, i64) {
     let v = get_wallet_balances(app.state(), None)
         .await
@@ -2916,9 +2932,9 @@ async fn live_wallet_balance_conservation_across_send() {
 
     fund(&cl, &addr, 105).await;
     // Advance the tip past coinbase maturity to a throwaway address so every
-    // coin funded to `addr` is spendable; `get_wallet_balances` counts unspent
-    // rows regardless of maturity, so we further need the whole set to actually
-    // be reachable by the send.
+    // coin funded to `addr` is spendable. `liquidDoos` reports only mature
+    // value, so without this the pre-send `liquid == total` assertion below
+    // would (correctly) fail and the send could not reach the whole set.
     let burn = recv_leaf_01_at(97);
     fund(&cl, &burn, 3).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
@@ -3224,20 +3240,30 @@ async fn live_max_send_leaves_only_sweep_output_liquid() {
     sync_wallet_state(app.state(), None).await.expect("sync");
 
     // Post-sweep the wallet holds exactly two coins that count toward totalDoos:
-    //   1) the sweep output at `addr` (mature, liquid, value = sweep_output)
-    //   2) the block-1 coinbase reward at `addr` from execute()'s mine (also
-    //      liquid — coinbase maturity is a spendability filter, not a balance
-    //      filter).
+    //   1) the sweep output at `addr` — mature, so it lands in `liquid`
+    //   2) the block-1 coinbase reward at `addr` from execute()'s mine — mined
+    //      one block ago against a regtest maturity of 2, so it is still
+    //      IMMATURE and is reported in its own bucket, not in `liquid`.
+    // `liquid` now means "spendable", matching what coin selection would pick;
+    // `total` still counts everything the wallet owns.
     let reward = new_coinbase_reward_for(&cl, &addr, 1).await;
     let (liq_after, nc_after, nl_after, tot_after) = balances_now(&app).await;
+    let immature_after = immature_now(&app).await;
     assert_eq!(nc_after, 0);
     assert_eq!(nl_after, 0);
     assert_eq!(
-        liq_after,
-        sweep_output + reward,
-        "post-sweep liquid = sweep_output + coinbase reward"
+        liq_after, sweep_output,
+        "post-sweep liquid = the sweep output alone; the fresh reward is immature"
     );
-    assert_eq!(tot_after, liq_after, "no other classes present");
+    assert_eq!(
+        immature_after, reward,
+        "the just-mined coinbase reward is held back by maturity"
+    );
+    assert_eq!(
+        tot_after,
+        liq_after + immature_after,
+        "total still counts everything the wallet owns"
+    );
     // Chain-conservation across the sweep: only the miner fee left the wallet
     // (net of the newly-mined block reward, which arrived).
     assert_eq!(tot_after, tot_pre - fee + reward);

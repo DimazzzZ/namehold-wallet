@@ -115,6 +115,8 @@ function routeInvoke(o: Overrides = {}) {
           liquidDoos: 5_000_000,
           nameControlDoos: 0,
           nameLockupDoos: 0,
+          immatureDoos: 0,
+          immatureInBlocks: null,
           totalDoos: 5_000_000,
         });
       case "read_balance":

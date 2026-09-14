@@ -314,6 +314,8 @@ pub async fn sync_wallet_state(
         .unwrap_or("the configured node");
     let (all_coins, txs) =
         fetch_wallet_coins_and_txs_with_client(&client, &addresses, node_url).await?;
+    // Balances below are split on coinbase maturity, which is per-network.
+    let sync_network = derivation::network_from_profile(&profile_network)?;
 
     // 4. Persist UTXOs + tx cache under the lock.
     let balances = {
@@ -330,7 +332,7 @@ pub async fn sync_wallet_state(
         }
         sync::set_sync_cursor(&conn, &profile_id, height)?;
         db::queries::update_profile_sync(&conn, &profile_id, height)?;
-        sync::compute_balances(&conn, &profile_id)?
+        sync::compute_balances(&conn, &profile_id, sync_network)?
     };
 
     // 5. Refresh name states for known names (best-effort; never fails the sync).
@@ -348,6 +350,8 @@ pub async fn sync_wallet_state(
         "liquidDoos": balances.liquid,
         "nameControlDoos": balances.name_control,
         "nameLockupDoos": balances.name_lockup,
+        "immatureDoos": balances.immature,
+        "immatureInBlocks": balances.immature_in_blocks,
         "totalDoos": balances.total(),
     }))
 }
@@ -453,7 +457,9 @@ pub async fn build_send_hns_draft(
     let selection = if is_max {
         send::select_all_coins(&coins, rate)?
     } else {
-        send::select_coins(&coins, value_doos as u64, rate)?
+        send::select_coins(&coins, value_doos as u64, rate).map_err(|e| {
+            explain_shortfall(&conn, &profile.id, network, value_doos as u64, &coins, e)
+        })?
     };
     let amount = if is_max {
         selection.input_total - selection.fee
@@ -544,7 +550,9 @@ pub async fn estimate_tx_draft_fee(
     let profile = active_profile(&conn)?;
     let network = derivation::network_from_profile(&profile.network)?;
     let coins = send::load_spendable_coins(&conn, &profile.id, None, network)?;
-    let selection = send::select_coins(&coins, value_doos as u64, rate)?;
+    let selection = send::select_coins(&coins, value_doos as u64, rate).map_err(|e| {
+        explain_shortfall(&conn, &profile.id, network, value_doos as u64, &coins, e)
+    })?;
     Ok(serde_json::json!({
         "feeDoos": selection.fee,
         "changeDoos": selection.change,
@@ -1432,6 +1440,41 @@ pub(crate) async fn fetch_wallet_coins_and_txs_with_client(
     Ok((all_coins, txs))
 }
 
+/// Turn a bare "insufficient funds" from coin selection into one that names
+/// immature coinbase when that is the real reason. Coin selection only sees the
+/// coins it was handed; the balance split lives in `compute_balances`, so the
+/// explanation is assembled here where both are reachable. Any other error, and
+/// any DB failure while looking up balances, passes straight through — this
+/// only ever improves a message, never replaces a different failure.
+fn explain_shortfall(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    network: crate::noncustodial::network::Network,
+    needed: u64,
+    coins: &[crate::noncustodial::send::SpendableCoin],
+    err: AppError,
+) -> AppError {
+    let AppError::InvalidInput(ref msg) = err else {
+        return err;
+    };
+    if !msg.starts_with("insufficient funds") {
+        return err;
+    }
+    let Ok(balances) = sync::compute_balances(conn, profile_id, network) else {
+        return err;
+    };
+    if balances.immature <= 0 {
+        return err;
+    }
+    let available: u64 = coins.iter().map(|c| c.value).sum();
+    AppError::InvalidInput(crate::noncustodial::send::shortfall_message(
+        needed,
+        available,
+        balances.immature,
+        balances.immature_in_blocks,
+    ))
+}
+
 /// Refuse to broadcast through a node that reports a different chain than the
 /// wallet profile. Split out of [`broadcast_tx_draft`] so it can be tested
 /// against a mock without an `AppState`.
@@ -1863,14 +1906,20 @@ pub async fn get_wallet_balances(
     };
     if id.is_empty() {
         return Ok(serde_json::json!({
-            "liquidDoos": 0, "nameControlDoos": 0, "nameLockupDoos": 0, "totalDoos": 0
+            "liquidDoos": 0, "nameControlDoos": 0, "nameLockupDoos": 0,
+            "immatureDoos": 0, "immatureInBlocks": null, "totalDoos": 0
         }));
     }
-    let b = sync::compute_balances(&conn, &id)?;
+    let profile = db::queries::get_wallet_profile(&conn, &id)?
+        .ok_or_else(|| AppError::NotFound(format!("wallet profile {id}")))?;
+    let network = derivation::network_from_profile(&profile.network)?;
+    let b = sync::compute_balances(&conn, &id, network)?;
     Ok(serde_json::json!({
         "liquidDoos": b.liquid,
         "nameControlDoos": b.name_control,
         "nameLockupDoos": b.name_lockup,
+        "immatureDoos": b.immature,
+        "immatureInBlocks": b.immature_in_blocks,
         "totalDoos": b.total(),
     }))
 }

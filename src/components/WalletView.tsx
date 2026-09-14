@@ -179,7 +179,11 @@ export function WalletView() {
   // Spending uses node-synced coins (tracked_utxos), NOT the explorer balance.
   // If the explorer shows funds but nothing is synced yet, the user must connect
   // a node and Refresh before they can send.
+  // Already net of immature coinbase: the backend applies the same maturity
+  // predicate coin selection does, so a number shown here can actually be sent.
   const spendable = balances?.liquidDoos ?? 0;
+  const immature = balances?.immatureDoos ?? 0;
+  const immatureInBlocks = balances?.immatureInBlocks ?? null;
   const explorerBalance = readBalance?.confirmed ?? 0;
   const needsNodeSync = explorerBalance > 0 && spendable === 0;
 
@@ -901,6 +905,19 @@ export function WalletView() {
               {formatHns(readBalance?.unconfirmed ?? 0)}
             </div>
           </div>
+          {immature > 0 && (
+            <div data-testid="balance-immature">
+              <div title="Freshly mined coins — spendable once they mature">
+                Immature
+                {immatureInBlocks !== null && immatureInBlocks > 0
+                  ? ` (${immatureInBlocks} ${immatureInBlocks === 1 ? "block" : "blocks"})`
+                  : ""}
+              </div>
+              <div className="text-sm text-gray-800 tabular-nums font-mono">
+                {formatHns(immature)}
+              </div>
+            </div>
+          )}
           {(balances?.nameLockupDoos ?? 0) > 0 && (
             <div data-testid="balance-locked-auctions">
               <div title="In-flight bids — returned on reveal/redeem">Locked in Auctions</div>

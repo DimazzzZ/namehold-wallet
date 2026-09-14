@@ -80,6 +80,8 @@ function makeBackend(initial: { A: number; B: number }) {
           liquidDoos: state.liquid[id] ?? 0,
           nameControlDoos: 0,
           nameLockupDoos: 0,
+          immatureDoos: 0,
+          immatureInBlocks: null,
           totalDoos: state.liquid[id] ?? 0,
         });
       }
@@ -240,6 +242,8 @@ describe("Per-wallet balance persistence (Issue 6)", () => {
             liquidDoos: 0,
             nameControlDoos: 0,
             nameLockupDoos: 0,
+            immatureDoos: 0,
+            immatureInBlocks: null,
             totalDoos: 0,
           });
         case "get_signer_session":
