@@ -258,3 +258,80 @@ This runs the following tests:
 | `live_auction_open_bid_reveal_register` | Winner: OPEN → BID → REVEAL → REGISTER |
 | `live_auction_open_bid_reveal_redeem` | Loser redeem: OPEN → BID → REVEAL → REDEEM |
 | `live_auction_register_transfer_finalize` | Post-win: REGISTER → TRANSFER → FINALIZE |
+| `live_batch_transfer_two_names` | Batch: acquire 2 → BATCH TRANSFER → FINALIZE each |
+
+### Send-path money invariants (Group A)
+
+| Test | Asserts |
+|------|---------|
+| `live_send_builds_broadcasts_and_confirms` | Baseline: build → sign → broadcast → refresh confirms |
+| `live_send_insufficient_funds` | Requesting > balance → `insufficient funds` before draft persist |
+| `live_send_dust_amount_rejected` | Amount below `DUST_THRESHOLD` → rejected pre-selection |
+| `live_send_change_lands_on_change_address` | External recipient → change appears at branch=1/idx=0 |
+| `live_send_dust_change_folded_into_fee` | Sub-dust remainder folds into fee (`change==0`), tx accepted |
+| `live_send_max_sweeps_all_coins` | `max=true` sweeps every coin, no change, single output |
+| `live_send_immature_coinbase_rejected_then_matures` | Guards commit `a520456`: immature coinbase not spendable until `height+maturity ≤ tip+1` |
+| `live_send_wrong_network_address_rejected` | Mainnet `hs1q…` on regtest → rejected before signing |
+| `live_send_broadcast_double_spend_releases_reservation` | Double-spend broadcast → `failed` status, reservation freed |
+| `live_send_rebroadcast_same_draft_rejected` | Second broadcast of a mined draft → node rejects (no RBF) |
+| `live_send_estimate_fee_smoke` | `estimate_tx_draft_fee` matches a real build's fee/change/inputs |
+| `live_send_txid_matches_node` | Local txid == node-returned txid (sighash/serialization guard) |
+
+### Reservation invariants (Group B)
+
+| Test | Asserts |
+|------|---------|
+| `live_reservation_excludes_other_draft` | Second build can't select the first draft's reserved coin |
+| `live_reservation_ttl_reclaim` | Stale unsigned draft's reservation is reclaimed; broadcasted is NOT |
+| `live_delete_draft_releases_and_guards` | `delete_tx_draft` frees unsigned; refuses broadcasted/confirmed |
+| `live_release_reservation_command` | `release_tx_draft_reservation` frees coins without deleting draft |
+
+### Confirmation / reorg state machine (Group C)
+
+These drive REAL reorgs via a `#[cfg(test)]` `invalidateblock`/`reconsiderblock` RPC passthrough (`NodeRpcClient`).
+
+| Test | Asserts |
+|------|---------|
+| `live_confirm_reorg_reverts_to_broadcasted` | Confirmed → invalidateblock → refresh reverts → reconsider → re-confirms |
+| `live_confirm_finality_ceiling` | ≥ `CONFIRMATION_FINALITY_DEPTH` confs → refresh stops churning |
+| `live_broadcast_pending_promotes` | `broadcast_pending` draft on-chain → refresh promotes via `local_txid_from_summary` |
+| `live_coinbase_reorg_immaturity` | Unmine a confirmed coinbase → wallet treats the re-mined one as freshly immature |
+
+### Covenant actions (Group D)
+
+| Test | Asserts |
+|------|---------|
+| `live_update_records` | UPDATE writes records; name stays CLOSED, owner value preserved |
+| `live_renew_extends_lease` | Guards commit `78bba67`: RENEW uses `getblockhash` UNREVERSED (no `bad-register-renewal`) |
+| `live_cancel_reverts_transfer` | CANCEL clears a pending transfer; name still owned |
+| `live_revoke_burns_control` | REVOKE → name state REVOKED |
+
+### Batch covenant variants (Group E)
+
+| Test | Asserts |
+|------|---------|
+| `live_batch_bid_two_names` | Shared-lockup batch bid → both BIDs land, commitments persisted |
+| `live_batch_reveal_two_names` | Batch reveal after batch bid → both reveals accepted |
+| `live_batch_redeem_two_names` | Losing batch → batch redeem reclaims both lockups |
+| `live_batch_renew_two_names` | Shared `renewal_block` → both renewed |
+| `live_batch_finalize_two_names` | Single-tx batch finalize after batch transfer + lockup |
+
+### Covenant invariant + timing negatives (Group F)
+
+| Test | Asserts |
+|------|---------|
+| `live_premature_finalize_rejected` | Finalize before `transfer_lockup` (10) → rejected; after → accepted |
+| `live_bid_lockup_invariant_and_reveal_value` | On-chain: BID value == lockup; REVEAL value == true bid |
+| `live_register_value_is_clearing_price` | REGISTER output value == `getnameinfo.info.value` |
+| `live_redeem_when_won_rejected` | Winner cannot `build_redeem_draft` (no losing reveal to reclaim) |
+| `live_double_open_and_double_bid_guarded` | Second OPEN/BID while first pending → command-level rejection |
+
+### Atomic swap + signing + capability (Group G)
+
+| Test | Asserts |
+|------|---------|
+| `live_finalize_with_payment_atomic` | One tx carries BOTH a FINALIZE covenant AND the seller-payment output |
+| `live_sign_name_message_ownership_gate` | `sign_name_message` signs an owned name; refuses one the wallet does not own |
+| `live_signer_profile_mismatch_refused` | Signer unlocked for profile X → refuses to sign profile Y's draft |
+| `live_watch_only_send_refused` | Watch-only profile → `build_send_hns_draft` refuses |
+| `live_write_capability_downgrades` | Node reachable + local + signer unlocked → `can_write`; flip to Explorer → refused |

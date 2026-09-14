@@ -686,6 +686,52 @@ impl NodeRpcClient {
         let doos_per_byte = ((rate_hns_per_kvb * 1_000_000.0) / 1000.0).floor() as i64;
         Ok((doos_per_byte.max(1)) as u64)
     }
+
+    // --- Reorg control (TEST ONLY) -----------------------------------------
+    //
+    // These wrap hsd's `invalidateblock`/`reconsiderblock` RPCs, which let a
+    // regtest node rewind and replay its chain on demand. They exist SOLELY so
+    // the live-node integration tests can drive real reorgs (confirmation
+    // state-machine, coinbase immaturity after unmine). They are `#[cfg(test)]`
+    // so the shipped wallet can NEVER rewind a user's chain — there is no code
+    // path that reaches them outside `cargo test`.
+
+    /// `invalidateblock` — mark `hash` (and every block built on top of it)
+    /// invalid, rewinding the best chain to its parent. Regtest/simnet only.
+    #[cfg(test)]
+    pub async fn invalidate_block(&self, hash: &str) -> Result<(), AppError> {
+        // hsd returns a JSON `null` result on success, which `call` reports as
+        // "returned no result". Treat that specific miss as success and only
+        // propagate genuine RPC errors.
+        void_rpc(
+            self.call::<serde_json::Value>("invalidateblock", serde_json::json!([hash]))
+                .await,
+        )
+    }
+
+    /// `reconsiderblock` — clear the invalid mark set by [`invalidate_block`],
+    /// letting the node reconnect the previously-rejected branch. Regtest only.
+    #[cfg(test)]
+    pub async fn reconsider_block(&self, hash: &str) -> Result<(), AppError> {
+        void_rpc(
+            self.call::<serde_json::Value>("reconsiderblock", serde_json::json!([hash]))
+                .await,
+        )
+    }
+}
+
+/// Normalize a void JSON-RPC call (one whose success payload is a JSON `null`).
+///
+/// `call` requires a non-null `result`; for `invalidateblock`/`reconsiderblock`
+/// that `null` is success, not an error. Map the "returned no result" miss to
+/// `Ok(())` and surface every other RPC failure verbatim.
+#[cfg(test)]
+fn void_rpc(res: Result<serde_json::Value, AppError>) -> Result<(), AppError> {
+    match res {
+        Ok(_) => Ok(()),
+        Err(AppError::Rpc(msg)) if msg.contains("returned no result") => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Minimal typed view of `getblockchaininfo` (extra fields ignored).
