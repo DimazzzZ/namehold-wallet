@@ -7,7 +7,7 @@
 //! (`node_rpc_api_key` + the active profile's network), so "the node the app
 //! starts" and "the node the app talks to" are the same node.
 
-use crate::commands::active_profile::active_profile_network;
+use crate::commands::active_profile::{active_profile_network, active_profile_network_opt};
 use crate::db;
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
@@ -378,7 +378,17 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
         (api_key, node_mode)
     };
-    let network = active_profile_network(&state);
+    // Refuse rather than default. Spawning hsd is the one place where guessing
+    // mainnet is an action with consequences: it starts a full mainnet chain
+    // sync into a data dir the user prepared for another network, and the
+    // wallet then reads a chain it has nothing on.
+    let network = active_profile_network_opt(&state).ok_or_else(|| {
+        AppError::InvalidInput(
+            "no active wallet profile, so there is no network to start a node for — create or \
+             select a wallet first"
+                .to_string(),
+        )
+    })?;
 
     // hsd will listen on this network's RPC port, but `node_rpc_url` keeps
     // whatever was seeded — the mainnet 12037. Left alone, the wallet starts a

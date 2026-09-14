@@ -169,6 +169,15 @@ and `NameActionsModal` gate their "View on explorer" link on
 `ReceiveAddressList` and `WalletView` already did. Shakeshift indexes no other
 chain, so the link 404s elsewhere.
 
+**N15 — Starting a node refuses rather than guessing mainnet.**
+`commands::active_profile::active_profile_network_opt` keeps "no profile"
+distinguishable from "mainnet", and `start_hsd` returns an error instead of
+launching. Guessing here is an action with consequences: it begins a full
+mainnet chain sync in a data dir prepared for another network. The defaulting
+form stays for callers that only *label* a network (status payloads, the
+mainnet-only Namebase paths). Pinned by
+`the_optional_form_reports_no_profile_as_none`.
+
 ## 4. Explicitly not enforced
 
 - **The app does not verify the node is honest about its chain.** Every guard

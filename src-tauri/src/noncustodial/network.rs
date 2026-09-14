@@ -12,6 +12,12 @@ pub enum Network {
     Main,
     Testnet,
     Regtest,
+    /// Implemented for parity with hsd, but unreachable from the app: the TS
+    /// `WalletNetwork` union, the only network `<select>` (`AddWalletForm`),
+    /// `commands::secure_wallet::validate_network` and the `wallet_profiles`
+    /// SQL `CHECK` all exclude it. Kept so the per-network tables here stay a
+    /// faithful mirror of `networks.js` rather than a subset that silently
+    /// disagrees with it.
     Simnet,
 }
 

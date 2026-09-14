@@ -117,6 +117,24 @@ fn conn_for(h: &Harness, node_rpc_url: &str) -> rusqlite::Connection {
     db::queries::set_setting(&conn, "hsd_path", h.binary.to_str().unwrap()).unwrap();
     db::queries::set_setting(&conn, "hsd_prefix", h.data_dir().to_str().unwrap()).unwrap();
     db::queries::set_setting(&conn, "node_rpc_url", node_rpc_url).unwrap();
+    // `start_hsd` needs an active profile to know which network to launch: it
+    // refuses rather than guessing mainnet, since guessing would begin a full
+    // mainnet chain sync in the user's data dir. Seed a mainnet one so these
+    // process-lifecycle tests exercise the spawn paths, not that guard. Tests
+    // that care about another network insert their own and re-point
+    // `set_active_profile`.
+    db::queries::insert_wallet_profile(
+        &conn,
+        "lifecycle-default",
+        "Lifecycle",
+        "watch_only_xpub",
+        "mainnet",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "lifecycle-default").unwrap();
     conn
 }
 

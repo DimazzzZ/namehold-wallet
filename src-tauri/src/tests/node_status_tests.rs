@@ -321,6 +321,20 @@ async fn start_hsd_refuses_hsd_below_minimum_version() {
     // Unroutable RPC so the "adopt an already-running node" probe fails
     // deterministically and falls through to the version-gated spawn path.
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    // `start_hsd` refuses without an active profile (it will not guess which
+    // network to launch), so seed one — this test is about the version gate.
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p1",
+        "Primary",
+        "watch_only_xpub",
+        "mainnet",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p1").unwrap();
 
     let app = app_with(conn);
     let result = start_hsd(app.state()).await;

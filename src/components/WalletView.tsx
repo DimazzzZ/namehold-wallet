@@ -55,6 +55,7 @@ import {
   formatDate,
   latestTimestamp,
   isLikelyHnsAddress,
+  hnsAddressPrefix,
   truncateMiddle,
 } from "../lib/utils";
 import { mergeActivity } from "../lib/activity";
@@ -597,9 +598,9 @@ export function WalletView() {
   const sendAmtDoos = hnsToDollarydoos(sendAmount);
   const addressError =
     sendAddress.trim() && !isLikelyHnsAddress(sendAddress, profile.network)
-      ? `Enter a valid ${profile.network} address (starts with ${
-          profile.network === "mainnet" ? "hs1" : profile.network === "testnet" ? "ts1" : "rs1"
-        }…)`
+      ? `Enter a valid ${profile.network} address (starts with ${hnsAddressPrefix(
+          profile.network,
+        )}…)`
       : null;
   const amountError =
     sendAmount.trim() && (isNaN(sendAmtDoos) || sendAmtDoos <= 0)
