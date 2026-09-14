@@ -4,6 +4,43 @@ The wallet signs locally and only talks to a node for **reads + broadcast**. To
 exercise everything end-to-end you need a local **hsd regtest node with the
 address index enabled** (so `getcoinsbyaddress` works).
 
+## TL;DR — automated live suite (canonical)
+
+For an automated, end-to-end check that our tx-building/covenant code is
+actually accepted on-chain, use the runner instead of the manual dance below:
+
+```sh
+bash scripts/regtest.sh run-it
+```
+
+This boots a disposable regtest node (idempotent), points the live-node
+integration suite at it, and runs every `live_*` test in
+`src-tauri/src/tests/live_node_it.rs` green (send, full auction lifecycle,
+single transfer→finalize, and batch transfer). The node's data dir is the
+repo-local, git-ignored `.regtest/` — it never touches your real `~/.hsd` chain.
+
+Other subcommands:
+
+```sh
+bash scripts/regtest.sh start            # launch node, wait for RPC (idempotent)
+bash scripts/regtest.sh fund <addr> 110  # mine 110 blocks to <addr>
+bash scripts/regtest.sh mine 1 <addr>    # advance the chain one block
+bash scripts/regtest.sh rpc getnameinfo <name>   # hsd-cli passthrough
+bash scripts/regtest.sh stop             # graceful shutdown
+bash scripts/regtest.sh reset            # stop + wipe .regtest/ for a fresh chain
+```
+
+Mining 110 blocks is about having enough value to spend, not about maturity:
+on regtest `coinbaseMaturity` is **2** blocks (mainnet and testnet 100, simnet
+6), so the first coinbase is spendable almost immediately.
+
+With no node/env set, the same tests print "skip" — so `cargo test` /
+`cargo nextest` stays offline and CI is unaffected. See the `namehold-qa`
+skill for details.
+
+The rest of this doc is the **manual** walkthrough (useful for exercising the
+UI by hand); `scripts/regtest.sh` automates steps 1 and 4 for you.
+
 ## 1. Start a regtest node
 
 Install hsd if needed (`npm i -g hsd`, or build from source), then:
@@ -40,8 +77,9 @@ pnpm tauri dev
 
 ## 4. Fund it (mine regtest coins to your receive address)
 
-Copy the **Receive Address** from the Wallet page, then mine to it (coinbase
-needs 100 blocks to mature, so mine 100+):
+Copy the **Receive Address** from the Wallet page, then mine to it. On
+regtest a coinbase matures after **2** blocks (hsd `coinbaseMaturity`; it is
+100 on mainnet/testnet), so mine a comfortable 110 to have plenty of value:
 
 ```sh
 hsd-cli --network=regtest --api-key=test rpc generatetoaddress 110 <receiveAddress>
