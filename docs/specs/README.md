@@ -19,3 +19,4 @@ Each spec has these sections, in this order:
 | Spec | Status |
 |------|--------|
 | [2026-09-11 Remote-node connection & broadcast guard](./2026-09-11-remote-node-connection-and-broadcast-guard.md) | Implemented on `feat/spv-broadcast-guard-and-remote-node-onboarding` |
+| [2026-09-14 Network-derived behaviour](./2026-09-14-network-derived-behaviour.md) | In progress on `feat/batch-transfer` |

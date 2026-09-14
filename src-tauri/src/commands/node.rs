@@ -683,8 +683,10 @@ pub struct NodeConnectionCheck {
     pub network: Option<String>,
     /// `Some(false)` when the node reports a chain that doesn't match the
     /// active wallet profile's network (e.g. a testnet node answering for a
-    /// mainnet wallet) — the read gate refuses such a node. Sends are not
-    /// network-gated by the app; a cross-chain tx is rejected by the node.
+    /// mainnet wallet). Such a node is refused throughout: reads do not treat
+    /// it as authoritative, `sync_wallet_state` will not seed the cache from
+    /// it, `get_write_capability` reports it as unable to send, and
+    /// `broadcast_tx_draft` refuses to hand it a signed transaction.
     /// `None` when there is nothing to compare against: no active profile
     /// yet (onboarding), or the node didn't report `chain`.
     pub network_matches: Option<bool>,

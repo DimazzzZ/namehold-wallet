@@ -52,7 +52,10 @@ const CAUGHT_UP_SLEEP: Duration = Duration::from_secs(10);
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn run_chain_scanner(db_path: String) {
     loop {
-        let settings = {
+        // Settings and the active profile's network come from one connection:
+        // the scanner must not treat a node on another chain as authoritative
+        // (its heights and covenants would be written against our cursor).
+        let (settings, expected_network) = {
             let conn = match open_conn(&db_path) {
                 Ok(c) => c,
                 Err(_) => {
@@ -60,13 +63,15 @@ pub async fn run_chain_scanner(db_path: String) {
                     continue;
                 }
             };
-            match queries::get_settings(&conn) {
+            let settings = match queries::get_settings(&conn) {
                 Ok(s) => s,
                 Err(_) => {
                     sleep(NOT_READY_SLEEP).await;
                     continue;
                 }
-            }
+            };
+            let network = queries::get_active_profile_network(&conn).ok().flatten();
+            (settings, network)
         };
 
         // Only scan when the node is authoritative.
@@ -79,14 +84,18 @@ pub async fn run_chain_scanner(db_path: String) {
             continue;
         }
 
-        let tip =
-            match crate::commands::read::node_tip_height_if_synced_from_settings(&settings).await {
-                Some(h) => h,
-                None => {
-                    sleep(NOT_READY_SLEEP).await;
-                    continue;
-                }
-            };
+        let tip = match crate::commands::read::node_tip_height_if_synced_from_settings_with_network(
+            &settings,
+            expected_network.as_deref(),
+        )
+        .await
+        {
+            Some(h) => h,
+            None => {
+                sleep(NOT_READY_SLEEP).await;
+                continue;
+            }
+        };
 
         let cursor = {
             let conn = match open_conn(&db_path) {

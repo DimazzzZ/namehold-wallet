@@ -447,7 +447,7 @@ pub async fn run_watched_scan(db_path: &str) {
 
 async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
     // 1. Load config + settings + previously-notified set.
-    let (settings, config, previously_notified, watched, prev_states, poll_meta) = {
+    let (settings, expected_network, config, previously_notified, watched, prev_states, poll_meta) = {
         let conn = crate::commands::sync::open_conn(db_path)?;
         let settings = queries::get_settings(&conn)?;
         let config = load_config(&settings);
@@ -459,8 +459,10 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
         let watched = list_watched_names(&conn)?;
         let prev_states = load_prev_snapshots(&conn)?;
         let poll_meta = load_poll_meta(&conn)?;
+        let expected_network = queries::get_active_profile_network(&conn).ok().flatten();
         (
             settings,
+            expected_network,
             config,
             previously_notified,
             watched,
@@ -475,7 +477,9 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
 
     // 2. Build node client from settings.
     let node = NodeRpcClient::from_settings(&settings);
-    let node_ready = crate::commands::read::node_ready_from_settings(&settings).await;
+    let node_ready =
+        crate::commands::read::node_ready_from_settings(&settings, expected_network.as_deref())
+            .await;
 
     // 3. Adaptive skip + fetch. Bounded concurrency (4) to avoid hammering hsd.
     let now_secs = chrono::Utc::now().timestamp();

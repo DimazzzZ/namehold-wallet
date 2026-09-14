@@ -109,11 +109,13 @@ pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -
         .is_some()
 }
 
-/// Like [`node_tip_height_if_synced`] but additionally rejects the node when
-/// its reported `chain` doesn't match the `expected_network` (e.g. a regtest
-/// node answering for a mainnet wallet). When `expected_network` is `None` the
-/// network check is skipped (backward-compat for callers without a profile).
-async fn node_tip_height_if_synced_for_network(
+/// Like [`node_tip_height_if_synced`] but with an explicitly supplied
+/// `expected_network`, for the one caller that has already resolved it
+/// ([`is_node_ready_for_local_reads`]). Rejects the node when its reported
+/// `chain` disagrees (e.g. a regtest node answering for a mainnet wallet).
+/// `None` means "no network to compare" — see
+/// [`node_tip_height_if_synced_with_client`] for why that is permissive.
+pub(crate) async fn node_tip_height_if_synced_for_network(
     state: &State<'_, AppState>,
     expected_network: Option<&str>,
 ) -> Option<i64> {
@@ -124,26 +126,22 @@ async fn node_tip_height_if_synced_for_network(
     node_tip_height_if_synced_from_settings_with_network(&settings, expected_network).await
 }
 
-/// The live node tip height, but ONLY when the node is connected AND fully
-/// synced (same gate as [`is_node_ready_for_local_reads`] — this is its
-/// height-carrying form). `None` when the node is unreachable or catching up.
+/// The live node tip height, but ONLY when the node is connected, fully synced,
+/// AND reporting the same chain as the active profile. `None` when the node is
+/// unreachable, catching up, or on another network.
+///
+/// The expected network is resolved here rather than taken as an argument:
+/// every `State`-based caller wants the active profile's chain, and a helper
+/// that could be called without one is exactly how the cross-chain reads this
+/// guard exists to prevent got in. Callers outside a `State` context use
+/// [`node_tip_height_if_synced_from_settings_with_network`], which makes the
+/// expected network an explicit argument they cannot forget.
 pub(crate) async fn node_tip_height_if_synced(state: &State<'_, AppState>) -> Option<i64> {
-    let settings = {
+    let expected_network = {
         let db = state.db.lock().ok()?;
-        crate::db::queries::get_settings(&db).ok()?
+        queries::get_active_profile_network(&db).ok().flatten()
     };
-    node_tip_height_if_synced_from_settings(&settings).await
-}
-
-/// Settings-based form of [`node_tip_height_if_synced`], usable outside a
-/// `State<AppState>` context (e.g. the background sync thread, which holds only
-/// a bare DB connection). Returns the node tip height iff the node RPC answers
-/// AND the chain is fully synced. This is the single source of truth for the
-/// "is the node authoritative?" gate — the `State`-based helper delegates here.
-pub(crate) async fn node_tip_height_if_synced_from_settings(
-    settings: &std::collections::HashMap<String, String>,
-) -> Option<i64> {
-    node_tip_height_if_synced_from_settings_with_network(settings, None).await
+    node_tip_height_if_synced_for_network(state, expected_network.as_deref()).await
 }
 
 /// Same as [`node_tip_height_if_synced_from_settings`], but additionally
@@ -302,14 +300,17 @@ pub(crate) async fn resolve_name_ownership_with_client(
     })
 }
 
-/// Settings-based readiness gate: `true` when the local node is connected AND
-/// fully synced, making node/local data the authoritative read source. Mirrors
+/// Settings-based readiness gate: `true` when the local node is connected, fully
+/// synced, AND reporting `expected_network`. Mirrors
 /// [`is_node_ready_for_local_reads`] for callers that only have settings/a DB
-/// connection (the background sync thread).
+/// connection (the background sync thread, the chain scanner, the watched-name
+/// daemon). Pass the active profile's stored network string; `None` skips the
+/// comparison and should only be used where no profile exists.
 pub async fn node_ready_from_settings(
     settings: &std::collections::HashMap<String, String>,
+    expected_network: Option<&str>,
 ) -> bool {
-    node_tip_height_if_synced_from_settings(settings)
+    node_tip_height_if_synced_from_settings_with_network(settings, expected_network)
         .await
         .is_some()
 }

@@ -230,7 +230,7 @@ pub async fn sync_wallet_state(
 ) -> Result<serde_json::Value, AppError> {
     // 1. Snapshot addresses + settings under the lock, then release it before
     //    any network I/O.
-    let (profile_id, addresses, settings) = {
+    let (profile_id, profile_network, addresses, settings) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let profile = match wallet_profile_id {
             Some(id) => db::queries::get_wallet_profile(&conn, &id)?
@@ -270,7 +270,7 @@ pub async fn sync_wallet_state(
             }
         }
         let settings = db::queries::get_settings(&conn)?;
-        (profile.id, addresses, settings)
+        (profile.id, profile.network, addresses, settings)
     };
 
     let client = NodeRpcClient::from_settings(&settings);
@@ -279,7 +279,24 @@ pub async fn sync_wallet_state(
     // read-only mode: balances + names come from the explorer, so this is NOT an
     // error — we just can't refresh spendable UTXOs. Report it softly.
     let height = match client.get_blockchain_info().await {
-        Ok(info) => info.blocks,
+        Ok(info) => {
+            // A node on another chain must not seed this profile's cache. Its
+            // height would land in `sync_cursors` — the cursor coin selection
+            // reads to decide coinbase maturity — and its `getnameinfo` answers
+            // would overwrite `tracked_name_states`. Refuse before any write.
+            if crate::noncustodial::network::network_check(
+                Some(&profile_network),
+                info.chain.as_deref(),
+            ) == Some(false)
+            {
+                let reported = info.chain.as_deref().unwrap_or("unknown");
+                return Err(AppError::InvalidInput(format!(
+                    "node is on network '{reported}' but this wallet is '{profile_network}' — \
+                     refusing to sync; point the wallet at a {profile_network} node"
+                )));
+            }
+            info.blocks
+        }
         Err(_) => {
             return Ok(serde_json::json!({
                 "walletProfileId": profile_id,
@@ -1415,6 +1432,40 @@ pub(crate) async fn fetch_wallet_coins_and_txs_with_client(
     Ok((all_coins, txs))
 }
 
+/// Refuse to broadcast through a node that reports a different chain than the
+/// wallet profile. Split out of [`broadcast_tx_draft`] so it can be tested
+/// against a mock without an `AppState`.
+///
+/// Mirrors the read gate's conservatism: only a POSITIVE mismatch refuses. A
+/// node that does not report `chain` (older hsd builds), or a draft whose
+/// profile has vanished, leaves the decision to hsd as before — `None` from
+/// `network_check` means "unknown", not "wrong".
+pub(crate) async fn broadcast_network_guard_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    expected_network: Option<&str>,
+) -> Result<(), AppError> {
+    // Nothing to compare against: skip the probe entirely rather than spend an
+    // RPC round-trip on a check that cannot fail.
+    let Some(expected) = expected_network else {
+        return Ok(());
+    };
+    // A probe failure is not a mismatch. Let the broadcast proceed and be
+    // classified by the existing transport/RPC error handling.
+    let Ok(info) = client.get_blockchain_info().await else {
+        return Ok(());
+    };
+    if crate::noncustodial::network::network_check(Some(expected), info.chain.as_deref())
+        == Some(false)
+    {
+        let reported = info.chain.as_deref().unwrap_or("unknown");
+        return Err(AppError::InvalidInput(format!(
+            "node is on network '{reported}' but this wallet is '{expected}' — refusing to \
+             broadcast; the transaction was not sent and the draft is unchanged"
+        )));
+    }
+    Ok(())
+}
+
 /// Broadcast a signed draft via node RPC.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -1422,15 +1473,17 @@ pub async fn broadcast_tx_draft(
     state: State<'_, AppState>,
     draft_id: String,
 ) -> Result<BroadcastResult, AppError> {
-    let (signed_hex, settings) = {
+    let (signed_hex, expected_network, settings) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let draft = db::queries::get_tx_draft(&conn, &draft_id)?
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
+        let network =
+            db::queries::get_wallet_profile(&conn, &draft.wallet_profile_id)?.map(|p| p.network);
         let signed = draft
             .signed_tx_hex
             .ok_or_else(|| AppError::InvalidInput("draft is not signed yet".to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
-        (signed, settings)
+        (signed, network, settings)
     };
 
     // A full local node or a configured remote node can broadcast — configuring
@@ -1457,6 +1510,15 @@ pub async fn broadcast_tx_draft(
                 .to_string(),
         ));
     }
+    // And the node must be on the wallet's own chain. Previously this was left
+    // to hsd, on the reasoning that a cross-chain tx spends coins the node has
+    // never seen and is rejected anyway. That reasoning fails open: the
+    // rejection arrives as a transport-shaped error often enough to strand the
+    // draft in `broadcast_pending`, and it leaks the signed transaction to a
+    // node the user never meant to talk to. Refuse up-front instead, leaving
+    // the draft untouched, exactly as the read gate refuses such a node.
+    broadcast_network_guard_with_client(&client, expected_network.as_deref()).await?;
+
     let outcome = classify_broadcast_outcome_with_client(&client, &signed_hex).await;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     match outcome {
@@ -1827,7 +1889,7 @@ pub async fn get_write_capability(
             .map_err(|e| AppError::Lock(e.to_string()))?;
         slot.as_ref().map(|s| s.is_unlocked()).unwrap_or(false)
     };
-    let (source, allow_remote, settings, probe_addr) = {
+    let (source, allow_remote, settings, probe_addr, expected_network) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
         let source = ChainSource::from_settings(&settings);
@@ -1837,7 +1899,10 @@ pub async fn get_write_capability(
             .ok()
             .and_then(|p| db::queries::get_profile_addresses(&conn, &p.id).ok())
             .and_then(|addrs| addrs.into_iter().next());
-        (source, allow_remote, settings, probe_addr)
+        let expected_network = db::queries::get_active_profile_network(&conn)
+            .ok()
+            .flatten();
+        (source, allow_remote, settings, probe_addr, expected_network)
     };
     let mut cap =
         crate::providers::WriteCapability::evaluate(signer_unlocked, source, allow_remote);
@@ -1865,8 +1930,14 @@ pub async fn get_write_capability(
             .get("node_rpc_url")
             .map(|s| s.as_str())
             .unwrap_or("your node");
-        apply_node_write_probe_with_client(&client, &mut cap, node_url, probe_addr.as_deref())
-            .await;
+        apply_node_write_probe_with_client(
+            &client,
+            &mut cap,
+            node_url,
+            probe_addr.as_deref(),
+            expected_network.as_deref(),
+        )
+        .await;
     }
     Ok(cap)
 }
@@ -1881,6 +1952,7 @@ pub(crate) async fn apply_node_write_probe_with_client(
     cap: &mut crate::providers::WriteCapability,
     node_url: &str,
     probe_addr: Option<&str>,
+    expected_network: Option<&str>,
 ) {
     if !cap.can_write {
         return;
@@ -1892,11 +1964,27 @@ pub(crate) async fn apply_node_write_probe_with_client(
             cap.reason = Some(format!("Start your local node ({node_url}) to send."));
         }
         Ok(info) => {
+            // Wrong chain first: a regtest node is 100% synced and fully
+            // indexed, so every later check would pass and the UI would show a
+            // green "ready to send" for a node that cannot accept our
+            // transactions. Report the real problem instead of a sync percentage.
+            let chain_mismatch = crate::noncustodial::network::network_check(
+                expected_network,
+                info.chain.as_deref(),
+            ) == Some(false);
             // "Synced" = applied blocks caught up to the best known header; see
             // `chain_synced` for why verificationprogress wins. No metadata at
             // all counts as synced (regtest).
             let synced = info.is_synced(/* assume_when_unknown */ true);
-            if !synced {
+            if chain_mismatch {
+                let reported = info.chain.as_deref().unwrap_or("unknown");
+                let expected = expected_network.unwrap_or("unknown");
+                cap.broadcaster_available = false;
+                cap.can_write = false;
+                cap.reason = Some(format!(
+                    "Your node is on {reported} but this wallet is {expected}. Point it at a {expected} node under Settings → Connections."
+                ));
+            } else if !synced {
                 let pct = match info.verification_progress {
                     Some(p) => (p * 100.0).floor() as i64,
                     None => match info.headers {

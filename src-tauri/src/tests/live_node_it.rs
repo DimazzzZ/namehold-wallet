@@ -2881,7 +2881,9 @@ async fn live_write_capability_downgrades() {
 /// as `i64` doos. Panics on a malformed response — the command owns the schema
 /// and any drift is a test-worthy regression on its own.
 async fn balances_now(app: &tauri::App<tauri::test::MockRuntime>) -> (i64, i64, i64, i64) {
-    let v = get_wallet_balances(app.state(), None).await.expect("balances");
+    let v = get_wallet_balances(app.state(), None)
+        .await
+        .expect("balances");
     let g = |k: &str| v.get(k).and_then(|x| x.as_i64()).expect(k);
     (
         g("liquidDoos"),
@@ -3013,7 +3015,10 @@ async fn live_balance_classes_track_bid_lockup() {
 
     // Baseline on the fresh account: no name coins can exist here yet.
     let (_, nc_pre, nl_pre, tot_pre) = balances_now(&app).await;
-    assert_eq!(nc_pre, 0, "fresh account: no name-control coins at baseline");
+    assert_eq!(
+        nc_pre, 0,
+        "fresh account: no name-control coins at baseline"
+    );
     assert_eq!(nl_pre, 0, "fresh account: no name-lockup coins at baseline");
 
     let tip = cl.get_blockchain_info().await.expect("info").blocks;
@@ -3059,8 +3064,14 @@ async fn live_balance_classes_track_bid_lockup() {
     );
     // The BID's fee is captured in the draft's summary_json — every draft
     // must record a strictly positive fee so the miner is paid.
-    assert!(draft_fee_by_action(&app, "bid") > 0, "bid draft must record a fee");
-    assert!(draft_fee_by_action(&app, "open") > 0, "open draft must record a fee");
+    assert!(
+        draft_fee_by_action(&app, "bid") > 0,
+        "bid draft must record a fee"
+    );
+    assert!(
+        draft_fee_by_action(&app, "open") > 0,
+        "open draft must record a fee"
+    );
 }
 
 /// Read the `feeDoos` recorded in the most recent draft for `action` on the

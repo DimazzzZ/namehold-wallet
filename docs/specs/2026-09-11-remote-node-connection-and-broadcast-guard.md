@@ -138,10 +138,14 @@ frontend fixture that builds a `NodeConnectionCheck` includes `networkMatches`.
 
 ## 4. Explicitly not enforced
 
-- **Sends are not network-gated by the app.** `broadcast_tx_draft` does not
-  compare node chain to profile. A cross-chain transaction is rejected by the
-  node (its inputs do not exist there). UI copy and docs must not say "sends
-  will be refused". (Review finding on `b49415c`, closed 2026-09-11.)
+- ~~**Sends are not network-gated by the app.**~~ **Superseded 2026-09-14.**
+  This spec originally left a cross-chain send to the node to reject. That
+  reasoning failed open: the rejection arrives transport-shaped often enough to
+  strand a draft in `broadcast_pending`, and it hands a signed transaction to a
+  node the user never meant to talk to. `broadcast_tx_draft` now refuses a
+  positive network mismatch before sending. See
+  [2026-09-14 Network-derived behaviour](./2026-09-14-network-derived-behaviour.md),
+  requirement N4.
 - **`chain_source` does not route reads.** Reads come from the node when it
   is synced and on the right network (R8), else from the explorer, regardless
   of the selector. The "Read-only (never send)" label describes send
