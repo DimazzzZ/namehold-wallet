@@ -1630,11 +1630,15 @@ pub struct RenewalsResponse {
     pub current_height: Option<i64>,
     /// `"node"` — live height from a connected, fully synced node.
     /// `"explorer"` — estimate persisted by the last sync (explorer name-stats
-    /// snapshots and/or the last node-synced height), extrapolated by wall
-    /// time at ~10-minute blocks. NOT a live read.
+    /// snapshots and/or the last node-synced height). On main and testnet it is
+    /// aged by wall time at ~10-minute blocks; on regtest and simnet, where
+    /// blocks are mined on demand, it is reported unaged. Either way NOT a
+    /// live read.
     /// `"unknown"` — no height available; chain days are null, never invented.
     pub height_source: String,
-    /// Frontend copy of [`crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS`].
+    /// The active profile network's expiry warning threshold
+    /// ([`crate::noncustodial::network::Network::expiring_soon_threshold_days`]),
+    /// so the frontend colours rows on the same rule the backend used.
     pub expiring_soon_threshold_days: f64,
     pub names: Vec<RenewalRow>,
 }
@@ -1644,7 +1648,10 @@ fn empty_renewals() -> RenewalsResponse {
         wallet_profile_id: None,
         current_height: None,
         height_source: "unknown".into(),
-        expiring_soon_threshold_days: crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS,
+        // No profile, so no network to scale by: mainnet's value is the safe
+        // stand-in for an empty response the UI renders nothing from anyway.
+        expiring_soon_threshold_days: crate::noncustodial::network::Network::Main
+            .expiring_soon_threshold_days(),
         names: Vec::new(),
     }
 }
@@ -1663,6 +1670,23 @@ pub(crate) fn estimate_persisted_height(
     conn: &rusqlite::Connection,
     profile_id: &str,
 ) -> Result<Option<i64>, AppError> {
+    // Ageing a stored height by wall clock assumes blocks arrive on a schedule.
+    // They do on main and testnet; on regtest and simnet they are mined on
+    // demand, so the same arithmetic invents six blocks an idle hour never
+    // produced and every renewal countdown drifts. There, report the stored
+    // height as-is: stale but true.
+    let ages_by_wall_clock = queries::get_wallet_profile(conn, profile_id)?
+        .and_then(|p| crate::noncustodial::network::Network::from_str_opt(&p.network))
+        .unwrap_or_default()
+        .has_wall_clock_block_timing();
+    let age = |elapsed: i64| {
+        if ages_by_wall_clock {
+            elapsed.max(0)
+        } else {
+            0
+        }
+    };
+
     let mut best: Option<i64> = None;
     let mut consider = |h: Option<i64>| {
         if let Some(h) = h {
@@ -1696,7 +1720,7 @@ pub(crate) fn estimate_persisted_height(
         let end = stats.get("renewalPeriodEnd").and_then(|x| x.as_i64());
         let until = stats.get("blocksUntilExpire").and_then(|x| x.as_i64());
         if let (Some(end), Some(until)) = (end, until) {
-            consider(Some(end - until + elapsed_blocks.max(0)));
+            consider(Some(end - until + age(elapsed_blocks)));
         }
     }
 
@@ -1711,7 +1735,7 @@ pub(crate) fn estimate_persisted_height(
         )
         .optional()?;
     if let Some((Some(h), elapsed_blocks)) = profile_snapshot {
-        consider(Some(h + elapsed_blocks.max(0)));
+        consider(Some(h + age(elapsed_blocks)));
     }
 
     Ok(best)
@@ -1740,10 +1764,12 @@ pub(crate) fn compute_renewals(
 ) -> Result<RenewalsResponse, AppError> {
     use crate::noncustodial::network::{Network, BLOCKS_PER_DAY};
 
-    let threshold = crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS;
     let network = queries::get_wallet_profile(conn, profile_id)?
         .and_then(|p| Network::from_str_opt(&p.network))
         .unwrap_or_default();
+    // Scaled to this network's renewal window, so the warning means the same
+    // share of the lease everywhere instead of covering the whole of a short one.
+    let threshold = network.expiring_soon_threshold_days();
     let renewal_window = network.name_params().renewal_window as i64;
 
     let (current_height, height_source) = match live_node_height {

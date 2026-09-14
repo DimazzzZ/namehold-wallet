@@ -38,7 +38,16 @@ pub const SETTING_STATE: &str = "watched_name_notify_state";
 pub const ADAPTIVE_SKIP_BLOCKS: i64 = 300;
 pub const ADAPTIVE_SKIP_MIN_AGE_SECS: i64 = 300;
 
-/// Default bidding-soon lead in blocks (~1 day).
+/// Default bidding-soon lead in blocks (~1 day of mainnet blocks).
+///
+/// Framed for mainnet, where a bidding period is 720 blocks and one day of lead
+/// is a fifth of it. On a test chain the same 144 blocks exceeds the entire
+/// period (regtest bids for 5 blocks, testnet for 144), so the notice is true
+/// from the moment a name opens. Deliberately NOT scaled per network: this is a
+/// stored, user-editable setting, and silently rewriting it when a different
+/// profile becomes active would surprise more than the generous default does.
+/// Notifications are off by default; a user running on a test chain who turns
+/// them on should lower this in Settings.
 pub const DEFAULT_BIDDING_SOON_LEAD_BLOCKS: u32 = 144;
 
 /// One doo = 1e-6 HNS.

@@ -448,16 +448,21 @@ export function NameActionsModal({
       }
     >
       <div className="space-y-4 text-sm">
-        {/* Explorer link + watchlist toggle */}
+        {/* Explorer link (mainnet only — Shakeshift indexes no other chain, so
+            the link would 404) + watchlist toggle */}
         <div className="flex items-center justify-between gap-2">
-          <button
-            type="button"
-            className="text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer inline-flex items-center gap-1"
-            onClick={() => openExternal(explorerNameUrl(name))}
-            data-testid="name-explorer-link"
-          >
-            View on explorer ↗
-          </button>
+          {profile?.network === "mainnet" ? (
+            <button
+              type="button"
+              className="text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer inline-flex items-center gap-1"
+              onClick={() => openExternal(explorerNameUrl(name))}
+              data-testid="name-explorer-link"
+            >
+              View on explorer ↗
+            </button>
+          ) : (
+            <span />
+          )}
           <WatchlistToggle name={name} />
         </div>
 

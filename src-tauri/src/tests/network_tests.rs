@@ -1,6 +1,8 @@
 //! Tests for `crate::noncustodial::network` — pure Network functions.
 
-use crate::noncustodial::network::{network_check, network_name_matches, NameParams, Network};
+use crate::noncustodial::network::{
+    network_check, network_name_matches, NameParams, Network, BLOCKS_PER_DAY,
+};
 
 // ── address_hrp ──────────────────────────────────────────────────────
 
@@ -34,6 +36,41 @@ fn test_coinbase_maturity_all_variants() {
     assert_eq!(Network::Testnet.coinbase_maturity(), 100);
     assert_eq!(Network::Regtest.coinbase_maturity(), 2);
     assert_eq!(Network::Simnet.coinbase_maturity(), 6);
+}
+
+// ── expiring_soon_threshold_days ─────────────────────────────────────
+
+/// Mainnet keeps its established 30-day warning; every other network gets the
+/// same SHARE of its own (much shorter) renewal window. A flat 30 days is the
+/// entire testnet window and more than the simnet one, so the alarm would be
+/// permanently on there.
+#[test]
+fn test_expiring_soon_threshold_scales_with_the_renewal_window() {
+    assert!((Network::Main.expiring_soon_threshold_days() - 30.0).abs() < 1e-9);
+    for n in [Network::Testnet, Network::Regtest, Network::Simnet] {
+        let window_days = n.name_params().renewal_window as f64 / BLOCKS_PER_DAY;
+        let threshold = n.expiring_soon_threshold_days();
+        assert!(
+            threshold > 0.0 && threshold < window_days,
+            "{n:?}: threshold {threshold} must fall inside its {window_days}-day window"
+        );
+        assert!(
+            threshold < 30.0,
+            "{n:?}: a mainnet-sized warning would cover the whole lease"
+        );
+    }
+}
+
+// ── has_wall_clock_block_timing ──────────────────────────────────────
+
+/// Only chains with miners produce blocks on a schedule. Regtest and simnet
+/// mine on demand, so ageing a stored height by elapsed time invents blocks.
+#[test]
+fn test_has_wall_clock_block_timing_all_variants() {
+    assert!(Network::Main.has_wall_clock_block_timing());
+    assert!(Network::Testnet.has_wall_clock_block_timing());
+    assert!(!Network::Regtest.has_wall_clock_block_timing());
+    assert!(!Network::Simnet.has_wall_clock_block_timing());
 }
 
 // ── default_rpc_port ─────────────────────────────────────────────────

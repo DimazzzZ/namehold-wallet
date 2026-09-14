@@ -2536,9 +2536,15 @@ fn compute_renewals_empty_profile_reports_unknown_height() {
     assert_eq!(resp.height_source, "unknown");
     assert!(resp.current_height.is_none());
     assert!(resp.names.is_empty());
+    // Scaled to regtest's 5000-block renewal window, not mainnet's flat 30 days
+    // — on a chain whose whole lease is ~35 days, a 30-day warning is always on.
     assert_eq!(
         resp.expiring_soon_threshold_days,
-        crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS
+        crate::noncustodial::network::Network::Regtest.expiring_soon_threshold_days()
+    );
+    assert!(
+        resp.expiring_soon_threshold_days < crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS,
+        "regtest warns later than mainnet, not on day one"
     );
 }
 

@@ -1272,10 +1272,12 @@ async fn capabilities_node_down_near_expiry_yields_expiring_soon() {
         // Persisted height estimate (no live node in this branch): last-synced
         // height, "now" so extrapolation is a no-op.
         db::queries::update_profile_sync(&conn, &id, 90_000).unwrap();
-        // regtest renewal window = 5_000 blocks (Network::name_params()).
-        // renewal_height chosen so ~10 days remain at height 90_000:
-        // 90_000 - (renewal_height + 5_000) = 10 * 144 blocks.
-        let renewal_height: i64 = 90_000 - 5_000 + 10 * 144;
+        // regtest renewal window = 5_000 blocks (Network::name_params()), and
+        // its expiry threshold is ~1.43 days rather than mainnet's 30 — scaled
+        // to the window, since 30 days is most of a regtest lease. Put the name
+        // one day from expiry so it is inside that threshold.
+        // 90_000 - (renewal_height + 5_000) = 1 * 144 blocks.
+        let renewal_height: i64 = 90_000 - 5_000 + 144;
         conn.execute(
             "INSERT INTO tracked_name_states
                 (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout,

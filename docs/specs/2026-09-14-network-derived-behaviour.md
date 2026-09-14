@@ -142,6 +142,33 @@ loopback **and** on a recognised default port for a *different* network, which
 makes it a leftover seed rather than a choice. A custom port, a remote host, or
 a URL already on the right port is never touched.
 
+### Time, thresholds and the explorer
+
+**N12 — The expiry warning scales with the network's renewal window.**
+`Network::expiring_soon_threshold_days` returns a fixed share (30/730) of
+`name_params().renewal_window`, keeping mainnet's established 30 days while
+giving testnet ~1.2, regtest ~1.4 and simnet ~0.7. A flat 30 days is the entire
+testnet window and more than the simnet one, so every owned name there sat
+permanently in "expiring soon". `derive_auction_task_state` and
+`build_name_action_capabilities` take the profile's `Network`;
+`compute_renewals` reports the same figure to the frontend as
+`expiringSoonThresholdDays`. Pinned by
+`test_expiring_soon_threshold_scales_with_the_renewal_window`.
+
+**N13 — A stored height is only aged by wall clock where blocks follow one.**
+`Network::has_wall_clock_block_timing` is true for main and testnet only.
+`commands/read.rs::estimate_persisted_height` ages its candidates by
+`elapsed_seconds / 600` on those networks and by zero elsewhere. Regtest and
+simnet mine on demand, so the old arithmetic invented six blocks for every idle
+hour and every renewal countdown drifted. A stale height is reported as stale.
+Pinned by `test_has_wall_clock_block_timing_all_variants`.
+
+**N14 — Mainnet-only explorer links appear only on mainnet.** `NameInfoModal`
+and `NameActionsModal` gate their "View on explorer" link on
+`profile.network === "mainnet"`, as `TxInfoModal`, `BlockInfoModal`,
+`ReceiveAddressList` and `WalletView` already did. Shakeshift indexes no other
+chain, so the link 404s elsewhere.
+
 ## 4. Explicitly not enforced
 
 - **The app does not verify the node is honest about its chain.** Every guard
@@ -159,6 +186,26 @@ a URL already on the right port is never touched.
   change, and the fallback only applies when `node_rpc_url` is absent — which
   migration `009` makes impossible in practice. The setting itself is what N11
   keeps correct.
+- **The explorer read fallback is not network-gated.** With no
+  `explorer_api_url` configured, `providers::explorer_client_from_settings`
+  falls back to the mainnet `e.hnsfans.com` on every network, so a non-mainnet
+  profile whose node is unreachable queries a mainnet index. In practice it
+  returns not-found rather than another chain's money — a regtest address does
+  not exist on mainnet — but "no data" is being reported as "nothing there".
+  Left as-is deliberately: the factory has four production call sites and the
+  client bakes the same default in a second layer, so a correct fix needs an
+  "explorer unavailable" state threaded through the read paths. Tracked, not
+  done.
+- **Notification lead defaults are not scaled per network.**
+  `reveal_lead_blocks` (144) and `DEFAULT_BIDDING_SOON_LEAD_BLOCKS` (144) exceed
+  the entire reveal and bidding windows on test chains, so those notices are on
+  for the whole period. They are stored, user-editable settings, and rewriting a
+  stored setting when a different profile becomes active would surprise more
+  than a generous default. Documented at both constants instead.
+- **`BLOCKS_PER_DAY` stays a single constant.** Every hsd network sets
+  `pow.targetSpacing` to 600s, so a per-network accessor would return the same
+  144 four times. The real per-network question is whether blocks arrive on that
+  schedule at all, which is N13.
 - **`Network::Simnet` is unreachable from the app.** The backend implements it
   for parity with hsd, but the TS `WalletNetwork` union, the only network
   `<select>` (`AddWalletForm.tsx`), `validate_network` and the SQL `CHECK` all

@@ -83,12 +83,20 @@ impl Default for DeadlineNotifyConfig {
         Self {
             enabled: false,
             // ~1 day of mainnet blocks — enough runway to build+broadcast a
-            // reveal, not so early it's noise.
+            // reveal, not so early it's noise. On a test chain the reveal
+            // period is shorter than this lead (regtest 10 blocks, simnet 50),
+            // so the notice is on for the whole window. Left unscaled for the
+            // same reason as `renewal_lead_days` below: it is a stored user
+            // setting, not a derived value.
             reveal_lead_blocks: 144,
-            // Matches names::EXPIRING_SOON_THRESHOLD_DAYS by default, but is
+            // Matches mainnet's in-app expiry threshold by default, but is
             // independently configurable (notifications vs. in-app coloring
-            // are different urgency knobs).
-            renewal_lead_days: crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS,
+            // are different urgency knobs). Not scaled per network here: this
+            // is a stored user setting, and silently rewriting it when a
+            // different profile becomes active would be worse than a default
+            // that is merely generous on a test chain.
+            renewal_lead_days: crate::noncustodial::network::Network::Main
+                .expiring_soon_threshold_days(),
         }
     }
 }

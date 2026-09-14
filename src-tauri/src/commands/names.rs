@@ -319,6 +319,13 @@ pub enum AuctionTaskState {
 /// (A settings-configurable threshold was considered and skipped for now —
 /// the constant is the single source of truth, surfaced to the frontend via
 /// `read_renewals.expiringSoonThresholdDays`.)
+/// Mainnet's expiry warning threshold, kept as a named constant because tests
+/// and the notification default both pin the historical 30-day behaviour.
+/// Live code reads
+/// [`crate::noncustodial::network::Network::expiring_soon_threshold_days`]
+/// instead, which scales this to the network's own renewal window — a flat 30
+/// days is the entire window on testnet and more than it on simnet, so every
+/// owned name there would be permanently "expiring soon".
 pub const EXPIRING_SOON_THRESHOLD_DAYS: f64 = 30.0;
 
 /// Full capability response for a name.
@@ -603,9 +610,15 @@ async fn evaluate_name_action_capabilities(
     name: String,
     profile_id: &str,
 ) -> Result<NameActionCapabilities, AppError> {
-    let settings = {
+    // Resolved once for both branches below: the expiry warning threshold and
+    // the renewal window are both per-network.
+    let (settings, network) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        queries::get_settings(&conn)?
+        let settings = queries::get_settings(&conn)?;
+        let network = queries::get_wallet_profile(&conn, profile_id)?
+            .and_then(|p| Network::from_str_opt(&p.network))
+            .unwrap_or_default();
+        (settings, network)
     };
     let client = NodeRpcClient::from_settings(&settings);
 
@@ -662,6 +675,7 @@ async fn evaluate_name_action_capabilities(
                 owns_name,
                 spend_locked,
                 None,
+                network,
             ))
         }
         None => {
@@ -676,9 +690,6 @@ async fn evaluate_name_action_capabilities(
                 // renewal window + the best persisted height estimate (no live
                 // node here by definition of this branch). Reused, not
                 // duplicated — both read the same helpers.
-                let network = queries::get_wallet_profile(&conn, profile_id)?
-                    .and_then(|p| Network::from_str_opt(&p.network))
-                    .unwrap_or_default();
                 let renewal_window = network.name_params().renewal_window as i64;
                 let current_height =
                     crate::commands::read::estimate_persisted_height(&conn, profile_id)?;
@@ -721,6 +732,7 @@ async fn evaluate_name_action_capabilities(
                 owns_name,
                 spend_locked,
                 days_until_expire,
+                network,
             ))
         }
     }
@@ -745,6 +757,7 @@ pub(crate) fn build_name_action_capabilities(
     owns_name: bool,
     spend_locked: bool,
     days_until_expire_override: Option<f64>,
+    network: Network,
 ) -> NameActionCapabilities {
     // 4. Derive capabilities with strengthened validation rules.
     // Task 1: `can_open` also reflects a pending OPEN for this name (our own
@@ -962,6 +975,7 @@ pub(crate) fn build_name_action_capabilities(
         action_ctx.has_pending_open,
         action_ctx.reveal_txid.as_deref(),
         action_ctx.reveal_draft_status.as_deref(),
+        network,
     );
 
     // 6. Determine next action.
@@ -1049,10 +1063,12 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
 /// auction but has not yet registered.
 ///
 /// `days_until_expire` (when known) turns a calm "Owned" into
-/// [`AuctionTaskState::ExpiringSoon`] once it drops to
-/// [`EXPIRING_SOON_THRESHOLD_DAYS`] or below (including negative values —
-/// per our data the window already lapsed, which is MORE urgent, not less).
-/// `None` means "unknown", which never fires the alarm.
+/// [`AuctionTaskState::ExpiringSoon`] once it drops to `network`'s
+/// [`Network::expiring_soon_threshold_days`] or below (including negative
+/// values — per our data the window already lapsed, which is MORE urgent, not
+/// less). `None` means "unknown", which never fires the alarm. The threshold
+/// scales with the network's renewal window: a flat 30 days is the whole
+/// window on testnet, so every name there would be permanently "expiring soon".
 ///
 /// `has_bid_coin` (unspent COV_BID) vs `has_reveal_coin` (unspent COV_REVEAL,
 /// Part 3 / Task 6): a REVEAL spends the former and creates the latter, so
@@ -1078,9 +1094,10 @@ pub fn derive_auction_task_state(
     has_pending_open: bool,
     reveal_txid: Option<&str>,
     reveal_draft_status: Option<&str>,
+    network: Network,
 ) -> AuctionTaskState {
     let expiring_soon = days_until_expire
-        .map(|d| d <= EXPIRING_SOON_THRESHOLD_DAYS)
+        .map(|d| d <= network.expiring_soon_threshold_days())
         .unwrap_or(false);
     match phase {
         "AVAILABLE" | "" => {
@@ -3065,6 +3082,7 @@ mod tests {
             has_pending_open,
             reveal_txid,
             reveal_draft_status,
+            Network::Main,
         )
     }
 
@@ -3710,6 +3728,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(caps.can_open.allowed);
         assert_eq!(caps.can_open.reason, None);
@@ -3727,6 +3746,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(caps.can_open.allowed);
         assert_eq!(caps.can_open.reason, None);
@@ -3744,6 +3764,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_open.allowed);
         assert_eq!(
@@ -3767,6 +3788,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_open.allowed);
         assert_eq!(
@@ -3791,6 +3813,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(caps.can_bid.allowed);
         assert_eq!(caps.can_bid.reason, None);
@@ -3808,6 +3831,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(caps.can_bid.allowed);
         assert_eq!(caps.can_bid.reason, None);
@@ -3825,6 +3849,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_bid.allowed);
         assert_eq!(
@@ -3848,6 +3873,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_bid.allowed);
         assert_eq!(
@@ -3876,6 +3902,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(caps.can_reveal.allowed);
         assert_eq!(caps.can_reveal.reason, None);
@@ -3897,6 +3924,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_reveal.allowed);
         assert_eq!(
@@ -3920,6 +3948,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_reveal.allowed);
         assert_eq!(
@@ -3943,6 +3972,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_reveal.allowed);
         assert_eq!(
@@ -3970,6 +4000,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(caps.can_redeem.allowed);
         // NOTE: `can_redeem.reason`'s if/else chain in the source falls into
@@ -3997,6 +4028,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_redeem.allowed);
         assert_eq!(
@@ -4017,6 +4049,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_redeem.allowed);
         assert_eq!(
@@ -4041,6 +4074,7 @@ mod tests {
             true,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_redeem.allowed);
         assert_eq!(
@@ -4069,6 +4103,7 @@ mod tests {
             true,
             false,
             None,
+            Network::Main,
         );
         assert!(caps.can_register.allowed);
         assert_eq!(caps.can_register.reason, None);
@@ -4091,6 +4126,7 @@ mod tests {
             true,
             false,
             None,
+            Network::Main,
         );
         assert!(caps.can_register.allowed);
         assert_eq!(caps.can_register.reason, None);
@@ -4112,6 +4148,7 @@ mod tests {
             true,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_register.allowed);
         assert_eq!(
@@ -4132,6 +4169,7 @@ mod tests {
             true,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_register.allowed);
         assert_eq!(
@@ -4156,6 +4194,7 @@ mod tests {
             true,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_register.allowed);
         assert_eq!(
@@ -4183,6 +4222,7 @@ mod tests {
             true,
             false,
             None,
+            Network::Main,
         );
         assert!(caps.can_update.allowed);
         assert_eq!(caps.can_update.reason, None);
@@ -4211,6 +4251,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         let does_not_control = Some("wallet does not control this name");
         assert!(!caps.can_update.allowed);
@@ -4244,6 +4285,7 @@ mod tests {
             true,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_finalize.allowed);
         assert_eq!(
@@ -4268,6 +4310,7 @@ mod tests {
             true,
             false,
             None,
+            Network::Main,
         );
         assert!(!caps.can_finalize.allowed);
         assert_eq!(
@@ -4298,6 +4341,7 @@ mod tests {
             true,
             true,
             None,
+            Network::Main,
         );
         for cap in [
             &caps.can_register,
@@ -4336,6 +4380,7 @@ mod tests {
             true,
             false,
             Some(5.0),
+            Network::Main,
         );
         assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
         assert_eq!(caps.next_action_key.as_deref(), Some("RENEW"));
@@ -4360,6 +4405,7 @@ mod tests {
             true,
             false,
             None,
+            Network::Main,
         );
         assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
     }
@@ -4383,6 +4429,7 @@ mod tests {
             true,
             false,
             None,
+            Network::Main,
         );
         assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
         // CLOSED countdown surfaces from stats.
@@ -4407,6 +4454,7 @@ mod tests {
             true,
             false,
             None,
+            Network::Main,
         );
         assert_eq!(caps.task_state, AuctionTaskState::OwnedNoUrgentAction);
         assert_eq!(caps.countdown_label, None);
@@ -4429,6 +4477,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert_eq!(caps.name, "example");
         assert_eq!(caps.phase, "BIDDING");
@@ -4461,6 +4510,7 @@ mod tests {
             false,
             false,
             None,
+            Network::Main,
         );
         assert_eq!(caps.reveal_txid.as_deref(), Some("deadbeef"));
         assert_eq!(caps.bid_value_doos, Some(123_456));
