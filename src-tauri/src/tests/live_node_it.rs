@@ -2957,26 +2957,35 @@ async fn live_balance_classes_track_bid_lockup() {
         eprintln!("skip live_balance_classes_track_bid_lockup: set HNS_IT_NODE_URL");
         return;
     };
-    // Private, never-used-elsewhere account. This test does an on-chain BID
-    // and asserts on the exact delta `nameLockupDoos` moves by. If this
-    // account has ever been touched by a prior failing run of this test on
-    // the same chain, the pre-existing BID output persists at a wallet-owned
-    // derived address and skews the delta. Bump this index if the chain gets
-    // stale in a way that can't be reset.
-    let conn = seeded_conn_acct(&url, &key, 122);
-    let app = app_with(conn);
+    // REUSE-SAFETY: this test does an on-chain BID whose lockup output lands
+    // on a wallet-owned receive address, and it asserts on the EXACT delta
+    // `nameLockupDoos` moves by. A BID output is a permanent unspent coin —
+    // re-running against the same chain would let a prior run's bid reappear
+    // (the receive address is re-derived) and inflate the delta. To stay
+    // deterministic across arbitrary reuse we pick a FRESH account per run,
+    // keyed off the current chain height: two runs can only collide if the
+    // tip is identical, which it never is once any block has been mined. The
+    // account index is kept well clear of the fixed private accounts used by
+    // sibling tests (0-24).
     let cl = client(&url, &key);
-    let (addr, _, _) = leaf00_at(122);
+    let tip0 = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct: u32 = 100_000 + (tip0 as u32);
+    let conn = seeded_conn_acct(&url, &key, acct);
+    let app = app_with(conn);
+    let (addr, _, _) = leaf00_at(acct);
 
     fund(&cl, &addr, 105).await;
-    let burn = recv_leaf_01_at(196);
+    // Throwaway address to advance the tip past coinbase maturity. Derived
+    // from the same fresh account (branch 1) so it never collides with a
+    // sibling test's burn address.
+    let burn = recv_leaf_01_at(acct);
     fund(&cl, &burn, 3).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
 
-    // Baseline. The live suite runs serially against ONE chain and this
-    // account's address may already carry name coins from an earlier run, so
-    // assert on DELTAS from this baseline rather than absolute class values.
-    let (_, _nc_pre, nl_pre, tot_pre) = balances_now(&app).await;
+    // Baseline on the fresh account: no name coins can exist here yet.
+    let (_, nc_pre, nl_pre, tot_pre) = balances_now(&app).await;
+    assert_eq!(nc_pre, 0, "fresh account: no name-control coins at baseline");
+    assert_eq!(nl_pre, 0, "fresh account: no name-lockup coins at baseline");
 
     let tip = cl.get_blockchain_info().await.expect("info").blocks;
     let name = format!("bclas{tip}");
