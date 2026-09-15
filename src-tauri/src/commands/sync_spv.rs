@@ -47,6 +47,13 @@ pub async fn sync_spv_step(db_path: &str, profile_id: &str) -> bool {
         // and get_settings — no seam exists to inject a failure here.
         Err(_) => return false, // lcov-excl-line
     };
+    // G2: resolve the profile's network (before dropping the connection) to
+    // gate the explorer availability below.
+    let network = queries::get_wallet_profile(&conn, profile_id)
+        .ok()
+        .flatten()
+        .and_then(|p| crate::noncustodial::derivation::network_from_profile(&p.network).ok())
+        .unwrap_or_default();
     drop(conn);
 
     // Verify the SPV node is reachable.
@@ -63,11 +70,15 @@ pub async fn sync_spv_step(db_path: &str, profile_id: &str) -> bool {
 
     // Check explorer health (non-blocking, just logs warnings).
     // This helps diagnose explorer connectivity issues early.
-    let explorer = explorer_client_from_settings(&settings);
-    if let Err(e) = explorer.health().await {
-        eprintln!("sync_spv_step: explorer health check failed: {e}");
-        // Continue anyway — explorer might be temporarily down, and
-        // the repair/discover steps will handle individual request failures.
+    if let Some(explorer) = explorer_client_from_settings(&settings, network) {
+        if let Err(e) = explorer.health().await {
+            eprintln!("sync_spv_step: explorer health check failed: {e}");
+            // Continue anyway — explorer might be temporarily down, and
+            // the repair/discover steps will handle individual request failures.
+        }
+    } else {
+        eprintln!("sync_spv_step: explorer unavailable for this network");
+        // Continue anyway — the node is the primary source in SPV mode.
     }
 
     // Update the sync cursor to the current height.

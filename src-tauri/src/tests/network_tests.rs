@@ -150,6 +150,23 @@ fn test_default_is_main() {
     assert_eq!(Network::default(), Network::Main);
 }
 
+// ── default_explorer_base_url ────────────────────────────────────────
+
+/// G2: only mainnet has a documented public HNSFans explorer. Non-mainnet
+/// networks return None so callers disable the explorer fallback rather than
+/// silently querying mainnet — the concrete miss that used to make a fresh
+/// testnet wallet look empty.
+#[test]
+fn test_default_explorer_base_url_mainnet_only() {
+    assert_eq!(
+        Network::Main.default_explorer_base_url(),
+        Some("https://e.hnsfans.com")
+    );
+    assert_eq!(Network::Testnet.default_explorer_base_url(), None);
+    assert_eq!(Network::Regtest.default_explorer_base_url(), None);
+    assert_eq!(Network::Simnet.default_explorer_base_url(), None);
+}
+
 // ── name_params ──────────────────────────────────────────────────────
 
 #[test]

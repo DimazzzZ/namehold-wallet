@@ -2326,10 +2326,17 @@ pub async fn build_revoke_draft(
 // Batch operations — build a single tx with multiple covenant outputs.
 // ---------------------------------------------------------------------------
 
-/// Max names per batch operation. Conservative cap that stays well under
-/// block-size limits under any covenant mix. hsd itself enforces per-covenant-type
-/// block limits (MAX_BLOCK_RENEWALS, MAX_BLOCK_OPENS, …); this batch cap is a
-/// client-side safety net to prevent building a tx that the node would reject.
+/// Max names per batch operation. Conservative cap that stays well under hsd's
+/// covenant limits under any covenant mix.
+///
+/// hsd's real limits (lib/protocol/consensus.js): MAX_BLOCK_OPENS=300,
+/// MAX_BLOCK_UPDATES=600, MAX_BLOCK_RENEWALS=600. These are applied
+/// IDENTICALLY per-transaction (tx.js) and per-block (chain.js), so a batch of
+/// 100 covenants of any single type is well below even the strictest (OPENS)
+/// per-tx limit and will not be rejected on covenant-count grounds. This cap is
+/// hsd's own self-limit style (roughly MAX_BLOCK_RENEWALS/6) and acts as a
+/// client-side safety net against tx SIZE/weight, not covenant count — a batch
+/// this size is always ONE atomic transaction (no chunking).
 pub const MAX_BATCH_SIZE: usize = 100;
 
 #[tauri::command]

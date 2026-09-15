@@ -158,13 +158,12 @@ frontend fixture that builds a `NodeConnectionCheck` includes `networkMatches`.
 
 ## 5. Known gaps
 
-- **G1 — Onboarding cannot detect a mismatch.** Because of R2 there is no
-  profile during onboarding, so `network_matches` is always `None` there; a
-  user can validate a testnet node, then create a mainnet wallet, and only
-  learn of the mismatch when they next press "Test connection" in Settings
-  (or when reads route to the explorer). Accepted for now: the wallet's
-  network is chosen after the connection step. A future fix would re-probe
-  after profile creation or ask for the network first.
+- **G1 — Onboarding cannot detect a mismatch.** ~~CLOSED.~~ The onboarding
+  connection step now lifts a NetworkPicker above the three connection cards.
+  The selected network is threaded into `check_node_connection` as
+  `expected_network`, so the backend compares the node's chain against it even
+  before any wallet profile exists. Changing the network invalidates a prior
+  probe. The wallet-creation step inherits the same network as `defaultNetwork`.
 - **G2 — Unknown network strings.** `network_name_matches` compares unknown
   strings literally; two different unknown strings are a mismatch, the same
   unknown string on both sides is a match. hsd only ever reports the four

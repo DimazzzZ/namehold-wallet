@@ -11,7 +11,10 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('chain_source',                    'local_node'),
     ('node_rpc_url',                    'http://127.0.0.1:12037'),
     ('node_rpc_api_key',                ''),
-    ('explorer_api_url',                'https://e.hnsfans.com'),
+    -- Explorer base URL. Empty by default: the runtime resolves per active
+    -- profile's network via `Network::default_explorer_base_url` (G2), so a
+    -- testnet/regtest user doesn't inherit the mainnet URL as a stored value.
+    ('explorer_api_url',                ''),
     -- Custody model: 'noncustodial_local' (Namehold holds keys, signs locally)
     -- or 'legacy_hsd_wallet' (deprecated: hsd wallet holds keys and signs).
     ('custody_mode',                    'noncustodial_local'),

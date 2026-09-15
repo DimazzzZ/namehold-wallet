@@ -23,32 +23,44 @@ pub use signer::{
     WriteCapability,
 };
 
-/// The ONE place settings turn into an explorer client (Task 11 / S1).
+/// The ONE place settings turn into an explorer client (Task 11 / S1, G2).
 ///
 /// Before this, `HnsFansClient::new(...)` was constructed at three separate
 /// call sites (`commands/sync.rs` x2, `commands/read.rs`), each re-deriving
 /// `explorer_api_url` from settings with its own copy of the
 /// trim/filter-empty/default logic — and the default URL was hard-coded at
 /// each of those sites too. Every construction site now calls this instead,
-/// so there is exactly one settings key read and one fallback default
-/// ([`hnsfans::DEFAULT_EXPLORER_URL`]) in the whole app.
+/// so there is exactly one settings key read in the whole app.
+///
+/// Network-aware (G2): the HNSFans default explorer only serves *mainnet*
+/// data. On testnet/regtest/simnet there is no known public explorer, so
+/// pointing a non-mainnet wallet at `e.hnsfans.com` produced false "no data"
+/// results. Resolution order:
+///   1. explicit `explorer_api_url` from settings (any network), else
+///   2. [`Network::default_explorer_base_url`] (mainnet only), else
+///   3. `None` — the explorer fallback is *disabled* and callers must degrade
+///      to cache or a candid "explorer unavailable" error instead of mainnet.
 ///
 /// If `explorer_fallback_url` is set in settings, the client will
 /// automatically fail over to it when the primary explorer is unreachable.
 pub fn explorer_client_from_settings(
     settings: &crate::models::settings::SettingsMap,
-) -> hnsfans::HnsFansClient {
-    let url = settings
+    network: crate::noncustodial::network::Network,
+) -> Option<hnsfans::HnsFansClient> {
+    let explicit = settings
         .get("explorer_api_url")
         .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(hnsfans::DEFAULT_EXPLORER_URL);
+        .filter(|s| !s.is_empty());
+    let url = match explicit {
+        Some(u) => u,
+        None => network.default_explorer_base_url()?,
+    };
     let fallback = settings
         .get("explorer_fallback_url")
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
-    match fallback {
+    Some(match fallback {
         Some(fb) => hnsfans::HnsFansClient::with_fallback(url, fb),
         None => hnsfans::HnsFansClient::new(url),
-    }
+    })
 }

@@ -99,6 +99,21 @@ impl Network {
         format!("http://127.0.0.1:{}", self.default_rpc_port())
     }
 
+    /// Default read-only explorer base URL for this network, or `None` when no
+    /// public explorer is known. Only mainnet has a documented HNSFans host
+    /// (`e.hnsfans.com`); testnet/regtest/simnet have none, so the explorer
+    /// fallback is *disabled* there rather than silently pointing a non-mainnet
+    /// wallet at mainnet data (which produced false "no data" results). See
+    /// [`crate::providers::explorer_client_from_settings`], which returns
+    /// `None` when neither an explicit `explorer_api_url` nor this default is
+    /// available.
+    pub fn default_explorer_base_url(self) -> Option<&'static str> {
+        match self {
+            Network::Main => Some(crate::providers::hnsfans::DEFAULT_EXPLORER_URL),
+            Network::Testnet | Network::Regtest | Network::Simnet => None,
+        }
+    }
+
     /// BIP32 xprv version bytes (hsd `keyPrefix.xprivkey`).
     pub fn xprv_version(self) -> u32 {
         // hsd uses the same value across networks for the binary prefix; the

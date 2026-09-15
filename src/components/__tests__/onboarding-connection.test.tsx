@@ -179,10 +179,11 @@ describe("Onboarding — Connection choice", () => {
     expect(invokeMock).not.toHaveBeenCalledWith("update_setting", expect.anything());
   });
 
-  // During onboarding no wallet profile exists, so the real backend always
-  // returns `networkMatches: null` here (see App.tsx: Onboarding renders only
-  // when there is no profile). This test pins the shared hook/UI contract —
-  // `ok === false` on a mismatch — not a state onboarding can reach today.
+  // G1: the connection step now lifts the network picker up front and threads
+  // it into `check_node_connection`, so the backend can compare the node's
+  // chain against the network the user just picked — even before any wallet
+  // profile exists. This test pins that end-to-end: pick a network, probe a
+  // node on a different chain, warning shows, Continue stays disabled.
   it("a reachable node on the wrong network keeps Continue disabled", async () => {
     invokeMock.mockImplementation((cmd: string) =>
       cmd === "check_node_connection"
@@ -238,6 +239,42 @@ describe("Onboarding — Connection choice", () => {
     await waitFor(() => expect(screen.getByTestId("connection-success")).toBeInTheDocument());
 
     fireEvent.change(screen.getByTestId("remote-api-key-input"), { target: { value: "k2" } });
+    expect(screen.queryByTestId("connection-success")).toBeNull();
+    expect(screen.getByTestId("select-remote-button")).toBeDisabled();
+  });
+
+  // G1: the picked network is passed to the backend as `expected_network`.
+  it("threads the selected network into the connection probe", async () => {
+    render(<Onboarding />, { wrapper: wrapper() });
+    fireEvent.change(screen.getByTestId("onboarding-network-select"), {
+      target: { value: "testnet" },
+    });
+    fireEvent.change(screen.getByTestId("remote-url-input"), {
+      target: { value: "https://node.example.com:13037" },
+    });
+    fireEvent.click(screen.getByTestId("test-connection-button"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(
+        "check_node_connection",
+        expect.objectContaining({ expected_network: "testnet" }),
+      ),
+    );
+  });
+
+  // G1: changing the network after a green probe must invalidate it — a node
+  // proven on mainnet is not proven on testnet.
+  it("changing the network invalidates a prior successful probe", async () => {
+    render(<Onboarding />, { wrapper: wrapper() });
+    fireEvent.change(screen.getByTestId("remote-url-input"), {
+      target: { value: "https://node.example.com:12037" },
+    });
+    fireEvent.click(screen.getByTestId("test-connection-button"));
+    await waitFor(() => expect(screen.getByTestId("connection-success")).toBeInTheDocument());
+    expect(screen.getByTestId("select-remote-button")).not.toBeDisabled();
+
+    fireEvent.change(screen.getByTestId("onboarding-network-select"), {
+      target: { value: "regtest" },
+    });
     expect(screen.queryByTestId("connection-success")).toBeNull();
     expect(screen.getByTestId("select-remote-button")).toBeDisabled();
   });

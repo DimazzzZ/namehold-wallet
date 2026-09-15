@@ -7,6 +7,7 @@ import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
 import { fromConnectionMode } from "../lib/connectionMode";
 import { boolToSetting } from "../lib/settingsBool";
 import { RemoteNodeFields } from "./ui/RemoteNodeFields";
+import type { WalletNetwork } from "../types";
 
 /**
  * Wallet-first, non-custodial onboarding (first run, zero profiles).
@@ -19,6 +20,11 @@ export function Onboarding() {
   const qc = useQueryClient();
   const saveAll = useSettingsStore((s) => s.saveAll);
   const [step, setStep] = useState<"connection" | "wallet">("connection");
+  // G1: the network selected on the connection step is the ground truth the
+  // "Test connection" probe uses (before any wallet profile exists) AND the
+  // default the wallet-creation step should honour, so both screens stay in
+  // agreement about which chain the user is setting up.
+  const [selectedNetwork, setSelectedNetwork] = useState<WalletNetwork>("mainnet");
 
   const finish = async () => {
     await saveAll({ onboarding_complete: "true" });
@@ -27,7 +33,13 @@ export function Onboarding() {
   };
 
   if (step === "connection") {
-    return <ConnectionChoice onNext={() => setStep("wallet")} />;
+    return (
+      <ConnectionChoice
+        network={selectedNetwork}
+        onNetworkChange={setSelectedNetwork}
+        onNext={() => setStep("wallet")}
+      />
+    );
   }
 
   return (
@@ -38,7 +50,11 @@ export function Onboarding() {
           A non-custodial wallet for moving and managing Handshake names. Your keys never leave this
           device, and your recovery phrase is only ever shown in a secure window.
         </p>
-        <AddWalletForm defaultLabel="Primary" onDone={finish} />
+        <AddWalletForm
+          defaultLabel="Primary"
+          defaultNetwork={selectedNetwork}
+          onDone={finish}
+        />
       </div>
     </div>
   );
@@ -49,7 +65,15 @@ export function Onboarding() {
  * Three options: Local full node (default), Remote node, or SPV.
  * Persists chain_source, node_mode, and node_rpc_url, then advances to wallet creation.
  */
-function ConnectionChoice({ onNext }: { onNext: () => void }) {
+function ConnectionChoice({
+  network,
+  onNetworkChange,
+  onNext,
+}: {
+  network: WalletNetwork;
+  onNetworkChange: (n: WalletNetwork) => void;
+  onNext: () => void;
+}) {
   const saveAll = useSettingsStore((s) => s.saveAll);
   const [remoteUrl, setRemoteUrl] = useState("");
   const [remoteApiKey, setRemoteApiKey] = useState("");
@@ -89,6 +113,26 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
           device.
         </p>
 
+        {/* G1: network picked here gates the remote-node probe and seeds the
+            wallet-creation step. Changing it invalidates any prior probe so a
+            "connected" result can't survive onto a different chain. */}
+        <div className="flex flex-col gap-1 mb-6">
+          <label className="text-sm font-medium text-gray-700">Network</label>
+          <select
+            className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 max-w-xs"
+            value={network}
+            onChange={(e) => {
+              probe.reset();
+              onNetworkChange(e.target.value as WalletNetwork);
+            }}
+            data-testid="onboarding-network-select"
+          >
+            <option value="mainnet">Mainnet</option>
+            <option value="testnet">Testnet</option>
+            <option value="regtest">Regtest (local testing only)</option>
+          </select>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* Local full node */}
           <button
@@ -117,6 +161,7 @@ function ConnectionChoice({ onNext }: { onNext: () => void }) {
                 onUrlChange={setRemoteUrl}
                 onApiKeyChange={setRemoteApiKey}
                 probe={probe}
+                expectedNetwork={network}
                 urlPlaceholder="https://node.example.com:12037"
                 apiKeyPlaceholder="API key (optional)"
                 urlTestId="remote-url-input"

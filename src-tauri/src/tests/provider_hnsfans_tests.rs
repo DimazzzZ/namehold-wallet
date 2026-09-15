@@ -12,7 +12,7 @@
 use crate::providers::hnsfans::HnsFansClient;
 use mockito::Server;
 
-// --- explorer_client_from_settings: the single factory (Task 11 / S1) ---
+// --- explorer_client_from_settings: the single factory (Task 11 / S1, G2) ---
 
 #[tokio::test]
 async fn test_explorer_client_from_settings_uses_configured_url() {
@@ -28,7 +28,11 @@ async fn test_explorer_client_from_settings_uses_configured_url() {
 
     let mut settings = std::collections::HashMap::new();
     settings.insert("explorer_api_url".to_string(), server.url());
-    let client = crate::providers::explorer_client_from_settings(&settings);
+    let client = crate::providers::explorer_client_from_settings(
+        &settings,
+        crate::noncustodial::network::Network::Main,
+    )
+    .expect("explicit URL is available on any network");
 
     let name = client
         .get_name_info_optional("customname")
@@ -468,7 +472,11 @@ async fn test_explorer_client_from_settings_uses_fallback_url() {
     let mut settings = std::collections::HashMap::new();
     settings.insert("explorer_api_url".to_string(), primary.url());
     settings.insert("explorer_fallback_url".to_string(), fallback.url());
-    let client = crate::providers::explorer_client_from_settings(&settings);
+    let client = crate::providers::explorer_client_from_settings(
+        &settings,
+        crate::noncustodial::network::Network::Main,
+    )
+    .expect("explicit URL is available on any network");
 
     let name = client
         .get_name_info_optional("fallbackname")

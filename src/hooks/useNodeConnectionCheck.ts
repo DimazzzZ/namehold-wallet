@@ -11,8 +11,15 @@ export interface NodeConnectionCheckState {
   error: string | null;
   /** True only after a probe that reached the node on the wallet's network. */
   ok: boolean;
-  /** Probe `url` with an optional API key. An empty URL sets `error` without a backend call. */
-  run: (url: string, apiKey?: string) => Promise<void>;
+  /**
+   * Probe `url` with an optional API key. An empty URL sets `error` without a
+   * backend call. G1: `expectedNetwork` is the network the user picked in the
+   * onboarding UI (before any wallet profile exists); when passed, the backend
+   * compares against it instead of falling back to the active profile's
+   * network — which during onboarding is `None`, making every probe pass
+   * regardless of the node's actual chain.
+   */
+  run: (url: string, apiKey?: string, expectedNetwork?: string) => Promise<void>;
   /** Forget the last outcome — call whenever the URL or key being probed changes. */
   reset: () => void;
 }
@@ -46,7 +53,7 @@ export function useNodeConnectionCheck(): NodeConnectionCheckState {
     setTesting(false);
   };
 
-  const run = async (url: string, apiKey?: string) => {
+  const run = async (url: string, apiKey?: string, expectedNetwork?: string) => {
     requestId.current += 1;
     const myRequestId = requestId.current;
     const trimmed = url.trim();
@@ -62,6 +69,7 @@ export function useNodeConnectionCheck(): NodeConnectionCheckState {
       const r = await invoke<NodeConnectionCheck>("check_node_connection", {
         url: trimmed,
         api_key: apiKey || undefined,
+        expected_network: expectedNetwork || undefined,
       });
       if (requestId.current !== myRequestId) return; // superseded by reset()/run()
       setResult(r);
