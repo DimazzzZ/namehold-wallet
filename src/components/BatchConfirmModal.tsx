@@ -6,9 +6,17 @@ import { displayName } from "../lib/idn";
 
 export interface BatchConfirmModalProps {
   open: boolean;
-  action: "bid" | "renew" | "reveal" | "redeem" | "finalize";
+  action: "bid" | "renew" | "reveal" | "redeem" | "finalize" | "transfer";
   names: string[];
   estimatedFeeDoos: number;
+  /**
+   * For `action === "transfer"`, the single shared recipient the whole batch
+   * will be transferred to. Rendered as a "To: …" line in the summary panel
+   * so the user confirms the destination before signing. Ignored for other
+   * actions (they have no user-visible recipient — the wallet's own owner
+   * coin holds the value in place).
+   */
+  recipient?: string;
   onConfirm: () => void | Promise<void>;
   onCancel: () => void;
 }
@@ -23,6 +31,7 @@ export function BatchConfirmModal({
   action,
   names,
   estimatedFeeDoos,
+  recipient,
   onConfirm,
   onCancel,
 }: BatchConfirmModalProps) {
@@ -35,6 +44,7 @@ export function BatchConfirmModal({
     reveal: "reveal",
     redeem: "redeem",
     finalize: "finalize",
+    transfer: "transfer",
   }[action];
 
   const handleConfirm = async () => {
@@ -62,6 +72,13 @@ export function BatchConfirmModal({
               Estimated fee: <strong>~{formatHns(estimatedFeeDoos / 1_000_000)}</strong> HNS
             </span>
           </div>
+          {action === "transfer" && recipient && (
+            <div data-testid="batch-transfer-recipient">
+              <span className="text-gray-700">
+                To: <strong className="font-mono break-all">{recipient}</strong>
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Collapsible name list */}

@@ -1613,16 +1613,20 @@ pub fn get_draft_status_by_txid(
 
 /// Balance for a profile from the local UTXO cache, shaped like the frontend
 /// `HsdBalance` ({confirmed, unconfirmed, locked_confirmed, locked_unconfirmed}).
-/// Liquid coins map to `confirmed`; name-bound value (control + lockup) maps to
-/// `locked_confirmed`. We don't yet split a mempool/unconfirmed bucket.
+/// Spendable liquid coins map to `confirmed`; name-bound value (control +
+/// lockup) maps to `locked_confirmed`. Immature coinbase value maps to
+/// `unconfirmed`: it is the wallet's, but not yet usable — the closest of the
+/// four buckets, and better than counting it as confirmed-and-spendable. We
+/// still don't split a mempool bucket.
 pub fn read_cached_balance(
     conn: &rusqlite::Connection,
     profile_id: &str,
+    network: crate::noncustodial::network::Network,
 ) -> Result<serde_json::Value, AppError> {
-    let b = crate::noncustodial::sync::compute_balances(conn, profile_id)?;
+    let b = crate::noncustodial::sync::compute_balances(conn, profile_id, network)?;
     Ok(serde_json::json!({
         "confirmed": b.liquid,
-        "unconfirmed": 0,
+        "unconfirmed": b.immature,
         "locked_confirmed": b.name_control + b.name_lockup,
         "locked_unconfirmed": 0,
     }))
@@ -2990,7 +2994,8 @@ mod noncustodial_query_tests {
         insert_utxo(&conn, "aa", 0, 1_000_000, "liquid_hns", 0);
         insert_utxo(&conn, "bb", 0, 3_000_000, "name_control", 6);
         insert_utxo(&conn, "cc", 0, 2_000_000, "name_lockup", 3);
-        let bal = read_cached_balance(&conn, "p1").unwrap();
+        let bal =
+            read_cached_balance(&conn, "p1", crate::noncustodial::network::Network::Main).unwrap();
         assert_eq!(bal["confirmed"], 1_000_000);
         assert_eq!(bal["locked_confirmed"], 5_000_000); // control + lockup
         assert_eq!(bal["unconfirmed"], 0);

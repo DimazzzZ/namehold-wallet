@@ -103,7 +103,7 @@ async fn node_ready_from_settings_true_when_synced() {
         .create_async()
         .await;
 
-    assert!(node_ready_from_settings(&settings_for_url(&server.url())).await);
+    assert!(node_ready_from_settings(&settings_for_url(&server.url()), None).await);
 }
 
 #[tokio::test]
@@ -124,13 +124,48 @@ async fn node_ready_from_settings_false_while_syncing() {
         .create_async()
         .await;
 
-    assert!(!node_ready_from_settings(&settings_for_url(&server.url())).await);
+    assert!(!node_ready_from_settings(&settings_for_url(&server.url()), None).await);
+}
+
+/// The gate the background sync, chain scanner and watched-name daemon all
+/// use: a fully synced node that reports a different chain than the profile is
+/// NOT authoritative. Without this, a regtest node's height would be written
+/// into a mainnet profile's `sync_cursors` — the same cursor coin selection
+/// reads to decide coinbase maturity.
+#[tokio::test]
+async fn node_ready_from_settings_false_when_node_is_on_another_chain() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "result": {
+                    "chain": "regtest",
+                    "blocks": 1000, "headers": 1000, "verification_progress": 1.0
+                },
+                "error": null, "id": null
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let settings = settings_for_url(&server.url());
+    assert!(
+        !node_ready_from_settings(&settings, Some("mainnet")).await,
+        "a regtest node must not be authoritative for a mainnet profile"
+    );
+    assert!(
+        node_ready_from_settings(&settings, Some("regtest")).await,
+        "the same node IS authoritative for a regtest profile"
+    );
 }
 
 #[tokio::test]
 async fn node_ready_from_settings_false_when_unreachable() {
     // Unroutable node → probe fails → not ready.
-    assert!(!node_ready_from_settings(&settings_for_url("http://127.0.0.1:1")).await);
+    assert!(!node_ready_from_settings(&settings_for_url("http://127.0.0.1:1"), None).await);
 }
 
 // --- api-key resolution (talk to a node configured via hsd.conf) -------------
@@ -286,6 +321,20 @@ async fn start_hsd_refuses_hsd_below_minimum_version() {
     // Unroutable RPC so the "adopt an already-running node" probe fails
     // deterministically and falls through to the version-gated spawn path.
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    // `start_hsd` refuses without an active profile (it will not guess which
+    // network to launch), so seed one — this test is about the version gate.
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p1",
+        "Primary",
+        "watch_only_xpub",
+        "mainnet",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p1").unwrap();
 
     let app = app_with(conn);
     let result = start_hsd(app.state()).await;

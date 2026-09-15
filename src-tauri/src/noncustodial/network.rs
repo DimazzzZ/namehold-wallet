@@ -12,6 +12,12 @@ pub enum Network {
     Main,
     Testnet,
     Regtest,
+    /// Implemented for parity with hsd, but unreachable from the app: the TS
+    /// `WalletNetwork` union, the only network `<select>` (`AddWalletForm`),
+    /// `commands::secure_wallet::validate_network` and the `wallet_profiles`
+    /// SQL `CHECK` all exclude it. Kept so the per-network tables here stay a
+    /// faithful mirror of `networks.js` rather than a subset that silently
+    /// disagrees with it.
     Simnet,
 }
 
@@ -34,6 +40,63 @@ impl Network {
             Network::Regtest => 5355,
             Network::Simnet => 5356,
         }
+    }
+
+    /// Coinbase maturity: number of blocks a coinbase output must age before
+    /// it can be spent (hsd `coinbaseMaturity`). Spending an immature coinbase
+    /// is a consensus violation (`bad-txns-premature-spend-of-coinbase`), so
+    /// coin selection must exclude coinbase coins younger than this.
+    pub fn coinbase_maturity(self) -> i64 {
+        match self {
+            Network::Main => 100,
+            Network::Testnet => 100,
+            Network::Regtest => 2,
+            Network::Simnet => 6,
+        }
+    }
+
+    /// Days before a name's renewal deadline at which the UI starts warning.
+    /// Scales with this network's renewal window (see
+    /// [`EXPIRING_SOON_WINDOW_FRACTION`]), so the warning means the same
+    /// proportion of the lease everywhere: ~30 days on mainnet, ~1.2 on
+    /// testnet, ~1.4 on regtest, ~0.7 on simnet.
+    pub fn expiring_soon_threshold_days(self) -> f64 {
+        let window_days = self.name_params().renewal_window as f64 / BLOCKS_PER_DAY;
+        window_days * EXPIRING_SOON_WINDOW_FRACTION
+    }
+
+    /// Whether blocks on this network arrive on a wall-clock schedule.
+    ///
+    /// Every network sets `pow.targetSpacing` to 600s, but only main and
+    /// testnet have miners producing blocks against it. Regtest and simnet mine
+    /// on demand, so "10 minutes have passed, therefore one block was found" is
+    /// false there — a wallet idle for an hour would invent six blocks it can
+    /// see for itself never happened. Callers that age a stored height by wall
+    /// time must check this first.
+    pub fn has_wall_clock_block_timing(self) -> bool {
+        match self {
+            Network::Main | Network::Testnet => true,
+            Network::Regtest | Network::Simnet => false,
+        }
+    }
+
+    /// Default hsd RPC port (`networks.js` `rpcPort`). hsd picks this from the
+    /// network flag it was started with, so a wallet whose profile is regtest
+    /// must talk to 14037 even though the settings default is the mainnet
+    /// 12037 — see `commands::node::start_hsd`, which passes `--regtest`.
+    pub fn default_rpc_port(self) -> u16 {
+        match self {
+            Network::Main => 12037,
+            Network::Testnet => 13037,
+            Network::Regtest => 14037,
+            Network::Simnet => 15037,
+        }
+    }
+
+    /// Default node RPC URL for this network, on loopback — the address
+    /// `start_hsd` makes hsd listen on.
+    pub fn default_rpc_url(self) -> String {
+        format!("http://127.0.0.1:{}", self.default_rpc_port())
     }
 
     /// BIP32 xprv version bytes (hsd `keyPrefix.xprivkey`).
@@ -107,6 +170,17 @@ pub fn network_check(expected: Option<&str>, reported: Option<&str>) -> Option<b
 /// `networks.js` `pow.targetSpacing` = 600s). Used to convert block distances
 /// into human days; exact only in expectation.
 pub const BLOCKS_PER_DAY: f64 = 144.0;
+
+/// Fraction of a name's renewal window at which "expiring soon" starts. Chosen
+/// so mainnet keeps its established 30-day warning: mainnet's window is 105,120
+/// blocks ≈ 730 days, and 30/730 is this fraction.
+///
+/// Expressed as a fraction rather than a fixed number of days because the
+/// window itself is per-network. A flat 30 days is the WHOLE window on testnet
+/// (4320 blocks ≈ 30 days) and more than it on simnet, so every owned name
+/// there would sit permanently in "expiring soon" — an alarm that is always on
+/// is an alarm nobody reads.
+const EXPIRING_SOON_WINDOW_FRACTION: f64 = 30.0 / 730.0;
 
 /// Name-auction consensus parameters (hsd `networks.js` `names`). Block counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

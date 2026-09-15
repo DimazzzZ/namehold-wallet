@@ -242,12 +242,36 @@ pub fn load_reserved_coins(
 /// for (e.g. re-signing an existing draft): coins that draft itself already
 /// reserved remain visible to it. Stale reservations are released first (see
 /// [`release_stale_reservations`]) so they never wrongly exclude a coin.
+///
+/// Immature coinbase coins are also excluded: HSD rejects any tx that spends
+/// a coinbase output younger than `coinbaseMaturity` blocks with
+/// `bad-txns-premature-spend-of-coinbase`. The consensus rule (hsd
+/// `lib/primitives/tx.js::checkInputs`) is
+/// `spend_height - coin.height >= coinbaseMaturity`, where `spend_height` is
+/// the height the tx would be mined at — `chain.height + 1` in both the
+/// mempool and block validation. So a coin is spendable from
+/// `coin.height + maturity <= tip + 1` onward; comparing against `tip` alone
+/// would hold every coinbase coin back one block longer than the node does.
+/// The maturity threshold comes from `network`
+/// (see [`crate::noncustodial::network::Network::coinbase_maturity`]).
+///
+/// The tip is read from `sync_cursors` — the same cursor `sync` advances — so
+/// this filter matches the wallet's most recently synced view of the chain and
+/// requires no extra RPC.
 pub fn load_spendable_coins(
     conn: &Connection,
     profile_id: &str,
     own_draft_id: Option<&str>,
+    network: Network,
 ) -> Result<Vec<SpendableCoin>, AppError> {
     release_stale_reservations(conn, profile_id)?;
+
+    let maturity = network.coinbase_maturity();
+    // Height the next block — and so any tx we build now — would be mined at.
+    // A never-synced wallet reads tip 0, which fails the maturity check for
+    // every coinbase coin and keeps them excluded until the next sync: we
+    // cannot know whether one has matured until we have caught up.
+    let spend_height = crate::noncustodial::sync::get_sync_height(conn, profile_id)? + 1;
 
     let mut stmt = conn.prepare(
         "SELECT u.txid, u.vout, u.value_doos, d.branch, d.child_index
@@ -260,17 +284,21 @@ pub fn load_spendable_coins(
            AND u.covenant_type = 0
            AND u.spend_class = 'liquid_hns'
            AND (u.reserved_by_draft_id IS NULL OR u.reserved_by_draft_id = ?2)
+           AND (u.coinbase = 0 OR u.height + ?3 <= ?4)
          ORDER BY u.value_doos DESC, u.txid ASC, u.vout ASC",
     )?;
-    let rows = stmt.query_map(params![profile_id, own_draft_id], |row| {
-        Ok(SpendableCoin {
-            txid: row.get(0)?,
-            vout: row.get::<_, i64>(1)? as u32,
-            value: row.get::<_, i64>(2)? as u64,
-            branch: row.get::<_, i64>(3)? as u32,
-            child_index: row.get::<_, i64>(4)? as u32,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![profile_id, own_draft_id, maturity, spend_height],
+        |row| {
+            Ok(SpendableCoin {
+                txid: row.get(0)?,
+                vout: row.get::<_, i64>(1)? as u32,
+                value: row.get::<_, i64>(2)? as u64,
+                branch: row.get::<_, i64>(3)? as u32,
+                child_index: row.get::<_, i64>(4)? as u32,
+            })
+        },
+    )?;
     let mut coins = Vec::new();
     for c in rows {
         coins.push(c?);
@@ -362,6 +390,32 @@ pub fn select_coins(
     Err(AppError::InvalidInput(
         "insufficient funds to cover amount and fee".to_string(),
     ))
+}
+
+/// The shortfall message for a build that could not be funded.
+///
+/// When immature coinbase value alone would have covered it, say so: the
+/// balance card shows that value in its own bucket, and "insufficient funds"
+/// against a visible balance reads like a bug rather than a wait. `available`
+/// is the spendable total, `immature` the value held back by coinbase maturity,
+/// and `blocks` how long until the earliest of it matures.
+pub fn shortfall_message(
+    needed: u64,
+    available: u64,
+    immature: i64,
+    blocks: Option<i64>,
+) -> String {
+    if immature > 0 && available.saturating_add(immature as u64) >= needed {
+        let wait = match blocks {
+            Some(b) if b > 0 => format!(" in about {b} block(s)"),
+            _ => String::new(),
+        };
+        return format!(
+            "insufficient mature funds: {immature} doos are freshly mined and cannot be spent \
+             until they mature{wait}"
+        );
+    }
+    "insufficient funds to cover amount and fee".to_string()
 }
 
 /// Sweep selection: spend ALL available coins into a single recipient output of
@@ -759,7 +813,7 @@ mod tests {
             Err(AppError::Db(_))
         ));
         assert!(matches!(
-            load_spendable_coins(&conn, "p1", None),
+            load_spendable_coins(&conn, "p1", None, Network::Main),
             Err(AppError::Db(_))
         ));
     }
@@ -818,6 +872,130 @@ mod tests {
             ],
         )
         .unwrap();
+    }
+
+    /// A confirmed coinbase UTXO at `height` — the only kind subject to the
+    /// maturity filter. Liquid, unspent, covenant-free otherwise, so the only
+    /// clause that can exclude it is the coinbase-maturity one.
+    fn insert_coinbase_utxo(conn: &Connection, txid: &str, address: &str, value: u64, height: i64) {
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                 value_doos, height, coinbase, covenant_type, spend_class, spent_by_txid)
+             VALUES (?1, 0, 'p1', ?2, '0014deadbeef', ?3, ?4, 1, 0, 'liquid_hns', NULL)",
+            params![txid, address, value as i64, height],
+        )
+        .unwrap();
+    }
+
+    /// hsd spends a coinbase once `spend_height - coin.height >= maturity`,
+    /// with `spend_height = tip + 1` (`lib/primitives/tx.js::checkInputs`).
+    /// On mainnet (maturity 100) a coin mined at height 500 is therefore
+    /// spendable from tip 599 onward; at tip 598 the node would reject the tx
+    /// with `bad-txns-premature-spend-of-coinbase`.
+    /// "Insufficient funds" against a balance card that plainly shows the money
+    /// reads like a bug. When immature coinbase alone closes the gap, the
+    /// message says so and how long the wait is.
+    #[test]
+    fn shortfall_message_names_immature_coinbase_when_it_explains_the_gap() {
+        let msg = shortfall_message(1_000_000, 200_000, 900_000, Some(42));
+        assert!(msg.contains("freshly mined"), "{msg}");
+        assert!(msg.contains("900000"), "{msg}");
+        assert!(msg.contains("42"), "{msg}");
+    }
+
+    /// With no immature value, or when maturing would still not cover the
+    /// amount, the plain message stands — claiming the wait would fix it would
+    /// be a lie.
+    #[test]
+    fn shortfall_message_stays_generic_when_maturity_would_not_help() {
+        assert_eq!(
+            shortfall_message(1_000_000, 200_000, 0, None),
+            "insufficient funds to cover amount and fee"
+        );
+        assert_eq!(
+            shortfall_message(1_000_000, 200_000, 100_000, Some(5)),
+            "insufficient funds to cover amount and fee",
+            "even fully matured, 300000 does not cover 1000000"
+        );
+    }
+
+    /// An unknown wait is still worth reporting: the reason matters more than
+    /// the countdown.
+    #[test]
+    fn shortfall_message_omits_the_countdown_when_it_is_unknown() {
+        let msg = shortfall_message(1_000_000, 0, 1_000_000, None);
+        assert!(msg.contains("freshly mined"), "{msg}");
+        assert!(!msg.contains("about"), "{msg}");
+    }
+
+    #[test]
+    fn load_spendable_coins_excludes_immature_coinbase() {
+        let conn = mem_db();
+        insert_derived(&conn, 0, 5, "hs1qrecv");
+        insert_coinbase_utxo(&conn, &hex::encode([0xa1; 32]), "hs1qrecv", 400_000, 500);
+        crate::noncustodial::sync::set_sync_cursor(&conn, "p1", 598).unwrap();
+
+        let coins = load_spendable_coins(&conn, "p1", None, Network::Main).expect("load");
+        assert!(
+            coins.is_empty(),
+            "coinbase one block short of maturity must not be selectable: {coins:?}"
+        );
+    }
+
+    /// The boundary the node itself uses: `coin.height + maturity == tip + 1`.
+    #[test]
+    fn load_spendable_coins_includes_coinbase_exactly_at_maturity() {
+        let conn = mem_db();
+        insert_derived(&conn, 0, 5, "hs1qrecv");
+        let txid = hex::encode([0xa1; 32]);
+        insert_coinbase_utxo(&conn, &txid, "hs1qrecv", 400_000, 500);
+        crate::noncustodial::sync::set_sync_cursor(&conn, "p1", 599).unwrap();
+
+        let coins = load_spendable_coins(&conn, "p1", None, Network::Main).expect("load");
+        assert_eq!(coins.len(), 1, "{coins:?}");
+        assert_eq!(coins[0].txid, txid);
+    }
+
+    /// Per-network thresholds are honoured: regtest matures in 2 blocks, so a
+    /// coin mined at 10 is spendable at tip 11 — where mainnet would still
+    /// hold it for another 89 blocks.
+    #[test]
+    fn load_spendable_coins_applies_the_networks_own_maturity() {
+        let conn = mem_db();
+        insert_derived(&conn, 0, 5, "hs1qrecv");
+        insert_coinbase_utxo(&conn, &hex::encode([0xa1; 32]), "hs1qrecv", 400_000, 10);
+        crate::noncustodial::sync::set_sync_cursor(&conn, "p1", 11).unwrap();
+
+        assert_eq!(
+            load_spendable_coins(&conn, "p1", None, Network::Regtest)
+                .expect("load regtest")
+                .len(),
+            1,
+            "regtest maturity is 2 blocks"
+        );
+        assert!(
+            load_spendable_coins(&conn, "p1", None, Network::Main)
+                .expect("load main")
+                .is_empty(),
+            "mainnet maturity is 100 blocks"
+        );
+    }
+
+    /// No `sync_cursors` row = never synced. The tip reads 0, so every
+    /// coinbase coin stays excluded until the wallet has caught up — while
+    /// ordinary coins remain selectable.
+    #[test]
+    fn load_spendable_coins_excludes_all_coinbase_when_never_synced() {
+        let conn = mem_db();
+        insert_derived(&conn, 0, 5, "hs1qrecv");
+        insert_coinbase_utxo(&conn, &hex::encode([0xa1; 32]), "hs1qrecv", 400_000, 1);
+        let plain = hex::encode([0xb2; 32]);
+        insert_utxo(&conn, &plain, 0, "hs1qrecv", 300_000, 0, "liquid_hns", None);
+
+        let coins = load_spendable_coins(&conn, "p1", None, Network::Regtest).expect("load");
+        assert_eq!(coins.len(), 1, "only the non-coinbase coin: {coins:?}");
+        assert_eq!(coins[0].txid, plain);
     }
 
     #[test]
@@ -887,7 +1065,7 @@ mod tests {
             None,
         );
 
-        let coins = load_spendable_coins(&conn, "p1", None).expect("load");
+        let coins = load_spendable_coins(&conn, "p1", None, Network::Main).expect("load");
 
         // Only the two genuinely-spendable coins, largest-first.
         assert_eq!(coins.len(), 2);
@@ -948,11 +1126,12 @@ mod tests {
         reserve(&conn, &txid_a, 0, "draft-a");
 
         // A fresh selection (no own draft id) must not see draft-a's coin.
-        let coins = load_spendable_coins(&conn, "p1", None).expect("load");
+        let coins = load_spendable_coins(&conn, "p1", None, Network::Main).expect("load");
         assert!(coins.is_empty(), "reserved coin must be excluded");
 
         // A DIFFERENT draft's re-selection must also not see it.
-        let coins = load_spendable_coins(&conn, "p1", Some("draft-b")).expect("load");
+        let coins =
+            load_spendable_coins(&conn, "p1", Some("draft-b"), Network::Main).expect("load");
         assert!(
             coins.is_empty(),
             "coin reserved by another draft stays excluded"
@@ -979,7 +1158,8 @@ mod tests {
 
         // Re-selecting for the SAME draft (e.g. re-signing) must see its own
         // reserved coin.
-        let coins = load_spendable_coins(&conn, "p1", Some("draft-a")).expect("load");
+        let coins =
+            load_spendable_coins(&conn, "p1", Some("draft-a"), Network::Main).expect("load");
         assert_eq!(coins.len(), 1);
         assert_eq!(coins[0].txid, txid_a);
     }
@@ -1003,7 +1183,7 @@ mod tests {
         insert_draft_row(&conn, "draft-old", Some("2000-01-01T00:00:00Z"));
         reserve(&conn, &txid_a, 0, "draft-old");
 
-        let coins = load_spendable_coins(&conn, "p1", None).expect("load");
+        let coins = load_spendable_coins(&conn, "p1", None, Network::Main).expect("load");
         assert_eq!(coins.len(), 1, "TTL-expired reservation must be reclaimed");
         assert_eq!(coins[0].txid, txid_a);
 
@@ -1053,7 +1233,7 @@ mod tests {
             .unwrap();
             reserve(&conn, &txid_a, 0, "draft-inflight");
 
-            let coins = load_spendable_coins(&conn, "p1", None).expect("load");
+            let coins = load_spendable_coins(&conn, "p1", None, Network::Main).expect("load");
             assert!(
                 coins.is_empty(),
                 "status={status}: an in-flight draft's coin must stay reserved past the TTL"
@@ -1097,7 +1277,7 @@ mod tests {
         insert_draft_row(&conn, "draft-abandoned", Some("2000-01-01T00:00:00Z"));
         reserve(&conn, &txid_a, 0, "draft-abandoned");
 
-        let coins = load_spendable_coins(&conn, "p1", None).expect("load");
+        let coins = load_spendable_coins(&conn, "p1", None, Network::Main).expect("load");
         assert_eq!(
             coins.len(),
             1,
@@ -1126,14 +1306,16 @@ mod tests {
         );
         reserve(&conn, &txid_a, 0, "no-such-draft");
 
-        let coins = load_spendable_coins(&conn, "p1", None).expect("load");
+        let coins = load_spendable_coins(&conn, "p1", None, Network::Main).expect("load");
         assert_eq!(coins.len(), 1, "dangling reservation must be reclaimed");
     }
 
     #[test]
     fn load_spendable_coins_empty_when_none() {
         let conn = mem_db();
-        assert!(load_spendable_coins(&conn, "p1", None).unwrap().is_empty());
+        assert!(load_spendable_coins(&conn, "p1", None, Network::Main)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

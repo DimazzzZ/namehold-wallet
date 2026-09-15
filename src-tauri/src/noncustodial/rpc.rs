@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::error::AppError;
+use crate::noncustodial::network::Network;
 
 /// Where the engine reads chain state and broadcasts transactions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +127,49 @@ impl NodeMode {
             NodeMode::Spv => "spv",
         }
     }
+}
+
+/// If `current` is a loopback node URL pointing at another network's default
+/// hsd RPC port, return the URL for `network`'s port. Otherwise `None`.
+///
+/// This exists because `start_hsd` launches hsd with `--regtest` / `--testnet`,
+/// which makes it listen on that network's port, while `node_rpc_url` keeps
+/// whatever was seeded (the mainnet 12037). The wallet then talks to a port
+/// nothing is listening on.
+///
+/// Deliberately narrow. It only rewrites a URL that is BOTH loopback AND on a
+/// recognised default port for a different network — i.e. one that is
+/// self-evidently a leftover default rather than a choice. A custom port, a
+/// non-loopback host, or a URL already on the right port is returned as `None`
+/// and left exactly as the user set it.
+pub fn realign_loopback_rpc_url(current: &str, network: Network) -> Option<String> {
+    let want = network.default_rpc_port();
+    let rest = current
+        .strip_prefix("http://")
+        .or_else(|| current.strip_prefix("https://"))?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let (host, port) = authority.rsplit_once(':')?;
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
+        return None;
+    }
+    let port: u16 = port.parse().ok()?;
+    if port == want {
+        return None;
+    }
+    // Only a port that is some OTHER network's default counts as a stale
+    // default; anything else is a deliberate choice we must not overwrite.
+    let is_other_default = [
+        Network::Main,
+        Network::Testnet,
+        Network::Regtest,
+        Network::Simnet,
+    ]
+    .iter()
+    .any(|n| n.default_rpc_port() == port);
+    if !is_other_default {
+        return None;
+    }
+    Some(format!("http://{host}:{want}"))
 }
 
 /// Resolve node_mode from settings map.
@@ -597,7 +641,10 @@ impl NodeRpcClient {
         }
     }
 
-    /// `getblockhash` — the block hash (display-order hex) at `height`.
+    /// `getblockhash` — the block hash at `height`, hex in hsd's internal byte
+    /// order. Unlike Bitcoin, hsd does not reverse hashes for RPC display, so
+    /// the hex is fed straight back to `getblock` or decoded as-is into a
+    /// covenant (see `commands::names::renewal_block`).
     pub async fn get_block_hash(&self, height: i64) -> Result<String, AppError> {
         self.call("getblockhash", serde_json::json!([height])).await
     }
@@ -682,6 +729,52 @@ impl NodeRpcClient {
         // minimum (1 doo/byte, == send::MIN_FEE_RATE_PER_BYTE).
         let doos_per_byte = ((rate_hns_per_kvb * 1_000_000.0) / 1000.0).floor() as i64;
         Ok((doos_per_byte.max(1)) as u64)
+    }
+
+    // --- Reorg control (TEST ONLY) -----------------------------------------
+    //
+    // These wrap hsd's `invalidateblock`/`reconsiderblock` RPCs, which let a
+    // regtest node rewind and replay its chain on demand. They exist SOLELY so
+    // the live-node integration tests can drive real reorgs (confirmation
+    // state-machine, coinbase immaturity after unmine). They are `#[cfg(test)]`
+    // so the shipped wallet can NEVER rewind a user's chain — there is no code
+    // path that reaches them outside `cargo test`.
+
+    /// `invalidateblock` — mark `hash` (and every block built on top of it)
+    /// invalid, rewinding the best chain to its parent. Regtest/simnet only.
+    #[cfg(test)]
+    pub async fn invalidate_block(&self, hash: &str) -> Result<(), AppError> {
+        // hsd returns a JSON `null` result on success, which `call` reports as
+        // "returned no result". Treat that specific miss as success and only
+        // propagate genuine RPC errors.
+        void_rpc(
+            self.call::<serde_json::Value>("invalidateblock", serde_json::json!([hash]))
+                .await,
+        )
+    }
+
+    /// `reconsiderblock` — clear the invalid mark set by [`invalidate_block`],
+    /// letting the node reconnect the previously-rejected branch. Regtest only.
+    #[cfg(test)]
+    pub async fn reconsider_block(&self, hash: &str) -> Result<(), AppError> {
+        void_rpc(
+            self.call::<serde_json::Value>("reconsiderblock", serde_json::json!([hash]))
+                .await,
+        )
+    }
+}
+
+/// Normalize a void JSON-RPC call (one whose success payload is a JSON `null`).
+///
+/// `call` requires a non-null `result`; for `invalidateblock`/`reconsiderblock`
+/// that `null` is success, not an error. Map the "returned no result" miss to
+/// `Ok(())` and surface every other RPC failure verbatim.
+#[cfg(test)]
+fn void_rpc(res: Result<serde_json::Value, AppError>) -> Result<(), AppError> {
+    match res {
+        Ok(_) => Ok(()),
+        Err(AppError::Rpc(msg)) if msg.contains("returned no result") => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -952,6 +1045,50 @@ mod tests {
         settings.insert("chain_source".to_string(), "explorer".to_string());
         let client = NodeRpcClient::from_settings(&settings);
         assert_eq!(client.source, ChainSource::Explorer);
+    }
+
+    /// The bug this exists for: starting a regtest node rewrites the seeded
+    /// mainnet default to regtest's port, so the wallet reaches the node it
+    /// just launched.
+    #[test]
+    fn realign_rewrites_a_stale_default_for_the_target_network() {
+        assert_eq!(
+            realign_loopback_rpc_url("http://127.0.0.1:12037", Network::Regtest).as_deref(),
+            Some("http://127.0.0.1:14037")
+        );
+        assert_eq!(
+            realign_loopback_rpc_url("http://localhost:14037", Network::Main).as_deref(),
+            Some("http://localhost:12037")
+        );
+    }
+
+    /// Anything that is not self-evidently a leftover default is left alone: a
+    /// port the user chose, a host that is not loopback, and a URL already on
+    /// the right port. Overwriting any of these would silently redirect the
+    /// wallet away from the node the user configured.
+    #[test]
+    fn realign_leaves_deliberate_urls_untouched() {
+        assert_eq!(
+            realign_loopback_rpc_url("http://127.0.0.1:14037", Network::Regtest),
+            None,
+            "already correct"
+        );
+        assert_eq!(
+            realign_loopback_rpc_url("http://127.0.0.1:9999", Network::Regtest),
+            None,
+            "a custom port is a choice, not a stale default"
+        );
+        assert_eq!(
+            realign_loopback_rpc_url("https://node.example.com:12037", Network::Regtest),
+            None,
+            "a remote host is never rewritten"
+        );
+        assert_eq!(
+            realign_loopback_rpc_url("http://127.0.0.1", Network::Regtest),
+            None,
+            "no port to compare"
+        );
+        assert_eq!(realign_loopback_rpc_url("", Network::Regtest), None);
     }
 
     #[test]

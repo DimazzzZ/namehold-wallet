@@ -13,9 +13,10 @@
 //! Covenant classification is verified against hsd `lib/covenants/rules.js`
 //! covenant type table.
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::AppError;
+use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::{NodeCoin, NodeCovenant};
 
 // --- hsd covenant types (lib/covenants/rules.js `types`) -------------------
@@ -183,37 +184,75 @@ pub fn mark_missing_as_spent(
 /// Aggregate balance (in dollarydoos) for a profile, split by spend class.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Balances {
-    /// Freely spendable HNS.
+    /// Freely spendable HNS — what coin selection can actually draw on.
     pub liquid: i64,
     /// Value bound to names the wallet controls.
     pub name_control: i64,
     /// Value locked in in-flight auction bids.
     pub name_lockup: i64,
+    /// Coinbase value the wallet owns but cannot spend yet. Counted separately
+    /// from `liquid` so the UI never offers funds coin selection would refuse
+    /// (see [`crate::noncustodial::send::load_spendable_coins`]).
+    pub immature: i64,
+    /// Blocks until the *earliest*-maturing immature coin becomes spendable, or
+    /// `None` when there are none. Lets the UI say how long the wait is instead
+    /// of only that there is one.
+    pub immature_in_blocks: Option<i64>,
 }
 
 impl Balances {
+    /// Everything the wallet owns, spendable or not.
     pub fn total(&self) -> i64 {
-        self.liquid + self.name_control + self.name_lockup
+        self.liquid + self.name_control + self.name_lockup + self.immature
     }
 }
 
 /// Compute unspent balances for a profile from the chain cache.
-pub fn compute_balances(conn: &Connection, profile_id: &str) -> Result<Balances, AppError> {
+///
+/// `liquid` counts only what [`crate::noncustodial::send::load_spendable_coins`]
+/// would select, using the same coinbase-maturity predicate and the same tip, so
+/// the number shown as spendable is the number that can be spent. Immature
+/// coinbase value is reported separately rather than dropped — the wallet owns
+/// it, it simply cannot move it yet.
+pub fn compute_balances(
+    conn: &Connection,
+    profile_id: &str,
+    network: Network,
+) -> Result<Balances, AppError> {
+    let maturity = network.coinbase_maturity();
+    let spend_height = get_sync_height(conn, profile_id)? + 1;
+
     let mut stmt = conn.prepare(
-        "SELECT spend_class, COALESCE(SUM(value_doos), 0)
+        "SELECT spend_class,
+                COALESCE(SUM(value_doos), 0),
+                COALESCE(SUM(CASE WHEN coinbase = 1 AND height + ?2 > ?3
+                                  THEN value_doos ELSE 0 END), 0),
+                MIN(CASE WHEN coinbase = 1 AND height + ?2 > ?3
+                         THEN height + ?2 END)
          FROM tracked_utxos
          WHERE wallet_profile_id = ?1 AND spent_by_txid IS NULL
          GROUP BY spend_class",
     )?;
-    let rows = stmt.query_map([profile_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    let rows = stmt.query_map(params![profile_id, maturity, spend_height], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+        ))
     })?;
 
     let mut balances = Balances::default();
     for row in rows {
-        let (class, sum) = row?;
+        let (class, sum, immature, ready_at) = row?;
         match class.as_str() {
-            "liquid_hns" => balances.liquid = sum,
+            "liquid_hns" => {
+                // Only liquid coins are coinbase outputs in practice, but split
+                // unconditionally rather than rely on that.
+                balances.liquid = sum - immature;
+                balances.immature = immature;
+                balances.immature_in_blocks = ready_at.map(|h| (h - spend_height).max(0));
+            }
             "name_control" => balances.name_control = sum,
             "name_lockup" => balances.name_lockup = sum,
             _ => {} // unsupported is not counted as spendable balance
@@ -258,6 +297,11 @@ pub fn set_sync_cursor(conn: &Connection, profile_id: &str, height: i64) -> Resu
 }
 
 /// Read the last synced height for a profile (0 if never synced).
+///
+/// A missing cursor row means "never synced" and reads as 0. A genuine DB
+/// failure is returned as `AppError::Db` rather than collapsing into 0 — coin
+/// selection uses this height to decide coinbase maturity, so a silent 0 there
+/// would silently shrink the spendable set.
 pub fn get_sync_height(conn: &Connection, profile_id: &str) -> Result<i64, AppError> {
     let height: Option<i64> = conn
         .query_row(
@@ -265,7 +309,7 @@ pub fn get_sync_height(conn: &Connection, profile_id: &str) -> Result<i64, AppEr
             [profile_id],
             |row| row.get(0),
         )
-        .ok();
+        .optional()?;
     Ok(height.unwrap_or(0))
 }
 
@@ -461,11 +505,79 @@ mod tests {
         )
         .unwrap();
 
-        let bal = compute_balances(&conn, "p1").unwrap();
+        let bal = compute_balances(&conn, "p1", Network::Main).unwrap();
         assert_eq!(bal.liquid, 1_000_000);
         assert_eq!(bal.name_lockup, 2_000_000);
         assert_eq!(bal.name_control, 3_000_000);
         assert_eq!(bal.total(), 6_000_000);
+    }
+
+    /// The balance card must not offer funds coin selection would refuse. An
+    /// immature coinbase is reported in its own bucket, not in `liquid`, using
+    /// the same `height + maturity <= tip + 1` rule as
+    /// `send::load_spendable_coins`.
+    #[test]
+    fn compute_balances_splits_immature_coinbase_out_of_liquid() {
+        let conn = mem_db();
+        let mut cb = coin("aa", 0, 5_000_000, None);
+        cb.coinbase = Some(true);
+        cb.height = Some(500);
+        upsert_utxo(&conn, "p1", &cb).unwrap();
+        upsert_utxo(&conn, "p1", &coin("bb", 0, 1_000_000, None)).unwrap();
+
+        // Mainnet maturity 100: at tip 598 the coin needs one more block.
+        set_sync_cursor(&conn, "p1", 598).unwrap();
+        let bal = compute_balances(&conn, "p1", Network::Main).unwrap();
+        assert_eq!(bal.liquid, 1_000_000, "only the ordinary coin is spendable");
+        assert_eq!(bal.immature, 5_000_000);
+        assert_eq!(bal.immature_in_blocks, Some(1));
+        assert_eq!(bal.total(), 6_000_000, "the wallet still owns all of it");
+
+        // One block later it is spendable and the bucket empties.
+        set_sync_cursor(&conn, "p1", 599).unwrap();
+        let bal = compute_balances(&conn, "p1", Network::Main).unwrap();
+        assert_eq!(bal.liquid, 6_000_000);
+        assert_eq!(bal.immature, 0);
+        assert_eq!(bal.immature_in_blocks, None);
+    }
+
+    /// The per-network threshold applies here exactly as it does in coin
+    /// selection: the same coin and tip, two different answers.
+    #[test]
+    fn compute_balances_uses_the_networks_own_maturity() {
+        let conn = mem_db();
+        let mut cb = coin("aa", 0, 5_000_000, None);
+        cb.coinbase = Some(true);
+        cb.height = Some(10);
+        upsert_utxo(&conn, "p1", &cb).unwrap();
+        set_sync_cursor(&conn, "p1", 11).unwrap();
+
+        let regtest = compute_balances(&conn, "p1", Network::Regtest).unwrap();
+        assert_eq!(regtest.liquid, 5_000_000, "regtest matures in 2 blocks");
+        assert_eq!(regtest.immature, 0);
+
+        let main = compute_balances(&conn, "p1", Network::Main).unwrap();
+        assert_eq!(main.liquid, 0, "mainnet matures in 100 blocks");
+        assert_eq!(main.immature, 5_000_000);
+        // Ready at height 10 + 100 = 110, i.e. once the tip reaches 109 and a
+        // tx built now would be mined at 110. From tip 11 that is 98 blocks.
+        assert_eq!(main.immature_in_blocks, Some(98));
+    }
+
+    /// A wallet that has never synced reads tip 0, so every coinbase coin is
+    /// immature — the same conservative direction coin selection takes.
+    #[test]
+    fn compute_balances_treats_all_coinbase_as_immature_before_a_sync() {
+        let conn = mem_db();
+        let mut cb = coin("aa", 0, 5_000_000, None);
+        cb.coinbase = Some(true);
+        cb.height = Some(1);
+        upsert_utxo(&conn, "p1", &cb).unwrap();
+        upsert_utxo(&conn, "p1", &coin("bb", 0, 1_000_000, None)).unwrap();
+
+        let bal = compute_balances(&conn, "p1", Network::Regtest).unwrap();
+        assert_eq!(bal.liquid, 1_000_000);
+        assert_eq!(bal.immature, 5_000_000);
     }
 
     #[test]
@@ -481,7 +593,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM tracked_utxos", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
-        let bal = compute_balances(&conn, "p1").unwrap();
+        let bal = compute_balances(&conn, "p1", Network::Main).unwrap();
         assert_eq!(bal.liquid, 1_500_000);
     }
 
@@ -496,7 +608,7 @@ mod tests {
         let spent = mark_missing_as_spent(&conn, "p1", &live).unwrap();
         assert_eq!(spent, 1);
 
-        let bal = compute_balances(&conn, "p1").unwrap();
+        let bal = compute_balances(&conn, "p1", Network::Main).unwrap();
         assert_eq!(bal.liquid, 2_000_000);
 
         // Re-running is a no-op (already marked).
@@ -509,10 +621,16 @@ mod tests {
         let conn = mem_db();
         upsert_utxo(&conn, "p1", &coin("aa", 0, 1_000_000, None)).unwrap();
         mark_missing_as_spent(&conn, "p1", &[]).unwrap();
-        assert_eq!(compute_balances(&conn, "p1").unwrap().liquid, 0);
+        assert_eq!(
+            compute_balances(&conn, "p1", Network::Main).unwrap().liquid,
+            0
+        );
         // Coin re-appears (e.g. mempool double-spend reverted) — upsert clears spend.
         upsert_utxo(&conn, "p1", &coin("aa", 0, 1_000_000, None)).unwrap();
-        assert_eq!(compute_balances(&conn, "p1").unwrap().liquid, 1_000_000);
+        assert_eq!(
+            compute_balances(&conn, "p1", Network::Main).unwrap().liquid,
+            1_000_000
+        );
     }
 
     #[test]
@@ -703,7 +821,7 @@ mod tests {
             .unwrap();
         assert_eq!(stored, "unsupported");
 
-        let bal = compute_balances(&conn, "p1").unwrap();
+        let bal = compute_balances(&conn, "p1", Network::Main).unwrap();
         assert_eq!(bal.liquid, 1_000_000);
         assert_eq!(bal.name_control, 0);
         assert_eq!(bal.name_lockup, 0);
@@ -757,7 +875,7 @@ mod tests {
             Err(AppError::Db(_))
         ));
         assert!(matches!(
-            compute_balances(&conn, "p1"),
+            compute_balances(&conn, "p1", Network::Main),
             Err(AppError::Db(_))
         ));
         assert!(matches!(

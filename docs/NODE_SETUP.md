@@ -59,10 +59,11 @@ Instead of running hsd locally, you can point the wallet at an existing hsd RPC:
   sent to an endpoint you just typed.
 - **Network mismatch:** once a wallet profile exists, "Test connection" compares the node's
   reported network with your wallet's and flags a mismatch (e.g. a testnet node for a
-  mainnet wallet). The app will not read from a mismatched node. Sending is not
-  network-gated by the app — a transaction built for one chain is rejected by a node on
-  another. During first-run onboarding there is no wallet yet, so the comparison starts
-  applying in Settings.
+  mainnet wallet). A mismatched node is refused everywhere: the app will not read from it,
+  will not sync from it, reports it as unable to send, and refuses to broadcast through it —
+  the signed transaction never leaves your device. Settings will not save one either.
+  During first-run onboarding there is no wallet yet, so the comparison starts applying in
+  Settings.
 - **To send:** enable "Allow sending via remote node" (off by default for safety; shown in
   the onboarding Remote step and in Settings → Connections). This sets the
   `allow_remote_broadcast` flag, which gates the broadcast path. Your recovery phrase

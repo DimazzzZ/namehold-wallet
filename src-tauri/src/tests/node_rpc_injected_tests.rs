@@ -764,8 +764,10 @@ async fn write_probe_noop_when_cap_already_read_only() {
         signer_unlocked: false,
         reason: Some("locked".to_string()),
     };
-    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
-        .await;
+    crate::commands::tx::apply_node_write_probe_with_client(
+        &mock, &mut cap, "http://x", None, None,
+    )
+    .await;
     // Unchanged.
     assert!(!cap.can_write);
     assert_eq!(cap.reason.as_deref(), Some("locked"));
@@ -779,6 +781,7 @@ async fn write_probe_unreachable_downgrades_with_start_node_reason() {
         &mock,
         &mut cap,
         "http://localhost:12037",
+        None,
         None,
     )
     .await;
@@ -795,6 +798,119 @@ async fn write_probe_unreachable_downgrades_with_start_node_reason() {
         .contains("http://localhost:12037"));
 }
 
+/// A wrong-chain node is fully synced and fully indexed, so every other probe
+/// passes and the UI would show a green "ready to send" for a node that cannot
+/// accept our transactions. The chain check runs first and names the real problem.
+#[tokio::test]
+async fn write_probe_wrong_chain_downgrades_before_sync_and_index_checks() {
+    let mock =
+        MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), Some("regtest")));
+    let mut cap = writable_cap();
+    crate::commands::tx::apply_node_write_probe_with_client(
+        &mock,
+        &mut cap,
+        "http://x",
+        None,
+        Some("mainnet"),
+    )
+    .await;
+    assert!(!cap.can_write);
+    assert!(!cap.broadcaster_available);
+    let reason = cap.reason.as_deref().unwrap();
+    assert!(reason.contains("regtest"), "{reason}");
+    assert!(reason.contains("mainnet"), "{reason}");
+    assert!(!reason.contains("still syncing"), "{reason}");
+}
+
+/// The same node stays write-capable for a profile on its own chain, and a node
+/// that reports no chain at all (older hsd) is not treated as a mismatch.
+#[tokio::test]
+async fn write_probe_keeps_write_on_matching_or_unknown_chain() {
+    let matching =
+        MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), Some("regtest")));
+    let mut cap = writable_cap();
+    crate::commands::tx::apply_node_write_probe_with_client(
+        &matching,
+        &mut cap,
+        "http://x",
+        None,
+        Some("regtest"),
+    )
+    .await;
+    assert!(cap.can_write, "{:?}", cap.reason);
+
+    let silent = MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), None));
+    let mut cap = writable_cap();
+    crate::commands::tx::apply_node_write_probe_with_client(
+        &silent,
+        &mut cap,
+        "http://x",
+        None,
+        Some("mainnet"),
+    )
+    .await;
+    assert!(
+        cap.can_write,
+        "unknown chain is not a mismatch: {:?}",
+        cap.reason
+    );
+}
+
+// ------- broadcast_network_guard_with_client -------------------------------
+
+/// Broadcasting through a node on another chain is refused up-front, so the
+/// signed draft is never handed over and its status is left untouched.
+#[tokio::test]
+async fn broadcast_guard_refuses_a_node_on_another_chain() {
+    let mock =
+        MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), Some("regtest")));
+    let err = crate::commands::tx::broadcast_network_guard_with_client(&mock, Some("mainnet"))
+        .await
+        .expect_err("cross-chain broadcast must be refused");
+    let msg = err.to_string();
+    assert!(msg.contains("regtest"), "{msg}");
+    assert!(msg.contains("mainnet"), "{msg}");
+}
+
+/// The guard only refuses a POSITIVE mismatch: a matching chain, a node that
+/// reports none, an unknown profile network, and an unreachable node all pass
+/// through to the existing broadcast error handling.
+#[tokio::test]
+async fn broadcast_guard_allows_matching_unknown_and_unreachable() {
+    let matching =
+        MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), Some("main")));
+    assert!(
+        crate::commands::tx::broadcast_network_guard_with_client(&matching, Some("mainnet"))
+            .await
+            .is_ok(),
+        "hsd reports 'main' for a 'mainnet' profile"
+    );
+
+    let silent = MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), None));
+    assert!(
+        crate::commands::tx::broadcast_network_guard_with_client(&silent, Some("mainnet"))
+            .await
+            .is_ok()
+    );
+
+    let regtest =
+        MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), Some("regtest")));
+    assert!(
+        crate::commands::tx::broadcast_network_guard_with_client(&regtest, None)
+            .await
+            .is_ok(),
+        "no profile network to compare against"
+    );
+
+    let unreachable = MockNodeRpc::new().with_blockchain_info_err("no route");
+    assert!(
+        crate::commands::tx::broadcast_network_guard_with_client(&unreachable, Some("mainnet"))
+            .await
+            .is_ok(),
+        "a probe failure is not a mismatch"
+    );
+}
+
 #[tokio::test]
 async fn write_probe_unsynced_downgrades_with_progress_pct() {
     // verification_progress=0.5 → 50% not yet synced.
@@ -806,8 +922,10 @@ async fn write_probe_unsynced_downgrades_with_progress_pct() {
         bestblockhash: None,
     });
     let mut cap = writable_cap();
-    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
-        .await;
+    crate::commands::tx::apply_node_write_probe_with_client(
+        &mock, &mut cap, "http://x", None, None,
+    )
+    .await;
     assert!(!cap.can_write);
     let reason = cap.reason.as_deref().unwrap();
     assert!(reason.contains("50%"));
@@ -832,6 +950,7 @@ async fn write_probe_synced_but_no_address_index_downgrades() {
         &mut cap,
         "http://x",
         Some("hs1qprobe"),
+        None,
     )
     .await;
     assert!(!cap.can_write);
@@ -855,6 +974,7 @@ async fn write_probe_synced_and_indexed_keeps_write_capable() {
         &mut cap,
         "http://x",
         Some("hs1qprobe"),
+        None,
     )
     .await;
     assert!(cap.can_write);
@@ -873,8 +993,10 @@ async fn write_probe_unsynced_no_verification_progress_uses_headers_ratio() {
         bestblockhash: None,
     });
     let mut cap = writable_cap();
-    crate::commands::tx::apply_node_write_probe_with_client(&mock, &mut cap, "http://x", None)
-        .await;
+    crate::commands::tx::apply_node_write_probe_with_client(
+        &mock, &mut cap, "http://x", None, None,
+    )
+    .await;
     assert!(!cap.can_write);
     let reason = cap.reason.as_deref().unwrap();
     assert!(
@@ -903,6 +1025,7 @@ async fn write_probe_synced_no_verification_progress_via_headers() {
         &mut cap,
         "http://x",
         Some("hs1qprobe"),
+        None,
     )
     .await;
     assert!(

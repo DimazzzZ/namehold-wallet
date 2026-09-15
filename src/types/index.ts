@@ -27,8 +27,10 @@ export interface NodeConnectionCheck {
   network: string | null;
   /**
    * `false` when the node reports a chain that doesn't match the active
-   * wallet's network — the read gate refuses such a node (sends are not
-   * network-gated by the app; the node itself rejects a cross-chain tx).
+   * wallet's network. Such a node is refused throughout: reads don't treat it
+   * as authoritative, syncing from it is refused, it reports as unable to
+   * send, and broadcasting through it is refused before the signed
+   * transaction leaves the device.
    * `null` when there is nothing to compare (no wallet profile yet, or the
    * node didn't report its chain).
    */
@@ -495,9 +497,21 @@ export interface NameSignature {
 }
 
 export interface WalletBalances {
+  /** Spendable now — already excludes immature coinbase, like coin selection. */
   liquidDoos: number;
   nameControlDoos: number;
   nameLockupDoos: number;
+  /**
+   * Coinbase value the wallet owns but cannot spend yet (mined too recently for
+   * the network's `coinbaseMaturity`). Included in `totalDoos`, excluded from
+   * `liquidDoos`.
+   */
+  immatureDoos: number;
+  /**
+   * Blocks until the earliest immature coin becomes spendable, or `null` when
+   * there are none.
+   */
+  immatureInBlocks: number | null;
   totalDoos: number;
 }
 

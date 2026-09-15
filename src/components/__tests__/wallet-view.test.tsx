@@ -52,6 +52,8 @@ type Overrides = {
   canWrite?: boolean;
   draft?: unknown;
   spendableDoos?: number;
+  immatureDoos?: number;
+  immatureInBlocks?: number | null;
   confirmedDoos?: number;
   renewals?: unknown;
   drafts?: unknown[];
@@ -85,7 +87,9 @@ function routeInvoke(o: Overrides = {}) {
           liquidDoos: o.spendableDoos ?? 5_000_000,
           nameControlDoos: 0,
           nameLockupDoos: 0,
-          totalDoos: o.spendableDoos ?? 5_000_000,
+          immatureDoos: o.immatureDoos ?? 0,
+          immatureInBlocks: o.immatureInBlocks ?? null,
+          totalDoos: (o.spendableDoos ?? 5_000_000) + (o.immatureDoos ?? 0),
         });
       case "read_balance":
         return Promise.resolve({
@@ -273,6 +277,42 @@ describe("WalletView (non-custodial)", () => {
     expect(await screen.findByTestId("needs-node-sync")).toBeInTheDocument();
     // Can't send with nothing synced, even though the signer/node are ready.
     expect(screen.getByRole("button", { name: /Send HNS/i })).toBeDisabled();
+  });
+
+  it("shows freshly mined coins as Immature and refuses to spend them", async () => {
+    // A just-mined wallet: the node reported the coinbase, but it cannot be
+    // spent for another 40 blocks. Before this split the same value showed up
+    // as "spendable", Send was enabled, and the build failed at the backend.
+    invokeMock.mockImplementation(
+      routeInvoke({
+        unlocked: true,
+        canWrite: true,
+        spendableDoos: 0,
+        immatureDoos: 2_000_000_000,
+        immatureInBlocks: 40,
+        confirmedDoos: 0,
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    const cell = await screen.findByTestId("balance-immature");
+    expect(cell).toHaveTextContent(/Immature/i);
+    expect(cell).toHaveTextContent(/40 blocks/i);
+    // Nothing spendable, so the send flow stays shut even though the signer is
+    // unlocked and the node can write.
+    expect(screen.getByRole("button", { name: /Send HNS/i })).toBeDisabled();
+  });
+
+  it("hides the Immature cell when every coin has matured", async () => {
+    invokeMock.mockImplementation(
+      routeInvoke({ unlocked: true, canWrite: true, spendableDoos: 2_000_000_000 }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+
+    await screen.findByText("Primary");
+    expect(screen.queryByTestId("balance-immature")).toBeNull();
+    expect(screen.getByRole("button", { name: /Send HNS/i })).not.toBeDisabled();
   });
 
   it("needs-node-sync callout has a Start node button that calls start_hsd", async () => {

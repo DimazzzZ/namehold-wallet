@@ -55,6 +55,7 @@ import {
   formatDate,
   latestTimestamp,
   isLikelyHnsAddress,
+  hnsAddressPrefix,
   truncateMiddle,
 } from "../lib/utils";
 import { mergeActivity } from "../lib/activity";
@@ -88,6 +89,8 @@ export function WalletView() {
   const batchRevealMutation = useNameAction("build_batch_reveal_draft");
   const batchRedeemMutation = useNameAction("build_batch_redeem_draft");
   const batchFinalizeMutation = useNameAction("build_batch_finalize_draft");
+  // Batch transfer mutation: transfers N selected names to one shared recipient.
+  const batchTransferMutation = useNameAction("build_batch_transfer_draft");
   // Substring filter for the Owned Names list. Matches on BOTH the raw ACE
   // name (as stored on-chain) and its decoded displayName, so a unicode
   // substring (e.g. from a `.козёл`-style label) still finds the underlying
@@ -131,6 +134,8 @@ export function WalletView() {
   // global setting default. Shared by the Send dialog and every batch action.
   const [sendFeeRate, setSendFeeRate] = useState("");
   const [batchFeeRate, setBatchFeeRate] = useState("");
+  // Shared recipient for a batch transfer (one address for the whole batch).
+  const [batchRecipient, setBatchRecipient] = useState("");
   const [draft, setDraft] = useState<TxDraftSummary | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // Toggle the QR alongside the receive address. Off by default — the address
@@ -153,10 +158,11 @@ export function WalletView() {
   // Batch confirmation modal state.
   const [batchModal, setBatchModal] = useState<{
     open: boolean;
-    action: "renew" | "reveal" | "redeem" | "finalize";
+    action: "renew" | "reveal" | "redeem" | "finalize" | "transfer";
     names: string[];
     feeDoos: number;
     draftId: string;
+    recipient?: string;
   } | null>(null);
   // Wallets manager modal (add / switch / delete). `addMode` opens it straight
   // to the add-wallet form.
@@ -174,7 +180,11 @@ export function WalletView() {
   // Spending uses node-synced coins (tracked_utxos), NOT the explorer balance.
   // If the explorer shows funds but nothing is synced yet, the user must connect
   // a node and Refresh before they can send.
+  // Already net of immature coinbase: the backend applies the same maturity
+  // predicate coin selection does, so a number shown here can actually be sent.
   const spendable = balances?.liquidDoos ?? 0;
+  const immature = balances?.immatureDoos ?? 0;
+  const immatureInBlocks = balances?.immatureInBlocks ?? null;
   const explorerBalance = readBalance?.confirmed ?? 0;
   const needsNodeSync = explorerBalance > 0 && spendable === 0;
 
@@ -282,25 +292,28 @@ export function WalletView() {
   // supports it (canX.allowed = true). Empty selection ⇒ false.
   const batchEligibility = useMemo(() => {
     if (selectedNames.size === 0 || nameCaps.length === 0) {
-      return { canReveal: false, canRedeem: false, canFinalize: false };
+      return { canReveal: false, canRedeem: false, canFinalize: false, canTransfer: false };
     }
     const capsByName = new Map(nameCaps.map((c) => [c.name, c]));
     let canReveal = true;
     let canRedeem = true;
     let canFinalize = true;
+    let canTransfer = true;
     for (const n of selectedNames) {
       const c = capsByName.get(n);
       if (!c) {
         canReveal = false;
         canRedeem = false;
         canFinalize = false;
+        canTransfer = false;
         break;
       }
       if (!c.canReveal.allowed) canReveal = false;
       if (!c.canRedeem.allowed) canRedeem = false;
       if (!c.canFinalize.allowed) canFinalize = false;
+      if (!c.canTransfer.allowed) canTransfer = false;
     }
-    return { canReveal, canRedeem, canFinalize };
+    return { canReveal, canRedeem, canFinalize, canTransfer };
   }, [selectedNames, nameCaps]);
 
   // Batch renew: build a single tx with multiple renewal covenants, sign, broadcast.
@@ -386,6 +399,31 @@ export function WalletView() {
     }
   };
 
+  const handleBatchTransfer = async () => {
+    const names = Array.from(selectedNames);
+    const recipient = batchRecipient.trim();
+    if (names.length === 0 || !recipient) return;
+    try {
+      showToast(`Building batch transfer draft…`, "info");
+      const draft = await batchTransferMutation.mutateAsync({
+        names,
+        recipient,
+        feeRate: batchFeeRateArg,
+      });
+      const feeDoos = draft.summary?.feeDoos ?? 0;
+      setBatchModal({
+        open: true,
+        action: "transfer",
+        names,
+        feeDoos,
+        draftId: draft.id,
+        recipient,
+      });
+    } catch (e) {
+      showToast(`Batch transfer failed: ${mapError(e)}`, "error");
+    }
+  };
+
   // Confirm a pending batch draft: unlock (if needed) → sign → broadcast.
   const handleBatchConfirm = async () => {
     if (!batchModal || !profile) return;
@@ -402,6 +440,7 @@ export function WalletView() {
       );
       setBatchModal(null);
       clearSelection();
+      setBatchRecipient("");
       qc.invalidateQueries({ queryKey: ["wallet"] });
     } catch (e) {
       showToast(`Batch ${action} failed: ${mapError(e)}`, "error");
@@ -559,9 +598,9 @@ export function WalletView() {
   const sendAmtDoos = hnsToDollarydoos(sendAmount);
   const addressError =
     sendAddress.trim() && !isLikelyHnsAddress(sendAddress, profile.network)
-      ? `Enter a valid ${profile.network} address (starts with ${
-          profile.network === "mainnet" ? "hs1" : profile.network === "testnet" ? "ts1" : "rs1"
-        }…)`
+      ? `Enter a valid ${profile.network} address (starts with ${hnsAddressPrefix(
+          profile.network,
+        )}…)`
       : null;
   const amountError =
     sendAmount.trim() && (isNaN(sendAmtDoos) || sendAmtDoos <= 0)
@@ -867,6 +906,19 @@ export function WalletView() {
               {formatHns(readBalance?.unconfirmed ?? 0)}
             </div>
           </div>
+          {immature > 0 && (
+            <div data-testid="balance-immature">
+              <div title="Freshly mined coins — spendable once they mature">
+                Immature
+                {immatureInBlocks !== null && immatureInBlocks > 0
+                  ? ` (${immatureInBlocks} ${immatureInBlocks === 1 ? "block" : "blocks"})`
+                  : ""}
+              </div>
+              <div className="text-sm text-gray-800 tabular-nums font-mono">
+                {formatHns(immature)}
+              </div>
+            </div>
+          )}
           {(balances?.nameLockupDoos ?? 0) > 0 && (
             <div data-testid="balance-locked-auctions">
               <div title="In-flight bids — returned on reveal/redeem">Locked in Auctions</div>
@@ -1290,6 +1342,29 @@ export function WalletView() {
                     >
                       Finalize Selected
                     </Button>
+                    <Input
+                      className="w-56"
+                      placeholder="Transfer to hs1q… / rs1q…"
+                      value={batchRecipient}
+                      onChange={(e) => setBatchRecipient(e.target.value)}
+                      data-testid="batch-transfer-recipient-input"
+                    />
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={handleBatchTransfer}
+                      disabled={!batchEligibility.canTransfer || !batchRecipient.trim()}
+                      title={
+                        !batchEligibility.canTransfer
+                          ? "All selected names must be transferable (owned, not mid-transfer)"
+                          : !batchRecipient.trim()
+                            ? "Enter a recipient address"
+                            : undefined
+                      }
+                      data-testid="batch-transfer-btn"
+                    >
+                      Transfer Selected
+                    </Button>
                     <Button size="sm" variant="ghost" onClick={clearSelection}>
                       Clear
                     </Button>
@@ -1385,6 +1460,7 @@ export function WalletView() {
           action={batchModal.action}
           names={batchModal.names}
           estimatedFeeDoos={batchModal.feeDoos}
+          recipient={batchModal.recipient}
           onConfirm={handleBatchConfirm}
           onCancel={handleBatchCancel}
         />

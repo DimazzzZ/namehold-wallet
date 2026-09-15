@@ -7,7 +7,7 @@
 //! (`node_rpc_api_key` + the active profile's network), so "the node the app
 //! starts" and "the node the app talks to" are the same node.
 
-use crate::commands::active_profile::active_profile_network;
+use crate::commands::active_profile::{active_profile_network, active_profile_network_opt};
 use crate::db;
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
@@ -378,7 +378,33 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
         (api_key, node_mode)
     };
-    let network = active_profile_network(&state);
+    // Refuse rather than default. Spawning hsd is the one place where guessing
+    // mainnet is an action with consequences: it starts a full mainnet chain
+    // sync into a data dir the user prepared for another network, and the
+    // wallet then reads a chain it has nothing on.
+    let network = active_profile_network_opt(&state).ok_or_else(|| {
+        AppError::InvalidInput(
+            "no active wallet profile, so there is no network to start a node for — create or \
+             select a wallet first"
+                .to_string(),
+        )
+    })?;
+
+    // hsd will listen on this network's RPC port, but `node_rpc_url` keeps
+    // whatever was seeded — the mainnet 12037. Left alone, the wallet starts a
+    // regtest node and then talks to a port nothing is listening on. Realign a
+    // stale loopback default now; a custom port or a remote host is left as the
+    // user set it (see `realign_loopback_rpc_url`).
+    {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let current = db::queries::get_settings(&db)?
+            .get("node_rpc_url")
+            .cloned()
+            .unwrap_or_default();
+        if let Some(fixed) = crate::noncustodial::rpc::realign_loopback_rpc_url(&current, network) {
+            db::queries::set_setting(&db, "node_rpc_url", &fixed)?;
+        }
+    }
 
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| AppError::Other(format!("cannot create data dir {data_dir}: {e}")))?;
@@ -683,8 +709,10 @@ pub struct NodeConnectionCheck {
     pub network: Option<String>,
     /// `Some(false)` when the node reports a chain that doesn't match the
     /// active wallet profile's network (e.g. a testnet node answering for a
-    /// mainnet wallet) — the read gate refuses such a node. Sends are not
-    /// network-gated by the app; a cross-chain tx is rejected by the node.
+    /// mainnet wallet). Such a node is refused throughout: reads do not treat
+    /// it as authoritative, `sync_wallet_state` will not seed the cache from
+    /// it, `get_write_capability` reports it as unable to send, and
+    /// `broadcast_tx_draft` refuses to hand it a signed transaction.
     /// `None` when there is nothing to compare against: no active profile
     /// yet (onboarding), or the node didn't report `chain`.
     pub network_matches: Option<bool>,

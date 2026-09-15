@@ -184,10 +184,16 @@ async fn full_lifecycle_build_sign_broadcast_succeeds() {
     let mut server = mockito::Server::new_async().await;
     // hsd returns the txid string as the JSON-RPC result.
     let node_txid = "abc0000000000000000000000000000000000000000000000000000000000def";
+    // Two POSTs now: the chain-identity probe `broadcast_tx_draft` runs before
+    // it hands over a signed transaction, then `sendrawtransaction` itself. The
+    // probe gets this same txid-shaped body, fails to decode as blockchain info,
+    // and — a probe failure being no evidence of a mismatch — lets the broadcast
+    // proceed.
     let m = server
         .mock("POST", "/")
         .with_header("content-type", "application/json")
         .with_body(format!(r#"{{"result":"{node_txid}","error":null,"id":1}}"#))
+        .expect(2)
         .create_async()
         .await;
 

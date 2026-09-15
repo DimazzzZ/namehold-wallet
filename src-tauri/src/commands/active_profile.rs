@@ -24,9 +24,27 @@ pub(crate) fn active_profile_network(state: &AppState) -> Network {
 /// Pure-DB core of [`active_profile_network`]: no profile, a dangling active
 /// id, a DB error, or an unparseable network string all yield `Network::Main`.
 pub(crate) fn active_profile_network_from_conn(conn: &rusqlite::Connection) -> Network {
+    active_profile_network_opt_from_conn(conn).unwrap_or_default()
+}
+
+/// The active profile's network, or `None` when there is no profile, the active
+/// id dangles, the DB errors, or the stored string does not parse.
+///
+/// Prefer this wherever defaulting to mainnet would be an action rather than a
+/// label. Reporting "mainnet" in a status payload is harmless; *launching* a
+/// mainnet node is not — it starts a full chain sync on the user's disk under a
+/// data dir they set up for something else.
+pub(crate) fn active_profile_network_opt_from_conn(conn: &rusqlite::Connection) -> Option<Network> {
     db::queries::get_active_profile_network(conn)
         .ok()
         .flatten()
         .and_then(|s| Network::from_str_opt(&s))
-        .unwrap_or_default()
+}
+
+/// `State`-based form of [`active_profile_network_opt_from_conn`]. A poisoned
+/// lock reads as "unknown" rather than mainnet, for the same reason.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn active_profile_network_opt(state: &AppState) -> Option<Network> {
+    let conn = state.db.lock().ok()?;
+    active_profile_network_opt_from_conn(&conn)
 }

@@ -109,11 +109,13 @@ pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -
         .is_some()
 }
 
-/// Like [`node_tip_height_if_synced`] but additionally rejects the node when
-/// its reported `chain` doesn't match the `expected_network` (e.g. a regtest
-/// node answering for a mainnet wallet). When `expected_network` is `None` the
-/// network check is skipped (backward-compat for callers without a profile).
-async fn node_tip_height_if_synced_for_network(
+/// Like [`node_tip_height_if_synced`] but with an explicitly supplied
+/// `expected_network`, for the one caller that has already resolved it
+/// ([`is_node_ready_for_local_reads`]). Rejects the node when its reported
+/// `chain` disagrees (e.g. a regtest node answering for a mainnet wallet).
+/// `None` means "no network to compare" — see
+/// [`node_tip_height_if_synced_with_client`] for why that is permissive.
+pub(crate) async fn node_tip_height_if_synced_for_network(
     state: &State<'_, AppState>,
     expected_network: Option<&str>,
 ) -> Option<i64> {
@@ -124,26 +126,22 @@ async fn node_tip_height_if_synced_for_network(
     node_tip_height_if_synced_from_settings_with_network(&settings, expected_network).await
 }
 
-/// The live node tip height, but ONLY when the node is connected AND fully
-/// synced (same gate as [`is_node_ready_for_local_reads`] — this is its
-/// height-carrying form). `None` when the node is unreachable or catching up.
+/// The live node tip height, but ONLY when the node is connected, fully synced,
+/// AND reporting the same chain as the active profile. `None` when the node is
+/// unreachable, catching up, or on another network.
+///
+/// The expected network is resolved here rather than taken as an argument:
+/// every `State`-based caller wants the active profile's chain, and a helper
+/// that could be called without one is exactly how the cross-chain reads this
+/// guard exists to prevent got in. Callers outside a `State` context use
+/// [`node_tip_height_if_synced_from_settings_with_network`], which makes the
+/// expected network an explicit argument they cannot forget.
 pub(crate) async fn node_tip_height_if_synced(state: &State<'_, AppState>) -> Option<i64> {
-    let settings = {
+    let expected_network = {
         let db = state.db.lock().ok()?;
-        crate::db::queries::get_settings(&db).ok()?
+        queries::get_active_profile_network(&db).ok().flatten()
     };
-    node_tip_height_if_synced_from_settings(&settings).await
-}
-
-/// Settings-based form of [`node_tip_height_if_synced`], usable outside a
-/// `State<AppState>` context (e.g. the background sync thread, which holds only
-/// a bare DB connection). Returns the node tip height iff the node RPC answers
-/// AND the chain is fully synced. This is the single source of truth for the
-/// "is the node authoritative?" gate — the `State`-based helper delegates here.
-pub(crate) async fn node_tip_height_if_synced_from_settings(
-    settings: &std::collections::HashMap<String, String>,
-) -> Option<i64> {
-    node_tip_height_if_synced_from_settings_with_network(settings, None).await
+    node_tip_height_if_synced_for_network(state, expected_network.as_deref()).await
 }
 
 /// Same as [`node_tip_height_if_synced_from_settings`], but additionally
@@ -302,14 +300,17 @@ pub(crate) async fn resolve_name_ownership_with_client(
     })
 }
 
-/// Settings-based readiness gate: `true` when the local node is connected AND
-/// fully synced, making node/local data the authoritative read source. Mirrors
+/// Settings-based readiness gate: `true` when the local node is connected, fully
+/// synced, AND reporting `expected_network`. Mirrors
 /// [`is_node_ready_for_local_reads`] for callers that only have settings/a DB
-/// connection (the background sync thread).
+/// connection (the background sync thread, the chain scanner, the watched-name
+/// daemon). Pass the active profile's stored network string; `None` skips the
+/// comparison and should only be used where no profile exists.
 pub async fn node_ready_from_settings(
     settings: &std::collections::HashMap<String, String>,
+    expected_network: Option<&str>,
 ) -> bool {
-    node_tip_height_if_synced_from_settings(settings)
+    node_tip_height_if_synced_from_settings_with_network(settings, expected_network)
         .await
         .is_some()
 }
@@ -466,7 +467,7 @@ pub async fn read_balance(
     // Prefer local cache when the node is connected and synced.
     if is_node_ready_for_local_reads(&state).await {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        return queries::read_cached_balance(&conn, &id);
+        return queries::read_cached_balance(&conn, &id, profile_network(&conn, &id)?);
     }
 
     // Explorer fallback.
@@ -531,7 +532,20 @@ pub async fn read_balance(
         }
     }
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    queries::read_cached_balance(&conn, &id)
+    let network = profile_network(&conn, &id)?;
+    queries::read_cached_balance(&conn, &id, network)
+}
+
+/// The `Network` of one profile, for the cached read model. Errors rather than
+/// defaulting: a balance computed with the wrong coinbase maturity would report
+/// funds as spendable that coin selection refuses.
+fn profile_network(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<crate::noncustodial::network::Network, AppError> {
+    let profile = queries::get_wallet_profile(conn, profile_id)?
+        .ok_or_else(|| AppError::NotFound(format!("wallet profile {profile_id}")))?;
+    crate::noncustodial::derivation::network_from_profile(&profile.network)
 }
 
 /// Names this wallet actually OWNS on-chain — the union of node-free discovered
@@ -1616,11 +1630,15 @@ pub struct RenewalsResponse {
     pub current_height: Option<i64>,
     /// `"node"` — live height from a connected, fully synced node.
     /// `"explorer"` — estimate persisted by the last sync (explorer name-stats
-    /// snapshots and/or the last node-synced height), extrapolated by wall
-    /// time at ~10-minute blocks. NOT a live read.
+    /// snapshots and/or the last node-synced height). On main and testnet it is
+    /// aged by wall time at ~10-minute blocks; on regtest and simnet, where
+    /// blocks are mined on demand, it is reported unaged. Either way NOT a
+    /// live read.
     /// `"unknown"` — no height available; chain days are null, never invented.
     pub height_source: String,
-    /// Frontend copy of [`crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS`].
+    /// The active profile network's expiry warning threshold
+    /// ([`crate::noncustodial::network::Network::expiring_soon_threshold_days`]),
+    /// so the frontend colours rows on the same rule the backend used.
     pub expiring_soon_threshold_days: f64,
     pub names: Vec<RenewalRow>,
 }
@@ -1630,7 +1648,10 @@ fn empty_renewals() -> RenewalsResponse {
         wallet_profile_id: None,
         current_height: None,
         height_source: "unknown".into(),
-        expiring_soon_threshold_days: crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS,
+        // No profile, so no network to scale by: mainnet's value is the safe
+        // stand-in for an empty response the UI renders nothing from anyway.
+        expiring_soon_threshold_days: crate::noncustodial::network::Network::Main
+            .expiring_soon_threshold_days(),
         names: Vec::new(),
     }
 }
@@ -1649,6 +1670,23 @@ pub(crate) fn estimate_persisted_height(
     conn: &rusqlite::Connection,
     profile_id: &str,
 ) -> Result<Option<i64>, AppError> {
+    // Ageing a stored height by wall clock assumes blocks arrive on a schedule.
+    // They do on main and testnet; on regtest and simnet they are mined on
+    // demand, so the same arithmetic invents six blocks an idle hour never
+    // produced and every renewal countdown drifts. There, report the stored
+    // height as-is: stale but true.
+    let ages_by_wall_clock = queries::get_wallet_profile(conn, profile_id)?
+        .and_then(|p| crate::noncustodial::network::Network::from_str_opt(&p.network))
+        .unwrap_or_default()
+        .has_wall_clock_block_timing();
+    let age = |elapsed: i64| {
+        if ages_by_wall_clock {
+            elapsed.max(0)
+        } else {
+            0
+        }
+    };
+
     let mut best: Option<i64> = None;
     let mut consider = |h: Option<i64>| {
         if let Some(h) = h {
@@ -1682,7 +1720,7 @@ pub(crate) fn estimate_persisted_height(
         let end = stats.get("renewalPeriodEnd").and_then(|x| x.as_i64());
         let until = stats.get("blocksUntilExpire").and_then(|x| x.as_i64());
         if let (Some(end), Some(until)) = (end, until) {
-            consider(Some(end - until + elapsed_blocks.max(0)));
+            consider(Some(end - until + age(elapsed_blocks)));
         }
     }
 
@@ -1697,7 +1735,7 @@ pub(crate) fn estimate_persisted_height(
         )
         .optional()?;
     if let Some((Some(h), elapsed_blocks)) = profile_snapshot {
-        consider(Some(h + elapsed_blocks.max(0)));
+        consider(Some(h + age(elapsed_blocks)));
     }
 
     Ok(best)
@@ -1726,10 +1764,12 @@ pub(crate) fn compute_renewals(
 ) -> Result<RenewalsResponse, AppError> {
     use crate::noncustodial::network::{Network, BLOCKS_PER_DAY};
 
-    let threshold = crate::commands::names::EXPIRING_SOON_THRESHOLD_DAYS;
     let network = queries::get_wallet_profile(conn, profile_id)?
         .and_then(|p| Network::from_str_opt(&p.network))
         .unwrap_or_default();
+    // Scaled to this network's renewal window, so the warning means the same
+    // share of the lease everywhere instead of covering the whole of a short one.
+    let threshold = network.expiring_soon_threshold_days();
     let renewal_window = network.name_params().renewal_window as i64;
 
     let (current_height, height_source) = match live_node_height {

@@ -13,6 +13,7 @@ use crate::commands::names::{
     build_name_action_capabilities, conservative_capabilities, derive_auction_task_state,
     next_action_for_task, AuctionTaskState, NameActionContext,
 };
+use crate::noncustodial::network::Network;
 
 /// Helper to construct a minimal `NameActionContext` with all fields set.
 #[allow(clippy::too_many_arguments)]
@@ -64,6 +65,7 @@ fn task_state_available_no_pending_open() {
         false,
         None,
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::AvailableToOpen);
 }
@@ -82,6 +84,7 @@ fn task_state_available_with_pending_open() {
         true, // has_pending_open
         None,
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::WaitingForBidding);
 }
@@ -89,7 +92,18 @@ fn task_state_available_with_pending_open() {
 #[test]
 fn task_state_empty_phase_treated_as_available() {
     let state = derive_auction_task_state(
-        "", false, false, false, false, false, None, None, false, None, None,
+        "",
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+        None,
+        false,
+        None,
+        None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::AvailableToOpen);
 }
@@ -97,7 +111,18 @@ fn task_state_empty_phase_treated_as_available() {
 #[test]
 fn task_state_opening_phase() {
     let state = derive_auction_task_state(
-        "OPENING", false, false, false, false, false, None, None, false, None, None,
+        "OPENING",
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+        None,
+        false,
+        None,
+        None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::WaitingForBidding);
 }
@@ -105,8 +130,18 @@ fn task_state_opening_phase() {
 #[test]
 fn task_state_bidding_with_commitment() {
     let state = derive_auction_task_state(
-        "BIDDING", false, true, // has_bid_commitment
-        false, false, false, None, None, false, None, None,
+        "BIDDING",
+        false,
+        true, // has_bid_commitment
+        false,
+        false,
+        false,
+        None,
+        None,
+        false,
+        None,
+        None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::WaitingForBidding);
 }
@@ -114,7 +149,18 @@ fn task_state_bidding_with_commitment() {
 #[test]
 fn task_state_bidding_without_commitment() {
     let state = derive_auction_task_state(
-        "BIDDING", false, false, false, false, false, None, None, false, None, None,
+        "BIDDING",
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+        None,
+        false,
+        None,
+        None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::ReadyToBid);
 }
@@ -122,8 +168,18 @@ fn task_state_bidding_without_commitment() {
 #[test]
 fn task_state_reveal_no_commitment_returns_unavailable() {
     let state = derive_auction_task_state(
-        "REVEAL", false, false, // no commitment
-        false, false, false, None, None, false, None, None,
+        "REVEAL",
+        false,
+        false, // no commitment
+        false,
+        false,
+        false,
+        None,
+        None,
+        false,
+        None,
+        None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::UnavailableOther);
 }
@@ -142,6 +198,7 @@ fn task_state_reveal_with_broadcasted_draft() {
         false,
         None,
         Some("broadcasted"),
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::RevealBroadcastPending);
 }
@@ -160,6 +217,7 @@ fn task_state_reveal_with_broadcast_pending_draft() {
         false,
         None,
         Some("broadcast_pending"),
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::RevealBroadcastPending);
 }
@@ -178,6 +236,7 @@ fn task_state_reveal_with_confirmed_draft() {
         false,
         None,
         Some("confirmed"),
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::RevealDoneWaitingForClose);
 }
@@ -197,6 +256,7 @@ fn task_state_reveal_with_dropped_draft_and_unspent_bid_coin() {
         false,
         None,
         Some("dropped"),
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::ReadyToReveal);
 }
@@ -216,6 +276,7 @@ fn task_state_reveal_with_txid_and_spent_bid_coin() {
         false,
         Some("abc123"),
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::RevealDoneWaitingForClose);
 }
@@ -234,6 +295,7 @@ fn task_state_closed_owns_name_unregistered() {
         false,
         None,
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::WonNeedsRegister);
 }
@@ -252,6 +314,7 @@ fn task_state_closed_owns_name_already_registered() {
         false,
         None,
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);
 }
@@ -270,6 +333,7 @@ fn task_state_closed_owns_name_registered_expiring_soon() {
         false,
         None,
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::ExpiringSoon);
 }
@@ -278,8 +342,18 @@ fn task_state_closed_owns_name_registered_expiring_soon() {
 fn task_state_closed_owns_name_no_coin_synced() {
     // Owned per explorer but coin not synced locally.
     let state = derive_auction_task_state(
-        "CLOSED", true, false, false, false, false, // no owner coin
-        None, None, false, None, None,
+        "CLOSED",
+        true,
+        false,
+        false,
+        false,
+        false, // no owner coin
+        None,
+        None,
+        false,
+        None,
+        None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);
 }
@@ -287,9 +361,18 @@ fn task_state_closed_owns_name_no_coin_synced() {
 #[test]
 fn task_state_closed_lost_has_reveal_coin() {
     let state = derive_auction_task_state(
-        "CLOSED", false, // doesn't own
-        false, false, true, // has_reveal_coin (losing bid)
-        false, None, None, false, None, None,
+        "CLOSED",
+        false, // doesn't own
+        false,
+        false,
+        true, // has_reveal_coin (losing bid)
+        false,
+        None,
+        None,
+        false,
+        None,
+        None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::LostNeedsRedeem);
 }
@@ -297,7 +380,18 @@ fn task_state_closed_lost_has_reveal_coin() {
 #[test]
 fn task_state_transfer_phase() {
     let state = derive_auction_task_state(
-        "TRANSFER", false, false, false, false, false, None, None, false, None, None,
+        "TRANSFER",
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+        None,
+        false,
+        None,
+        None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::TransferPendingFinalize);
 }
@@ -305,7 +399,18 @@ fn task_state_transfer_phase() {
 #[test]
 fn task_state_revoked_phase() {
     let state = derive_auction_task_state(
-        "REVOKED", false, false, false, false, false, None, None, false, None, None,
+        "REVOKED",
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+        None,
+        false,
+        None,
+        None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::UnavailableOther);
 }
@@ -324,6 +429,7 @@ fn task_state_unknown_phase_owned() {
         false,
         None,
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);
 }
@@ -342,6 +448,7 @@ fn task_state_unknown_phase_not_owned() {
         false,
         None,
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::UnavailableOther);
 }
@@ -464,6 +571,7 @@ fn cap_available_phase_can_open() {
         false,
         false,
         None,
+        Network::Main,
     );
     assert!(caps.can_open.allowed);
     assert_eq!(caps.can_open.reason, None);
@@ -483,6 +591,7 @@ fn cap_available_phase_with_pending_open_cannot_open() {
         false,
         false,
         None,
+        Network::Main,
     );
     assert!(!caps.can_open.allowed);
     assert!(caps
@@ -507,6 +616,7 @@ fn cap_bidding_phase_can_bid_without_commitment() {
         false,
         false,
         None,
+        Network::Main,
     );
     assert!(caps.can_bid.allowed);
     assert_eq!(caps.can_bid.reason, None);
@@ -526,6 +636,7 @@ fn cap_bidding_phase_cannot_bid_with_commitment() {
         false,
         false,
         None,
+        Network::Main,
     );
     assert!(!caps.can_bid.allowed);
     assert!(caps
@@ -550,6 +661,7 @@ fn cap_reveal_phase_can_reveal_with_commitment_and_coin() {
         false,
         false,
         None,
+        Network::Main,
     );
     assert!(caps.can_reveal.allowed);
     assert_eq!(caps.can_reveal.reason, None);
@@ -569,6 +681,7 @@ fn cap_reveal_phase_cannot_reveal_without_commitment() {
         false,
         false,
         None,
+        Network::Main,
     );
     assert!(!caps.can_reveal.allowed);
     assert!(caps
@@ -593,6 +706,7 @@ fn cap_reveal_phase_cannot_reveal_without_bid_coin() {
         false,
         false,
         None,
+        Network::Main,
     );
     assert!(!caps.can_reveal.allowed);
     assert!(caps
@@ -617,6 +731,7 @@ fn cap_closed_phase_can_redeem_lost_bid() {
         false, // doesn't own
         false,
         None,
+        Network::Main,
     );
     assert!(caps.can_redeem.allowed);
 }
@@ -635,6 +750,7 @@ fn cap_closed_phase_cannot_redeem_if_owns() {
         true, // owns
         false,
         None,
+        Network::Main,
     );
     assert!(!caps.can_redeem.allowed);
     assert!(caps
@@ -670,6 +786,7 @@ fn cap_closed_phase_can_register_unregistered_win() {
         true,
         false,
         None,
+        Network::Main,
     );
     assert!(caps.can_register.allowed);
 }
@@ -699,6 +816,7 @@ fn cap_closed_phase_cannot_register_already_registered() {
         true,
         false,
         None,
+        Network::Main,
     );
     assert!(!caps.can_register.allowed);
     assert!(caps
@@ -723,6 +841,7 @@ fn cap_owned_can_update_transfer_renew_revoke() {
         true, // owns_name
         false,
         None,
+        Network::Main,
     );
     assert!(caps.can_update.allowed);
     assert!(caps.can_transfer.allowed);
@@ -744,6 +863,7 @@ fn cap_not_owned_cannot_update_transfer_renew_revoke() {
         false, // doesn't own
         false,
         None,
+        Network::Main,
     );
     assert!(!caps.can_update.allowed);
     assert!(!caps.can_transfer.allowed);
@@ -776,6 +896,7 @@ fn cap_spend_locked_disables_all_spend_actions() {
         true,
         true, // spend_locked
         None,
+        Network::Main,
     );
     assert!(!caps.can_register.allowed);
     assert!(!caps.can_update.allowed);
@@ -814,6 +935,7 @@ fn cap_transfer_phase_can_finalize_with_items() {
         true,
         false,
         None,
+        Network::Main,
     );
     assert!(caps.can_finalize.allowed);
 }
@@ -843,6 +965,7 @@ fn cap_transfer_phase_cannot_finalize_without_items() {
         true,
         false,
         None,
+        Network::Main,
     );
     assert!(!caps.can_finalize.allowed);
     assert!(caps
@@ -877,7 +1000,8 @@ fn cap_expiring_soon_sets_correct_task_state() {
         &action_ctx,
         true,
         false,
-        Some(15.0), // days_until_expire = 15 (below 30-day threshold)
+        Some(15.0), // days_until_expire = 15 (below 30-day threshold),
+        Network::Main,
     );
     assert_eq!(caps.task_state, AuctionTaskState::ExpiringSoon);
     let (key, _label, _) = next_action_for_task(&caps.task_state);
@@ -909,6 +1033,7 @@ fn cap_preserves_bid_value_and_reveal_txid() {
         false,
         false,
         None,
+        Network::Main,
     );
     assert_eq!(caps.bid_value_doos, Some(100_000));
     assert_eq!(caps.reveal_txid, Some("abc123def456".into()));

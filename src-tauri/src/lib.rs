@@ -691,6 +691,7 @@ pub fn run() {
             commands::names::build_batch_reveal_draft,
             commands::names::build_batch_redeem_draft,
             commands::names::build_batch_finalize_draft,
+            commands::names::build_batch_transfer_draft,
             commands::names::build_finalize_with_payment_draft,
             commands::names::get_name_action_capabilities,
             commands::names::get_names_action_capabilities,

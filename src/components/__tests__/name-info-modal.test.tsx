@@ -48,7 +48,9 @@ beforeEach(() => {
     isError: false,
   } as any);
   mockUseActiveProfile.mockReturnValue({
-    data: { id: "p1" },
+    // `network` matters: the explorer link is mainnet-only (Shakeshift indexes
+    // no other chain), so a fixture without it silently hides the link.
+    data: { id: "p1", network: "mainnet" },
     isLoading: false,
     isError: false,
   } as any);
@@ -273,6 +275,39 @@ describe("NameInfoModal", () => {
     // Should show the "requires synced node" message
     expect(screen.getByTestId("name-info-dns-no-node")).toBeInTheDocument();
     expect(screen.getByText(/Requires a synced local node/)).toBeInTheDocument();
+  });
+
+  it("hides the explorer link off mainnet", () => {
+    // Shakeshift indexes mainnet only, so the link would 404 on a regtest or
+    // testnet wallet. The four other explorer links in the app already gate on
+    // this; these two name modals did not.
+    mockUseActiveProfile.mockReturnValue({
+      data: { id: "p1", network: "regtest" },
+      isLoading: false,
+      isError: false,
+    } as any);
+    const nameInfo: HsdName = {
+      name: "example",
+      state: "CLOSED",
+      registered: true,
+      expired: false,
+      height: 100,
+      renewal: 200,
+      owner: { hash: "abc", index: 0 },
+      value: null,
+      highest: null,
+      stats: null,
+      transfer: 0,
+    };
+    mockUseReadNameInfo.mockReturnValue({
+      data: nameInfo,
+      isLoading: false,
+      isError: false,
+    } as any);
+
+    render(<NameInfoModal name="example" open onClose={vi.fn()} />, { wrapper: wrapper() });
+
+    expect(screen.queryByTestId("name-explorer-link")).toBeNull();
   });
 
   it("renders explorer link", () => {

@@ -7,6 +7,7 @@
 use crate::commands::names::{
     derive_auction_task_state, next_action_for_task, AuctionTaskState, EXPIRING_SOON_THRESHOLD_DAYS,
 };
+use crate::noncustodial::network::Network;
 
 // Helper: no owner coin (covenant_type = None). `has_bid_coin` (unspent
 // COV_BID, gates REVEAL readiness) and `has_reveal_coin` (unspent COV_REVEAL,
@@ -32,6 +33,7 @@ fn state_no_owner(
         false,
         None,
         None,
+        Network::Main,
     )
 }
 
@@ -55,6 +57,7 @@ fn state_registered(
         false,
         None,
         None,
+        Network::Main,
     )
 }
 
@@ -78,6 +81,7 @@ fn state_unregistered(
         false,
         None,
         None,
+        Network::Main,
     )
 }
 
@@ -95,6 +99,7 @@ fn state_registered_days(phase: &str, days: Option<f64>) -> AuctionTaskState {
         false,
         None,
         None,
+        Network::Main,
     )
 }
 
@@ -141,6 +146,7 @@ fn available_with_pending_open_yields_waiting_for_bidding() {
         true,
         None,
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::WaitingForBidding);
 }
@@ -148,7 +154,18 @@ fn available_with_pending_open_yields_waiting_for_bidding() {
 #[test]
 fn empty_phase_with_pending_open_yields_waiting_for_bidding() {
     let state = derive_auction_task_state(
-        "", false, false, false, false, false, None, None, true, None, None,
+        "",
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+        None,
+        true,
+        None,
+        None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::WaitingForBidding);
 }
@@ -169,6 +186,7 @@ fn available_without_pending_open_still_yields_available_to_open() {
         false,
         None,
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::AvailableToOpen);
 }
@@ -237,6 +255,7 @@ fn reveal_state(
         false,
         reveal_txid,
         reveal_draft_status,
+        Network::Main,
     )
 }
 
@@ -417,6 +436,7 @@ fn explorer_owned_without_owner_coin_within_threshold_yields_expiring_soon() {
         false,
         None,
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::ExpiringSoon);
 }
@@ -436,6 +456,7 @@ fn won_unregistered_within_threshold_still_needs_register_first() {
         false,
         None,
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::WonNeedsRegister);
 }
@@ -455,6 +476,7 @@ fn unowned_closed_within_threshold_is_not_expiring_soon() {
         false,
         None,
         None,
+        Network::Main,
     );
     assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);
 }

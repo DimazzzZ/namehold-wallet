@@ -4,6 +4,7 @@ import { useNodeStatus, useStartHsd, useStopHsd, useResyncHsd } from "../queries
 import { useActiveProfile, useExportBidCommitments } from "../queries/wallet";
 import { open, save } from "../lib/dialog";
 import { isTauri } from "../lib/runtime";
+import { defaultNodeRpcUrl } from "../lib/utils";
 import { invoke } from "../lib/invoke";
 import {
   checkNotificationPermission,
@@ -171,9 +172,22 @@ export function Settings() {
     }
   };
 
+  // A node the probe positively identified as being on another chain is not a
+  // node this wallet can use: reads refuse it, sends refuse it, and saving it
+  // just parks a broken setting. Only a POSITIVE mismatch blocks — a node that
+  // was never tested, or one that didn't report its chain, saves as before.
+  const nodeNetworkMismatch = nodeProbe.result?.networkMatches === false;
+
   const handleSave = async () => {
     if (explorerUrlError) {
       showToast(explorerUrlError, "error");
+      return;
+    }
+    if (nodeNetworkMismatch) {
+      showToast(
+        `That node is on ${nodeProbe.result?.network ?? "another network"}, but this wallet is ${profile?.network ?? "on a different network"}. Point it at a matching node before saving.`,
+        "error",
+      );
       return;
     }
     // Normalize the trailing slash the same way the backend does
@@ -302,7 +316,7 @@ export function Settings() {
             onApiKeyChange={(v) => updateField("node_rpc_api_key", v)}
             probe={nodeProbe}
             urlLabel="Node RPC URL (sending)"
-            urlPlaceholder="http://127.0.0.1:12037"
+            urlPlaceholder={defaultNodeRpcUrl(profile?.network ?? "mainnet")}
             apiKeyLabel="Node RPC API key"
             apiKeyPlaceholder={
               hasStoredSecret(settings, "node_rpc_api_key")
@@ -640,7 +654,11 @@ export function Settings() {
 
       {dirty && (
         <StickyFooter>
-          <Button onClick={handleSave} disabled={saving || !!explorerUrlError || !!feeRateError}>
+          <Button
+            onClick={handleSave}
+            disabled={saving || !!explorerUrlError || !!feeRateError || nodeNetworkMismatch}
+            data-testid="settings-save"
+          >
             {saving ? "Saving…" : "Save settings"}
           </Button>
         </StickyFooter>

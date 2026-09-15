@@ -458,11 +458,21 @@ pub async fn run_sync_steps(
     let node_authoritative = if node_mode.is_spv() {
         false
     } else {
-        let settings = open_conn(db_path)
-            .ok()
-            .and_then(|c| queries::get_settings(&c).ok());
-        match settings {
-            Some(s) => crate::commands::read::node_ready_from_settings(&s).await,
+        // The network belongs to the profile being synced, not to whichever
+        // profile happens to be active: a node on another chain must never be
+        // authoritative for this one.
+        let snapshot = open_conn(db_path).ok().and_then(|c| {
+            let settings = queries::get_settings(&c).ok()?;
+            let network = queries::get_wallet_profile(&c, profile_id)
+                .ok()
+                .flatten()
+                .map(|p| p.network);
+            Some((settings, network))
+        });
+        match snapshot {
+            Some((s, network)) => {
+                crate::commands::read::node_ready_from_settings(&s, network.as_deref()).await
+            }
             None => false,
         }
     };
