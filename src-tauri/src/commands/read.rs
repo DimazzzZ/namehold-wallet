@@ -832,8 +832,7 @@ pub async fn read_name_info(
     let (explorer_opt, settings) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        let network =
-            crate::commands::active_profile::active_profile_network_from_conn(&conn);
+        let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
         (explorer_client(&settings, network), settings)
     };
 
@@ -1128,8 +1127,7 @@ pub async fn read_name_bids(
     let (client_opt, commitments) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        let network =
-            crate::commands::active_profile::active_profile_network_from_conn(&conn);
+        let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
         (
             explorer_client(&settings, network),
             queries::list_bid_commitments(&conn, &id)?,
@@ -1180,8 +1178,7 @@ pub async fn get_resource(
     let (explorer_opt, settings) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let s = queries::get_settings(&conn)?;
-        let network =
-            crate::commands::active_profile::active_profile_network_from_conn(&conn);
+        let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
         (explorer_client(&s, network), s)
     };
     let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);

@@ -3340,13 +3340,10 @@ async fn live_batch_large_covenant_count() {
     }
 
     // Batch renew all 20 names in one tx.
-    let batch = crate::commands::names::build_batch_renew_draft(
-        app.state(),
-        names.clone(),
-        Some(1),
-    )
-    .await
-    .expect("build batch renew");
+    let batch =
+        crate::commands::names::build_batch_renew_draft(app.state(), names.clone(), Some(1))
+            .await
+            .expect("build batch renew");
 
     // Broadcast the batch.
     execute(&app, &cl, &addr, batch.id.clone()).await;

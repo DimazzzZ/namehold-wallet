@@ -50,11 +50,7 @@ export function Onboarding() {
           A non-custodial wallet for moving and managing Handshake names. Your keys never leave this
           device, and your recovery phrase is only ever shown in a secure window.
         </p>
-        <AddWalletForm
-          defaultLabel="Primary"
-          defaultNetwork={selectedNetwork}
-          onDone={finish}
-        />
+        <AddWalletForm defaultLabel="Primary" defaultNetwork={selectedNetwork} onDone={finish} />
       </div>
     </div>
   );
