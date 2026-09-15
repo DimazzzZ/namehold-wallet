@@ -334,7 +334,9 @@ fn explorer_client(
 /// it names the missing setting rather than degrading to empty/mainnet data.
 fn explorer_unavailable_error() -> AppError {
     AppError::Other(
-        "No explorer is available for this network. The node is not synced and +         no 'explorer_api_url' is configured — set one in Settings, or wait for +         the local node to finish syncing."
+        "No explorer is available for this network. The node is not synced \
+         and no 'explorer_api_url' is configured — set one in Settings, or \
+         wait for the local node to finish syncing."
             .to_string(),
     )
 }
