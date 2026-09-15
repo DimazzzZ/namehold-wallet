@@ -370,6 +370,15 @@ broadcasting; Confirm signs + broadcasts the draft in one step.
 Batch operations use hsd's `createbatch` RPC, which handles consensus limits
 automatically (chunking to stay under block-size limits).
 
+**Note:** The description above is inaccurate and kept only until the next
+manual pass rewrites this section. In reality, batch operations are built
+client-side as a single transaction (there is no `createbatch` RPC in hsd).
+The client enforces a conservative `MAX_BATCH_SIZE=100` names per batch,
+well below hsd's per-transaction covenant limits (300 OPENS, 600 UPDATES,
+600 RENEWALS). Per-block limits are identical to per-tx limits, so a
+100-item batch will never be rejected on covenant-count grounds. Chunking
+is not implemented — each batch is one atomic transaction with one txid.
+
 ### Paid name swaps
 
 To sell a name for HNS (**Sell with payment** flow):
@@ -461,15 +470,16 @@ All node settings live under **Settings → Connections**.
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| **Explorer base URL (reads)** | `https://e.hnsfans.com` | For node-free reads. |
-| **Node RPC URL (sending)** | `http://127.0.0.1:12037` | Mainnet. Testnet 13037, regtest 14037. |
-| **Node RPC API key** | (empty) | Match hsd's `--api-key`. |
-| **Node data directory (`hsd --prefix`)** | (system default) | Use **Browse…** to pick. |
-| **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. |
-| **Autostart HSD when the app launches** | **on** | Toggle off to keep hsd manual. |
-| **Sync in background** | **on** | When enabled, a background daemon syncs your wallet every 60 seconds, even when the app is closed. When disabled, only manual Sync (or the app's auto-sync while running) refreshes your data. |
-| **Node mode** | **Full node** | **SPV** (lightweight, faster sync, explorer-dependent) or **Full node** (requires ~15GB, indexes all addresses). SPV mode is read-only — cannot send transactions. |
-| **Explorer fallback URL** | (empty) | When primary explorer is unreachable, automatically tries this URL. Leave empty to disable failover. |
+| **Chain source** | **Local full node** | How the wallet reads and sends: **Local full node** (hsd on this device, full indexes), **SPV** (lightweight, explorer-dependent, read-only), **Remote node** (user-provided hsd RPC), or **Explorer only** (read-only). |
+| **Node RPC URL** | `http://127.0.0.1:12037` | When chain source is Local full node or Remote node. Mainnet 12037, testnet 13037, regtest 14037. |
+| **Node RPC API key** | (empty) | For remote nodes: match the remote hsd's `--api-key`. Ignored for local nodes. |
+| **Allow sending via remote node** | **off** | When chain source is Remote node, enable this to broadcast signed transactions to the remote node. Off by default for safety. |
+| **Explorer base URL** | (network-dependent) | Mainnet: `https://e.hnsfans.com`. Testnet/regtest have no default explorer — set one explicitly if you have one. |
+| **Explorer fallback URL** | (empty) | When the primary explorer is unreachable, automatically tries this URL. Leave empty to disable failover. |
+| **Node data directory (`hsd --prefix`)** | (system default) | Use **Browse…** to pick. Local hsd only. |
+| **hsd binary path** | (auto) | Only needed if hsd isn't on PATH. Local hsd only. |
+| **Autostart HSD when the app launches** | **on** | Toggle off to keep hsd manual. Local hsd only. |
+| **Sync in background** | **on** | When enabled, a background daemon syncs your wallet every 60 seconds, even when the app is closed. Local full node only. |
 
 ### Background sync
 

@@ -39,11 +39,12 @@ impl From<ExplorerError> for AppError {
     }
 }
 
-/// The default explorer API host, serving the documented `/api/addresses`,
-/// `/api/names`, and `/api/txs` routes. This is now the SOLE hard-coded
-/// occurrence of the URL in the app (Task 11 / S1) — every construction site
-/// goes through [`crate::providers::explorer_client_from_settings`], which
-/// falls back to this constant only when `explorer_api_url` is unset/blank.
+/// The default **mainnet** explorer API host, serving the documented
+/// `/api/addresses`, `/api/names`, and `/api/txs` routes. This is the SOLE
+/// hard-coded occurrence of the URL in the app — every construction site goes
+/// through [`crate::providers::explorer_client_from_settings`], which applies
+/// it only for mainnet (via [`crate::noncustodial::network::Network::default_explorer_base_url`])
+/// and only when no explicit `explorer_api_url` is set (G2).
 pub const DEFAULT_EXPLORER_URL: &str = "https://e.hnsfans.com";
 
 pub struct HnsFansClient {
@@ -53,13 +54,14 @@ pub struct HnsFansClient {
 }
 
 impl HnsFansClient {
+    /// Build a client for a concrete explorer base URL. The URL must be
+    /// non-empty and network-appropriate — resolution and the network gate
+    /// live in [`crate::providers::explorer_client_from_settings`] (G2), so
+    /// this no longer silently substitutes the mainnet default for a blank
+    /// URL. A blank URL yields a client whose requests fail as transport
+    /// errors, which is the correct signal when no explorer is configured.
     pub fn new(base_url: &str) -> Self {
-        let trimmed = base_url.trim_end_matches('/');
-        let base = if trimmed.is_empty() {
-            DEFAULT_EXPLORER_URL.to_string()
-        } else {
-            trimmed.to_string()
-        };
+        let base = base_url.trim_end_matches('/').to_string();
         Self {
             http: Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -772,9 +774,13 @@ mod tests {
         let client = HnsFansClient::new("https://example.com///");
         assert_eq!(client.base_url, "https://example.com");
 
-        // Empty input falls back to the default explorer API host.
+        // G2: empty input no longer silently substitutes the mainnet default —
+        // resolution and the network gate live in `explorer_client_from_settings`.
+        // A blank URL yields an empty `base_url`; requests then fail as
+        // transport errors, which is the correct signal when no explorer is
+        // configured for the current network.
         let client = HnsFansClient::new("");
-        assert_eq!(client.base_url, "https://e.hnsfans.com");
+        assert_eq!(client.base_url, "");
 
         // A normal URL is preserved verbatim.
         let client = HnsFansClient::new("https://my.node:1234");
@@ -783,25 +789,53 @@ mod tests {
 
     #[test]
     fn explorer_client_from_settings_defaults_when_blank_or_missing() {
-        // Task 11 / S1: the shared factory falls back to the same default as
-        // `HnsFansClient::new("")` when `explorer_api_url` is absent, empty,
-        // or whitespace-only — and uses a configured URL verbatim otherwise.
+        // Task 11 / S1, G2: on mainnet the shared factory falls back to the
+        // default explorer URL when `explorer_api_url` is absent/blank. On
+        // non-mainnet with no explicit URL, it returns None.
+        use crate::noncustodial::network::Network;
+
+        // --- mainnet: blank/missing → default URL ---
         let empty = std::collections::HashMap::new();
-        let client = crate::providers::explorer_client_from_settings(&empty);
+        let client = crate::providers::explorer_client_from_settings(&empty, Network::Main)
+            .expect("mainnet with no setting should use default");
         assert_eq!(client.base_url, DEFAULT_EXPLORER_URL);
 
         let mut blank = std::collections::HashMap::new();
         blank.insert("explorer_api_url".to_string(), "   ".to_string());
-        let client = crate::providers::explorer_client_from_settings(&blank);
+        let client = crate::providers::explorer_client_from_settings(&blank, Network::Main)
+            .expect("mainnet with blank setting should use default");
         assert_eq!(client.base_url, DEFAULT_EXPLORER_URL);
 
+        // --- mainnet: explicit URL → used verbatim ---
         let mut custom = std::collections::HashMap::new();
         custom.insert(
             "explorer_api_url".to_string(),
             "https://my.explorer:9999/".to_string(),
         );
-        let client = crate::providers::explorer_client_from_settings(&custom);
+        let client = crate::providers::explorer_client_from_settings(&custom, Network::Main)
+            .expect("mainnet with explicit URL should use it");
         assert_eq!(client.base_url, "https://my.explorer:9999");
+
+        // --- non-mainnet: no explicit URL → None (G2) ---
+        let empty2 = std::collections::HashMap::new();
+        assert!(
+            crate::providers::explorer_client_from_settings(&empty2, Network::Regtest).is_none(),
+            "regtest with no setting should return None"
+        );
+        assert!(
+            crate::providers::explorer_client_from_settings(&empty2, Network::Testnet).is_none(),
+            "testnet with no setting should return None"
+        );
+
+        // --- non-mainnet: explicit URL → used (user knows what they're doing) ---
+        let mut explicit = std::collections::HashMap::new();
+        explicit.insert(
+            "explorer_api_url".to_string(),
+            "https://regtest.explorer:8080".to_string(),
+        );
+        let client = crate::providers::explorer_client_from_settings(&explicit, Network::Regtest)
+            .expect("regtest with explicit URL should use it");
+        assert_eq!(client.base_url, "https://regtest.explorer:8080");
     }
 
     #[test]

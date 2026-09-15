@@ -195,16 +195,14 @@ mainnet-only Namebase paths). Pinned by
   change, and the fallback only applies when `node_rpc_url` is absent — which
   migration `009` makes impossible in practice. The setting itself is what N11
   keeps correct.
-- **The explorer read fallback is not network-gated.** With no
-  `explorer_api_url` configured, `providers::explorer_client_from_settings`
-  falls back to the mainnet `e.hnsfans.com` on every network, so a non-mainnet
-  profile whose node is unreachable queries a mainnet index. In practice it
-  returns not-found rather than another chain's money — a regtest address does
-  not exist on mainnet — but "no data" is being reported as "nothing there".
-  Left as-is deliberately: the factory has four production call sites and the
-  client bakes the same default in a second layer, so a correct fix needs an
-  "explorer unavailable" state threaded through the read paths. Tracked, not
-  done.
+- **The explorer read fallback is network-gated.** ~~Previously a gap.~~
+  `providers::explorer_client_from_settings` now takes a `Network` and
+  returns `Option<HnsFansClient>`. Resolution order: explicit
+  `explorer_api_url` from settings > `Network::default_explorer_base_url`
+  (mainnet only) > `None`. On testnet/regtest/simnet with no explicit URL the
+  factory returns `None`, and every read/sync call site threads that through
+  as either a candid "explorer unavailable" error or a degraded empty result
+  — never a silent mainnet query.
 - **Notification lead defaults are not scaled per network.**
   `reveal_lead_blocks` (144) and `DEFAULT_BIDDING_SOON_LEAD_BLOCKS` (144) exceed
   the entire reveal and bidding windows on test chains, so those notices are on

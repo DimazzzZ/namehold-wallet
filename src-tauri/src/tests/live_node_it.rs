@@ -3268,3 +3268,92 @@ async fn live_max_send_leaves_only_sweep_output_liquid() {
     // (net of the newly-mined block reward, which arrived).
     assert_eq!(tot_after, tot_pre - fee + reward);
 }
+
+/// G1: broadcast guard rejects a node on the wrong chain. Set up a mainnet
+/// profile but connect to regtest node → get_write_capability must block with
+/// a chain-mismatch reason, not allow broadcast.
+#[tokio::test]
+async fn live_broadcast_guard_rejects_cross_network() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_broadcast_guard_rejects_cross_network: set HNS_IT_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    // Override the profile network to mainnet (while keeping regtest node URL).
+    conn.execute(
+        "UPDATE wallet_profiles SET network = 'mainnet' WHERE id = ?1",
+        params![PROFILE],
+    )
+    .unwrap();
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    fund(&cl, &addr, 101).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    unlock(&app);
+
+    // Signer unlocked, but node is on regtest while wallet is mainnet →
+    // broadcast must be blocked with a chain-mismatch reason.
+    let cap = crate::commands::tx::get_write_capability(app.state())
+        .await
+        .expect("cap");
+    assert!(
+        !cap.can_write,
+        "cross-network broadcast must be blocked: {cap:?}"
+    );
+    assert!(
+        cap.reason
+            .as_ref()
+            .map(|r| r.contains("mainnet") || r.contains("regtest"))
+            .unwrap_or(false),
+        "reason must mention the network mismatch: {:?}",
+        cap.reason
+    );
+}
+
+/// G2: large batch (20 names) assembles into one tx and broadcasts successfully.
+/// This confirms that the node accepts large covenant txs and batching works
+/// end-to-end. A full 100-item batch requires too much on-chain setup time.
+#[tokio::test]
+async fn live_batch_large_covenant_count() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_batch_large_covenant_count: set HNS_IT_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+
+    // Fund and sync.
+    fund(&cl, &addr, 101).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    unlock(&app);
+
+    // Acquire 20 names (realistic batch size, avoids excessive on-chain setup).
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let mut names = Vec::new();
+    for i in 0..20 {
+        let name = format!("batch{tip}_{i:02}");
+        acquire_name(&app, &cl, &addr, &name).await;
+        names.push(name);
+    }
+
+    // Batch renew all 20 names in one tx.
+    let batch =
+        crate::commands::names::build_batch_renew_draft(app.state(), names.clone(), Some(1))
+            .await
+            .expect("build batch renew");
+
+    // Broadcast the batch.
+    execute(&app, &cl, &addr, batch.id.clone()).await;
+
+    // Verify the batch was accepted: draft status shows broadcasted/confirmed.
+    let row = draft_status(&app, &batch.id);
+    assert!(
+        matches!(row.status.as_str(), "broadcasted" | "confirmed"),
+        "large batch (20 names) must broadcast successfully, got status: {}",
+        row.status
+    );
+    eprintln!("✓ Large batch (20 covenants) assembled and broadcast successfully");
+}

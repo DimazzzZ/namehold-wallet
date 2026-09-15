@@ -813,7 +813,7 @@ pub async fn repair_step_windowed(
     profile_id: &str,
     window: u32,
 ) {
-    let (explorer, all_addresses, total_backlog) = {
+    let (explorer_opt, all_addresses, total_backlog) = {
         let conn = match open_conn(db_path) {
             Ok(c) => c,
             Err(_) => return,
@@ -822,12 +822,32 @@ pub async fn repair_step_windowed(
             Ok(s) => s,
             Err(_) => return,
         };
-        let explorer = crate::providers::explorer_client_from_settings(&settings);
+        // G2: resolve the profile's network to gate the explorer availability.
+        let network = queries::get_wallet_profile(&conn, profile_id)
+            .ok()
+            .flatten()
+            .and_then(|p| crate::noncustodial::derivation::network_from_profile(&p.network).ok())
+            .unwrap_or_default();
+        let explorer_opt = crate::providers::explorer_client_from_settings(&settings, network);
         let addrs = queries::get_profile_addresses(&conn, profile_id).unwrap_or_default();
         // Total backlog counted once: the stable "/ N" denominator for progress.
         let total =
             queries::count_repair_candidates(&conn, profile_id, REPAIR_MIN_AGE_HOURS).unwrap_or(0);
-        (explorer, addrs, total)
+        (explorer_opt, addrs, total)
+    };
+    // G2: if no explorer is available for this network and the node isn't
+    // authoritative, the repair step cannot proceed. Return early without
+    // stamping the sync (so a later run can retry).
+    let explorer = match explorer_opt {
+        Some(e) => e,
+        None => {
+            let mut s = status.lock().await;
+            s.errors.push(
+                "explorer unavailable for this network — configure explorer_api_url or wait for the local node to sync"
+                    .to_string(),
+            );
+            return;
+        }
     };
     let addr_set: HashSet<String> = all_addresses.iter().cloned().collect();
 
@@ -1071,7 +1091,7 @@ pub async fn stamp_explorer_sync_if_clean(
 }
 
 pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profile_id: &str) {
-    let (explorer, addrs) = {
+    let (explorer_opt, addrs) = {
         let conn = match open_conn(db_path) {
             Ok(c) => c,
             Err(_) => return,
@@ -1080,9 +1100,29 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
             Ok(s) => s,
             Err(_) => return,
         };
-        let explorer = crate::providers::explorer_client_from_settings(&settings);
+        // G2: resolve the profile's network to gate the explorer availability.
+        let network = queries::get_wallet_profile(&conn, profile_id)
+            .ok()
+            .flatten()
+            .and_then(|p| crate::noncustodial::derivation::network_from_profile(&p.network).ok())
+            .unwrap_or_default();
+        let explorer_opt = crate::providers::explorer_client_from_settings(&settings, network);
         let addrs = queries::get_profile_addresses(&conn, profile_id).unwrap_or_default();
-        (explorer, addrs)
+        (explorer_opt, addrs)
+    };
+    // G2: if no explorer is available for this network and the node isn't
+    // authoritative, the discover step cannot proceed. Return early without
+    // stamping the sync (so a later run can retry).
+    let explorer = match explorer_opt {
+        Some(e) => e,
+        None => {
+            let mut s = status.lock().await;
+            s.errors.push(
+                "explorer unavailable for this network — configure explorer_api_url or wait for the local node to sync"
+                    .to_string(),
+            );
+            return;
+        }
     };
     if addrs.is_empty() {
         return;

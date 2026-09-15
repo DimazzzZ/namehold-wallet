@@ -315,11 +315,30 @@ pub async fn node_ready_from_settings(
         .is_some()
 }
 
-/// HNSFans explorer client from settings (`explorer_api_url`). Thin wrapper
-/// kept for call-site brevity — the actual construction is centralized in
-/// [`crate::providers::explorer_client_from_settings`] (Task 11 / S1).
-fn explorer_client(settings: &std::collections::HashMap<String, String>) -> HnsFansClient {
-    crate::providers::explorer_client_from_settings(settings)
+/// HNSFans explorer client from settings + the active profile's network.
+/// Thin wrapper kept for call-site brevity — the actual construction and the
+/// network gate live in [`crate::providers::explorer_client_from_settings`]
+/// (Task 11 / S1, G2). Returns `None` when no explorer is available for this
+/// network (e.g. testnet/regtest with no explicit `explorer_api_url`), so a
+/// non-mainnet wallet never silently reads mainnet data. Call sites degrade to
+/// cache or a candid "explorer unavailable" error instead.
+fn explorer_client(
+    settings: &std::collections::HashMap<String, String>,
+    network: crate::noncustodial::network::Network,
+) -> Option<HnsFansClient> {
+    crate::providers::explorer_client_from_settings(settings, network)
+}
+
+/// The user-facing error used wherever the explorer fallback is required but
+/// unavailable for the active profile's network (G2). Concrete and actionable:
+/// it names the missing setting rather than degrading to empty/mainnet data.
+fn explorer_unavailable_error() -> AppError {
+    AppError::Other(
+        "No explorer is available for this network. The node is not synced \
+         and no 'explorer_api_url' is configured — set one in Settings, or \
+         wait for the local node to finish syncing."
+            .to_string(),
+    )
 }
 
 /// Node-only owned-name discovery for [`discover_owned_names`]. Resolves the
@@ -471,13 +490,24 @@ pub async fn read_balance(
     }
 
     // Explorer fallback.
-    let (client, mut addrs) = {
+    let (client_opt, mut addrs) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
+        let network = profile_network(&conn, &id)?;
         (
-            explorer_client(&settings),
+            explorer_client(&settings, network),
             queries::get_profile_addresses(&conn, &id)?,
         )
+    };
+    // G2: with no explorer for this network and the node not ready, fall
+    // through to the cached balance (last-resort path this function already
+    // documents in its doc-comment) rather than silently querying mainnet.
+    let client = match client_opt {
+        Some(c) => c,
+        None => {
+            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+            return queries::read_cached_balance(&conn, &id, profile_network(&conn, &id)?);
+        }
     };
     // Auto-provision derived addresses if none exist yet, so the explorer
     // can look up the wallet's balance even if sync hasn't run.
@@ -676,13 +706,21 @@ pub async fn discover_owned_names(
         return discover_owned_names_via_node(&state, &id).await;
     }
 
-    let (client, addrs) = {
+    let (client_opt, addrs) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
+        let network = profile_network(&conn, &id)?;
         (
-            explorer_client(&settings),
+            explorer_client(&settings, network),
             queries::get_profile_addresses(&conn, &id)?,
         )
+    };
+    // G2: no explorer for this network and the node isn't authoritative — no
+    // way to discover owned names honestly. Return empty (same shape used
+    // when the wallet has no addresses yet) rather than mainnet data.
+    let client = match client_opt {
+        Some(c) => c,
+        None => return Ok(serde_json::json!({ "discovered": 0, "names": [] })),
     };
     if addrs.is_empty() {
         return Ok(serde_json::json!({ "discovered": 0, "names": [] }));
@@ -793,10 +831,11 @@ pub async fn read_name_info(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<serde_json::Value, AppError> {
-    let (explorer, settings) = {
+    let (explorer_opt, settings) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        (explorer_client(&settings), settings)
+        let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
+        (explorer_client(&settings, network), settings)
     };
 
     // Node first — but ONLY when it is fully synced. An unsynced node answers
@@ -813,6 +852,12 @@ pub async fn read_name_info(
     }
 
     // Node unreachable or not synced — fall back to the explorer.
+    //
+    // G2: if the active profile's network has no explorer configured, surface
+    // that explicitly instead of degrading to mainnet or synthesizing
+    // AVAILABLE — the caller has no way to distinguish "genuinely
+    // AVAILABLE" from "we didn't ask".
+    let explorer = explorer_opt.ok_or_else(explorer_unavailable_error)?;
     //
     // `get_name_info_optional` returns `Ok(None)` when the explorer reports the
     // name is not found (HTTP 404 / empty body), which we treat as AVAILABLE so
@@ -1081,13 +1126,21 @@ pub async fn read_name_bids(
     }
 
     // Explorer fallback (pre-sync or scanner hasn't reached the name yet).
-    let (client, commitments) = {
+    let (client_opt, commitments) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
+        let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
         (
-            explorer_client(&settings),
+            explorer_client(&settings, network),
             queries::list_bid_commitments(&conn, &id)?,
         )
+    };
+    // G2: no explorer for this network and the node hasn't indexed the name
+    // yet — return empty bids (same shape as when the name has no bids) rather
+    // than mainnet data.
+    let client = match client_opt {
+        Some(c) => c,
+        None => return Ok(empty_name_bids_response(&name)),
     };
 
     let info = match client.get_name_info_optional(&name).await? {
@@ -1124,10 +1177,11 @@ pub async fn get_resource(
     name: String,
 ) -> Result<serde_json::Value, AppError> {
     // 1. Fetch name info (state, height, stats) — reuses read_name_info logic.
-    let (explorer, settings) = {
+    let (explorer_opt, settings) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let s = queries::get_settings(&conn)?;
-        (explorer_client(&s), s)
+        let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
+        (explorer_client(&s, network), s)
     };
     let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
     let node_ready = is_node_ready_for_local_reads(&state).await;
@@ -1136,10 +1190,15 @@ pub async fn get_resource(
     let info: serde_json::Value = if node_ready {
         get_resource_info_with_client(&node, &name).await
     } else {
-        match explorer.get_name_info_optional(&name).await {
-            Ok(Some(i)) => serde_json::to_value(&i).unwrap_or_default(),
-            Ok(None) => serde_json::json!({ "name": name, "state": "AVAILABLE" }),
-            Err(_) => serde_json::json!({}),
+        // G2: if the active profile's network has no explorer, degrade to empty
+        // name info rather than mainnet data.
+        match explorer_opt {
+            None => serde_json::json!({}),
+            Some(explorer) => match explorer.get_name_info_optional(&name).await {
+                Ok(Some(i)) => serde_json::to_value(&i).unwrap_or_default(),
+                Ok(None) => serde_json::json!({ "name": name, "state": "AVAILABLE" }),
+                Err(_) => serde_json::json!({}),
+            },
         }
     };
 
@@ -1972,15 +2031,31 @@ pub async fn repair_owned_names(state: State<'_, AppState>) -> Result<serde_json
         return repair_owned_names_via_node(&state, &id).await;
     }
 
-    let (client, inventory_tlds, tracked, all_addresses) = {
+    let (client_opt, inventory_tlds, tracked, all_addresses) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
+        let network = profile_network(&conn, &id)?;
         (
-            explorer_client(&settings),
+            explorer_client(&settings, network),
             queries::get_inventory_tlds(&conn)?,
             queries::list_tracked_name_names(&conn, &id)?,
             queries::get_profile_addresses(&conn, &id)?,
         )
+    };
+    // G2: no explorer for this network and the node isn't authoritative —
+    // return a candid empty result with an explanatory error message so the
+    // caller doesn't display "repaired 0" as if the work succeeded.
+    let client = match client_opt {
+        Some(c) => c,
+        None => {
+            return Ok(serde_json::json!({
+                "repaired": 0,
+                "discovered": 0,
+                "errors": [
+                    "explorer unavailable for this network — configure explorer_api_url or wait for the local node to sync"
+                ],
+            }))
+        }
     };
     let addr_set: HashSet<String> = all_addresses.iter().cloned().collect();
 

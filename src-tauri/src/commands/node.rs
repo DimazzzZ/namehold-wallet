@@ -810,6 +810,7 @@ pub async fn check_node_connection(
     state: State<'_, AppState>,
     url: String,
     api_key: Option<String>,
+    expected_network: Option<String>,
 ) -> Result<NodeConnectionCheck, AppError> {
     let url = url.trim();
     if url.is_empty() {
@@ -823,9 +824,20 @@ pub async fn check_node_connection(
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
         let key = resolve_probe_api_key(url, api_key.as_deref(), &settings);
-        // A DB error is a real failure the user must see, not a silent skip of
-        // the network check — `?` turns it into AppError::Db.
-        let expected = db::queries::get_active_profile_network(&conn)?;
+        // G1: caller-supplied `expected_network` wins (onboarding has no
+        // profile yet, so the network the user just picked in the UI is the
+        // only truth). Otherwise fall back to the active profile's stored
+        // network. A DB error on the fallback is a real failure the user must
+        // see, not a silent skip of the network check — `?` turns it into
+        // AppError::Db.
+        let expected = match expected_network
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            Some(explicit) => Some(explicit.to_string()),
+            None => db::queries::get_active_profile_network(&conn)?,
+        };
         (key, expected)
     };
     // `try_new` enforces the plaintext-key / non-loopback guard. Any failure

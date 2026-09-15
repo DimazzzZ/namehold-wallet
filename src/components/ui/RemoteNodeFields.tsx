@@ -14,6 +14,15 @@ export interface RemoteNodeFieldsProps {
   onApiKeyChange: (key: string) => void;
   /** The probe state (testing, result, error, ok). */
   probe: NodeConnectionCheckState;
+  /**
+   * Which network the caller expects the node to be on. G1: onboarding has
+   * no wallet profile yet, so without this the backend has nothing to compare
+   * the node's chain against and every probe reports `networkMatches=null`,
+   * allowing a testnet-node/mainnet-wallet combination to slip through.
+   * Threaded straight into `probe.run` — Settings, which has an active
+   * profile, may omit it and let the backend fall back to the stored network.
+   */
+  expectedNetwork?: string;
   /** Label above the URL input. Omit for a placeholder-only field. */
   urlLabel?: string;
   /** Label above the API key input. Omit for a placeholder-only field. */
@@ -51,6 +60,7 @@ export function RemoteNodeFields({
   onUrlChange,
   onApiKeyChange,
   probe,
+  expectedNetwork,
   urlLabel,
   apiKeyLabel,
   urlPlaceholder,
@@ -86,7 +96,7 @@ export function RemoteNodeFields({
         <Button
           size="sm"
           variant="secondary"
-          onClick={() => probe.run(url, apiKey)}
+          onClick={() => probe.run(url, apiKey, expectedNetwork)}
           disabled={probe.testing}
           data-testid="test-connection-button"
         >

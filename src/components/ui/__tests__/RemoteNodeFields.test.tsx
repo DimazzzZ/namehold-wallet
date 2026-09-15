@@ -85,7 +85,10 @@ describe("RemoteNodeFields", () => {
   it("probes the current url and key when Test connection is clicked", () => {
     const probe = renderFields({ url: "http://127.0.0.1:12037", apiKey: "sekrit" });
     fireEvent.click(screen.getByTestId("test-connection-button"));
-    expect(probe.run).toHaveBeenCalledWith("http://127.0.0.1:12037", "sekrit");
+    // G1: the third argument (expectedNetwork) is undefined when the caller
+    // does not pass it — Settings, which has an active profile and relies on
+    // the backend fallback, is a legitimate example.
+    expect(probe.run).toHaveBeenCalledWith("http://127.0.0.1:12037", "sekrit", undefined);
   });
 
   it("disables the button and swaps its label while a probe is in flight", () => {

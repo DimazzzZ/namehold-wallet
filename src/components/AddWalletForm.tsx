@@ -24,9 +24,17 @@ type Path = "choose" | "import" | "create" | "watch" | "ledger";
 export function AddWalletForm({
   onDone,
   defaultLabel = "",
+  defaultNetwork = "mainnet",
 }: {
   onDone: () => void | Promise<void>;
   defaultLabel?: string;
+  /**
+   * Preselect the network picker. G1: onboarding lifts the network choice into
+   * the connection step (so the "Test connection" probe can validate the
+   * node's chain against it) and threads the user's pick down here, keeping
+   * the two screens in agreement.
+   */
+  defaultNetwork?: WalletNetwork;
 }) {
   const showToast = useUiStore((s) => s.showToast);
   const createWallet = useSecureCreateWallet();
@@ -35,7 +43,7 @@ export function AddWalletForm({
 
   const [path, setPath] = useState<Path>("choose");
   const [label, setLabel] = useState(defaultLabel);
-  const [network, setNetwork] = useState<WalletNetwork>("mainnet");
+  const [network, setNetwork] = useState<WalletNetwork>(defaultNetwork);
 
   const busy = createWallet.isPending || importWallet.isPending || importLedger.isPending;
 
