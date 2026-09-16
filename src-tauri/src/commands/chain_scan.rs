@@ -85,16 +85,33 @@ pub async fn run_chain_scanner(db_path: String) {
             continue;
         }
 
-        let tip = match crate::commands::read::node_tip_height_if_synced_from_settings_with_network(
-            &settings,
-            expected_network.as_deref(),
-        )
-        .await
-        {
-            Some(h) => h,
-            None => {
-                sleep(NOT_READY_SLEEP).await;
-                continue;
+        // Use per-profile probe if active profile exists; otherwise fall back to global.
+        let tip = if let Some(profile_id) = active_profile_id.as_deref() {
+            match crate::commands::read::node_tip_height_if_synced_from_profile_with_network(
+                &db_path,
+                profile_id,
+                expected_network.as_deref(),
+            )
+            .await
+            {
+                Some(h) => h,
+                None => {
+                    sleep(NOT_READY_SLEEP).await;
+                    continue;
+                }
+            }
+        } else {
+            match crate::commands::read::node_tip_height_if_synced_from_settings_with_network(
+                &settings,
+                expected_network.as_deref(),
+            )
+            .await
+            {
+                Some(h) => h,
+                None => {
+                    sleep(NOT_READY_SLEEP).await;
+                    continue;
+                }
             }
         };
 

@@ -270,7 +270,7 @@ pub async fn claim_paid_transfer(
     }
 
     // Load the offer and settings (hold DB lock briefly).
-    let (offer, settings) = {
+    let (offer, client) = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let mut stmt = db.prepare(
             "SELECT name, buyer_address, price_doos, transfer_txid, claimed, created_at
@@ -301,13 +301,26 @@ pub async fn claim_paid_transfer(
             return Err(AppError::InvalidInput("offer already claimed".into()));
         }
 
-        let settings = queries::get_settings(&db)?;
-        (offer, settings)
+        // Per-profile node override routing (ADR-001): a paid swap is verified
+        // against a node on the active profile's network. Use the active
+        // profile's effective node config (per-profile override -> global
+        // settings -> built-in default). Fall back to global settings when
+        // there is no active profile or its config is missing/misconfigured.
+        let client = match queries::get_active_profile_id(&db) {
+            Ok(profile_id) => NodeRpcClient::for_profile(&db, &profile_id).unwrap_or_else(|_| {
+                let settings = queries::get_settings(&db).unwrap_or_default();
+                NodeRpcClient::from_settings(&settings)
+            }),
+            Err(_) => {
+                let settings = queries::get_settings(&db)?;
+                NodeRpcClient::from_settings(&settings)
+            }
+        };
+        (offer, client)
     };
     // DB lock dropped here — safe to do async RPC.
 
     // Fetch the tx from the node.
-    let client = NodeRpcClient::from_settings(&settings);
     let verification =
         verify_paid_transfer_with_client(&client, &txid, &offer.buyer_address, offer.price_doos)
             .await?;
