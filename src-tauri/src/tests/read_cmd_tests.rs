@@ -2886,3 +2886,68 @@ async fn get_resource_explorer_error_degrades_to_empty_info() {
     // Records contract still holds: always a present, empty array.
     assert!(val["data"]["records"].as_array().unwrap().is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Per-profile node override routing (ADR-001) for read commands.
+//
+// A read command must build its node client from the *effective* config for
+// the target profile: per-profile override -> global -> default. Global
+// `node_rpc_url` points at a synced-but-otherwise-inert node (so the readiness
+// preflight passes) while the per-profile override points at the node that
+// actually serves the block. If the command wrongly read the block from the
+// global URL the block-serving mock would never be hit and the shaped result
+// would be null.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_block_info_uses_per_profile_node_override() {
+    // Global node: only answers the readiness probe (getblockchaininfo). It
+    // deliberately does NOT serve getblockhash/getblock, so a read routed here
+    // would soft-degrade to null.
+    let mut global = mockito::Server::new_async().await;
+    let _g_ready = mock_synced_node(&mut global).await;
+
+    // Override node: also synced, AND serves the block data.
+    let mut override_node = mockito::Server::new_async().await;
+    let _o_ready = mock_synced_node(&mut override_node).await;
+    let o_hash = override_node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockhash".into()))
+        .with_body(
+            r#"{"result":"aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44","error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    let o_block = override_node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("\"getblock\"".into()))
+        .with_body(
+            r#"{"result":{"hash":"aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44","height":42,"time":1700000000,"difficulty":1.0,"tx":[{"outputs":[{"value":2000000000}]}]},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    // Global default points at the inert node.
+    db::queries::set_setting(&conn, "node_rpc_url", &global.url()).unwrap();
+    // Per-profile override points at the block-serving node.
+    conn.execute(
+        "INSERT INTO profile_settings (profile_id, key, value) VALUES ('W1', 'node_rpc_url', ?1)",
+        rusqlite::params![override_node.url()],
+    )
+    .unwrap();
+
+    let app = app_with(conn);
+    let val = read_block_info(app.state(), 42).await.unwrap();
+
+    // The block was served by the override node — proving the read routed
+    // through the per-profile effective config, not the global URL.
+    assert_eq!(val["height"], 42);
+    assert_eq!(val["minerReward"], 2_000_000_000i64);
+    o_hash.assert_async().await;
+    o_block.assert_async().await;
+}

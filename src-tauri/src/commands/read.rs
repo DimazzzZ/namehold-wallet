@@ -164,6 +164,33 @@ pub(crate) async fn node_tip_height_if_synced_from_settings_with_network(
     node_tip_height_if_synced_with_client(&client, expected_network).await
 }
 
+/// Per-profile readiness probe: the live node tip height, but ONLY when the node
+/// is connected, fully synced, AND reporting the same chain as the profile.
+/// Returns None when the node is unreachable, catching up, on another network,
+/// or the profile doesn't exist.
+///
+/// Per-profile node override routing (ADR-001): if the profile has a per-profile
+/// override, it takes precedence; otherwise falls back to global settings; otherwise
+/// uses the built-in default. This is the readiness probe for background daemons
+/// (chain scanner, watched-name daemon) that operate on behalf of a specific profile.
+pub(crate) async fn node_tip_height_if_synced_from_profile_with_network(
+    db_path: &str,
+    profile_id: &str,
+    expected_network: Option<&str>,
+) -> Option<i64> {
+    let conn = match crate::db::connection::open(std::path::Path::new(db_path)) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    let client = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, profile_id)
+        .unwrap_or_else(|_| {
+            // Fallback to global settings if profile config is missing or misconfigured.
+            let settings = queries::get_settings(&conn).unwrap_or_default();
+            crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings)
+        });
+    node_tip_height_if_synced_with_client(&client, expected_network).await
+}
+
 /// The client-injected core of [`node_tip_height_if_synced_from_settings_with_network`].
 /// All the sync-progress + network-match logic lives here so it can be unit
 /// tested against a `MockNodeRpc` without a live node. The settings-based
@@ -315,6 +342,20 @@ pub async fn node_ready_from_settings(
         .is_some()
 }
 
+/// Per-profile readiness gate: true when the node is connected, fully synced,
+/// AND reporting the profile's network. Mirrors node_ready_from_settings for
+/// callers that have a profile ID and a DB path (background daemons).
+/// Returns false when the profile doesn't exist or the node is unreachable.
+pub async fn node_ready_from_profile(
+    db_path: &str,
+    profile_id: &str,
+    expected_network: Option<&str>,
+) -> bool {
+    node_tip_height_if_synced_from_profile_with_network(db_path, profile_id, expected_network)
+        .await
+        .is_some()
+}
+
 /// HNSFans explorer client from settings + the active profile's network.
 /// Thin wrapper kept for call-site brevity — the actual construction and the
 /// network gate live in [`crate::providers::explorer_client_from_settings`]
@@ -350,14 +391,15 @@ async fn discover_owned_names_via_node(
     state: &State<'_, AppState>,
     profile_id: &str,
 ) -> Result<serde_json::Value, AppError> {
-    let (settings, hashes) = {
+    // Build the node client from this profile's *effective* config (per-profile
+    // override -> global -> default; ADR-001) under the same lock we use to read
+    // its name hashes, then drop the guard before the async RPC phase.
+    let (client, hashes) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let settings = queries::get_settings(&conn)?;
+        let client = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, profile_id)?;
         let hashes = queries::list_unspent_wallet_name_hashes(&conn, profile_id)?;
-        (settings, hashes)
+        (client, hashes)
     };
-
-    let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
 
     // Resolve hashes → names and fetch their on-chain state via the node.
     let fetched = discover_names_via_node_with_client(&client, &hashes).await;
@@ -384,10 +426,12 @@ async fn repair_owned_names_via_node(
     state: &State<'_, AppState>,
     profile_id: &str,
 ) -> Result<serde_json::Value, AppError> {
-    let (settings, inventory_tlds, tracked, all_addresses) = {
+    let (client, inventory_tlds, tracked, all_addresses) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         (
-            queries::get_settings(&conn)?,
+            // Effective node config for this profile (ADR-001), built under the
+            // same lock as the DB reads below.
+            crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, profile_id)?,
             queries::get_inventory_tlds(&conn)?,
             queries::list_tracked_name_names(&conn, profile_id)?,
             queries::get_profile_addresses(&conn, profile_id)?,
@@ -404,8 +448,6 @@ async fn repair_owned_names_via_node(
         }
         candidates.push(n);
     }
-
-    let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
 
     let mut errors: Vec<String> = Vec::new();
     let mut repaired = 0u32;
@@ -831,11 +873,24 @@ pub async fn read_name_info(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<serde_json::Value, AppError> {
-    let (explorer_opt, settings) = {
+    // Build the node client from the active profile's *effective* config
+    // (per-profile override -> global -> default; ADR-001) so a wallet with an
+    // override reads its own node instead of the global one. The explorer
+    // fallback is still keyed off global settings + the profile's network —
+    // that surface hasn't been split per-profile yet, and the network gate in
+    // `explorer_client_from_settings` still prevents cross-network reads.
+    let (explorer_opt, node_opt) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
         let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
-        (explorer_client(&settings, network), settings)
+        let explorer_opt = explorer_client(&settings, network);
+        let node_opt = match queries::get_active_profile_id(&conn) {
+            Ok(id) if !id.is_empty() => {
+                Some(crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &id)?)
+            }
+            _ => None,
+        };
+        (explorer_opt, node_opt)
     };
 
     // Node first — but ONLY when it is fully synced. An unsynced node answers
@@ -844,10 +899,11 @@ pub async fn read_name_info(
     // reads so an unsynced node falls through to the explorer path below.
     // `getnameinfo` returns `{ info: { name, state, stats:{…phase…} } }`
     // (or null `info` for a name that has never been touched on-chain).
-    let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
-    if is_node_ready_for_local_reads(&state).await {
-        if let Some(shaped) = read_name_info_node_with_client(&node, &name).await {
-            return Ok(serde_json::to_value(&shaped)?);
+    if let Some(node) = node_opt.as_ref() {
+        if is_node_ready_for_local_reads(&state).await {
+            if let Some(shaped) = read_name_info_node_with_client(node, &name).await {
+                return Ok(serde_json::to_value(&shaped)?);
+            }
         }
     }
 
@@ -1177,18 +1233,29 @@ pub async fn get_resource(
     name: String,
 ) -> Result<serde_json::Value, AppError> {
     // 1. Fetch name info (state, height, stats) — reuses read_name_info logic.
-    let (explorer_opt, settings) = {
+    // Build the node client from the active profile's *effective* config
+    // (per-profile override -> global -> default; ADR-001). The explorer
+    // fallback stays keyed off global settings + the profile's network.
+    let (explorer_opt, node_opt) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let s = queries::get_settings(&conn)?;
         let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
-        (explorer_client(&s, network), s)
+        let explorer_opt = explorer_client(&s, network);
+        let node_opt = match queries::get_active_profile_id(&conn) {
+            Ok(id) if !id.is_empty() => {
+                Some(crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &id)?)
+            }
+            _ => None,
+        };
+        (explorer_opt, node_opt)
     };
-    let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
-    let node_ready = is_node_ready_for_local_reads(&state).await;
+    // Records come from the node only; without a profile there's no node client
+    // and thus no records — treat that like "node not ready".
+    let node_ready = node_opt.is_some() && is_node_ready_for_local_reads(&state).await;
 
     // Name info: try node first, then explorer.
-    let info: serde_json::Value = if node_ready {
-        get_resource_info_with_client(&node, &name).await
+    let info: serde_json::Value = if let (true, Some(node)) = (node_ready, node_opt.as_ref()) {
+        get_resource_info_with_client(node, &name).await
     } else {
         // G2: if the active profile's network has no explorer, degrade to empty
         // name info rather than mainnet data.
@@ -1203,8 +1270,9 @@ pub async fn get_resource(
     };
 
     // 2. Fetch resource records (node only).
-    let records: Vec<serde_json::Value> = if node_ready {
-        get_resource_records_with_client(&node, &name).await
+    let records: Vec<serde_json::Value> = if let (true, Some(node)) = (node_ready, node_opt.as_ref())
+    {
+        get_resource_records_with_client(node, &name).await
     } else {
         vec![]
     };
@@ -1255,18 +1323,20 @@ pub async fn read_name_records(
         })
     };
 
-    if resolve_profile(&state, wallet_profile_id)?.is_none() {
-        return Ok(empty_resource());
-    }
+    let profile_id = match resolve_profile(&state, wallet_profile_id)? {
+        Some(id) => id,
+        None => return Ok(empty_resource()),
+    };
     if is_node_ready_for_local_reads(&state).await {
-        // Read settings under a short lock, then drop the guard BEFORE the
-        // async RPC call — the same pattern the other node-first reads use so
-        // we never hold the DB mutex across an .await.
-        let settings = {
+        // Build the node client from the resolved profile's *effective* config
+        // (per-profile override -> global -> default; ADR-001) under a short
+        // lock, then drop the guard BEFORE the async RPC call — the same
+        // pattern the other node-first reads use so we never hold the DB mutex
+        // across an .await.
+        let node = {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-            queries::get_settings(&conn)?
+            crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &profile_id)?
         };
-        let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
         return Ok(read_name_records_with_client(&node, &name).await);
     }
     Ok(empty_resource())
@@ -1331,13 +1401,20 @@ pub async fn read_block_info(
         return Ok(serde_json::Value::Null);
     }
 
-    // Read settings under a short lock, then drop the guard BEFORE the async
-    // RPC calls — never hold the DB mutex across an .await.
-    let settings = {
+    // Build the node client from the active profile's *effective* config
+    // (per-profile override -> global -> default; ADR-001) under a short lock,
+    // then drop the guard BEFORE the async RPC calls — never hold the DB mutex
+    // across an .await. No active profile → nothing authoritative to read, so
+    // soft-degrade to null like the "no synced node" path above.
+    let node = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        queries::get_settings(&conn)?
+        match queries::get_active_profile_id(&conn) {
+            Ok(id) if !id.is_empty() => {
+                crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &id)?
+            }
+            _ => return Ok(serde_json::Value::Null),
+        }
     };
-    let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
     Ok(read_block_info_with_client(&node, height).await)
 }
 
@@ -1404,13 +1481,18 @@ pub async fn read_tx_info(
         return Ok(serde_json::Value::Null);
     }
 
-    // Read settings under a short lock, then drop the guard BEFORE the async
-    // RPC call — never hold the DB mutex across an .await.
-    let settings = {
+    // Build the node client from the active profile's effective config under a
+    // short lock, then drop the guard before the async RPC (ADR-001). No active
+    // profile → soft-degrade to null like the "no synced node" path above.
+    let node = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        queries::get_settings(&conn)?
+        match queries::get_active_profile_id(&conn) {
+            Ok(id) if !id.is_empty() => {
+                crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &id)?
+            }
+            _ => return Ok(serde_json::Value::Null),
+        }
     };
-    let node = crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings);
     Ok(read_tx_info_with_client(&node, &txid).await)
 }
 

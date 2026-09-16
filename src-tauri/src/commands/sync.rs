@@ -602,17 +602,18 @@ pub async fn sync_node_step(db_path: &str, profile_id: &str) -> bool {
         Ok(c) => c,
         Err(_) => return false,
     };
-    let settings = match queries::get_settings(&conn) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
     let addresses = match queries::get_profile_addresses(&conn, profile_id) {
         Ok(a) => a,
         Err(_) => return false,
     };
+    // Resolve the profile's effective node config (per-profile override ->
+    // global -> default) rather than reading global settings directly.
+    let client = match NodeRpcClient::for_profile(&conn, profile_id) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
     drop(conn);
 
-    let client = NodeRpcClient::from_settings(&settings);
     let height = match client.get_blockchain_info().await {
         Ok(info) => info.blocks,
         Err(_) => return false,
@@ -680,24 +681,22 @@ pub(crate) async fn fetch_coins_with_guard_with_client(
 /// other bidders' data — that's the per-bid explorer path (Stage 2 replaces
 /// it with the chain scanner).
 pub async fn node_discover_step(db_path: &str, profile_id: &str) {
-    let (settings, hashes) = {
+    let (client, hashes) = {
         let conn = match open_conn(db_path) {
             Ok(c) => c,
             Err(_) => return,
         };
-        let settings = match queries::get_settings(&conn) {
-            Ok(s) => s,
+        let client = match NodeRpcClient::for_profile(&conn, profile_id) {
+            Ok(c) => c,
             Err(_) => return,
         };
         let hashes =
             queries::list_unspent_wallet_name_hashes(&conn, profile_id).unwrap_or_default();
-        (settings, hashes)
+        (client, hashes)
     };
     if hashes.is_empty() {
         return;
     }
-
-    let client = NodeRpcClient::from_settings(&settings);
 
     // Resolve hashes → names and fetch their on-chain state via the node.
     let fetched =

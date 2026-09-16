@@ -54,12 +54,19 @@ pub async fn sync_spv_step(db_path: &str, profile_id: &str) -> bool {
         .flatten()
         .and_then(|p| crate::noncustodial::derivation::network_from_profile(&p.network).ok())
         .unwrap_or_default();
-    drop(conn);
-
-    // Verify the SPV node is reachable.
+    // Verify the SPV node is reachable. Resolve the profile's effective node
+    // config (per-profile override -> global -> default) rather than reading
+    // global settings directly for the node endpoint. The explorer factory
+    // below still uses global `settings` — explorer URLs are not part of the
+    // ADR-001 node-config tuple.
     // Note: SPV mode is read-only. Sending is blocked by write-capability check.
     // Individual UTXOs are not tracked (explorer provides balance display).
-    let client = NodeRpcClient::from_settings(&settings);
+    let client = match NodeRpcClient::for_profile(&conn, profile_id) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    drop(conn);
+
     let height = match client.get_blockchain_info().await {
         Ok(info) => info.blocks,
         Err(e) => {

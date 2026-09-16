@@ -114,6 +114,7 @@ fn seed_ctx(conn: &rusqlite::Connection, funding_txid: &str, funding_value: i64)
             child_index: 0,
         }],
         settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     }
 }
 

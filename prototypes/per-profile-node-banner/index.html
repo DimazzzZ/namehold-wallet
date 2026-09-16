@@ -1,0 +1,933 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Per-profile node preflight — prototype</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#151a22; --border:#242c38; --text:#e6edf3; --muted:#8b96a5;
+    --ok:#2ea043; --warn:#d29922; --err:#f85149; --accent:#4c8bf5;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif}
+  .wrap{display:grid;grid-template-columns:340px 1fr;min-height:100vh}
+  .sim{background:var(--panel);border-right:1px solid var(--border);padding:16px;overflow:auto}
+  .sim h2{margin:0 0 12px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+  .sim label{display:block;margin:10px 0 4px;color:var(--muted);font-size:12px}
+  .sim select,.sim input{width:100%;padding:6px 8px;background:#0b0e13;border:1px solid var(--border);color:var(--text);border-radius:6px}
+  .sim .row{display:flex;gap:8px;align-items:center;margin-top:6px}
+  .sim .row input[type=checkbox]{width:auto}
+  .app{padding:24px;overflow:auto}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px}
+  .card h3{margin:0 0 8px;font-size:14px}
+  .kv{display:grid;grid-template-columns:160px 1fr;gap:6px 12px;color:var(--muted);font-size:13px}
+  .kv b{color:var(--text);font-weight:600}
+  .banner{border-radius:10px;padding:12px 14px;margin-bottom:16px;display:flex;gap:12px;align-items:flex-start}
+  .banner .dot{width:10px;height:10px;border-radius:50%;margin-top:6px;flex:0 0 10px}
+  .banner.ok{background:rgba(46,160,67,.10);border:1px solid rgba(46,160,67,.35)} .banner.ok .dot{background:var(--ok)}
+  .banner.warn{background:rgba(210,153,34,.10);border:1px solid rgba(210,153,34,.35)} .banner.warn .dot{background:var(--warn)}
+  .banner.err{background:rgba(248,81,73,.10);border:1px solid rgba(248,81,73,.40)} .banner.err .dot{background:var(--err)}
+  .banner.info{background:rgba(56,139,253,.10);border:1px solid rgba(56,139,253,.40)} .banner.info .dot{background:#388bfd}
+  .banner.probing{background:rgba(139,148,158,.10);border:1px solid rgba(139,148,158,.35)} .banner.probing .dot{background:var(--muted);animation:pulse 1s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+  .banner h4{margin:0 0 4px;font-size:14px}
+  .banner p{margin:0;color:var(--muted)}
+  .banner .actions{margin-top:8px;display:flex;gap:8px;flex-wrap:wrap}
+  button{background:#1e2732;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;cursor:pointer;font-size:13px}
+  button.primary{background:var(--accent);border-color:var(--accent)}
+  button.ghost{background:transparent}
+  .actions .textlink{color:var(--accent);font-size:13px;align-self:center;text-decoration:none}
+  .stale{margin-left:8px;font-size:11px;font-weight:400;opacity:.7;font-style:italic}
+  .sendresult{margin-top:8px;font-size:12px}
+  .sendresult.ok{color:#7ee787}
+  .sendresult.err{color:#ff7b72}
+  .send-btn[disabled]{opacity:.5;cursor:not-allowed}
+  .modal-back{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center}
+  .modal-back.open{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:12px;width:min(520px,92vw);padding:18px}
+  .modal h3{margin:0 0 6px}
+  .modal .muted{color:var(--muted);font-size:13px;margin:0 0 12px}
+  .modal .field{margin:10px 0}
+  .modal .field label{display:block;color:var(--muted);font-size:12px;margin-bottom:4px}
+  .modal .field input,.modal .field select{width:100%;padding:6px 8px;background:#0b0e13;border:1px solid var(--border);color:var(--text);border-radius:6px}
+  .modal .footer{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+  .modal .mErr{margin:6px 0 0;padding:8px 10px;background:#3b1720;border:1px solid #7a2b3b;color:#fecdd3;border-radius:6px;font-size:12px}
+  .modal .preview{margin-top:12px;display:grid;gap:8px}
+  .mini{border-radius:8px;padding:8px 10px;border:1px solid var(--border);background:#0b0e13}
+  .mini .lbl{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
+  .mini .ttl{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}
+  .mini .bd{font-size:12px;color:var(--muted);margin-top:2px}
+  .mini .pdot{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .mini.ok .pdot{background:var(--ok)} .mini.warn .pdot{background:var(--warn)} .mini.err .pdot{background:var(--err)} .mini.info .pdot{background:#388bfd}
+  code{background:#0b0e13;padding:1px 5px;border-radius:4px;color:#c9d1d9}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;border:1px solid var(--border);color:var(--muted)}
+  .pill.override{color:#c9d1d9;border-color:var(--accent)}
+  .trace{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--muted);white-space:pre-wrap;background:#0b0e13;border:1px solid var(--border);border-radius:6px;padding:10px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <aside class="sim">
+    <h2>Simulator — inputs</h2>
+
+    <label>Active profile</label>
+    <select id="pId">
+      <option value="A" selected>A — regtest (existing)</option>
+      <option value="B">B — mainnet (existing)</option>
+      <option value="C">C — testnet (fresh, never probed)</option>
+    </select>
+
+    <label>Profile network</label>
+    <select id="pNet">
+      <option>mainnet</option><option selected>regtest</option><option>testnet</option>
+    </select>
+
+    <label>Global settings — node_rpc_url</label>
+    <input id="gUrl" value="http://127.0.0.1:12037" />
+    <label>Global settings — chain_source</label>
+    <select id="gCs"><option>local_node</option><option>remote_node</option><option>explorer</option></select>
+
+      <div class="row"><input type="checkbox" id="hasReadOverride" checked><label for="hasReadOverride" style="margin:0">Read slot: per-profile override</label></div>
+      <div class="row"><input type="checkbox" id="hasWriteOverride" checked><label for="hasWriteOverride" style="margin:0">Write slot: per-profile override</label></div>
+    <div id="ovBlock">
+      <label>Read source — url</label>
+      <input id="rUrl" value="https://explorer.example" />
+      <label>Read source — kind</label>
+      <select id="rCs"><option selected>explorer</option><option>local_node</option><option>remote_node</option></select>
+      <label>Write source — url</label>
+      <input id="wUrl" value="http://127.0.0.1:14037" />
+      <label>Write source — kind</label>
+      <select id="wCs"><option value="none">none (read-only profile)</option><option value="local_node" selected>local_node</option><option value="remote_node">remote_node</option></select>
+    </div>
+
+    <h2 style="margin-top:16px">Simulator — node reality</h2>
+    <label>Reachable?</label>
+    <select id="reach">
+      <option value="yes" selected>yes (RPC ok)</option>
+      <option value="unreachable">no — timeout / refused</option>
+      <option value="unauthorized">reachable — 401/403 (bad api key)</option>
+    </select>
+    <label>Node reports chain</label>
+    <select id="nChain"><option>main</option><option selected>regtest</option><option>testnet</option><option value="">(unknown)</option></select>
+    <label>Synced?</label>
+    <select id="synced"><option value="yes" selected>yes</option><option value="no">no</option></select>
+    <label>Profile age</label>
+    <select id="profileAge"><option value="fresh">freshly created (no history)</option><option value="existing" selected>existing (has activity)</option></select>
+    <label>Explorer supports broadcast?</label>
+    <select id="expBroadcast"><option value="yes" selected>yes</option><option value="no">no (read-only)</option></select>
+    <label>Write node reachable?</label>
+    <select id="wReach">
+      <option value="yes" selected>yes (RPC ok)</option>
+      <option value="unreachable">no — timeout / refused</option>
+      <option value="unauthorized">reachable — 401/403 (bad api key)</option>
+    </select>
+    <label>Write node reports chain</label>
+    <select id="wChain"><option>main</option><option selected>regtest</option><option>testnet</option><option value="">(unknown)</option></select>
+
+    <div class="row" style="margin-top:14px">
+      <button class="primary" id="applyBtn">Recompute</button>
+      <button class="ghost" id="scenarioBtn">Cycle preset</button>
+    </div>
+    <p style="color:var(--muted);font-size:12px;margin-top:10px">Presets cycle through the 5 canonical states so we can grill each in isolation.</p>
+  </aside>
+
+  <main class="app">
+    <div class="card">
+      <h3>WalletView (mock) — profile <span id="pNetLabel" class="pill">regtest</span> <span id="ovPill" class="pill override">override</span></h3>
+      <div id="banner"></div>
+      <div class="kv">
+        <div>Balance</div><b>— HNS</b>
+        <div>Spendable</div><b>— HNS</b>
+        <div>Tip height</div><b id="tip">—</b>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="send-btn primary" id="sendBtn">Send</button>
+        <button class="send-btn" id="receiveBtn">Receive</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Effective node config (resolved)</h3>
+      <div class="trace" id="trace">—</div>
+    </div>
+  </main>
+</div>
+
+<div class="modal-back" id="modal">
+  <div class="modal">
+    <h3>Configure node for this profile</h3>
+    <p class="muted">These settings apply only to the active profile. Clearing them falls back to global settings.</p>
+    <div class="field"><label>node_rpc_url</label><input id="mUrl" placeholder="http://127.0.0.1:14037"></div>
+    <div class="field"><label>node_rpc_api_key</label><input id="mKey" placeholder="(optional)"></div>
+    <div class="field"><label>chain_source</label>
+      <!-- Q25 — the modal configures the WRITE (send) slot; explorer can't
+           broadcast, so it is not offered here (making the bad config
+           inexpressible in the UI). preflightWriteSlot still guards against a
+           programmatic explorer write-source. -->
+      <select id="mCs"><option>local_node</option><option>remote_node</option></select>
+    </div>
+    <!-- Q27 — a write override MUST name a node; an override without a URL is
+         meaningless (that's what "Clear override" is for). Save is blocked
+         with this inline error until a URL is entered. -->
+    <div class="mErr" id="mErr" style="display:none"></div>
+    <div class="preview" id="mPreview">
+      <div class="mini" id="mPrevCurrent"><div class="lbl">Current</div><div class="ttl"></div><div class="bd"></div></div>
+      <div class="mini" id="mPrevAfter"><div class="lbl">After save</div><div class="ttl"></div><div class="bd"></div></div>
+    </div>
+    <div class="footer">
+      <button class="ghost" id="mClear">Clear override</button>
+      <button id="mCancel">Cancel</button>
+      <button class="primary" id="mSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+// Resolution — mirrors ADR-001:
+// per-profile override → global → default. Realign is a no-op when override present.
+function resolveEffective(state){
+  // Q17 — two independent slots: read_source and write_source. Each profile can
+  // read via explorer while writing via its own node. When no override is set,
+  // both slots fall back to global (read via global source, write via global
+  // node if it is a node). Realign (N11) still applies to a loopback node URL.
+  const trace = [];
+  const defaults = { mainnet: 12037, testnet: 13037, regtest: 14037 };
+  const realign = (url) => {
+    const m = /127\.0\.0\.1:(\d+)/.exec(url);
+    if (!m) return url;
+    const port = parseInt(m[1],10);
+    const expected = defaults[state.pNet];
+    if (Object.values(defaults).includes(port) && port !== expected){
+      trace.push("realign rewrote loopback default " + port + " → " + expected);
+      return url.replace(":"+port, ":"+expected);
+    }
+    return url;
+  };
+  let read, write;
+  // Q19 — each slot has its OWN override flag. A profile can override read while
+  // inheriting write from global, or vice versa. Per-slot per-profile override.
+  if (state.hasReadOverride){
+    read = { url: state.rUrl, cs: state.rCs, source: "profile_override" };
+    trace.push("read override → " + read.cs);
+  } else {
+    read = { url: state.gUrl, cs: state.gCs, source: "global" };
+    trace.push("read inherits global → " + read.cs);
+  }
+  if (state.hasWriteOverride){
+    write = { url: state.wUrl, cs: state.wCs, source: "profile_override" };
+    if (write.cs !== "none") write.url = realign(write.url);
+    trace.push("write override → " + write.cs);
+  } else {
+    // Global fallback for write: only a global NODE can serve as a write slot.
+    const gIsNode = state.gCs === "local_node" || state.gCs === "remote_node";
+    write = gIsNode
+      ? { url: realign(state.gUrl), cs: state.gCs, source: "global" }
+      : { url: "", cs: "none", source: "global" };
+    trace.push("write inherits global → " + write.cs);
+  }
+  return { read, write, trace };
+}
+
+// Preflight — classifies the resulting node state into a banner variant.
+function preflight(state, eff){
+  // ── Canonical preflight priority (highest → lowest) ──────────────────────
+  // When several conditions are true at once, the FIRST match wins. Keep the
+  // branches below in this exact order; do not reorder without updating this
+  // contract.
+  //   (1) reachability   — can we talk to the node/explorer at all?
+  //   (2) network mismatch — reachable, but wrong network for this profile
+  //   (3) fresh-setup    — new profile inheriting a global that can't serve it
+  //   (4) syncing        — right network, node not caught up yet
+  //   (5) ok             — reachable, right network, ready
+  // Rationale: we can't judge a node's network until we can reach it, and a
+  // node's sync state on the wrong network is meaningless.
+  // host:port only, credentials and path stripped — never surface user:pass in the wallet UI.
+  const hostPort = (url) => {
+    try {
+      const u = new URL(url);
+      const host = (u.hostname || "").replace(/^[^@]*@/, "");
+      return u.port ? host + ":" + u.port : host;
+    } catch {
+      return String(url).replace(/^[a-z]+:\/\//i, "").replace(/^[^@]*@/, "").replace(/[/?#].*$/, "");
+    }
+  };
+  // Explorer chain source has no node: node_mode / synced are meaningless here.
+  // We still verify the explorer is reachable and on the profile's network.
+  if (eff.cs === "explorer"){
+    // (1) reachability — explorer endpoint
+    if (state.reach === "unreachable" || state.reach === "no"){
+      return { level: "err", title: "Can't reach the explorer",
+        body: "The wallet can't reach the explorer at " + hostPort(eff.url) + ". Check the explorer URL for this profile.",
+        canWrite: false, actions: ["configure"] };
+    }
+    // (1b) authorization — explorer reached but rejected us (rare, but some
+    // gated explorers use an api key). Same class as node unauthorized (Q15).
+    if (state.reach === "unauthorized"){
+      return { level: "err", title: "Explorer rejected the api key",
+        body: "The explorer at " + hostPort(eff.url) + " is reachable but refused the request (401/403). Check the explorer credentials for this profile.",
+        canWrite: false, actions: ["configure"] };
+    }
+    const eNorm = (x) => x === "mainnet" ? "main" : x;
+    // (2) network mismatch — explorer serves the wrong network
+    if (state.nChain && eNorm(state.nChain) !== eNorm(state.pNet)){
+      const fromOverride = eff.source === "profile_override";
+      return { level: "err", title: "Explorer is on a different network",
+        body: "This profile is on " + state.pNet + " but the explorer at " + hostPort(eff.url) + " serves " + state.nChain + ". Reads would be wrong, so they're blocked.",
+        canWrite: false,
+        actions: fromOverride ? ["configure"] : ["open_settings"],
+        secondaryLink: fromOverride ? "settings" : "configure" };
+    }
+    // Reachable + right network: reads are live. Broadcast depends on whether
+    // this explorer relays transactions.
+    return { level: "ok", title: "Reading via explorer",
+      body: state.expBroadcast
+        ? "Balance and history come from the explorer; sends are relayed through it too."
+        : "Balance and history come from the explorer. This explorer is read-only, so sending is unavailable — set up a node to broadcast (reading stays on the explorer).",
+      canWrite: !!state.expBroadcast,
+      actions: state.expBroadcast ? [] : ["setup_node"] };
+  }
+
+  // (1) reachability — node endpoint
+  if (state.reach === "unreachable" || state.reach === "no"){
+    return { level: "err", title: "Can't reach the node",
+      body: "The wallet can't connect to " + hostPort(eff.url) + ". Check that the node is running or configure a different endpoint for this profile.",
+      canWrite: false, actions: ["configure"] };
+  }
+  // (1b) authorization — reached the node, but RPC rejected our credentials.
+  // Distinct from unreachable (Q15): the node is likely correct; the api key is
+  // wrong. We can't read getblockchaininfo, so we can't judge network/sync yet.
+  if (state.reach === "unauthorized"){
+    return { level: "err", title: "Node rejected the api key",
+      body: "The node at " + hostPort(eff.url) + " is reachable but refused the request (401/403). Check this profile's node api key.",
+      canWrite: false, actions: ["configure"] };
+  }
+  const nChain = state.nChain || null;
+  const norm = (x) => x === "mainnet" ? "main" : x;
+  // (2) network mismatch — node reports the wrong network
+  if (nChain && norm(nChain) !== norm(state.pNet)){
+    const fromOverride = eff.source === "profile_override";
+    // (3) fresh-setup — new profile inheriting a global that can't serve it
+    // A freshly created profile with no override hits mismatch only because the
+    // inherited global node can't serve this network — it's a setup step, not a
+    // user error. Show a calm info banner instead of a red error.
+    if (state.isFresh && !fromOverride){
+      return { level: "info", title: "This profile needs its own node",
+        body: "New " + state.pNet + " profile: the shared global node is on " + nChain + " and can't serve " + state.pNet + ". Point this profile at a " + state.pNet + " node to get started.",
+        canWrite: false,
+        actions: ["configure"] };
+    }
+    return { level: "err", title: "Node is on a different network",
+      body: "This profile is on " + state.pNet + " but " + hostPort(eff.url) + " reports " + nChain + ". Sync and broadcast are blocked.",
+      canWrite: false,
+      actions: fromOverride ? ["configure"] : ["open_settings"],
+      secondaryLink: fromOverride ? "settings" : "configure" };
+  }
+  // (4) syncing — right network, node not caught up yet
+  if (state.synced === "no"){
+    return { level: "warn", title: "Node is still syncing",
+      body: "Sending is paused until the node catches up. Balance and history stay readable via the explorer.",
+      canWrite: false, actions: ["configure"] };
+  }
+  // (5) ok — reachable, right network, ready
+  return { level: "ok", title: "Node ready", body: "This profile's node is reachable and synced.", canWrite: true, actions: [] };
+}
+
+// Session-scoped cache of the last known preflight result (hybrid model):
+// paint the cached status instantly on entry, then refresh from a background preflight.
+let lastKnownPreflight = null;
+let bgTimer = null;
+
+// Per-profile cache of the last preflight result, keyed by profile id.
+// On profile switch we look up the target's entry:
+//   hit  -> paint stale immediately, refresh in the background
+//   miss -> neutral probing banner, then run preflight for the first time
+// Save (variant 4) invalidates the ACTIVE profile's entry only, not siblings.
+const preflightCache = new Map();
+function getCached(pId){ return preflightCache.get(pId) || null; }
+function setCached(pId, entry){ preflightCache.set(pId, entry); }
+function invalidateCached(pId){ preflightCache.delete(pId); }
+// Q18 (variant 1) — when the global node config changes, immediately evict the
+// preflight cache for EVERY override-less profile. Their effective config was
+// tied to the old global; the next render/switch must re-probe. Override-full
+// profiles are unaffected — their key doesn't include the global.
+let lastGlobal = null;  // seeded on first render() below
+function invalidateOverrideLessCaches(){
+  let evicted = 0;
+  // A profile is affected by a global change if EITHER slot inherits global
+  // (Q19: slots are independent, so read OR write inheriting is enough).
+  const inheritsGlobal = (f) => !f || f.hasReadOverride === false || f.hasWriteOverride === false;
+  for (const [pid, fields] of Object.entries(profileFields)){
+    if (pid === activeProfileId) continue;
+    if (inheritsGlobal(fields)){
+      if (preflightCache.delete(pid)) evicted++;
+    }
+  }
+  // Active profile: read live from the DOM.
+  const activeInherits = ($("hasReadOverride") && !$("hasReadOverride").checked) ||
+                         ($("hasWriteOverride") && !$("hasWriteOverride").checked);
+  if (activeInherits){
+    if (preflightCache.delete(activeProfileId)) evicted++;
+    lastKnownPreflight = null;  // mirror cleared for onSend()
+  }
+  return evicted;
+}
+function noticeGlobalChange(){
+  const nowG = { gUrl: $("gUrl").value.trim(), gCs: $("gCs").value };
+  if (!lastGlobal){ lastGlobal = nowG; return false; }
+  if (nowG.gUrl === lastGlobal.gUrl && nowG.gCs === lastGlobal.gCs) return false;
+  lastGlobal = nowG;
+  invalidateOverrideLessCaches();
+  return true;
+}
+
+// Variant 3 (Q13) — the node itself can drift under a STABLE effective config
+// (hsd restarted on another network at the same port, a tunnel's upstream
+// changed, resync, reboot). effKey can't see that, so a cached "ok" can quietly
+// go stale. Two defenses:
+//   1) TTL: a cached entry is only trusted for rendering for CACHE_TTL_MS.
+//   2) Action preflight: broadcast/sync ALWAYS run a fresh preflight, ignoring
+//      the cache entirely (see onSend). The banner is an indicator, never the
+//      source of truth for a write.
+const CACHE_TTL_MS = 30000;
+// Indirection so the prototype/tests can advance a virtual clock.
+let nowFn = () => Date.now();
+function now(){ return nowFn(); }
+
+// Canonical signature of the resolved config that a preflight depends on.
+// Two configs with the same (url, chain_source, source) would preflight the
+// same node the same way; a change in any of them makes a cached result stale.
+function effKey(eff){
+  if (!eff) return "?";
+  // Q20 (variant 1) — `source` is intentionally part of each slot's key. If a
+  // slot's flag flips global→profile_override at the SAME url, the key changes
+  // and we re-probe once. That extra probe is accepted: flag flips are rare,
+  // explicit actions, and re-verifying an override never hurts correctness.
+  const part = (s) => s ? (s.url + "|" + s.cs + "|" + s.source) : "-";
+  // Backward-compat: a bare {url,cs,source} still keys cleanly.
+  if (eff.read || eff.write) return "R(" + part(eff.read) + ")W(" + part(eff.write) + ")";
+  return part(eff);
+}
+
+// Variant 3 — lazy invalidation. A cache entry is only valid if the profile's
+// CURRENTLY resolved effective config still matches the one the entry was
+// computed against. This self-heals after a GLOBAL settings change (profiles
+// without an override re-resolve to a different url/source -> treated as a miss
+// -> probing), without needing any global invalidation event. Profiles whose
+// effective config is unchanged (e.g. those with an override) keep their cache.
+function getCachedFor(pId, currentEff){
+  const entry = preflightCache.get(pId);
+  if (!entry) return null;
+  if (effKey(entry.eff) !== effKey(currentEff)){
+    preflightCache.delete(pId);   // stale: resolved config drifted
+    return null;
+  }
+  if (typeof entry.at === "number" && (now() - entry.at) > CACHE_TTL_MS){
+    // Config unchanged, but the entry is too old to trust the node hasn't
+    // drifted. Treat as a miss so render() re-probes; don't delete (a fresh
+    // probe will overwrite it) — deleting vs keeping is equivalent here since
+    // render schedules an immediate refresh, but keeping avoids losing the
+    // last-known result if the refresh is cancelled by a rapid switch.
+    return null;
+  }
+  return entry;
+}
+
+// Per-profile snapshot of the simulator fields that are actually part of a
+// profile's identity (network + override state + freshness). Node-reality
+// fields (reach/nChain/synced/expBroadcast) stay shared — they describe the
+// world the node lives in, not the profile.
+const profileFields = {
+  A: { pNet:"regtest", hasReadOverride:true,  hasWriteOverride:true,  rUrl:"https://explorer.example", rCs:"explorer",    wUrl:"http://127.0.0.1:14037", wCs:"local_node",  isFresh:false },
+  B: { pNet:"mainnet", hasReadOverride:true,  hasWriteOverride:true,  rUrl:"http://127.0.0.1:12037",   rCs:"remote_node", wUrl:"http://127.0.0.1:12037", wCs:"remote_node", isFresh:false },
+  C: { pNet:"testnet", hasReadOverride:false, hasWriteOverride:false, rUrl:"",                          rCs:"local_node",  wUrl:"",                        wCs:"none",        isFresh:true  },
+};
+function loadProfileFields(pId){
+  const p = profileFields[pId]; if (!p) return;
+  $("pNet").value = p.pNet;
+  $("hasReadOverride").checked  = p.hasReadOverride;
+  $("hasWriteOverride").checked = p.hasWriteOverride;
+  $("rUrl").value = p.rUrl;
+  $("rCs").value = p.rCs;
+  $("wUrl").value = p.wUrl;
+  $("wCs").value = p.wCs;
+  $("profileAge").value = p.isFresh ? "fresh" : "existing";
+}
+function saveProfileFields(pId){
+  profileFields[pId] = {
+    pNet: $("pNet").value,
+    hasReadOverride:  $("hasReadOverride").checked,
+    hasWriteOverride: $("hasWriteOverride").checked,
+    rUrl: $("rUrl").value.trim(),
+    rCs: $("rCs").value,
+    wUrl: $("wUrl").value.trim(),
+    wCs: $("wCs").value,
+    isFresh: $("profileAge").value === "fresh",
+  };
+}
+let activeProfileId = "A";
+// Q14 — concurrency guard for action-preflight (broadcast/sync).
+// Each Send captures (pId, effKey) and a monotonic token. When the async
+// preflight returns we only broadcast/paint if the active profile + its
+// currently resolved effKey still match the captured context AND this is still
+// the latest Send (token). Otherwise the user switched profile or changed
+// config mid-flight, and acting would target a context they no longer see.
+let sendToken = 0;
+
+function readState(){
+  return {
+    pId: $("pId").value,
+    pNet: $("pNet").value,
+    gUrl: $("gUrl").value.trim(),
+    gCs: $("gCs").value,
+    hasReadOverride:  $("hasReadOverride").checked,
+    hasWriteOverride: $("hasWriteOverride").checked,
+    rUrl: $("rUrl").value.trim(),
+    rCs: $("rCs").value,
+    wUrl: $("wUrl").value.trim(),
+    wCs: $("wCs").value,
+    reach: $("reach").value,
+    nChain: $("nChain").value,
+    synced: $("synced").value,
+    isFresh: $("profileAge").value === "fresh",
+    expBroadcast: $("expBroadcast").value === "yes",
+    wReach: $("wReach").value,
+    wChain: $("wChain").value,
+  };
+}
+
+// The actual (simulated) network preflight. In the real wallet this calls
+// getblockchaininfo over RPC; here it resolves synchronously from the inputs.
+function runPreflight(state){
+  const resolved = resolveEffective(state);
+  const pf = composePreflight(state, resolved);
+  // Keep a flat `eff` for banner text / DoR panel: reads are what the user
+  // sees by default, so surface the read slot as the headline resolved config.
+  const eff = { ...resolved.read, read: resolved.read, write: resolved.write, trace: resolved.trace };
+  return { eff, pf, at: now() };
+}
+
+// Write-slot readiness (Q17). A write source is a node (or "none"). Explorer is
+// never a write source. Mirrors the node branch of preflight(), but its ONLY
+// job is: can we broadcast here? It never gates reads.
+function preflightWriteSlot(state, w){
+  const hostPort = (url) => {
+    try { const u = new URL(url); const h=(u.hostname||"").replace(/^[^@]*@/,""); return u.port? h+":"+u.port : h; }
+    catch { return String(url).replace(/^[a-z]+:\/\//i,"").replace(/^[^@]*@/,"").replace(/[/?#].*$/,""); }
+  };
+  if (!w || w.cs === "none"){
+    return { ok:false, title:"No node for sending", reason:"read_only_profile",
+      body:"This is a read-only profile — no write source is configured. Set up a node to broadcast (reading is unaffected).",
+      actions:["setup_node"] };
+  }
+  // Q24 — explorer is a read-only source; it cannot broadcast. Report this at
+  // the source (ok:false) rather than only papering over it in the banner, so
+  // no other consumer of preflightWriteSlot mistakes explorer for sendable.
+  if (w.cs === "explorer"){
+    return { ok:false, title:"Explorer can't broadcast", reason:"explorer_cannot_broadcast",
+      body:"The send slot resolves to an explorer, which can read chain state but can't broadcast transactions. Point this profile's write source at a node to send.",
+      actions:["setup_node"] };
+  }
+  if (state.wReach === "unreachable" || state.wReach === "no"){
+    return { ok:false, title:"Can't reach the send node", reason:"unreachable",
+      body:"The wallet can't connect to the send node at " + hostPort(w.url) + ". Check that it's running or point this profile's write source elsewhere.",
+      actions:["setup_node"] };
+  }
+  if (state.wReach === "unauthorized"){
+    return { ok:false, title:"Send node rejected the api key", reason:"unauthorized",
+      body:"The send node at " + hostPort(w.url) + " is reachable but refused the request (401/403). Check this profile's write-node api key.",
+      actions:["setup_node"] };
+  }
+  const norm = (x) => x === "mainnet" ? "main" : x;
+  if (state.wChain && norm(state.wChain) !== norm(state.pNet)){
+    return { ok:false, title:"Send node is on a different network", reason:"mismatch", wNet: state.wChain,
+      body:"This profile is on " + state.pNet + " but the send node at " + hostPort(w.url) + " reports " + state.wChain + ". Broadcast is blocked.",
+      actions:["setup_node"] };
+  }
+  return { ok:true, title:"Send node ready", reason:"ok", wNet: state.wChain || state.pNet, body:"", actions:[] };
+}
+
+// Compose read-slot + write-slot into one banner. Rules:
+//  • Reads gate balance/history; the read slot decides the base banner.
+//  • If reads are broken (err), that dominates — you can't sensibly send either.
+//  • If reads are fine, canWrite is driven by the write slot.
+//  • Same-network guard: if both slots report a network and they DIFFER, block
+//    writes with a dedicated error — never "read testnet, send mainnet".
+function composePreflight(state, resolved){
+  const readPf  = preflight(state, resolved.read);   // read readiness (its canWrite is ignored)
+  const writePf = preflightWriteSlot(state, resolved.write);
+  const norm = (x) => x === "mainnet" ? "main" : x;
+
+  // Reads broken → surface the read error, sending is meaningless.
+  if (readPf.level === "err"){
+    return { level:"err", title:readPf.title, body:readPf.body, canWrite:false, actions:readPf.actions,
+      secondaryLink: readPf.secondaryLink, readOk:false };
+  }
+
+  // Reads OK. Same-network guard between the two slots (only when both known).
+  const readNet = state.nChain || null;
+  const writeNet = (resolved.write && resolved.write.cs !== "none") ? (state.wChain || null) : null;
+  if (readNet && writeNet && norm(readNet) !== norm(writeNet)){
+    return { level:"err", title:"Read and send are on different networks",
+      body:"Reads resolve to " + readNet + " but the send node reports " + writeNet + ". Sending here could broadcast to the wrong network, so it's blocked. Align both slots to " + state.pNet + ".",
+      canWrite:false, actions:["setup_node"], readOk:true };
+  }
+
+  // Reads OK + networks agree (or write unknown) → write slot decides.
+  if (writePf.ok){
+    // Q21 (variant 2) — collapse the body when both slots point at the same
+    // physical endpoint (same url + cs). `source` is deliberately ignored:
+    // the user cares about the endpoint, not whether it came from override or
+    // global. Two sentences about one node would just be noise.
+    const readVia = resolved.read.cs === "explorer" ? "the explorer"
+                  : resolved.read.cs === "local_node" ? "the local node"
+                  : "the remote node";
+    const samePhysicalEndpoint =
+      resolved.read.cs !== "explorer" &&   // Q23: explorer can't send — never claim it does
+      resolved.read.cs === resolved.write.cs &&
+      resolved.read.url === resolved.write.url;
+    const body = samePhysicalEndpoint
+      ? "Reads and sends both use " + readVia + "."
+      : "Reads come from " + readVia + "; broadcast goes through the send node.";
+    return { level:"ok", title:"Ready to read and send",
+      body, canWrite:true, actions:[], readOk:true };
+  }
+  // Reads OK but can't send: keep the banner at info/warn (reads still work),
+  // carry the write slot's explanation + setup_node CTA.
+  // "No node" and "explorer can't broadcast" are configuration states, not
+  // errors — reads still work — so they sit at info. Reachability/auth/mismatch
+  // failures are genuine problems → warn.
+  const level = (writePf.reason === "read_only_profile" ||
+                 writePf.reason === "explorer_cannot_broadcast") ? "info" : "warn";
+  return { level, title:writePf.title, body:writePf.body, canWrite:false, actions:writePf.actions, readOk:true };
+}
+}
+
+// Probing state for the MAIN banner. Used right after a config commit (Save),
+// when the previously cached preflight described the OLD config and would be
+// misleading. Shows a neutral "checking" banner — no stale level leaks through —
+// and hard-disables Send until the fresh preflight lands.
+function paintProbing(state, eff){
+  const bannerHtml = '<div class="banner probing"><div class="dot"></div><div style="flex:1">' +
+    '<h4>Checking this profile\u2019s node\u2026</h4>' +
+    '<p>Applying the new configuration and re-running preflight against ' + (eff && eff.url ? eff.url : "the node") + '.</p>' +
+    '</div></div>';
+  $("banner").innerHTML = bannerHtml;
+  $("sendBtn").disabled = true;
+  $("tip").textContent = "\u2014";
+  $("trace").textContent =
+    "profile.network = " + state.pNet + "\n" +
+    "resolved.url    = " + (eff ? eff.url : "?") + "\n" +
+    "resolved.source = " + (eff ? eff.source : "?") + "\n" +
+    "preflight.level = (probing; new config just applied)";
+}
+
+// Paint the banner + trace from a given {eff, pf} result (no network here).
+function paint(state, eff, pf, stale){
+  const anyOverride = state.hasReadOverride || state.hasWriteOverride;
+  $("ovBlock").style.display = anyOverride ? "" : "none";
+  $("ovPill").style.display = anyOverride ? "" : "none";
+  $("pNetLabel").textContent = state.pNet;
+
+  const linkHtml = pf.secondaryLink === "settings"
+    ? '<a href="#" class="textlink" onclick="return false">or adjust global settings</a>'
+    : pf.secondaryLink === "configure"
+    ? '<a href="#" class="textlink" onclick="openModal();return false">or override just this profile</a>'
+    : "";
+  const staleTag = stale ? '<span class="stale">checking…</span>' : "";
+  const bannerHtml = `<div class="banner ${pf.level}"><div class="dot"></div><div style="flex:1"><h4>${pf.title}${staleTag}</h4><p>${pf.body}</p><div class="actions">${pf.actions.includes("configure") ? '<button class="primary" onclick="openModal()">Configure node for this profile…</button>' : ''}${pf.actions.includes("open_settings") ? '<button class="primary">Open Settings → Connections</button>' : ''}${linkHtml}</div></div></div>`;
+  const setupNodeBtn = pf.actions.includes("setup_node")
+    ? '<button class="primary" onclick="openModalForNode()">Set up a node to send…</button>'
+    : '';
+  const bannerHtml2 = bannerHtml.replace('<div class="actions">', '<div class="actions">' + setupNodeBtn);
+  $("banner").innerHTML = bannerHtml2;
+
+  // Send stays disabled while showing a stale cached status: the authoritative
+  // gate is the synchronous preflight in onSend(), never the cached paint.
+  $("sendBtn").disabled = !pf.canWrite || stale;
+  $("tip").textContent = pf.level === "ok" && !stale ? "12,345" : "—";
+
+  $("trace").textContent =
+    "profile.network = " + state.pNet + "\n" +
+    "resolved.url    = " + eff.url + "\n" +
+    "resolved.cs     = " + eff.cs + "\n" +
+    "resolved.source = " + eff.source + "\n" +
+    "trace:\n  - " + eff.trace.join("\n  - ") + "\n" +
+    "preflight.level = " + pf.level + (stale ? " (cached; rechecking)" : "");
+}
+
+// Entry render: paint cached status instantly (marked stale), then kick a
+// background preflight that repaints with the fresh result.
+function render(){
+  // Q18: detect a global node config change first. If it changed, every
+  // override-less profile's cache is evicted now (variant 1 — eager, not lazy),
+  // so the block below repaints them from a clean probe rather than stale data.
+  noticeGlobalChange();
+  const state = readState();
+  const eff = resolveEffective(state);
+  const cached = getCachedFor(state.pId, eff);
+  if (cached){
+    paint(state, cached.eff, cached.pf, true);
+  } else {
+    // No valid cache for this profile+config (never probed, or lazily
+    // invalidated because the resolved config drifted — e.g. a global settings
+    // change hit an override-less profile). Show neutral probing, not the old
+    // level, so a stale result never lingers on screen.
+    paintProbing(state, eff);
+  }
+  if (bgTimer) clearTimeout(bgTimer);
+  // Simulate async RPC latency for the background recheck.
+  bgTimer = setTimeout(() => {
+    const fresh = runPreflight(state);
+    setCached(state.pId, fresh);
+    // Q31 — context guard: the user may have switched profiles while this
+    // recheck was in flight. setCached is address-scoped by pId (safe to keep),
+    // but only mirror lastKnownPreflight and paint if THIS profile is still
+    // active — otherwise we'd stamp another profile's banner with this result.
+    if (state.pId === activeProfileId){
+      lastKnownPreflight = fresh;   // mirror active profile for onSend()
+      paint(state, fresh.eff, fresh.pf, false);
+    }
+  }, cached ? 450 : 0);
+}
+
+// Variant 3: switching the active profile. The new profile has its own effective
+// config and its own node. We never show profile A's status labeled as B:
+//   cache hit  -> paint that profile's last known status (marked "checking…")
+//                 immediately, then refresh in the background.
+//   cache miss -> neutral probing banner (never probed yet), then first preflight.
+function switchProfile(){
+  // Persist the outgoing profile's identity fields before swapping inputs.
+  saveProfileFields(activeProfileId);
+  const nextId = $("pId").value;
+  activeProfileId = nextId;
+  loadProfileFields(nextId);          // push the new profile's fields into inputs
+  const state = readState();
+  const eff = resolveEffective(state);
+  const cached = getCachedFor(nextId, eff);
+  lastKnownPreflight = cached;        // mirror for onSend()
+  if (cached){
+    paint(state, cached.eff, cached.pf, true);   // stale, background refresh below
+  } else {
+    paintProbing(state, eff);         // first time on this profile
+  }
+  if (bgTimer) clearTimeout(bgTimer);
+  bgTimer = setTimeout(() => {
+    const fresh = runPreflight(state);
+    setCached(nextId, fresh);
+    if (activeProfileId === nextId){  // ignore if user switched again meanwhile
+      lastKnownPreflight = fresh;
+      paint(state, fresh.eff, fresh.pf, false);
+    }
+  }, cached ? 450 : 600);
+}
+
+function openModal(){
+  $("mUrl").value = $("wUrl").value;
+  $("mCs").value  = $("wCs").value === "none" ? "local_node" : $("wCs").value;
+  hideModalErr();
+  $("modal").classList.add("open");
+  previewModal();
+}
+
+// Q16 — variant 2: from the explorer read-only banner, guide the user to add a
+// node purely for broadcast. Reading stays on the explorer; we only preset the
+// override's chain_source to local_node so the modal opens ready to point at a
+// node. We deliberately do NOT touch the explorer read path here.
+function openModalForNode(){
+  $("mUrl").value = $("wUrl").value;   // keep any send-node URL already typed
+  $("mCs").value  = "local_node";      // preset: sending needs a node
+  hideModalErr();
+  $("modal").classList.add("open");
+  previewModal();
+}
+function closeModal(){ $("modal").classList.remove("open"); hideModalErr(); }
+// Q27 — the URL-required error is transient: clear it whenever the modal opens,
+// closes, or the user edits the URL, so a stale message never lingers.
+function hideModalErr(){ const e=$("mErr"); if(e){ e.style.display="none"; e.textContent=""; } }
+
+// Live-preview inside the override modal. Two mini-banners:
+//   Current   — preflight over the currently SAVED state (what the outer banner shows).
+  //   After save — preflight over the DRAFT state: hasWriteOverride:true with the modal's fields.
+// The outer banner does NOT change until Save. Node-reality fields (reach/nChain/synced)
+// come from the simulator, since the prototype can't actually probe the draft URL.
+function previewModal(){
+  const saved = readState();
+  // The modal configures the WRITE slot; the read slot is preserved as-is.
+  const draft = { ...saved, hasWriteOverride: true, wUrl: $("mUrl").value.trim(), wCs: $("mCs").value };
+  const paintMini = (nodeId, pf) => {
+    const el = $(nodeId);
+    el.className = "mini " + pf.level;
+    el.querySelector(".ttl").innerHTML = '<span class="pdot"></span>' + pf.title;
+    el.querySelector(".bd").textContent = pf.body;
+  };
+  paintMini("mPrevCurrent", runPreflight(saved).pf);
+  paintMini("mPrevAfter",   runPreflight(draft).pf);
+}
+// Q19 — the modal configures the write slot, so "Clear" clears ONLY the write
+// override. The read slot's override (e.g. explorer) is preserved.
+function clearOverride(){
+  $("hasWriteOverride").checked = false;
+  $("wCs").value = "none";
+  $("wUrl").value = "";
+  render();
+}
+
+// Broadcast path: ALWAYS runs a fresh synchronous preflight, ignoring the
+// cached banner. If the node isn't ready, broadcast is refused here even if
+// the (possibly stale) banner looked green a moment ago.
+function onSend(){
+  const state = readState();
+  // Capture the context this Send is bound to.
+  const ctxPid = activeProfileId;
+  const ctxEffKey = effKey(resolveEffective(state));
+  const myToken = ++sendToken;
+
+  // Point disable (Q14): block a second Send while this one is in flight.
+  // Navigation (profile switch, Save) stays enabled on purpose.
+  $("sendBtn").disabled = true;
+  $("sendResult").textContent = "Running preflight before broadcast…";
+  $("sendResult").className = "sendresult probing";
+
+  // Action preflight (Q13): broadcast NEVER trusts the render cache or its TTL.
+  // Simulated async RPC latency; in production this is a live node round-trip.
+  setTimeout(() => {
+    // Re-read the world AS IT IS NOW, then guard against context drift.
+    const nowState = readState();
+    const stillActive = activeProfileId === ctxPid;
+    const stillSameCfg = stillActive && effKey(resolveEffective(nowState)) === ctxEffKey;
+    const stillLatest = myToken === sendToken;
+
+    if (!stillActive || !stillSameCfg || !stillLatest){
+      // The profile or its effective config changed while we waited (or a newer
+      // Send superseded us). Do NOT broadcast against a context the user has
+      // left. Only touch the UI if we're still the latest Send, so we don't
+      // stomp a newer action's message.
+      if (stillLatest){
+        $("sendResult").textContent = "Broadcast cancelled: profile or node config changed while checking. Review and Send again.";
+        $("sendResult").className = "sendresult err";
+        // Re-enable Send if we're still on a writable context; render() will
+        // correct this on the active profile's next paint anyway.
+        $("sendBtn").disabled = false;
+      }
+      return;
+    }
+
+    const fresh = runPreflight(nowState);
+    lastKnownPreflight = fresh;
+    setCached(ctxPid, fresh);
+    paint(nowState, fresh.eff, fresh.pf, false);   // paint() resets sendBtn.disabled from canWrite
+    if (!fresh.pf.canWrite){
+      $("sendResult").textContent = "Broadcast refused: " + fresh.pf.title.toLowerCase() + " (preflight ran just now).";
+      $("sendResult").className = "sendresult err";
+      return;
+    }
+    // Q34 (variant 2) — name the WRITE slot, not the flat read-headline eff.
+    // Broadcast goes through the write slot, which can differ from the read
+    // source; fresh.eff.url mirrors reads, so use fresh.eff.write.{url,cs}. The
+    // source suffix disambiguates profiles whose write nodes share an address.
+    const w = fresh.eff.write;
+    $("sendResult").textContent = "Preflight passed — transaction would broadcast to " + w.url + " (" + w.cs + ").";
+    $("sendResult").className = "sendresult ok";
+  }, 400);
+}
+
+$("modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
+$("mCancel").onclick = closeModal;
+$("mUrl").addEventListener("input", () => { hideModalErr(); previewModal(); });
+$("mCs").addEventListener("change", previewModal);
+$("pId").addEventListener("change", switchProfile);
+$("mSave").onclick = () => {
+  // Q27 — a write override on local_node/remote_node must name a node URL.
+  // Both selectable sources require an address (explorer was removed in Q25),
+  // so an empty URL is always invalid here. Block save with an inline error
+  // instead of persisting a URL-less override that would just fail preflight.
+  const url = $("mUrl").value.trim();
+  if (!url){
+    const err = $("mErr");
+    err.textContent = "Enter the node's URL to save this override, or use \u201cClear override\u201d to inherit the global node.";
+    err.style.display = "block";
+    $("mUrl").focus();
+    return;
+  }
+  $("hasWriteOverride").checked = true;
+  $("wUrl").value = url;
+  $("wCs").value  = $("mCs").value;
+  closeModal();
+  // Variant 4: commit is authoritative, probing moves to the MAIN banner.
+  // The previously cached preflight described the OLD config, so drop it and
+  // paint a neutral probing banner against the NEW resolved config, then let
+  // the async preflight land and repaint the real result.
+  const state = readState();
+  const eff = resolveEffective(state);
+  lastKnownPreflight = null;         // old cache no longer describes reality
+  invalidateCached(state.pId);       // drop only this profile's entry, not siblings
+  paintProbing(state, eff);
+  if (bgTimer) clearTimeout(bgTimer);
+  bgTimer = setTimeout(() => {
+    const fresh = runPreflight(state);
+    setCached(state.pId, fresh);
+    lastKnownPreflight = fresh;
+    paint(state, fresh.eff, fresh.pf, false);
+  }, 600);                           // simulate async RPC latency of the recheck
+};
+$("mClear").onclick = () => { clearOverride(); closeModal(); };
+
+// Presets to grill.
+const presets = [
+  { name:"1. Happy path (read=explorer, write=node, regtest, synced)",
+    set:{ pNet:"regtest", hasReadOverride:true, hasWriteOverride:true, rUrl:"https://explorer.example", rCs:"explorer", wUrl:"http://127.0.0.1:14037", wCs:"local_node",
+          reach:"yes", nChain:"regtest", synced:"yes", expBroadcast:"no", wReach:"yes", wChain:"regtest" }},
+  { name:"2. Same-network guard (read=testnet explorer, write=mainnet node)",
+    set:{ pNet:"testnet", hasReadOverride:true, hasWriteOverride:true, rUrl:"https://testnet.explorer", rCs:"explorer", wUrl:"http://127.0.0.1:12037", wCs:"remote_node",
+          reach:"yes", nChain:"testnet", synced:"yes", expBroadcast:"no", wReach:"yes", wChain:"main" }},
+  { name:"3. Read-only profile (write=none)",
+    set:{ pNet:"mainnet", hasReadOverride:true, hasWriteOverride:true, rUrl:"https://mainnet.explorer", rCs:"explorer", wUrl:"", wCs:"none",
+          reach:"yes", nChain:"main", synced:"yes", expBroadcast:"no", wReach:"yes", wChain:"" }},
+  { name:"4. Send node unreachable (read fine via explorer)",
+    set:{ pNet:"regtest", hasReadOverride:true, hasWriteOverride:true, rUrl:"https://explorer.example", rCs:"explorer", wUrl:"http://10.0.0.5:14037", wCs:"remote_node",
+          reach:"yes", nChain:"regtest", synced:"yes", expBroadcast:"no", wReach:"unreachable", wChain:"" }},
+  { name:"5. No override, global node fine (read+write both via node)",
+    set:{ pNet:"mainnet", hasReadOverride:false, hasWriteOverride:false, gUrl:"http://127.0.0.1:12037", gCs:"local_node",
+          reach:"yes", nChain:"main", synced:"yes", wReach:"yes", wChain:"main" }},
+  { name:"6. Split slots (read override=explorer, write inherits global node)",
+    set:{ pNet:"regtest", hasReadOverride:true, hasWriteOverride:false, rUrl:"https://explorer.example", rCs:"explorer",
+          gUrl:"http://127.0.0.1:12037", gCs:"local_node",
+          reach:"yes", nChain:"regtest", synced:"yes", expBroadcast:"no", wReach:"yes", wChain:"regtest" }},
+];
+let idx = 0;
+$("scenarioBtn").onclick = () => {
+  const p = presets[idx % presets.length];
+  for (const [k,v] of Object.entries(p.set)){
+    const el = $(k === "pNet" ? "pNet" : k === "gUrl" ? "gUrl" : k === "gCs" ? "gCs" :
+                 k === "rUrl" ? "rUrl" : k === "rCs" ? "rCs" :
+                 k === "wUrl" ? "wUrl" : k === "wCs" ? "wCs" :
+                 k === "reach" ? "reach" : k === "nChain" ? "nChain" : k === "synced" ? "synced" :
+                 k === "expBroadcast" ? "expBroadcast" :
+                 k === "wReach" ? "wReach" : k === "wChain" ? "wChain" : "");
+    if (el){
+      if (el.type === "checkbox") el.checked = v; else el.value = v;
+    }
+    if (k === "hasReadOverride")  $("hasReadOverride").checked = v;
+    if (k === "hasWriteOverride") $("hasWriteOverride").checked = v;
+  }
+  document.title = p.name;
+  idx++;
+  render();
+};
+
+document.body.addEventListener("input", render);
+document.body.addEventListener("change", render);
+$("applyBtn").onclick = render;
+$("sendBtn").onclick = onSend;
+if (!document.getElementById("sendResult")){
+  const el = document.createElement("div");
+  el.id = "sendResult"; el.className = "sendresult";
+  $("sendBtn").insertAdjacentElement("afterend", el);
+}
+
+render();
+</script>
+</body>
+</html>

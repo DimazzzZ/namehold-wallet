@@ -109,6 +109,7 @@ fn seed_ctx_with_funding(conn: &rusqlite::Connection, settings: HashMap<String, 
             child_index: 0,
         }],
         settings,
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     }
 }
 
@@ -238,6 +239,7 @@ fn build_open_draft_allows_different_name_after_first() {
             child_index: 0,
         }],
         settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
     let ctx2 = Ctx {
         profile_id: PROFILE.into(),
@@ -253,6 +255,7 @@ fn build_open_draft_allows_different_name_after_first() {
             child_index: 0,
         }],
         settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
 
     build_open_draft_inner(&conn, &ctx1, "example", Some(10)).unwrap();
@@ -285,6 +288,7 @@ fn build_open_draft_fails_with_insufficient_funds() {
             child_index: 0,
         }],
         settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
 
     let err = build_open_draft_inner(&conn, &ctx, NAME, Some(100)).unwrap_err();
