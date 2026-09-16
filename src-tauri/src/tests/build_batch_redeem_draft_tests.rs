@@ -174,6 +174,7 @@ fn setup(names_in: &[&str]) -> (rusqlite::Connection, Ctx, PerName) {
             child_index: 0,
         }],
         settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
     (conn, ctx, per_name)
 }

@@ -19,61 +19,16 @@ fn test_xpub() -> crate::noncustodial::hd::ExtendedPubKey {
     crate::noncustodial::hd::ExtendedPubKey::from_priv(&master)
 }
 
-/// Create a test DB with ALL migrations (including wallet_profiles from 006+).
+/// Create a test DB with the FULL production migration set. Uses
+/// `db::migrations::run` so tests always match the app's schema (previously
+/// this helper manually chained migrations 004..016 and silently drifted
+/// whenever a new migration landed — notably `profile_settings` in 027, which
+/// per-profile node override routing depends on).
 fn create_full_test_db() -> rusqlite::Connection {
-    let conn = crate::tests::command_helpers::create_test_db();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/004_wallet_addresses.sql"
-    ))
-    .unwrap();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/005_fix_hnsfans_api_url.sql"
-    ))
-    .unwrap();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/006_noncustodial_wallet_profiles.sql"
-    ))
-    .unwrap();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/007_noncustodial_chain_cache.sql"
-    ))
-    .unwrap();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/008_noncustodial_name_state.sql"
-    ))
-    .unwrap();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/009_node_rpc_settings.sql"
-    ))
-    .unwrap();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/010_drop_legacy_settings.sql"
-    ))
-    .unwrap();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/011_hsd_data_dir.sql"
-    ))
-    .unwrap();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/012_tx_draft_confirmations.sql"
-    ))
-    .unwrap();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/013_owner_address.sql"
-    ))
-    .unwrap();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/014_reveal_end_height.sql"
-    ))
-    .unwrap();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/015_coin_reservation.sql"
-    ))
-    .unwrap();
-    conn.execute_batch(include_str!(
-        "../../../src-tauri/src/sql/016_last_explorer_sync_at.sql"
-    ))
-    .unwrap();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+        .unwrap();
+    db::migrations::run(&conn).unwrap();
     conn
 }
 
@@ -157,6 +112,7 @@ fn test_fee_rate_explicit_overrides_settings() {
         change_address: "tb1qchange".into(),
         funding: vec![],
         settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
 
     // Explicit fee_rate takes priority
@@ -178,6 +134,7 @@ fn test_fee_rate_from_settings_falls_back() {
         change_address: "tb1qchange".into(),
         funding: vec![],
         settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
 
     // No explicit fee_rate and no settings → default
@@ -203,6 +160,7 @@ fn test_fee_rate_from_settings_kvb() {
         change_address: "tb1qchange".into(),
         funding: vec![],
         settings,
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
 
     let rate = names::fee_rate(&ctx, None);
@@ -228,6 +186,7 @@ fn test_fee_rate_from_settings_large_kvb() {
         change_address: "tb1qchange".into(),
         funding: vec![],
         settings,
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
 
     assert_eq!(names::fee_rate(&ctx, None), 100);
@@ -251,6 +210,7 @@ fn test_fee_rate_invalid_kvb_string_falls_back() {
         change_address: "tb1qchange".into(),
         funding: vec![],
         settings,
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
 
     // Invalid parse → falls back to default
@@ -3768,4 +3728,85 @@ async fn build_batch_redeem_draft_wrapper_rejects_empty() {
         .await
         .expect_err("empty names must be rejected");
     assert!(format!("{err}").contains("no names provided"));
+}
+
+// ============================================================================
+// Per-profile node override routing (ADR-001) for name-action capabilities.
+//
+// `get_name_action_capabilities` fetches on-chain name state via the node
+// client, which must be built from the *effective* config for the target
+// profile: per-profile override -> global -> default. The global
+// `node_rpc_url` points at a synced-but-inert node (so the readiness preflight
+// in `is_node_ready_for_local_reads` passes) while the per-profile override
+// serves `getnameinfo`. If the command wrongly built its client from the
+// global URL the name-serving mock would never be hit and the capability
+// evaluation would fall back to local Sync evidence instead of reporting the
+// on-chain phase the override node reports.
+// ============================================================================
+
+/// A node that only answers the readiness probe (`getblockchaininfo`, synced,
+/// on the regtest chain). It deliberately does NOT serve `getnameinfo`, so a
+/// capability evaluation routed here soft-degrades to the local-evidence path.
+async fn mock_ready_but_no_names(server: &mut mockito::Server) -> mockito::Mock {
+    server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"chain":"regtest","blocks":1000,"headers":1000,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await
+}
+
+#[tokio::test]
+async fn capabilities_uses_per_profile_node_override() {
+    // Global node: passes the readiness preflight but never serves getnameinfo.
+    let mut global = mockito::Server::new_async().await;
+    let _g_ready = mock_ready_but_no_names(&mut global).await;
+
+    // Override node: synced AND serves getnameinfo, reporting the OPENING phase.
+    let mut override_node = mockito::Server::new_async().await;
+    let _o_ready = mock_ready_but_no_names(&mut override_node).await;
+    let o_name = override_node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+        .with_body(
+            r#"{"result":{"info":{"name":"routed","state":"OPENING","height":100,"value":0,"renewals":0,"claimed":0,"weak":false,"stats":{}}},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        // Global default points at the inert (name-less) node.
+        db::queries::set_setting(&conn, "node_rpc_url", &global.url()).unwrap();
+        // Per-profile override points at the name-serving node.
+        conn.execute(
+            "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, 'node_rpc_url', ?2)",
+            rusqlite::params![&id, override_node.url()],
+        )
+        .unwrap();
+        id
+    };
+
+    let app = mock_app_with(state);
+    let caps = names::get_name_action_capabilities(
+        app.state(),
+        "routed".into(),
+        Some(profile_id),
+    )
+    .await
+    .expect("capabilities should resolve via the override node");
+
+    // The phase came from the override node's getnameinfo — proving the client
+    // was built from the per-profile effective config, not the global URL.
+    assert_eq!(
+        caps.phase, "OPENING",
+        "phase must come from the per-profile override node"
+    );
+    o_name.assert_async().await;
 }

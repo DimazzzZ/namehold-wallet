@@ -47,6 +47,7 @@ mod namebase_transfer_tests;
 mod names_action_context_tests;
 mod names_cmd_tests;
 mod network_tests;
+mod node_config_tests;
 mod node_cmd_tests;
 mod node_lifecycle_tests;
 mod node_rpc_injected_tests;
