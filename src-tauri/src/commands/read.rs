@@ -164,6 +164,33 @@ pub(crate) async fn node_tip_height_if_synced_from_settings_with_network(
     node_tip_height_if_synced_with_client(&client, expected_network).await
 }
 
+/// Per-profile readiness probe: the live node tip height, but ONLY when the node
+/// is connected, fully synced, AND reporting the same chain as the profile.
+/// Returns None when the node is unreachable, catching up, on another network,
+/// or the profile doesn't exist.
+///
+/// Per-profile node override routing (ADR-001): if the profile has a per-profile
+/// override, it takes precedence; otherwise falls back to global settings; otherwise
+/// uses the built-in default. This is the readiness probe for background daemons
+/// (chain scanner, watched-name daemon) that operate on behalf of a specific profile.
+pub(crate) async fn node_tip_height_if_synced_from_profile_with_network(
+    db_path: &str,
+    profile_id: &str,
+    expected_network: Option<&str>,
+) -> Option<i64> {
+    let conn = match crate::db::connection::open(std::path::Path::new(db_path)) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    let client = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, profile_id)
+        .unwrap_or_else(|_| {
+            // Fallback to global settings if profile config is missing or misconfigured.
+            let settings = queries::get_settings(&conn).unwrap_or_default();
+            crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings)
+        });
+    node_tip_height_if_synced_with_client(&client, expected_network).await
+}
+
 /// The client-injected core of [`node_tip_height_if_synced_from_settings_with_network`].
 /// All the sync-progress + network-match logic lives here so it can be unit
 /// tested against a `MockNodeRpc` without a live node. The settings-based
@@ -311,6 +338,20 @@ pub async fn node_ready_from_settings(
     expected_network: Option<&str>,
 ) -> bool {
     node_tip_height_if_synced_from_settings_with_network(settings, expected_network)
+        .await
+        .is_some()
+}
+
+/// Per-profile readiness gate: true when the node is connected, fully synced,
+/// AND reporting the profile's network. Mirrors node_ready_from_settings for
+/// callers that have a profile ID and a DB path (background daemons).
+/// Returns false when the profile doesn't exist or the node is unreachable.
+pub async fn node_ready_from_profile(
+    db_path: &str,
+    profile_id: &str,
+    expected_network: Option<&str>,
+) -> bool {
+    node_tip_height_if_synced_from_profile_with_network(db_path, profile_id, expected_network)
         .await
         .is_some()
 }

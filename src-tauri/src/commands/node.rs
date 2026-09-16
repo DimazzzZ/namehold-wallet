@@ -209,11 +209,24 @@ pub(crate) async fn probe_and_update(state: &AppState) -> bool {
 async fn probe_node(state: &AppState) -> Option<NodeProbe> {
     // Clone the settings map under the lock, then drop it — never hold the db
     // mutex across the await.
-    let settings = {
+    // Per-profile node override routing (ADR-001): probe the active profile's
+    // effective node config (per-profile override -> global settings ->
+    // built-in default) so the tray/status reflects the active profile's node.
+    // Fall back to global settings when there is no active profile or its
+    // config is missing/misconfigured.
+    let client = {
         let db = state.db.lock().ok()?;
-        db::queries::get_settings(&db).ok()?
+        match db::queries::get_active_profile_id(&db) {
+            Ok(profile_id) => NodeRpcClient::for_profile(&db, &profile_id).unwrap_or_else(|_| {
+                let settings = db::queries::get_settings(&db).unwrap_or_default();
+                NodeRpcClient::from_settings(&settings)
+            }),
+            Err(_) => {
+                let settings = db::queries::get_settings(&db).ok()?;
+                NodeRpcClient::from_settings(&settings)
+            }
+        }
     };
-    let client = NodeRpcClient::from_settings(&settings);
     client
         .get_blockchain_info()
         .await
@@ -591,11 +604,24 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
 
     // Snapshot settings (no lock held across the await), then ask any node still
     // answering to stop. Best-effort: if nothing's reachable, that's fine.
-    let settings = {
+    // Per-profile node override routing (ADR-001): stop the node the active
+    // profile is actually pointed at (per-profile override -> global settings
+    // -> built-in default). Fall back to global settings when there is no
+    // active profile or its config is missing/misconfigured.
+    let client = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::get_settings(&db)?
+        match db::queries::get_active_profile_id(&db) {
+            Ok(profile_id) => NodeRpcClient::for_profile(&db, &profile_id).unwrap_or_else(|_| {
+                let settings = db::queries::get_settings(&db).unwrap_or_default();
+                NodeRpcClient::from_settings(&settings)
+            }),
+            Err(_) => {
+                let settings = db::queries::get_settings(&db)?;
+                NodeRpcClient::from_settings(&settings)
+            }
+        }
     };
-    let _ = NodeRpcClient::from_settings(&settings).stop().await;
+    let _ = client.stop().await;
     // Mark the node as offline. The backend probe loop will confirm in ~5s,
     // but we set it immediately so the tray + UI flip right away.
     state
