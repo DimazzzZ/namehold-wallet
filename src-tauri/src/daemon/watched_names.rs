@@ -456,7 +456,16 @@ pub async fn run_watched_scan(db_path: &str) {
 
 async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
     // 1. Load config + settings + previously-notified set.
-    let (settings, expected_network, config, previously_notified, watched, prev_states, poll_meta) = {
+    let (
+        settings,
+        expected_network,
+        active_profile_id,
+        config,
+        previously_notified,
+        watched,
+        prev_states,
+        poll_meta,
+    ) = {
         let conn = crate::commands::sync::open_conn(db_path)?;
         let settings = queries::get_settings(&conn)?;
         let config = load_config(&settings);
@@ -469,9 +478,13 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
         let prev_states = load_prev_snapshots(&conn)?;
         let poll_meta = load_poll_meta(&conn)?;
         let expected_network = queries::get_active_profile_network(&conn).ok().flatten();
+        let active_profile_id = queries::get_active_profile_id(&conn)
+            .ok()
+            .filter(|s| !s.is_empty());
         (
             settings,
             expected_network,
+            active_profile_id,
             config,
             previously_notified,
             watched,
@@ -484,8 +497,22 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
         return Ok(());
     }
 
-    // 2. Build node client from settings.
-    let node = NodeRpcClient::from_settings(&settings);
+    // 2. Build node client from the active profile's effective node config.
+    //    Per-profile overrides take precedence per ADR-001; fall back to global
+    //    settings when no profile is active (e.g. onboarding).
+    let node = if let Some(profile_id) = active_profile_id.as_deref() {
+        let conn = crate::commands::sync::open_conn(db_path)?;
+        match NodeRpcClient::for_profile(&conn, profile_id) {
+            Ok(c) => c,
+            Err(_) => {
+                // Profile went away or is misconfigured — skip this pass rather
+                // than silently defaulting to global settings.
+                return Ok(());
+            }
+        }
+    } else {
+        NodeRpcClient::from_settings(&settings)
+    };
     let node_ready =
         crate::commands::read::node_ready_from_settings(&settings, expected_network.as_deref())
             .await;
@@ -1816,5 +1843,59 @@ mod tests {
         drop(conn);
 
         cleanup_db(&path);
+    }
+
+    // --- Per-profile node config resolution for the watched-names daemon -----
+
+    fn set_profile_override(
+        conn: &rusqlite::Connection,
+        profile_id: &str,
+        key: &str,
+        value: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
+             ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![profile_id, key, value],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resolve_watched_client_uses_active_profile_override() {
+        let conn = test_conn();
+        queries::insert_wallet_profile(
+            &conn, "p1", "Primary", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        )
+        .unwrap();
+        set_profile_override(&conn, "p1", "node_rpc_url", "http://override.local:12037");
+
+        let client = NodeRpcClient::for_profile(&conn, "p1").unwrap();
+        assert_eq!(client.node_url(), "http://override.local:12037");
+    }
+
+    #[test]
+    fn resolve_watched_client_falls_back_to_global_when_no_override() {
+        let conn = test_conn();
+        queries::insert_wallet_profile(
+            &conn, "p1", "Primary", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        )
+        .unwrap();
+        queries::set_setting(&conn, "node_rpc_url", "http://global.local:12037").unwrap();
+
+        let client = NodeRpcClient::for_profile(&conn, "p1").unwrap();
+        assert_eq!(client.node_url(), "http://global.local:12037");
+    }
+
+    #[test]
+    fn resolve_watched_client_uses_builtin_default_when_no_override_or_global() {
+        let conn = test_conn();
+        queries::insert_wallet_profile(
+            &conn, "p1", "Primary", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+        )
+        .unwrap();
+
+        let client = NodeRpcClient::for_profile(&conn, "p1").unwrap();
+        assert_eq!(client.node_url(), "http://127.0.0.1:12037");
     }
 }
