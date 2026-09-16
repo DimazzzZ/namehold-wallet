@@ -189,6 +189,7 @@ fn setup() -> (rusqlite::Connection, Ctx, BidCommitmentRow, NameCoin) {
             child_index: 0,
         }],
         settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
     let bid = bid_row(&recv0.address, &nonce_hex);
     let coin = bid_coin(&bid_txid, &recv0.address, 2_000_000);
@@ -305,6 +306,7 @@ fn build_reveal_draft_fails_with_insufficient_funds() {
             child_index: 0,
         }],
         settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
     let bid = bid_row(&recv0.address, &nonce_hex);
     let coin = bid_coin(&bid_txid, &recv0.address, 1_000_000);

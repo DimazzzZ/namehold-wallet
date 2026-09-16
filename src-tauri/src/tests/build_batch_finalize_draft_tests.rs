@@ -185,6 +185,7 @@ fn setup(name_list: &[&str]) -> (rusqlite::Connection, Ctx, PerName, [u8; 32]) {
             child_index: 0,
         }],
         settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
     let rblock = [0x77u8; 32];
     (conn, ctx, per_name, rblock)

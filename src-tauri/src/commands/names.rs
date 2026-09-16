@@ -47,6 +47,13 @@ pub(crate) struct Ctx {
     pub(crate) change_address: String,
     pub(crate) funding: Vec<SpendableCoin>,
     pub(crate) settings: std::collections::HashMap<String, String>,
+    /// Node RPC client built from the *effective* per-profile config
+    /// (per-profile override -> global settings -> default). Resolved once at
+    /// `load_ctx` time under the DB lock so every RPC call this command issues
+    /// (`getnameinfo`, `getblockchaininfo`, `getblockhash`, ...) targets the
+    /// same node the active profile is pinned to — never a stale global URL.
+    /// `NodeRpcClient` is `Clone`, so callers `ctx.node.clone()` freely.
+    pub(crate) node: NodeRpcClient,
 }
 
 pub(crate) fn load_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
@@ -72,6 +79,10 @@ pub(crate) fn load_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     )?;
     let funding = send::load_spendable_coins(&conn, &id, None, network)?;
     let settings = queries::get_settings(&conn)?;
+    // Build the node client from the effective per-profile config under the
+    // same lock so a per-profile override always wins over the global URL for
+    // every subsequent RPC call this Ctx serves.
+    let node = NodeRpcClient::for_profile(&conn, &id)?;
     Ok(Ctx {
         profile_id: id,
         network,
@@ -80,6 +91,7 @@ pub(crate) fn load_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
         change_address: change.address,
         funding,
         settings,
+        node,
     })
 }
 
@@ -612,15 +624,18 @@ async fn evaluate_name_action_capabilities(
 ) -> Result<NameActionCapabilities, AppError> {
     // Resolved once for both branches below: the expiry warning threshold and
     // the renewal window are both per-network.
-    let (settings, network) = {
+    // Build the node client from the *effective* per-profile config (per-profile
+    // override -> global settings -> default) under the same lock, so a
+    // per-profile override always wins over the global URL for the getnameinfo
+    // call that drives the on-chain branch below.
+    let (client, network) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let settings = queries::get_settings(&conn)?;
+        let client = NodeRpcClient::for_profile(&conn, profile_id)?;
         let network = queries::get_wallet_profile(&conn, profile_id)?
             .and_then(|p| Network::from_str_opt(&p.network))
             .unwrap_or_default();
-        (settings, network)
+        (client, network)
     };
-    let client = NodeRpcClient::from_settings(&settings);
 
     // 1. Fetch the name's on-chain state via RPC — but ONLY trust the node when
     //    it is fully synced. An unsynced node answers RPC yet its wallet scan is
@@ -1356,7 +1371,7 @@ pub async fn build_bid_draft(
         ));
     }
     let ctx = load_ctx(&state)?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
     let ns = fetch_name_state(&client, &name).await?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_bid_draft_inner(&conn, &ctx, &name, bid_value, lockup, fee_rate, &ns)
@@ -1562,7 +1577,7 @@ pub async fn build_batch_bid_draft(
 
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
 
     // Pre-fetch all name states and hashes to validate phase + catch errors
     // early, before any writes.
@@ -1761,7 +1776,7 @@ pub async fn build_reveal_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
     let ns = fetch_name_state(&client, &name).await?;
 
     // Look up our bid commitment + the unspent BID coin at that address.
@@ -1853,7 +1868,7 @@ pub async fn build_redeem_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
     let ns = fetch_name_state(&client, &name).await?;
 
     let coin = {
@@ -1928,7 +1943,7 @@ async fn owner_coin_and_state(
         queries::get_name_coin(&conn, &ctx.profile_id, name)?
             .ok_or_else(|| AppError::NotFound(format!("wallet does not hold '{name}' (sync?)")))?
     };
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
     let ns = fetch_name_state(&client, name).await?;
     Ok((coin, ns))
 }
@@ -1943,7 +1958,7 @@ pub async fn build_register_draft(
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_register_draft_inner(
@@ -2063,7 +2078,7 @@ pub async fn build_renew_draft(
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_renew_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &coin, &rblock)
@@ -2177,7 +2192,7 @@ pub async fn build_finalize_draft(
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_finalize_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &coin, &rblock)
@@ -2358,7 +2373,7 @@ pub async fn build_batch_renew_draft(
     }
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
 
     let mut per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)> =
@@ -2544,7 +2559,7 @@ pub async fn build_batch_reveal_draft(
     }
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
 
     // Per-name prefetch: brief DB lock (bid commitment + unspent BID coin),
     // then async RPC with NO lock held — preserving the original per-name
@@ -2671,7 +2686,7 @@ pub async fn build_batch_redeem_draft(
     }
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
 
     // Per-name prefetch: async RPC first, then a brief DB lock for the
     // commitment + reveal-coin lookup — preserving the original per-iteration
@@ -2789,7 +2804,7 @@ pub async fn build_batch_finalize_draft(
     }
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
 
     let mut per_name: PerNameFinalize = Vec::with_capacity(names.len());
@@ -2926,7 +2941,7 @@ pub async fn build_finalize_with_payment_draft(
     let ctx = load_ctx(&state)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
-    let client = NodeRpcClient::from_settings(&ctx.settings);
+    let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;

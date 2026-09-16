@@ -55,7 +55,7 @@ pub async fn run_chain_scanner(db_path: String) {
         // Settings and the active profile's network come from one connection:
         // the scanner must not treat a node on another chain as authoritative
         // (its heights and covenants would be written against our cursor).
-        let (settings, expected_network) = {
+        let (settings, expected_network, active_profile_id) = {
             let conn = match open_conn(&db_path) {
                 Ok(c) => c,
                 Err(_) => {
@@ -71,7 +71,8 @@ pub async fn run_chain_scanner(db_path: String) {
                 }
             };
             let network = queries::get_active_profile_network(&conn).ok().flatten();
-            (settings, network)
+            let profile_id = queries::get_active_profile_id(&conn).ok().filter(|s| !s.is_empty());
+            (settings, network, profile_id)
         };
 
         // Only scan when the node is authoritative.
@@ -114,7 +115,28 @@ pub async fn run_chain_scanner(db_path: String) {
             continue;
         }
 
-        let client = NodeRpcClient::from_settings(&settings);
+        // Resolve the client for the active profile if one exists, otherwise fall
+        // back to global settings. Per-profile overrides take precedence per ADR-001.
+        let client = if let Some(profile_id) = active_profile_id.as_deref() {
+            let conn = match open_conn(&db_path) {
+                Ok(c) => c,
+                Err(_) => {
+                    sleep(NOT_READY_SLEEP).await;
+                    continue;
+                }
+            };
+            match NodeRpcClient::for_profile(&conn, profile_id) {
+                Ok(c) => c,
+                Err(_) => {
+                    // Profile not found or misconfigured — sleep and retry
+                    sleep(NOT_READY_SLEEP).await;
+                    continue;
+                }
+            }
+        } else {
+            // No active profile — fall back to global settings
+            NodeRpcClient::from_settings(&settings)
+        };
         let end = (cursor + BATCH_SIZE).min(tip);
 
         let mut advanced_to = cursor;

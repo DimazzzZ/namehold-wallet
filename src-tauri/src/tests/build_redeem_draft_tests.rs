@@ -154,6 +154,7 @@ fn setup(reveal_value: u64, funding_value: i64) -> (rusqlite::Connection, Ctx, N
             child_index: 0,
         }],
         settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
     };
     let coin = reveal_coin(&reveal_txid, &recv0.address, reveal_value);
     (conn, ctx, coin)

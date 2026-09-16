@@ -196,6 +196,10 @@ pub(crate) async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Opti
             Err(_) => None,
         }
     };
+    let profile_id = match state.db.lock() {
+        Ok(conn) => db::queries::get_active_profile_id(&conn).ok().filter(|id| !id.is_empty()),
+        Err(_) => None,
+    };
     match settings {
         Some(s) => {
             // 1) Explicit user setting wins: convert doos/kvB → doos/byte and
@@ -208,7 +212,17 @@ pub(crate) async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Opti
                 return (kvb / 1000).max(send::MIN_FEE_RATE_PER_BYTE);
             }
             // 2) Ask the node for an estimate — same behavior as before.
-            let client = NodeRpcClient::from_settings(&s);
+            // Per-profile node override routing (ADR-001): if an active profile
+            // exists, use its effective node config; otherwise fall back to global.
+            let client = if let Some(id) = profile_id {
+                match state.db.lock() {
+                    Ok(conn) => NodeRpcClient::for_profile(&conn, &id)
+                        .unwrap_or_else(|_| NodeRpcClient::from_settings(&s)),
+                    Err(_) => NodeRpcClient::from_settings(&s),
+                }
+            } else {
+                NodeRpcClient::from_settings(&s)
+            };
             client
                 .estimate_smart_fee(6)
                 .await
@@ -230,7 +244,7 @@ pub async fn sync_wallet_state(
 ) -> Result<serde_json::Value, AppError> {
     // 1. Snapshot addresses + settings under the lock, then release it before
     //    any network I/O.
-    let (profile_id, profile_network, addresses, settings) = {
+    let (profile_id, profile_network, addresses, settings, client) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let profile = match wallet_profile_id {
             Some(id) => db::queries::get_wallet_profile(&conn, &id)?
@@ -270,10 +284,13 @@ pub async fn sync_wallet_state(
             }
         }
         let settings = db::queries::get_settings(&conn)?;
-        (profile.id, profile.network, addresses, settings)
+        // Per-profile node override routing (ADR-001): the sync must use the
+        // profile's effective node config (override -> global -> default), not
+        // the raw global settings. Build the client while the lock is held so
+        // the effective-config resolver can read `profile_settings`.
+        let client = NodeRpcClient::for_profile(&conn, &profile.id)?;
+        (profile.id, profile.network, addresses, settings, client)
     };
-
-    let client = NodeRpcClient::from_settings(&settings);
 
     // Probe the node first. If it's unreachable, that's expected in explorer /
     // read-only mode: balances + names come from the explorer, so this is NOT an
@@ -400,7 +417,7 @@ pub async fn sync_tracked_names(
     state: State<'_, AppState>,
     wallet_profile_id: Option<String>,
 ) -> Result<serde_json::Value, AppError> {
-    let (profile_id, settings) = {
+    let (profile_id, client) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let id = match wallet_profile_id {
             Some(id) => id,
@@ -411,9 +428,10 @@ pub async fn sync_tracked_names(
                 "no active wallet profile".to_string(),
             ));
         }
-        (id, db::queries::get_settings(&conn)?)
+        // Per-profile node override routing (ADR-001).
+        let client = NodeRpcClient::for_profile(&conn, &id)?;
+        (id, client)
     };
-    let client = NodeRpcClient::from_settings(&settings);
     let n = refresh_name_states(&state, &profile_id, &client).await?;
     Ok(serde_json::json!({ "walletProfileId": profile_id, "namesSynced": n }))
 }
@@ -1516,7 +1534,7 @@ pub async fn broadcast_tx_draft(
     state: State<'_, AppState>,
     draft_id: String,
 ) -> Result<BroadcastResult, AppError> {
-    let (signed_hex, expected_network, settings) = {
+    let (signed_hex, expected_network, settings, client) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let draft = db::queries::get_tx_draft(&conn, &draft_id)?
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
@@ -1526,7 +1544,12 @@ pub async fn broadcast_tx_draft(
             .signed_tx_hex
             .ok_or_else(|| AppError::InvalidInput("draft is not signed yet".to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
-        (signed, network, settings)
+        // Per-profile node override routing (ADR-001): broadcast through the
+        // draft's own profile's effective node config, not the raw global.
+        // `remote_broadcast_allowed` is a user-wide opt-in — it stays on the
+        // global settings map by design.
+        let client = NodeRpcClient::for_profile(&conn, &draft.wallet_profile_id)?;
+        (signed, network, settings, client)
     };
 
     // A full local node or a configured remote node can broadcast — configuring
@@ -1535,7 +1558,6 @@ pub async fn broadcast_tx_draft(
     // `broadcast_pending` state; the same read-only check inside
     // `send_raw_transaction` (via `can_broadcast()`) is the second line of
     // defense, and the UI-facing `WriteCapability` gate is the first.
-    let client = NodeRpcClient::from_settings(&settings);
     if !client.source().can_broadcast() {
         return Err(AppError::InvalidInput(
             "chain source is read-only; broadcasting is disabled".to_string(),
@@ -1686,10 +1708,10 @@ pub async fn refresh_tx_confirmations(
         })
     }
 
-    // 1. Resolve the profile + settings. Drafts are NOT fetched yet — the
+    // 1. Resolve the profile + node client. Drafts are NOT fetched yet — the
     //    confirmed-draft depth filter needs the current chain tip, which is
     //    only known after probing the node in step 2.
-    let (profile_id, settings) = {
+    let (profile_id, client) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let id = match wallet_profile_id {
             Some(id) => id,
@@ -1698,11 +1720,12 @@ pub async fn refresh_tx_confirmations(
         if id.is_empty() {
             return Ok(empty_result(None, false));
         }
-        (id, db::queries::get_settings(&conn)?)
+        // Per-profile node override routing (ADR-001).
+        let client = NodeRpcClient::for_profile(&conn, &id)?;
+        (id, client)
     };
 
     // 2. Probe the node. Unreachable → soft no-op (never touch drafts on a blip).
-    let client = NodeRpcClient::from_settings(&settings);
     let tip = match client.get_blockchain_info().await {
         Ok(info) => info.blocks,
         Err(_) => return Ok(empty_result(Some(&profile_id), false)),
@@ -1938,10 +1961,26 @@ pub async fn get_write_capability(
             .map_err(|e| AppError::Lock(e.to_string()))?;
         slot.as_ref().map(|s| s.is_unlocked()).unwrap_or(false)
     };
-    let (source, allow_remote, settings, probe_addr, expected_network) = {
+    let (source, allow_remote, settings, probe_addr, expected_network, effective_url, client_opt) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = db::queries::get_settings(&conn)?;
-        let source = ChainSource::from_settings(&settings);
+        // Per-profile node override routing (ADR-001): if an active profile
+        // exists, use its effective node config (override -> global -> default).
+        // Otherwise fall back to global settings (no profile = no override).
+        let (source, effective_url, client_opt) = match active_profile(&conn) {
+            Ok(profile) => {
+                match crate::noncustodial::node_config::effective_node_config_for_profile(
+                    &conn, &profile.id,
+                ) {
+                    Ok(cfg) => {
+                        let client = NodeRpcClient::for_profile(&conn, &profile.id).ok();
+                        (cfg.chain_source, cfg.node_rpc_url, client)
+                    }
+                    Err(_) => (ChainSource::from_settings(&settings), "your node".to_string(), None),
+                }
+            }
+            Err(_) => (ChainSource::from_settings(&settings), "your node".to_string(), None),
+        };
         let allow_remote = crate::noncustodial::rpc::remote_broadcast_allowed(&settings);
         // One address to probe the node's address index (if a profile exists).
         let probe_addr = active_profile(&conn)
@@ -1951,7 +1990,7 @@ pub async fn get_write_capability(
         let expected_network = db::queries::get_active_profile_network(&conn)
             .ok()
             .flatten();
-        (source, allow_remote, settings, probe_addr, expected_network)
+        (source, allow_remote, settings, probe_addr, expected_network, effective_url, client_opt)
     };
     let mut cap =
         crate::providers::WriteCapability::evaluate(signer_unlocked, source, allow_remote);
@@ -1974,11 +2013,10 @@ pub async fn get_write_capability(
     // wallet learns its spendable + name-owner coins via getcoinsbyaddress). If
     // any is missing, downgrade to read-only with a precise, actionable reason.
     if cap.can_write {
-        let client = NodeRpcClient::from_settings(&settings);
-        let node_url = settings
-            .get("node_rpc_url")
-            .map(|s| s.as_str())
-            .unwrap_or("your node");
+        // Use the client resolved from the active profile's effective config if
+        // available; otherwise fall back to global settings.
+        let client = client_opt.unwrap_or_else(|| NodeRpcClient::from_settings(&settings));
+        let node_url = effective_url.as_str();
         apply_node_write_probe_with_client(
             &client,
             &mut cap,
