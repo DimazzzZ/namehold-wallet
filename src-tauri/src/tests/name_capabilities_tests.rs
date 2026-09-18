@@ -44,6 +44,7 @@ fn ctx(
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
+        lockup_value_doos: None,
     }
 }
 
@@ -1067,6 +1068,33 @@ fn cap_preserves_bid_value_and_reveal_txid() {
     );
     assert_eq!(caps.bid_value_doos, Some(100_000));
     assert_eq!(caps.reveal_txid, Some("abc123def456".into()));
+}
+
+// The wallet's own lockup (the on-chain value of its BID output) is OUR value,
+// so `build_name_action_capabilities` must surface it from the context onto the
+// capability response. Lets the modal show the user both their true bid and the
+// blinded on-chain amount during BIDDING/OPENING instead of the on-chain 0.
+#[test]
+fn capabilities_surface_local_lockup_value() {
+    let mut action_ctx = ctx(
+        true, true, false, false, None, Some(10), None, 1, false, None, None,
+        Some(200_000),
+    );
+    action_ctx.lockup_value_doos = Some(500_000);
+
+    let caps = build_name_action_capabilities(
+        "example".into(),
+        "BIDDING".into(),
+        "BIDDING",
+        None,
+        &action_ctx,
+        false,
+        false,
+        None,
+        Network::Main,
+    );
+    assert_eq!(caps.lockup_value_doos, Some(500_000));
+    assert_eq!(caps.bid_value_doos, Some(200_000));
 }
 
 // ============================================================================

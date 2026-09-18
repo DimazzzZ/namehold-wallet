@@ -359,6 +359,11 @@ pub struct NameActionCapabilities {
     /// The wallet's true bid value (doos) from the local commitment row.
     /// Surfaced so the confirm-before-broadcast panel can show the amount.
     pub bid_value_doos: Option<i64>,
+    /// The lockup (doos) the wallet locked in its own BID output — the amount
+    /// the NETWORK sees on-chain before reveal (the true bid is hidden inside
+    /// the blind). OUR own value, so we can show it pre-reveal instead of the
+    /// on-chain 0. Pairs with `bid_value_doos` in the modal header.
+    pub lockup_value_doos: Option<i64>,
     pub can_open: NameActionCapability,
     pub can_bid: NameActionCapability,
     pub can_reveal: NameActionCapability,
@@ -412,6 +417,8 @@ pub(crate) struct NameActionContext {
     pub reveal_draft_status: Option<String>,
     /// The wallet's true bid value (doos) from the commitment row.
     pub bid_value_doos: Option<i64>,
+    /// The lockup value (doos) from the local commitment row, if any.
+    pub lockup_value_doos: Option<i64>,
 }
 
 /// Gather wallet evidence from the DB for a name.
@@ -513,6 +520,7 @@ pub(crate) fn find_name_action_context(
             .flatten()
     });
     let bid_value_doos = bid.as_ref().map(|b| b.bid_value_doos);
+    let lockup_value_doos = bid.as_ref().map(|b| b.lockup_value_doos);
 
     Ok(NameActionContext {
         has_bid_commitment: bid.is_some(),
@@ -527,6 +535,7 @@ pub(crate) fn find_name_action_context(
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
+        lockup_value_doos,
     })
 }
 
@@ -1028,6 +1037,7 @@ pub(crate) fn build_name_action_capabilities(
         has_owner_coin: action_ctx.has_owner_coin,
         reveal_txid: action_ctx.reveal_txid.clone(),
         bid_value_doos: action_ctx.bid_value_doos,
+        lockup_value_doos: action_ctx.lockup_value_doos,
         can_open,
         can_bid,
         can_reveal,
@@ -1065,6 +1075,7 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         has_owner_coin: false,
         reveal_txid: None,
         bid_value_doos: None,
+        lockup_value_doos: None,
         can_open: disallowed.clone(),
         can_bid: disallowed.clone(),
         can_reveal: disallowed.clone(),
@@ -3089,6 +3100,7 @@ mod tests {
             reveal_txid: None,
             reveal_draft_status: None,
             bid_value_doos: None,
+            lockup_value_doos: None,
         }
     }
 

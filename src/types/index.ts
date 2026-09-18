@@ -620,6 +620,11 @@ export interface NameActionCapabilities {
   /** The wallet's true bid value (doos) from the local commitment row, so the
    * confirm-before-broadcast panel can show the amount. Null when unknown. */
   bidValueDoos: number | null;
+  /** The lockup value (doos) the wallet locked in its own BID output — the
+   * amount the network sees on-chain before reveal (the true bid stays hidden
+   * inside the blind). OUR own value, so the modal can show it pre-reveal
+   * instead of the on-chain 0. Null when we hold no commitment for this name. */
+  lockupValueDoos: number | null;
   canOpen: NameActionCapability;
   canBid: NameActionCapability;
   canReveal: NameActionCapability;
