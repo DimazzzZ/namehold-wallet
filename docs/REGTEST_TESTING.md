@@ -38,6 +38,13 @@ With no node/env set, the same tests print "skip" — so `cargo test` /
 `cargo nextest` stays offline and CI is unaffected. See the `namehold-qa`
 skill for details.
 
+> **Where data lives.** The regtest *chain* data is the repo-local, git-ignored
+> `.regtest/` dir (via `hsd --prefix`); a manual `hsd --network=regtest` without
+> `--prefix` uses `~/.hsd/regtest/` instead. The *wallet's* own state (profiles,
+> portfolio, and the regtest node RPC config you enter in Settings) is not
+> per-network — it lives in the single shared `~/.namehold/portfolio.db`. See
+> "Where data and node config live" in `NODE_SETUP.md`.
+
 The rest of this doc is the **manual** walkthrough (useful for exercising the
 UI by hand); `scripts/regtest.sh` automates steps 1 and 4 for you.
 

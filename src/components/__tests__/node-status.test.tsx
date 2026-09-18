@@ -159,10 +159,11 @@ describe("Node status (truthful, RPC-based)", () => {
     expect(syncText).not.toHaveTextContent(/\/ 65027/);
   });
 
-  it("Settings shows Syncing when blocks == headers but progress < 0.9999", async () => {
-    // blocks == headers (apparent tip) but verificationprogress only 0.9997 —
-    // the node is still far behind the real chain. Must show Syncing, not lie
-    // about being synced.
+  it("Settings shows Connected when blocks == headers even if progress plateaus at 99.9%", async () => {
+    // Regression guard for the "stuck at 99.9%" bug: verificationprogress can
+    // plateau just under 1.0 (0.9997 here) after the tip is reached. With
+    // blocks == headers the node IS caught up, so the badge must flip to
+    // Connected instead of sitting on "Syncing · 99.9%" forever.
     invokeMock.mockImplementation(
       route(
         nodeStatus({
@@ -176,8 +177,28 @@ describe("Node status (truthful, RPC-based)", () => {
     );
     render(<Settings />, { wrapper: wrapper() });
 
+    expect(await screen.findByText(/^Connected · block 317$/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Syncing/i)).toBeNull();
+  });
+
+  it("Settings shows Syncing when blocks == headers but progress is far below the tip", async () => {
+    // A node reporting blocks == headers while only ~8% verified hasn't
+    // downloaded the real headers yet. Progress below the loose 0.999 floor
+    // must still be treated as unsynced.
+    invokeMock.mockImplementation(
+      route(
+        nodeStatus({
+          connected: true,
+          process_alive: true,
+          height: 317,
+          headers: 317,
+          verification_progress: 0.08,
+        }),
+      ),
+    );
+    render(<Settings />, { wrapper: wrapper() });
+
     expect((await screen.findAllByText(/Syncing/i)).length).toBeGreaterThanOrEqual(1);
-    // The status badge must NOT say "Connected" — it should show "Syncing · 99.9%".
     expect(screen.queryByText(/^Connected · block 317$/i)).toBeNull();
   });
 

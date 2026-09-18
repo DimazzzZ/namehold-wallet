@@ -103,6 +103,51 @@ When "Sync in background" is enabled (Settings → Connections, default ON):
 To disable background sync, uncheck **Settings → Connections → "Sync in
 background"**. hsd will be stopped the next time you close the app.
 
+## Where data and node config live
+
+The wallet keeps **all of its own state in a single directory, `~/.namehold`** —
+not the OS-specific app-data dir. The bundle identifier
+(`org.zhavoronkov.nameholdwallet`) is kept only for packaging/signing and no
+longer dictates where data lives. `~/.namehold` is deliberately the "pair" of
+the node's `~/.hsd`: wallet data under `~/.namehold`, node (chain) data under
+`~/.hsd`.
+
+There is **one `~/.namehold` for all networks and profiles** — it is not split
+per network. Everything per-network (mainnet/testnet/regtest) lives either as
+rows inside the shared database or in the node's own datadir.
+
+| Path | What it holds |
+|------|---------------|
+| `~/.namehold/portfolio.db` | The shared SQLite database: wallet profiles, portfolio (UTXOs, name states, transactions), and **all node configuration** (global + per-profile `node_rpc_url`, `node_rpc_api_key`, `chain_source`, per-slot overrides). Used by both the GUI and the `namehold-syncd` daemon. |
+| `~/.namehold/syncd.pid` | PID file for the background sync daemon (see above). |
+
+**Node RPC config is not stored in files.** The regtest/testnet/mainnet
+connection settings you enter under **Settings → Node RPC** are written as rows
+in `portfolio.db` (keyed by wallet profile, plus a global default), not as a
+per-network config file. Resolution runs independently for the read slot and
+the write (send) slot: per-slot per-profile override → global setting →
+built-in default.
+
+### Node (hsd) datadirs and default RPC ports
+
+The node's chain data is per-network and lives under `~/.hsd` (or a custom
+`--prefix`). The wallet's built-in RPC defaults per network are:
+
+| Network | Default node datadir | Default RPC URL |
+|---------|----------------------|-----------------|
+| mainnet | `~/.hsd/` | `http://127.0.0.1:12037` |
+| testnet | `~/.hsd/testnet/` | `http://127.0.0.1:13037` |
+| regtest | `~/.hsd/regtest/` | `http://127.0.0.1:14037` |
+| simnet | `~/.hsd/simnet/` | `http://127.0.0.1:15037` |
+
+- The datadir the app uses for hsd comes from the `hsd_prefix` setting when set;
+  otherwise it falls back to `~/.hsd`.
+- `scripts/regtest.sh` is the exception: for reproducible, throwaway testing it
+  runs hsd with `--prefix=<repo>/.regtest` (git-ignored) and `--api-key=test`, so
+  test runs never touch your real `~/.hsd` chain. See `REGTEST_TESTING.md`.
+- Only mainnet has a built-in public explorer (`e.hnsfans.com`); testnet, regtest
+  and simnet have no explorer fallback.
+
 ## SPV mode (lightweight alternative)
 
 For users who don't need to send transactions or want faster initial setup:

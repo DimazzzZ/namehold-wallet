@@ -288,6 +288,32 @@ fn node_start_error_is_none_without_a_failing_log() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn node_start_error_ignores_benign_peer_socket_errors_while_syncing() {
+    // Regression: hsd routinely logs benign peer-connection failures like
+    // "(net) Error: Socket Error: ECONNREFUSED" while it is still syncing and
+    // its RPC hasn't come up yet. These are NOT startup failures. Reporting
+    // them as "hsd failed to start" (just because the log contains the
+    // substring "Error") shows a fake failure over a node that is healthy and
+    // mid-rescan. Captured verbatim from a real regtest run.
+    let dir = std::env::temp_dir().join("namehold_node_err_benign_net");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("namehold-hsd.log"),
+        "[info] (net) Connected to 5.161.64.49:12038.\n\
+         [debug] (net) Error: Socket Error: ECONNREFUSED (173.255.209.126:12038)\n\
+         [debug] (net) Error: Socket Error: ECONNREFUSED (74.207.247.120:12038)\n\
+         [debug] (wallet) Adding block: 17222.\n\
+         [info] (chain) Block 000000000000023319cc63c828c18ef22139cc4e327452632f620a2fb5944c63 (17222) added to chain (size=5842 txs=11 time=3.004958).\n",
+    )
+    .unwrap();
+    assert!(
+        node_start_error(&dir.to_string_lossy()).is_none(),
+        "benign (net) socket errors during sync must not surface as a start failure"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // --- start_hsd refuses hsd below the minimum supported version (S3) ----------
 
 use crate::commands::node::start_hsd;
@@ -1084,7 +1110,7 @@ async fn start_hsd_adopts_already_running_node() {
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
         .with_body(
-            r#"{"result":{"blocks":777,"headers":777,"verificationprogress":1.0},"error":null,"id":1}"#,
+            r#"{"result":{"blocks":777,"headers":777,"verificationprogress":1.0,"chain":"regtest"},"error":null,"id":1}"#,
         )
         .expect_at_least(1)
         .create_async()
@@ -1092,6 +1118,21 @@ async fn start_hsd_adopts_already_running_node() {
 
     let conn = blank_conn();
     db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    // A node is adopted *for* the active profile, so a profile must exist and
+    // its network must match the chain the node reports. Seed a regtest profile
+    // and let the mock report chain "regtest".
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p1",
+        "test",
+        "watch_only_xpub",
+        "regtest",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p1").unwrap();
     let app = app_with(conn);
     let state = app.state::<AppState>();
 
@@ -1102,6 +1143,56 @@ async fn start_hsd_adopts_already_running_node() {
     assert!(state.hsd_child.lock().unwrap().is_none());
     // The alive flag was set as a side-effect.
     assert!(state
+        .node_rpc_alive
+        .load(std::sync::atomic::Ordering::Relaxed));
+}
+
+/// Adopt must REFUSE a running node whose chain disagrees with the active
+/// profile's network — the guard that stops a regtest profile from adopting a
+/// mainnet node answering on the same port. Regression cover for the bug where
+/// a mainnet chain ended up driving a regtest wallet.
+#[tokio::test]
+async fn start_hsd_refuses_to_adopt_node_on_wrong_chain() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":2798,"headers":2798,"verificationprogress":1.0,"chain":"main"},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    // Active profile is regtest, but the node reports the main chain.
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p1",
+        "test",
+        "watch_only_xpub",
+        "regtest",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p1").unwrap();
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+
+    let err = start_hsd(app.state())
+        .await
+        .expect_err("must refuse mismatch");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("mismatch"),
+        "expected mismatch error, got: {msg}"
+    );
+    // No child spawned, and we did not mark the (wrong) node alive.
+    assert!(state.hsd_child.lock().unwrap().is_none());
+    assert!(!state
         .node_rpc_alive
         .load(std::sync::atomic::Ordering::Relaxed));
 }
@@ -1327,5 +1418,213 @@ async fn probe_and_update_uses_global_when_no_active_profile() {
     assert!(
         alive,
         "probe must use global settings when there is no active profile"
+    );
+}
+
+// --- Network isolation: scoped data dir + idempotent, non-destructive migration.
+use crate::commands::node::{
+    dir_has_chain_root, migrate_network_prefix, network_scoped_data_dir, plan_network_migration,
+    PrefixMigration,
+};
+
+/// A unique scratch dir under the OS temp dir, cleaned on drop.
+struct Scratch(std::path::PathBuf);
+impl Scratch {
+    fn new(tag: &str) -> Self {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let p = std::env::temp_dir().join(format!("namehold-netiso-{tag}-{n}"));
+        std::fs::create_dir_all(&p).unwrap();
+        Scratch(p)
+    }
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn make_chain_root(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir.join("chain")).unwrap();
+    std::fs::create_dir_all(dir.join("blocks")).unwrap();
+    std::fs::create_dir_all(dir.join("tree")).unwrap();
+}
+
+#[test]
+fn network_scoped_data_dir_keeps_mainnet_at_base() {
+    // Mainnet is never scoped — existing mainnet data must stay at the root.
+    assert_eq!(
+        network_scoped_data_dir("/data/hsd", Network::Main),
+        "/data/hsd"
+    );
+}
+
+#[test]
+fn network_scoped_data_dir_scopes_non_mainnet_under_base() {
+    assert_eq!(
+        network_scoped_data_dir("/data/hsd", Network::Regtest),
+        "/data/hsd/regtest"
+    );
+    assert_eq!(
+        network_scoped_data_dir("/data/hsd", Network::Testnet),
+        "/data/hsd/testnet"
+    );
+    assert_eq!(
+        network_scoped_data_dir("/data/hsd", Network::Simnet),
+        "/data/hsd/simnet"
+    );
+}
+
+#[test]
+fn plan_network_migration_never_touches_mainnet() {
+    // Mainnet: no-op regardless of what's on disk.
+    assert_eq!(
+        plan_network_migration(true, false, true),
+        PrefixMigration::None
+    );
+    assert_eq!(
+        plan_network_migration(true, true, true),
+        PrefixMigration::None
+    );
+}
+
+#[test]
+fn plan_network_migration_does_nothing_when_scoped_root_populated() {
+    // "do nothing if we already have": a populated scoped root is left alone,
+    // even if a legacy subdir also exists.
+    assert_eq!(
+        plan_network_migration(false, true, false),
+        PrefixMigration::None
+    );
+    assert_eq!(
+        plan_network_migration(false, true, true),
+        PrefixMigration::None
+    );
+}
+
+#[test]
+fn plan_network_migration_creates_or_adopts_when_scoped_root_empty() {
+    assert_eq!(
+        plan_network_migration(false, false, false),
+        PrefixMigration::CreateScopedRoot
+    );
+    assert_eq!(
+        plan_network_migration(false, false, true),
+        PrefixMigration::AdoptLegacySubdir
+    );
+}
+
+#[test]
+fn dir_has_chain_root_detects_hsd_layout() {
+    let s = Scratch::new("chainroot");
+    assert!(
+        !dir_has_chain_root(s.path()),
+        "empty dir is not a chain root"
+    );
+    std::fs::create_dir_all(s.path().join("chain")).unwrap();
+    assert!(!dir_has_chain_root(s.path()), "chain alone is not enough");
+    std::fs::create_dir_all(s.path().join("blocks")).unwrap();
+    assert!(
+        dir_has_chain_root(s.path()),
+        "chain + blocks is a chain root"
+    );
+}
+
+fn app_with_prefix_and_regtest(base: &std::path::Path) -> tauri::App<tauri::test::MockRuntime> {
+    let conn = blank_conn();
+    db::queries::set_setting(&conn, "hsd_prefix", base.to_str().unwrap()).unwrap();
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p1",
+        "test",
+        "watch_only_xpub",
+        "regtest",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p1").unwrap();
+    app_with(conn)
+}
+
+#[test]
+fn migrate_creates_scoped_root_when_base_empty() {
+    // Fresh base: regtest gets its own <base>/regtest root created.
+    let s = Scratch::new("fresh");
+    let app = app_with_prefix_and_regtest(s.path());
+    let scoped = s.path().join("regtest");
+    migrate_network_prefix(&app.state(), Network::Regtest, scoped.to_str().unwrap()).unwrap();
+    assert!(scoped.is_dir(), "scoped regtest root created");
+}
+
+#[test]
+fn migrate_leaves_mainnet_shaped_base_root_untouched() {
+    // The exact broken case: a mainnet chain was synced into a regtest prefix's
+    // ROOT (no --regtest flag). Migration must NOT touch that root; it just
+    // gives regtest its own scoped root beside it.
+    let s = Scratch::new("brokenroot");
+    make_chain_root(s.path()); // mainnet-shaped chain at the base root
+    let marker = s.path().join("chain").join("MARKER");
+    std::fs::write(&marker, b"mainnet").unwrap();
+
+    let app = app_with_prefix_and_regtest(s.path());
+    let scoped = s.path().join("regtest");
+    migrate_network_prefix(&app.state(), Network::Regtest, scoped.to_str().unwrap()).unwrap();
+
+    assert!(scoped.is_dir(), "regtest got its own scoped root");
+    assert!(
+        marker.exists(),
+        "mainnet data at the base root is untouched"
+    );
+    // The base root's chain was NOT moved into the scoped root.
+    assert!(!scoped.join("chain").join("MARKER").exists());
+}
+
+#[test]
+fn migrate_is_noop_when_scoped_root_already_has_chain() {
+    // "do nothing if we already have": a populated scoped root is not disturbed.
+    let s = Scratch::new("already");
+    let scoped = s.path().join("regtest");
+    make_chain_root(&scoped);
+    let marker = scoped.join("chain").join("KEEP");
+    std::fs::write(&marker, b"regtest").unwrap();
+
+    let app = app_with_prefix_and_regtest(s.path());
+    migrate_network_prefix(&app.state(), Network::Regtest, scoped.to_str().unwrap()).unwrap();
+
+    assert!(
+        marker.exists(),
+        "existing scoped chain is left exactly as-is"
+    );
+}
+
+#[test]
+fn migrate_adopts_legacy_nested_subdir_into_scoped_root() {
+    // Legacy layout: hsd ran with the bare base as --prefix and nested the
+    // network's data at <base>/regtest/regtest. Migration lifts it up into the
+    // scoped root <base>/regtest.
+    let s = Scratch::new("legacy");
+    let nested = s.path().join("regtest").join("regtest");
+    make_chain_root(&nested);
+    let marker = nested.join("chain").join("LEGACY");
+    std::fs::write(&marker, b"regtest").unwrap();
+
+    let app = app_with_prefix_and_regtest(s.path());
+    let scoped = s.path().join("regtest");
+    migrate_network_prefix(&app.state(), Network::Regtest, scoped.to_str().unwrap()).unwrap();
+
+    assert!(
+        scoped.join("chain").join("LEGACY").exists(),
+        "legacy nested chain lifted into the scoped root"
+    );
+    assert!(
+        !nested.join("chain").join("LEGACY").exists(),
+        "moved, not copied"
     );
 }

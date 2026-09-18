@@ -182,6 +182,56 @@ fn test_read_log_tail_empty_file() {
 // Note: resolve_data_dir, active_profile_network, is_running, configured_hsd_path
 // are private fn — tested indirectly via the node_status command test below.
 
+// --- guard_probe_network: the network guard that stops a profile from adopting
+//     (or spawning into) a node on the wrong chain -----------------------------
+
+#[test]
+fn guard_probe_network_ok_when_chain_matches() {
+    assert!(node::guard_probe_network(Network::Regtest, Some("regtest")).is_ok());
+    assert!(node::guard_probe_network(Network::Testnet, Some("testnet")).is_ok());
+    assert!(node::guard_probe_network(Network::Main, Some("main")).is_ok());
+}
+
+#[test]
+fn guard_probe_network_tolerates_main_mainnet_spelling() {
+    // hsd reports `getblockchaininfo.chain = "main"`; the profile schema stores
+    // "mainnet". network_name_matches canonicalizes both, so this must pass.
+    assert!(node::guard_probe_network(Network::Main, Some("mainnet")).is_ok());
+}
+
+#[test]
+fn guard_probe_network_refuses_mainnet_node_for_regtest_profile() {
+    // The exact failure that put a mainnet chain under a regtest prefix: a node
+    // reporting "main" while the active profile is regtest must be refused.
+    let err = node::guard_probe_network(Network::Regtest, Some("main")).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("mismatch"),
+        "expected mismatch message, got: {msg}"
+    );
+    assert!(
+        msg.contains("regtest"),
+        "should name the profile network: {msg}"
+    );
+    assert!(
+        msg.contains("main"),
+        "should name the reported chain: {msg}"
+    );
+}
+
+#[test]
+fn guard_probe_network_refuses_regtest_node_for_mainnet_profile() {
+    assert!(node::guard_probe_network(Network::Main, Some("regtest")).is_err());
+}
+
+#[test]
+fn guard_probe_network_skips_when_node_reports_no_chain() {
+    // Old hsd builds don't populate `chain`: "None skips" — cannot validate, so
+    // we do not refuse (same rule as the read gate and connection probe).
+    assert!(node::guard_probe_network(Network::Regtest, None).is_ok());
+    assert!(node::guard_probe_network(Network::Regtest, Some("")).is_ok());
+}
+
 // --- node_status command test (covers resolve_data_dir, active_profile_network,
 //     is_running, configured_hsd_path, find_hsd_binary, get_hsd_version, probe_node) ---
 
