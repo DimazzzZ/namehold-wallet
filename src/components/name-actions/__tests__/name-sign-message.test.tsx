@@ -41,6 +41,7 @@ function capsFor(name: string, ownsName: boolean): NameActionCapabilities {
     hasOwnerCoin: ownsName,
     revealTxid: null,
     bidValueDoos: null,
+    lockupValueDoos: null,
     canOpen: cap,
     canBid: cap,
     canReveal: cap,

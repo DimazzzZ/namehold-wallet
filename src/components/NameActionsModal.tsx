@@ -24,13 +24,15 @@ import { DnsRecordsEditor } from "./name-actions/DnsRecordsEditor";
 import { GuidedAction } from "./name-actions/GuidedAction";
 import { NameBidsPanel } from "./name-actions/NameBidsPanel";
 import { NameSignMessage } from "./name-actions/NameSignMessage";
+import { NameDetails } from "./name-actions/NameDetails";
 import { OwnershipActions } from "./name-actions/OwnershipActions";
 import { PaidSwapClaim } from "./name-actions/PaidSwapClaim";
 import { useUiStore } from "../stores/ui";
 import { FeeRateOverride } from "./ui/FeeRateOverride";
 import { parseFeeRateArg } from "../lib/feeRate";
 import { mapError, stageOf, unwrapStaged } from "../lib/errors";
-import { formatHns } from "../lib/utils";
+import { formatHns, formatHnsShort } from "../lib/utils";
+import { Tooltip } from "./ui/Tooltip";
 import { displayName } from "../lib/idn";
 import { WatchlistToggle } from "./WatchlistToggle";
 import { explorerNameUrl, openExternal } from "../lib/openExternal";
@@ -174,6 +176,17 @@ export function NameActionsModal({
 
   // Whether the name is owned by the current wallet.
   const isOwned = caps?.ownsName ?? (!!info?.owner && info?.registered === true);
+
+  // Before REVEAL, hsd reports the on-chain `value`/`highest` as 0 — every bid
+  // is blinded, so the network cannot know the amounts yet. But OUR own bid is
+  // not a secret to us: the backend persisted its plaintext in `bid_commitments`
+  // and surfaces it as `caps.bidValueDoos`. So when this wallet has a bid
+  // commitment on a still-bidding/opening name, show that local value instead
+  // of a misleading on-chain 0. On-chain `highest`/`value` are only meaningful
+  // once amounts are revealed (REVEAL/CLOSED), so we defer to them there.
+  const preReveal = badge.phase === "BIDDING" || badge.phase === "OPENING";
+  const showLocalBid =
+    preReveal && caps?.hasBidCommitment === true && caps?.bidValueDoos != null;
 
   // Current DNS records for owned names, read from the node (`getnameresource`).
   // Used to seed the editor once per open so the user sees/edits/deletes the
@@ -322,9 +335,23 @@ export function NameActionsModal({
     // Owned names have update/transfer/renew/revoke actions
     caps?.ownsName === true;
 
+  // Once THIS wallet has already bid (one bid per wallet per name) there is
+  // no actionable control left: every auction button is caps-disabled, so
+  // the advanced toggle would only open an all-disabled menu. Suppress it.
+  const alreadyBidWaiting = caps?.taskState === "waitingForBidding";
+
+  // Whether the modal actually offers something to sign/broadcast right now.
+  // `hasRelevantActions` includes a phase-based fallback that is true during
+  // BIDDING even after THIS wallet has already bid — in that state every
+  // action is caps-disabled and there is nothing left to submit, so the
+  // "unlock to sign" notice would be pointless. Gate signable UI on this
+  // instead of the looser `hasRelevantActions`.
+  const hasSignableActions = hasRelevantActions && !alreadyBidWaiting;
+
   // Show the advanced toggle only when there are meaningful extra actions behind it.
   const showAdvancedToggle =
     hasRelevantActions &&
+    !alreadyBidWaiting &&
     // Auction-phase advanced actions are always meaningful.
     (badge.phase !== "CLOSED" ||
       // For CLOSED owned names: only show if there are ownership actions the user may want.
@@ -514,14 +541,39 @@ export function NameActionsModal({
     <Dialog
       open={open}
       onClose={onClose}
+      className="max-w-2xl"
       title={
-        decodedName === name ? (
-          `.${name}`
-        ) : (
-          <>
-            .{decodedName} <span className="text-xs font-normal text-gray-400">(.{name})</span>
-          </>
-        )
+        <span className="flex items-center gap-2 flex-wrap">
+          <span>
+            {decodedName === name ? (
+              `.${name}`
+            ) : (
+              <>
+                .{decodedName} <span className="text-xs font-normal text-gray-400">(.{name})</span>
+              </>
+            )}
+          </span>
+          {/* Phase badge (moved from the body so it sits right of the name,
+              matching the former NameInfoModal). Same loading gate: task-state
+              summary when known, a neutral placeholder while caps is pending,
+              and only then the raw on-chain phase. data-testid stays here so
+              the tests that assert on the phase label follow it. */}
+          {!isLoading &&
+            !isError &&
+            (summary ? (
+              <Badge variant={summary.variant} data-testid="name-phase">
+                {summary.label}
+              </Badge>
+            ) : capsPending ? (
+              <Badge variant="default" data-testid="name-phase">
+                <span data-testid="name-phase-loading">Checking…</span>
+              </Badge>
+            ) : (
+              <Badge variant={badge.variant} data-testid="name-phase">
+                {badge.label}
+              </Badge>
+            ))}
+        </span>
       }
     >
       <div className="space-y-4 text-sm">
@@ -560,37 +612,46 @@ export function NameActionsModal({
         )}
 
         {/* Phase header - only show when data is loaded and no error */}
-        {!isLoading && !isError && (
-          <div
-            className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded p-2"
-            data-testid="name-phase"
-          >
+        {/* Phase meta row — the phase badge itself now lives in the modal
+            title; here we keep the countdown and high-bid/value summary. Only
+            render the row when there's something to show. */}
+        {!isLoading &&
+          !isError &&
+          (countdown || showLocalBid || (info?.highest ?? info?.value) != null) && (
+          <div className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded p-2">
             <div className="flex items-center gap-2">
-              {/* Task-state badge when available; while the caps query is still
-                  pending, show a neutral placeholder instead of the raw phase so
-                  we never render a label that contradicts the table row. Only
-                  once caps has settled with no summary do we fall back to the
-                  on-chain phase. */}
-              {summary ? (
-                <Badge variant={summary.variant}>{summary.label}</Badge>
-              ) : capsPending ? (
-                <Badge variant="default" data-testid="name-phase-loading">
-                  Checking…
-                </Badge>
-              ) : (
-                <Badge variant={badge.variant}>{badge.label}</Badge>
-              )}
               {countdown && (
                 <span className="text-xs text-gray-600" data-testid="name-countdown">
                   {countdown.label} {formatCountdown(countdown)}
                 </span>
               )}
             </div>
-            {(info?.highest ?? info?.value) != null && (
-              <span className="text-xs text-gray-500">
-                {info?.highest != null ? `High bid ${formatHns(info.highest)} HNS` : ""}
-                {info?.value != null ? ` · value ${formatHns(info.value)} HNS` : ""}
+            {showLocalBid ? (
+              <span className="text-xs text-gray-700" data-testid="name-your-bid">
+                Your bid{" "}
+                <Tooltip content={<>{formatHns(caps?.bidValueDoos)} HNS</>}>
+                  <span className="cursor-help underline decoration-dotted underline-offset-2">
+                    {formatHnsShort(caps?.bidValueDoos)} HNS
+                  </span>
+                </Tooltip>
+                {caps?.lockupValueDoos != null && (
+                  <span data-testid="name-your-lockup">
+                    {" · lockup "}
+                    <Tooltip content={<>{formatHns(caps.lockupValueDoos)} HNS</>}>
+                      <span className="cursor-help underline decoration-dotted underline-offset-2">
+                        {formatHnsShort(caps.lockupValueDoos)} HNS
+                      </span>
+                    </Tooltip>
+                  </span>
+                )}
               </span>
+            ) : (
+              (info?.highest ?? info?.value) != null && (
+                <span className="text-xs text-gray-500">
+                  {info?.highest != null ? `High bid ${formatHns(info.highest)} HNS` : ""}
+                  {info?.value != null ? ` · value ${formatHns(info.value)} HNS` : ""}
+                </span>
+              )
             )}
           </div>
         )}
@@ -612,7 +673,10 @@ export function NameActionsModal({
         )}
 
         {/* Write-capability gate — only show when there are relevant actions */}
-        {!canWrite && hasRelevantActions && (
+        {/* Write-capability gate — only when there is actually something to
+            sign. If the modal has nothing to submit (e.g. this wallet already
+            bid and is just waiting), the "unlock to sign" notice is noise. */}
+        {!canWrite && hasSignableActions && (
           <div
             className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800"
             role="alert"
@@ -704,7 +768,26 @@ export function NameActionsModal({
             </div>
           ) : null)}
 
-        <NameBidsPanel name={name} profileId={profile?.id ?? null} phase={badge.phase} />
+        <NameBidsPanel
+          name={name}
+          profileId={profile?.id ?? null}
+          phase={badge.phase}
+          suppressEmptyHint={alreadyBidWaiting}
+        />
+
+        {/* Read-only on-chain details (heights, transfer, owner UTXO, closed
+            values, DNS records) — the former NameInfoModal, folded in so one
+            modal serves both inspection and actions. For owned names the
+            editable DnsRecordsEditor below owns the records, so suppress the
+            read-only DNS block here to avoid showing them twice. */}
+        {!isLoading && !isError && (
+          <NameDetails
+            name={name}
+            profileId={profile?.id ?? null}
+            info={info}
+            hideDnsRecords={isOwned}
+          />
+        )}
 
         {/* Advanced actions toggle — only when relevant actions exist */}
         {showAdvancedToggle && (

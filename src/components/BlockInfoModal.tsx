@@ -18,7 +18,8 @@ interface BlockInfoModalProps {
  * Gracefully degrades when the node is unavailable (shows a "requires synced
  * node" hint rather than erroring).
  *
- * Mirrors `NameInfoModal` — purely informational, no actions.
+ * Mirrors the read-only `NameDetails` section of `NameActionsModal` —
+ * purely informational, no actions.
  */
 export function BlockInfoModal({ height, open, onClose, isMainnet }: BlockInfoModalProps) {
   const nodeLive = useNodeLive();

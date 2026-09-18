@@ -28,10 +28,20 @@ export function NameBidsPanel({
   name,
   profileId,
   phase,
+  suppressEmptyHint = false,
 }: {
   name: string;
   profileId: string | null;
   phase: string;
+  /**
+   * When true, the "No bids yet" empty-state hint is not rendered even in
+   * OPENING/BIDDING. Set this once THIS wallet has already bid
+   * (`taskState === "waitingForBidding"`): the guided panel above already
+   * says "Your bid is placed. Reveal opens in …", so an empty explorer bid
+   * list (mock / not-yet-indexed) rendering "No bids yet" right below it
+   * reads as a direct contradiction.
+   */
+  suppressEmptyHint?: boolean;
 }) {
   const { data, isLoading, isError } = useNameBids(name, profileId);
 
@@ -41,7 +51,7 @@ export function NameBidsPanel({
   const showEmptyHint = phase === "OPENING" || phase === "BIDDING";
 
   if (bids.length === 0) {
-    if (!showEmptyHint) return null;
+    if (!showEmptyHint || suppressEmptyHint) return null;
     return (
       <div className="text-xs text-gray-400" data-testid="name-bids">
         No bids yet

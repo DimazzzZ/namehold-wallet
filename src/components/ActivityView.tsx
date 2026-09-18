@@ -18,7 +18,7 @@ import { displayName, nameMatches } from "../lib/idn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "../stores/ui";
 import { mapError, StagedError } from "../lib/errors";
-import { NameInfoModal } from "./NameInfoModal";
+import { NameActionsModal } from "./NameActionsModal";
 import { BlockInfoModal } from "./BlockInfoModal";
 import { TxInfoModal } from "./TxInfoModal";
 import { mergeActivity, type MergedRow } from "../lib/activity";
@@ -289,7 +289,7 @@ export function ActivityView() {
       )}
 
       {infoName && (
-        <NameInfoModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
+        <NameActionsModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
       )}
 
       {infoBlock != null && (

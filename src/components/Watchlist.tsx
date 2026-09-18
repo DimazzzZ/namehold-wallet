@@ -11,7 +11,7 @@ import { displayName } from "../lib/idn";
 import { formatHns } from "../lib/utils";
 import { useReadNames } from "../queries/read";
 import type { HsdName } from "../types";
-import { NameInfoModal } from "./NameInfoModal";
+import { NameActionsModal } from "./NameActionsModal";
 import { subscribeAction } from "../lib/actionBus";
 
 interface WatchedName {
@@ -396,7 +396,7 @@ export function Watchlist() {
       )}
 
       {infoName && (
-        <NameInfoModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
+        <NameActionsModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
       )}
     </div>
   );

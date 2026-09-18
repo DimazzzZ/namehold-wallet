@@ -10,7 +10,6 @@ import {
   type AuctionTaskSummary,
 } from "../lib/auction";
 import { NameActionsModal } from "./NameActionsModal";
-import { NameInfoModal } from "./NameInfoModal";
 import { BatchBidModal } from "./BatchBidModal";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
@@ -66,7 +65,6 @@ export function AuctionsView() {
 
   const [lookupName, setLookupName] = useState("");
   const [manageName, setManageName] = useState<string | null>(null);
-  const [infoName, setInfoName] = useState<string | null>(null);
   // Standalone batch-bid modal (paste names + shared bid/lockup). Lives here
   // on the Auctions page because bidding is a name-acquisition action.
   const [batchBidOpen, setBatchBidOpen] = useState(false);
@@ -217,7 +215,7 @@ export function AuctionsView() {
           <button
             type="button"
             className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-            onClick={() => setInfoName(n.name)}
+            onClick={() => setManageName(n.name)}
             title="View name info"
             data-testid="auction-name-info-link"
           >
@@ -334,10 +332,6 @@ export function AuctionsView() {
             setManageName(null);
           }}
         />
-      )}
-
-      {infoName && (
-        <NameInfoModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
       )}
 
       <BatchBidModal

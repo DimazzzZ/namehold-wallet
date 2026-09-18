@@ -451,6 +451,121 @@ describe("NameActionsModal — phase header + DNS editor", () => {
   });
 });
 
+describe("NameActionsModal — local bid shown before reveal", () => {
+  // In BIDDING/OPENING every bid is blinded, so hsd reports value/highest as 0.
+  // But our own bid is not a secret to us: the backend surfaces its plaintext
+  // via caps.bidValueDoos. The header must show OUR bid, never the misleading
+  // on-chain 0.
+  function routeBidding(opts: {
+    hasBidCommitment: boolean;
+    bidValueDoos: number | null;
+    lockupValueDoos?: number | null;
+    onChainValue?: number | null;
+    onChainHighest?: number | null;
+  }) {
+    return (cmd: string) => {
+      if (cmd === "get_name_action_capabilities") {
+        return Promise.resolve({
+          name: "biddingtld",
+          phase: "BIDDING",
+          taskState: "waitingForBidding",
+          ownsName: false,
+          hasBidCommitment: opts.hasBidCommitment,
+          hasRevealCoin: false,
+          hasOwnerCoin: false,
+          bidValueDoos: opts.bidValueDoos,
+          lockupValueDoos: opts.lockupValueDoos ?? null,
+          canOpen: { allowed: false, reason: null },
+          canBid: { allowed: false, reason: "Already bid" },
+          canReveal: { allowed: false, reason: "Reveal not open" },
+          canRedeem: { allowed: false, reason: null },
+          canRegister: { allowed: false, reason: null },
+          canUpdate: { allowed: false, reason: null },
+          canTransfer: { allowed: false, reason: null },
+          canFinalize: { allowed: false, reason: null },
+          canCancelTransfer: { allowed: false, reason: null },
+          canRenew: { allowed: false, reason: null },
+          canRevoke: { allowed: false, reason: null },
+          nextActionKey: null,
+          nextActionLabel: null,
+          nextActionReason: null,
+          countdownLabel: null,
+          countdownBlocks: null,
+          countdownHours: null,
+        });
+      }
+      switch (cmd) {
+        case "list_wallet_profiles":
+          return Promise.resolve([profile]);
+        case "get_signer_session":
+          return Promise.resolve({
+            walletProfileId: profile.id,
+            unlocked: true,
+            unlockedUntilEpochMs: Date.now() + 60000,
+          });
+        case "read_name_info":
+          return Promise.resolve({
+            name: "biddingtld",
+            state: "BIDDING",
+            height: 100,
+            renewal: 200,
+            owner: null,
+            value: opts.onChainValue ?? 0,
+            highest: opts.onChainHighest ?? 0,
+            registered: false,
+            stats: { blocksUntilReveal: 4 },
+          });
+        default:
+          return Promise.resolve(null);
+      }
+    };
+  }
+
+  it("shows our own bid (from caps.bidValueDoos) instead of the on-chain 0 during BIDDING", async () => {
+    invokeMock.mockImplementation(
+      routeBidding({
+        hasBidCommitment: true,
+        bidValueDoos: 100_000_000,
+        lockupValueDoos: 500_000_000,
+      }),
+    );
+    render(<NameActionsModal name="biddingtld" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    const yourBid = await screen.findByTestId("name-your-bid");
+    // Compact display (≤2 decimals); full precision lives in the hover tooltip.
+    expect(yourBid).toHaveTextContent("Your bid 100 HNS");
+    // Both numbers are shown, so the "hidden until reveal" hint is gone.
+    expect(yourBid).not.toHaveTextContent(/hidden until reveal/i);
+    // HSD term: the on-chain concealing amount is the "lockup" (OUR value).
+    const lockup = await screen.findByTestId("name-your-lockup");
+    expect(lockup).toHaveTextContent("lockup 500 HNS");
+    // The old non-canonical "blind (on-chain)" wording must be gone.
+    expect(yourBid).not.toHaveTextContent(/blind/i);
+    // The misleading on-chain "High bid 0 · value 0" must NOT be rendered.
+    expect(screen.queryByText(/High bid 0\.000000 HNS/)).not.toBeInTheDocument();
+  });
+
+  it("falls back to on-chain high-bid/value when the wallet has no bid commitment", async () => {
+    invokeMock.mockImplementation(
+      routeBidding({
+        hasBidCommitment: false,
+        bidValueDoos: null,
+        onChainValue: 5_000_000,
+        onChainHighest: 7_000_000,
+      }),
+    );
+    render(<NameActionsModal name="biddingtld" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    // No local bid → no "Your bid" line; the on-chain summary is shown instead.
+    expect(await screen.findByText(/High bid 7\.000000 HNS/)).toBeInTheDocument();
+    expect(screen.queryByTestId("name-your-bid")).not.toBeInTheDocument();
+  });
+});
+
 describe("NameActionsModal — recover bid commitment (Task 2 / C2)", () => {
   function routeReveal(captured: { recover?: Record<string, unknown> }, hasBidCommitment: boolean) {
     return (cmd: string, args?: Record<string, unknown>) => {
