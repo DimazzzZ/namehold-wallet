@@ -146,6 +146,30 @@ export function GuidedAction({
         );
 
       case "BIDDING":
+        // Task-state precedence over raw on-chain phase: once THIS wallet has
+        // placed its bid the backend reports `waitingForBidding` (the badge
+        // reads "Waiting for Bidding"). The name is still in the on-chain
+        // BIDDING phase, but there is no bid action left for this wallet — one
+        // bid per wallet per name — so render a wait-for-reveal panel instead
+        // of the bid form. The switch keyed purely on `badge.phase`, so an
+        // already-bid name showed the "Place a Bid" form under a
+        // "Waiting for Bidding" badge.
+        if (caps?.taskState === "waitingForBidding") {
+          return (
+            <div className="text-sm text-gray-600" data-testid="bidding-waiting">
+              You already placed a bid for this name (one bid per wallet per
+              name). Wait for the reveal window, then reveal your bid.
+              <div className="mt-1 font-medium">
+                {countdown
+                  ? `Your bid is placed. Reveal opens in ${formatCountdown(countdown)}.`
+                  : // Verbatim match with the backend `next_action_reason` for this
+                    // already-bid WaitingForBidding case (see next_action override
+                    // in names.rs). Keep the two strings identical.
+                    "Your bid is placed. Wait for the reveal window to open."}
+              </div>
+            </div>
+          );
+        }
         return (
           <BidForm
             variant="guided"

@@ -273,4 +273,41 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
     expect(screen.getByText(/Active Auctions \(1\)/i)).toBeInTheDocument();
     expect(screen.queryByText(/No active auctions/i)).not.toBeInTheDocument();
   });
+
+  it("filters a dropped-open position (no live caps) while keeping a live bidding sibling — the vmp3rt3/vmp3rt4 case", async () => {
+    // Mirrors an observed regtest sequence: `vmp3rt4`'s open tx was broadcast
+    // but never confirmed, so its draft settled to `dropped`; `vmp3rt3`'s open
+    // confirmed and its bid confirmed. Even if the backend were to leak the
+    // dropped name into positions, it has no live caps in an active-position
+    // task state, so the client must not render it — only `vmp3rt3` shows.
+    invokeMock.mockImplementation(
+      baseRoutes({
+        positions: ["vmp3rt3", "vmp3rt4"],
+        names: [],
+        capsByName: {
+          vmp3rt3: baseCaps("vmp3rt3", {
+            phase: "BIDDING",
+            taskState: "readyToBid",
+            hasBidCommitment: true,
+            canBid: { allowed: true, reason: null },
+            nextActionKey: "BID",
+            nextActionLabel: "Place Bid",
+            countdownLabel: "Reveal starts in",
+            countdownBlocks: 5,
+            countdownHours: 1,
+          }),
+          // Dropped open: node has no auction for it, so its caps land in a
+          // non-active state (nothing to do).
+          vmp3rt4: baseCaps("vmp3rt4", { taskState: "unavailableOther" }),
+        },
+      }),
+    );
+    render(<AuctionsView />, { wrapper: wrapper() });
+
+    expect(await screen.findByText(".vmp3rt3")).toBeInTheDocument();
+    expect(screen.getByText(/Ready to Bid/i)).toBeInTheDocument();
+    // vmp3rt4 must not render as a row, and the count reflects only the live one.
+    expect(screen.queryByText(".vmp3rt4")).not.toBeInTheDocument();
+    expect(screen.getByText(/Active Auctions \(1\)/i)).toBeInTheDocument();
+  });
 });

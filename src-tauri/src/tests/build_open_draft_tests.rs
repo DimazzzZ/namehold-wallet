@@ -325,3 +325,51 @@ fn build_open_draft_rejects_invalid_name() {
     let err = build_open_draft_inner(&conn, &ctx, "", Some(10)).unwrap_err();
     assert!(matches!(err, AppError::InvalidInput(_)));
 }
+
+/// Regression: the "cancelled OPEN blocks retry" bug.
+///
+/// Repro of the reported UX: user opens the action modal (which calls
+/// `build_open_draft` to build+persist a `draft`), then hits Cancel WITHOUT
+/// confirming/broadcasting. The draft was persisted eagerly, so it lingers as
+/// status `draft` — never signed, never broadcast. The double-open guard then
+/// treats it as "already being opened" and refuses every retry.
+///
+/// Correct behavior: a cancelled (un-broadcast) draft must be discardable via
+/// `delete_tx_draft`, after which a fresh open for the same name succeeds. This
+/// test asserts that discard-then-retry path works — it is the seam the fix
+/// (discard the draft on modal Cancel) relies on end-to-end.
+#[test]
+fn cancelled_open_draft_can_be_discarded_and_retried() {
+    use crate::db::queries;
+
+    let conn = test_db();
+    seed_profile(&conn);
+    let ctx = seed_ctx_with_funding(&conn, HashMap::new());
+
+    // 1. Modal "Open" pressed → build+persist a draft (status = 'draft').
+    let first = build_open_draft_inner(&conn, &ctx, NAME, Some(10)).unwrap();
+    assert_eq!(first.action, "open");
+
+    // Sanity: the eager draft is what makes a second open fail today.
+    let blocked = build_open_draft_inner(&conn, &ctx, NAME, Some(10)).unwrap_err();
+    assert!(matches!(blocked, AppError::InvalidInput(_)));
+
+    // 2. User pressed Cancel → the un-broadcast draft must be discardable,
+    //    releasing its reserved funding coin.
+    queries::delete_tx_draft(&conn, &first.id).unwrap();
+    let still_reserved: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        still_reserved, 0,
+        "discarding the cancelled draft must release its reserved coin"
+    );
+
+    // 3. Retry the same name → must now succeed (no lingering guard).
+    let retry = build_open_draft_inner(&conn, &ctx, NAME, Some(10)).unwrap();
+    assert_eq!(retry.action, "open");
+}

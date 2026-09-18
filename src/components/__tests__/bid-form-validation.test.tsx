@@ -63,6 +63,20 @@ function route() {
     switch (cmd) {
       case "list_wallet_profiles":
         return Promise.resolve([profile]);
+      // Submitting a bid runs build → sign → broadcast (see `run()` in
+      // NameActionsModal / useExecuteDraft). The default `null` fall-through
+      // used to make `run()` dereference `draft.id` on null and leak an
+      // unhandled rejection into the suite. Stub the whole pipeline so the
+      // happy path resolves cleanly; the tests still only assert on the
+      // `build_bid_draft` args, not on the broadcast result.
+      case "build_bid_draft":
+        return Promise.resolve({ id: "draft-1" });
+      case "sign_tx_draft":
+        return Promise.resolve({ id: "draft-1" });
+      case "broadcast_tx_draft":
+        return Promise.resolve({ txid: "abcdef0123456789" });
+      case "delete_tx_draft":
+        return Promise.resolve(undefined);
       case "get_signer_session":
         return Promise.resolve({
           walletProfileId: "p1",

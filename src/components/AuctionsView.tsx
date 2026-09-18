@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useActiveProfile } from "../queries/wallet";
 import { useReadNames, useNamesActionCapabilities, useAuctionPositions } from "../queries/read";
 import {
@@ -56,6 +57,7 @@ export function AuctionsView() {
   // Resolve the active wallet once here (not inside the inline TaskRow, which
   // remounts every render and would trigger a profile-refetch storm) so every
   // capability fetch is pinned to this wallet.
+  const qc = useQueryClient();
   const activeProfile = useActiveProfile().data ?? null;
   const activeProfileId = activeProfile?.id ?? null;
   // Watch-only wallets can't sign, so batch bidding is hidden for them.
@@ -166,6 +168,16 @@ export function AuctionsView() {
   };
 
   const handleOpenManagement = (name: string) => {
+    // Cache bridge: seed the modal's SINGLE capability query from the batch
+    // result the table already fetched, so the modal opens already showing the
+    // same task-state badge as the row the user clicked — no fetch-window flash
+    // where it would fall back to the raw on-chain phase and visibly contradict
+    // the table. Keyed identically to `useNameActionCapabilities` in read.ts:
+    // ["read","nameCapabilities", profileId, name].
+    const rowCaps = capsByName.get(name);
+    if (rowCaps) {
+      qc.setQueryData(["read", "nameCapabilities", activeProfileId, name], rowCaps);
+    }
     setManageName(name);
   };
 

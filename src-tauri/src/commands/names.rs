@@ -994,8 +994,24 @@ pub(crate) fn build_name_action_capabilities(
     );
 
     // 6. Determine next action.
-    let (next_action_key, next_action_label, next_action_reason) =
+    let (next_action_key, next_action_label, mut next_action_reason) =
         next_action_for_task(&task_state);
+
+    // `WaitingForBidding` is reused for two distinct situations: a pending OPEN
+    // that hasn't reached BIDDING yet (default reason "The auction opens for
+    // bidding soon.") and a name already in the on-chain BIDDING phase that
+    // THIS wallet has already bid on (one bid per wallet per name). For the
+    // latter the default reason reads wrong — bidding is already open and the
+    // wallet's action is to wait for the reveal window, not for bidding to
+    // start — so refine the reason to match the "your bid is placed" panel the
+    // guided UI renders for this case.
+    if matches!(task_state, AuctionTaskState::WaitingForBidding)
+        && phase == "BIDDING"
+        && action_ctx.has_bid_commitment
+    {
+        next_action_reason =
+            Some("Your bid is placed. Wait for the reveal window to open.".into());
+    }
 
     // 7. Extract countdown from stats.
     let (countdown_label, countdown_blocks, countdown_hours) =

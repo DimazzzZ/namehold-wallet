@@ -5092,6 +5092,103 @@ mod noncustodial_query_tests {
         assert!(!positions.contains(&"draftonly".to_string()));
     }
 
+    /// Regression: a `dropped` open draft (broadcast, evicted/reorg'd out, then
+    /// judged `dropped`) must NOT appear as an active auction position, while a
+    /// name with a live in-flight open draft plus a confirmed bid still does.
+    ///
+    /// Mirrors an observed regtest sequence: `vmp3rt4`'s open tx was broadcast
+    /// but never confirmed, so its draft settled to `dropped`; `vmp3rt3`'s open
+    /// confirmed and its bid confirmed. Only `vmp3rt3` should show "In Auction".
+    #[test]
+    fn auction_position_names_excludes_dropped_open_draft() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+
+        // vmp3rt3: open draft reaches `confirmed` (in-flight status) — kept.
+        insert_tx_draft(
+            &conn,
+            "open3",
+            "p1",
+            "open",
+            "",
+            "",
+            r#"{"action":"open","name":"vmp3rt3"}"#,
+        )
+        .unwrap();
+        update_tx_draft_status(&conn, "open3", "confirmed", None, Some("txid_open3")).unwrap();
+
+        // vmp3rt3: bid draft also confirmed — reinforces the position.
+        insert_tx_draft(
+            &conn,
+            "bid3",
+            "p1",
+            "bid",
+            "",
+            "{}",
+            r#"{"action":"bid","name":"vmp3rt3"}"#,
+        )
+        .unwrap();
+        update_tx_draft_status(&conn, "bid3", "confirmed", None, Some("txid_bid3")).unwrap();
+
+        // vmp3rt4: open draft was broadcast then judged `dropped` (evicted /
+        // reorg'd out, never landed). Not an in-flight status → must be excluded.
+        insert_tx_draft(
+            &conn,
+            "open4",
+            "p1",
+            "open",
+            "",
+            "{}",
+            r#"{"action":"open","name":"vmp3rt4"}"#,
+        )
+        .unwrap();
+        update_tx_draft_status(&conn, "open4", "dropped", None, Some("txid_open4")).unwrap();
+
+        let positions = auction_position_names(&conn, "p1").unwrap();
+        assert!(
+            positions.contains(&"vmp3rt3".to_string()),
+            "vmp3rt3 has an in-flight open + confirmed bid and must show as a position"
+        );
+        assert!(
+            !positions.contains(&"vmp3rt4".to_string()),
+            "vmp3rt4's only draft is `dropped`; it must not show as an active auction"
+        );
+    }
+
+    /// Regression guard: every non-in-flight draft status is excluded from
+    /// auction positions, so a fix here can never silently start surfacing
+    /// abandoned/failed/queued drafts.
+    #[test]
+    fn auction_position_names_excludes_all_non_in_flight_statuses() {
+        // The `status` CHECK constraint permits only these values; of them,
+        // `draft`/`dropped`/`failed` are the non-in-flight ones.
+        for (idx, status) in ["draft", "dropped", "failed"].iter().enumerate() {
+            let conn = db();
+            seed_profile(&conn, "p1");
+            let id = format!("d{idx}");
+            let name = format!("name{idx}");
+            insert_tx_draft(
+                &conn,
+                &id,
+                "p1",
+                "open",
+                "",
+                "{}",
+                &format!(r#"{{"action":"open","name":"{name}"}}"#),
+            )
+            .unwrap();
+            // `draft` is the default; the others are set explicitly.
+            if *status != "draft" {
+                update_tx_draft_status(&conn, &id, status, None, Some("txid")).unwrap();
+            }
+            let positions = auction_position_names(&conn, "p1").unwrap();
+            assert!(
+                !positions.contains(&name),
+                "status `{status}` is not in-flight and must be excluded"
+            );
+        }
+    }
+
     /// Coverage: count_repair_candidates
     #[test]
     fn count_repair_candidates_matches_list() {

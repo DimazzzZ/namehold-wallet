@@ -323,10 +323,27 @@ export function taskSummaryFromCapabilities(
   caps: NameActionCapabilities | null | undefined,
 ): AuctionTaskSummary | null {
   if (!caps) return null;
+  // Unify the label with the modal's on-chain phase badge for the ONE case
+  // that is genuinely bidding: this wallet has placed its single bid while
+  // the name is still in the on-chain BIDDING phase. The backend collapses
+  // that into taskState `waitingForBidding`, but the same taskState is also
+  // reused for two not-yet-bidding situations — a pending OPEN on an
+  // AVAILABLE name and the pre-bid OPENING period — which must keep reading
+  // "Waiting for Bidding". Guard on exactly the backend's condition
+  // (phase === "BIDDING" && has_bid_commitment; see names.rs) so the row and
+  // the modal both say "Bidding" only when it really is bidding.
+  const isReallyBidding =
+    caps.taskState === "waitingForBidding" &&
+    caps.phase === "BIDDING" &&
+    caps.hasBidCommitment;
   return {
     taskState: caps.taskState,
-    label: taskStateLabel(caps.taskState),
-    variant: taskStateBadgeVariant(caps.taskState),
+    label: isReallyBidding ? "Bidding" : taskStateLabel(caps.taskState),
+    // Match the modal's auctionPhase("BIDDING") badge variant so the two
+    // surfaces are visually identical, not just textually.
+    variant: isReallyBidding
+      ? "warning"
+      : taskStateBadgeVariant(caps.taskState),
     urgency: taskStateUrgency(caps.taskState),
     nextActionKey: caps.nextActionKey,
     nextActionLabel: caps.nextActionLabel,

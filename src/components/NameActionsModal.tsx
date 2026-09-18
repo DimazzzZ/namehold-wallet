@@ -6,6 +6,7 @@ import {
   useWriteCapability,
   useNameAction,
   useExecuteDraft,
+  useDeleteTxDraft,
 } from "../queries/wallet";
 import {
   useReadNameInfo,
@@ -18,7 +19,7 @@ import { Button } from "./ui/Button";
 import { Dialog } from "./ui/Dialog";
 import { Badge } from "./ui/Badge";
 import { UnlockButton } from "./UnlockButton";
-import { BidForm } from "./name-actions/BidForm";
+import { BidGate } from "./name-actions/BidGate";
 import { DnsRecordsEditor } from "./name-actions/DnsRecordsEditor";
 import { GuidedAction } from "./name-actions/GuidedAction";
 import { NameBidsPanel } from "./name-actions/NameBidsPanel";
@@ -72,8 +73,13 @@ export function NameActionsModal({
   const { data: signer } = useSignerSession();
   const { data: writeCap } = useWriteCapability();
   const { data: info, isLoading, isError, error } = useReadNameInfo(open ? name : null);
-  const { data: caps } = useNameActionCapabilities(open ? name : null, profile?.id ?? null);
+  const {
+    data: caps,
+    isLoading: capsLoading,
+    isFetched: capsFetched,
+  } = useNameActionCapabilities(open ? name : null, profile?.id ?? null);
   const exec = useExecuteDraft();
+  const deleteDraft = useDeleteTxDraft();
   const recoverBid = useRecoverBidCommitment();
   const bruteForceRecover = useBruteForceRecoverBid();
 
@@ -156,6 +162,15 @@ export function NameActionsModal({
   const countdown = nextTransition(info?.state, info?.stats);
   const guide = AUCTION_PHASE_GUIDE[badge.phase];
   const summary = taskSummaryFromCapabilities(caps);
+  // Loading gate for the phase badge: the yellow `badge.label` fallback is the
+  // raw on-chain phase (e.g. "Bidding"), which contradicts the table's
+  // task-state label (e.g. "Waiting for Bidding") while the SINGLE caps query
+  // is still in flight. Suppress the fallback until caps has settled, so the
+  // modal never renders a badge that disagrees with the row that opened it.
+  // (With the cache bridge in AuctionsView, `caps` is normally seeded on open
+  // and `summary` is already present, so this only fires on a cold open or a
+  // node-preflight-not-ready case where caps legitimately resolves to null.)
+  const capsPending = capsLoading || !capsFetched;
 
   // Whether the name is owned by the current wallet.
   const isOwned = caps?.ownsName ?? (!!info?.owner && info?.registered === true);
@@ -203,6 +218,28 @@ export function NameActionsModal({
   // user's in-progress edits; closing resets the guard so re-opening re-reads
   // the fresh (post-Update) records.
   const seededForName = useRef<string | null>(null);
+  // Id of a draft that was built+persisted for this modal but not yet
+  // successfully broadcast. `build_*_draft` persists eagerly (status `draft`)
+  // and reserves coins, so an un-broadcast draft left behind will trip the
+  // backend double-action guard ("already being opened") on the next attempt.
+  // We clear it on broadcast success and discard it on cancel / modal close.
+  const pendingDraftRef = useRef<string | null>(null);
+
+  // Discard a built-but-not-broadcast draft, releasing its reserved coins.
+  // Safe to call for `draft`/`signed`/`failed` rows; the backend refuses
+  // `broadcasted`/`broadcast_pending`/`confirmed` rows, so we never call this
+  // after a broadcast-stage failure (the tx may be in flight).
+  const discardPendingDraft = async () => {
+    const id = pendingDraftRef.current;
+    if (!id) return;
+    pendingDraftRef.current = null;
+    try {
+      await deleteDraft.mutateAsync(id);
+    } catch {
+      // Best-effort cleanup: if the backend refuses (e.g. it raced into a
+      // broadcast state), leave the row for the Activity view's Discard.
+    }
+  };
   useEffect(() => {
     if (!open || !isOwned) return;
     if (seededForName.current === name) return;
@@ -235,6 +272,23 @@ export function NameActionsModal({
     setRevealConfirming(false);
     setOptimisticRevealTxid(null);
   }, [open, name]);
+
+  // Close cleanup: if the user dismisses the modal (open → false) while a
+  // built-but-not-broadcast draft is still tracked — e.g. they closed the
+  // action modal rather than pressing Cancel on the Confirm & Sign overlay —
+  // discard it so its reserved coins are freed and the next attempt isn't
+  // blocked by the double-action guard. Only fires on the true→false edge, so
+  // it never runs on mount or while the modal is open.
+  const prevOpenRef = useRef(open);
+  useEffect(() => {
+    if (prevOpenRef.current && !open) {
+      void discardPendingDraft();
+    }
+    prevOpenRef.current = open;
+    // discardPendingDraft is a stable closure over refs/hooks; intentionally
+    // gated on `open` only so it fires exactly on the close edge.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // Owned names with no urgent auction task (already registered, nothing to
   // finalize) auto-expand the management section, so the user isn't forced to
@@ -300,8 +354,13 @@ export function NameActionsModal({
       setBusy(null);
       return;
     }
+    // The draft is now persisted (status `draft`) with coins reserved. Track it
+    // so a cancel / close discards it instead of orphaning it.
+    pendingDraftRef.current = draft.id;
     try {
       const result = await exec.run(draft.id, profile.id, unlocked);
+      // Broadcast succeeded — the draft is now owned by the chain, not us.
+      pendingDraftRef.current = null;
       showToast(`${label} broadcast — ${result.txid.slice(0, 12)}…`, "success");
       qc.invalidateQueries({ queryKey: ["wallet"] });
       qc.invalidateQueries({ queryKey: ["read"] });
@@ -310,6 +369,15 @@ export function NameActionsModal({
       // exec.run() tags its rejection with which leg of unlock→sign→broadcast
       // threw (see useExecuteDraft) — thread that through to the toast.
       showToast(mapError(unwrapStaged(e), stageOf(e)), "error");
+      // A cancel on the Confirm & Sign overlay (or an unlock/sign failure)
+      // rejects at the `sign` stage, before broadcast — discard the orphan so
+      // the next attempt isn't blocked by the double-action guard. A
+      // `broadcast`-stage failure may have a tx in flight, so we keep the row.
+      if (stageOf(e) !== "broadcast") {
+        await discardPendingDraft();
+      } else {
+        pendingDraftRef.current = null;
+      }
     } finally {
       setBusy(null);
     }
@@ -330,9 +398,11 @@ export function NameActionsModal({
       setBusy(null);
       return;
     }
+    pendingDraftRef.current = draft.id;
     try {
       const result = await exec.run(draft.id, profile.id, unlocked);
       // Success: stay in the modal, show the pending card.
+      pendingDraftRef.current = null;
       setOptimisticRevealTxid(result.txid);
       setRevealConfirming(false);
       qc.invalidateQueries({ queryKey: ["wallet"] });
@@ -340,6 +410,13 @@ export function NameActionsModal({
     } catch (e) {
       showToast(mapError(unwrapStaged(e), stageOf(e)), "error");
       // On failure, stay in the confirm panel so the user can retry.
+      // A pre-broadcast cancel/failure orphans the reveal draft — discard it so
+      // a retry isn't blocked. Keep it only if broadcast may be in flight.
+      if (stageOf(e) !== "broadcast") {
+        await discardPendingDraft();
+      } else {
+        pendingDraftRef.current = null;
+      }
     } finally {
       setBusy(null);
     }
@@ -489,9 +566,17 @@ export function NameActionsModal({
             data-testid="name-phase"
           >
             <div className="flex items-center gap-2">
-              {/* Show task state badge when available, fall back to phase */}
+              {/* Task-state badge when available; while the caps query is still
+                  pending, show a neutral placeholder instead of the raw phase so
+                  we never render a label that contradicts the table row. Only
+                  once caps has settled with no summary do we fall back to the
+                  on-chain phase. */}
               {summary ? (
                 <Badge variant={summary.variant}>{summary.label}</Badge>
+              ) : capsPending ? (
+                <Badge variant="default" data-testid="name-phase-loading">
+                  Checking…
+                </Badge>
               ) : (
                 <Badge variant={badge.variant}>{badge.label}</Badge>
               )}
@@ -673,8 +758,11 @@ export function NameActionsModal({
                   {busy === "REDEEM" ? "…" : "Redeem"}
                 </Button>
               </div>
-              <BidForm
+              <BidGate
                 variant="advanced"
+                canBid={caps?.canBid ?? { allowed: false, reason: null }}
+                phase={badge.phase}
+                countdown={countdown}
                 bidHns={bidHns}
                 onBidChange={setBidHns}
                 lockupHns={lockupHns}

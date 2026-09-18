@@ -648,6 +648,36 @@ fn cap_bidding_phase_cannot_bid_with_commitment() {
 }
 
 #[test]
+fn cap_bidding_phase_already_bid_reason_is_wait_for_reveal() {
+    // A name in the on-chain BIDDING phase that THIS wallet already bid on
+    // resolves to WaitingForBidding. Its next-action reason must describe the
+    // real remaining action (wait for reveal), not the pending-OPEN default
+    // "The auction opens for bidding soon." — bidding is already open here.
+    let action_ctx = ctx(
+        true, false, false, false, None, None, None, 1, false, None, None, None,
+    );
+    let caps = build_name_action_capabilities(
+        "example".into(),
+        "BIDDING".into(),
+        "BIDDING",
+        None,
+        &action_ctx,
+        false,
+        false,
+        None,
+        Network::Main,
+    );
+    assert_eq!(caps.task_state, AuctionTaskState::WaitingForBidding);
+    assert_eq!(caps.next_action_label.as_deref(), Some("Wait for Bidding"));
+    let reason = caps.next_action_reason.as_deref().unwrap();
+    assert_eq!(
+        reason,
+        "Your bid is placed. Wait for the reveal window to open."
+    );
+    assert!(!reason.contains("opens for bidding soon"));
+}
+
+#[test]
 fn cap_reveal_phase_can_reveal_with_commitment_and_coin() {
     let action_ctx = ctx(
         true, true, false, false, None, None, None, 0, false, None, None, None,
