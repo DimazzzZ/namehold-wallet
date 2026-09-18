@@ -416,12 +416,12 @@ describe("WalletView (non-custodial)", () => {
     const updateRow = (await screen.findByText(".ecology")).closest("tr")!;
     expect(within(updateRow).getByText("Update")).toBeInTheDocument();
     expect(screen.queryByText("222.000000")).not.toBeInTheDocument();
-    // ...it shows net 0 in Amount, with an explanatory tooltip about the
-    // carried value.
-    expect(within(updateRow).getByText("0.000000")).toBeInTheDocument();
-    expect(
-      within(updateRow).getByTitle(/Name value 222\.000000 HNS is carried to your own new coin/i),
-    ).toBeInTheDocument();
+    // ...instead, the Amount cell surfaces the carried name value as an
+    // informational "⤷ 222.000000" (net flow is still 0 — not shown as a cost),
+    // in the neutral gray tone with a dotted-underline tooltip trigger.
+    const carried = within(updateRow).getByText(/⤷\s*222\.000000/);
+    expect(carried).toBeInTheDocument();
+    expect(carried.className).toContain("text-gray-500");
     // A real send still shows its outgoing amount. `send_hns` isn't in
     // ACTION_META so it renders as the FALLBACK_META "Other" badge; find the
     // send row by its unique amount instead.
@@ -1313,11 +1313,12 @@ describe("WalletView — Recent transactions amount tone", () => {
     render(<WalletView />, { wrapper: wrapper() });
     await screen.findByText("Primary");
 
-    // Self-homed UPDATE: amount cell shows "0.000000" in neutral gray tone.
+    // Self-homed UPDATE: amount cell shows the carried name value as
+    // "⤷ 222.000000" in neutral gray — not a red spend.
     const updateRow = (await screen.findByText(".ecology")).closest("tr")!;
-    const zeroCell = within(updateRow).getByText("0.000000");
-    expect(zeroCell.className).toContain("text-gray-700");
-    expect(zeroCell.className).not.toContain("text-red-600");
+    const carriedCell = within(updateRow).getByText(/⤷\s*222\.000000/);
+    expect(carriedCell.className).toContain("text-gray-500");
+    expect(carriedCell.className).not.toContain("text-red-600");
 
     // Outgoing SEND: amount cell shows "-1.000000" in red tone (spend).
     const sendRow = screen.getByText("-1.000000").closest("tr")!;

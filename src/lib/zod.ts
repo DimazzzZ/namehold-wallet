@@ -55,6 +55,7 @@ export const ActionRowSchema = z.object({
   name: z.string().nullable(),
   nameHash: z.string().nullable(),
   valueDoos: z.number(),
+  nameValueDoos: z.number().nullable(),
   direction: z.string(),
   height: z.number().nullable(),
   time: z.number().nullable(),

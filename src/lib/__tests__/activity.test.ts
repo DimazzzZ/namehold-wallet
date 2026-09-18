@@ -12,6 +12,7 @@ describe("mergeActivity", () => {
         name: null,
         nameHash: null,
         valueDoos: -100_000_000,
+        nameValueDoos: null,
         direction: "send",
         height: 100,
         time: 1000,
@@ -71,6 +72,7 @@ describe("mergeActivity", () => {
         name: null,
         nameHash: null,
         valueDoos: 50_000_000,
+        nameValueDoos: null,
         direction: "receive",
         height: 200,
         time: 2000,
@@ -178,6 +180,73 @@ describe("mergeActivity", () => {
     expect(merged[0]!.feeDoos).toBe(10_000);
   });
 
+  it("onchain covenant with no draft: nameValueDoos comes from the backend row", () => {
+    const rows: ActionRow[] = [
+      {
+        txid: "reveal-tx",
+        action: "reveal",
+        name: null,
+        nameHash: "deadbeef",
+        valueDoos: 0,
+        nameValueDoos: 5_000_000, // covenant output value from the backend
+        direction: "internal",
+        height: 300,
+        time: 3000,
+        confirmed: true,
+        counterparty: null,
+      },
+    ];
+    const merged = mergeActivity(rows, []);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.valueDoos).toBe(0);
+    expect(merged[0]!.nameValueDoos).toBe(5_000_000);
+  });
+
+  it("draft fallback: backend nameValueDoos null → uses matched draft send total", () => {
+    const rows: ActionRow[] = [
+      {
+        txid: "update-tx",
+        action: "update",
+        name: null,
+        nameHash: "deadbeef",
+        valueDoos: 0,
+        nameValueDoos: null, // backend could not resolve the output value
+        direction: "internal",
+        height: 150,
+        time: 1500,
+        confirmed: true,
+        counterparty: null,
+      },
+    ];
+    const drafts: TxDraftSummary[] = [
+      {
+        id: "draft-update",
+        walletProfileId: "profile1",
+        action: "update",
+        status: "confirmed",
+        summary: {
+          action: "update",
+          sendTotalDoos: 222_000_000,
+          feeDoos: 10_000,
+          changeDoos: 0,
+          inputTotalDoos: 232_000_000,
+          numInputs: 1,
+          recipientAddress: null,
+          txid: "update-tx",
+          warnings: [],
+          name: "myname",
+        },
+        errorMessage: null,
+        txid: "update-tx",
+        confirmationHeight: 150,
+        createdAt: "2026-07-24 15:00:00",
+      },
+    ];
+    const merged = mergeActivity(rows, drafts);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.nameValueDoos).toBe(222_000_000);
+  });
+
   it("sort: mixed rows ordered newest-first by sortTs", () => {
     // Use realistic unix seconds so on-chain `time` and parsed `createdAt`
     // live in the same numeric range. 2026-07-24 timestamps:
@@ -191,6 +260,7 @@ describe("mergeActivity", () => {
         name: null,
         nameHash: null,
         valueDoos: -100_000_000,
+        nameValueDoos: null,
         direction: "send",
         height: 50,
         time: t1200, // oldest
@@ -203,6 +273,7 @@ describe("mergeActivity", () => {
         name: null,
         nameHash: null,
         valueDoos: 50_000_000,
+        nameValueDoos: null,
         direction: "receive",
         height: 100,
         time: t1300, // newest on-chain

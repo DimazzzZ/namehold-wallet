@@ -85,6 +85,14 @@ pub struct ActionRow {
     /// For destination-facing rows (Send / TRANSFER), the counterparty address
     /// when we can pick a canonical one. Empty otherwise.
     pub counterparty: Option<String>,
+    /// The name's locked value in dollarydoos, taken from the `value` of the
+    /// covenant output for a name-covenant row (BID lockup, REVEAL true bid,
+    /// REDEEM/REGISTER/UPDATE/RENEW/TRANSFER/FINALIZE self-homed value). This
+    /// is NOT a spend — it is re-homed to the wallet's own coin; only the fee
+    /// leaves the wallet. `None` for non-covenant rows and for covenant rows
+    /// whose output value could not be resolved locally (the UI shows `—`
+    /// without a tooltip in that case).
+    pub name_value_doos: Option<i64>,
 }
 
 /// Classify one decoded hsd tx (as returned by `/tx/address`) against the
@@ -126,6 +134,10 @@ pub fn classify_tx(tx: &serde_json::Value, our_addrs: &HashSet<String>) -> Optio
     let mut name_display: Option<String> = None;
     let mut name_cov_addr_is_ours = false;
     let mut name_cov_addr: Option<String> = None;
+    // The `value` of the covenant output — the name's locked value that is
+    // re-homed to the wallet's own coin (not spent). Captured from the same
+    // output that wins the covenant classification below.
+    let mut name_cov_value: Option<i64> = None;
 
     for o in outputs {
         let value = o.get("value").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -171,6 +183,9 @@ pub fn classify_tx(tx: &serde_json::Value, our_addrs: &HashSet<String>) -> Optio
                     } else {
                         Some(addr.to_string())
                     };
+                    // The covenant output's own value is the name's locked
+                    // value (re-homed to our coin, not spent).
+                    name_cov_value = Some(value);
                 }
             }
         }
@@ -267,6 +282,7 @@ pub fn classify_tx(tx: &serde_json::Value, our_addrs: &HashSet<String>) -> Optio
         time,
         confirmed,
         counterparty,
+        name_value_doos: name_cov_value,
     })
 }
 
@@ -419,6 +435,8 @@ mod tests {
         assert_eq!(row.height, Some(100));
         assert!(row.confirmed);
         assert!(row.name.is_none() && row.name_hash.is_none());
+        // Plain receive has no name covenant — no locked value to surface.
+        assert_eq!(row.name_value_doos, None);
     }
 
     #[test]
@@ -473,6 +491,9 @@ mod tests {
         // wallet beyond fee, so value_doos is 0 (matches `netSpendDoos`).
         assert_eq!(row.value_doos, 0);
         assert_eq!(row.direction, "send");
+        // The covenant output's own value is the bid lockup, surfaced for the
+        // Amount cell even though net flow (value_doos) is 0.
+        assert_eq!(row.name_value_doos, Some(5_000_000));
     }
 
     #[test]
@@ -498,6 +519,8 @@ mod tests {
         assert_eq!(row.name_hash.as_deref(), Some("deadbeef"));
         // Reveal output re-homes the bid coin back onto our own address.
         assert_eq!(row.value_doos, 0);
+        // The revealed true bid is the covenant output's value.
+        assert_eq!(row.name_value_doos, Some(5_000_000));
     }
 
     #[test]

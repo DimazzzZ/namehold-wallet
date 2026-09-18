@@ -127,9 +127,13 @@ export function mergeActivity(rows: ActionRow[], drafts: TxDraftSummary[]): Merg
       // For a self-homed covenant matched to a draft, expose the locked
       // name value so the UI can render its "222 HNS carried" tooltip.
       nameValueDoos:
-        draft?.summary?.recipientAddress == null && (draft?.summary?.sendTotalDoos ?? 0) > 0
+        // Prefer the backend value taken from the covenant output's own
+        // `value` (reliable, covers on-chain rows with no local draft). Fall
+        // back to the matched draft's self-homed send total.
+        row.nameValueDoos ??
+        (draft?.summary?.recipientAddress == null && (draft?.summary?.sendTotalDoos ?? 0) > 0
           ? draft!.summary!.sendTotalDoos
-          : null,
+          : null),
     });
   }
 
