@@ -13,6 +13,11 @@ use crate::commands::read::merge_indexed_bids;
 use crate::db;
 use crate::db::queries::BidCommitmentRow;
 
+/// The network every test in this module scopes its rows to. Both the index
+/// and the cursor are network-keyed (028); regtest is the natural choice since
+/// it is the chain these fixtures describe.
+const NET: &str = "regtest";
+
 fn conn() -> Connection {
     let c = Connection::open_in_memory().unwrap();
     c.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
@@ -34,10 +39,11 @@ fn seed_bid(
 ) {
     c.execute(
         "INSERT INTO name_bid_outpoints
-            (bid_txid, bid_vout, name_hash_hex, name, lockup_value_doos,
+            (network, bid_txid, bid_vout, name_hash_hex, name, lockup_value_doos,
              address, height, reveal_txid, reveal_value_doos)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'rs1qx', ?6, ?7, ?8)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'rs1qx', ?7, ?8, ?9)",
         params![
+            NET,
             bid_txid,
             bid_vout,
             name_hash,
@@ -89,7 +95,7 @@ fn read_indexed_bids_filters_by_name_hash_and_orders_by_height() {
         None,
     );
 
-    let out = read_indexed_bids(&c, "hasha").unwrap();
+    let out = read_indexed_bids(&c, NET, "hasha").unwrap();
     assert_eq!(out.len(), 2);
     // Ordered by height ASC — earlier bid first.
     assert_eq!(out[0].txid.as_deref(), Some("tx1"));
@@ -102,7 +108,7 @@ fn read_indexed_bids_filters_by_name_hash_and_orders_by_height() {
     assert_eq!(out[1].revealed, Some(true));
 
     // Unrelated name hash returns nothing (never leaks other names' bids).
-    assert!(read_indexed_bids(&c, "nosuchhash").unwrap().is_empty());
+    assert!(read_indexed_bids(&c, NET, "nosuchhash").unwrap().is_empty());
 }
 
 #[test]
@@ -111,7 +117,7 @@ fn read_indexed_bids_lowercases_name_hash_query() {
     seed_bid(&c, "tx1", 0, "aabbcc", Some("n"), 100, 5, None, None);
     // Query with uppercase — the row was stored lowercase, so the query must
     // normalize on the way in to match.
-    let out = read_indexed_bids(&c, "AABBCC").unwrap();
+    let out = read_indexed_bids(&c, NET, "AABBCC").unwrap();
     assert_eq!(out.len(), 1);
 }
 
@@ -126,11 +132,11 @@ fn apply_reveal(c: &Connection, name_hash: &str, reveal_txid: &str, reveal_value
          SET reveal_txid = ?1, reveal_value_doos = ?2
          WHERE rowid = (
              SELECT rowid FROM name_bid_outpoints
-             WHERE name_hash_hex = ?3 AND reveal_txid IS NULL
+             WHERE network = ?3 AND name_hash_hex = ?4 AND reveal_txid IS NULL
              ORDER BY height ASC, bid_txid ASC, bid_vout ASC
              LIMIT 1
          )",
-        params![reveal_txid, reveal_value, name_hash],
+        params![reveal_txid, reveal_value, NET, name_hash],
     )
     .unwrap();
 }
@@ -178,7 +184,7 @@ fn reveal_matches_earliest_unmatched_bid_for_same_name() {
     // Second REVEAL for the same name → the NEXT unmatched BID (height 210).
     apply_reveal(&c, "hn", "rvB", 2_500_000);
 
-    let out = read_indexed_bids(&c, "hn").unwrap();
+    let out = read_indexed_bids(&c, NET, "hn").unwrap();
     assert_eq!(out.len(), 2);
     // Ordered by height ASC in read_indexed_bids.
     assert_eq!(out[0].txid.as_deref(), Some("bidEarly"));
@@ -189,7 +195,7 @@ fn reveal_matches_earliest_unmatched_bid_for_same_name() {
     assert_eq!(out[1].revealed, Some(true));
 
     // The other name's BID is never touched by these reveals.
-    let other = read_indexed_bids(&c, "other").unwrap();
+    let other = read_indexed_bids(&c, NET, "other").unwrap();
     assert_eq!(other.len(), 1);
     assert_eq!(other[0].revealed, Some(false));
     assert_eq!(other[0].value, None);
@@ -198,16 +204,19 @@ fn reveal_matches_earliest_unmatched_bid_for_same_name() {
 #[test]
 fn scan_cursor_defaults_to_zero_and_can_advance() {
     let c = conn();
-    // The 018 migration inserts the singleton row at last_height=0.
-    assert_eq!(scan_cursor_height(&c), 0);
+    // The 028 migration seeds one row per network at last_height=0.
+    assert_eq!(scan_cursor_height(&c, NET), 0);
 
     // Direct UPDATE (matches what the scanner does through set_scan_cursor).
     c.execute(
-        "UPDATE chain_scan_cursor SET last_height = ?1 WHERE id = 1",
-        params![1_234_i64],
+        "UPDATE chain_scan_cursor SET last_height = ?1 WHERE network = ?2",
+        params![1_234_i64, NET],
     )
     .unwrap();
-    assert_eq!(scan_cursor_height(&c), 1_234);
+    assert_eq!(scan_cursor_height(&c, NET), 1_234);
+
+    // Another network's cursor is untouched — this is the whole point of 028.
+    assert_eq!(scan_cursor_height(&c, "main"), 0);
 }
 
 #[test]
@@ -334,7 +343,7 @@ fn temp_db() -> (std::path::PathBuf, rusqlite::Connection) {
 async fn scan_block_propagates_get_block_hash_error() {
     let (path, _conn) = temp_db();
     let mock = MockNodeRpc::new().with_block_hash_err("hash rpc down");
-    let result = scan_block(&mock, path.to_str().unwrap(), 1).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 1).await;
     assert!(result.is_err());
 }
 
@@ -344,7 +353,7 @@ async fn scan_block_propagates_get_block_error() {
     let mock = MockNodeRpc::new()
         .with_block_hash("abc123".to_string())
         .with_block_err("block rpc down");
-    let result = scan_block(&mock, path.to_str().unwrap(), 1).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 1).await;
     assert!(result.is_err());
 }
 
@@ -357,7 +366,7 @@ async fn scan_block_ok_when_block_has_no_tx_field() {
     let mock = MockNodeRpc::new()
         .with_block_hash("abc".to_string())
         .with_block(serde_json::json!({"height": 1}));
-    let result = scan_block(&mock, path.to_str().unwrap(), 1).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 1).await;
     assert!(result.is_ok());
 }
 
@@ -367,7 +376,7 @@ async fn scan_block_ok_when_tx_array_is_empty() {
     let mock = MockNodeRpc::new()
         .with_block_hash("abc".to_string())
         .with_block(serde_json::json!({"tx": []}));
-    let result = scan_block(&mock, path.to_str().unwrap(), 1).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 1).await;
     assert!(result.is_ok());
 }
 
@@ -377,7 +386,7 @@ async fn scan_block_ok_when_tx_has_no_outputs() {
     let mock = MockNodeRpc::new()
         .with_block_hash("abc".to_string())
         .with_block(serde_json::json!({"tx": [{"hash": "tx1"}]}));
-    let result = scan_block(&mock, path.to_str().unwrap(), 1).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 1).await;
     assert!(result.is_ok());
 }
 
@@ -392,7 +401,7 @@ async fn scan_block_ok_when_outputs_have_no_covenant() {
                 "outputs": [{"value": 100, "address": "rs1qabc"}]
             }]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 1).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 1).await;
     assert!(result.is_ok());
 }
 
@@ -420,11 +429,11 @@ async fn scan_block_inserts_bid_covenant() {
                 }]
             }]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 100).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 100).await;
     assert!(result.is_ok());
 
     // Verify the row was inserted
-    let bids = read_indexed_bids(&conn, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].txid.as_deref(), Some("txid_bid_1"));
     assert_eq!(bids[0].index, Some(0));
@@ -461,7 +470,7 @@ async fn scan_block_calls_get_block_hash_with_correct_height() {
         .with_block_hash("hash_at_999".to_string())
         .with_block(serde_json::json!({ "tx": [] }));
 
-    let result = scan_block(&mock, path.to_str().unwrap(), 999).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 999).await;
     assert!(result.is_ok());
 
     use crate::tests::mock_node_rpc::RpcCall;
@@ -499,10 +508,10 @@ async fn scan_block_inserts_bid_with_undecoded_name() {
                 }]
             }]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 50).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 50).await;
     assert!(result.is_ok());
 
-    let bids = read_indexed_bids(&conn, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].lockup, Some(1_000_000));
 }
@@ -543,11 +552,11 @@ async fn scan_block_inserts_reveal_and_matches_to_existing_bid() {
                 }]
             }]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 100).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 100).await;
     assert!(result.is_ok());
 
     // The BID row should now have reveal_txid and reveal_value_doos set
-    let bids = read_indexed_bids(&conn, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].revealed, Some(true));
     assert_eq!(bids[0].value, Some(2_000_000));
@@ -572,7 +581,7 @@ async fn scan_block_reveal_without_matching_bid_is_noop() {
                 }]
             }]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 200).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 200).await;
     assert!(result.is_ok());
 }
 
@@ -610,11 +619,11 @@ async fn scan_block_processes_bid_and_reveal_in_same_block() {
                 ]
             }]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 150).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 150).await;
     assert!(result.is_ok());
 
     // BID inserted and REVEAL matched to it
-    let bids = read_indexed_bids(&conn, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].txid.as_deref(), Some("txmixed"));
     assert_eq!(bids[0].lockup, Some(4_000_000));
@@ -642,10 +651,10 @@ async fn scan_block_skips_tx_with_empty_hash() {
                 }]
             }]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 10).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 10).await;
     assert!(result.is_ok());
     // Nothing inserted because txid was empty
-    let bids = read_indexed_bids(&conn, "aabb").unwrap();
+    let bids = read_indexed_bids(&conn, NET, "aabb").unwrap();
     assert!(bids.is_empty());
 }
 
@@ -667,7 +676,7 @@ async fn scan_block_skips_covenant_with_empty_items() {
                 }]
             }]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 10).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 10).await;
     assert!(result.is_ok());
     // Empty items → skipped
 }
@@ -690,7 +699,7 @@ async fn scan_block_skips_covenant_with_empty_name_hash() {
                 }]
             }]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 10).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 10).await;
     assert!(result.is_ok());
     // Empty name_hash → skipped
 }
@@ -714,9 +723,9 @@ async fn scan_block_skips_unknown_covenant_type() {
                 }]
             }]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 10).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 10).await;
     assert!(result.is_ok());
-    let bids = read_indexed_bids(&conn, "aabb").unwrap();
+    let bids = read_indexed_bids(&conn, NET, "aabb").unwrap();
     assert!(bids.is_empty());
 }
 
@@ -737,7 +746,7 @@ async fn scan_block_handles_missing_tx_hash_field() {
                 }]
             }]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 10).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 10).await;
     assert!(result.is_ok());
 }
 
@@ -760,9 +769,9 @@ async fn scan_block_handles_output_without_address_or_value() {
                 }]
             }]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 10).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 10).await;
     assert!(result.is_ok());
-    let bids = read_indexed_bids(&conn, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].lockup, Some(0)); // value defaults to 0
 }
@@ -790,7 +799,7 @@ async fn scan_block_upsert_updates_name_on_conflict() {
                 }]
             }]
         }));
-    scan_block(&mock1, path.to_str().unwrap(), 10)
+    scan_block(&mock1, path.to_str().unwrap(), NET, 10)
         .await
         .unwrap();
 
@@ -811,12 +820,12 @@ async fn scan_block_upsert_updates_name_on_conflict() {
                 }]
             }]
         }));
-    scan_block(&mock2, path.to_str().unwrap(), 11)
+    scan_block(&mock2, path.to_str().unwrap(), NET, 11)
         .await
         .unwrap();
 
     // The row should still be 1 (upserted, not duplicated)
-    let bids = read_indexed_bids(&conn, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
 }
 
@@ -858,11 +867,11 @@ async fn scan_block_processes_multiple_txs() {
                 }
             ]
         }));
-    let result = scan_block(&mock, path.to_str().unwrap(), 300).await;
+    let result = scan_block(&mock, path.to_str().unwrap(), NET, 300).await;
     assert!(result.is_ok());
 
-    assert_eq!(read_indexed_bids(&conn, nh1).unwrap().len(), 1);
-    assert_eq!(read_indexed_bids(&conn, nh2).unwrap().len(), 1);
+    assert_eq!(read_indexed_bids(&conn, NET, nh1).unwrap().len(), 1);
+    assert_eq!(read_indexed_bids(&conn, NET, nh2).unwrap().len(), 1);
 }
 
 // --- set_scan_cursor ---------------------------------------------------------
@@ -870,11 +879,11 @@ async fn scan_block_processes_multiple_txs() {
 #[tokio::test]
 async fn set_scan_cursor_persists_height() {
     let (_path, conn) = temp_db();
-    assert_eq!(scan_cursor_height(&conn), 0);
-    set_scan_cursor(&conn, 42).unwrap();
-    assert_eq!(scan_cursor_height(&conn), 42);
-    set_scan_cursor(&conn, 9999).unwrap();
-    assert_eq!(scan_cursor_height(&conn), 9999);
+    assert_eq!(scan_cursor_height(&conn, NET), 0);
+    set_scan_cursor(&conn, NET, 42).unwrap();
+    assert_eq!(scan_cursor_height(&conn, NET), 42);
+    set_scan_cursor(&conn, NET, 9999).unwrap();
+    assert_eq!(scan_cursor_height(&conn, NET), 9999);
 }
 
 // --- name_hash lowercasing in scan_block -------------------------------------
@@ -899,10 +908,10 @@ async fn scan_block_lowercases_name_hash_from_covenant() {
                 }]
             }]
         }));
-    scan_block(&mock, path.to_str().unwrap(), 5).await.unwrap();
+    scan_block(&mock, path.to_str().unwrap(), NET, 5).await.unwrap();
 
     // Query with lowercase should find it
-    let bids = read_indexed_bids(&conn, "aabbccdd").unwrap();
+    let bids = read_indexed_bids(&conn, NET, "aabbccdd").unwrap();
     assert_eq!(bids.len(), 1);
 }
 
@@ -940,9 +949,9 @@ async fn scan_block_assigns_correct_vout_index() {
                 ]
             }]
         }));
-    scan_block(&mock, path.to_str().unwrap(), 20).await.unwrap();
+    scan_block(&mock, path.to_str().unwrap(), NET, 20).await.unwrap();
 
-    let bids = read_indexed_bids(&conn, nh).unwrap();
+    let bids = read_indexed_bids(&conn, NET, nh).unwrap();
     assert_eq!(bids.len(), 2);
     assert_eq!(bids[0].index, Some(0));
     assert_eq!(bids[1].index, Some(1));

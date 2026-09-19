@@ -1054,7 +1054,7 @@ async fn read_name_bids_falls_through_to_explorer_when_scanner_behind() {
     )
     .unwrap();
     conn.execute(
-        "UPDATE chain_scan_cursor SET last_height = 100 WHERE id = 1",
+        "UPDATE chain_scan_cursor SET last_height = 100 WHERE network = 'regtest'",
         [],
     )
     .unwrap();
@@ -1100,7 +1100,7 @@ async fn read_name_bids_serves_from_local_index_when_scanner_covers() {
     )
     .unwrap();
     conn.execute(
-        "UPDATE chain_scan_cursor SET last_height = 1000 WHERE id = 1",
+        "UPDATE chain_scan_cursor SET last_height = 1000 WHERE network = 'regtest'",
         [],
     )
     .unwrap();
@@ -1110,9 +1110,9 @@ async fn read_name_bids_serves_from_local_index_when_scanner_covers() {
     let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name("coveredname").unwrap());
     conn.execute(
         "INSERT INTO name_bid_outpoints
-            (bid_txid, bid_vout, name_hash_hex, name, lockup_value_doos,
+            (network, bid_txid, bid_vout, name_hash_hex, name, lockup_value_doos,
              address, height, reveal_txid, reveal_value_doos)
-         VALUES ('txLocal', 0, ?1, 'coveredname', 200000000, 'rs1qx', 510,
+         VALUES ('regtest', 'txLocal', 0, ?1, 'coveredname', 200000000, 'rs1qx', 510,
                  'txReveal', 150000000)",
         params![name_hash_hex],
     )
@@ -1129,6 +1129,83 @@ async fn read_name_bids_serves_from_local_index_when_scanner_covers() {
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0]["txid"], "txLocal");
     assert_eq!(val["highest"], 150_000_000);
+}
+
+// ---------------------------------------------------------------------------
+// read_name_bids — regression for the pre-028 cross-network leak.
+//
+// Before 028 the scanner cursor was a singleton row and the index was keyed by
+// nameHash alone. A wallet that had synced mainnet (cursor at, say, 347186) and
+// then switched to a regtest profile got two wrong answers at once: the stale
+// mainnet height satisfied `scanner_covers` for a regtest name opened at 111,
+// and any mainnet BID for the same name answered the regtest query — a name
+// hashes identically on every chain.
+//
+// Both tables are network-keyed now, so the mainnet state below must be
+// invisible: coverage is false and we fall through to the explorer.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_name_bids_ignores_another_networks_cursor_and_index() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+    let _bids = server
+        .mock("GET", "/api/names/leakname")
+        .with_status(200)
+        .with_body(
+            r#"{"name":"leakname","state":"BIDDING","highest":4200000,
+                "bids":[{"txid":"txExplorer","index":0,"lockup":4200000}]}"#,
+        )
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", &server.url()).unwrap();
+
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, height)
+         VALUES ('W1', 'leakname', '', 'BIDDING', NULL, NULL, 111)",
+        [],
+    )
+    .unwrap();
+
+    // Mainnet is far ahead; regtest has never been scanned (028 seeds it at 0).
+    conn.execute(
+        "UPDATE chain_scan_cursor SET last_height = 347186 WHERE network = 'main'",
+        [],
+    )
+    .unwrap();
+
+    // A mainnet BID for the very same nameHash.
+    let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name("leakname").unwrap());
+    conn.execute(
+        "INSERT INTO name_bid_outpoints
+            (network, bid_txid, bid_vout, name_hash_hex, name, lockup_value_doos,
+             address, height, reveal_txid, reveal_value_doos)
+         VALUES ('main', 'txMainnet', 0, ?1, 'leakname', 900000000, 'hs1qx', 300000,
+                 NULL, NULL)",
+        params![name_hash_hex],
+    )
+    .unwrap();
+
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "leakname".into(), Some("W1".into()))
+        .await
+        .unwrap();
+
+    // The regtest cursor (0) does not cover height 111, so we fell through to
+    // the explorer — and the mainnet row never surfaced.
+    let bids = val["bids"].as_array().expect("bids array");
+    assert_eq!(bids.len(), 1);
+    assert_eq!(bids[0]["txid"], "txExplorer");
+    assert!(
+        !bids.iter().any(|b| b["txid"] == "txMainnet"),
+        "a mainnet BID must never answer a regtest query: {bids:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

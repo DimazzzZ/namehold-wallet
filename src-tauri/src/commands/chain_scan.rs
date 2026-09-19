@@ -5,7 +5,11 @@
 //!
 //! Design:
 //! - Runs only while the node is synced (`node_ready_from_settings`).
-//! - Walks blocks from `chain_scan_cursor.last_height + 1` to the node tip.
+//! - Scoped to the active profile's network: both the cursor and the index are
+//!   keyed by it, because a name hashes to the same value on every chain and a
+//!   mainnet cursor height is meaningless against a regtest tip (see 028).
+//! - Walks blocks from this network's `chain_scan_cursor.last_height + 1` to
+//!   the node tip.
 //! - For each block: `getblock(hash, verbose, verboseTx)` → iterate outputs →
 //!   BID/REVEAL covenants → upsert into `name_bid_outpoints`.
 //! - Advances the cursor per block so it's resumable and never re-scans genesis.
@@ -87,6 +91,21 @@ pub async fn run_chain_scanner(db_path: String) {
             continue;
         }
 
+        // The cursor and the index are network-keyed, so an unknown chain has
+        // nowhere safe to write: attributing it to a default would file, say,
+        // regtest BIDs under mainnet's nameHashes. No profile also means no
+        // caller — `read_name_bids` is per-profile — so idling costs nothing.
+        let scan_network = match expected_network
+            .as_deref()
+            .and_then(crate::noncustodial::network::Network::from_str_opt)
+        {
+            Some(n) => n.as_str(),
+            None => {
+                sleep(NOT_READY_SLEEP).await;
+                continue;
+            }
+        };
+
         // Use per-profile probe if active profile exists; otherwise fall back to global.
         let tip = if let Some(profile_id) = active_profile_id.as_deref() {
             match crate::commands::read::node_tip_height_if_synced_from_profile_with_network(
@@ -125,7 +144,7 @@ pub async fn run_chain_scanner(db_path: String) {
                     continue;
                 }
             };
-            get_scan_cursor(&conn)
+            get_scan_cursor(&conn, scan_network)
         };
 
         if cursor >= tip {
@@ -160,7 +179,10 @@ pub async fn run_chain_scanner(db_path: String) {
 
         let mut advanced_to = cursor;
         for height in (cursor + 1)..=end {
-            if scan_block(&client, &db_path, height).await.is_err() {
+            if scan_block(&client, &db_path, scan_network, height)
+                .await
+                .is_err()
+            {
                 // Transient RPC/DB error — stop this batch, retry next loop.
                 break;
             }
@@ -170,7 +192,7 @@ pub async fn run_chain_scanner(db_path: String) {
         // Advance cursor to the last successfully scanned height.
         if advanced_to > cursor {
             if let Ok(conn) = open_conn(&db_path) {
-                let _ = set_scan_cursor(&conn, advanced_to);
+                let _ = set_scan_cursor(&conn, scan_network, advanced_to);
             }
         }
 
@@ -188,6 +210,7 @@ pub async fn run_chain_scanner(db_path: String) {
 pub(crate) async fn scan_block(
     client: &dyn crate::noncustodial::node_rpc::NodeRpc,
     db_path: &str,
+    network: &str,
     height: i64,
 ) -> Result<(), crate::error::AppError> {
     let hash = client.get_block_hash(height).await?;
@@ -275,11 +298,13 @@ pub(crate) async fn scan_block(
     for bid in &bids {
         tx.execute(
             "INSERT INTO name_bid_outpoints
-                (bid_txid, bid_vout, name_hash_hex, name, lockup_value_doos, address, height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(bid_txid, bid_vout) DO UPDATE SET
+                (network, bid_txid, bid_vout, name_hash_hex, name,
+                 lockup_value_doos, address, height)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(network, bid_txid, bid_vout) DO UPDATE SET
                 name = COALESCE(excluded.name, name_bid_outpoints.name)",
             params![
+                network,
                 bid.bid_txid,
                 bid.bid_vout,
                 bid.name_hash_hex,
@@ -301,13 +326,14 @@ pub(crate) async fn scan_block(
              SET reveal_txid = ?1, reveal_value_doos = ?2
              WHERE rowid = (
                  SELECT rowid FROM name_bid_outpoints
-                 WHERE name_hash_hex = ?3 AND reveal_txid IS NULL
+                 WHERE network = ?3 AND name_hash_hex = ?4 AND reveal_txid IS NULL
                  ORDER BY height ASC, bid_txid ASC, bid_vout ASC
                  LIMIT 1
              )",
             params![
                 reveal.reveal_txid,
                 reveal.reveal_value_doos as i64,
+                network,
                 reveal.name_hash_hex,
             ],
         )?;
@@ -318,10 +344,10 @@ pub(crate) async fn scan_block(
 
 // --- DB helpers (chain_scan_cursor) ------------------------------------------
 
-fn get_scan_cursor(conn: &rusqlite::Connection) -> i64 {
+fn get_scan_cursor(conn: &rusqlite::Connection, network: &str) -> i64 {
     conn.query_row(
-        "SELECT last_height FROM chain_scan_cursor WHERE id = 1",
-        [],
+        "SELECT last_height FROM chain_scan_cursor WHERE network = ?1",
+        params![network],
         |r| r.get(0),
     )
     .unwrap_or(0)
@@ -332,11 +358,13 @@ fn get_scan_cursor(conn: &rusqlite::Connection) -> i64 {
 /// Zero behavior change — only ever called from `run_chain_scanner`.
 pub(crate) fn set_scan_cursor(
     conn: &rusqlite::Connection,
+    network: &str,
     height: i64,
 ) -> Result<(), crate::error::AppError> {
     conn.execute(
-        "UPDATE chain_scan_cursor SET last_height = ?1 WHERE id = 1",
-        params![height],
+        "INSERT INTO chain_scan_cursor (network, last_height) VALUES (?1, ?2)
+         ON CONFLICT(network) DO UPDATE SET last_height = excluded.last_height",
+        params![network, height],
     )?; // COVERAGE: the Err branch of `?` requires a corrupt/closed DB — not unit-testable.
     Ok(())
 }
@@ -367,15 +395,16 @@ struct RevealRow {
 /// and return the same JSON the frontend expects.
 pub fn read_indexed_bids(
     conn: &rusqlite::Connection,
+    network: &str,
     name_hash_hex: &str,
 ) -> Result<Vec<crate::hsd::types::HsdBid>, crate::error::AppError> {
     let mut stmt = conn.prepare(
         "SELECT bid_txid, bid_vout, lockup_value_doos, reveal_value_doos, reveal_txid
          FROM name_bid_outpoints
-         WHERE name_hash_hex = ?1
+         WHERE network = ?1 AND name_hash_hex = ?2
          ORDER BY height ASC, bid_txid ASC, bid_vout ASC",
     )?; // COVERAGE: the Err branch of `?` requires a malformed statement / broken DB — not unit-testable.
-    let rows = stmt.query_map(params![name_hash_hex.to_ascii_lowercase()], |r| {
+    let rows = stmt.query_map(params![network, name_hash_hex.to_ascii_lowercase()], |r| {
         let txid: String = r.get(0)?;
         let index: u32 = r.get::<_, i64>(1)? as u32;
         let lockup: i64 = r.get(2)?;
@@ -401,6 +430,6 @@ pub fn read_indexed_bids(
 
 /// The scanner's current cursor height. Exposed so `read_name_bids` can tell
 /// whether the scanner has reached the name's auction window yet.
-pub fn scan_cursor_height(conn: &rusqlite::Connection) -> i64 {
-    get_scan_cursor(conn)
+pub fn scan_cursor_height(conn: &rusqlite::Connection, network: &str) -> i64 {
+    get_scan_cursor(conn, network)
 }

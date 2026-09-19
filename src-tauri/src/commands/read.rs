@@ -1154,9 +1154,15 @@ pub async fn read_name_bids(
         let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name(&name)?);
         let (indexed_bids, commitments, scanner_height, name_height) = {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-            let indexed = crate::commands::chain_scan::read_indexed_bids(&conn, &name_hash_hex)?;
+            // Both the index and the cursor are network-keyed (028): a name
+            // hashes identically on every chain, and a cursor from another
+            // chain says nothing about this one's coverage.
+            let network =
+                crate::commands::active_profile::active_profile_network_from_conn(&conn).as_str();
+            let indexed =
+                crate::commands::chain_scan::read_indexed_bids(&conn, network, &name_hash_hex)?;
             let comms = queries::list_bid_commitments(&conn, &id)?;
-            let cursor_h = crate::commands::chain_scan::scan_cursor_height(&conn);
+            let cursor_h = crate::commands::chain_scan::scan_cursor_height(&conn, network);
             // The name's on-chain height (auction OPEN height) — if we have a
             // tracked_name_states row, use its `height`; otherwise fall through.
             let nh: Option<i64> = conn

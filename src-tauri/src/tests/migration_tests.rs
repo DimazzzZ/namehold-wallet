@@ -63,8 +63,9 @@ fn test_schema_version_tracking() {
     // 024 (watchlist_tags: comma-separated tags per watched name).
     // 025 (watched_name_states: daemon-written cache for watchlist columns + notifications).
     // 026 (ledger_hardware_profiles: add 'ledger_hardware' kind to wallet_profiles CHECK).
-    // 027 (profile_settings: per-profile node config overrides, ADR-001).
-    assert_eq!(count, 27);
+    // 027 (profile_settings: per-profile node config overrides, ADR-001),
+    // 028 (chain_scan_network_scope: cursor + bid index keyed by network).
+    assert_eq!(count, 28);
 }
 
 #[test]
