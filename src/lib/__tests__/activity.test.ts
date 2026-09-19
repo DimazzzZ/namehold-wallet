@@ -245,6 +245,11 @@ describe("mergeActivity", () => {
     const merged = mergeActivity(rows, drafts);
     expect(merged).toHaveLength(1);
     expect(merged[0]!.nameValueDoos).toBe(222_000_000);
+    // Regression: only OPEN, BID and FINALIZE carry a raw name in their
+    // covenant, so the chain row for every other name action arrives nameless.
+    // The draft this wallet built knows it — without the fallback the Activity
+    // row showed its action and then "—" where the name belongs.
+    expect(merged[0]!.name).toBe("myname");
   });
 
   it("sort: mixed rows ordered newest-first by sortTs", () => {
