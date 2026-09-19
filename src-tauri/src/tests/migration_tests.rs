@@ -64,8 +64,9 @@ fn test_schema_version_tracking() {
     // 025 (watched_name_states: daemon-written cache for watchlist columns + notifications).
     // 026 (ledger_hardware_profiles: add 'ledger_hardware' kind to wallet_profiles CHECK).
     // 027 (profile_settings: per-profile node config overrides, ADR-001),
-    // 028 (chain_scan_network_scope: cursor + bid index keyed by network).
-    assert_eq!(count, 28);
+    // 028 (chain_scan_network_scope: cursor + bid index keyed by network),
+    // 029 (bid_auction_scope: bid index keyed by the auction's OPEN height).
+    assert_eq!(count, 29);
 }
 
 #[test]

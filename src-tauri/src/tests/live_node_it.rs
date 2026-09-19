@@ -3464,12 +3464,23 @@ async fn live_chain_scanner_indexes_own_bid() {
         crate::commands::chain_scan::set_scan_cursor(&c, "regtest", tip).unwrap();
     }
 
+    // The auction this bid belongs to — the OPEN height the BID covenant names.
+    let auction_start = cl
+        .get_name_info(&name)
+        .await
+        .expect("name info")
+        .get("info")
+        .and_then(|i| i.get("height"))
+        .and_then(|h| h.as_i64())
+        .expect("name must have an open auction");
+
     // The BID covenant is indexed, in doos, under the txid (not the wtxid).
     let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name(&name).unwrap());
     let indexed = {
         let state = app.state::<AppState>();
         let c = state.db.lock().unwrap();
-        crate::commands::chain_scan::read_indexed_bids(&c, "regtest", &name_hash_hex).unwrap()
+        crate::commands::chain_scan::read_indexed_bids(&c, "regtest", auction_start, &name_hash_hex)
+            .unwrap()
     };
     assert_eq!(
         indexed.len(),
@@ -3488,10 +3499,27 @@ async fn live_chain_scanner_indexes_own_bid() {
         let state = app.state::<AppState>();
         let c = state.db.lock().unwrap();
         assert!(
-            crate::commands::chain_scan::read_indexed_bids(&c, "main", &name_hash_hex)
-                .unwrap()
-                .is_empty(),
+            crate::commands::chain_scan::read_indexed_bids(
+                &c,
+                "main",
+                auction_start,
+                &name_hash_hex
+            )
+            .unwrap()
+            .is_empty(),
             "regtest BIDs must not answer a mainnet query"
+        );
+        // Nor does a different auction for the same name see them (029).
+        assert!(
+            crate::commands::chain_scan::read_indexed_bids(
+                &c,
+                "regtest",
+                auction_start - 1,
+                &name_hash_hex
+            )
+            .unwrap()
+            .is_empty(),
+            "a bid must only answer for the auction it was placed in"
         );
         assert_eq!(
             crate::commands::chain_scan::scan_cursor_height(&c, "main"),

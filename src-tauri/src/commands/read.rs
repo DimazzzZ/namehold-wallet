@@ -1159,12 +1159,11 @@ pub async fn read_name_bids(
             // chain says nothing about this one's coverage.
             let network =
                 crate::commands::active_profile::active_profile_network_from_conn(&conn).as_str();
-            let indexed =
-                crate::commands::chain_scan::read_indexed_bids(&conn, network, &name_hash_hex)?;
             let comms = queries::list_bid_commitments(&conn, &id)?;
             let cursor_h = crate::commands::chain_scan::scan_cursor_height(&conn, network);
-            // The name's on-chain height (auction OPEN height) — if we have a
-            // tracked_name_states row, use its `height`; otherwise fall through.
+            // The OPEN height of the name's CURRENT auction. `upsert_name_state`
+            // clears it when the node reports no auction, so `None` means the
+            // name has none open right now — not merely that we haven't looked.
             let nh: Option<i64> = conn
                 .query_row(
                     "SELECT height FROM tracked_name_states WHERE wallet_profile_id = ?1 AND name = ?2",
@@ -1173,6 +1172,19 @@ pub async fn read_name_bids(
                 )
                 .ok()
                 .flatten();
+            // Bids belong to an auction, not to a name (029). Without a current
+            // auction there is nothing to show: a lapsed auction's bids are
+            // still indexed, and serving them is what made a name sitting at
+            // "Waiting for Bidding" list bids from its previous auction.
+            let indexed = match nh {
+                Some(start) => crate::commands::chain_scan::read_indexed_bids(
+                    &conn,
+                    network,
+                    start,
+                    &name_hash_hex,
+                )?,
+                None => Vec::new(),
+            };
             (indexed, comms, cursor_h, nh)
         };
 

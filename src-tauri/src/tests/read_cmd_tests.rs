@@ -1110,9 +1110,9 @@ async fn read_name_bids_serves_from_local_index_when_scanner_covers() {
     let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name("coveredname").unwrap());
     conn.execute(
         "INSERT INTO name_bid_outpoints
-            (network, bid_txid, bid_vout, name_hash_hex, name, lockup_value_doos,
-             address, height, reveal_txid, reveal_value_doos)
-         VALUES ('regtest', 'txLocal', 0, ?1, 'coveredname', 200000000, 'rs1qx', 510,
+            (network, bid_txid, bid_vout, name_hash_hex, name, name_start_height,
+             lockup_value_doos, address, height, reveal_txid, reveal_value_doos)
+         VALUES ('regtest', 'txLocal', 0, ?1, 'coveredname', 500, 200000000, 'rs1qx', 510,
                  'txReveal', 150000000)",
         params![name_hash_hex],
     )
@@ -1184,9 +1184,9 @@ async fn read_name_bids_ignores_another_networks_cursor_and_index() {
     let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name("leakname").unwrap());
     conn.execute(
         "INSERT INTO name_bid_outpoints
-            (network, bid_txid, bid_vout, name_hash_hex, name, lockup_value_doos,
-             address, height, reveal_txid, reveal_value_doos)
-         VALUES ('main', 'txMainnet', 0, ?1, 'leakname', 900000000, 'hs1qx', 300000,
+            (network, bid_txid, bid_vout, name_hash_hex, name, name_start_height,
+             lockup_value_doos, address, height, reveal_txid, reveal_value_doos)
+         VALUES ('main', 'txMainnet', 0, ?1, 'leakname', 111, 900000000, 'hs1qx', 300000,
                  NULL, NULL)",
         params![name_hash_hex],
     )
@@ -1206,6 +1206,106 @@ async fn read_name_bids_ignores_another_networks_cursor_and_index() {
         !bids.iter().any(|b| b["txid"] == "txMainnet"),
         "a mainnet BID must never answer a regtest query: {bids:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// read_name_bids — bids belong to an auction, not to a name (029).
+//
+// A name can be auctioned more than once: an auction nobody reveals in lapses
+// and the name becomes available again. The index keeps every BID it ever saw,
+// so without scoping, a name showing "Waiting for Bidding" with no auction open
+// listed the bids from its previous auction — and a name in a NEW auction would
+// list the old one's bids beside the current ones.
+// ---------------------------------------------------------------------------
+
+/// Insert one indexed BID for `name` in the auction that opened at `start`.
+fn seed_indexed_bid(conn: &rusqlite::Connection, name: &str, start: i64, txid: &str, lockup: i64) {
+    let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name(name).unwrap());
+    conn.execute(
+        "INSERT INTO name_bid_outpoints
+            (network, bid_txid, bid_vout, name_hash_hex, name, name_start_height,
+             lockup_value_doos, address, height, reveal_txid, reveal_value_doos)
+         VALUES ('regtest', ?1, 0, ?2, ?3, ?4, ?5, 'rs1qx', ?6, NULL, NULL)",
+        params![txid, name_hash_hex, name, start, lockup, start + 3],
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn read_name_bids_shows_nothing_when_the_name_has_no_open_auction() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", "").unwrap();
+
+    // The node reports no auction, so `upsert_name_state` left `height` NULL.
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, height)
+         VALUES ('W1', 'lapsed', '', 'UNKNOWN', NULL)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE chain_scan_cursor SET last_height = 5000 WHERE network = 'regtest'",
+        [],
+    )
+    .unwrap();
+    // …but the lapsed auction's BID is still indexed, and always will be.
+    seed_indexed_bid(&conn, "lapsed", 111, "txLapsed", 100_000_000);
+
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "lapsed".into(), Some("W1".into()))
+        .await
+        .unwrap();
+
+    let bids = val["bids"].as_array().expect("bids array");
+    assert!(
+        bids.is_empty(),
+        "a name with no auction open must list no bids: {val}"
+    );
+}
+
+#[tokio::test]
+async fn read_name_bids_shows_only_the_current_auctions_bids() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = mock_synced_node(&mut server).await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    db::queries::set_setting(&conn, "explorer_api_url", "http://127.0.0.1:1").unwrap();
+
+    // The name is in its SECOND auction, opened at 900.
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, height)
+         VALUES ('W1', 'twice', '', 'BIDDING', 900)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE chain_scan_cursor SET last_height = 5000 WHERE network = 'regtest'",
+        [],
+    )
+    .unwrap();
+    seed_indexed_bid(&conn, "twice", 111, "txOldAuction", 100_000_000);
+    seed_indexed_bid(&conn, "twice", 900, "txThisAuction", 250_000_000);
+
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "twice".into(), Some("W1".into()))
+        .await
+        .unwrap();
+
+    let bids = val["bids"].as_array().expect("bids array");
+    assert_eq!(bids.len(), 1, "only the current auction's bid: {val}");
+    assert_eq!(bids[0]["txid"], "txThisAuction");
+    assert_eq!(bids[0]["lockup"], 250_000_000);
 }
 
 // ---------------------------------------------------------------------------

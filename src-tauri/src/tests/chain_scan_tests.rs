@@ -18,6 +18,14 @@ use crate::db::queries::BidCommitmentRow;
 /// it is the chain these fixtures describe.
 const NET: &str = "regtest";
 
+/// The auction these fixtures bid in, i.e. the OPEN height the BID covenant
+/// names. Bids are scoped to an auction, not to a name (029).
+const START: i64 = 100;
+
+/// [`START`] as it appears in a covenant item: `pushU32`, so 4 bytes
+/// little-endian, hex-encoded. 100 = 0x64 → `64000000`, not `00000064`.
+const START_HEX: &str = "64000000";
+
 fn conn() -> Connection {
     let c = Connection::open_in_memory().unwrap();
     c.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
@@ -39,15 +47,16 @@ fn seed_bid(
 ) {
     c.execute(
         "INSERT INTO name_bid_outpoints
-            (network, bid_txid, bid_vout, name_hash_hex, name, lockup_value_doos,
-             address, height, reveal_txid, reveal_value_doos)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'rs1qx', ?7, ?8, ?9)",
+            (network, bid_txid, bid_vout, name_hash_hex, name, name_start_height,
+             lockup_value_doos, address, height, reveal_txid, reveal_value_doos)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'rs1qx', ?8, ?9, ?10)",
         params![
             NET,
             bid_txid,
             bid_vout,
             name_hash,
             name,
+            START,
             lockup,
             height,
             reveal_txid,
@@ -95,7 +104,7 @@ fn read_indexed_bids_filters_by_name_hash_and_orders_by_height() {
         None,
     );
 
-    let out = read_indexed_bids(&c, NET, "hasha").unwrap();
+    let out = read_indexed_bids(&c, NET, START, "hasha").unwrap();
     assert_eq!(out.len(), 2);
     // Ordered by height ASC — earlier bid first.
     assert_eq!(out[0].txid.as_deref(), Some("tx1"));
@@ -108,7 +117,7 @@ fn read_indexed_bids_filters_by_name_hash_and_orders_by_height() {
     assert_eq!(out[1].revealed, Some(true));
 
     // Unrelated name hash returns nothing (never leaks other names' bids).
-    assert!(read_indexed_bids(&c, NET, "nosuchhash").unwrap().is_empty());
+    assert!(read_indexed_bids(&c, NET, START, "nosuchhash").unwrap().is_empty());
 }
 
 #[test]
@@ -117,7 +126,7 @@ fn read_indexed_bids_lowercases_name_hash_query() {
     seed_bid(&c, "tx1", 0, "aabbcc", Some("n"), 100, 5, None, None);
     // Query with uppercase — the row was stored lowercase, so the query must
     // normalize on the way in to match.
-    let out = read_indexed_bids(&c, NET, "AABBCC").unwrap();
+    let out = read_indexed_bids(&c, NET, START, "AABBCC").unwrap();
     assert_eq!(out.len(), 1);
 }
 
@@ -132,11 +141,12 @@ fn apply_reveal(c: &Connection, name_hash: &str, reveal_txid: &str, reveal_value
          SET reveal_txid = ?1, reveal_value_doos = ?2
          WHERE rowid = (
              SELECT rowid FROM name_bid_outpoints
-             WHERE network = ?3 AND name_hash_hex = ?4 AND reveal_txid IS NULL
+             WHERE network = ?3 AND name_hash_hex = ?4
+               AND name_start_height = ?5 AND reveal_txid IS NULL
              ORDER BY height ASC, bid_txid ASC, bid_vout ASC
              LIMIT 1
          )",
-        params![reveal_txid, reveal_value, NET, name_hash],
+        params![reveal_txid, reveal_value, NET, name_hash, START],
     )
     .unwrap();
 }
@@ -184,7 +194,7 @@ fn reveal_matches_earliest_unmatched_bid_for_same_name() {
     // Second REVEAL for the same name → the NEXT unmatched BID (height 210).
     apply_reveal(&c, "hn", "rvB", 2_500_000);
 
-    let out = read_indexed_bids(&c, NET, "hn").unwrap();
+    let out = read_indexed_bids(&c, NET, START, "hn").unwrap();
     assert_eq!(out.len(), 2);
     // Ordered by height ASC in read_indexed_bids.
     assert_eq!(out[0].txid.as_deref(), Some("bidEarly"));
@@ -195,7 +205,7 @@ fn reveal_matches_earliest_unmatched_bid_for_same_name() {
     assert_eq!(out[1].revealed, Some(true));
 
     // The other name's BID is never touched by these reveals.
-    let other = read_indexed_bids(&c, NET, "other").unwrap();
+    let other = read_indexed_bids(&c, NET, START, "other").unwrap();
     assert_eq!(other.len(), 1);
     assert_eq!(other[0].revealed, Some(false));
     assert_eq!(other[0].value, None);
@@ -424,7 +434,7 @@ async fn scan_block_inserts_bid_covenant() {
                     "address": "rs1qbidder",
                     "covenant": {
                         "type": COV_BID as u64,
-                        "items": [name_hash, "00000001", &raw_name_hex, "blindhex"]
+                        "items": [name_hash, START_HEX, &raw_name_hex, "blindhex"]
                     }
                 }]
             }]
@@ -433,7 +443,7 @@ async fn scan_block_inserts_bid_covenant() {
     assert!(result.is_ok());
 
     // Verify the row was inserted
-    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, START, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].txid.as_deref(), Some("txid_bid_1"));
     assert_eq!(bids[0].index, Some(0));
@@ -503,7 +513,7 @@ async fn scan_block_inserts_bid_with_undecoded_name() {
                     "address": "rs1qx",
                     "covenant": {
                         "type": COV_BID as u64,
-                        "items": [name_hash, "00000001", "ff80fe", "blind"]
+                        "items": [name_hash, START_HEX, "ff80fe", "blind"]
                     }
                 }]
             }]
@@ -511,7 +521,7 @@ async fn scan_block_inserts_bid_with_undecoded_name() {
     let result = scan_block(&mock, path.to_str().unwrap(), NET, 50).await;
     assert!(result.is_ok());
 
-    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, START, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].lockup, Some(1_000_000));
 }
@@ -547,7 +557,7 @@ async fn scan_block_inserts_reveal_and_matches_to_existing_bid() {
                     "address": "rs1qrev",
                     "covenant": {
                         "type": COV_REVEAL as u64,
-                        "items": [name_hash, "0000005a", "nonce123"]
+                        "items": [name_hash, START_HEX, "nonce123"]
                     }
                 }]
             }]
@@ -556,7 +566,7 @@ async fn scan_block_inserts_reveal_and_matches_to_existing_bid() {
     assert!(result.is_ok());
 
     // The BID row should now have reveal_txid and reveal_value_doos set
-    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, START, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].revealed, Some(true));
     assert_eq!(bids[0].value, Some(2_000_000));
@@ -576,7 +586,7 @@ async fn scan_block_reveal_without_matching_bid_is_noop() {
                     "address": "rs1qx",
                     "covenant": {
                         "type": COV_REVEAL as u64,
-                        "items": ["no_such_hash", "00000001", "nonce"]
+                        "items": ["no_such_hash", START_HEX, "nonce"]
                     }
                 }]
             }]
@@ -605,7 +615,7 @@ async fn scan_block_processes_bid_and_reveal_in_same_block() {
                         "address": "rs1qbid",
                         "covenant": {
                             "type": COV_BID as u64,
-                            "items": [name_hash, "00000001", &raw_name_hex, "blind"]
+                            "items": [name_hash, START_HEX, &raw_name_hex, "blind"]
                         }
                     },
                     {
@@ -613,7 +623,7 @@ async fn scan_block_processes_bid_and_reveal_in_same_block() {
                         "address": "rs1qrev",
                         "covenant": {
                             "type": COV_REVEAL as u64,
-                            "items": [name_hash, "00000064", "nonce"]
+                            "items": [name_hash, START_HEX, "nonce"]
                         }
                     }
                 ]
@@ -623,7 +633,7 @@ async fn scan_block_processes_bid_and_reveal_in_same_block() {
     assert!(result.is_ok());
 
     // BID inserted and REVEAL matched to it
-    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, START, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].txid.as_deref(), Some("txmixed"));
     assert_eq!(bids[0].lockup, Some(4_000_000));
@@ -694,7 +704,9 @@ async fn scan_block_parses_real_hsd_getblock_payload() {
         .await
         .unwrap();
 
-    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
+    // The payload's covenant item[1] is `6f000000` — 111 little-endian, the
+    // auction's OPEN height, not this module's synthetic START.
+    let bids = read_indexed_bids(&conn, NET, 111, name_hash).unwrap();
     assert_eq!(bids.len(), 1, "the BID output must be indexed");
     // The txid, not the wtxid — this is what `bid_commitments.bid_txid` holds.
     assert_eq!(
@@ -738,7 +750,7 @@ async fn scan_block_converts_fractional_hns_to_doos() {
                     "address": { "version": 0, "string": "rs1qx" },
                     "covenant": {
                         "type": COV_BID as u64,
-                        "items": [name_hash, "00000001", "6e616d65", "blind"]
+                        "items": [name_hash, START_HEX, "6e616d65", "blind"]
                     }
                 }]
             }]
@@ -748,7 +760,7 @@ async fn scan_block_converts_fractional_hns_to_doos() {
         .await
         .unwrap();
 
-    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, START, name_hash).unwrap();
     assert_eq!(bids[0].lockup, Some(123_456));
 }
 
@@ -767,7 +779,7 @@ async fn scan_block_skips_tx_with_empty_txid() {
                     "address": "rs1q",
                     "covenant": {
                         "type": COV_BID as u64,
-                        "items": ["aabb", "00000001", "6e616d65", "blind"]
+                        "items": ["aabb", START_HEX, "6e616d65", "blind"]
                     }
                 }]
             }]
@@ -775,7 +787,7 @@ async fn scan_block_skips_tx_with_empty_txid() {
     let result = scan_block(&mock, path.to_str().unwrap(), NET, 10).await;
     assert!(result.is_ok());
     // Nothing inserted because txid was empty
-    let bids = read_indexed_bids(&conn, NET, "aabb").unwrap();
+    let bids = read_indexed_bids(&conn, NET, START, "aabb").unwrap();
     assert!(bids.is_empty());
 }
 
@@ -815,7 +827,7 @@ async fn scan_block_skips_covenant_with_empty_name_hash() {
                     "address": "rs1q",
                     "covenant": {
                         "type": COV_BID as u64,
-                        "items": ["", "00000001", "6e616d65", "blind"]
+                        "items": ["", START_HEX, "6e616d65", "blind"]
                     }
                 }]
             }]
@@ -839,14 +851,14 @@ async fn scan_block_skips_unknown_covenant_type() {
                     "address": "rs1q",
                     "covenant": {
                         "type": 99_u64,
-                        "items": ["aabb", "00000001", "6e616d65", "blind"]
+                        "items": ["aabb", START_HEX, "6e616d65", "blind"]
                     }
                 }]
             }]
         }));
     let result = scan_block(&mock, path.to_str().unwrap(), NET, 10).await;
     assert!(result.is_ok());
-    let bids = read_indexed_bids(&conn, NET, "aabb").unwrap();
+    let bids = read_indexed_bids(&conn, NET, START, "aabb").unwrap();
     assert!(bids.is_empty());
 }
 
@@ -862,7 +874,7 @@ async fn scan_block_handles_missing_txid_field() {
                     "value": 1,
                     "covenant": {
                         "type": COV_BID as u64,
-                        "items": ["aabb", "00000001", "6e616d65", "blind"]
+                        "items": ["aabb", START_HEX, "6e616d65", "blind"]
                     }
                 }]
             }]
@@ -885,14 +897,14 @@ async fn scan_block_handles_output_without_address_or_value() {
                 "vout": [{
                     "covenant": {
                         "type": COV_BID as u64,
-                        "items": [name_hash, "00000001", &raw_name_hex, "blind"]
+                        "items": [name_hash, START_HEX, &raw_name_hex, "blind"]
                     }
                 }]
             }]
         }));
     let result = scan_block(&mock, path.to_str().unwrap(), NET, 10).await;
     assert!(result.is_ok());
-    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, START, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].lockup, Some(0)); // value defaults to 0
 }
@@ -915,7 +927,7 @@ async fn scan_block_upsert_updates_name_on_conflict() {
                     "address": "rs1q",
                     "covenant": {
                         "type": COV_BID as u64,
-                        "items": [name_hash, "00000001", "zzzz", "blind"]
+                        "items": [name_hash, START_HEX, "zzzz", "blind"]
                     }
                 }]
             }]
@@ -936,7 +948,7 @@ async fn scan_block_upsert_updates_name_on_conflict() {
                     "address": "rs1q",
                     "covenant": {
                         "type": COV_BID as u64,
-                        "items": [name_hash, "00000001", &raw_name_hex, "blind"]
+                        "items": [name_hash, START_HEX, &raw_name_hex, "blind"]
                     }
                 }]
             }]
@@ -946,7 +958,7 @@ async fn scan_block_upsert_updates_name_on_conflict() {
         .unwrap();
 
     // The row should still be 1 (upserted, not duplicated)
-    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
+    let bids = read_indexed_bids(&conn, NET, START, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
 }
 
@@ -971,7 +983,7 @@ async fn scan_block_processes_multiple_txs() {
                         "address": "rs1qa",
                         "covenant": {
                             "type": COV_BID as u64,
-                            "items": [nh1, "00000001", &raw1, "blind1"]
+                            "items": [nh1, START_HEX, &raw1, "blind1"]
                         }
                     }]
                 },
@@ -982,7 +994,7 @@ async fn scan_block_processes_multiple_txs() {
                         "address": "rs1qb",
                         "covenant": {
                             "type": COV_BID as u64,
-                            "items": [nh2, "00000001", &raw2, "blind2"]
+                            "items": [nh2, START_HEX, &raw2, "blind2"]
                         }
                     }]
                 }
@@ -991,8 +1003,8 @@ async fn scan_block_processes_multiple_txs() {
     let result = scan_block(&mock, path.to_str().unwrap(), NET, 300).await;
     assert!(result.is_ok());
 
-    assert_eq!(read_indexed_bids(&conn, NET, nh1).unwrap().len(), 1);
-    assert_eq!(read_indexed_bids(&conn, NET, nh2).unwrap().len(), 1);
+    assert_eq!(read_indexed_bids(&conn, NET, START, nh1).unwrap().len(), 1);
+    assert_eq!(read_indexed_bids(&conn, NET, START, nh2).unwrap().len(), 1);
 }
 
 // --- set_scan_cursor ---------------------------------------------------------
@@ -1024,7 +1036,7 @@ async fn scan_block_lowercases_name_hash_from_covenant() {
                     "address": "rs1q",
                     "covenant": {
                         "type": COV_BID as u64,
-                        "items": ["AABBCCDD", "00000001", &raw_name_hex, "blind"]
+                        "items": ["AABBCCDD", START_HEX, &raw_name_hex, "blind"]
                     }
                 }]
             }]
@@ -1034,7 +1046,7 @@ async fn scan_block_lowercases_name_hash_from_covenant() {
         .unwrap();
 
     // Query with lowercase should find it
-    let bids = read_indexed_bids(&conn, NET, "aabbccdd").unwrap();
+    let bids = read_indexed_bids(&conn, NET, START, "aabbccdd").unwrap();
     assert_eq!(bids.len(), 1);
 }
 
@@ -1058,7 +1070,7 @@ async fn scan_block_assigns_correct_vout_index() {
                         "address": "rs1qa",
                         "covenant": {
                             "type": COV_BID as u64,
-                            "items": [nh, "00000001", &raw_name_hex, "blind"]
+                            "items": [nh, START_HEX, &raw_name_hex, "blind"]
                         }
                     },
                     {
@@ -1066,7 +1078,7 @@ async fn scan_block_assigns_correct_vout_index() {
                         "address": "rs1qb",
                         "covenant": {
                             "type": COV_BID as u64,
-                            "items": [nh, "00000001", &raw_name_hex, "blind"]
+                            "items": [nh, START_HEX, &raw_name_hex, "blind"]
                         }
                     }
                 ]
@@ -1076,7 +1088,7 @@ async fn scan_block_assigns_correct_vout_index() {
         .await
         .unwrap();
 
-    let bids = read_indexed_bids(&conn, NET, nh).unwrap();
+    let bids = read_indexed_bids(&conn, NET, START, nh).unwrap();
     assert_eq!(bids.len(), 2);
     assert_eq!(bids[0].index, Some(0));
     assert_eq!(bids[1].index, Some(1));

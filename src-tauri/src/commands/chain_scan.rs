@@ -8,6 +8,8 @@
 //! - Scoped to the active profile's network: both the cursor and the index are
 //!   keyed by it, because a name hashes to the same value on every chain and a
 //!   mainnet cursor height is meaningless against a regtest tip (see 028).
+//! - Scoped to an auction: a name can be auctioned repeatedly, so rows also
+//!   carry the OPEN height the covenant names (see 029).
 //! - Walks blocks from this network's `chain_scan_cursor.last_height + 1` to
 //!   the node tip.
 //! - For each block: `getblock(hash, verbose, verboseTx)` → iterate outputs →
@@ -262,6 +264,15 @@ pub(crate) async fn scan_block(
                 continue;
             }
 
+            // item[1] of both BID and REVEAL is the u32 OPEN height of the
+            // auction (`covenants::bid`/`covenants::reveal`'s `start`). It is
+            // what separates this auction's bids from those of an earlier,
+            // lapsed auction for the same name.
+            let start_height = match items.get(1).and_then(|v| v.as_str()).and_then(u32le_hex) {
+                Some(h) => h as i64,
+                None => continue,
+            };
+
             // `address` is an object here (`{version, hash, string}`), not the
             // bare bech32 string the REST API returns. Read the encoded form
             // hsd hands us; tolerate the flat shape for other node builds.
@@ -294,6 +305,7 @@ pub(crate) async fn scan_block(
                         bid_txid: txid.to_string(),
                         bid_vout: vout as u32,
                         name_hash_hex: name_hash,
+                        name_start_height: start_height,
                         name: raw_name,
                         lockup_value_doos: value,
                         address: addr,
@@ -304,6 +316,7 @@ pub(crate) async fn scan_block(
                     // REVEAL items: [nameHash, u32(height), nonce]
                     reveals.push(RevealRow {
                         name_hash_hex: name_hash,
+                        name_start_height: start_height,
                         reveal_txid: txid.to_string(),
                         reveal_value_doos: value,
                     });
@@ -323,8 +336,8 @@ pub(crate) async fn scan_block(
         tx.execute(
             "INSERT INTO name_bid_outpoints
                 (network, bid_txid, bid_vout, name_hash_hex, name,
-                 lockup_value_doos, address, height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 name_start_height, lockup_value_doos, address, height)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(network, bid_txid, bid_vout) DO UPDATE SET
                 name = COALESCE(excluded.name, name_bid_outpoints.name)",
             params![
@@ -333,6 +346,7 @@ pub(crate) async fn scan_block(
                 bid.bid_vout,
                 bid.name_hash_hex,
                 bid.name,
+                bid.name_start_height,
                 bid.lockup_value_doos as i64,
                 bid.address,
                 bid.height,
@@ -350,7 +364,8 @@ pub(crate) async fn scan_block(
              SET reveal_txid = ?1, reveal_value_doos = ?2
              WHERE rowid = (
                  SELECT rowid FROM name_bid_outpoints
-                 WHERE network = ?3 AND name_hash_hex = ?4 AND reveal_txid IS NULL
+                 WHERE network = ?3 AND name_hash_hex = ?4
+                   AND name_start_height = ?5 AND reveal_txid IS NULL
                  ORDER BY height ASC, bid_txid ASC, bid_vout ASC
                  LIMIT 1
              )",
@@ -359,11 +374,25 @@ pub(crate) async fn scan_block(
                 reveal.reveal_value_doos as i64,
                 network,
                 reveal.name_hash_hex,
+                reveal.name_start_height,
             ],
         )?;
     }
     tx.commit()?;
     Ok(())
+}
+
+/// Decode a covenant item that holds a `pushU32` value: hex of up to 4
+/// little-endian bytes. Shorter pushes are zero-extended; anything longer is
+/// not a u32 push and yields `None`.
+fn u32le_hex(hex_str: &str) -> Option<u32> {
+    let bytes = hex::decode(hex_str).ok()?;
+    if bytes.len() > 4 {
+        return None;
+    }
+    let mut buf = [0u8; 4];
+    buf[..bytes.len()].copy_from_slice(&bytes);
+    Some(u32::from_le_bytes(buf))
 }
 
 /// Convert an HNS amount as hsd's JSON-RPC reports it (a float with at most 6
@@ -409,6 +438,7 @@ struct BidRow {
     bid_txid: String,
     bid_vout: u32,
     name_hash_hex: String,
+    name_start_height: i64,
     name: Option<String>,
     lockup_value_doos: u64,
     address: Option<String>,
@@ -417,6 +447,7 @@ struct BidRow {
 
 struct RevealRow {
     name_hash_hex: String,
+    name_start_height: i64,
     reveal_txid: String,
     reveal_value_doos: u64,
 }
@@ -430,31 +461,39 @@ struct RevealRow {
 pub fn read_indexed_bids(
     conn: &rusqlite::Connection,
     network: &str,
+    name_start_height: i64,
     name_hash_hex: &str,
 ) -> Result<Vec<crate::hsd::types::HsdBid>, crate::error::AppError> {
     let mut stmt = conn.prepare(
         "SELECT bid_txid, bid_vout, lockup_value_doos, reveal_value_doos, reveal_txid
          FROM name_bid_outpoints
-         WHERE network = ?1 AND name_hash_hex = ?2
+         WHERE network = ?1 AND name_hash_hex = ?2 AND name_start_height = ?3
          ORDER BY height ASC, bid_txid ASC, bid_vout ASC",
     )?; // COVERAGE: the Err branch of `?` requires a malformed statement / broken DB — not unit-testable.
-    let rows = stmt.query_map(params![network, name_hash_hex.to_ascii_lowercase()], |r| {
-        let txid: String = r.get(0)?;
-        let index: u32 = r.get::<_, i64>(1)? as u32;
-        let lockup: i64 = r.get(2)?;
-        let reveal_value: Option<i64> = r.get(3)?;
-        let reveal_txid: Option<String> = r.get(4)?;
-        Ok(crate::hsd::types::HsdBid {
-            txid: Some(txid),
-            index: Some(index),
-            lockup: Some(lockup as u64),
-            value: reveal_value.map(|v| v as u64),
-            revealed: Some(reveal_txid.is_some()),
-            win: None,
-            reveal: None,
-            time: None,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![
+            network,
+            name_hash_hex.to_ascii_lowercase(),
+            name_start_height
+        ],
+        |r| {
+            let txid: String = r.get(0)?;
+            let index: u32 = r.get::<_, i64>(1)? as u32;
+            let lockup: i64 = r.get(2)?;
+            let reveal_value: Option<i64> = r.get(3)?;
+            let reveal_txid: Option<String> = r.get(4)?;
+            Ok(crate::hsd::types::HsdBid {
+                txid: Some(txid),
+                index: Some(index),
+                lockup: Some(lockup as u64),
+                value: reveal_value.map(|v| v as u64),
+                revealed: Some(reveal_txid.is_some()),
+                win: None,
+                reveal: None,
+                time: None,
+            })
+        },
+    )?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
