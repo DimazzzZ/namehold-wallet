@@ -2,6 +2,7 @@ import { useNameRecords } from "../../queries/read";
 import { useNodeLive } from "../../queries/node";
 import { Badge } from "../ui/Badge";
 import { formatHns } from "../../lib/utils";
+import { Tooltip } from "../ui/Tooltip";
 import type { HsdName } from "../../types";
 
 /**
@@ -121,12 +122,9 @@ export function NameDetails({ name, profileId, info, hideDnsRecords }: NameDetai
         <div className="text-xs space-y-1 border-t border-gray-200 pt-2">
           {info.value !== null && (
             <div className="flex justify-between">
-              <span
-                className="text-gray-600 cursor-help"
-                title="Handshake uses a Vickrey second-price auction: the winner pays the second-highest bid, not their own bid."
-              >
-                Paid price (2nd-price):
-              </span>
+              <Tooltip content="Handshake uses a Vickrey second-price auction: the winner pays the second-highest bid, not their own bid.">
+                <span className="text-gray-600 cursor-help">Paid price (2nd-price):</span>
+              </Tooltip>
               <span className="font-mono">{formatHns(info.value)}</span>
             </div>
           )}

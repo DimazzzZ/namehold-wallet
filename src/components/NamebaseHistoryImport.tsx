@@ -17,6 +17,7 @@ import { useUiStore } from "../stores/ui";
 import { mapError } from "../lib/errors";
 import { formatHns, formatDate } from "../lib/utils";
 import { displayName } from "../lib/idn";
+import { Tooltip } from "./ui/Tooltip";
 
 /**
  * "Account history (imported)" card inside the Move-from-Namebase screen.
@@ -119,19 +120,22 @@ export function NamebaseHistoryImport() {
           </Badge>
         </div>
         <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={handleFetchLive}
-            disabled={!isConnected || importLive.isPending}
-            title={
+          <Tooltip
+            content={
               isConnected
                 ? "Fetch fresh history from Namebase"
                 : "Connect to Namebase to enable live fetch"
             }
           >
-            {importLive.isPending ? "Fetching…" : "Fetch from Namebase"}
-          </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={handleFetchLive}
+              disabled={!isConnected || importLive.isPending}
+            >
+              {importLive.isPending ? "Fetching…" : "Fetch from Namebase"}
+            </Button>
+          </Tooltip>
           <Button size="sm" onClick={handleUpload} disabled={importFile.isPending}>
             {importFile.isPending ? "Importing…" : "Upload CSV"}
           </Button>
@@ -164,15 +168,11 @@ export function NamebaseHistoryImport() {
             <Button size="sm" variant="ghost" onClick={() => setShowTable((v) => !v)}>
               {showTable ? "Hide details" : "Show details"}
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={handleClear}
-              disabled={clearAll.isPending}
-              title="Delete all imported history rows"
-            >
-              {clearAll.isPending ? "Clearing…" : "Clear imported history"}
-            </Button>
+            <Tooltip content="Delete all imported history rows">
+              <Button size="sm" variant="ghost" onClick={handleClear} disabled={clearAll.isPending}>
+                {clearAll.isPending ? "Clearing…" : "Clear imported history"}
+              </Button>
+            </Tooltip>
           </div>
 
           {showTable && (

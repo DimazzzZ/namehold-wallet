@@ -11,6 +11,7 @@
     "tauri": "tauri",
     "test": "vitest",
     "lint:secure-imports": "node scripts/lint-secure-imports.mjs",
+    "lint:native-title": "node scripts/lint-native-title.mjs",
     "lint:format": "prettier --check .",
     "format": "prettier --write .",
     "version:set": "node scripts/bump-version.mjs"

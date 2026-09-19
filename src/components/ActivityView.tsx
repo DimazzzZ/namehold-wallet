@@ -464,43 +464,46 @@ export function ActivityRow({
         {row.nameList && row.nameList.length > 1 ? (
           // Batch action: collapsed summary with expand-on-click
           <div>
-            <button
-              type="button"
-              className="text-gray-600 hover:text-gray-900 hover:underline cursor-pointer text-left"
-              onClick={() => setBatchExpanded(!batchExpanded)}
-              title={batchExpanded ? "Collapse" : "Expand"}
-              data-testid="activity-batch-summary-toggle"
-            >
-              .{displayName(row.name ?? "")}
-            </button>
+            <Tooltip content={batchExpanded ? "Collapse" : "Expand"}>
+              <button
+                type="button"
+                className="text-gray-600 hover:text-gray-900 hover:underline cursor-pointer text-left"
+                onClick={() => setBatchExpanded(!batchExpanded)}
+                data-testid="activity-batch-summary-toggle"
+              >
+                .{displayName(row.name ?? "")}
+              </button>
+            </Tooltip>
             {batchExpanded && (
               <ul className="text-xs space-y-0.5 mt-1">
                 {row.nameList.map((n) => (
                   <li key={n}>
-                    <button
-                      type="button"
-                      className={linkClass}
-                      onClick={() => onNameClick(n)}
-                      title="View name info"
-                      data-testid="activity-name-info-link"
-                    >
-                      .{displayName(n)}
-                    </button>
+                    <Tooltip content="View name info">
+                      <button
+                        type="button"
+                        className={linkClass}
+                        onClick={() => onNameClick(n)}
+                        data-testid="activity-name-info-link"
+                      >
+                        .{displayName(n)}
+                      </button>
+                    </Tooltip>
                   </li>
                 ))}
               </ul>
             )}
           </div>
         ) : row.name ? (
-          <button
-            type="button"
-            className={linkClass}
-            onClick={() => onNameClick(row.name!)}
-            title="View name info"
-            data-testid="activity-name-info-link"
-          >
-            .{displayName(row.name)}
-          </button>
+          <Tooltip content="View name info">
+            <button
+              type="button"
+              className={linkClass}
+              onClick={() => onNameClick(row.name!)}
+              data-testid="activity-name-info-link"
+            >
+              .{displayName(row.name)}
+            </button>
+          </Tooltip>
         ) : (
           <span className="text-gray-400">—</span>
         )}
@@ -540,56 +543,60 @@ export function ActivityRow({
         {row.height == null ? (
           <span className="text-gray-400">—</span>
         ) : (
-          <button
-            type="button"
-            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-            onClick={() => onBlockClick(row.height!)}
-            title="View block info"
-            data-testid="activity-block-info-link"
-          >
-            #{row.height}
-          </button>
+          <Tooltip content="View block info">
+            <button
+              type="button"
+              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+              onClick={() => onBlockClick(row.height!)}
+              data-testid="activity-block-info-link"
+            >
+              #{row.height}
+            </button>
+          </Tooltip>
         )}
       </td>
-      <td className="py-1 pr-4 text-xs font-mono text-gray-500" title={row.txid ?? undefined}>
+      <td className="py-1 pr-4 text-xs font-mono text-gray-500">
         {row.txid ? (
-          <button
-            type="button"
-            className="inline-block max-w-[140px] truncate align-bottom text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-            onClick={() => onTxClick(row.txid!)}
-            title="View transaction info"
-            data-testid="activity-tx-info-link"
-          >
-            {row.txid.slice(0, 10)}…
-          </button>
+          <Tooltip content={`View transaction info — ${row.txid}`}>
+            <button
+              type="button"
+              className="inline-block max-w-[140px] truncate align-bottom text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+              onClick={() => onTxClick(row.txid!)}
+              data-testid="activity-tx-info-link"
+            >
+              {row.txid.slice(0, 10)}…
+            </button>
+          </Tooltip>
         ) : (
           <span className="text-gray-400">—</span>
         )}
       </td>
       <td className="py-1 pr-2 text-xs whitespace-nowrap">
         {canAct && draftActions.execute && (
-          <button
-            type="button"
-            className="px-2 py-0.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-            onClick={handleExecute}
-            disabled={actionBusy || execDraft.pending}
-            title={draftActions.execute}
-            data-testid="activity-draft-execute"
-          >
-            {draftActions.execute}
-          </button>
+          <Tooltip content={draftActions.execute}>
+            <button
+              type="button"
+              className="px-2 py-0.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleExecute}
+              disabled={actionBusy || execDraft.pending}
+              data-testid="activity-draft-execute"
+            >
+              {draftActions.execute}
+            </button>
+          </Tooltip>
         )}
         {canAct && draftActions.discard && (
-          <button
-            type="button"
-            className="ml-1 px-2 py-0.5 bg-red-50 text-red-600 hover:bg-red-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-            onClick={handleDiscard}
-            disabled={actionBusy || deleteDraft.isPending}
-            title="Discard draft"
-            data-testid="activity-draft-discard"
-          >
-            Discard
-          </button>
+          <Tooltip content="Discard draft">
+            <button
+              type="button"
+              className="ml-1 px-2 py-0.5 bg-red-50 text-red-600 hover:bg-red-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleDiscard}
+              disabled={actionBusy || deleteDraft.isPending}
+              data-testid="activity-draft-discard"
+            >
+              Discard
+            </button>
+          </Tooltip>
         )}
       </td>
     </tr>

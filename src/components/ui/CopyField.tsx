@@ -3,6 +3,7 @@ import { writeText } from "../../lib/clipboard";
 import { openExternal } from "../../lib/openExternal";
 import { useUiStore } from "../../stores/ui";
 import { Button } from "./Button";
+import { Tooltip } from "./Tooltip";
 
 interface CopyFieldProps {
   label?: React.ReactNode;
@@ -70,17 +71,18 @@ export function CopyField({
           {display ?? value}
         </code>
         {externalUrl && (
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => openExternal(externalUrl)}
-            title={externalLabel}
-            aria-label={externalLabel}
-            data-testid={externalTestId}
-            className="shrink-0"
-          >
-            ↗
-          </Button>
+          <Tooltip content={externalLabel}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => openExternal(externalUrl)}
+              aria-label={externalLabel}
+              data-testid={externalTestId}
+              className="shrink-0"
+            >
+              ↗
+            </Button>
+          </Tooltip>
         )}
         <Button
           variant="secondary"

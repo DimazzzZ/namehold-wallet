@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
+import { Tooltip } from "../ui/Tooltip";
 
 /**
  * The bid + lockup input pair, forfeit warning, and submit button — used by
@@ -110,15 +111,11 @@ export function BidForm({
         <div className="flex items-end gap-2">
           {bidField}
           {lockupField}
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={disabled}
-            title={submitTitle ?? ""}
-            onClick={onSubmit}
-          >
-            {busy ? busyLabel : idleLabel}
-          </Button>
+          <Tooltip content={submitTitle ?? ""}>
+            <Button size="sm" variant="secondary" disabled={disabled} onClick={onSubmit}>
+              {busy ? busyLabel : idleLabel}
+            </Button>
+          </Tooltip>
         </div>
         {forfeitWarning}
       </>

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Tooltip } from "../ui/Tooltip";
 
 type Props = {
   /** Why the wrapped action is unavailable, or `null`/empty for no hint. */
@@ -11,16 +12,11 @@ type Props = {
  * reachable.
  *
  * `Button` carries `disabled:pointer-events-none`, so a disabled button
- * receives no pointer events and the browser never shows its `title` — the
- * tooltip went dead exactly when it had something to say. Hanging the title on
- * a wrapper the pointer CAN reach restores it, without giving disabled buttons
- * hover styling or click handling.
+ * receives no pointer events and a native `title` on it is never shown — the
+ * tooltip went dead exactly when it had something to say. [`Tooltip`] listens
+ * on a wrapper the pointer can still reach, and renders nothing extra when
+ * `reason` is empty.
  */
 export function ActionHint({ reason, children }: Props) {
-  if (!reason) return <>{children}</>;
-  return (
-    <span className="inline-flex" title={reason}>
-      {children}
-    </span>
-  );
+  return <Tooltip content={reason}>{children}</Tooltip>;
 }

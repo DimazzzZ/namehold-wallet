@@ -1,9 +1,11 @@
 import { cn } from "../../lib/utils";
+import { Tooltip } from "./Tooltip";
 
 interface BadgeProps {
   children: React.ReactNode;
   variant?: "default" | "success" | "warning" | "error" | "info";
   className?: string;
+  /** Hover explanation. Rendered as the app's `Tooltip`, not a native title. */
   title?: string;
   "data-testid"?: string;
 }
@@ -24,16 +26,17 @@ export function Badge({
   "data-testid": dataTestId,
 }: BadgeProps) {
   return (
-    <span
-      title={title}
-      data-testid={dataTestId}
-      className={cn(
-        "inline-block px-2 py-0.5 rounded text-xs font-medium",
-        variants[variant],
-        className,
-      )}
-    >
-      {children}
-    </span>
+    <Tooltip content={title}>
+      <span
+        data-testid={dataTestId}
+        className={cn(
+          "inline-block px-2 py-0.5 rounded text-xs font-medium",
+          variants[variant],
+          className,
+        )}
+      >
+        {children}
+      </span>
+    </Tooltip>
   );
 }
