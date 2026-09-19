@@ -121,6 +121,25 @@ export function GuidedAction({
           caps?.auctionBiddingBlocks,
           caps?.auctionRevealBlocks,
         );
+
+        // Our own OPEN is broadcast but not yet in a block, so the chain still
+        // reports the name as available while the wallet knows better. The
+        // panel heading already reads "Wait for Bidding" (it follows the task
+        // state); rendering the AVAILABLE copy underneath it — "Start a Vickrey
+        // auction" plus an Open button disabled with "an auction is already
+        // opening" — told the user to do the thing they had just done.
+        if (caps?.taskState === "waitingForBidding") {
+          return (
+            <div className="space-y-2" data-testid="open-pending">
+              <div className="text-sm text-gray-700">
+                Your OPEN is broadcast and waiting to be mined. Bidding starts once it lands in a
+                block.
+              </div>
+              {auctionWindow && <div className="text-xs text-gray-500">{auctionWindow}</div>}
+            </div>
+          );
+        }
+
         return (
           <div className="space-y-2">
             <div className="text-sm text-gray-700">{guide.description}</div>
