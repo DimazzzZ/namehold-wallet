@@ -87,6 +87,21 @@ describe("Tooltip", () => {
     expect(screen.getByRole("button", { name: "Transfer" })).toBe(before);
   });
 
+  it("lets className replace the default layout, not stack onto it", () => {
+    // Regression: the wrapper defaults to `inline-flex`, and `cn` concatenates
+    // rather than merging Tailwind classes — so a caller passing `block` got
+    // `"inline-flex block"` and no say in the matter. Wrapping the sidebar's
+    // block NavLinks turned the nav into a wrapping grid.
+    render(
+      <Tooltip content="Wallet" className="block">
+        <a href="/">Wallet</a>
+      </Tooltip>,
+    );
+    const trigger = screen.getByText("Wallet").parentElement!;
+    expect(trigger).toHaveClass("block");
+    expect(trigger).not.toHaveClass("inline-flex");
+  });
+
   it("only underlines the trigger when asked to hint at it", () => {
     const { rerender } = render(
       <Tooltip content="x">
