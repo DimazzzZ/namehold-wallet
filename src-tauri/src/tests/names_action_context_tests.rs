@@ -433,7 +433,14 @@ fn find_name_action_context_reports_a_stranded_bid_from_a_lapsed_auction() {
     seed_bid_commitment(&conn, NAME, &nh_hex, ADDRESS);
     db::queries::set_auction_heights(&conn, PROFILE, "blind", 111, 132).unwrap();
     let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_BID);
-    seed_tracked_utxo(&conn, "oldbid", 0, ADDRESS, sync::COV_BID as i64, Some(&cov));
+    seed_tracked_utxo(
+        &conn,
+        "oldbid",
+        0,
+        ADDRESS,
+        sync::COV_BID as i64,
+        Some(&cov),
+    );
 
     let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
     assert_eq!(ctx.existing_bid_count, 0, "not a bid in THIS auction");

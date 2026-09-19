@@ -486,8 +486,11 @@ pub(crate) fn find_name_action_context(
         (Some(_), None) => true,
         (None, _) => true,
     };
-    let commitments: Vec<queries::BidCommitmentRow> =
-        for_name.iter().filter(|b| belongs_here(b)).cloned().collect();
+    let commitments: Vec<queries::BidCommitmentRow> = for_name
+        .iter()
+        .filter(|b| belongs_here(b))
+        .cloned()
+        .collect();
     let bid = commitments.first().cloned();
 
     // Bids this wallet placed in an EARLIER auction of the same name whose BID
@@ -515,7 +518,9 @@ pub(crate) fn find_name_action_context(
             .flatten()
             .is_some()
         })
-        .fold((0i64, 0i64), |(n, sum), b| (n + 1, sum + b.lockup_value_doos));
+        .fold((0i64, 0i64), |(n, sum), b| {
+            (n + 1, sum + b.lockup_value_doos)
+        });
     // Part 3 (confirmed pre-existing bug, folded in from the Task 2 review):
     // revealing SPENDS the COV_BID coin and CREATES a COV_REVEAL coin — so a
     // COV_REVEAL coin can only exist AFTER a successful reveal, never before.
