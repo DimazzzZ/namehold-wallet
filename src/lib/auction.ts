@@ -318,6 +318,8 @@ export interface AuctionTaskSummary {
   countdownLabel: string | null;
   countdownBlocks: number | null;
   countdownHours: number | null;
+  /** An action this wallet sent that is still waiting for a block, if any. */
+  pendingBroadcastAction: string | null;
 }
 
 /**
@@ -350,6 +352,7 @@ export function taskSummaryFromCapabilities(
     nextActionKey: caps.nextActionKey,
     nextActionLabel: caps.nextActionLabel,
     nextActionReason: caps.nextActionReason,
+    pendingBroadcastAction: caps.pendingBroadcastAction ?? null,
     countdownLabel: caps.countdownLabel,
     countdownBlocks: caps.countdownBlocks,
     countdownHours: caps.countdownHours,
@@ -456,4 +459,30 @@ export function auctionWindowText(
   if (biddingBlocks == null || revealBlocks == null) return null;
   const plural = (n: number) => `${n} block${n === 1 ? "" : "s"}`;
   return `Bidding runs ${plural(biddingBlocks)}, then ${plural(revealBlocks)} to reveal.`;
+}
+
+/** Title-case an action key for display: "reveal" -> "Reveal". */
+function actionTitle(action: string): string {
+  return action.charAt(0).toUpperCase() + action.slice(1).toLowerCase();
+}
+
+/**
+ * The sentence for a name action this wallet has sent that is still waiting
+ * for a block, or `null` when nothing is in flight.
+ *
+ * Every other label in the app is derived from the chain's view of the name,
+ * and between broadcast and the next block that view has not moved — so
+ * without this the UI can only describe a world where the user never pressed
+ * the button. On a chain that mines on demand this gap lasts until someone
+ * mines.
+ */
+export function pendingBroadcastText(action: string | null | undefined): string | null {
+  if (!action) return null;
+  return `${actionTitle(action)} is broadcast and waiting to be mined. Nothing changes on-chain until it lands in a block.`;
+}
+
+/** The compact form for a list row: "Reveal · waiting for a block". */
+export function pendingBroadcastBadge(action: string | null | undefined): string | null {
+  if (!action) return null;
+  return `${actionTitle(action)} · waiting for a block`;
 }

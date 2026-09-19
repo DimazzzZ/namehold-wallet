@@ -319,25 +319,44 @@ export function ActivityView() {
 function statusBadge(status: string): {
   variant: "default" | "success" | "warning" | "error" | "info";
   label: string;
+  /** What the status means and what it is waiting on. */
+  hint: string;
 } {
   if (status === "onchain") {
     // Handled by the caller (confirmed/pending badge).
-    return { variant: "default", label: "Onchain" };
+    return { variant: "default", label: "Onchain", hint: "Seen on-chain." };
   }
   if (status === "confirmed") {
-    return { variant: "success", label: "Confirmed" };
+    return { variant: "success", label: "Confirmed", hint: "Mined into a block. Done." };
   }
   if (status === "broadcasted" || status === "broadcast_pending") {
-    return { variant: "warning", label: "Pending" };
+    return {
+      variant: "warning",
+      label: "Pending",
+      hint: "Sent to the network and waiting in the mempool. Nothing changes on-chain until a block includes it.",
+    };
   }
   if (status === "dropped") {
-    return { variant: "error", label: "Not confirmed" };
+    return {
+      variant: "error",
+      label: "Not confirmed",
+      hint: "The network no longer has it. It was never mined, so nothing happened on-chain.",
+    };
   }
   if (status === "failed") {
-    return { variant: "error", label: "Failed" };
+    return {
+      variant: "error",
+      label: "Failed",
+      hint: "It could not be sent. Nothing left this wallet.",
+    };
   }
-  // draft, signed, etc.
-  return { variant: "default", label: status };
+  if (status === "signed") {
+    return { variant: "default", label: status, hint: "Signed but not sent yet." };
+  }
+  if (status === "draft") {
+    return { variant: "default", label: status, hint: "Built but neither signed nor sent." };
+  }
+  return { variant: "default", label: status, hint: "" };
 }
 
 /**
@@ -451,6 +470,13 @@ export function ActivityRow({
     row.status === "onchain" ? (row.confirmed ? "success" : "warning") : badge.variant;
   const badgeLabel =
     row.status === "onchain" ? (row.confirmed ? "Confirmed" : "Pending") : badge.label;
+  // The height is already its own column; the badge's hint explains the state.
+  const badgeHint =
+    row.status === "onchain"
+      ? row.confirmed
+        ? `Mined into a block${row.height != null ? ` (#${row.height})` : ""}.`
+        : "Seen by the node but not in a block yet."
+      : badge.hint;
 
   const linkClass = "text-blue-500 hover:text-blue-700 hover:underline cursor-pointer";
 
@@ -532,10 +558,7 @@ export function ActivityRow({
         {row.feeDoos == null ? "—" : formatHns(row.feeDoos)}
       </td>
       <td className="py-1 pr-4">
-        <Badge
-          variant={badgeVariant}
-          title={row.height != null ? `Height #${row.height}` : "Mempool"}
-        >
+        <Badge variant={badgeVariant} title={badgeHint}>
           {badgeLabel}
         </Badge>
       </td>

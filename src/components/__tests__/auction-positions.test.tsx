@@ -282,6 +282,35 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
     expect(screen.queryByText(/No active auctions/i)).not.toBeInTheDocument();
   });
 
+  it("an action of ours still in the mempool outranks the phase label", async () => {
+    // Between broadcast and the next block the chain still reports the old
+    // phase, so the row read "Ready to Bid" right after the user placed a bid —
+    // as if nothing had happened. On a chain that mines on demand it stayed
+    // that way indefinitely.
+    invokeMock.mockImplementation(
+      baseRoutes({
+        positions: ["inflight"],
+        names: [],
+        capsByName: {
+          inflight: baseCaps("inflight", {
+            phase: "BIDDING",
+            taskState: "readyToBid",
+            nextActionKey: "BID",
+            nextActionLabel: "Place Bid",
+            pendingBroadcastAction: "bid",
+          }),
+        },
+      }),
+    );
+    render(<AuctionsView />, { wrapper: wrapper() });
+
+    expect(await screen.findByText(".inflight")).toBeInTheDocument();
+    expect(await screen.findByTestId("auction-pending-block")).toHaveTextContent(
+      "Bid · waiting for a block",
+    );
+    expect(screen.queryByText(/^Ready to Bid$/i)).toBeNull();
+  });
+
   it("filters a dropped-open position (no live caps) while keeping a live bidding sibling — the vmp3rt3/vmp3rt4 case", async () => {
     // Mirrors an observed regtest sequence: `vmp3rt4`'s open tx was broadcast
     // but never confirmed, so its draft settled to `dropped`; `vmp3rt3`'s open

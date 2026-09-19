@@ -440,6 +440,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
             countdownHours: null,
             auctionBiddingBlocks: 5,
             auctionRevealBlocks: 10,
+            pendingBroadcastAction: "open",
           },
         },
       ),
@@ -448,8 +449,8 @@ describe("NameActionsModal — guided acquisition flow", () => {
       wrapper: wrapper(),
     });
 
-    const panel = await screen.findByTestId("open-pending");
-    expect(panel).toHaveTextContent(/broadcast and waiting to be mined/i);
+    const panel = await screen.findByTestId("action-pending-block");
+    expect(panel).toHaveTextContent(/Open is broadcast and waiting to be mined/i);
     // The window still helps: it says what happens once it lands.
     expect(panel).toHaveTextContent("Bidding runs 5 blocks, then 10 blocks to reveal.");
 

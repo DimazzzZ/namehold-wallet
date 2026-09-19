@@ -397,6 +397,11 @@ pub struct NameActionCapabilities {
     /// everywhere. `None` when we could not determine the network.
     pub auction_bidding_blocks: Option<i64>,
     pub auction_reveal_blocks: Option<i64>,
+    /// Set while a transaction this wallet sent for the name is still in the
+    /// mempool: the action it performs (`"open"`, `"reveal"`, …). Until it is
+    /// mined the chain reports the name's previous state, so without this the
+    /// UI can only describe a world where the user never pressed the button.
+    pub pending_broadcast_action: Option<String>,
 }
 
 /// Context gathered from the DB for a name action evaluation.
@@ -425,6 +430,11 @@ pub(crate) struct NameActionContext {
     /// already opened the name is a phase change (AVAILABLE -> OPENING),
     /// which `can_open`'s phase check already handles separately.
     pub has_pending_open: bool,
+    /// The action this wallet has broadcast for the name and the chain has not
+    /// confirmed yet. Drives the "sent, waiting for a block" copy — the one
+    /// state no phase-derived label can describe, because on-chain nothing has
+    /// happened yet.
+    pub pending_broadcast_action: Option<String>,
     /// The `reveal_txid` stamped on the bid commitment row (if any).
     pub reveal_txid: Option<String>,
     /// Status of the local tx_draft matching `reveal_txid` (if one exists).
@@ -528,6 +538,8 @@ pub(crate) fn find_name_action_context(
     let has_pending_open_draft =
         queries::has_pending_draft_for_name(conn, profile_id, "open", name).unwrap_or(false);
     let has_pending_open = has_pending_open_coin || has_pending_open_draft;
+    let pending_broadcast_action =
+        queries::pending_broadcast_action_for_name(conn, profile_id, name).unwrap_or(None);
 
     // Reveal-in-flight evidence: the commitment row's `reveal_txid` (stamped
     // either by our own broadcast in `build_reveal_draft`, or by `chain_scan`
@@ -554,6 +566,7 @@ pub(crate) fn find_name_action_context(
         transfer_has_items: transfer,
         existing_bid_count,
         has_pending_open,
+        pending_broadcast_action,
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
@@ -1078,6 +1091,7 @@ pub(crate) fn build_name_action_capabilities(
         countdown_hours,
         auction_bidding_blocks: Some(name_params.bidding_period as i64),
         auction_reveal_blocks: Some(name_params.reveal_period as i64),
+        pending_broadcast_action: action_ctx.pending_broadcast_action.clone(),
     }
 }
 
@@ -1121,6 +1135,7 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         // has no network in hand here — so don't claim auction periods either.
         auction_bidding_blocks: None,
         auction_reveal_blocks: None,
+        pending_broadcast_action: None,
     }
 }
 
@@ -3096,6 +3111,7 @@ mod tests {
             transfer_has_items: None,
             existing_bid_count: 0,
             has_pending_open: false,
+            pending_broadcast_action: None,
             reveal_txid: None,
             reveal_draft_status: None,
             bid_value_doos: None,

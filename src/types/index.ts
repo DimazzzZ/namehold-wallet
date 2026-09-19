@@ -654,6 +654,12 @@ export interface NameActionCapabilities {
    */
   auctionBiddingBlocks?: number | null;
   auctionRevealBlocks?: number | null;
+  /**
+   * The action this wallet has broadcast for the name that is still waiting
+   * for a block (`"open"`, `"reveal"`, …). Until it is mined the chain reports
+   * the name's previous state, so nothing phase-derived can describe it.
+   */
+  pendingBroadcastAction?: string | null;
 }
 
 // ---------------------------------------------------------------------------

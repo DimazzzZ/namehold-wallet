@@ -1559,6 +1559,41 @@ pub fn has_pending_draft_for_name(
     Ok(false)
 }
 
+/// The action of a transaction this wallet has BROADCAST for `name` that the
+/// chain has not confirmed yet — `Some("open")`, `Some("reveal")`, and so on.
+///
+/// This is the gap the UI has to narrate. Between broadcast and the next block
+/// the chain still reports the name's previous state, so every phase-derived
+/// label says nothing happened, while the user has just watched a confirmation
+/// dialog and a txid go by. On a chain that mines on demand (regtest) the gap
+/// is indefinite.
+///
+/// Only `broadcast_pending`/`broadcasted` count: a `draft` or `signed` row has
+/// not left the device, and `confirmed`/`dropped`/`failed` are settled. When
+/// several qualify — a name can legitimately have more than one in flight — the
+/// most recent wins, which is the one the user just sent.
+pub fn pending_broadcast_action_for_name(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+) -> Result<Option<String>, AppError> {
+    let sql = format!(
+        "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
+         WHERE wallet_profile_id = ?1
+           AND status IN ('broadcast_pending','broadcasted')
+         ORDER BY created_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![profile_id], row_to_draft)?;
+    for r in rows {
+        let row = r?;
+        if draft_summary_covers_name(&row.summary_json, name) {
+            return Ok(Some(row.action));
+        }
+    }
+    Ok(None)
+}
+
 /// True when a draft's `summary_json` names `name` — either as its single
 /// `name` field OR as a member of its `nameList` array (batch drafts persist
 /// one row covering many names). Single-name drafts have no `nameList`, so
@@ -3595,6 +3630,44 @@ mod noncustodial_query_tests {
 
         update_tx_draft_status(&conn, "d1", "dropped", None, None).unwrap();
         assert!(!has_pending_draft_for_name(&conn, "p1", "open", "alpha").unwrap());
+    }
+
+    /// Only a transaction that has actually left the device and has not
+    /// settled counts as "waiting for a block" — that is the window the UI has
+    /// to narrate, because the chain still reports the name's old state
+    /// throughout it.
+    #[test]
+    fn pending_broadcast_action_tracks_only_the_in_flight_window() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        let pending = |name: &str| pending_broadcast_action_for_name(&conn, "p1", name).unwrap();
+
+        insert_tx_draft(
+            &conn,
+            "d1",
+            "p1",
+            "reveal",
+            "",
+            "{}",
+            r#"{"action":"reveal","name":"alpha"}"#,
+        )
+        .unwrap();
+        // Built but not sent — nothing is in flight.
+        assert_eq!(pending("alpha"), None);
+
+        update_tx_draft_status(&conn, "d1", "signed", None, None).unwrap();
+        assert_eq!(pending("alpha"), None, "signed is still on this device");
+
+        update_tx_draft_status(&conn, "d1", "broadcasted", None, None).unwrap();
+        assert_eq!(pending("alpha"), Some("reveal".to_string()));
+        // Scoped to the name.
+        assert_eq!(pending("beta"), None);
+
+        update_tx_draft_status(&conn, "d1", "confirmed", None, None).unwrap();
+        assert_eq!(pending("alpha"), None, "confirmed has settled");
+
+        update_tx_draft_status(&conn, "d1", "dropped", None, None).unwrap();
+        assert_eq!(pending("alpha"), None, "dropped has settled");
     }
 
     #[test]

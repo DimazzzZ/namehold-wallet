@@ -14,6 +14,8 @@ import {
   validateBidInputs,
   auctionWindowText,
   AUCTION_PHASE_GUIDE,
+  pendingBroadcastText,
+  pendingBroadcastBadge,
 } from "./auction";
 import { hnsToDollarydoos } from "./utils";
 import type { HsdNameStats } from "../types";
@@ -333,5 +335,22 @@ describe("AUCTION_PHASE_GUIDE", () => {
     const copy = AUCTION_PHASE_GUIDE.AVAILABLE?.description ?? "";
     expect(copy).not.toMatch(/week|day|hour|month/i);
     expect(copy).toMatch(/sealed/i);
+  });
+});
+
+describe("pendingBroadcastText / pendingBroadcastBadge", () => {
+  it("names the action that is waiting for a block", () => {
+    expect(pendingBroadcastText("reveal")).toBe(
+      "Reveal is broadcast and waiting to be mined. Nothing changes on-chain until it lands in a block.",
+    );
+    expect(pendingBroadcastBadge("reveal")).toBe("Reveal · waiting for a block");
+  });
+
+  it("says nothing when nothing is in flight", () => {
+    expect(pendingBroadcastText(null)).toBeNull();
+    expect(pendingBroadcastText(undefined)).toBeNull();
+    expect(pendingBroadcastBadge(null)).toBeNull();
+    // An empty action is not an action.
+    expect(pendingBroadcastText("")).toBeNull();
   });
 });
