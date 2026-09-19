@@ -18,7 +18,7 @@ export function ActionReasonBanner({ reason }: Props) {
   if (!reason) return null;
   return (
     <div
-      className="flex items-start justify-between gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2"
+      className="flex items-center justify-between gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2"
       data-testid="action-reason"
     >
       <span>{reason}</span>
