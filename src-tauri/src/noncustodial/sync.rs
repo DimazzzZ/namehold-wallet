@@ -347,6 +347,12 @@ pub fn upsert_name_state(
     let info = name_info.get("info");
     // An unopened/unknown name has null info — record a minimal row so the UI
     // can still show the name with an UNKNOWN/CLOSED-less state.
+    //
+    // Every other column here is derived from `info`, so all of them are
+    // cleared alongside it. Leaving them at their previous values left a row
+    // that contradicted itself: a name whose auction had lapsed kept the OPEN
+    // height of that dead auction, and `read_name_bids` used it to serve the
+    // lapsed auction's bids for a name that had no auction at all.
     let info = match info {
         Some(v) if !v.is_null() => v,
         _ => {
@@ -355,9 +361,16 @@ pub fn upsert_name_state(
                     (wallet_profile_id, name, name_hash_hex, state, raw_json)
                  VALUES (?1, ?2, '', 'UNKNOWN', ?3)
                  ON CONFLICT(wallet_profile_id, name) DO UPDATE SET
-                    state    = 'UNKNOWN',
-                    raw_json = excluded.raw_json,
-                    updated_at = datetime('now')",
+                    state           = 'UNKNOWN',
+                    owner_txid      = NULL,
+                    owner_vout      = NULL,
+                    height          = NULL,
+                    renewal_height  = NULL,
+                    transfer_height = NULL,
+                    renewals        = NULL,
+                    weak            = NULL,
+                    raw_json        = excluded.raw_json,
+                    updated_at      = datetime('now')",
                 params![profile_id, name, name_info.to_string()],
             )?;
             return Ok(());
@@ -905,5 +918,60 @@ mod tests {
             ),
             Err(AppError::Db(_))
         ));
+    }
+
+    /// When the node stops reporting an auction for a name — which is what
+    /// happens once an auction nobody revealed in lapses — every column that
+    /// came from `info` must go with it. Leaving the old OPEN height behind
+    /// made the row claim an auction that no longer existed, and
+    /// `read_name_bids` then served that dead auction's bids.
+    #[test]
+    fn upsert_name_state_clears_info_derived_columns_when_the_auction_is_gone() {
+        let conn = mem_db();
+        let live = serde_json::json!({
+            "info": {
+                "nameHash": "aa",
+                "state": "BIDDING",
+                "height": 111,
+                "renewal": 111,
+                "transfer": 0,
+                "renewals": 0,
+                "weak": false,
+                "owner": { "hash": "bb", "index": 2 }
+            }
+        });
+        upsert_name_state(&conn, "p1", "lapsed", &live).unwrap();
+
+        let num = |column: &str| -> Option<i64> {
+            conn.query_row(
+                &format!("SELECT {column} FROM tracked_name_states WHERE name = 'lapsed'"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let text = |column: &str| -> Option<String> {
+            conn.query_row(
+                &format!("SELECT {column} FROM tracked_name_states WHERE name = 'lapsed'"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(num("height"), Some(111), "precondition: auction recorded");
+        assert_eq!(text("owner_txid"), Some("bb".to_string()));
+
+        // The auction lapses: hsd reports the name with a null `info`.
+        upsert_name_state(&conn, "p1", "lapsed", &serde_json::json!({ "info": null })).unwrap();
+
+        assert_eq!(text("state"), Some("UNKNOWN".to_string()));
+        assert_eq!(num("height"), None, "a lapsed auction leaves no OPEN height");
+        assert_eq!(num("renewal_height"), None);
+        assert_eq!(num("transfer_height"), None);
+        assert_eq!(num("renewals"), None);
+        assert_eq!(num("weak"), None);
+        assert_eq!(text("owner_txid"), None);
+        assert_eq!(num("owner_vout"), None);
     }
 }
