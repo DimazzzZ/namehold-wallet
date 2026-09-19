@@ -45,7 +45,14 @@ interface TooltipProps {
    * badge) — underlining those just adds noise.
    */
   hint?: boolean;
-  /** Extra classes for the trigger wrapper. */
+  /**
+   * Layout classes for the trigger wrapper, REPLACING the default
+   * `inline-flex`. The wrapper is a real element in the layout — floating-ui
+   * measures it, so it cannot be `display: contents` — which means a trigger
+   * inside a block list or a flex row has to say how it should sit. Getting
+   * this wrong is visible: wrapping the sidebar's block `NavLink`s in an
+   * `inline-flex` span turned the nav into a wrapping grid.
+   */
   className?: string;
   /** Override the hover debounce, in ms. `0` shows instantly. */
   openDelay?: number;
@@ -106,10 +113,10 @@ export function Tooltip({
         ref={refs.setReference}
         {...getReferenceProps()}
         className={cn(
-          hint
-            ? "cursor-help underline decoration-dotted decoration-gray-400 underline-offset-2"
-            : "inline-flex",
-          className,
+          hint && "cursor-help underline decoration-dotted decoration-gray-400 underline-offset-2",
+          // `cn` concatenates, so a caller's layout class has to replace the
+          // default rather than be appended after it.
+          className ?? (hint ? undefined : "inline-flex"),
         )}
       >
         {children}

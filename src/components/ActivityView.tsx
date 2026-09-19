@@ -557,10 +557,13 @@ export function ActivityRow({
       </td>
       <td className="py-1 pr-4 text-xs font-mono text-gray-500">
         {row.txid ? (
-          <Tooltip content={`View transaction info — ${row.txid}`}>
+          <Tooltip
+            content={`View transaction info — ${row.txid}`}
+            className="inline-flex align-bottom"
+          >
             <button
               type="button"
-              className="inline-block max-w-[140px] truncate align-bottom text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+              className="inline-block max-w-[140px] truncate text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
               onClick={() => onTxClick(row.txid!)}
               data-testid="activity-tx-info-link"
             >

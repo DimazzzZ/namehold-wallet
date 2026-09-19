@@ -71,7 +71,7 @@ export function CopyField({
           {display ?? value}
         </code>
         {externalUrl && (
-          <Tooltip content={externalLabel}>
+          <Tooltip content={externalLabel} className="inline-flex shrink-0">
             <Button
               variant="secondary"
               size="sm"

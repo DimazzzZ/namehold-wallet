@@ -62,8 +62,8 @@ export function ReceiveAddressList() {
                 data-testid={`addr-row-${row.index}`}
               >
                 <span className="text-gray-400 w-6 text-right font-mono">{row.index}</span>
-                <Tooltip content={row.address}>
-                  <span className="font-mono text-gray-700 flex-1 truncate">
+                <Tooltip content={row.address} className="flex-1 min-w-0">
+                  <span className="font-mono text-gray-700 block truncate">
                     {truncateMiddle(row.address, 10, 8)}
                   </span>
                 </Tooltip>

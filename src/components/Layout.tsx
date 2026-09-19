@@ -46,9 +46,8 @@ export function Layout() {
         </div>
         <nav className="flex-1 py-2">
           {PRIMARY_ROUTES.map((item) => (
-            <Tooltip content={item.description}>
+            <Tooltip key={item.key} content={item.description} className="block">
               <NavLink
-                key={item.key}
                 to={item.to}
                 end={item.to === "/"}
                 className={({ isActive }) =>
