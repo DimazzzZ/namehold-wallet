@@ -134,6 +134,7 @@ fn bid_row(addr: &str, nonce_hex: &str) -> BidCommitmentRow {
         bid_txid: None,
         reveal_txid: None,
         reveal_end_height: None,
+        name_start_height: None,
     }
 }
 

@@ -270,6 +270,7 @@ fn merge_indexed_bids_marks_mine_and_computes_highest() {
         bid_txid: Some("txmine".into()),
         reveal_txid: None,
         reveal_end_height: None,
+        name_start_height: None,
     }];
 
     let out = merge_indexed_bids(&indexed, &commitments, "namehold");
@@ -317,6 +318,7 @@ fn merge_indexed_bids_never_marks_bid_from_a_different_name_as_mine() {
         bid_txid: Some("txshared".into()),
         reveal_txid: None,
         reveal_end_height: None,
+        name_start_height: None,
     }];
 
     let out = merge_indexed_bids(&indexed, &commitments, "namehold");

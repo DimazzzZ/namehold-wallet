@@ -60,7 +60,7 @@ fn seed_pending_bid(
         &"22".repeat(32),
     )
     .unwrap();
-    db::queries::set_reveal_end_height(conn, profile_id, &"22".repeat(32), reveal_end_height)
+    db::queries::set_auction_heights(conn, profile_id, &"22".repeat(32), 0, reveal_end_height)
         .unwrap();
 }
 

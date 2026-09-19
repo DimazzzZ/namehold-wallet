@@ -448,14 +448,33 @@ pub(crate) struct NameActionContext {
 }
 
 /// Gather wallet evidence from the DB for a name.
+/// `auction_start` is the OPEN height of the auction currently running for
+/// `name`, when the caller knows it. Bids belong to an auction, not to a name —
+/// a name can be auctioned repeatedly — so a commitment from an auction that
+/// has since lapsed must not be read as one of this wallet's bids on the live
+/// one. `None` means "we could not tell", and then nothing is filtered.
 pub(crate) fn find_name_action_context(
     conn: &rusqlite::Connection,
     profile_id: &str,
     name: &str,
+    auction_start: Option<i64>,
 ) -> Result<NameActionContext, AppError> {
-    let bid = queries::get_bid_commitment(conn, profile_id, name)
-        .ok()
-        .flatten();
+    // Newest first, so the first match is the most recent bid in this auction.
+    let commitments: Vec<queries::BidCommitmentRow> =
+        queries::list_bid_commitments(conn, profile_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|b| b.name == name)
+            .filter(|b| match (auction_start, b.name_start_height) {
+                (Some(start), Some(placed)) => placed == start,
+                // A commitment recovered from the chain has no recorded auction
+                // (030). Counting one that may be dead is a wrong number; hiding a
+                // live one is a bid the user never gets told to reveal.
+                (Some(_), None) => true,
+                (None, _) => true,
+            })
+            .collect();
+    let bid = commitments.first().cloned();
     // Part 3 (confirmed pre-existing bug, folded in from the Task 2 review):
     // revealing SPENDS the COV_BID coin and CREATES a COV_REVEAL coin — so a
     // COV_REVEAL coin can only exist AFTER a successful reveal, never before.
@@ -505,10 +524,8 @@ pub(crate) fn find_name_action_context(
         })
     });
 
-    // Count existing bids for bid multiplicity rule.
-    let existing_bid_count = queries::list_bid_commitments(conn, profile_id)
-        .map(|v| v.iter().filter(|b| b.name == name).count() as i64)
-        .unwrap_or(0);
+    // Count existing bids for bid multiplicity rule — this auction's only.
+    let existing_bid_count = commitments.len() as i64;
 
     // Task 1: pending-OPEN evidence, mirroring the two checks
     // `build_open_draft`'s guard enforces — (a) an UNCONFIRMED COV_OPEN coin
@@ -702,9 +719,15 @@ async fn evaluate_name_action_capabilities(
                 .map(|s| s.to_uppercase())
                 .unwrap_or_else(|| "AVAILABLE".to_string());
 
+            // The auction running right now, straight from the node.
+            let auction_start = name_info
+                .get("info")
+                .and_then(|i| i.get("height"))
+                .and_then(|h| h.as_i64());
+
             let (action_ctx, tracked_owner_address, profile_addrs) = {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-                let action_ctx = find_name_action_context(&conn, profile_id, &name)?;
+                let action_ctx = find_name_action_context(&conn, profile_id, &name, auction_start)?;
                 let tracked_owner_address =
                     queries::get_tracked_name_state(&conn, profile_id, &name)?
                         .and_then(|t| t.owner_address);
@@ -743,7 +766,16 @@ async fn evaluate_name_action_capabilities(
             let (tracked, action_ctx, profile_addrs, renewal_window, current_height) = {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
                 let tracked = queries::get_tracked_name_state(&conn, profile_id, &name)?;
-                let action_ctx = find_name_action_context(&conn, profile_id, &name)?;
+                // No live node — the cached `getnameinfo` payload is the best
+                // evidence of which auction is running. `upsert_name_state`
+                // clears it when the node reports none.
+                let cached_auction_start = tracked
+                    .as_ref()
+                    .and_then(|t| t.raw_json.as_deref())
+                    .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+                    .and_then(|v| v.get("info")?.get("height")?.as_i64());
+                let action_ctx =
+                    find_name_action_context(&conn, profile_id, &name, cached_auction_start)?;
                 let addrs = queries::get_profile_addresses(&conn, profile_id)?;
                 // Same expiry math as `read_renewals::compute_renewals`: network
                 // renewal window + the best persisted height estimate (no live
@@ -1564,10 +1596,11 @@ pub(crate) fn build_bid_draft_inner(
     // leaves this NULL.
     let params = ctx.network.name_params();
     let reveal_end_height = names_pure::reveal_end_height(ns.height as i64, &params);
-    queries::set_reveal_end_height(
+    queries::set_auction_heights(
         conn,
         &ctx.profile_id,
         &hex::encode(blind),
+        ns.height as i64,
         reveal_end_height,
     )?;
 
@@ -1758,7 +1791,13 @@ pub(crate) fn build_batch_bid_draft_inner(
 
         // Estimate reveal-end height and stamp it.
         let reveal_end_height = names_pure::reveal_end_height(spec.ns.height as i64, &params);
-        queries::set_reveal_end_height(conn, &ctx.profile_id, &blind_hex, reveal_end_height)?;
+        queries::set_auction_heights(
+            conn,
+            &ctx.profile_id,
+            &blind_hex,
+            spec.ns.height as i64,
+            reveal_end_height,
+        )?;
 
         outcomes.push(BidOutcome {
             primary: PrimaryOutput {

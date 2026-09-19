@@ -2449,6 +2449,9 @@ pub struct BidCommitmentRow {
     /// see `014_reveal_end_height.sql`. `None` for commitments recovered via
     /// `recover_bid_commitment` or written before this column existed.
     pub reveal_end_height: Option<i64>,
+    /// OPEN height of the auction this bid was placed in (030). `None` for a
+    /// commitment recovered from the chain, where the auction is unknown.
+    pub name_start_height: Option<i64>,
 }
 
 /// Insert a bid commitment row. Errors (rather than silently no-op'ing) when a
@@ -2531,7 +2534,7 @@ pub fn bid_commitment_exists(
 
 const BID_COLS: &str = "name, name_hash_hex, address, branch, child_index, \
      bid_value_doos, lockup_value_doos, nonce_hex, blind_hex, bid_txid, reveal_txid, \
-     reveal_end_height";
+     reveal_end_height, name_start_height";
 
 fn row_to_bid(row: &rusqlite::Row) -> rusqlite::Result<BidCommitmentRow> {
     Ok(BidCommitmentRow {
@@ -2547,22 +2550,26 @@ fn row_to_bid(row: &rusqlite::Row) -> rusqlite::Result<BidCommitmentRow> {
         bid_txid: row.get(9)?,
         reveal_txid: row.get(10)?,
         reveal_end_height: row.get(11)?,
+        name_start_height: row.get(12)?,
     })
 }
 
-/// Persist the reveal-window-close height estimate for the bid commitment
-/// just inserted by `build_bid_draft` (the only caller with a live auction
-/// `start` height to compute it from — see `014_reveal_end_height.sql`).
-pub fn set_reveal_end_height(
+/// Persist the auction a bid commitment belongs to, and the reveal-window-close
+/// height derived from it, for the commitment `build_bid_draft` just inserted —
+/// the only caller with the live auction `start` height in hand (see
+/// `014_reveal_end_height.sql` and `030_bid_commitment_auction.sql`).
+pub fn set_auction_heights(
     conn: &rusqlite::Connection,
     profile_id: &str,
     blind_hex: &str,
+    name_start_height: i64,
     reveal_end_height: i64,
 ) -> Result<(), AppError> {
     conn.execute(
-        "UPDATE bid_commitments SET reveal_end_height = ?3
-         WHERE wallet_profile_id = ?1 AND blind_hex = ?2",
-        params![profile_id, blind_hex, reveal_end_height],
+        "UPDATE bid_commitments
+            SET reveal_end_height = ?3, name_start_height = ?4
+          WHERE wallet_profile_id = ?1 AND blind_hex = ?2",
+        params![profile_id, blind_hex, reveal_end_height, name_start_height],
     )?;
     Ok(())
 }
@@ -5121,8 +5128,8 @@ mod noncustodial_query_tests {
         )
         .unwrap();
 
-        set_reveal_end_height(&conn, "p1", "b1", 500).unwrap();
-        set_reveal_end_height(&conn, "p1", "b2", 600).unwrap();
+        set_auction_heights(&conn, "p1", "b1", 0, 500).unwrap();
+        set_auction_heights(&conn, "p1", "b2", 0, 600).unwrap();
 
         // Mark one as revealed
         set_bid_reveal_txid(&conn, "p1", "revealed", "reveal_txid").unwrap();

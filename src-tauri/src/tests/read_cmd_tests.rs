@@ -787,6 +787,7 @@ fn bid_commitment_row(
         bid_txid: Some(bid_txid.to_string()),
         reveal_txid: None,
         reveal_end_height: None,
+        name_start_height: None,
     }
 }
 
@@ -2206,6 +2207,7 @@ fn merge_indexed_bids_marks_own_bids_and_aggregates_highest() {
         bid_txid: Some("mine_txid".to_string()),
         reveal_txid: None,
         reveal_end_height: None,
+        name_start_height: None,
     }];
     let out = merge_indexed_bids(&indexed, &commitments, "foo");
     assert_eq!(out["name"], "foo");
@@ -2360,6 +2362,7 @@ fn merge_name_bids_multiple_own_bids_increments_count() {
             bid_txid: Some("tx1".into()),
             reveal_txid: None,
             reveal_end_height: None,
+            name_start_height: None,
         },
         crate::db::queries::BidCommitmentRow {
             name: "foo".into(),
@@ -2374,6 +2377,7 @@ fn merge_name_bids_multiple_own_bids_increments_count() {
             bid_txid: Some("tx2".into()),
             reveal_txid: None,
             reveal_end_height: None,
+            name_start_height: None,
         },
     ];
     let v = merge_name_bids(&info, &commitments, "foo");
@@ -2432,6 +2436,7 @@ fn merge_indexed_bids_commitment_without_txid_never_matches() {
         bid_txid: None,
         reveal_txid: None,
         reveal_end_height: None,
+        name_start_height: None,
     }];
     let v = merge_indexed_bids(&indexed, &commitments, "foo");
     assert_eq!(v["myBidCount"], 0);
@@ -2472,6 +2477,7 @@ fn merge_indexed_bids_ignores_commitment_for_other_name() {
         bid_txid: Some("shared_tx".into()),
         reveal_txid: None,
         reveal_end_height: None,
+        name_start_height: None,
     }];
     let v = merge_indexed_bids(&indexed, &commitments, "foo");
     assert_eq!(v["myBidCount"], 0);

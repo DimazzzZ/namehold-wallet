@@ -1002,7 +1002,7 @@ mod branch_cov {
         assert_eq!(list[0].bid_value_doos, 100);
         assert!(list[0].reveal_end_height.is_none());
 
-        set_reveal_end_height(&conn, "p1", "bl1", 555).unwrap();
+        set_auction_heights(&conn, "p1", "bl1", 0, 555).unwrap();
         let deadlines = list_pending_reveal_deadlines(&conn).unwrap();
         assert_eq!(deadlines.len(), 1);
         assert_eq!(deadlines[0].0, "p1");
