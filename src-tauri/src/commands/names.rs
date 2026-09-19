@@ -493,21 +493,27 @@ pub(crate) fn find_name_action_context(
         .unwrap_or(0);
 
     // Task 1: pending-OPEN evidence, mirroring the two checks
-    // `build_open_draft`'s guard enforces — (a) an unspent COV_OPEN coin for
-    // this name anywhere in the profile, OR (b) a not-yet-terminal `open`
+    // `build_open_draft`'s guard enforces — (a) an UNCONFIRMED COV_OPEN coin
+    // for this name anywhere in the profile, OR (b) a not-yet-terminal `open`
     // draft. Either makes `can_open` reflect the pending state instead of
     // staying "allowed" until the user hits the guard directly.
+    //
+    // Unconfirmed, not merely unspent: an OPEN output is a zero-value marker
+    // that nothing ever spends, so the wallet keeps it forever. Treating a
+    // confirmed one as "pending" made every name this wallet had ever opened
+    // permanently un-openable — including one whose auction had since lapsed
+    // and which the chain now reports as available again. A live auction is
+    // already handled by the phase check in `build_name_action_capabilities`.
     let has_pending_open_coin = names::hash_name(name)
         .ok()
         .map(hex::encode)
         .map(|nh_hex| {
-            queries::find_unspent_covenant_utxos_by_name_hash(
+            queries::has_unconfirmed_covenant_utxo_by_name_hash(
                 conn,
                 profile_id,
                 sync::COV_OPEN as i64,
                 &nh_hex,
             )
-            .map(|v| !v.is_empty())
             .unwrap_or(false)
         })
         .unwrap_or(false);
@@ -1357,8 +1363,14 @@ pub(crate) fn build_open_draft_inner(
     // window, a stale UI, or a replayed call can still reach this command
     // directly, so the rule must be enforced here. Two checks, either of
     // which blocks a second open:
-    //   (a) an unspent COV_OPEN coin for this name anywhere in the profile —
-    //       our OPEN is already live on-chain (or awaiting confirmation);
+    //   (a) an UNCONFIRMED COV_OPEN coin for this name anywhere in the profile
+    //       — our OPEN is in the mempool and might still land. A CONFIRMED one
+    //       is not a duplicate risk: the name is then in OPENING/BIDDING and
+    //       consensus rejects a second OPEN, while an OPEN coin left over from
+    //       an auction that has since lapsed is stale evidence — nothing spends
+    //       a zero-value OPEN marker, so the wallet holds it forever, and
+    //       blocking on it made a name that is available again impossible to
+    //       reopen;
     //   (b) a not-yet-terminal `open` draft for this name — one is already
     //       queued/signed/broadcast and might still land.
     // This deliberately does NOT fetch node state to detect someone ELSE
@@ -1372,13 +1384,13 @@ pub(crate) fn build_open_draft_inner(
     // written anything (classic TOCTOU). Tests call this function directly
     // with an owned `&Connection` (no mutex), which is fine because tests
     // are single-threaded.
-    let existing_open_coins = queries::find_unspent_covenant_utxos_by_name_hash(
+    let open_in_flight = queries::has_unconfirmed_covenant_utxo_by_name_hash(
         conn,
         &ctx.profile_id,
         sync::COV_OPEN as i64,
         &nh_hex,
     )?;
-    if !existing_open_coins.is_empty() {
+    if open_in_flight {
         return Err(AppError::InvalidInput(format!(
             "an auction for '{name}' is already being opened — wait for it to confirm"
         )));

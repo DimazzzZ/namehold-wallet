@@ -68,6 +68,27 @@ fn seed_tracked_utxo(
     .unwrap();
 }
 
+/// Like [`seed_tracked_utxo`] but with an explicit confirmation height.
+/// hsd reports `-1` (or nothing) for a mempool coin, a real height once it is
+/// in a block — the difference between "in flight" and "we hold it".
+fn seed_tracked_utxo_at_height(
+    conn: &rusqlite::Connection,
+    txid: &str,
+    address: &str,
+    covenant_type: i64,
+    covenant_json: &str,
+    height: Option<i64>,
+) {
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, height, covenant_type, covenant_json, spend_class, spent_by_txid)
+         VALUES (?1, 0, ?2, ?3, 'deadbeef', 0, ?4, ?5, ?6, 'name_control', NULL)",
+        rusqlite::params![txid, PROFILE, address, height, covenant_type, covenant_json],
+    )
+    .unwrap();
+}
+
 fn seed_bid_commitment(
     conn: &rusqlite::Connection,
     name: &str,
@@ -302,6 +323,49 @@ fn find_name_action_context_with_pending_open_draft() {
 
     let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
     assert!(ctx.has_pending_open);
+}
+
+/// An OPEN we broadcast that is still in the mempool: this really is pending.
+#[test]
+fn find_name_action_context_with_unconfirmed_open_coin() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_OPEN);
+    seed_tracked_utxo_at_height(&conn, "aa", ADDRESS, sync::COV_OPEN as i64, &cov, Some(-1));
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    assert!(
+        ctx.has_pending_open,
+        "a mempool OPEN coin is an open still in flight"
+    );
+}
+
+/// Regression: a CONFIRMED OPEN coin is not a pending open.
+///
+/// Nothing ever spends the zero-value OPEN marker, so the wallet holds it for
+/// good. Reading "we hold one" as "one is pending" made every name this wallet
+/// had ever opened permanently un-openable — including one whose auction had
+/// lapsed and which the chain reports as available again. The modal showed
+/// "an auction is already opening for this name (pending confirmation)" for a
+/// name with no auction at all, and the Open button stayed disabled.
+#[test]
+fn find_name_action_context_ignores_a_confirmed_open_coin() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_OPEN);
+    seed_tracked_utxo_at_height(&conn, "bb", ADDRESS, sync::COV_OPEN as i64, &cov, Some(111));
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    assert!(
+        !ctx.has_pending_open,
+        "an OPEN coin confirmed at height 111 is history, not a pending open"
+    );
 }
 
 #[test]

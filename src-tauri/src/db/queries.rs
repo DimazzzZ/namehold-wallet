@@ -2278,6 +2278,42 @@ pub fn find_unspent_covenant_utxos_by_name_hash(
         .collect())
 }
 
+/// True when the profile holds an UNSPENT, UNCONFIRMED covenant coin of
+/// `covenant_type` for `name_hash_hex` — one this wallet broadcast that is
+/// still sitting in the mempool (hsd reports `-1`/absent as the height of a
+/// mempool coin; see `NodeCoin::height`).
+///
+/// This is the "still in flight" question, which is not the same as
+/// [`find_unspent_covenant_utxos_by_name_hash`]'s "we hold one". An OPEN coin,
+/// for instance, is a zero-value marker nobody ever spends, so once it confirms
+/// the wallet holds it forever — long after that auction has ended. Asking the
+/// broader question to mean "in flight" made a name whose auction had lapsed
+/// look like it was still opening.
+pub fn has_unconfirmed_covenant_utxo_by_name_hash(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    covenant_type: i64,
+    name_hash_hex: &str,
+) -> Result<bool, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT u.covenant_json
+         FROM tracked_utxos u
+         WHERE u.wallet_profile_id = ?1
+           AND u.covenant_type = ?2
+           AND u.spent_by_txid IS NULL
+           AND (u.height IS NULL OR u.height < 0)",
+    )?;
+    let want = name_hash_hex.to_ascii_lowercase();
+    let mut rows = stmt.query(params![profile_id, covenant_type])?;
+    while let Some(row) = rows.next()? {
+        let covenant_json: Option<String> = row.get(0)?;
+        if covenant_name_hash_hex(covenant_json.as_deref()).as_deref() == Some(want.as_str()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// A distinct (nameHash, optional rawName) pair pulled from every unspent
 /// name-covenant coin the wallet holds. Emitted by
 /// [`list_unspent_wallet_name_hashes`] for node-only owned-name discovery: the
