@@ -625,6 +625,10 @@ export interface NameActionCapabilities {
    * inside the blind). OUR own value, so the modal can show it pre-reveal
    * instead of the on-chain 0. Null when we hold no commitment for this name. */
   lockupValueDoos: number | null;
+  /** How many bid commitments THIS wallet holds for this name. Multi-bid: can
+   * be > 1. `bidValueDoos`/`lockupValueDoos` above are the LATEST of these,
+   * shown in the modal header; this count drives the "(N of yours)" hint. */
+  myBidCount: number;
   canOpen: NameActionCapability;
   canBid: NameActionCapability;
   canReveal: NameActionCapability;

@@ -283,8 +283,13 @@ function buildCapabilities(name: string): Record<string, unknown> {
     revealTxid: a.revealTxid,
     // The user's own bid value (doos), so the confirm panel can show it.
     bidValueDoos: a.hasBid ? a.bidValueDoos : null,
+    // Latest lockup + how many bids this wallet holds (mock: 0 or 1).
+    lockupValueDoos: a.hasBid ? a.lockupDoos : null,
+    myBidCount: a.hasBid ? 1 : 0,
     canOpen: cap(phase === "AVAILABLE"),
-    canBid: cap(phase === "BIDDING" && !a.hasBid),
+    // Multi-bid (Namebase-style): another independent bid is allowed for the
+    // whole BIDDING window, even after this wallet has already bid.
+    canBid: cap(phase === "BIDDING"),
     canReveal: cap(
       phase === "REVEAL" && a.hasBid && hasBidCoin && a.revealStatus !== "broadcasted",
     ),

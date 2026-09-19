@@ -323,19 +323,19 @@ export function taskSummaryFromCapabilities(
   caps: NameActionCapabilities | null | undefined,
 ): AuctionTaskSummary | null {
   if (!caps) return null;
-  // Unify the label with the modal's on-chain phase badge for the ONE case
-  // that is genuinely bidding: this wallet has placed its single bid while
-  // the name is still in the on-chain BIDDING phase. The backend collapses
-  // that into taskState `waitingForBidding`, but the same taskState is also
-  // reused for two not-yet-bidding situations — a pending OPEN on an
-  // AVAILABLE name and the pre-bid OPENING period — which must keep reading
-  // "Waiting for Bidding". Guard on exactly the backend's condition
-  // (phase === "BIDDING" && has_bid_commitment; see names.rs) so the row and
-  // the modal both say "Bidding" only when it really is bidding.
+  // Unify the label with the modal's on-chain phase badge whenever this
+  // wallet has an active position in a name that is genuinely in the on-chain
+  // BIDDING phase. Multi-bid (Namebase-style): the backend now keeps such a
+  // name in taskState `readyToBid` (another independent bid is allowed), so a
+  // placed-bid row must read "Bidding" off `readyToBid` + `hasBidCommitment`,
+  // not the old `waitingForBidding`. The bare `readyToBid` without a
+  // commitment (no bid yet) keeps its own "Ready to Bid" label. The
+  // `waitingForBidding` cases (pending OPEN on an AVAILABLE name, the pre-bid
+  // OPENING period) must keep reading "Waiting for Bidding".
   const isReallyBidding =
-    caps.taskState === "waitingForBidding" &&
     caps.phase === "BIDDING" &&
-    caps.hasBidCommitment;
+    caps.hasBidCommitment &&
+    (caps.taskState === "readyToBid" || caps.taskState === "waitingForBidding");
   return {
     taskState: caps.taskState,
     label: isReallyBidding ? "Bidding" : taskStateLabel(caps.taskState),

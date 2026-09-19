@@ -628,7 +628,7 @@ export function NameActionsModal({
             </div>
             {showLocalBid ? (
               <span className="text-xs text-gray-700" data-testid="name-your-bid">
-                Your bid{" "}
+                {(caps?.myBidCount ?? 0) > 1 ? "Latest bid" : "Your bid"}{" "}
                 <Tooltip content={<>{formatHns(caps?.bidValueDoos)} HNS</>}>
                   <span className="cursor-help underline decoration-dotted underline-offset-2">
                     {formatHnsShort(caps?.bidValueDoos)} HNS
@@ -642,6 +642,11 @@ export function NameActionsModal({
                         {formatHnsShort(caps.lockupValueDoos)} HNS
                       </span>
                     </Tooltip>
+                  </span>
+                )}
+                {(caps?.myBidCount ?? 0) > 1 && (
+                  <span className="text-gray-400" data-testid="name-your-bid-count">
+                    {` · ${caps?.myBidCount} of yours`}
                   </span>
                 )}
               </span>

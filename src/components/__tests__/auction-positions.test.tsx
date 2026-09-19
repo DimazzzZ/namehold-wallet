@@ -305,7 +305,10 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
     render(<AuctionsView />, { wrapper: wrapper() });
 
     expect(await screen.findByText(".vmp3rt3")).toBeInTheDocument();
-    expect(screen.getByText(/Ready to Bid/i)).toBeInTheDocument();
+    // Multi-bid: a BIDDING row that already holds a commitment (readyToBid +
+    // hasBidCommitment) is labeled "Bidding" to match the modal's phase badge,
+    // while still inviting another independent bid.
+    expect(screen.getByText(/Bidding/i)).toBeInTheDocument();
     // vmp3rt4 must not render as a row, and the count reflects only the live one.
     expect(screen.queryByText(".vmp3rt4")).not.toBeInTheDocument();
     expect(screen.getByText(/Active Auctions \(1\)/i)).toBeInTheDocument();
