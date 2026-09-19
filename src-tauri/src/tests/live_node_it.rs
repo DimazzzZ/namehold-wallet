@@ -124,10 +124,17 @@ fn seeded_conn_acct(url: &str, api_key: &str, acct: u32) -> rusqlite::Connection
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
+    seed_profile_into(&conn, url, api_key, acct);
+    conn
+}
 
+/// The seeding half of [`seeded_conn_acct`], split out so a test that needs a
+/// FILE-backed DB (the chain scanner reopens the DB by path, which an in-memory
+/// connection cannot share) can reuse the exact same profile fixture.
+fn seed_profile_into(conn: &rusqlite::Connection, url: &str, api_key: &str, acct: u32) {
     let (addr, spk, pubkey) = leaf00_at(acct);
     db::queries::insert_wallet_profile(
-        &conn,
+        conn,
         PROFILE,
         "RegIT",
         "mnemonic_hot",
@@ -137,9 +144,9 @@ fn seeded_conn_acct(url: &str, api_key: &str, acct: u32) -> rusqlite::Connection
         false,
     )
     .unwrap();
-    db::queries::set_active_profile(&conn, PROFILE).unwrap();
-    db::queries::set_setting(&conn, "node_rpc_url", url).unwrap();
-    db::queries::set_setting(&conn, "node_rpc_api_key", api_key).unwrap();
+    db::queries::set_active_profile(conn, PROFILE).unwrap();
+    db::queries::set_setting(conn, "node_rpc_url", url).unwrap();
+    db::queries::set_setting(conn, "node_rpc_api_key", api_key).unwrap();
 
     conn.execute(
         "INSERT INTO derived_addresses
@@ -166,7 +173,6 @@ fn seeded_conn_acct(url: &str, api_key: &str, acct: u32) -> rusqlite::Connection
         )
         .unwrap();
     }
-    conn
 }
 
 fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> {
@@ -3370,4 +3376,160 @@ async fn live_batch_large_covenant_count() {
         row.status
     );
     eprintln!("✓ Large batch (20 covenants) assembled and broadcast successfully");
+}
+
+/// End-to-end proof for the chain scanner against a real node: OPEN a name,
+/// BID on it, mine, then run the scanner over the chain and read the bids back
+/// through the real `read_name_bids` command.
+///
+/// This is the test that would have caught the two defects fixed alongside it:
+///
+///   - `scan_block` parsed `outputs` / `hash` / integer doos, but hsd's
+///     JSON-RPC `getblock` emits `vout` / `txid` / HNS floats. Every mocked
+///     scanner test agreed with the wrong shape, so the scanner walked entire
+///     chains and indexed nothing.
+///   - the cursor was a global singleton, so a height left over from another
+///     network made `cursor >= tip` true and the scanner never ran at all.
+///
+/// Both are invisible to a mock and obvious here.
+#[tokio::test]
+async fn live_chain_scanner_indexes_own_bid() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_chain_scanner_indexes_own_bid: set HNS_IT_NODE_URL");
+        return;
+    };
+
+    // The scanner reopens the DB by path, so this fixture must be file-backed.
+    let db_path = std::env::temp_dir().join(format!(
+        "namehold_live_scanner_{}_{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_file(&db_path);
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    seed_profile_into(&conn, &url, &key, 0);
+    drop(conn);
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+
+    cl.generate_to_address(101, &addr).await.expect("fund");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let tip0 = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("scanit{tip0}");
+
+    // OPEN → BIDDING.
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(
+        mine_until(&cl, &name, "BIDDING", &addr, 30).await,
+        "name {name} did not reach BIDDING; state={:?}",
+        node_state(&cl, &name).await
+    );
+
+    // A bid whose lockup is deliberately NOT a whole number of HNS: 2.5 HNS.
+    // hsd reports it as the float 2.5, and a scanner that read the field as an
+    // integer would silently store 0.
+    const BID_DOOS: i64 = 1_000_000;
+    const LOCKUP_DOOS: i64 = 2_500_000;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let bid = build_bid_draft(app.state(), name.clone(), BID_DOOS, LOCKUP_DOOS, Some(1))
+        .await
+        .expect("build bid");
+    execute(&app, &cl, &addr, bid.id).await;
+    cl.generate_to_address(1, &addr).await.expect("mine bid");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // Run the scanner exactly as `run_chain_scanner` does, over the whole chain.
+    let tip = cl.get_blockchain_info().await.expect("info").blocks as i64;
+    for height in 1..=tip {
+        crate::commands::chain_scan::scan_block(&cl, db_path.to_str().unwrap(), "regtest", height)
+            .await
+            .unwrap_or_else(|e| panic!("scan_block({height}) failed: {e:?}"));
+    }
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        crate::commands::chain_scan::set_scan_cursor(&c, "regtest", tip).unwrap();
+    }
+
+    // The BID covenant is indexed, in doos, under the txid (not the wtxid).
+    let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name(&name).unwrap());
+    let indexed = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        crate::commands::chain_scan::read_indexed_bids(&c, "regtest", &name_hash_hex).unwrap()
+    };
+    assert_eq!(
+        indexed.len(),
+        1,
+        "the scanner must index exactly one BID for {name}"
+    );
+    assert_eq!(
+        indexed[0].lockup,
+        Some(LOCKUP_DOOS as u64),
+        "lockup must be stored in doos, not HNS"
+    );
+
+    // Another network's slice of the same tables stays empty — the index is
+    // network-keyed, and a name hashes identically on every chain.
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        assert!(
+            crate::commands::chain_scan::read_indexed_bids(&c, "main", &name_hash_hex)
+                .unwrap()
+                .is_empty(),
+            "regtest BIDs must not answer a mainnet query"
+        );
+        assert_eq!(
+            crate::commands::chain_scan::scan_cursor_height(&c, "main"),
+            0,
+            "scanning regtest must not advance the mainnet cursor"
+        );
+    }
+
+    // `read_name_bids` only trusts the index once the scanner has passed the
+    // name's auction height, which it reads from `tracked_name_states`. Owned-
+    // name discovery is explorer-based and unavailable on regtest, so seed the
+    // row and let the sync resolve it from the node's `getnameinfo` — exactly
+    // what discovery would do on mainnet.
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state)
+             VALUES (?1, ?2, '', 'UNKNOWN')",
+            params![PROFILE, name],
+        )
+        .unwrap();
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // And the command that feeds the UI surfaces it as the wallet's own bid,
+    // served from the local index (regtest has no explorer to fall back to).
+    let val =
+        crate::commands::read::read_name_bids(app.state(), name.clone(), Some(PROFILE.to_string()))
+            .await
+            .expect("read_name_bids");
+    let bids = val["bids"].as_array().expect("bids array");
+    assert_eq!(bids.len(), 1, "the bids panel must show the bid: {val}");
+    assert_eq!(bids[0]["lockup"], LOCKUP_DOOS);
+    assert_eq!(bids[0]["mine"], true, "our own bid must be marked mine");
+    assert_eq!(bids[0]["myValue"], BID_DOOS);
+    assert_eq!(val["myBidCount"], 1);
+
+    let _ = std::fs::remove_file(&db_path);
 }
