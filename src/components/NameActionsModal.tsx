@@ -19,7 +19,6 @@ import { Button } from "./ui/Button";
 import { Dialog } from "./ui/Dialog";
 import { Badge } from "./ui/Badge";
 import { UnlockButton } from "./UnlockButton";
-import { BidGate } from "./name-actions/BidGate";
 import { DnsRecordsEditor } from "./name-actions/DnsRecordsEditor";
 import { GuidedAction } from "./name-actions/GuidedAction";
 import { NameBidsPanel } from "./name-actions/NameBidsPanel";
@@ -348,10 +347,23 @@ export function NameActionsModal({
   // instead of the looser `hasRelevantActions`.
   const hasSignableActions = hasRelevantActions && !alreadyBidWaiting;
 
+  // In BIDDING the advanced section holds only the manual Auction fallbacks
+  // (Open / Reveal / Redeem) — the name isn't owned yet, so there are no DNS
+  // or management sections behind the toggle. When every one of those buttons
+  // is caps-disabled (the common BIDDING case: opening is done, reveal hasn't
+  // started, nothing to redeem), the toggle would only reveal an all-disabled
+  // menu. Suppress it unless at least one auction action is actually live.
+  const advancedHasLiveAction =
+    badge.phase !== "BIDDING" ||
+    caps?.canOpen?.allowed === true ||
+    caps?.canReveal?.allowed === true ||
+    caps?.canRedeem?.allowed === true;
+
   // Show the advanced toggle only when there are meaningful extra actions behind it.
   const showAdvancedToggle =
     hasRelevantActions &&
     !alreadyBidWaiting &&
+    advancedHasLiveAction &&
     // Auction-phase advanced actions are always meaningful.
     (badge.phase !== "CLOSED" ||
       // For CLOSED owned names: only show if there are ownership actions the user may want.
@@ -846,25 +858,6 @@ export function NameActionsModal({
                   {busy === "REDEEM" ? "…" : "Redeem"}
                 </Button>
               </div>
-              <BidGate
-                variant="advanced"
-                canBid={caps?.canBid ?? { allowed: false, reason: null }}
-                phase={badge.phase}
-                countdown={countdown}
-                bidHns={bidHns}
-                onBidChange={setBidHns}
-                lockupHns={lockupHns}
-                onLockupChange={setLockupHns}
-                bidError={bidInputError}
-                lockupError={lockupInputError}
-                forfeitLockupText={forfeitLockupText}
-                disabled={actionDisabled("BID", caps?.canBid) || !bidFormValid}
-                busy={busy === "BID"}
-                onSubmit={submitBid}
-                idleLabel="Bid"
-                busyLabel="…"
-                submitTitle={actionReason(caps?.canBid) ?? ""}
-              />
             </section>
 
             {/* DNS records (REGISTER / UPDATE) - only show for owned names */}
