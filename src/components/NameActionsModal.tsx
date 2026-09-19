@@ -381,6 +381,20 @@ export function NameActionsModal({
     return null;
   };
 
+  // Whether the modal-wide write gate below is on screen. It already states the
+  // write-capability reason and carries its own Unlock button.
+  const writeGateVisible = !canWrite && hasSignableActions;
+
+  // The reason a guided panel shows in its banner. Same as `actionReason`,
+  // except it does not repeat the write-capability reason while the gate is
+  // showing it — otherwise the same sentence, and its Unlock button, appear
+  // twice. Tooltips keep using `actionReason`: a title on a disabled button
+  // isn't a duplicate of anything.
+  const guidedReason = (cap?: NameActionCapability): string | null => {
+    if (!canWrite) return writeGateVisible ? null : actionReason(cap);
+    return actionReason(cap);
+  };
+
   const run = async (label: string, builder: () => Promise<{ id: string }>) => {
     if (!profile) return;
     setBusy(label);
@@ -692,7 +706,7 @@ export function NameActionsModal({
         {/* Write-capability gate — only when there is actually something to
             sign. If the modal has nothing to submit (e.g. this wallet already
             bid and is just waiting), the "unlock to sign" notice is noise. */}
-        {!canWrite && hasSignableActions && (
+        {writeGateVisible && (
           <div
             className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800"
             role="alert"
@@ -732,7 +746,7 @@ export function NameActionsModal({
                 summary={summary}
                 busy={busy}
                 actionDisabled={actionDisabled}
-                actionReason={actionReason}
+                actionReason={guidedReason}
                 onOpen={() => run("OPEN", () => build.open.mutateAsync({ name }))}
                 onRedeem={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}
                 onRegister={() => submitRecords("REGISTER")}

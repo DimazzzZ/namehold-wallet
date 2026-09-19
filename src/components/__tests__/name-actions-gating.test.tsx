@@ -26,7 +26,17 @@ const profile = {
   active: true,
 };
 
-function route(canWrite: boolean, reason: string | null) {
+/**
+ * `reason` is what the capability rows carry; `writeReason` is what
+ * `get_write_capability` reports. They default to the same string — a test that
+ * needs to tell the two notices apart passes them separately.
+ */
+function route(
+  canWrite: boolean,
+  reason: string | null,
+  signerUnlocked = true,
+  writeReason: string | null = reason,
+) {
   return (cmd: string) => {
     if (cmd === "get_name_action_capabilities") {
       return Promise.resolve({
@@ -62,15 +72,15 @@ function route(canWrite: boolean, reason: string | null) {
       case "get_signer_session":
         return Promise.resolve({
           walletProfileId: "p1",
-          unlocked: true,
+          unlocked: signerUnlocked,
           unlockedUntilEpochMs: Date.now() + 60000,
         });
       case "get_write_capability":
         return Promise.resolve({
-          signerUnlocked: true,
-          broadcasterAvailable: canWrite,
+          signerUnlocked,
+          broadcasterAvailable: true,
           canWrite,
-          reason,
+          reason: writeReason,
         });
       case "read_name_info":
         return Promise.resolve({
@@ -137,6 +147,28 @@ describe("NameActionsModal — node-readiness gating", () => {
     expect(screen.queryByLabelText("Bid (HNS)")).not.toBeInTheDocument();
     // Close stays available.
     expect(screen.getByRole("button", { name: /^Close$/i })).not.toBeDisabled();
+  });
+
+  it("states the locked-wallet reason once, with an Unlock button", async () => {
+    // Regression: the write-capability reason was printed twice — once by the
+    // modal-wide gate (which has an Unlock button) and again, bare, inside the
+    // guided action panel. One notice, one button, and it must be actionable.
+    const reason = "Unlock your wallet to sign transactions.";
+    invokeMock.mockImplementation(route(false, "Needs a synced owner coin.", false, reason));
+    render(<NameActionsModal name="examplename" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    // Re-query on every tick: React swaps the banner's subtree once the
+    // write-capability query resolves, so a node captured earlier goes stale.
+    await waitFor(() =>
+      expect(screen.getByTestId("name-actions-blocked")).toHaveTextContent(reason),
+    );
+
+    const occurrences = (document.body.textContent ?? "").split(reason).length - 1;
+    expect(occurrences).toBe(1);
+    expect(screen.getAllByTestId("unlock-now")).toHaveLength(1);
+    expect(screen.getByTestId("name-actions-blocked")).toContainElement(
+      screen.getByTestId("unlock-now"),
+    );
   });
 
   it("enables actions once the node is write-capable", async () => {

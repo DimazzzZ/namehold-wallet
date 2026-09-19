@@ -2,6 +2,7 @@ import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { CopyField } from "../ui/CopyField";
 import { TxInfoModal } from "../TxInfoModal";
+import { ActionReasonBanner } from "./ActionReasonBanner";
 import { BidForm } from "./BidForm";
 import { DnsRecordsEditor } from "./DnsRecordsEditor";
 import { formatCountdown } from "../../lib/auction";
@@ -118,11 +119,7 @@ export function GuidedAction({
         return (
           <div className="space-y-2">
             <div className="text-sm text-gray-700">{guide.description}</div>
-            {actionReason(caps?.canOpen) && (
-              <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                {actionReason(caps?.canOpen)}
-              </div>
-            )}
+            <ActionReasonBanner reason={actionReason(caps?.canOpen)} />
             <Button
               variant="primary"
               disabled={actionDisabled("OPEN", caps?.canOpen)}
@@ -186,13 +183,7 @@ export function GuidedAction({
             idleLabel={guide.action}
             busyLabel="Placing bid…"
             description={guide.description}
-            reasonBanner={
-              actionReason(caps?.canBid) && (
-                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                  {actionReason(caps?.canBid)}
-                </div>
-              )
-            }
+            reasonBanner={<ActionReasonBanner reason={actionReason(caps?.canBid)} />}
           />
         );
 
@@ -305,11 +296,7 @@ export function GuidedAction({
         return (
           <div className="space-y-2">
             <div className="text-sm text-gray-700">{guide.description}</div>
-            {actionReason(caps?.canReveal) && (
-              <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                {actionReason(caps?.canReveal)}
-              </div>
-            )}
+            <ActionReasonBanner reason={actionReason(caps?.canReveal)} />
             {caps && !caps.hasBidCommitment && (
               <div
                 className="rounded border border-gray-200 bg-gray-50 p-2 space-y-2"
@@ -388,11 +375,7 @@ export function GuidedAction({
                 {caps.nextActionReason ??
                   "You won the auction! Register the name to finalize ownership."}
               </div>
-              {actionReason(caps?.canRegister) && (
-                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                  {actionReason(caps?.canRegister)}
-                </div>
-              )}
+              <ActionReasonBanner reason={actionReason(caps?.canRegister)} />
               <DnsRecordsEditor
                 variant="guided"
                 rows={rows}
