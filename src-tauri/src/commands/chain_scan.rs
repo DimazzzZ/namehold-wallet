@@ -226,11 +226,21 @@ pub(crate) async fn scan_block(
     let mut reveals: Vec<RevealRow> = Vec::new();
 
     for tx in txs {
-        let txid = tx.get("hash").and_then(|h| h.as_str()).unwrap_or_default();
+        // `txid`, NOT `hash`: hsd's `txToJSON` puts the txid in `txid` and the
+        // WITNESS txid in `hash` (`rpc.js` → `tx.txid()` / `tx.wtxid()`), and on
+        // Handshake every signed tx has a witness, so the two always differ.
+        // `bid_commitments.bid_txid` holds the txid, so indexing under the wtxid
+        // meant a bid could never be recognised as the wallet's own.
+        let txid = tx.get("txid").and_then(|h| h.as_str()).unwrap_or_default();
         if txid.is_empty() {
             continue;
         }
-        let outputs = tx.get("outputs").and_then(|o| o.as_array());
+        // `vout`, NOT `outputs`: `getblock` goes through hsd's JSON-RPC layer,
+        // which emits the bitcoind-shaped `vin`/`vout`. Only hsd's REST/HTTP API
+        // uses `inputs`/`outputs` (what `noncustodial::sync` consumes). Reading
+        // `outputs` here made every block parse as empty, so the scanner walked
+        // the whole chain and indexed nothing while the cursor advanced to tip.
+        let outputs = tx.get("vout").and_then(|o| o.as_array());
         let outputs = match outputs {
             Some(o) => o,
             None => continue,
@@ -252,11 +262,25 @@ pub(crate) async fn scan_block(
                 continue;
             }
 
+            // `address` is an object here (`{version, hash, string}`), not the
+            // bare bech32 string the REST API returns. Read the encoded form
+            // hsd hands us; tolerate the flat shape for other node builds.
             let addr = output
                 .get("address")
-                .and_then(|a| a.as_str())
+                .and_then(|a| {
+                    a.get("string")
+                        .and_then(|s| s.as_str())
+                        .or_else(|| a.as_str())
+                })
                 .map(|s| s.to_string());
-            let value = output.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
+            // `value` is HNS as a JSON number (`Amount.coin(value, true)` →
+            // `fixed.toFloat(value, 6)`), not doos. Every consumer of this table
+            // — and `bid_commitments.lockup_value_doos` beside it — is in doos.
+            let value = output
+                .get("value")
+                .and_then(|v| v.as_f64())
+                .map(doos_from_hns)
+                .unwrap_or(0);
 
             match cov_type {
                 COV_BID => {
@@ -340,6 +364,16 @@ pub(crate) async fn scan_block(
     }
     tx.commit()?;
     Ok(())
+}
+
+/// Convert an HNS amount as hsd's JSON-RPC reports it (a float with at most 6
+/// decimals) into doos. Exact for every reachable amount: the 2.04e9 HNS supply
+/// cap is 2.04e15 doos, well inside f64's 2^53 exact-integer range.
+fn doos_from_hns(hns: f64) -> u64 {
+    if !hns.is_finite() || hns <= 0.0 {
+        return 0;
+    }
+    (hns * 1_000_000.0).round() as u64
 }
 
 // --- DB helpers (chain_scan_cursor) ------------------------------------------

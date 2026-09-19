@@ -385,7 +385,7 @@ async fn scan_block_ok_when_tx_has_no_outputs() {
     let (path, _conn) = temp_db();
     let mock = MockNodeRpc::new()
         .with_block_hash("abc".to_string())
-        .with_block(serde_json::json!({"tx": [{"hash": "tx1"}]}));
+        .with_block(serde_json::json!({"tx": [{"txid": "tx1"}]}));
     let result = scan_block(&mock, path.to_str().unwrap(), NET, 1).await;
     assert!(result.is_ok());
 }
@@ -397,8 +397,8 @@ async fn scan_block_ok_when_outputs_have_no_covenant() {
         .with_block_hash("abc".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "tx1",
-                "outputs": [{"value": 100, "address": "rs1qabc"}]
+                "txid": "tx1",
+                "vout": [{"value": 100, "address": "rs1qabc"}]
             }]
         }));
     let result = scan_block(&mock, path.to_str().unwrap(), NET, 1).await;
@@ -418,9 +418,9 @@ async fn scan_block_inserts_bid_covenant() {
         .with_block_hash("blockhash1".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txid_bid_1",
-                "outputs": [{
-                    "value": 5_000_000_u64,
+                "txid": "txid_bid_1",
+                "vout": [{
+                    "value": 5,
                     "address": "rs1qbidder",
                     "covenant": {
                         "type": COV_BID as u64,
@@ -497,9 +497,9 @@ async fn scan_block_inserts_bid_with_undecoded_name() {
         .with_block_hash("bh".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txbad",
-                "outputs": [{
-                    "value": 1_000_000_u64,
+                "txid": "txbad",
+                "vout": [{
+                    "value": 1,
                     "address": "rs1qx",
                     "covenant": {
                         "type": COV_BID as u64,
@@ -541,9 +541,9 @@ async fn scan_block_inserts_reveal_and_matches_to_existing_bid() {
         .with_block_hash("bh2".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txreveal1",
-                "outputs": [{
-                    "value": 2_000_000_u64,
+                "txid": "txreveal1",
+                "vout": [{
+                    "value": 2,
                     "address": "rs1qrev",
                     "covenant": {
                         "type": COV_REVEAL as u64,
@@ -570,9 +570,9 @@ async fn scan_block_reveal_without_matching_bid_is_noop() {
         .with_block_hash("bh3".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txrev_orphan",
-                "outputs": [{
-                    "value": 1_000_000_u64,
+                "txid": "txrev_orphan",
+                "vout": [{
+                    "value": 1,
                     "address": "rs1qx",
                     "covenant": {
                         "type": COV_REVEAL as u64,
@@ -598,10 +598,10 @@ async fn scan_block_processes_bid_and_reveal_in_same_block() {
         .with_block_hash("bhmixed".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txmixed",
-                "outputs": [
+                "txid": "txmixed",
+                "vout": [
                     {
-                        "value": 4_000_000_u64,
+                        "value": 4,
                         "address": "rs1qbid",
                         "covenant": {
                             "type": COV_BID as u64,
@@ -609,7 +609,7 @@ async fn scan_block_processes_bid_and_reveal_in_same_block() {
                         }
                     },
                     {
-                        "value": 2_500_000_u64,
+                        "value": 2.5,
                         "address": "rs1qrev",
                         "covenant": {
                             "type": COV_REVEAL as u64,
@@ -631,18 +631,139 @@ async fn scan_block_processes_bid_and_reveal_in_same_block() {
     assert_eq!(bids[0].value, Some(2_500_000));
 }
 
+// --- Real-node payload shape -------------------------------------------------
+
+/// The exact `getblock(hash, true, true)` payload hsd 8.0.0 returned for
+/// regtest block 118 (trimmed to the BID tx), captured from a live node.
+///
+/// Every fixture above is hand-written, and for a long time they all described
+/// a shape hsd's JSON-RPC never emits — `outputs` instead of `vout`, the wtxid
+/// in place of the txid, doos instead of HNS, a bare address string instead of
+/// the address object. The tests passed and the scanner indexed nothing on a
+/// real chain. This one is copied from the wire, so it fails if any of those
+/// assumptions creep back.
+#[tokio::test]
+async fn scan_block_parses_real_hsd_getblock_payload() {
+    let (path, conn) = temp_db();
+    let name_hash = "23847bd14136c4458edf7e849d6b0f1f80d581242d1e709dd931b6079c6890b8";
+    let mock = MockNodeRpc::new()
+        .with_block_hash(
+            "5ce20191c2ff1319ae6a71dd6912810e7da565f04f29fae01f6f173f6ffe3cae".to_string(),
+        )
+        .with_block(serde_json::json!({
+            "hash": "5ce20191c2ff1319ae6a71dd6912810e7da565f04f29fae01f6f173f6ffe3cae",
+            "height": 118,
+            "tx": [{
+                "txid": "6b56e7c2e7087ba8b1e7eea58317d02a48d7fabab49eb43f91a48ee9e6069030",
+                "hash": "bb20237582a5e390501acd90f521582de92dbfdf3b2c152dfbd0d9c03cd7afc9",
+                "vout": [
+                    {
+                        "value": 100,
+                        "n": 0,
+                        "address": {
+                            "version": 0,
+                            "hash": "386bb5b05f53473ab69bd2d0a9aa01ada50886a9",
+                            "string": "rs1q8p4mtvzl2drn4d5m6tg2n2sp4kjs3p4fwd35rc"
+                        },
+                        "covenant": {
+                            "type": 3,
+                            "action": "BID",
+                            "items": [
+                                "23847bd14136c4458edf7e849d6b0f1f80d581242d1e709dd931b6079c6890b8",
+                                "6f000000",
+                                "766d7033727433",
+                                "49e0c5efa9523efa32b66b4f4118b1aa6aa99ee3e32c29af4d4abfd4c2dd99a9"
+                            ]
+                        }
+                    },
+                    {
+                        "value": 1899.999967,
+                        "n": 1,
+                        "address": {
+                            "version": 0,
+                            "hash": "cabd4c8bed144952c1d67d2015b4ef873f8f98b5",
+                            "string": "rs1qe275ezldz3y49swk05sptd80sulclx94ert9nf"
+                        },
+                        "covenant": { "type": 0, "action": "NONE", "items": [] }
+                    }
+                ]
+            }]
+        }));
+
+    scan_block(&mock, path.to_str().unwrap(), NET, 118)
+        .await
+        .unwrap();
+
+    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
+    assert_eq!(bids.len(), 1, "the BID output must be indexed");
+    // The txid, not the wtxid — this is what `bid_commitments.bid_txid` holds.
+    assert_eq!(
+        bids[0].txid.as_deref(),
+        Some("6b56e7c2e7087ba8b1e7eea58317d02a48d7fabab49eb43f91a48ee9e6069030")
+    );
+    assert_eq!(bids[0].index, Some(0));
+    // 100 HNS on the wire → 100_000_000 doos in the table.
+    assert_eq!(bids[0].lockup, Some(100_000_000));
+    assert_eq!(bids[0].revealed, Some(false));
+
+    // The raw name decodes out of covenant item 2, and the address object's
+    // encoded form is what we store.
+    let (name, addr): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT name, address FROM name_bid_outpoints WHERE network = ?1",
+            params![NET],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(name.as_deref(), Some("vmp3rt3"));
+    assert_eq!(
+        addr.as_deref(),
+        Some("rs1q8p4mtvzl2drn4d5m6tg2n2sp4kjs3p4fwd35rc")
+    );
+}
+
+/// A non-integral HNS amount must round to exact doos rather than truncating
+/// to 0 — the old `as_u64()` read returned `None` for any fractional value.
+#[tokio::test]
+async fn scan_block_converts_fractional_hns_to_doos() {
+    let (path, conn) = temp_db();
+    let name_hash = "fe01";
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "txid": "txfrac",
+                "vout": [{
+                    "value": 0.123456,
+                    "address": { "version": 0, "string": "rs1qx" },
+                    "covenant": {
+                        "type": COV_BID as u64,
+                        "items": [name_hash, "00000001", "6e616d65", "blind"]
+                    }
+                }]
+            }]
+        }));
+
+    scan_block(&mock, path.to_str().unwrap(), NET, 7)
+        .await
+        .unwrap();
+
+    let bids = read_indexed_bids(&conn, NET, name_hash).unwrap();
+    assert_eq!(bids[0].lockup, Some(123_456));
+}
+
 // --- Malformed output edge cases ---------------------------------------------
 
 #[tokio::test]
-async fn scan_block_skips_tx_with_empty_hash() {
+async fn scan_block_skips_tx_with_empty_txid() {
     let (path, conn) = temp_db();
     let mock = MockNodeRpc::new()
         .with_block_hash("bh".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "",
-                "outputs": [{
-                    "value": 1_000_000_u64,
+                "txid": "",
+                "vout": [{
+                    "value": 1,
                     "address": "rs1q",
                     "covenant": {
                         "type": COV_BID as u64,
@@ -665,9 +786,9 @@ async fn scan_block_skips_covenant_with_empty_items() {
         .with_block_hash("bh".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txvalid",
-                "outputs": [{
-                    "value": 1_000_000_u64,
+                "txid": "txvalid",
+                "vout": [{
+                    "value": 1,
                     "address": "rs1q",
                     "covenant": {
                         "type": COV_BID as u64,
@@ -688,9 +809,9 @@ async fn scan_block_skips_covenant_with_empty_name_hash() {
         .with_block_hash("bh".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txvalid",
-                "outputs": [{
-                    "value": 1_000_000_u64,
+                "txid": "txvalid",
+                "vout": [{
+                    "value": 1,
                     "address": "rs1q",
                     "covenant": {
                         "type": COV_BID as u64,
@@ -712,9 +833,9 @@ async fn scan_block_skips_unknown_covenant_type() {
         .with_block_hash("bh".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txvalid",
-                "outputs": [{
-                    "value": 1_000_000_u64,
+                "txid": "txvalid",
+                "vout": [{
+                    "value": 1,
                     "address": "rs1q",
                     "covenant": {
                         "type": 99_u64,
@@ -730,15 +851,15 @@ async fn scan_block_skips_unknown_covenant_type() {
 }
 
 #[tokio::test]
-async fn scan_block_handles_missing_tx_hash_field() {
-    // tx object without "hash" at all → unwrap_or_default → empty → skipped
+async fn scan_block_handles_missing_txid_field() {
+    // tx object without "txid" at all → unwrap_or_default → empty → skipped
     let (path, _conn) = temp_db();
     let mock = MockNodeRpc::new()
         .with_block_hash("bh".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "outputs": [{
-                    "value": 1_000_000_u64,
+                "vout": [{
+                    "value": 1,
                     "covenant": {
                         "type": COV_BID as u64,
                         "items": ["aabb", "00000001", "6e616d65", "blind"]
@@ -760,8 +881,8 @@ async fn scan_block_handles_output_without_address_or_value() {
         .with_block_hash("bh".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txnoaddr",
-                "outputs": [{
+                "txid": "txnoaddr",
+                "vout": [{
                     "covenant": {
                         "type": COV_BID as u64,
                         "items": [name_hash, "00000001", &raw_name_hex, "blind"]
@@ -788,9 +909,9 @@ async fn scan_block_upsert_updates_name_on_conflict() {
         .with_block_hash("bh1".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txupsert",
-                "outputs": [{
-                    "value": 2_000_000_u64,
+                "txid": "txupsert",
+                "vout": [{
+                    "value": 2,
                     "address": "rs1q",
                     "covenant": {
                         "type": COV_BID as u64,
@@ -809,9 +930,9 @@ async fn scan_block_upsert_updates_name_on_conflict() {
         .with_block_hash("bh2".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txupsert",
-                "outputs": [{
-                    "value": 2_000_000_u64,
+                "txid": "txupsert",
+                "vout": [{
+                    "value": 2,
                     "address": "rs1q",
                     "covenant": {
                         "type": COV_BID as u64,
@@ -844,9 +965,9 @@ async fn scan_block_processes_multiple_txs() {
         .with_block(serde_json::json!({
             "tx": [
                 {
-                    "hash": "tx_a",
-                    "outputs": [{
-                        "value": 1_000_000_u64,
+                    "txid": "tx_a",
+                    "vout": [{
+                        "value": 1,
                         "address": "rs1qa",
                         "covenant": {
                             "type": COV_BID as u64,
@@ -855,9 +976,9 @@ async fn scan_block_processes_multiple_txs() {
                     }]
                 },
                 {
-                    "hash": "tx_b",
-                    "outputs": [{
-                        "value": 2_000_000_u64,
+                    "txid": "tx_b",
+                    "vout": [{
+                        "value": 2,
                         "address": "rs1qb",
                         "covenant": {
                             "type": COV_BID as u64,
@@ -897,9 +1018,9 @@ async fn scan_block_lowercases_name_hash_from_covenant() {
         .with_block_hash("bh".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txlower",
-                "outputs": [{
-                    "value": 500_000_u64,
+                "txid": "txlower",
+                "vout": [{
+                    "value": 0.5,
                     "address": "rs1q",
                     "covenant": {
                         "type": COV_BID as u64,
@@ -908,7 +1029,9 @@ async fn scan_block_lowercases_name_hash_from_covenant() {
                 }]
             }]
         }));
-    scan_block(&mock, path.to_str().unwrap(), NET, 5).await.unwrap();
+    scan_block(&mock, path.to_str().unwrap(), NET, 5)
+        .await
+        .unwrap();
 
     // Query with lowercase should find it
     let bids = read_indexed_bids(&conn, NET, "aabbccdd").unwrap();
@@ -928,10 +1051,10 @@ async fn scan_block_assigns_correct_vout_index() {
         .with_block_hash("bh".to_string())
         .with_block(serde_json::json!({
             "tx": [{
-                "hash": "txvout",
-                "outputs": [
+                "txid": "txvout",
+                "vout": [
                     {
-                        "value": 1_000_000_u64,
+                        "value": 1,
                         "address": "rs1qa",
                         "covenant": {
                             "type": COV_BID as u64,
@@ -939,7 +1062,7 @@ async fn scan_block_assigns_correct_vout_index() {
                         }
                     },
                     {
-                        "value": 2_000_000_u64,
+                        "value": 2,
                         "address": "rs1qb",
                         "covenant": {
                             "type": COV_BID as u64,
@@ -949,7 +1072,9 @@ async fn scan_block_assigns_correct_vout_index() {
                 ]
             }]
         }));
-    scan_block(&mock, path.to_str().unwrap(), NET, 20).await.unwrap();
+    scan_block(&mock, path.to_str().unwrap(), NET, 20)
+        .await
+        .unwrap();
 
     let bids = read_indexed_bids(&conn, NET, nh).unwrap();
     assert_eq!(bids.len(), 2);
