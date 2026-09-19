@@ -61,6 +61,10 @@ export function NameBidsPanel({
 
   const isRevealPhase = phase === "REVEAL" || phase === "CLOSED";
   const myBidCount = data?.myBidCount ?? bids.filter((b) => b.mine).length;
+  // "N bids so far" counts what the chain has; a bid of ours still in the
+  // mempool is not one of them yet, and is called out separately.
+  const pendingCount = bids.filter((b) => b.pending).length;
+  const onChainCount = bids.length - pendingCount;
 
   return (
     <div className="text-sm" data-testid="name-bids">
@@ -68,7 +72,8 @@ export function NameBidsPanel({
 
       {!isRevealPhase && (
         <div className="text-xs text-gray-500 mb-1">
-          {bids.length} bids so far · yours: {myBidCount}
+          {onChainCount} bids so far · yours: {myBidCount}
+          {pendingCount > 0 && ` · ${pendingCount} of yours waiting for a block`}
         </div>
       )}
 
@@ -94,6 +99,24 @@ function BidRow({ bid }: { bid: NameBid }) {
   const rowClass = bid.mine
     ? "flex items-center gap-2 text-xs text-gray-800 bg-blue-50 border-l-2 border-blue-400 rounded px-1.5 py-0.5"
     : "flex items-center gap-2 text-xs text-gray-700";
+
+  // Ours, sent, not yet in a block. The chain knows nothing about it, so the
+  // row states that rather than sitting among the confirmed ones unmarked.
+  if (bid.pending) {
+    return (
+      <li className={rowClass} data-testid="name-bid-row-pending">
+        <span>lockup: {formatHns(bid.lockup)} HNS</span>
+        <Badge variant="info">You</Badge>
+        <span>your bid: {formatHns(bid.myValue)} HNS</span>
+        <Badge
+          variant="warning"
+          title="Sent to the network. It joins the auction once a block includes it."
+        >
+          waiting for a block
+        </Badge>
+      </li>
+    );
+  }
 
   if (!revealed) {
     // BIDDING-style row: only the public lockup is knowable — a competitor's

@@ -2449,6 +2449,67 @@ fn merge_indexed_bids_commitment_without_txid_never_matches() {
     assert_eq!(v["value"], 500);
 }
 
+/// A bid this wallet broadcast that the scanner has not seen yet. The index
+/// only holds BID outputs found in blocks, so before it is mined the user's own
+/// bid was absent from the panel entirely — "1 bids so far" right after placing
+/// a second one.
+#[test]
+fn merge_indexed_bids_appends_our_own_unmined_bid_as_pending() {
+    use crate::commands::read::merge_indexed_bids;
+    let indexed = vec![HsdBid {
+        txid: Some("mined".into()),
+        index: Some(0),
+        lockup: Some(189_000_000),
+        value: None,
+        revealed: Some(false),
+        win: None,
+        reveal: None,
+        time: None,
+    }];
+    let commit =
+        |txid: &str, bid: i64, lockup: i64, blind: &str| crate::db::queries::BidCommitmentRow {
+            name: "foo".into(),
+            name_hash_hex: "aa".into(),
+            address: "rs1".into(),
+            branch: 0,
+            child_index: 0,
+            bid_value_doos: bid,
+            lockup_value_doos: lockup,
+            nonce_hex: "00".into(),
+            blind_hex: blind.into(),
+            bid_txid: Some(txid.into()),
+            reveal_txid: None,
+            reveal_end_height: None,
+            name_start_height: None,
+        };
+    let commitments = vec![
+        commit("mined", 11_000_000, 189_000_000, "b1"),
+        commit("inflight", 5_000_000, 295_000_000, "b2"),
+    ];
+
+    let v = merge_indexed_bids(&indexed, &commitments, "foo");
+    let bids = v["bids"].as_array().unwrap();
+    assert_eq!(bids.len(), 2, "the mined one plus ours in flight");
+    // Both are ours, so the count covers the one the chain cannot see yet.
+    assert_eq!(v["myBidCount"], 2);
+
+    let pending = bids
+        .iter()
+        .find(|b| b["pending"] == true)
+        .expect("pending row");
+    assert_eq!(pending["txid"], "inflight");
+    assert_eq!(pending["lockup"], 295_000_000);
+    assert_eq!(pending["myValue"], 5_000_000);
+    assert_eq!(pending["mine"], true);
+    // Nothing is known on-chain about it yet.
+    assert!(pending["value"].is_null());
+    assert_eq!(pending["revealed"], false);
+
+    // The mined one is not marked pending.
+    let mined = bids.iter().find(|b| b["txid"] == "mined").unwrap();
+    assert!(mined.get("pending").is_none());
+}
+
 #[test]
 fn merge_indexed_bids_ignores_commitment_for_other_name() {
     use crate::commands::read::merge_indexed_bids;
