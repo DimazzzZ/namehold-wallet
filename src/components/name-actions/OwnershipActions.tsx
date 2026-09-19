@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { hnsToDollarydoos } from "../../lib/utils";
+import { ActionHint } from "./ActionHint";
 import type { NameActionCapabilities, NameActionCapability } from "../../types";
 
 /**
@@ -92,48 +93,53 @@ export function OwnershipActions({
         placeholder="hs1q… / rs1q…"
       />
       <div className="flex flex-wrap gap-2">
-        <Button
-          size="sm"
-          variant="danger"
-          disabled={actionDisabled("TRANSFER", caps?.canTransfer) || !recipient.trim()}
-          title={actionReason(caps?.canTransfer) ?? ""}
-          onClick={onTransfer}
-        >
-          {busy === "TRANSFER" ? "…" : "Transfer"}
-        </Button>
-        <Button
-          size="sm"
-          disabled={actionDisabled("FINALIZE", caps?.canFinalize)}
-          title={actionReason(caps?.canFinalize) ?? ""}
-          onClick={onFinalize}
-        >
-          {busy === "FINALIZE" ? "…" : "Finalize"}
-        </Button>
-        <Button
-          size="sm"
-          disabled={actionDisabled("CANCEL_TRANSFER", caps?.canCancelTransfer)}
-          title={actionReason(caps?.canCancelTransfer) ?? ""}
-          onClick={onCancelTransfer}
-        >
-          {busy === "CANCEL" ? "…" : "Cancel transfer"}
-        </Button>
-        <Button
-          size="sm"
-          disabled={actionDisabled("RENEW", caps?.canRenew)}
-          title={actionReason(caps?.canRenew) ?? ""}
-          onClick={onRenew}
-        >
-          {busy === "RENEW" ? "…" : "Renew"}
-        </Button>
-        <Button
-          size="sm"
-          variant="danger"
-          disabled={actionDisabled("REVOKE", caps?.canRevoke)}
-          title={actionReason(caps?.canRevoke) ?? ""}
-          onClick={onRevoke}
-        >
-          {busy === "REVOKE" ? "…" : "Revoke"}
-        </Button>
+        <ActionHint reason={actionReason(caps?.canTransfer)}>
+          <Button
+            size="sm"
+            variant="danger"
+            disabled={actionDisabled("TRANSFER", caps?.canTransfer) || !recipient.trim()}
+            onClick={onTransfer}
+          >
+            {busy === "TRANSFER" ? "…" : "Transfer"}
+          </Button>
+        </ActionHint>
+        <ActionHint reason={actionReason(caps?.canFinalize)}>
+          <Button
+            size="sm"
+            disabled={actionDisabled("FINALIZE", caps?.canFinalize)}
+            onClick={onFinalize}
+          >
+            {busy === "FINALIZE" ? "…" : "Finalize"}
+          </Button>
+        </ActionHint>
+        <ActionHint reason={actionReason(caps?.canCancelTransfer)}>
+          <Button
+            size="sm"
+            disabled={actionDisabled("CANCEL_TRANSFER", caps?.canCancelTransfer)}
+            onClick={onCancelTransfer}
+          >
+            {busy === "CANCEL" ? "…" : "Cancel transfer"}
+          </Button>
+        </ActionHint>
+        <ActionHint reason={actionReason(caps?.canRenew)}>
+          <Button
+            size="sm"
+            disabled={actionDisabled("RENEW", caps?.canRenew)}
+            onClick={onRenew}
+          >
+            {busy === "RENEW" ? "…" : "Renew"}
+          </Button>
+        </ActionHint>
+        <ActionHint reason={actionReason(caps?.canRevoke)}>
+          <Button
+            size="sm"
+            variant="danger"
+            disabled={actionDisabled("REVOKE", caps?.canRevoke)}
+            onClick={onRevoke}
+          >
+            {busy === "REVOKE" ? "…" : "Revoke"}
+          </Button>
+        </ActionHint>
         {canFinalize && !actionDisabled("FINALIZE", canFinalize) && onBuyWithPayment && (
           <Button
             size="sm"
