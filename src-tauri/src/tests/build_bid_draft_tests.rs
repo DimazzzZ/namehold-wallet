@@ -210,15 +210,15 @@ fn build_bid_draft_uses_explicit_fee_rate() {
 }
 
 #[test]
-fn build_bid_draft_rejects_when_bid_coin_exists() {
+fn build_bid_draft_allows_second_bid_with_existing_bid_coin() {
+    // Multi-bid (Namebase-style): an existing unspent COV_BID coin for this
+    // name no longer blocks a new independent bid. The second bid rotates to a
+    // different receive address (distinct nonce/blind ⇒ distinct commitment).
     let conn = test_db();
     seed_profile(&conn);
     let ctx = seed_ctx(&conn, &"aa".repeat(32), 10_000_000);
     let ns = bidding_name_state();
 
-    // Seed an unspent COV_BID coin for this name → multiplicity guard (a).
-    // Detection JOINs tracked_utxos → derived_addresses and matches the name
-    // hash from covenant_json items[0].
     let nh_hex = hex::encode(names::hash_name(NAME).unwrap());
     let bid_addr = "hs1qbidcoin";
     conn.execute(
@@ -245,34 +245,50 @@ fn build_bid_draft_rejects_when_bid_coin_exists() {
     )
     .unwrap();
 
-    let err =
-        build_bid_draft_inner(&conn, &ctx, NAME, 1_000_000, 2_000_000, Some(10), &ns).unwrap_err();
-    match err {
-        AppError::InvalidInput(msg) => assert!(msg.contains("already has an unspent bid")),
-        other => panic!("expected InvalidInput, got {other:?}"),
-    }
+    let summary =
+        build_bid_draft_inner(&conn, &ctx, NAME, 1_000_000, 2_000_000, Some(10), &ns).unwrap();
+    assert_eq!(summary.action, "bid");
 }
 
 #[test]
-fn build_bid_draft_rejects_second_bid_when_draft_pending() {
+fn build_bid_draft_allows_multiple_independent_bids() {
+    // Two bids on the same name both succeed and each persists its own
+    // commitment row (different values ⇒ different blinds). Each bid is built
+    // from a `Ctx` carrying its OWN unreserved funding coin — mirroring the
+    // real command, which reloads a fresh funding set (excluding coins already
+    // reserved by the first draft) on every call. `build_bid_draft_inner`
+    // itself takes a static funding list, so we hand it two distinct ctxs
+    // rather than re-feeding one coin that the first bid already reserved.
     let conn = test_db();
     seed_profile(&conn);
-    let ctx = seed_ctx(&conn, &"aa".repeat(32), 10_000_000);
+    let ctx1 = seed_ctx(&conn, &"aa".repeat(32), 10_000_000);
     let ns = bidding_name_state();
+    build_bid_draft_inner(&conn, &ctx1, NAME, 1_000_000, 2_000_000, Some(10), &ns).unwrap();
 
-    // First bid succeeds and leaves a pending `bid` draft.
-    build_bid_draft_inner(&conn, &ctx, NAME, 1_000_000, 2_000_000, Some(10), &ns).unwrap();
+    // A second coin (different txid, same receive address) funds the 2nd bid.
+    let network = Network::Main;
+    let xpub = test_xpub();
+    let recv0 = derivation::derive_one(network, &xpub, derivation::BRANCH_RECEIVE, 0).unwrap();
+    let extra_txid = "bb".repeat(32);
+    seed_tracked_coin(&conn, &extra_txid, 0, 10_000_000, &recv0.address);
+    let mut ctx2 = seed_ctx(&conn, &"cc".repeat(32), 10_000_000);
+    ctx2.funding = vec![SpendableCoin {
+        txid: extra_txid,
+        vout: 0,
+        value: 10_000_000,
+        branch: derivation::BRANCH_RECEIVE,
+        child_index: 0,
+    }];
+    build_bid_draft_inner(&conn, &ctx2, NAME, 1_500_000, 3_000_000, Some(10), &ns).unwrap();
 
-    // Second bid for the same name is rejected by guard (b) — pending draft.
-    // (This surfaces before the funding-reservation path.)
-    let err =
-        build_bid_draft_inner(&conn, &ctx, NAME, 1_000_000, 2_000_000, Some(10), &ns).unwrap_err();
-    match err {
-        AppError::InvalidInput(msg) => {
-            assert!(msg.contains("already pending") || msg.contains("one bid per wallet"))
-        }
-        other => panic!("expected InvalidInput, got {other:?}"),
-    }
+    let commit_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM bid_commitments WHERE wallet_profile_id = ?1 AND name = ?2",
+            rusqlite::params![PROFILE, NAME],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(commit_count, 2, "each independent bid persists its own commitment");
 }
 
 #[test]

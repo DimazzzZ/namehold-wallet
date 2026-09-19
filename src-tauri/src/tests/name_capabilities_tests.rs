@@ -144,7 +144,9 @@ fn task_state_bidding_with_commitment() {
         None,
         Network::Main,
     );
-    assert_eq!(state, AuctionTaskState::WaitingForBidding);
+    // Multi-bid: an existing commitment during BIDDING keeps the wallet in
+    // ReadyToBid (another independent bid is allowed).
+    assert_eq!(state, AuctionTaskState::ReadyToBid);
 }
 
 #[test]
@@ -624,7 +626,10 @@ fn cap_bidding_phase_can_bid_without_commitment() {
 }
 
 #[test]
-fn cap_bidding_phase_cannot_bid_with_commitment() {
+fn cap_bidding_phase_can_bid_again_with_commitment() {
+    // Multi-bid (Namebase-style): an existing commitment no longer blocks a
+    // new bid during BIDDING. `can_bid` stays allowed and `my_bid_count`
+    // reports how many bids this wallet already holds.
     let action_ctx = ctx(
         true, false, false, false, None, None, None, 1, false, None, None, None,
     );
@@ -639,21 +644,16 @@ fn cap_bidding_phase_cannot_bid_with_commitment() {
         None,
         Network::Main,
     );
-    assert!(!caps.can_bid.allowed);
-    assert!(caps
-        .can_bid
-        .reason
-        .as_ref()
-        .unwrap()
-        .contains("one bid per wallet"));
+    assert!(caps.can_bid.allowed);
+    assert_eq!(caps.can_bid.reason, None);
+    assert_eq!(caps.my_bid_count, 1);
 }
 
 #[test]
-fn cap_bidding_phase_already_bid_reason_is_wait_for_reveal() {
-    // A name in the on-chain BIDDING phase that THIS wallet already bid on
-    // resolves to WaitingForBidding. Its next-action reason must describe the
-    // real remaining action (wait for reveal), not the pending-OPEN default
-    // "The auction opens for bidding soon." — bidding is already open here.
+fn cap_bidding_phase_already_bid_stays_ready_to_bid() {
+    // Multi-bid: a name in BIDDING that THIS wallet already bid on stays
+    // ReadyToBid (another independent bid is allowed), so the guided next
+    // action keeps inviting a bid rather than parking on "wait for reveal".
     let action_ctx = ctx(
         true, false, false, false, None, None, None, 1, false, None, None, None,
     );
@@ -668,14 +668,8 @@ fn cap_bidding_phase_already_bid_reason_is_wait_for_reveal() {
         None,
         Network::Main,
     );
-    assert_eq!(caps.task_state, AuctionTaskState::WaitingForBidding);
-    assert_eq!(caps.next_action_label.as_deref(), Some("Wait for Bidding"));
-    let reason = caps.next_action_reason.as_deref().unwrap();
-    assert_eq!(
-        reason,
-        "Your bid is placed. Wait for the reveal window to open."
-    );
-    assert!(!reason.contains("opens for bidding soon"));
+    assert_eq!(caps.task_state, AuctionTaskState::ReadyToBid);
+    assert_eq!(caps.next_action_label.as_deref(), Some("Place Bid"));
 }
 
 #[test]

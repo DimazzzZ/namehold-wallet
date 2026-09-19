@@ -198,9 +198,11 @@ fn bidding_without_commitment_yields_ready_to_bid() {
 }
 
 #[test]
-fn bidding_with_commitment_yields_waiting() {
+fn bidding_with_commitment_yields_ready_to_bid() {
+    // Multi-bid: holding a commitment during BIDDING no longer parks the
+    // wallet in WaitingForBidding — another independent bid is allowed.
     let state = state_no_owner("BIDDING", false, true, false, false);
-    assert_eq!(state, AuctionTaskState::WaitingForBidding);
+    assert_eq!(state, AuctionTaskState::ReadyToBid);
 }
 
 #[test]

@@ -239,12 +239,14 @@ fn batch_bid_empty_phase_shown_as_available() {
 }
 
 #[test]
-fn batch_bid_rejects_when_existing_unspent_bid_coin() {
+fn batch_bid_allows_name_with_existing_unspent_bid_coin() {
+    // Multi-bid (Namebase-style): a batch bid on a name that already has an
+    // unspent COV_BID coin is now allowed — the new bid rotates to its own
+    // address and adds an independent commitment.
     let conn = test_db();
     seed_profile(&conn);
     let ctx = seed_ctx(&conn, &"aa".repeat(32), 50_000_000);
 
-    // Seed an unspent COV_BID coin for "alpha" → multiplicity guard trips.
     let nh_hex = hex::encode(names::hash_name("alpha").unwrap());
     let bid_addr = "hs1qbidcoin";
     conn.execute(
@@ -273,12 +275,8 @@ fn batch_bid_rejects_when_existing_unspent_bid_coin() {
 
     let names = vec!["alpha".to_string()];
     let specs = vec![spec("alpha", "BIDDING")];
-    let err = build_batch_bid_draft_inner(&conn, &ctx, &names, specs, 1_000_000, 2_000_000, 10)
-        .unwrap_err();
-    match err {
-        AppError::InvalidInput(msg) => assert!(msg.contains("already has an unspent bid")),
-        other => panic!("expected InvalidInput, got {other:?}"),
-    }
+    build_batch_bid_draft_inner(&conn, &ctx, &names, specs, 1_000_000, 2_000_000, 10)
+        .expect("batch bid on a name with an existing bid coin is now allowed");
 }
 
 #[test]

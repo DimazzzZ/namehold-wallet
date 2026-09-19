@@ -2386,7 +2386,9 @@ fn bid_covenant_json_for(name: &str, blind_hex: &str) -> String {
 }
 
 #[tokio::test]
-async fn build_bid_draft_rejects_second_bid_when_a_draft_is_already_pending() {
+async fn build_bid_draft_allows_second_independent_bid() {
+    // Multi-bid (Namebase-style): a second bid on the same name succeeds and
+    // persists its own draft + commitment (distinct value ⇒ distinct blind).
     let mut server = mockito::Server::new_async().await;
     let _mocks = mock_names_rpc(&mut server).await;
     let state = create_full_test_state();
@@ -2403,17 +2405,11 @@ async fn build_bid_draft_rejects_second_bid_when_a_draft_is_already_pending() {
         .await
         .expect("first bid draft should build");
 
-    let err = names::build_bid_draft(app.state(), "duplicatename".into(), 1000, 2000, None)
+    names::build_bid_draft(app.state(), "duplicatename".into(), 1500, 3000, None)
         .await
-        .expect_err("second bid on the same name must be rejected");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("one bid per wallet per name"),
-        "error should state the product rule, got: {msg}"
-    );
+        .expect("a second independent bid on the same name is now allowed");
 
-    // Exactly one bid draft — the rejected attempt must not have persisted
-    // anything (no draft row, no second commitment).
+    // Two bid drafts and two commitments — one per independent bid.
     let state: tauri::State<crate::AppState> = app.state();
     let conn = state.db.lock().unwrap();
     let draft_count: i64 = conn
@@ -2423,10 +2419,7 @@ async fn build_bid_draft_rejects_second_bid_when_a_draft_is_already_pending() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(
-        draft_count, 1,
-        "rejected retry must not persist a second draft"
-    );
+    assert_eq!(draft_count, 2, "each independent bid persists its own draft");
     let commitment_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM bid_commitments WHERE wallet_profile_id = ?1 AND name = 'duplicatename'",
@@ -2435,16 +2428,15 @@ async fn build_bid_draft_rejects_second_bid_when_a_draft_is_already_pending() {
         )
         .unwrap();
     assert_eq!(
-        commitment_count, 1,
-        "rejected retry must not persist a second commitment"
+        commitment_count, 2,
+        "each independent bid persists its own commitment"
     );
 }
 
-/// Even without any local draft/commitment history, an unspent COV_BID coin
-/// for the name anywhere in the profile (e.g. imported/recovered wallet
-/// state) must block a second bid.
+/// An existing unspent COV_BID coin for the name (e.g. imported/recovered
+/// wallet state) no longer blocks a new independent bid.
 #[tokio::test]
-async fn build_bid_draft_rejects_when_an_unspent_bid_coin_already_exists() {
+async fn build_bid_draft_allows_bid_when_an_unspent_bid_coin_already_exists() {
     let mut server = mockito::Server::new_async().await;
     let _mocks = mock_names_rpc(&mut server).await;
     let state = create_full_test_state();
@@ -2472,17 +2464,11 @@ async fn build_bid_draft_rejects_when_an_unspent_bid_coin_already_exists() {
     };
     let app = mock_app_with(state);
 
-    let err = names::build_bid_draft(app.state(), "existingbid".into(), 1000, 2000, None)
+    names::build_bid_draft(app.state(), "existingbid".into(), 1000, 2000, None)
         .await
-        .expect_err("a bid on a name with an existing unspent BID coin must be rejected");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("one bid per wallet per name"),
-        "error should state the product rule, got: {msg}"
-    );
+        .expect("a new bid is allowed even when an unspent BID coin already exists");
 
-    // Nothing was written — including no commitment for a bid that was never
-    // allowed to build.
+    // The new bid persisted its own commitment.
     let state: tauri::State<crate::AppState> = app.state();
     let conn = state.db.lock().unwrap();
     let commitment_count: i64 = conn
@@ -2492,8 +2478,7 @@ async fn build_bid_draft_rejects_when_an_unspent_bid_coin_already_exists() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(commitment_count, 0);
-    let _ = profile_id;
+    assert_eq!(commitment_count, 1);
 }
 
 /// The multiplicity guard is name-hash-scoped — a bid on a different name
