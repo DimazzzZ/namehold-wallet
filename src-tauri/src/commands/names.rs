@@ -402,6 +402,11 @@ pub struct NameActionCapabilities {
     /// mined the chain reports the name's previous state, so without this the
     /// UI can only describe a world where the user never pressed the button.
     pub pending_broadcast_action: Option<String>,
+    /// Bids this wallet placed in an EARLIER auction of the same name whose
+    /// lockup is stranded: unrevealable and unredeemable, and invisible in the
+    /// bids panel now that it is scoped to the current auction.
+    pub stranded_bid_count: i64,
+    pub stranded_lockup_doos: i64,
 }
 
 /// Context gathered from the DB for a name action evaluation.
@@ -435,6 +440,14 @@ pub(crate) struct NameActionContext {
     /// state no phase-derived label can describe, because on-chain nothing has
     /// happened yet.
     pub pending_broadcast_action: Option<String>,
+    /// Bids from an EARLIER auction of this name whose BID coin is still
+    /// unspent. They can never be revealed (a REVEAL is only valid while
+    /// `start == ns.height`) nor redeemed (REDEEM spends a REVEAL output that
+    /// was never created), so the lockup is gone — and scoping the bids panel
+    /// by auction made them invisible, which is worse than the wrong count it
+    /// replaced: the money is missing with nothing on screen to explain it.
+    pub stranded_bid_count: i64,
+    pub stranded_lockup_doos: i64,
     /// The `reveal_txid` stamped on the bid commitment row (if any).
     pub reveal_txid: Option<String>,
     /// Status of the local tx_draft matching `reveal_txid` (if one exists).
@@ -460,21 +473,49 @@ pub(crate) fn find_name_action_context(
     auction_start: Option<i64>,
 ) -> Result<NameActionContext, AppError> {
     // Newest first, so the first match is the most recent bid in this auction.
+    let for_name: Vec<queries::BidCommitmentRow> = queries::list_bid_commitments(conn, profile_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|b| b.name == name)
+        .collect();
+    let belongs_here = |b: &queries::BidCommitmentRow| match (auction_start, b.name_start_height) {
+        (Some(start), Some(placed)) => placed == start,
+        // A commitment recovered from the chain has no recorded auction (030).
+        // Counting one that may be dead is a wrong number; hiding a live one is
+        // a bid the user never gets told to reveal.
+        (Some(_), None) => true,
+        (None, _) => true,
+    };
     let commitments: Vec<queries::BidCommitmentRow> =
-        queries::list_bid_commitments(conn, profile_id)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|b| b.name == name)
-            .filter(|b| match (auction_start, b.name_start_height) {
-                (Some(start), Some(placed)) => placed == start,
-                // A commitment recovered from the chain has no recorded auction
-                // (030). Counting one that may be dead is a wrong number; hiding a
-                // live one is a bid the user never gets told to reveal.
-                (Some(_), None) => true,
-                (None, _) => true,
-            })
-            .collect();
+        for_name.iter().filter(|b| belongs_here(b)).cloned().collect();
     let bid = commitments.first().cloned();
+
+    // Bids this wallet placed in an EARLIER auction of the same name whose BID
+    // coin is still unspent. They can never be revealed — a REVEAL is only
+    // valid while `start == ns.height` (hsd `chain.js`, `bad-reveal-nonlocal`)
+    // and the name has since reopened at a new height — and REDEEM spends a
+    // REVEAL output, which was never created. The lockup is gone for good.
+    //
+    // Scoping the bids panel by auction (029/030) made these invisible, which
+    // is worse than the wrong count it replaced: the money is simply missing
+    // with nothing on screen to explain it.
+    let (stranded_bid_count, stranded_lockup_doos) = for_name
+        .iter()
+        .filter(|b| !belongs_here(b))
+        .filter(|b| {
+            queries::find_unspent_covenant_utxo(
+                conn,
+                profile_id,
+                &b.address,
+                sync::COV_BID as i64,
+                name,
+                &b.name_hash_hex,
+            )
+            .ok()
+            .flatten()
+            .is_some()
+        })
+        .fold((0i64, 0i64), |(n, sum), b| (n + 1, sum + b.lockup_value_doos));
     // Part 3 (confirmed pre-existing bug, folded in from the Task 2 review):
     // revealing SPENDS the COV_BID coin and CREATES a COV_REVEAL coin — so a
     // COV_REVEAL coin can only exist AFTER a successful reveal, never before.
@@ -584,6 +625,8 @@ pub(crate) fn find_name_action_context(
         existing_bid_count,
         has_pending_open,
         pending_broadcast_action,
+        stranded_bid_count,
+        stranded_lockup_doos,
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
@@ -1124,6 +1167,8 @@ pub(crate) fn build_name_action_capabilities(
         auction_bidding_blocks: Some(name_params.bidding_period as i64),
         auction_reveal_blocks: Some(name_params.reveal_period as i64),
         pending_broadcast_action: action_ctx.pending_broadcast_action.clone(),
+        stranded_bid_count: action_ctx.stranded_bid_count,
+        stranded_lockup_doos: action_ctx.stranded_lockup_doos,
     }
 }
 
@@ -1168,6 +1213,8 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         auction_bidding_blocks: None,
         auction_reveal_blocks: None,
         pending_broadcast_action: None,
+        stranded_bid_count: 0,
+        stranded_lockup_doos: 0,
     }
 }
 
@@ -3151,6 +3198,8 @@ mod tests {
             existing_bid_count: 0,
             has_pending_open: false,
             pending_broadcast_action: None,
+            stranded_bid_count: 0,
+            stranded_lockup_doos: 0,
             reveal_txid: None,
             reveal_draft_status: None,
             bid_value_doos: None,

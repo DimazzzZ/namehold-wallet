@@ -42,6 +42,8 @@ fn ctx(
         existing_bid_count,
         has_pending_open,
         pending_broadcast_action: None,
+        stranded_bid_count: 0,
+        stranded_lockup_doos: 0,
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,

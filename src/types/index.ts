@@ -660,6 +660,14 @@ export interface NameActionCapabilities {
    * the name's previous state, so nothing phase-derived can describe it.
    */
   pendingBroadcastAction?: string | null;
+  /**
+   * Bids placed in an EARLIER auction of the same name whose lockup is
+   * stranded — the auction closed without a reveal, so it can be neither
+   * revealed nor redeemed. Scoping the bids panel by auction hid these, which
+   * leaves money missing with nothing on screen to explain it.
+   */
+  strandedBidCount?: number;
+  strandedLockupDoos?: number;
 }
 
 // ---------------------------------------------------------------------------

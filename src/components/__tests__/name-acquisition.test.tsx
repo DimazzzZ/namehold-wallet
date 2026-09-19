@@ -460,6 +460,64 @@ describe("NameActionsModal — guided acquisition flow", () => {
     expect(screen.queryByText(/already opening for this name/i)).toBeNull();
   });
 
+  /// Scoping the bids panel to the current auction (029/030) correctly stopped
+  /// a lapsed auction's bid from being counted — but it also removed the only
+  /// trace of it. The lockup is unrecoverable, so the wallet has to say where
+  /// the money went rather than let the coin vanish from the UI.
+  it("names the lockup stranded in an earlier auction of the same name", async () => {
+    invokeMock.mockImplementation(
+      routeModal(
+        {
+          name: "reopened",
+          state: "BIDDING",
+          height: 779,
+          renewal: null,
+          owner: null,
+          value: null,
+          highest: null,
+          stats: { blocksUntilReveal: 4, hoursUntilReveal: 1 },
+        },
+        {
+          capabilities: {
+            name: "reopened",
+            phase: "BIDDING",
+            taskState: "readyToBid",
+            ownsName: false,
+            hasBidCommitment: false,
+            hasBidCoin: false,
+            hasRevealCoin: false,
+            hasOwnerCoin: false,
+            canOpen: { allowed: false, reason: null },
+            canBid: { allowed: true, reason: null },
+            canReveal: { allowed: false, reason: null },
+            canRedeem: { allowed: false, reason: null },
+            canRegister: { allowed: false, reason: null },
+            canUpdate: { allowed: false, reason: null },
+            canTransfer: { allowed: false, reason: null },
+            canFinalize: { allowed: false, reason: null },
+            canCancelTransfer: { allowed: false, reason: null },
+            canRenew: { allowed: false, reason: null },
+            canRevoke: { allowed: false, reason: null },
+            nextActionKey: "BID",
+            nextActionLabel: "Place Bid",
+            nextActionReason: null,
+            countdownLabel: null,
+            countdownBlocks: null,
+            countdownHours: null,
+            strandedBidCount: 1,
+            strandedLockupDoos: 100_000_000,
+          },
+        },
+      ),
+    );
+    render(<NameActionsModal name="reopened" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    const notice = await screen.findByTestId("stranded-bids");
+    expect(notice).toHaveTextContent("1 bid from an earlier auction of this name");
+    expect(notice).toHaveTextContent("100 HNS is still locked");
+    expect(notice).toHaveTextContent(/cannot be recovered/i);
+  });
+
   it("shows Bid for a BIDDING name", async () => {
     invokeMock.mockImplementation(
       routeModal({

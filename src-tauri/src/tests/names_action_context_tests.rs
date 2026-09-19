@@ -416,6 +416,52 @@ fn find_name_action_context_counts_only_this_auctions_bids() {
     assert_eq!(unknown.existing_bid_count, 2);
 }
 
+/// A bid from a lapsed auction whose BID coin is still unspent is stranded:
+/// it can never be revealed (a REVEAL is only valid while `start == ns.height`,
+/// and the name has reopened at a new height) nor redeemed (REDEEM spends a
+/// REVEAL output that was never created). Scoping the bids panel by auction
+/// hid it, so the wallet has to report it explicitly or the money just vanishes
+/// from the UI.
+#[test]
+fn find_name_action_context_reports_a_stranded_bid_from_a_lapsed_auction() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+
+    // The lapsed auction's bid, with its BID coin still unspent.
+    seed_bid_commitment(&conn, NAME, &nh_hex, ADDRESS);
+    db::queries::set_auction_heights(&conn, PROFILE, "blind", 111, 132).unwrap();
+    let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_BID);
+    seed_tracked_utxo(&conn, "oldbid", 0, ADDRESS, sync::COV_BID as i64, Some(&cov));
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert_eq!(ctx.existing_bid_count, 0, "not a bid in THIS auction");
+    assert_eq!(ctx.stranded_bid_count, 1);
+    assert_eq!(ctx.stranded_lockup_doos, 2_000_000);
+
+    // Viewed from its own auction it is an ordinary bid, not stranded.
+    let own = find_name_action_context(&conn, PROFILE, NAME, Some(111)).unwrap();
+    assert_eq!(own.existing_bid_count, 1);
+    assert_eq!(own.stranded_bid_count, 0);
+}
+
+/// A spent BID coin is a bid that was revealed and settled — nothing stranded.
+#[test]
+fn find_name_action_context_does_not_strand_a_spent_bid() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    seed_bid_commitment(&conn, NAME, &nh_hex, ADDRESS);
+    db::queries::set_auction_heights(&conn, PROFILE, "blind", 111, 132).unwrap();
+    // No BID coin seeded at all — it was spent by the reveal.
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert_eq!(ctx.stranded_bid_count, 0);
+    assert_eq!(ctx.stranded_lockup_doos, 0);
+}
+
 /// A commitment recovered from the chain has no recorded auction. Counting one
 /// that may be dead is a wrong number; hiding a live one is a bid the user is
 /// never told to reveal, and the lockup burns. Keep it.
