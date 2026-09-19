@@ -12,6 +12,8 @@ import {
   taskStateUrgencyRank,
   taskSummaryFromCapabilities,
   validateBidInputs,
+  auctionWindowText,
+  AUCTION_PHASE_GUIDE,
 } from "./auction";
 import { hnsToDollarydoos } from "./utils";
 import type { HsdNameStats } from "../types";
@@ -298,5 +300,38 @@ describe("taskSummaryFromCapabilities — genuine-bidding label unification", ()
       caps({ phase: "BIDDING", taskState: "readyToBid", hasBidCommitment: false }),
     );
     expect(s?.label).toBe("Ready to Bid");
+  });
+});
+
+describe("auctionWindowText", () => {
+  it("reports the network's real periods", () => {
+    // mainnet
+    expect(auctionWindowText(720, 1440)).toBe(
+      "Bidding runs 720 blocks, then 1440 blocks to reveal.",
+    );
+    // regtest — two orders of magnitude shorter
+    expect(auctionWindowText(5, 10)).toBe("Bidding runs 5 blocks, then 10 blocks to reveal.");
+  });
+
+  it("singularises a one-block period", () => {
+    expect(auctionWindowText(1, 1)).toBe("Bidding runs 1 block, then 1 block to reveal.");
+  });
+
+  it("renders nothing when the periods are unknown", () => {
+    expect(auctionWindowText(null, 10)).toBeNull();
+    expect(auctionWindowText(5, null)).toBeNull();
+    expect(auctionWindowText(undefined, undefined)).toBeNull();
+  });
+});
+
+describe("AUCTION_PHASE_GUIDE", () => {
+  /// Regression: the AVAILABLE copy promised "a ~1-week bidding period" on
+  /// every network. Bidding is 720 blocks on mainnet, 144 on testnet and 5 on
+  /// regtest — so the sentence was wrong nearly everywhere it was shown. The
+  /// real numbers now come from the backend via `auctionWindowText`.
+  it("does not hardcode an auction duration", () => {
+    const copy = AUCTION_PHASE_GUIDE.AVAILABLE?.description ?? "";
+    expect(copy).not.toMatch(/week|day|hour|month/i);
+    expect(copy).toMatch(/sealed/i);
   });
 });

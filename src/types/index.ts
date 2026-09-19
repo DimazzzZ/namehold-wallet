@@ -646,6 +646,14 @@ export interface NameActionCapabilities {
   countdownLabel: string | null;
   countdownBlocks: number | null;
   countdownHours: number | null;
+  /**
+   * How long this network's auction phases run, in blocks. Static per network,
+   * but needed before an auction exists — to say what opening one commits to.
+   * Optional so existing fixtures stay valid; `null` when the backend could not
+   * determine the network.
+   */
+  auctionBiddingBlocks?: number | null;
+  auctionRevealBlocks?: number | null;
 }
 
 // ---------------------------------------------------------------------------

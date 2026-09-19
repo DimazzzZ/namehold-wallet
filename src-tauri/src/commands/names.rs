@@ -389,6 +389,14 @@ pub struct NameActionCapabilities {
     pub countdown_label: Option<String>,
     pub countdown_blocks: Option<i64>,
     pub countdown_hours: Option<f64>,
+    /// How long this network's auction phases run, in blocks. Static per
+    /// network (`NameParams`), not per name — but the UI needs it BEFORE an
+    /// auction exists, to describe what opening one commits to. The periods
+    /// differ by two orders of magnitude between mainnet (720/1440) and
+    /// regtest (5/10), so a hardcoded "about a week" is wrong nearly
+    /// everywhere. `None` when we could not determine the network.
+    pub auction_bidding_blocks: Option<i64>,
+    pub auction_reveal_blocks: Option<i64>,
 }
 
 /// Context gathered from the DB for a name action evaluation.
@@ -1036,6 +1044,7 @@ pub(crate) fn build_name_action_capabilities(
     // 7. Extract countdown from stats.
     let (countdown_label, countdown_blocks, countdown_hours) =
         names_pure::extract_countdown(raw_phase, stats);
+    let name_params = network.name_params();
 
     NameActionCapabilities {
         name,
@@ -1067,6 +1076,8 @@ pub(crate) fn build_name_action_capabilities(
         countdown_label,
         countdown_blocks,
         countdown_hours,
+        auction_bidding_blocks: Some(name_params.bidding_period as i64),
+        auction_reveal_blocks: Some(name_params.reveal_period as i64),
     }
 }
 
@@ -1106,6 +1117,10 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         countdown_label: None,
         countdown_blocks: None,
         countdown_hours: None,
+        // This is the "we could not read anything" fallback, and the caller
+        // has no network in hand here — so don't claim auction periods either.
+        auction_bidding_blocks: None,
+        auction_reveal_blocks: None,
     }
 }
 
@@ -3808,6 +3823,43 @@ mod tests {
             caps.can_open.reason.as_deref(),
             Some("name is in phase 'BIDDING', not AVAILABLE")
         );
+    }
+
+    /// The auction window must come from the ACTIVE network, not a constant.
+    /// mainnet bids for 720 blocks and regtest for 5 — the UI used to promise
+    /// "about a week" on both.
+    #[test]
+    fn capabilities_carry_this_networks_auction_window() {
+        let ctx = ctx_default();
+        let caps_for = |network| {
+            build_name_action_capabilities(
+                "n".into(),
+                "AVAILABLE".into(),
+                "AVAILABLE",
+                None,
+                &ctx,
+                false,
+                false,
+                None,
+                network,
+            )
+        };
+
+        let main = caps_for(Network::Main);
+        assert_eq!(main.auction_bidding_blocks, Some(720));
+        assert_eq!(main.auction_reveal_blocks, Some(1440));
+
+        let regtest = caps_for(Network::Regtest);
+        assert_eq!(regtest.auction_bidding_blocks, Some(5));
+        assert_eq!(regtest.auction_reveal_blocks, Some(10));
+    }
+
+    /// The "we could not read anything" fallback must not invent periods.
+    #[test]
+    fn conservative_capabilities_claim_no_auction_window() {
+        let caps = conservative_capabilities("n", "node unreachable");
+        assert_eq!(caps.auction_bidding_blocks, None);
+        assert_eq!(caps.auction_reveal_blocks, None);
     }
 
     #[test]

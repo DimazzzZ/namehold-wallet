@@ -132,7 +132,11 @@ export interface AuctionPhaseGuide {
 export const AUCTION_PHASE_GUIDE: Record<AuctionPhase, AuctionPhaseGuide | null> = {
   AVAILABLE: {
     title: "Open Auction",
-    description: "Start a Vickrey auction for this name. The name enters a ~1-week bidding period.",
+    // No duration here on purpose: the phases are network parameters, and they
+    // differ by orders of magnitude (mainnet bids for 720 blocks, regtest for
+    // 5). `auctionWindowText` renders the real numbers beside this.
+    description:
+      "Start a Vickrey auction for this name. Anyone can bid, and every bid stays sealed until the reveal phase.",
     action: "Open",
     actionHint: "Opens the auction on-chain. Costs a small network fee.",
   },
@@ -434,4 +438,22 @@ export function validateBidInputs(bidHns: string, lockupHns: string): BidInputVa
 /** Convert doos to HNS for display. */
 export function doosToHns(doos: number): number {
   return doos / 1_000_000;
+}
+
+/**
+ * One line describing the auction this network actually runs, e.g.
+ * "Bidding runs 720 blocks, then 1440 blocks to reveal."
+ *
+ * Returns `null` when the periods are unknown, so the caller renders nothing
+ * rather than a guess. Blocks are the honest unit — a block is ~10 minutes on
+ * mainnet but is mined on demand on regtest, so only the count is meaningful
+ * across every network.
+ */
+export function auctionWindowText(
+  biddingBlocks: number | null | undefined,
+  revealBlocks: number | null | undefined,
+): string | null {
+  if (biddingBlocks == null || revealBlocks == null) return null;
+  const plural = (n: number) => `${n} block${n === 1 ? "" : "s"}`;
+  return `Bidding runs ${plural(biddingBlocks)}, then ${plural(revealBlocks)} to reveal.`;
 }

@@ -2,10 +2,11 @@ import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { CopyField } from "../ui/CopyField";
 import { TxInfoModal } from "../TxInfoModal";
+import { ActionHint } from "./ActionHint";
 import { ActionReasonBanner } from "./ActionReasonBanner";
 import { BidForm } from "./BidForm";
 import { DnsRecordsEditor } from "./DnsRecordsEditor";
-import { formatCountdown } from "../../lib/auction";
+import { auctionWindowText, formatCountdown } from "../../lib/auction";
 import { formatHns } from "../../lib/utils";
 import { useState, type ReactNode } from "react";
 import type {
@@ -115,20 +116,32 @@ export function GuidedAction({
 
   const content = ((): ReactNode => {
     switch (badge.phase) {
-      case "AVAILABLE":
+      case "AVAILABLE": {
+        const auctionWindow = auctionWindowText(
+          caps?.auctionBiddingBlocks,
+          caps?.auctionRevealBlocks,
+        );
         return (
           <div className="space-y-2">
             <div className="text-sm text-gray-700">{guide.description}</div>
+            {auctionWindow && (
+              <div className="text-xs text-gray-500" data-testid="auction-window">
+                {auctionWindow}
+              </div>
+            )}
             <ActionReasonBanner reason={actionReason(caps?.canOpen)} />
-            <Button
-              variant="primary"
-              disabled={actionDisabled("OPEN", caps?.canOpen)}
-              onClick={onOpen}
-            >
-              {busy === "OPEN" ? "Opening…" : guide.action}
-            </Button>
+            <ActionHint reason={actionReason(caps?.canOpen)}>
+              <Button
+                variant="primary"
+                disabled={actionDisabled("OPEN", caps?.canOpen)}
+                onClick={onOpen}
+              >
+                {busy === "OPEN" ? "Opening…" : guide.action}
+              </Button>
+            </ActionHint>
           </div>
         );
+      }
 
       case "OPENING":
         return (
