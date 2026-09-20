@@ -1324,6 +1324,17 @@ pub async fn sign_name_message(
         let coin = db::queries::get_name_coin(&conn, &id, &name)?.ok_or_else(|| {
             AppError::InvalidInput(format!("wallet does not own '{name}' (sync/own it first)"))
         })?;
+        // Holding the owner coin is not owning the name. `get_name_coin`
+        // resolves whatever `tracked_name_states.owner_txid` points at, and
+        // during REVEAL that is our own REVEAL coin — hsd reports the highest
+        // revealer as the owner long before anyone has won. Signing it would
+        // produce a well-formed claim of ownership that every verifier
+        // resolves as false. Same rule as the ownership capabilities.
+        if coin.covenant_type < crate::noncustodial::sync::COV_REGISTER as i64 {
+            return Err(AppError::InvalidInput(format!(
+                "the name '{name}' is not registered yet — there is no ownership to prove"
+            )));
+        }
         let settings = db::queries::get_settings(&conn)?;
         (
             profile.account_index as u32,
