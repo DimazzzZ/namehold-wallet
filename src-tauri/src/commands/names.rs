@@ -550,20 +550,30 @@ pub(crate) fn find_name_action_context(
     // lands back on the bid coin's own address, see `build_reveal_draft`), so
     // only the covenant type differs between the two queries below.
     //
-    // Looked up by NAME HASH across the profile, not through one commitment's
-    // address. Every bid lands on its own rotated address, so an address-scoped
-    // lookup answers for a single bid — and which one it picked was not even
-    // well defined: `created_at` has second resolution, so several bids placed
-    // in the same second order arbitrarily.
     let name_hash_hex = hex::encode(names::hash_name(name).unwrap_or([0u8; 32]));
-    let bid_coin = queries::find_unspent_covenant_utxos_by_name_hash(
-        conn,
-        profile_id,
-        sync::COV_BID as i64,
-        &name_hash_hex,
-    )
-    .ok()
-    .and_then(|v| v.into_iter().next());
+    // Every bid of THIS auction, not the newest one and not every bid the
+    // profile has ever placed on the name. Both wrong answers were live:
+    // picking one commitment's address was never well defined (`created_at`
+    // has second resolution, so bids placed in the same second order
+    // arbitrarily), and searching by name hash across the profile let a
+    // lockup stranded in a LAPSED auction answer for this one. A stranded BID
+    // coin can never be revealed — `start == ns.height` is consensus — so it
+    // kept Reveal enabled on a fully revealed name, and every press failed
+    // with "no unspent bid coin". This is the same set `build_reveal_draft`
+    // builds its transaction from, so the button and the builder cannot
+    // disagree.
+    let bid_coin = commitments.iter().find_map(|b| {
+        queries::find_unspent_covenant_utxo(
+            conn,
+            profile_id,
+            &b.address,
+            sync::COV_BID as i64,
+            name,
+            &b.name_hash_hex,
+        )
+        .ok()
+        .flatten()
+    });
     let reveal_coins = queries::find_unspent_covenant_utxos_by_name_hash(
         conn,
         profile_id,

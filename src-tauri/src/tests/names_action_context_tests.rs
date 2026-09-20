@@ -465,6 +465,54 @@ fn find_name_action_context_reports_a_stranded_bid_from_a_lapsed_auction() {
     assert_eq!(own.stranded_bid_count, 0);
 }
 
+/// Reported from a live regtest wallet: Reveal stayed enabled on a name whose
+/// bids had all been revealed, and failed every time with "no unspent bid
+/// coin". `has_bid_coin` was resolved by name hash across the whole profile
+/// while the reveal draft resolves it from the commitments of THIS auction, so
+/// a lockup stranded in a lapsed auction — unspendable by definition — kept
+/// answering "yes, there is a bid coin" forever.
+#[test]
+fn find_name_action_context_does_not_count_a_stranded_coin_as_revealable() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let other = "rs1qotheraddressfortheliveauctionbid00000000";
+    seed_derived_address(&conn, other, 0, 1);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_BID);
+
+    // A lapsed auction's bid whose BID coin is still sitting there.
+    seed_bid_commitment(&conn, NAME, &nh_hex, ADDRESS);
+    db::queries::set_auction_heights(&conn, PROFILE, "blind", 111, 132).unwrap();
+    seed_tracked_utxo(
+        &conn,
+        "oldbid",
+        0,
+        ADDRESS,
+        sync::COV_BID as i64,
+        Some(&cov),
+    );
+
+    // This auction's bid, already revealed — its BID coin is spent, so none is
+    // seeded for it.
+    db::queries::insert_bid_commitment(
+        &conn, PROFILE, NAME, &nh_hex, other, 0, 0, 1_000_000, 3_000_000, "nonce2", "blind2",
+    )
+    .unwrap();
+    db::queries::set_auction_heights(&conn, PROFILE, "blind2", 779, 800).unwrap();
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert_eq!(ctx.existing_bid_count, 1, "one bid belongs to this auction");
+    assert_eq!(
+        ctx.stranded_bid_count, 1,
+        "and one is stranded in the old one"
+    );
+    assert!(
+        !ctx.has_bid_coin,
+        "nothing left to reveal in this auction — the stranded coin is not revealable"
+    );
+}
+
 /// A spent BID coin is a bid that was revealed and settled — nothing stranded.
 #[test]
 fn find_name_action_context_does_not_strand_a_spent_bid() {
