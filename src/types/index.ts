@@ -605,6 +605,15 @@ export interface NameActionCapabilities {
   phase: string;
   taskState: AuctionTaskState;
   ownsName: boolean;
+  /**
+   * Whether the name is actually REGISTERED — an owner coin at COV_REGISTER or
+   * later. `ownsName` is NOT this: during REVEAL hsd already reports the
+   * highest revealer as the owner, so a wallet merely leading its own auction
+   * reads as an owner while holding nothing but a REVEAL coin. The backend
+   * states it so the UI stops re-deriving a wrong answer. Optional so existing
+   * fixtures stay valid; absent is read as "not registered".
+   */
+  nameIsRegistered?: boolean;
   hasBidCommitment: boolean;
   /** Unspent COV_BID coin for this name — what a REVEAL actually spends.
    * Gates `canReveal`. Backend fix (Task 6 / I2 Part 3): `hasRevealCoin`
