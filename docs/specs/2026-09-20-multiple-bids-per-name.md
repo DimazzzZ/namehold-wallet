@@ -258,21 +258,24 @@ verbs.** Each of the three — manual auction actions, DNS records, ownership
 **upcoming** when it belongs to a later stage (one muted line naming what
 unlocks it, no controls), or **absent** when it cannot apply. Four rules carry
 the weight: Register lives in the records section, so that section opens
-before the name is registered; a pending transfer closes it again (R11b);
-while a broadcast waits for a block every section is absent, since offering
-alternatives then only invites a competing transaction; and the advanced
-toggle appears only when at least one section is live. Every gate that read
+before the name is registered; a pending transfer closes it again (R11b),
+read from the backend's `transferPending` rather than re-derived from the
+phase; while a broadcast waits for a block every section is absent, since
+offering alternatives then only invites a competing transaction; and the
+advanced area — toggle and container both — appears only when at least one
+section is live, so an upcoming line is shown beside a live section and never
+as a menu whose whole content is "come back later". Every gate that read
 `ownsName` — the section filter, auto-expand, the toggle and its label, the
 read-only DNS suppression, and the "Owned by this wallet" badge — now reads
 the stage.
 *Enforced:* `src/lib/nameSections.ts::resolveSections`,
 `src/components/NameActionsModal.tsx`,
 `src/components/name-actions/UpcomingSection.tsx`,
-capability field `nameIsRegistered`.
+capability fields `nameIsRegistered` and `transferPending`.
 *Pinned:* `nameSections.test.ts` (the stage matrix),
 `name-modal-sections.test.tsx`,
 `name-actions-bid-gate.test.tsx :: offers no advanced section at all during OPENING, so no bid can be invited`,
-`name-actions-gating.test.tsx :: blocks every name action with the reason when the node can't write`.
+`name-actions-gating.test.tsx :: states the reason once and offers no menu when the node can't write`.
 
 ## 4. Explicitly not enforced
 
@@ -290,9 +293,12 @@ capability field `nameIsRegistered`.
 - **A commitment with no recorded auction is not attributed to one.** R3
   counts it in the current auction deliberately. It is not proof the bid is
   live.
-- **A section that is still ahead is not a hidden feature.** R19 renders it as
-  one muted line naming what unlocks it. It is deliberately not expandable:
-  expanding would reveal nothing.
+- **An upcoming section is not shown on its own.** R19 renders it as one muted
+  line naming what unlocks it, but only inside the advanced area, which needs
+  a live section to exist at all. On a name where nothing is actionable — a
+  reveal already sent, say — there is no menu and no line: a menu whose whole
+  content is "come back later" is the empty menu R19 exists to remove. It is
+  also not expandable, since expanding would reveal nothing.
 - **The three states are not permissions.** A live section can still hold
   buttons that are individually refused — an owner coin that has not synced,
   a locked signer — each with its own reason. The section answers "does this

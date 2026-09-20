@@ -13,6 +13,7 @@ function caps(over: Partial<NameActionCapabilities> = {}): NameActionCapabilitie
     phase: "CLOSED",
     taskState: "unavailableOther",
     ownsName: false,
+    transferPending: false,
     nameIsRegistered: false,
     hasBidCommitment: false,
     hasBidCoin: false,
@@ -53,6 +54,7 @@ describe("resolveSections — leading your own auction is not owning the name", 
     phase: "REVEAL",
     taskState: "revealDoneWaitingForClose",
     ownsName: true,
+    transferPending: false,
     nameIsRegistered: false,
     hasRevealCoin: true,
   });
@@ -86,6 +88,7 @@ describe("resolveSections — while a transaction is waiting for a block", () =>
         phase: "CLOSED",
         taskState: "ownedNoUrgentAction",
         ownsName: true,
+        transferPending: false,
         nameIsRegistered: true,
         canUpdate: yes,
         canRenew: yes,
@@ -108,6 +111,7 @@ describe("resolveSections — records", () => {
       caps({
         taskState: "wonNeedsRegister",
         ownsName: true,
+        transferPending: false,
         nameIsRegistered: false,
         canRegister: yes,
       }),
@@ -126,6 +130,7 @@ describe("resolveSections — records", () => {
         phase: "TRANSFER",
         taskState: "transferPendingFinalize",
         ownsName: true,
+        transferPending: true,
         nameIsRegistered: true,
         canFinalize: yes,
         canCancelTransfer: yes,
@@ -134,6 +139,24 @@ describe("resolveSections — records", () => {
     expect(s.records.kind).toBe("upcoming");
     if (s.records.kind === "upcoming") expect(s.records.when).toMatch(/cancel/i);
     expect(s.ownership.kind).toBe("live");
+  });
+
+  // The gate this mirrors is `can_update`, which keys on the transfer's items.
+  // Deriving it from the task state instead is a second source of truth: the
+  // two can disagree, and then the section says one thing and the button
+  // inside it does another.
+  it("follows the backend's transfer flag, not the phase-derived task state", () => {
+    const s = resolveSections(
+      caps({
+        phase: "CLOSED",
+        taskState: "ownedNoUrgentAction",
+        ownsName: true,
+        nameIsRegistered: true,
+        transferPending: true,
+        canUpdate: no("a transfer is pending — updating records would cancel it"),
+      }),
+    );
+    expect(s.records.kind).toBe("upcoming");
   });
 
   it("is absent on a name this wallet has nothing to do with", () => {
@@ -152,6 +175,7 @@ describe("resolveSections — auction", () => {
       caps({
         taskState: "ownedNoUrgentAction",
         ownsName: true,
+        transferPending: false,
         nameIsRegistered: true,
         canUpdate: yes,
       }),

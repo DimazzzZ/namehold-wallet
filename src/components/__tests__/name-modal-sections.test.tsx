@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -49,6 +49,7 @@ function capsFor(over: Record<string, unknown>) {
     phase: "CLOSED",
     taskState: "unavailableOther",
     ownsName: false,
+    transferPending: false,
     nameIsRegistered: false,
     hasBidCommitment: false,
     hasBidCoin: false,
@@ -139,6 +140,7 @@ describe("NameActionsModal — sections while the auction is still running", () 
     taskState: "revealDoneWaitingForClose",
     // hsd names the highest revealer as owner long before anyone has won.
     ownsName: true,
+    transferPending: false,
     nameIsRegistered: false,
     hasOwnerCoin: true,
     hasRevealCoin: true,
@@ -157,6 +159,23 @@ describe("NameActionsModal — sections while the auction is still running", () 
     expect(screen.queryByRole("button", { name: "Cancel transfer" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Renew" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Sign message for/)).not.toBeInTheDocument();
+  });
+
+  // The upcoming state is only worth anything if it reaches the screen. It
+  // does so beside a live section — here the reveal the wallet still owes —
+  // which is the common shape of this stage, not an edge case.
+  it("names what records and ownership are waiting for, beside the live reveal", async () => {
+    invokeMock.mockImplementation(route(revealInfo, { ...leaderCaps, canReveal: ok }));
+    render(<NameActionsModal name="leadingname" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    fireEvent.click(await screen.findByTestId("all-actions-toggle"));
+    // Both records and ownership are waiting on the same thing, and both say so.
+    expect(screen.getAllByText(/after you register this name/)).toHaveLength(2);
+    expect(screen.getByText("DNS records")).toBeInTheDocument();
+    expect(screen.getByText("Ownership")).toBeInTheDocument();
+    expect(screen.getByText("Manual auction actions")).toBeInTheDocument();
   });
 
   it("does not call the menu 'Manage actions' when there is nothing to manage", async () => {
@@ -217,6 +236,7 @@ describe("NameActionsModal — sections while a broadcast waits for a block", ()
           name: "pendingname",
           taskState: "ownedNoUrgentAction",
           ownsName: true,
+          transferPending: false,
           nameIsRegistered: true,
           hasOwnerCoin: true,
           canUpdate: ok,
@@ -233,6 +253,9 @@ describe("NameActionsModal — sections while a broadcast waits for a block", ()
 
     expect(screen.queryByTestId("all-actions-toggle")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Renew" })).not.toBeInTheDocument();
+    // Auto-expand still fires for a registered name, so without its own guard
+    // the container renders as an empty bordered box holding nothing.
+    expect(screen.queryByTestId("advanced-actions")).not.toBeInTheDocument();
   });
 });
 
@@ -255,6 +278,7 @@ describe("NameActionsModal — sections on a name the wallet really owns", () =>
           name: "ownedname",
           taskState: "ownedNoUrgentAction",
           ownsName: true,
+          transferPending: false,
           nameIsRegistered: true,
           hasOwnerCoin: true,
           canUpdate: ok,

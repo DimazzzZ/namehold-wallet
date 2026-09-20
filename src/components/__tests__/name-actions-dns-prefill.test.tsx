@@ -35,6 +35,7 @@ const ownedCaps = {
   phase: "CLOSED",
   taskState: "ownedNoUrgentAction",
   ownsName: true,
+  transferPending: false,
   nameIsRegistered: true,
   hasBidCommitment: false,
   hasRevealCoin: false,

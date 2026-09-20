@@ -43,6 +43,8 @@ function route(overrides: Record<string, () => Promise<unknown>> = {}) {
         phase: "BIDDING",
         taskState: "readyToBid",
         ownsName: false,
+        nameIsRegistered: false,
+        transferPending: false,
         hasBidCommitment: false,
         hasRevealCoin: false,
         hasOwnerCoin: false,

@@ -73,7 +73,11 @@ export function resolveSections(caps: NameActionCapabilities | null | undefined)
   // registered. A pending transfer takes it away again: hsd accepts
   // TRANSFER -> UPDATE and that transition is the cancel, so Update here would
   // end the transfer while saying nothing about transfers.
-  const transferPending = caps?.taskState === "transferPendingFinalize";
+  // The backend's own flag, the same `transfer_has_items` `can_update` keys
+  // on. The task state is a different question — it comes from the phase
+  // string — and where the two disagree this section would stand open over a
+  // button the node refuses.
+  const transferPending = caps?.transferPending === true;
   const records: SectionState = !ours
     ? { kind: "absent" }
     : transferPending

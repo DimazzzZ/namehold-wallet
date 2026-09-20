@@ -44,6 +44,8 @@ function route(
         phase: "CLOSED",
         taskState: "wonNeedsRegister",
         ownsName: true,
+        nameIsRegistered: false,
+        transferPending: false,
         hasBidCommitment: false,
         hasRevealCoin: false,
         hasOwnerCoin: true,
@@ -114,7 +116,7 @@ function wrapper() {
 beforeEach(() => invokeMock.mockReset());
 
 describe("NameActionsModal — node-readiness gating", () => {
-  it("blocks every name action with the reason when the node can't write", async () => {
+  it("states the reason once and offers no menu when the node can't write", async () => {
     invokeMock.mockImplementation(
       route(
         false,

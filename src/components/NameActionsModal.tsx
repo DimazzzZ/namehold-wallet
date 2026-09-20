@@ -331,8 +331,10 @@ export function NameActionsModal({
     if (shouldAutoExpandManagement) setShowAllActions(true);
   }, [shouldAutoExpandManagement]);
 
-  // Whether there are any user-actionable controls in this modal beyond plain info.
-  // Falls back to phase-based check when capabilities haven't loaded yet.
+  // Whether the modal offers anything beyond plain info, for the guided panel
+  // and the unlock notice. Deliberately looser than `sections.anyLive`, which
+  // governs the advanced area alone: this one has a phase-based fallback for
+  // the window before capabilities load.
   const hasRelevantActions =
     // Phase-based fallback (used when caps are null/loading)
     badge.phase === "AVAILABLE" ||
@@ -346,9 +348,10 @@ export function NameActionsModal({
     // leading an auction does not — the owner coin is still a REVEAL.
     caps?.nameIsRegistered === true;
 
-  // Once THIS wallet has already bid (one bid per wallet per name) there is
-  // no actionable control left: every auction button is caps-disabled, so
-  // the advanced toggle would only open an all-disabled menu. Suppress it.
+  // A wallet that has bid and is waiting for the window has nothing left to
+  // submit. This no longer reaches the advanced toggle — `sections.anyLive`
+  // decides that — and survives only to keep the "unlock to sign" notice off a
+  // modal with nothing to sign.
   const alreadyBidWaiting = caps?.taskState === "waitingForBidding";
 
   // Whether the modal actually offers something to sign/broadcast right now.
@@ -863,10 +866,18 @@ export function NameActionsModal({
           </div>
         )}
 
-        {showAllActions && (
-          <div className="space-y-4 border-t border-gray-200 pt-4">
+        {/* `anyLive` guards the container as well as the toggle: auto-expand can
+            leave `showAllActions` true while every section has since gone
+            absent — a broadcast going out does exactly that — and the bordered
+            box would render with nothing in it. */}
+        {showAllActions && sections.anyLive && (
+          <div className="space-y-4 border-t border-gray-200 pt-4" data-testid="advanced-actions">
             {sections.auction.kind === "upcoming" && (
-              <UpcomingSection title="Manual auction actions" when={sections.auction.when} />
+              <UpcomingSection
+                id="auction"
+                title="Manual auction actions"
+                when={sections.auction.when}
+              />
             )}
             {sections.auction.kind === "live" && (
               <section className="space-y-2">
@@ -911,7 +922,7 @@ export function NameActionsModal({
             )}
 
             {sections.records.kind === "upcoming" && (
-              <UpcomingSection title="DNS records" when={sections.records.when} />
+              <UpcomingSection id="records" title="DNS records" when={sections.records.when} />
             )}
             {recordsLive && (
               <section className="space-y-2">
@@ -1020,7 +1031,7 @@ export function NameActionsModal({
             )}
 
             {sections.ownership.kind === "upcoming" && (
-              <UpcomingSection title="Ownership" when={sections.ownership.when} />
+              <UpcomingSection id="ownership" title="Ownership" when={sections.ownership.when} />
             )}
             {sections.ownership.kind === "live" && (
               <>

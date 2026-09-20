@@ -246,6 +246,8 @@ describe("taskSummaryFromCapabilities — genuine-bidding label unification", ()
       phase: "BIDDING",
       taskState: "waitingForBidding",
       ownsName: false,
+      nameIsRegistered: false,
+      transferPending: false,
       hasBidCommitment: true,
       hasBidCoin: true,
       hasRevealCoin: false,

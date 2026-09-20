@@ -356,6 +356,12 @@ pub struct NameActionCapabilities {
     /// reported so the UI decides which sections exist from the backend's
     /// answer instead of re-deriving a wrong one from `owns_name`.
     pub name_is_registered: bool,
+    /// Whether a TRANSFER is in flight for this name — the same
+    /// `transfer_has_items` the gates use. Reported because the UI has to
+    /// close the records section for exactly the names `can_update` refuses,
+    /// and the phase string is a different question: it and the items can
+    /// disagree, and then the section and the button inside it disagree too.
+    pub transfer_pending: bool,
     pub has_bid_commitment: bool,
     pub has_bid_coin: bool,
     pub has_reveal_coin: bool,
@@ -1211,6 +1217,7 @@ pub(crate) fn build_name_action_capabilities(
         task_state,
         owns_name,
         name_is_registered,
+        transfer_pending,
         has_bid_commitment: action_ctx.has_bid_commitment,
         has_bid_coin: action_ctx.has_bid_coin,
         has_reveal_coin: action_ctx.has_reveal_coin,
@@ -1259,6 +1266,7 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         // registered. Claiming it would unlock the ownership sections on a
         // name we cannot even read.
         name_is_registered: false,
+        transfer_pending: false,
         has_bid_commitment: false,
         has_bid_coin: false,
         has_reveal_coin: false,
@@ -4874,6 +4882,56 @@ mod tests {
             caps.can_cancel_transfer.reason.as_deref(),
             Some("name is not in TRANSFER state")
         );
+    }
+
+    /// The UI has to close the records section for exactly the names
+    /// `can_update` refuses, and the only honest way to know is to be told.
+    /// Deriving it from the phase string instead is a second source of truth:
+    /// `transfer_has_items` and `phase == "TRANSFER"` can disagree, and then
+    /// the section and the button it contains disagree too.
+    #[test]
+    fn transfer_pending_is_reported_and_tracks_the_gate_not_the_phase() {
+        let mid_transfer = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        // Deliberately NOT the TRANSFER phase: the items are what decide.
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &mid_transfer,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(caps.transfer_pending);
+        assert!(!caps.can_update.allowed, "the gate agrees with the flag");
+
+        let settled = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            transfer_has_items: Some(false),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &settled,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(!caps.transfer_pending);
+        assert!(caps.can_update.allowed);
+        assert!(!conservative_capabilities("n", "unreachable").transfer_pending);
     }
 
     #[test]

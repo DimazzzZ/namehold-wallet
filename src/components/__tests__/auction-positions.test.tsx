@@ -55,6 +55,8 @@ function baseCaps(name: string, overrides: Record<string, unknown>) {
     phase: "AVAILABLE",
     taskState: "unavailableOther",
     ownsName: false,
+    nameIsRegistered: false,
+    transferPending: false,
     hasBidCommitment: false,
     hasRevealCoin: false,
     hasOwnerCoin: false,

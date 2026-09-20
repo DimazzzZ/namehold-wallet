@@ -6,9 +6,18 @@
  * sections on screen — while the buttons go, because a wall of disabled
  * controls is what made a user ask whether any of them were real.
  */
-export function UpcomingSection({ title, when }: { title: string; when: string }) {
+export function UpcomingSection({
+  id,
+  title,
+  when,
+}: {
+  /** Stable key for tests — the heading is display copy and may be reworded. */
+  id: string;
+  title: string;
+  when: string;
+}) {
   return (
-    <div className="text-xs text-gray-400" data-testid={`upcoming-section-${title}`}>
+    <div className="text-xs text-gray-400" data-testid={`upcoming-section-${id}`}>
       <span className="font-medium text-gray-500">{title}</span> — {when}
     </div>
   );

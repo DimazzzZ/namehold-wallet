@@ -275,6 +275,9 @@ function buildCapabilities(name: string): Record<string, unknown> {
     phase,
     taskState,
     ownsName: won,
+    // The mock's won names are registered: it allows update/transfer on them.
+    nameIsRegistered: won,
+    transferPending: false,
     hasBidCommitment: a.hasBid,
     hasBidCoin,
     hasRevealCoin,
