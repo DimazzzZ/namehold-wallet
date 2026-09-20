@@ -23,7 +23,7 @@ use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::NodeRpcClient;
 use crate::noncustodial::send::{self, SpendableCoin};
-use crate::noncustodial::sync::{self, COV_REGISTER, COV_REVEAL, COV_TRANSFER};
+use crate::noncustodial::sync::{self, COV_REGISTER, COV_REVEAL};
 use crate::noncustodial::tx::sighash;
 use crate::noncustodial::types::TxDraftSummary;
 use crate::noncustodial::{address, bids, covenants, names, resource};
@@ -3376,6 +3376,9 @@ pub(crate) fn build_finalize_with_payment_draft_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the tests need it: the capability code compares against
+    // COV_REGISTER, not against any particular later covenant.
+    use crate::noncustodial::sync::COV_TRANSFER;
     use serde_json::json;
 
     // ------------------------------------------------------------------
