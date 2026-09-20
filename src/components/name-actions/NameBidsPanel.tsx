@@ -1,7 +1,7 @@
 import { useNameBids } from "../../queries/read";
 import { Badge } from "../ui/Badge";
+import { Tooltip } from "../ui/Tooltip";
 import { formatHns } from "../../lib/utils";
-import { displayName } from "../../lib/idn";
 import type { NameBid } from "../../types";
 
 /**
@@ -68,7 +68,7 @@ export function NameBidsPanel({
 
   return (
     <div className="text-sm" data-testid="name-bids">
-      <div className="text-xs font-medium text-gray-600 mb-1">Bids for {displayName(name)}</div>
+      <div className="text-xs font-medium text-gray-600 mb-1">Bids</div>
 
       {!isRevealPhase && (
         <div className="text-xs text-gray-500 mb-1">
@@ -90,6 +90,25 @@ export function NameBidsPanel({
   );
 }
 
+/**
+ * The "lockup is not the bid" caveat, on the word it qualifies.
+ *
+ * It used to sit inline on every row as "(max, not the actual bid)" — the
+ * single most repeated string in the panel, and dead weight to anyone who
+ * already knows how a Vickrey auction works. On the word itself it stays one
+ * hover away for anyone who does not.
+ */
+function LockupLabel() {
+  return (
+    <Tooltip
+      hint
+      content="The most this bidder could have bid. The true bid stays sealed until the reveal phase."
+    >
+      lockup
+    </Tooltip>
+  );
+}
+
 function BidRow({ bid }: { bid: NameBid }) {
   const revealed = bid.revealed === true;
 
@@ -100,20 +119,33 @@ function BidRow({ bid }: { bid: NameBid }) {
     ? "flex items-center gap-2 text-xs text-gray-800 bg-blue-50 border-l-2 border-blue-400 rounded px-1.5 py-0.5"
     : "flex items-center gap-2 text-xs text-gray-700";
 
-  // Ours, sent, not yet in a block. The chain knows nothing about it, so the
-  // row states that rather than sitting among the confirmed ones unmarked.
-  if (bid.pending) {
-    return (
-      <li className={rowClass} data-testid="name-bid-row-pending">
-        <span>lockup: {formatHns(bid.lockup)} HNS</span>
-        <Badge variant="info">You</Badge>
-        <span>your bid: {formatHns(bid.myValue)} HNS</span>
+  // Badges live in one right-aligned group, with "You" last, so it sits in the
+  // same column on every row instead of drifting with the figures beside it.
+  const badges = (
+    <span className="ml-auto flex items-center gap-2">
+      {bid.pending && (
         <Badge
           variant="warning"
           title="Sent to the network. It joins the auction once a block includes it."
         >
           waiting for a block
         </Badge>
+      )}
+      {bid.win === true && <Badge variant="success">Winner</Badge>}
+      {bid.mine && <Badge variant="info">You</Badge>}
+    </span>
+  );
+
+  // Ours, sent, not yet in a block. The chain knows nothing about it, so the
+  // row states that rather than sitting among the confirmed ones unmarked.
+  if (bid.pending) {
+    return (
+      <li className={rowClass} data-testid="name-bid-row-pending">
+        <span>
+          <LockupLabel />: {formatHns(bid.lockup)} HNS
+        </span>
+        <span>your bid: {formatHns(bid.myValue)} HNS</span>
+        {badges}
       </li>
     );
   }
@@ -126,14 +158,11 @@ function BidRow({ bid }: { bid: NameBid }) {
     // safe to show.
     return (
       <li className={rowClass} data-testid={bid.mine ? "name-bid-row-mine" : "name-bid-row"}>
-        <span>lockup: {formatHns(bid.lockup)} HNS</span>
-        <span className="text-gray-400">(max, not the actual bid)</span>
-        {bid.mine && (
-          <>
-            <Badge variant="info">You</Badge>
-            <span>your bid: {formatHns(bid.myValue)} HNS</span>
-          </>
-        )}
+        <span>
+          <LockupLabel />: {formatHns(bid.lockup)} HNS
+        </span>
+        {bid.mine && <span>your bid: {formatHns(bid.myValue)} HNS</span>}
+        {badges}
       </li>
     );
   }
@@ -142,8 +171,7 @@ function BidRow({ bid }: { bid: NameBid }) {
   return (
     <li className={rowClass} data-testid={bid.mine ? "name-bid-row-mine" : "name-bid-row"}>
       <span>bid: {formatHns(bid.value)} HNS</span>
-      {bid.win === true && <Badge variant="success">Winner</Badge>}
-      {bid.mine && <Badge variant="info">You</Badge>}
+      {badges}
     </li>
   );
 }
