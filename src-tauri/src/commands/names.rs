@@ -23,7 +23,7 @@ use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::NodeRpcClient;
 use crate::noncustodial::send::{self, SpendableCoin};
-use crate::noncustodial::sync::{self, COV_REGISTER, COV_REVEAL};
+use crate::noncustodial::sync::{self, COV_REGISTER, COV_REVEAL, COV_TRANSFER};
 use crate::noncustodial::tx::sighash;
 use crate::noncustodial::types::TxDraftSummary;
 use crate::noncustodial::{address, bids, covenants, names, resource};
@@ -1025,13 +1025,23 @@ pub(crate) fn build_name_action_capabilities(
         .unwrap_or(false);
     let can_spend_as_owner = owns_name && name_is_registered;
     let not_registered_reason = "the name is not registered yet";
+    let transfer_pending = action_ctx.transfer_has_items.unwrap_or(false);
 
+    // Update is the one ownership action a pending transfer takes away. hsd
+    // lets a TRANSFER coin go to UPDATE, RENEW, FINALIZE or REVOKE
+    // (`rules.verifyCovenants`), and the UPDATE branch there *is* the cancel:
+    // the node accepts it and the transfer is gone. Offering it as "edit your
+    // DNS records" makes losing a pending transfer a side effect of a button
+    // that says nothing about transfers. Cancelling stays available under its
+    // own name.
     let can_update = NameActionCapability {
-        allowed: can_spend_as_owner,
+        allowed: can_spend_as_owner && !transfer_pending,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
         } else if !name_is_registered {
             Some(not_registered_reason.into())
+        } else if transfer_pending {
+            Some("a transfer is pending — updating records would cancel it".into())
         } else {
             None
         },
@@ -1059,12 +1069,17 @@ pub(crate) fn build_name_action_capabilities(
         },
     };
 
+    // Cancelling needs a transfer to cancel — the same condition `can_finalize`
+    // has always carried. Without it the button was live on every registered
+    // name and built an UPDATE that changes nothing and costs a fee.
     let can_cancel_transfer = NameActionCapability {
-        allowed: can_spend_as_owner,
+        allowed: can_spend_as_owner && transfer_pending,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
         } else if !name_is_registered {
             Some(not_registered_reason.into())
+        } else if !transfer_pending {
+            Some("name is not in TRANSFER state".into())
         } else {
             None
         },
@@ -4744,8 +4759,13 @@ mod tests {
 
     #[test]
     fn build_owner_actions_allowed_when_owned() {
+        // An ordinary owned name: registered, with no transfer in flight.
+        // This fixture used to also set `transfer_has_items: Some(true)` and
+        // assert Finalize — two different states in one case, which is what
+        // let "Update is fine" and "a transfer is pending" both look true.
+        // The pending-transfer state has its own test below.
         let ctx = NameActionContext {
-            transfer_has_items: Some(true),
+            transfer_has_items: Some(false),
             // A wallet that owns a name it can spend holds a REGISTER-or-later
             // coin; leaving this unset described a state production never has.
             has_owner_coin: true,
@@ -4767,15 +4787,90 @@ mod tests {
         assert_eq!(caps.can_update.reason, None);
         assert!(caps.can_transfer.allowed);
         assert_eq!(caps.can_transfer.reason, None);
-        assert!(caps.can_cancel_transfer.allowed);
-        assert_eq!(caps.can_cancel_transfer.reason, None);
+        // Nothing to cancel either — same reason as Finalize below.
+        assert!(!caps.can_cancel_transfer.allowed);
+        assert_eq!(
+            caps.can_cancel_transfer.reason.as_deref(),
+            Some("name is not in TRANSFER state")
+        );
         assert!(caps.can_renew.allowed);
         assert_eq!(caps.can_renew.reason, None);
         assert!(caps.can_revoke.allowed);
         assert_eq!(caps.can_revoke.reason, None);
-        // finalize allowed since transfer_has_items = Some(true).
+        // Nothing to finalize: no transfer is in flight.
+        assert!(!caps.can_finalize.allowed);
+        assert_eq!(
+            caps.can_finalize.reason.as_deref(),
+            Some("name is not in TRANSFER state")
+        );
+    }
+
+    /// A pending transfer is not a state Update belongs in. hsd lets a
+    /// TRANSFER coin go to UPDATE, RENEW, FINALIZE or REVOKE
+    /// (`rules.verifyCovenants`) — and that UPDATE *is* how a transfer is
+    /// cancelled. So the node accepts the transaction and the user's pending
+    /// transfer quietly disappears, with nothing on screen having said so.
+    /// Cancelling stays available, as the button that says what it does.
+    #[test]
+    fn update_is_refused_while_a_transfer_is_pending() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "TRANSFER".into(),
+            "TRANSFER",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(
+            !caps.can_update.allowed,
+            "updating records mid-transfer silently cancels the transfer"
+        );
+        assert_eq!(
+            caps.can_update.reason.as_deref(),
+            Some("a transfer is pending — updating records would cancel it")
+        );
+        // The actions that genuinely belong to a pending transfer stay live.
         assert!(caps.can_finalize.allowed);
-        assert_eq!(caps.can_finalize.reason, None);
+        assert!(caps.can_cancel_transfer.allowed);
+    }
+
+    /// Cancelling needs something to cancel. `can_finalize` has always
+    /// required `transfer_has_items`; its sibling did not, so on an ordinary
+    /// registered name the button was live and built an UPDATE that changes
+    /// nothing and costs a fee.
+    #[test]
+    fn cancel_transfer_is_refused_when_no_transfer_is_pending() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            transfer_has_items: Some(false),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(!caps.can_cancel_transfer.allowed);
+        assert_eq!(
+            caps.can_cancel_transfer.reason.as_deref(),
+            Some("name is not in TRANSFER state")
+        );
     }
 
     #[test]
