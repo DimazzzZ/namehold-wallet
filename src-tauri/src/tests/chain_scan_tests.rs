@@ -550,12 +550,15 @@ async fn scan_block_inserts_reveal_and_matches_to_existing_bid() {
         None,
     );
 
-    // Now scan a block containing a REVEAL for the same name_hash
+    // Now scan a block containing a REVEAL for the same name_hash. The reveal
+    // must SPEND the bid it discloses: hsd pairs `tx.inputs[i]` with
+    // `tx.output(i)`, and that outpoint is what the scanner keys on.
     let mock = MockNodeRpc::new()
         .with_block_hash("bh2".to_string())
         .with_block(serde_json::json!({
             "tx": [{
                 "txid": "txreveal1",
+                "vin": [{"txid": "txbid1", "vout": 0}],
                 "vout": [{
                     "value": 2,
                     "address": "rs1qrev",
@@ -607,42 +610,135 @@ async fn scan_block_processes_bid_and_reveal_in_same_block() {
     let name_hash = "aabb0011";
     let raw_name_hex = hex::encode("mixed");
 
-    // Block contains a BID then a REVEAL for the same name in the same tx
+    // One block, a BID tx and a REVEAL tx. They have to be separate
+    // transactions: a reveal SPENDS a bid coin, so a tx cannot create and
+    // reveal the same bid — the previous fixture did exactly that, which the
+    // old "match the earliest unmatched bid" rule was happy to accept.
     let mock = MockNodeRpc::new()
         .with_block_hash("bhmixed".to_string())
         .with_block(serde_json::json!({
-            "tx": [{
-                "txid": "txmixed",
-                "vout": [
-                    {
+            "tx": [
+                {
+                    "txid": "txmixed",
+                    "vin": [{"txid": "funding", "vout": 0}],
+                    "vout": [{
                         "value": 4,
                         "address": "rs1qbid",
                         "covenant": {
                             "type": COV_BID as u64,
                             "items": [name_hash, START_HEX, &raw_name_hex, "blind"]
                         }
-                    },
-                    {
+                    }]
+                },
+                {
+                    "txid": "txmixedreveal",
+                    "vin": [{"txid": "txmixed", "vout": 0}],
+                    "vout": [{
                         "value": 2.5,
                         "address": "rs1qrev",
                         "covenant": {
                             "type": COV_REVEAL as u64,
                             "items": [name_hash, START_HEX, "nonce"]
                         }
-                    }
-                ]
-            }]
+                    }]
+                }
+            ]
         }));
     let result = scan_block(&mock, path.to_str().unwrap(), NET, 150).await;
     assert!(result.is_ok());
 
-    // BID inserted and REVEAL matched to it
+    // The BID is indexed, and the REVEAL that spends it is attached to it.
     let bids = read_indexed_bids(&conn, NET, START, name_hash).unwrap();
     assert_eq!(bids.len(), 1);
     assert_eq!(bids[0].txid.as_deref(), Some("txmixed"));
     assert_eq!(bids[0].lockup, Some(4_000_000));
     assert_eq!(bids[0].revealed, Some(true));
     assert_eq!(bids[0].value, Some(2_500_000));
+}
+
+/// Two bids revealed by ONE transaction must each get their own disclosed
+/// value. The old rule paired each reveal with "the earliest bid not yet
+/// matched", which scrambles them: hsd pairs `tx.inputs[i]` with
+/// `tx.output(i)`, so the outpoint is the only correct key.
+#[tokio::test]
+async fn scan_block_pairs_each_reveal_with_the_bid_it_spends() {
+    let (path, conn) = temp_db();
+    let name_hash = "cc990011";
+
+    // Two bids, seeded in an order that a height-based match would reverse.
+    seed_bid(
+        &conn,
+        "bidEarly",
+        0,
+        name_hash,
+        Some("two"),
+        9_000_000,
+        10,
+        None,
+        None,
+    );
+    seed_bid(
+        &conn,
+        "bidLate",
+        0,
+        name_hash,
+        Some("two"),
+        4_000_000,
+        20,
+        None,
+        None,
+    );
+
+    // One reveal tx: output 0 spends bidLate, output 1 spends bidEarly.
+    let mock = MockNodeRpc::new()
+        .with_block_hash("bh".to_string())
+        .with_block(serde_json::json!({
+            "tx": [{
+                "txid": "txrevboth",
+                "vin": [
+                    {"txid": "bidLate", "vout": 0},
+                    {"txid": "bidEarly", "vout": 0}
+                ],
+                "vout": [
+                    {
+                        "value": 3,
+                        "address": "rs1qa",
+                        "covenant": {
+                            "type": COV_REVEAL as u64,
+                            "items": [name_hash, START_HEX, "nonceA"]
+                        }
+                    },
+                    {
+                        "value": 8,
+                        "address": "rs1qb",
+                        "covenant": {
+                            "type": COV_REVEAL as u64,
+                            "items": [name_hash, START_HEX, "nonceB"]
+                        }
+                    }
+                ]
+            }]
+        }));
+    scan_block(&mock, path.to_str().unwrap(), NET, 30)
+        .await
+        .unwrap();
+
+    let by_txid: std::collections::HashMap<String, Option<u64>> =
+        read_indexed_bids(&conn, NET, START, name_hash)
+            .unwrap()
+            .into_iter()
+            .map(|b| (b.txid.unwrap(), b.value))
+            .collect();
+    assert_eq!(
+        by_txid.get("bidLate"),
+        Some(&Some(3_000_000)),
+        "output 0 spends bidLate, so bidLate disclosed 3 HNS"
+    );
+    assert_eq!(
+        by_txid.get("bidEarly"),
+        Some(&Some(8_000_000)),
+        "output 1 spends bidEarly, so bidEarly disclosed 8 HNS"
+    );
 }
 
 // --- Real-node payload shape -------------------------------------------------

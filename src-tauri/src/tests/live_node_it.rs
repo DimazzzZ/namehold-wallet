@@ -771,6 +771,7 @@ async fn settle(
 fn file_backed_app(
     url: &str,
     key: &str,
+    acct: u32,
 ) -> (std::path::PathBuf, tauri::App<tauri::test::MockRuntime>) {
     let db_path = std::env::temp_dir().join(format!(
         "namehold_live_{}_{}.db",
@@ -784,7 +785,7 @@ fn file_backed_app(
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
-    seed_profile_into(&conn, url, key, 0);
+    seed_profile_into(&conn, url, key, acct);
     drop(conn);
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -3690,14 +3691,16 @@ async fn live_pending_action_is_reported_until_the_block_lands() {
         );
         return;
     };
-    let conn = seeded_conn_regtest(&url, &key);
-    let app = app_with(conn);
     let cl = client(&url, &key);
-    let (addr, _, _) = leaf00();
+    // Its own account: the shared `acct 0` address accumulates every sibling
+    // test's coins, and a huge set makes `getcoinsbyaddress` slow and flaky.
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct = fresh_acct(tip);
+    let conn = seeded_conn_acct(&url, &key, acct);
+    let app = app_with(conn);
+    let (addr, _, _) = leaf00_at(acct);
     fund(&cl, &addr, 101).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
-
-    let tip = cl.get_blockchain_info().await.expect("info").blocks;
     let name = format!("pend{tip}");
 
     let caps = |n: String| {
@@ -3770,13 +3773,13 @@ async fn live_own_bid_is_pending_before_the_block_and_indexed_after() {
         );
         return;
     };
-    let (db_path, app) = file_backed_app(&url, &key);
     let cl = client(&url, &key);
-    let (addr, _, _) = leaf00();
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct = fresh_acct(tip);
+    let (db_path, app) = file_backed_app(&url, &key, acct);
+    let (addr, _, _) = leaf00_at(acct);
     fund(&cl, &addr, 101).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
-
-    let tip = cl.get_blockchain_info().await.expect("info").blocks;
     let name = format!("pbid{tip}");
 
     let open = build_open_draft(app.state(), name.clone(), Some(1))
@@ -3851,13 +3854,13 @@ async fn live_reopened_name_scopes_its_bids_and_strands_the_old_lockup() {
         eprintln!("skip live_reopened_name_scopes_its_bids_and_strands_the_old_lockup: set HNS_IT_NODE_URL");
         return;
     };
-    let (db_path, app) = file_backed_app(&url, &key);
     let cl = client(&url, &key);
-    let (addr, _, _) = leaf00();
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct = fresh_acct(tip);
+    let (db_path, app) = file_backed_app(&url, &key, acct);
+    let (addr, _, _) = leaf00_at(acct);
     fund(&cl, &addr, 101).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
-
-    let tip = cl.get_blockchain_info().await.expect("info").blocks;
     let name = format!("relap{tip}");
 
     // --- First auction: open, bid, then walk away without revealing. --------
@@ -3973,14 +3976,16 @@ async fn live_reveal_covers_every_bid_this_wallet_placed_on_the_name() {
         );
         return;
     };
-    let conn = seeded_conn_regtest(&url, &key);
-    let app = app_with(conn);
     let cl = client(&url, &key);
-    let (addr, _, _) = leaf00();
+    // Its own account: the shared `acct 0` address accumulates every sibling
+    // test's coins, and a huge set makes `getcoinsbyaddress` slow and flaky.
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct = fresh_acct(tip);
+    let conn = seeded_conn_acct(&url, &key, acct);
+    let app = app_with(conn);
+    let (addr, _, _) = leaf00_at(acct);
     fund(&cl, &addr, 101).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
-
-    let tip = cl.get_blockchain_info().await.expect("info").blocks;
     let name = format!("multi{tip}");
 
     let open = build_open_draft(app.state(), name.clone(), Some(1))
@@ -4074,14 +4079,16 @@ async fn live_multi_bid_lifecycle_leaves_no_coin_stranded() {
         eprintln!("skip live_multi_bid_lifecycle_leaves_no_coin_stranded: set HNS_IT_NODE_URL");
         return;
     };
-    let conn = seeded_conn_regtest(&url, &key);
-    let app = app_with(conn);
     let cl = client(&url, &key);
-    let (addr, _, _) = leaf00();
+    // Its own account: the shared `acct 0` address accumulates every sibling
+    // test's coins, and a huge set makes `getcoinsbyaddress` slow and flaky.
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct = fresh_acct(tip);
+    let conn = seeded_conn_acct(&url, &key, acct);
+    let app = app_with(conn);
+    let (addr, _, _) = leaf00_at(acct);
     fund(&cl, &addr, 101).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
-
-    let tip = cl.get_blockchain_info().await.expect("info").blocks;
     let name = format!("cycle{tip}");
     let nh_hex = hex::encode(crate::noncustodial::names::hash_name(&name).unwrap());
 
@@ -4197,4 +4204,98 @@ async fn live_multi_bid_lifecycle_leaves_no_coin_stranded() {
         0,
         "every losing reveal must be redeemable through the app"
     );
+}
+
+/// Each indexed bid must carry the value ITS OWN reveal disclosed.
+///
+/// hsd pairs a name covenant with the coin spent at the same index
+/// (`rules.verifyCovenants`: `tx.inputs[i]` → `tx.output(i)`), so a reveal
+/// output names exactly one bid. The scanner instead attached each reveal to
+/// "the earliest bid not yet matched" — indistinguishable from the truth while
+/// a wallet had one bid per name, and wrong the moment one transaction reveals
+/// several: the values land on the wrong bids.
+#[tokio::test]
+async fn live_scanner_pairs_each_reveal_with_its_own_bid() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_scanner_pairs_each_reveal_with_its_own_bid: set HNS_IT_NODE_URL");
+        return;
+    };
+    let cl = client(&url, &key);
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let acct = fresh_acct(tip);
+    let (db_path, app) = file_backed_app(&url, &key, acct);
+    let (addr, _, _) = leaf00_at(acct);
+    fund(&cl, &addr, 101).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let name = format!("pair{tip}");
+
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+
+    // Deliberately mismatched orderings: the bid values ascend while the
+    // lockups descend, so pairing by anything other than the outpoint gets it
+    // visibly wrong.
+    let plan: [(i64, i64); 3] = [
+        (1_000_000, 9_000_000),
+        (2_000_000, 6_000_000),
+        (3_000_000, 4_000_000),
+    ];
+    for (bid_v, lockup) in plan {
+        sync_wallet_state(app.state(), None).await.expect("sync");
+        let d = build_bid_draft(app.state(), name.clone(), bid_v, lockup, Some(1))
+            .await
+            .unwrap_or_else(|e| panic!("build bid {bid_v}: {e:?}"));
+        execute(&app, &cl, &addr, d.id).await;
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    assert!(mine_until(&cl, &name, "REVEAL", &addr, 30).await);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build reveal");
+    execute(&app, &cl, &addr, reveal.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    scan_to_tip(&cl, &db_path).await;
+
+    // What the wallet knows locally: this bid txid bid this much.
+    let expected: std::collections::HashMap<String, i64> = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::list_bid_commitments(&c, PROFILE)
+            .unwrap()
+            .into_iter()
+            .filter(|b| b.name == name)
+            .filter_map(|b| b.bid_txid.map(|t| (t, b.bid_value_doos)))
+            .collect()
+    };
+    assert_eq!(expected.len(), 3);
+
+    let indexed: Vec<(String, Option<i64>)> = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        let mut stmt = c
+            .prepare(
+                "SELECT bid_txid, reveal_value_doos FROM name_bid_outpoints
+                 WHERE name = ?1 ORDER BY height",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map(params![name], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows
+    };
+    assert_eq!(indexed.len(), 3, "all three bids indexed");
+    for (bid_txid, revealed) in indexed {
+        let want = expected.get(&bid_txid).copied();
+        assert_eq!(
+            revealed, want,
+            "bid {bid_txid} disclosed {want:?} but the index says {revealed:?}"
+        );
+    }
 }

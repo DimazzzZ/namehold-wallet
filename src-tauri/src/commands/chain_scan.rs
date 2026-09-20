@@ -247,6 +247,9 @@ pub(crate) async fn scan_block(
             Some(o) => o,
             None => continue,
         };
+        // Same JSON-RPC shape as `vout`: `vin[i]` carries the spent outpoint as
+        // `txid` + `vout` (hsd `txToJSON`).
+        let inputs = tx.get("vin").and_then(|i| i.as_array());
         for (vout, output) in outputs.iter().enumerate() {
             let cov = match output.get("covenant") {
                 Some(c) => c,
@@ -313,10 +316,23 @@ pub(crate) async fn scan_block(
                     });
                 }
                 COV_REVEAL => {
-                    // REVEAL items: [nameHash, u32(height), nonce]
+                    // REVEAL items: [nameHash, u32(height), nonce].
+                    //
+                    // Which bid it reveals is not a guess: hsd pairs a name
+                    // covenant with the coin spent at the SAME index
+                    // (`rules.verifyCovenants` walks `tx.inputs[i]` against
+                    // `tx.output(i)`), so the BID being revealed is whatever
+                    // input `vout` spends.
+                    let spent = inputs.and_then(|v| v.get(vout)).and_then(|i| {
+                        Some((
+                            i.get("txid")?.as_str()?.to_string(),
+                            i.get("vout")?.as_u64()? as u32,
+                        ))
+                    });
                     reveals.push(RevealRow {
                         name_hash_hex: name_hash,
                         name_start_height: start_height,
+                        spent_bid: spent,
                         reveal_txid: txid.to_string(),
                         reveal_value_doos: value,
                     });
@@ -359,22 +375,23 @@ pub(crate) async fn scan_block(
     // doesn't already have a reveal_txid — this is a best-effort heuristic;
     // in practice each bidder has one BID per name per auction.
     for reveal in &reveals {
+        // Address the exact BID this reveal spends. The previous rule — "the
+        // earliest bid not yet matched" — was indistinguishable from the truth
+        // while a wallet held one bid per name, and scrambled the disclosed
+        // values the moment one transaction revealed several.
+        let Some((bid_txid, bid_vout)) = reveal.spent_bid.as_ref() else {
+            continue;
+        };
         tx.execute(
             "UPDATE name_bid_outpoints
              SET reveal_txid = ?1, reveal_value_doos = ?2
-             WHERE rowid = (
-                 SELECT rowid FROM name_bid_outpoints
-                 WHERE network = ?3 AND name_hash_hex = ?4
-                   AND name_start_height = ?5 AND reveal_txid IS NULL
-                 ORDER BY height ASC, bid_txid ASC, bid_vout ASC
-                 LIMIT 1
-             )",
+             WHERE network = ?3 AND bid_txid = ?4 AND bid_vout = ?5",
             params![
                 reveal.reveal_txid,
                 reveal.reveal_value_doos as i64,
                 network,
-                reveal.name_hash_hex,
-                reveal.name_start_height,
+                bid_txid,
+                *bid_vout,
             ],
         )?;
     }
@@ -448,6 +465,9 @@ struct BidRow {
 struct RevealRow {
     name_hash_hex: String,
     name_start_height: i64,
+    /// The BID outpoint this reveal spends — `(txid, vout)` of the input at
+    /// the reveal output's own index. `None` only for a malformed tx.
+    spent_bid: Option<(String, u32)>,
     reveal_txid: String,
     reveal_value_doos: u64,
 }
