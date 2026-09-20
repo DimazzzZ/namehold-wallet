@@ -112,6 +112,8 @@ export function GuidedAction({
   isMainnet,
 }: GuidedActionProps) {
   const [infoTx, setInfoTx] = useState<string | null>(null);
+  // Records are not part of registering — see the Register panel below.
+  const [showRegisterDns, setShowRegisterDns] = useState(false);
   if (!guide) return null;
 
   // A transaction this wallet sent is still in the mempool. The chain has not
@@ -411,13 +413,35 @@ export function GuidedAction({
                   "You won the auction! Register the name to finalize ownership."}
               </div>
               <ActionReasonBanner reason={actionReason(caps?.canRegister)} />
-              <DnsRecordsEditor
-                variant="guided"
-                rows={rows}
-                onRowChange={onRowChange}
-                onAddRow={onAddRow}
-                onRemoveRow={onRemoveRow}
-              />
+              {/* Registering publishes the name's resource, and an empty one
+                  is valid — hsd caps the resource size and nothing requires
+                  it to be non-empty. Putting a record editor in front of the
+                  user with nothing said about it read as "records required",
+                  which is a question the chain never asks. Say it is optional
+                  and keep the editor behind a disclosure, so the ordinary path
+                  is one button. */}
+              <div className="text-xs text-gray-600">
+                Registering claims the name on-chain. DNS records are optional — you can register
+                now and publish records later with Update.
+              </div>
+              {showRegisterDns ? (
+                <DnsRecordsEditor
+                  variant="guided"
+                  rows={rows}
+                  onRowChange={onRowChange}
+                  onAddRow={onAddRow}
+                  onRemoveRow={onRemoveRow}
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="text-xs text-blue-600 hover:underline"
+                  onClick={() => setShowRegisterDns(true)}
+                  data-testid="register-dns-toggle"
+                >
+                  Add DNS records now (optional)
+                </button>
+              )}
               <Button
                 variant="primary"
                 disabled={actionDisabled("REGISTER", caps?.canRegister)}

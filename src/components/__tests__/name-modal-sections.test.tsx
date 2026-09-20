@@ -296,3 +296,54 @@ describe("NameActionsModal — sections on a name the wallet really owns", () =>
     expect(await screen.findByText(/Sign message for/)).toBeInTheDocument();
   });
 });
+
+describe("NameActionsModal — the Register step", () => {
+  const wonInfo = {
+    name: "wonname",
+    state: "CLOSED",
+    height: 100,
+    renewal: 200,
+    owner: { hash: profile.receiveAddress, index: 0 },
+    registered: false,
+    value: 12_000_000,
+    highest: 1_000_000_000,
+    stats: { blocksUntilExpire: 4979, daysUntilExpire: 34.5 },
+  };
+  const wonCaps = capsFor({
+    name: "wonname",
+    taskState: "wonNeedsRegister",
+    ownsName: true,
+    nameIsRegistered: false,
+    hasOwnerCoin: true,
+    hasRevealCoin: true,
+    canRegister: ok,
+    nextActionKey: "REGISTER",
+    nextActionLabel: "Register Name",
+  });
+
+  // Reported from a live wallet: the Register panel dropped a DNS record
+  // editor in front of the user with nothing said about it, so the obvious
+  // reading was that records are required to register. They are not — hsd
+  // caps the resource size and accepts an empty one — and the wallet already
+  // sends an empty resource when the editor is untouched. The panel has to
+  // say so, or the user stalls on a question the chain does not ask.
+  it("says records are optional and keeps the editor out of the way", async () => {
+    invokeMock.mockImplementation(route(wonInfo, wonCaps));
+    render(<NameActionsModal name="wonname" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    await screen.findByText("Register Name");
+    expect(screen.getByText(/DNS records are optional/i)).toBeInTheDocument();
+    // Not in the way: no rows until the user asks for them.
+    expect(screen.queryByTestId("dns-rows")).not.toBeInTheDocument();
+    // And Register is reachable without touching them.
+    expect(screen.getByRole("button", { name: "Register" })).toBeEnabled();
+  });
+
+  it("opens the editor for whoever does want records up front", async () => {
+    invokeMock.mockImplementation(route(wonInfo, wonCaps));
+    render(<NameActionsModal name="wonname" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    fireEvent.click(await screen.findByTestId("register-dns-toggle"));
+    expect(await screen.findByTestId("dns-rows")).toBeInTheDocument();
+  });
+});

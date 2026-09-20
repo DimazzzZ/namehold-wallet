@@ -441,6 +441,9 @@ describe("NameActionsModal — phase header + DNS editor", () => {
     invokeMock.mockImplementation(routeModal(captured));
     render(<NameActionsModal name="cuatesttld" open onClose={() => {}} />, { wrapper: wrapper() });
 
+    // Records are optional on the Register step, so the editor sits behind a
+    // disclosure — whoever does want records up front opens it.
+    fireEvent.click(await screen.findByTestId("register-dns-toggle"));
     await screen.findByTestId("dns-rows");
     // Default first row is a TXT — fill its value, then Register.
     fireEvent.change(screen.getByLabelText("record value"), {
