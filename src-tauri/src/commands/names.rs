@@ -348,6 +348,14 @@ pub struct NameActionCapabilities {
     pub phase: String,
     pub task_state: AuctionTaskState,
     pub owns_name: bool,
+    /// Whether the name is actually REGISTERED — an owner coin at
+    /// `COV_REGISTER` or later. `owns_name` is NOT this: during REVEAL
+    /// `getnameinfo` already names the highest revealer as the owner, so a
+    /// wallet merely leading its own auction owns a REVEAL coin and nothing
+    /// more. The same value gates `can_update` and its siblings; it is
+    /// reported so the UI decides which sections exist from the backend's
+    /// answer instead of re-deriving a wrong one from `owns_name`.
+    pub name_is_registered: bool,
     pub has_bid_commitment: bool,
     pub has_bid_coin: bool,
     pub has_reveal_coin: bool,
@@ -1187,6 +1195,7 @@ pub(crate) fn build_name_action_capabilities(
         phase,
         task_state,
         owns_name,
+        name_is_registered,
         has_bid_commitment: action_ctx.has_bid_commitment,
         has_bid_coin: action_ctx.has_bid_coin,
         has_reveal_coin: action_ctx.has_reveal_coin,
@@ -1231,6 +1240,10 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         phase: "UNKNOWN".into(),
         task_state: AuctionTaskState::UnavailableOther,
         owns_name: false,
+        // No node-synced owner coin reached us, so nothing proves the name is
+        // registered. Claiming it would unlock the ownership sections on a
+        // name we cannot even read.
+        name_is_registered: false,
         has_bid_commitment: false,
         has_bid_coin: false,
         has_reveal_coin: false,
@@ -4411,6 +4424,72 @@ mod tests {
         assert!(caps.can_transfer.allowed);
         assert!(caps.can_renew.allowed);
         assert!(caps.can_revoke.allowed);
+    }
+
+    /// The UI needs the same "is this name actually registered?" answer the
+    /// capability gates are computed from. Re-deriving it in TypeScript from
+    /// `ownsName` is what put DNS, Ownership and Sign message on screen for a
+    /// name the wallet was merely leading the auction on, so the backend
+    /// states it once and the frontend reads it.
+    #[test]
+    fn name_is_registered_is_reported_alongside_the_gates_it_drives() {
+        let reveal_owner = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REVEAL as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &reveal_owner,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(
+            !caps.name_is_registered,
+            "a REVEAL owner coin means the name is not registered yet"
+        );
+
+        let registered_owner = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &registered_owner,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(caps.name_is_registered);
+    }
+
+    /// With no node-synced owner coin at all there is nothing to prove the name
+    /// is registered, and the conservative fallback must not claim it is.
+    #[test]
+    fn name_is_registered_is_false_without_an_owner_coin() {
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx_default(),
+            false,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(!caps.name_is_registered);
+        assert!(!conservative_capabilities("n", "node unreachable").name_is_registered);
     }
 
     #[test]
