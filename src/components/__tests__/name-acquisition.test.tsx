@@ -700,6 +700,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
             phase: "CLOSED",
             taskState: "ownedNoUrgentAction",
             ownsName: true,
+            nameIsRegistered: true,
             hasBidCommitment: false,
             hasRevealCoin: false,
             hasOwnerCoin: true,
@@ -818,6 +819,10 @@ describe("NameActionsModal — guided acquisition flow", () => {
             phase: "CLOSED",
             taskState: "ownedNoUrgentAction",
             ownsName: true,
+            // Registered, but its owner coin has not synced — the sections
+            // exist (that is the stage), and each button carries its own
+            // "not synced" reason.
+            nameIsRegistered: true,
             hasBidCommitment: false,
             hasRevealCoin: false,
             hasOwnerCoin: false,

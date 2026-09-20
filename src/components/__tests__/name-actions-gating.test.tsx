@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -133,16 +133,15 @@ describe("NameActionsModal — node-readiness gating", () => {
       expect(screen.getByRole("button", { name: /^Register$/i })).toBeDisabled();
     });
 
-    // Advanced actions are behind a toggle — open them to verify gating on actions
-    // that are always present in the auction section for the current modal contract.
-    fireEvent.click(screen.getByTestId("all-actions-toggle"));
-    expect(screen.getAllByRole("button", { name: /^Open$/i }).slice(-1)[0]).toBeDisabled();
-    expect(screen.getByRole("button", { name: /^Reveal$/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /^Redeem$/i })).toBeDisabled();
-    // In CLOSED (an owned, registered name) the BidGate hides the Bid /
-    // Lockup inputs and their submit entirely — there is no meaningful "Bid"
-    // action for a name whose auction is over. This is a stronger guarantee
-    // than "disabled" and replaces the earlier assertion.
+    // A node that cannot write refuses every capability, so there is nothing
+    // behind the advanced toggle and no toggle to open. The reason is already
+    // stated twice — on the banner above and on the guided action — and a menu
+    // of six buttons all carrying that same reason is the wall of dead
+    // controls this modal no longer renders.
+    expect(screen.queryByTestId("all-actions-toggle")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Reveal$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Redeem$/i })).toBeNull();
+    // No meaningful "Bid" action either, for a name whose auction is over.
     expect(screen.queryByRole("button", { name: /^Bid$/i })).toBeNull();
     expect(screen.queryByLabelText("Bid (HNS)")).not.toBeInTheDocument();
     // Close stays available.

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type { ReactNode } from "react";
@@ -127,19 +127,18 @@ function wrapper() {
 beforeEach(() => invokeMock.mockReset());
 
 describe("NameActionsModal — BidGate hides inputs off the bidding phase", () => {
-  it("shows no Bid/Lockup inputs in the advanced section during OPENING", async () => {
+  it("offers no advanced section at all during OPENING, so no bid can be invited", async () => {
     invokeMock.mockImplementation(route("OPENING", false));
     render(<NameActionsModal name="examplename" open onClose={() => {}} />, {
       wrapper: wrapper(),
     });
+    await screen.findByTestId("name-phase");
 
-    // Open the advanced section where the duplicate bid form used to live.
-    const toggle = await screen.findByTestId("all-actions-toggle");
-    fireEvent.click(toggle);
-
-    // The advanced section shows the manual Open fallback …
-    expect(await screen.findByRole("button", { name: "Open" })).toBeInTheDocument();
-    // … and there is NO Bid / Lockup input to invite a bid next to "Open".
+    // The auction is already open, so the manual Open fallback is refused and
+    // nothing else applies to a name this wallet does not own. A toggle onto a
+    // disabled "Open" is the dead control the section states exist to remove —
+    // which makes "no Bid / Lockup input here" unconditional.
+    expect(screen.queryByTestId("all-actions-toggle")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Bid (HNS)")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Lockup (HNS)")).not.toBeInTheDocument();
     expect(screen.queryByTestId("bid-gate-placeholder")).not.toBeInTheDocument();
