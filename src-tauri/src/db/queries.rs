@@ -2702,12 +2702,13 @@ pub fn set_bid_reveal_txid(
     conn: &rusqlite::Connection,
     profile_id: &str,
     name: &str,
+    blind_hex: &str,
     txid: &str,
 ) -> Result<(), AppError> {
     conn.execute(
-        "UPDATE bid_commitments SET reveal_txid = ?3
-         WHERE wallet_profile_id = ?1 AND name = ?2",
-        params![profile_id, name, txid],
+        "UPDATE bid_commitments SET reveal_txid = ?4
+         WHERE wallet_profile_id = ?1 AND name = ?2 AND blind_hex = ?3",
+        params![profile_id, name, blind_hex, txid],
     )?;
     Ok(())
 }
@@ -5104,6 +5105,44 @@ mod noncustodial_query_tests {
     }
 
     /// Coverage: list_pending_reveal_deadlines with revealed bids excluded
+    /// Stamping a reveal must mark the ONE bid it revealed.
+    ///
+    /// The column was keyed by name, from when a wallet could hold only one bid
+    /// per name. Once several were allowed, revealing one marked them all — and
+    /// `list_pending_reveal_deadlines` filters on `reveal_txid IS NULL`, so the
+    /// bids that were NOT revealed stopped being warned about, right up to the
+    /// block where their lockup became unreclaimable.
+    #[test]
+    fn set_bid_reveal_txid_marks_only_its_own_commitment() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        for (blind, lockup) in [("b1", 200), ("b2", 300), ("b3", 400)] {
+            insert_bid_commitment(
+                &conn, "p1", "multi", "h", "rs1q", 0, 0, 100, lockup, "n", blind,
+            )
+            .unwrap();
+            set_auction_heights(&conn, "p1", blind, 100, 121).unwrap();
+        }
+
+        set_bid_reveal_txid(&conn, "p1", "multi", "b2", "revealtx").unwrap();
+
+        let revealed: Vec<String> = list_bid_commitments(&conn, "p1")
+            .unwrap()
+            .into_iter()
+            .filter(|b| b.reveal_txid.is_some())
+            .map(|b| b.blind_hex)
+            .collect();
+        assert_eq!(revealed, vec!["b2".to_string()], "only the revealed bid");
+
+        // The other two must still be chased by the deadline scanner.
+        let pending = list_pending_reveal_deadlines(&conn).unwrap();
+        assert_eq!(
+            pending.len(),
+            2,
+            "the unrevealed bids must keep their deadline warning"
+        );
+    }
+
     #[test]
     fn list_pending_reveal_deadlines_excludes_revealed() {
         let conn = db();
@@ -5132,7 +5171,7 @@ mod noncustodial_query_tests {
         set_auction_heights(&conn, "p1", "b2", 0, 600).unwrap();
 
         // Mark one as revealed
-        set_bid_reveal_txid(&conn, "p1", "revealed", "reveal_txid").unwrap();
+        set_bid_reveal_txid(&conn, "p1", "revealed", "b2", "reveal_txid").unwrap();
 
         let deadlines = list_pending_reveal_deadlines(&conn).unwrap();
         assert_eq!(deadlines.len(), 1);
@@ -5150,7 +5189,7 @@ mod noncustodial_query_tests {
         )
         .unwrap();
         set_bid_txid(&conn, "p1", "blind1", "bid_txid_1").unwrap();
-        set_bid_reveal_txid(&conn, "p1", "name1", "reveal_txid_1").unwrap();
+        set_bid_reveal_txid(&conn, "p1", "name1", "blind1", "reveal_txid_1").unwrap();
 
         let bids = list_bid_commitments(&conn, "p1").unwrap();
         assert_eq!(bids.len(), 1);

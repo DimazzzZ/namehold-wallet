@@ -184,7 +184,14 @@ async fn revealed_bid_is_excluded_even_if_the_window_would_be_imminent() {
         enable_notifications(&conn, "144", "30");
         seed_current_height(&conn, &id, 1_000);
         seed_pending_bid(&conn, &id, "alreadyrevealed", 1_010);
-        db::queries::set_bid_reveal_txid(&conn, &id, "alreadyrevealed", "revealtxid").unwrap();
+        db::queries::set_bid_reveal_txid(
+            &conn,
+            &id,
+            "alreadyrevealed",
+            &"22".repeat(32),
+            "revealtxid",
+        )
+        .unwrap();
     }
 
     let app = mock_app_with(state);

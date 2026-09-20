@@ -3960,3 +3960,102 @@ async fn live_reopened_name_scopes_its_bids_and_strands_the_old_lockup() {
 
     let _ = std::fs::remove_file(&db_path);
 }
+
+/// Three bids on ONE name, then reveal. Every one of them must be revealed:
+/// an unrevealed BID coin can only ever be spent by a REVEAL, and a REVEAL is
+/// only valid while the auction is in its reveal window — miss it and the
+/// lockup is locked for good.
+#[tokio::test]
+async fn live_reveal_covers_every_bid_this_wallet_placed_on_the_name() {
+    let Some((url, key)) = it_env() else {
+        eprintln!(
+            "skip live_reveal_covers_every_bid_this_wallet_placed_on_the_name: set HNS_IT_NODE_URL"
+        );
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    fund(&cl, &addr, 101).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("multi{tip}");
+
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+
+    // Three independent bids, which the wallet explicitly supports.
+    let lockups: [i64; 3] = [2_000_000, 3_000_000, 4_000_000];
+    for (i, lockup) in lockups.iter().enumerate() {
+        sync_wallet_state(app.state(), None).await.expect("sync");
+        let bid = build_bid_draft(
+            app.state(),
+            name.clone(),
+            1_000_000 + i as i64 * 100_000,
+            *lockup,
+            Some(1),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("build bid {i}: {e:?}"));
+        execute(&app, &cl, &addr, bid.id).await;
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(&name).unwrap());
+    let unspent_bid_coins = |app: &tauri::App<tauri::test::MockRuntime>| {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::find_unspent_covenant_utxos_by_name_hash(
+            &c,
+            PROFILE,
+            crate::noncustodial::sync::COV_BID as i64,
+            &nh_hex,
+        )
+        .unwrap()
+        .len()
+    };
+    assert_eq!(
+        unspent_bid_coins(&app),
+        3,
+        "precondition: three bids placed"
+    );
+
+    assert!(mine_until(&cl, &name, "REVEAL", &addr, 30).await);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // Do what the app offers for this name, until it has nothing left to offer.
+    for attempt in 0..lockups.len() {
+        match build_reveal_draft(app.state(), name.clone(), Some(1)).await {
+            Ok(draft) => execute(&app, &cl, &addr, draft.id).await,
+            Err(e) => {
+                eprintln!("reveal attempt {attempt} refused: {e:?}");
+                break;
+            }
+        }
+        sync_wallet_state(app.state(), None).await.expect("sync");
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // The symptom: a BID coin still unspent once the reveal window closes is a
+    // lockup nobody can ever reclaim.
+    let left = unspent_bid_coins(&app);
+    let stranded: i64 = lockups.iter().sum::<i64>() - {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::list_bid_commitments(&c, PROFILE)
+            .unwrap()
+            .iter()
+            .filter(|b| b.name == name && b.reveal_txid.is_some())
+            .map(|b| b.lockup_value_doos)
+            .sum::<i64>()
+    };
+    assert_eq!(
+        left, 0,
+        "{left} of 3 bids left unrevealed — {stranded} doos of lockup is now unreclaimable"
+    );
+}

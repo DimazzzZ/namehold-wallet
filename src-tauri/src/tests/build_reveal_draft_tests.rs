@@ -206,7 +206,15 @@ fn build_reveal_draft_succeeds_and_persists() {
     let (conn, ctx, bid, coin) = setup();
     let ns = reveal_name_state();
 
-    let summary = build_reveal_draft_inner(&conn, &ctx, NAME, Some(10), &ns, &bid, &coin).unwrap();
+    let summary = build_reveal_draft_inner(
+        &conn,
+        &ctx,
+        NAME,
+        Some(10),
+        &ns,
+        &[(bid.clone(), coin.clone())],
+    )
+    .unwrap();
     assert_eq!(summary.action, "reveal");
 
     // The BID coin is always reserved (it's the name input the reveal spends).
@@ -231,7 +239,15 @@ fn build_reveal_draft_stamps_reveal_txid_on_commitment() {
     let (conn, ctx, bid, coin) = setup();
     let ns = reveal_name_state();
 
-    build_reveal_draft_inner(&conn, &ctx, NAME, Some(10), &ns, &bid, &coin).unwrap();
+    build_reveal_draft_inner(
+        &conn,
+        &ctx,
+        NAME,
+        Some(10),
+        &ns,
+        &[(bid.clone(), coin.clone())],
+    )
+    .unwrap();
 
     // The reveal txid is stamped back onto the commitment row (Task 1 fix).
     let reveal_txid: Option<String> = conn
@@ -252,7 +268,15 @@ fn build_reveal_draft_uses_explicit_fee_rate() {
     let (conn, ctx, bid, coin) = setup();
     let ns = reveal_name_state();
 
-    let summary = build_reveal_draft_inner(&conn, &ctx, NAME, Some(250), &ns, &bid, &coin).unwrap();
+    let summary = build_reveal_draft_inner(
+        &conn,
+        &ctx,
+        NAME,
+        Some(250),
+        &ns,
+        &[(bid.clone(), coin.clone())],
+    )
+    .unwrap();
     assert_eq!(summary.action, "reveal");
 }
 
@@ -263,7 +287,15 @@ fn build_reveal_draft_rejects_bad_nonce_length() {
     // A nonce that decodes to fewer than 32 bytes must be rejected.
     let bad = bid_row(&coin.address, "1122");
 
-    let err = build_reveal_draft_inner(&conn, &ctx, NAME, Some(10), &ns, &bad, &coin).unwrap_err();
+    let err = build_reveal_draft_inner(
+        &conn,
+        &ctx,
+        NAME,
+        Some(10),
+        &ns,
+        &[(bad.clone(), coin.clone())],
+    )
+    .unwrap_err();
     match err {
         AppError::Crypto(msg) => assert!(msg.contains("32 bytes")),
         other => panic!("expected Crypto error, got {other:?}"),
@@ -276,7 +308,15 @@ fn build_reveal_draft_rejects_non_hex_nonce() {
     let ns = reveal_name_state();
     let bad = bid_row(&coin.address, "zzzz");
 
-    let err = build_reveal_draft_inner(&conn, &ctx, NAME, Some(10), &ns, &bad, &coin).unwrap_err();
+    let err = build_reveal_draft_inner(
+        &conn,
+        &ctx,
+        NAME,
+        Some(10),
+        &ns,
+        &[(bad.clone(), coin.clone())],
+    )
+    .unwrap_err();
     assert!(matches!(err, AppError::Crypto(_)));
 }
 
@@ -321,7 +361,15 @@ fn build_reveal_draft_fails_with_insufficient_funds() {
     let coin = bid_coin(&bid_txid, &recv0.address, 1_000_000);
     let ns = reveal_name_state();
 
-    let err = build_reveal_draft_inner(&conn, &ctx, NAME, Some(100), &ns, &bid, &coin).unwrap_err();
+    let err = build_reveal_draft_inner(
+        &conn,
+        &ctx,
+        NAME,
+        Some(100),
+        &ns,
+        &[(bid.clone(), coin.clone())],
+    )
+    .unwrap_err();
     assert!(matches!(
         err,
         AppError::InvalidInput(_) | AppError::Other(_)

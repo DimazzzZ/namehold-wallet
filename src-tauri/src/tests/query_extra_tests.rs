@@ -1010,7 +1010,7 @@ mod branch_cov {
         assert_eq!(deadlines[0].2, 555);
 
         set_bid_txid(&conn, "p1", "bl1", "bidtx").unwrap();
-        set_bid_reveal_txid(&conn, "p1", "n1", "revtx").unwrap();
+        set_bid_reveal_txid(&conn, "p1", "n1", "bl1", "revtx").unwrap();
         assert_eq!(list_pending_reveal_deadlines(&conn).unwrap().len(), 0);
         let after = list_bid_commitments(&conn, "p1").unwrap();
         assert_eq!(after[0].bid_txid.as_deref(), Some("bidtx"));

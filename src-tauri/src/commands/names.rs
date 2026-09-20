@@ -107,7 +107,7 @@ pub(crate) fn fee_rate(ctx: &Ctx, fee_rate: Option<u64>) -> u64 {
 }
 
 /// Minimal view of `getnameinfo` we need to build covenants.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct NameState {
     pub(crate) height: u32,
     pub(crate) value: u64,
@@ -1911,28 +1911,57 @@ pub async fn build_reveal_draft(
     let client = ctx.node.clone();
     let ns = fetch_name_state(&client, &name).await?;
 
-    // Look up our bid commitment + the unspent BID coin at that address.
-    let (bid, bid_coin) = {
+    // EVERY bid this wallet placed in the auction now running, each with its
+    // own unspent BID coin. A wallet may hold several bids on one name, and a
+    // BID coin is spendable only by its own REVEAL — so taking just one (the
+    // newest, as `get_bid_commitment` returns) revealed one and abandoned the
+    // rest to the end of the reveal window, where their lockups stop being
+    // reclaimable at all.
+    let bids = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let nh = names::hash_name(&name)?;
-        let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, &name)?
-            .ok_or_else(|| AppError::NotFound(format!("no bid commitment for '{name}'")))?;
-        let coin = queries::find_unspent_covenant_utxo(
-            &conn,
-            &ctx.profile_id,
-            &bid.address,
-            sync::COV_BID as i64,
-            &name,
-            &hex::encode(nh),
-        )?
-        .ok_or_else(|| {
-            AppError::NotFound(format!("no unspent bid coin for '{name}' (sync first?)"))
-        })?;
-        (bid, coin)
+        let nh_hex = hex::encode(names::hash_name(&name)?);
+        let auction_start = ns.height as i64;
+        let commitments: Vec<queries::BidCommitmentRow> =
+            queries::list_bid_commitments(&conn, &ctx.profile_id)?
+                .into_iter()
+                .filter(|b| b.name == name)
+                // Bids belong to an auction (030). One from a lapsed auction
+                // can no longer be revealed — `start != ns.height` is a
+                // consensus error — so it would poison the whole transaction.
+                .filter(|b| {
+                    b.name_start_height
+                        .map(|h| h == auction_start)
+                        .unwrap_or(true)
+                })
+                .collect();
+        if commitments.is_empty() {
+            return Err(AppError::NotFound(format!(
+                "no bid commitment for '{name}'"
+            )));
+        }
+        let mut out: Vec<(queries::BidCommitmentRow, queries::NameCoin)> = Vec::new();
+        for bid in commitments {
+            if let Some(coin) = queries::find_unspent_covenant_utxo(
+                &conn,
+                &ctx.profile_id,
+                &bid.address,
+                sync::COV_BID as i64,
+                &name,
+                &nh_hex,
+            )? {
+                out.push((bid, coin));
+            }
+        }
+        out
     };
+    if bids.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "no unspent bid coin for '{name}' (sync first?)"
+        )));
+    }
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    let summary = build_reveal_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &bid, &bid_coin)?;
+    let summary = build_reveal_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &bids)?;
 
     Ok(summary)
 }
@@ -1951,42 +1980,59 @@ pub(crate) fn build_reveal_draft_inner(
     name: &str,
     fee_rate: Option<u64>,
     ns: &NameState,
-    bid: &queries::BidCommitmentRow,
-    bid_coin: &queries::NameCoin,
+    bids: &[(queries::BidCommitmentRow, queries::NameCoin)],
 ) -> Result<TxDraftSummary, AppError> {
+    if bids.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "no unspent bid coin for '{name}' (sync first?)"
+        )));
+    }
     let rate = self::fee_rate(ctx, fee_rate);
     let nh = names::hash_name(name)?;
 
-    let mut nonce = [0u8; 32];
-    let nb = hex::decode(&bid.nonce_hex).map_err(|e| AppError::Crypto(format!("nonce: {e}")))?;
-    if nb.len() != 32 {
-        return Err(AppError::Crypto("stored nonce not 32 bytes".into()));
-    }
-    nonce.copy_from_slice(&nb);
+    // One REVEAL per bid, in ONE transaction. A wallet may hold several bids on
+    // the same name, and each has its own BID coin that only its own REVEAL can
+    // spend — so revealing "the" bid left the rest to expire, and their lockups
+    // with them. The covenants are independent, so they ride together.
+    let mut name_inputs = Vec::with_capacity(bids.len());
+    let mut primaries = Vec::with_capacity(bids.len());
+    for (bid, bid_coin) in bids {
+        let mut nonce = [0u8; 32];
+        let nb =
+            hex::decode(&bid.nonce_hex).map_err(|e| AppError::Crypto(format!("nonce: {e}")))?;
+        if nb.len() != 32 {
+            return Err(AppError::Crypto("stored nonce not 32 bytes".into()));
+        }
+        nonce.copy_from_slice(&nb);
 
-    let cov = covenants::reveal(&nh, ns.height, &nonce);
-    // Reveal output value = the true bid value; output address = the bid coin's
-    // address. The lockup − bid difference returns as change automatically.
-    let res = actions::build_plan(
-        ctx.network,
-        ctx.account,
-        Some(name_input_from(bid_coin.clone())),
-        PrimaryOutput {
+        name_inputs.push(name_input_from(bid_coin.clone()));
+        // Reveal output value = the true bid value; output address = the bid
+        // coin's address. The lockup − bid difference returns as change.
+        primaries.push(PrimaryOutput {
             value: bid.bid_value_doos as u64,
             address: bid_coin.address.clone(),
-            covenant: cov,
-        },
+            covenant: covenants::reveal(&nh, ns.height, &nonce),
+        });
+    }
+
+    let res = actions::build_batch_plan(
+        ctx.network,
+        ctx.account,
+        &name_inputs,
+        &primaries,
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
     let summary = persist_with_conn(conn, &ctx.profile_id, "reveal", name, None, None, &res)?;
-    // Task 1 fix (companion to build_bid_draft): stamp the reveal txid onto
-    // the SAME commitment row (keyed by name — `set_bid_reveal_txid`), so the
-    // reveal-deadline scanner (which reads `reveal_txid`) can see this bid as
-    // resolved. Done under the caller's held lock, right after the draft
-    // persist — `res.txid` is the deterministic pre-signing Handshake txid.
-    queries::set_bid_reveal_txid(conn, &ctx.profile_id, name, &res.txid)?;
+    // Stamp the reveal txid onto each commitment this draft actually reveals —
+    // keyed by its own `blind_hex`, not by name. Keyed by name, one reveal
+    // marked every bid on that name as resolved, and the reveal-deadline
+    // scanner (which reads `reveal_txid`) fell silent on the ones still at
+    // risk. `res.txid` is the deterministic pre-signing Handshake txid.
+    for (bid, _) in bids {
+        queries::set_bid_reveal_txid(conn, &ctx.profile_id, name, &bid.blind_hex, &res.txid)?;
+    }
     Ok(summary)
 }
 
@@ -2706,27 +2752,56 @@ pub async fn build_batch_reveal_draft(
     )> = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
-        // DB reads — lock is held only briefly, dropped before any await.
-        let (bid, bid_coin) = {
-            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-            let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, name)?
-                .ok_or_else(|| AppError::NotFound(format!("no bid commitment for '{}'", name)))?;
-            let coin = queries::find_unspent_covenant_utxo(
-                &conn,
-                &ctx.profile_id,
-                &bid.address,
-                sync::COV_BID as i64,
-                name,
-                &hex::encode(nh),
-            )?
-            .ok_or_else(|| {
-                AppError::NotFound(format!("no unspent bid coin for '{}' (sync first?)", name))
-            })?;
-            (bid, coin)
-        };
-        // Async RPC — no DB lock held here.
+        // Async RPC first — its `height` says which auction is running, and a
+        // bid from an earlier one can no longer be revealed.
         let ns = fetch_name_state(&client, name).await?;
-        per_name.push((name.clone(), nh, bid, bid_coin, ns));
+        // DB reads — lock is held only briefly, dropped before the next await.
+        let bids = {
+            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+            let nh_hex = hex::encode(nh);
+            let auction_start = ns.height as i64;
+            let commitments: Vec<queries::BidCommitmentRow> =
+                queries::list_bid_commitments(&conn, &ctx.profile_id)?
+                    .into_iter()
+                    .filter(|b| &b.name == name)
+                    .filter(|b| {
+                        b.name_start_height
+                            .map(|h| h == auction_start)
+                            .unwrap_or(true)
+                    })
+                    .collect();
+            if commitments.is_empty() {
+                return Err(AppError::NotFound(format!(
+                    "no bid commitment for '{}'",
+                    name
+                )));
+            }
+            let mut out: Vec<(queries::BidCommitmentRow, queries::NameCoin)> = Vec::new();
+            for bid in commitments {
+                if let Some(coin) = queries::find_unspent_covenant_utxo(
+                    &conn,
+                    &ctx.profile_id,
+                    &bid.address,
+                    sync::COV_BID as i64,
+                    name,
+                    &nh_hex,
+                )? {
+                    out.push((bid, coin));
+                }
+            }
+            out
+        };
+        if bids.is_empty() {
+            return Err(AppError::NotFound(format!(
+                "no unspent bid coin for '{}' (sync first?)",
+                name
+            )));
+        }
+        // Every bid on the name, not just its newest — same reason as the
+        // single-name command: each BID coin needs its own REVEAL.
+        for (bid, bid_coin) in bids {
+            per_name.push((name.clone(), nh, bid, bid_coin, ns.clone()));
+        }
     }
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -2755,6 +2830,7 @@ pub(crate) fn build_batch_reveal_draft_inner(
     let mut primaries = Vec::with_capacity(per_name.len());
     let mut name_inputs = Vec::with_capacity(per_name.len());
     let mut batch_names = Vec::with_capacity(per_name.len());
+    let mut stamped: Vec<(String, String)> = Vec::with_capacity(per_name.len());
 
     for (name, nh, bid, bid_coin, ns) in per_name {
         let mut nonce = [0u8; 32];
@@ -2774,6 +2850,7 @@ pub(crate) fn build_batch_reveal_draft_inner(
             address: bid_coin.address.clone(),
             covenant: cov,
         });
+        stamped.push((name.clone(), bid.blind_hex.clone()));
         batch_names.push(name);
     }
 
@@ -2788,7 +2865,7 @@ pub(crate) fn build_batch_reveal_draft_inner(
     )?;
     let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
-    persist_with_conn(
+    let summary = persist_with_conn(
         conn,
         &ctx.profile_id,
         "batch-reveal",
@@ -2796,7 +2873,15 @@ pub(crate) fn build_batch_reveal_draft_inner(
         None,
         Some(&name_refs),
         &res,
-    )
+    )?;
+    // Stamp each commitment this batch reveals. The batch path never did, so
+    // its bids stayed `reveal_txid IS NULL` and the deadline scanner kept
+    // warning about bids it had already revealed — the mirror image of the
+    // single-name path's fault, which marked bids it had NOT revealed.
+    for (name, blind_hex) in stamped {
+        queries::set_bid_reveal_txid(conn, &ctx.profile_id, &name, &blind_hex, &res.txid)?;
+    }
+    Ok(summary)
 }
 
 #[tauri::command]
