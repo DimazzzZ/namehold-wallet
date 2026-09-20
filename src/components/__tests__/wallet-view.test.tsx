@@ -359,9 +359,10 @@ describe("WalletView (non-custodial)", () => {
     expect(await screen.findByText(/\.example/)).toBeInTheDocument();
   });
 
-  /// The whole Owned Names row is clickable, and its cells hold their own
-  /// buttons. Without stopping the click at the button, pressing one ran both
-  /// handlers and two dialogs opened on top of each other.
+  /// An Owned Names row is not clickable as a whole — its actions are its own
+  /// controls. It used to be, and since the cells hold buttons, pressing one
+  /// ran the cell's handler and then the row's as the click bubbled: two
+  /// dialogs, stacked.
   it("clicking a cell button in an Owned Names row opens only that button's dialog", async () => {
     invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
     render(<WalletView />, { wrapper: wrapper() });
@@ -382,6 +383,20 @@ describe("WalletView (non-custodial)", () => {
 
     fireEvent.click(screen.getByLabelText(/^Select example$/i));
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("clicking the row itself does nothing — only its controls act", async () => {
+    invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
+    render(<WalletView />, { wrapper: wrapper() });
+    const nameCell = await screen.findByText(/\.example/);
+
+    const row = nameCell.closest("tr")!;
+    fireEvent.click(row);
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // The row is still reachable — by its own controls.
+    fireEvent.click(screen.getByTestId("owned-name-info-link"));
+    expect(await screen.findAllByRole("dialog")).toHaveLength(1);
   });
 
   it("Recent transactions: a covenant UPDATE shows net Amount 0 (name value carried, not spent), a send shows its amount", async () => {
