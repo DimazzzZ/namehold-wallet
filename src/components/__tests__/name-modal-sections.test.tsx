@@ -50,6 +50,8 @@ function capsFor(over: Record<string, unknown>) {
     taskState: "unavailableOther",
     ownsName: false,
     transferPending: false,
+    redeemableRevealCount: 0,
+    redeemableValueDoos: 0,
     nameIsRegistered: false,
     hasBidCommitment: false,
     hasBidCoin: false,
@@ -141,6 +143,8 @@ describe("NameActionsModal — sections while the auction is still running", () 
     // hsd names the highest revealer as owner long before anyone has won.
     ownsName: true,
     transferPending: false,
+    redeemableRevealCount: 0,
+    redeemableValueDoos: 0,
     nameIsRegistered: false,
     hasOwnerCoin: true,
     hasRevealCoin: true,
@@ -237,6 +241,8 @@ describe("NameActionsModal — sections while a broadcast waits for a block", ()
           taskState: "ownedNoUrgentAction",
           ownsName: true,
           transferPending: false,
+          redeemableRevealCount: 0,
+          redeemableValueDoos: 0,
           nameIsRegistered: true,
           hasOwnerCoin: true,
           canUpdate: ok,
@@ -279,6 +285,8 @@ describe("NameActionsModal — sections on a name the wallet really owns", () =>
           taskState: "ownedNoUrgentAction",
           ownsName: true,
           transferPending: false,
+          redeemableRevealCount: 0,
+          redeemableValueDoos: 0,
           nameIsRegistered: true,
           hasOwnerCoin: true,
           canUpdate: ok,
@@ -345,5 +353,70 @@ describe("NameActionsModal — the Register step", () => {
 
     fireEvent.click(await screen.findByTestId("register-dns-toggle"));
     expect(await screen.findByTestId("dns-rows")).toBeInTheDocument();
+  });
+});
+
+describe("NameActionsModal — the Register step, laid out", () => {
+  const wonRedeemInfo = {
+    name: "wonredeem",
+    state: "CLOSED",
+    height: 100,
+    renewal: 200,
+    owner: { hash: profile.receiveAddress, index: 0 },
+    registered: false,
+    value: 12_000_000,
+    highest: 1_000_000_000,
+    stats: { blocksUntilExpire: 4979, daysUntilExpire: 34.5 },
+  };
+  // Won the name AND holding losing reveals on it — what outbidding yourself
+  // leaves behind, and the state a live wallet was actually in.
+  const wonRedeemCaps = capsFor({
+    name: "wonredeem",
+    taskState: "wonNeedsRegister",
+    ownsName: true,
+    nameIsRegistered: false,
+    hasOwnerCoin: true,
+    hasRevealCoin: true,
+    canRegister: ok,
+    canRedeem: ok,
+    redeemableRevealCount: 3,
+    redeemableValueDoos: 28_000_000,
+    nextActionLabel: "Register Name",
+  });
+
+  async function openAdvanced() {
+    invokeMock.mockImplementation(route(wonRedeemInfo, wonRedeemCaps));
+    render(<NameActionsModal name="wonredeem" open onClose={() => {}} />, { wrapper: wrapper() });
+    await screen.findByText("Register Name");
+    const toggle = screen.queryByTestId("all-actions-toggle");
+    if (toggle) fireEvent.click(toggle);
+  }
+
+  // The disclosure was a bare inline <button> beside the Register <Button>, so
+  // the two shared a line and read as one broken control row.
+  it("puts the optional-records disclosure on its own line, not beside Register", async () => {
+    invokeMock.mockImplementation(route(wonRedeemInfo, wonRedeemCaps));
+    render(<NameActionsModal name="wonredeem" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    const toggle = await screen.findByTestId("register-dns-toggle");
+    const register = screen.getAllByRole("button", { name: "Register" })[0]!;
+    expect(toggle.parentElement).not.toBe(register.parentElement);
+  });
+
+  // Register is the guided step. Repeating it inside the records section gave
+  // two identical live buttons for one action, with nothing to choose between.
+  it("offers Register exactly once while the guided step is showing it", async () => {
+    await openAdvanced();
+    expect(screen.getAllByRole("button", { name: "Register" })).toHaveLength(1);
+  });
+
+  // "Redeem" is a covenant name. On its own it tells the user nothing about
+  // the 28 HNS the wallet is holding for them.
+  it("says what Redeem reclaims, and hides the auction actions that are refused", async () => {
+    await openAdvanced();
+    expect(screen.getByText(/28(\.0+)? HNS/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Redeem" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reveal" })).not.toBeInTheDocument();
   });
 });

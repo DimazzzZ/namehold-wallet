@@ -7,6 +7,7 @@
 // every function degrades to "unknown" rather than throwing.
 
 import type { HsdNameStats, AuctionTaskState, NameActionCapabilities } from "../types";
+import { formatHns } from "./utils";
 
 export type AuctionPhase =
   "AVAILABLE" | "OPENING" | "BIDDING" | "REVEAL" | "CLOSED" | "REVOKED" | "TRANSFER" | "OTHER";
@@ -479,6 +480,21 @@ function actionTitle(action: string): string {
 export function pendingBroadcastText(action: string | null | undefined): string | null {
   if (!action) return null;
   return `${actionTitle(action)} is broadcast and waiting to be mined. Nothing changes on-chain until it lands in a block.`;
+}
+
+/**
+ * What pressing Redeem actually reclaims. "Redeem" names a covenant; on its
+ * own it tells the user nothing about money the wallet is holding for them.
+ * Falls back to the plain sentence when the backend could not total it.
+ */
+export function redeemExplainer(caps: NameActionCapabilities | null | undefined): string {
+  const n = caps?.redeemableRevealCount ?? 0;
+  const doos = caps?.redeemableValueDoos ?? 0;
+  if (n <= 0 || doos <= 0) {
+    return "Reclaim the funds locked in your losing bids on this name.";
+  }
+  const bids = n === 1 ? "losing bid" : "losing bids";
+  return `Reclaim ${formatHns(doos)} HNS locked in ${n} ${bids} on this name.`;
 }
 
 /** The compact form for a list row: "Reveal · waiting for a block". */

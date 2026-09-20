@@ -433,14 +433,19 @@ export function GuidedAction({
                   onRemoveRow={onRemoveRow}
                 />
               ) : (
-                <button
-                  type="button"
-                  className="text-xs text-blue-600 hover:underline"
-                  onClick={() => setShowRegisterDns(true)}
-                  data-testid="register-dns-toggle"
-                >
-                  Add DNS records now (optional)
-                </button>
+                // Block wrapper on purpose: a bare inline <button> next to the
+                // inline-flex Register below shared its line, and the two read
+                // as one broken control row. `space-y-*` only separates blocks.
+                <div>
+                  <button
+                    type="button"
+                    className="text-xs text-blue-600 hover:underline"
+                    onClick={() => setShowRegisterDns(true)}
+                    data-testid="register-dns-toggle"
+                  >
+                    Add DNS records now (optional)
+                  </button>
+                </div>
               )}
               <Button
                 variant="primary"

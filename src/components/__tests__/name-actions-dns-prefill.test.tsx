@@ -36,6 +36,8 @@ const ownedCaps = {
   taskState: "ownedNoUrgentAction",
   ownsName: true,
   transferPending: false,
+  redeemableRevealCount: 0,
+  redeemableValueDoos: 0,
   nameIsRegistered: true,
   hasBidCommitment: false,
   hasRevealCoin: false,

@@ -57,6 +57,8 @@ function baseCaps(name: string, overrides: Record<string, unknown>) {
     ownsName: false,
     nameIsRegistered: false,
     transferPending: false,
+    redeemableRevealCount: 0,
+    redeemableValueDoos: 0,
     hasBidCommitment: false,
     hasRevealCoin: false,
     hasOwnerCoin: false,

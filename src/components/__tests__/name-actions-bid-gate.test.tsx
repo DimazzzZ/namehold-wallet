@@ -46,6 +46,8 @@ function route(phase: "OPENING" | "BIDDING", canBidAllowed: boolean) {
         ownsName: false,
         nameIsRegistered: false,
         transferPending: false,
+        redeemableRevealCount: 0,
+        redeemableValueDoos: 0,
         hasBidCommitment: canBidAllowed ? false : phase === "BIDDING",
         hasBidCoin: false,
         hasRevealCoin: false,

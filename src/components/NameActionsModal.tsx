@@ -43,6 +43,7 @@ import {
   formatCountdown,
   AUCTION_PHASE_GUIDE,
   taskSummaryFromCapabilities,
+  redeemExplainer,
   validateBidInputs,
 } from "../lib/auction";
 import { hnsToDollarydoos } from "../lib/utils";
@@ -886,8 +887,15 @@ export function NameActionsModal({
                   The guided panel above already does this. Use these only if it has fallen out of
                   step with the chain.
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <ActionHint reason={actionReason(caps?.canOpen)}>
+                {/* Only what this stage actually allows. Open / Reveal /
+                    Redeem used to all render here, two of them permanently
+                    greyed, which is the wall of dead controls the section
+                    states exist to remove — and at button granularity it is
+                    worse, because a covenant name with no explanation reads as
+                    a thing the user failed to understand. Each live one says
+                    what pressing it does. */}
+                {caps?.canOpen?.allowed && (
+                  <div className="space-y-1">
                     <Button
                       size="sm"
                       variant="secondary"
@@ -896,8 +904,11 @@ export function NameActionsModal({
                     >
                       {busy === "OPEN" ? "…" : "Open"}
                     </Button>
-                  </ActionHint>
-                  <ActionHint reason={actionReason(caps?.canReveal)}>
+                    <div className="text-xs text-gray-500">Start the auction for this name.</div>
+                  </div>
+                )}
+                {caps?.canReveal?.allowed && (
+                  <div className="space-y-1">
                     <Button
                       size="sm"
                       variant="secondary"
@@ -906,8 +917,13 @@ export function NameActionsModal({
                     >
                       {busy === "REVEAL" ? "…" : "Reveal"}
                     </Button>
-                  </ActionHint>
-                  <ActionHint reason={actionReason(caps?.canRedeem)}>
+                    <div className="text-xs text-gray-500">
+                      Disclose what you bid. Every bid you placed on this name reveals together.
+                    </div>
+                  </div>
+                )}
+                {caps?.canRedeem?.allowed && (
+                  <div className="space-y-1">
                     <Button
                       size="sm"
                       variant="secondary"
@@ -916,8 +932,11 @@ export function NameActionsModal({
                     >
                       {busy === "REDEEM" ? "…" : "Redeem"}
                     </Button>
-                  </ActionHint>
-                </div>
+                    <div className="text-xs text-gray-500" data-testid="redeem-explainer">
+                      {redeemExplainer(caps)}
+                    </div>
+                  </div>
+                )}
               </section>
             )}
 
@@ -995,22 +1014,28 @@ export function NameActionsModal({
                 )}
 
                 <div className="flex gap-2">
-                  <ActionHint
-                    reason={
-                      !recordsFresh
-                        ? "Waiting for a fresh read of the current on-chain records"
-                        : actionReason(caps?.canRegister)
-                    }
-                  >
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={actionDisabled("REGISTER", caps?.canRegister) || !recordsFresh}
-                      onClick={() => submitRecords("REGISTER")}
+                  {/* The guided panel above owns Register whenever it is the
+                      step the name is on. Two identical live buttons for one
+                      action leave the user choosing between them with nothing
+                      to choose on. */}
+                  {caps?.taskState !== "wonNeedsRegister" && (
+                    <ActionHint
+                      reason={
+                        !recordsFresh
+                          ? "Waiting for a fresh read of the current on-chain records"
+                          : actionReason(caps?.canRegister)
+                      }
                     >
-                      {busy === "REGISTER" ? "…" : "Register"}
-                    </Button>
-                  </ActionHint>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={actionDisabled("REGISTER", caps?.canRegister) || !recordsFresh}
+                        onClick={() => submitRecords("REGISTER")}
+                      >
+                        {busy === "REGISTER" ? "…" : "Register"}
+                      </Button>
+                    </ActionHint>
+                  )}
                   <ActionHint
                     reason={
                       !recordsFresh

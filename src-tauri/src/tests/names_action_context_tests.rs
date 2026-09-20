@@ -513,6 +513,42 @@ fn find_name_action_context_does_not_count_a_stranded_coin_as_revealable() {
     );
 }
 
+/// Outbidding yourself leaves you owning the name AND holding losing reveals
+/// on it. "Redeem" names a covenant, not what pressing it does, so the amount
+/// it reclaims travels with the capability.
+#[test]
+fn find_name_action_context_totals_what_a_redeem_would_reclaim() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_REVEAL);
+    // Two losing reveals. No owner coin is recorded, so neither is the winner.
+    seed_tracked_utxo(
+        &conn,
+        "loser1",
+        0,
+        ADDRESS,
+        sync::COV_REVEAL as i64,
+        Some(&cov),
+    );
+    seed_tracked_utxo(
+        &conn,
+        "loser2",
+        0,
+        ADDRESS,
+        sync::COV_REVEAL as i64,
+        Some(&cov),
+    );
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert_eq!(ctx.redeemable_reveal_count, 2);
+    assert_eq!(
+        ctx.redeemable_value_doos, 200_000,
+        "the sum of the coins a REDEEM would spend"
+    );
+}
+
 /// A spent BID coin is a bid that was revealed and settled — nothing stranded.
 #[test]
 fn find_name_action_context_does_not_strand_a_spent_bid() {

@@ -38,6 +38,8 @@ function capsFor(name: string, ownsName: boolean): NameActionCapabilities {
     // Signing proves ownership, which does not exist before REGISTER.
     nameIsRegistered: ownsName,
     transferPending: false,
+    redeemableRevealCount: 0,
+    redeemableValueDoos: 0,
     hasBidCommitment: false,
     hasBidCoin: false,
     hasRevealCoin: false,

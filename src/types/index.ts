@@ -683,6 +683,13 @@ export interface NameActionCapabilities {
    */
   strandedBidCount?: number;
   strandedLockupDoos?: number;
+  /**
+   * Losing reveals a REDEEM would reclaim on this name, and what they are
+   * worth. "Redeem" is a covenant name, not an explanation — the button says
+   * what it reclaims, and this is where the figure comes from.
+   */
+  redeemableRevealCount: number;
+  redeemableValueDoos: number;
 }
 
 // ---------------------------------------------------------------------------

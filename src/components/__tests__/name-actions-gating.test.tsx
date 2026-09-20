@@ -46,6 +46,8 @@ function route(
         ownsName: true,
         nameIsRegistered: false,
         transferPending: false,
+        redeemableRevealCount: 0,
+        redeemableValueDoos: 0,
         hasBidCommitment: false,
         hasRevealCoin: false,
         hasOwnerCoin: true,

@@ -421,6 +421,12 @@ pub struct NameActionCapabilities {
     /// bids panel now that it is scoped to the current auction.
     pub stranded_bid_count: i64,
     pub stranded_lockup_doos: i64,
+    /// Losing reveals on this name that a REDEEM would reclaim, and what they
+    /// are worth. Reported so the button can say what it does: "Redeem" alone
+    /// is a covenant name, not an explanation, and this is money the wallet is
+    /// holding for the user.
+    pub redeemable_reveal_count: i64,
+    pub redeemable_value_doos: i64,
 }
 
 /// Context gathered from the DB for a name action evaluation.
@@ -466,6 +472,8 @@ pub(crate) struct NameActionContext {
     /// losing bids this wallet can still redeem. Several, when it outbid
     /// itself.
     pub redeemable_reveal_count: i64,
+    /// What those reveals are worth together — the sum a REDEEM reclaims.
+    pub redeemable_value_doos: i64,
     /// The `reveal_txid` stamped on the bid commitment row (if any).
     pub reveal_txid: Option<String>,
     /// Status of the local tx_draft matching `reveal_txid` (if one exists).
@@ -587,7 +595,7 @@ pub(crate) fn find_name_action_context(
     // A reveal coin that is NOT the name's owner is a losing bid this wallet
     // can still reclaim. Outbidding yourself leaves exactly this: you own the
     // name AND hold losing reveals on it.
-    let redeemable_reveal_count = reveal_coins
+    let (redeemable_reveal_count, redeemable_value_doos) = reveal_coins
         .iter()
         .filter(|c| {
             owner_coin
@@ -595,7 +603,7 @@ pub(crate) fn find_name_action_context(
                 .map(|o| !(o.txid == c.txid && o.vout == c.vout))
                 .unwrap_or(true)
         })
-        .count() as i64;
+        .fold((0i64, 0i64), |(n, sum), c| (n + 1, sum + c.value as i64));
     let reveal_coin = reveal_coins.into_iter().next();
     let owner_cov_type = owner_coin.as_ref().map(|c| c.covenant_type);
     let nh = owner_coin.as_ref().and_then(|c| c.name_height);
@@ -672,6 +680,7 @@ pub(crate) fn find_name_action_context(
         stranded_bid_count,
         stranded_lockup_doos,
         redeemable_reveal_count,
+        redeemable_value_doos,
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
@@ -1258,6 +1267,8 @@ pub(crate) fn build_name_action_capabilities(
         pending_broadcast_action: action_ctx.pending_broadcast_action.clone(),
         stranded_bid_count: action_ctx.stranded_bid_count,
         stranded_lockup_doos: action_ctx.stranded_lockup_doos,
+        redeemable_reveal_count: action_ctx.redeemable_reveal_count,
+        redeemable_value_doos: action_ctx.redeemable_value_doos,
     }
 }
 
@@ -1309,6 +1320,8 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         pending_broadcast_action: None,
         stranded_bid_count: 0,
         stranded_lockup_doos: 0,
+        redeemable_reveal_count: 0,
+        redeemable_value_doos: 0,
     }
 }
 
@@ -3420,6 +3433,7 @@ mod tests {
             stranded_bid_count: 0,
             stranded_lockup_doos: 0,
             redeemable_reveal_count: 0,
+            redeemable_value_doos: 0,
             reveal_txid: None,
             reveal_draft_status: None,
             bid_value_doos: None,
@@ -4533,6 +4547,7 @@ mod tests {
         let ctx = NameActionContext {
             has_reveal_coin: true,
             redeemable_reveal_count: 1,
+            redeemable_value_doos: 0,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4607,6 +4622,7 @@ mod tests {
         let ctx = NameActionContext {
             has_reveal_coin: true,
             redeemable_reveal_count: 2,
+            redeemable_value_doos: 0,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4634,6 +4650,7 @@ mod tests {
         let ctx = NameActionContext {
             has_reveal_coin: true,
             redeemable_reveal_count: 0,
+            redeemable_value_doos: 0,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(

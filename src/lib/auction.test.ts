@@ -248,6 +248,8 @@ describe("taskSummaryFromCapabilities — genuine-bidding label unification", ()
       ownsName: false,
       nameIsRegistered: false,
       transferPending: false,
+      redeemableRevealCount: 0,
+      redeemableValueDoos: 0,
       hasBidCommitment: true,
       hasBidCoin: true,
       hasRevealCoin: false,
