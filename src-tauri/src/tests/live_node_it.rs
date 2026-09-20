@@ -729,6 +729,114 @@ async fn live_batch_transfer_two_names() {
 // `execute` / `mine_until` / `acquire_name`) and add the small helpers below.
 
 /// Convenience: mine `n` blocks to `addr` (past coinbase maturity when `n>=101`).
+/// Sign and broadcast a draft WITHOUT mining it.
+///
+/// [`execute`] mines immediately, which is right for tests that only care
+/// about the settled state — but it makes the mempool window unobservable, and
+/// that window is exactly where the wallet has to describe a chain that has not
+/// moved yet.
+async fn broadcast_only(app: &tauri::App<tauri::test::MockRuntime>, draft_id: &str) {
+    unlock(app);
+    sign_tx_draft_inner(&app.state(), draft_id)
+        .await
+        .expect("sign");
+    let bc = broadcast_tx_draft(app.state(), draft_id.to_string())
+        .await
+        .expect("broadcast");
+    assert_eq!(bc.status, "broadcasted");
+}
+
+/// Mine one block and bring the wallet's view up to date with it — the other
+/// half of [`broadcast_only`]. Mirrors the tail of [`execute`].
+async fn settle(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    cl: &NodeRpcClient,
+    addr: &str,
+    draft_id: &str,
+) {
+    cl.generate_to_address(1, addr).await.expect("mine 1");
+    refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh confirmations");
+    {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        db::queries::release_reserved_utxos_for_draft(&conn, draft_id).expect("release");
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+}
+
+/// A profile seeded into a FILE-backed DB, which the chain scanner needs: it
+/// reopens the database by path, so an in-memory connection is invisible to it.
+fn file_backed_app(
+    url: &str,
+    key: &str,
+) -> (std::path::PathBuf, tauri::App<tauri::test::MockRuntime>) {
+    let db_path = std::env::temp_dir().join(format!(
+        "namehold_live_{}_{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_file(&db_path);
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    seed_profile_into(&conn, url, key, 0);
+    drop(conn);
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    (db_path.clone(), app_with(conn))
+}
+
+/// Walk the chain scanner over every block, exactly as `run_chain_scanner`
+/// does, then park its cursor at the tip.
+async fn scan_to_tip(cl: &NodeRpcClient, db_path: &std::path::Path) {
+    let tip = cl.get_blockchain_info().await.expect("info").blocks as i64;
+    for height in 1..=tip {
+        crate::commands::chain_scan::scan_block(cl, db_path.to_str().unwrap(), "regtest", height)
+            .await
+            .unwrap_or_else(|e| panic!("scan_block({height}): {e:?}"));
+    }
+    // Its own connection, opened after the walk: the app's `AppState` guard
+    // must not be held across an await.
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    crate::commands::chain_scan::set_scan_cursor(&conn, "regtest", tip).unwrap();
+}
+
+/// The auction's OPEN height as the node reports it right now, or `None` when
+/// the name has no auction at all.
+async fn auction_start(cl: &NodeRpcClient, name: &str) -> Option<i64> {
+    cl.get_name_info(name)
+        .await
+        .ok()?
+        .get("info")?
+        .get("height")?
+        .as_i64()
+}
+
+/// Mine until the node stops reporting an auction for `name` — an auction
+/// nobody revealed in lapses, and the name becomes available again.
+async fn mine_until_auction_lapses(
+    cl: &NodeRpcClient,
+    name: &str,
+    addr: &str,
+    max_blocks: u32,
+) -> bool {
+    let mut mined = 0;
+    while mined < max_blocks {
+        if auction_start(cl, name).await.is_none() {
+            return true;
+        }
+        cl.generate_to_address(5, addr).await.expect("mine");
+        mined += 5;
+    }
+    auction_start(cl, name).await.is_none()
+}
+
 async fn fund(cl: &NodeRpcClient, addr: &str, n: u32) {
     cl.generate_to_address(n, addr).await.expect("mine");
 }
@@ -3558,6 +3666,297 @@ async fn live_chain_scanner_indexes_own_bid() {
     assert_eq!(bids[0]["mine"], true, "our own bid must be marked mine");
     assert_eq!(bids[0]["myValue"], BID_DOOS);
     assert_eq!(val["myBidCount"], 1);
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+// ---------------------------------------------------------------------------
+// Before and after the block.
+//
+// Every status the wallet shows is derived from the chain's view of a name, and
+// between broadcasting and the next block that view has not moved. The unit
+// tests pin each piece against a mock; these drive the real transition on a
+// real node, which is the only way to catch a piece that is right on its own
+// and wrong in sequence.
+// ---------------------------------------------------------------------------
+
+/// A broadcast OPEN is reported as in flight until a block includes it, and
+/// the report clears on its own once one does.
+#[tokio::test]
+async fn live_pending_action_is_reported_until_the_block_lands() {
+    let Some((url, key)) = it_env() else {
+        eprintln!(
+            "skip live_pending_action_is_reported_until_the_block_lands: set HNS_IT_NODE_URL"
+        );
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    fund(&cl, &addr, 101).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("pend{tip}");
+
+    let caps = |n: String| {
+        let state = app.state::<AppState>();
+        async move {
+            crate::commands::names::get_name_action_capabilities(state, n, Some(PROFILE.into()))
+                .await
+                .expect("caps")
+        }
+    };
+
+    // Nothing sent yet.
+    let before = caps(name.clone()).await;
+    assert_eq!(before.pending_broadcast_action, None);
+    // The auction window is the network's, not a hardcoded guess: regtest bids
+    // for 5 blocks and reveals for 10, where mainnet is 720/1440.
+    assert_eq!(before.auction_bidding_blocks, Some(5));
+    assert_eq!(before.auction_reveal_blocks, Some(10));
+
+    // Broadcast the OPEN and STOP — this is the window under test.
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    broadcast_only(&app, &open.id).await;
+
+    let in_flight = caps(name.clone()).await;
+    assert_eq!(
+        in_flight.pending_broadcast_action.as_deref(),
+        Some("open"),
+        "the chain still calls the name available; the wallet must say an open is in flight"
+    );
+    assert_eq!(
+        node_state(&cl, &name).await,
+        None,
+        "precondition: the chain has not moved"
+    );
+
+    // One block, and the wallet should stop talking about a pending action.
+    settle(&app, &cl, &addr, &open.id).await;
+    let mined = caps(name.clone()).await;
+    assert_eq!(
+        mined.pending_broadcast_action, None,
+        "confirmed — nothing is in flight any more"
+    );
+    assert_eq!(node_state(&cl, &name).await.as_deref(), Some("OPENING"));
+
+    // Activity resolves the name for a confirmed OPEN. Only BID's raw name used
+    // to be decoded, so the very first action on a name listed itself with an
+    // empty Name cell.
+    let history = crate::commands::history::read_action_history(app.state(), Some(PROFILE.into()))
+        .await
+        .expect("history");
+    let row = history
+        .iter()
+        .find(|r| r.action == "open" && r.name.as_deref() == Some(name.as_str()));
+    assert!(
+        row.is_some(),
+        "the confirmed OPEN must carry its name: {history:?}"
+    );
+}
+
+/// Our own bid is listed while it is still in the mempool, and the same bid is
+/// then served from the chain index once mined — one row either way, never
+/// zero and never two.
+#[tokio::test]
+async fn live_own_bid_is_pending_before_the_block_and_indexed_after() {
+    let Some((url, key)) = it_env() else {
+        eprintln!(
+            "skip live_own_bid_is_pending_before_the_block_and_indexed_after: set HNS_IT_NODE_URL"
+        );
+        return;
+    };
+    let (db_path, app) = file_backed_app(&url, &key);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    fund(&cl, &addr, 101).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("pbid{tip}");
+
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+
+    // `read_name_bids` only trusts the index once the scanner has passed the
+    // name's auction height, and it reads that height from tracked state.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state)
+             VALUES (?1, ?2, '', 'UNKNOWN')",
+            params![PROFILE, name],
+        )
+        .unwrap();
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    scan_to_tip(&cl, &db_path).await;
+
+    const BID: i64 = 1_000_000;
+    const LOCKUP: i64 = 2_500_000;
+    let bid = build_bid_draft(app.state(), name.clone(), BID, LOCKUP, Some(1))
+        .await
+        .expect("build bid");
+    broadcast_only(&app, &bid.id).await;
+
+    // In the mempool: the index has nothing, but the panel must still show it.
+    let pending =
+        crate::commands::read::read_name_bids(app.state(), name.clone(), Some(PROFILE.to_string()))
+            .await
+            .expect("read bids");
+    let rows = pending["bids"].as_array().expect("bids");
+    assert_eq!(rows.len(), 1, "our own unmined bid: {pending}");
+    assert_eq!(rows[0]["pending"], true);
+    assert_eq!(rows[0]["mine"], true);
+    assert_eq!(rows[0]["lockup"], LOCKUP);
+    assert_eq!(rows[0]["myValue"], BID);
+    assert_eq!(pending["myBidCount"], 1);
+
+    // Mine it and let the scanner index it. Same one bid, now on-chain.
+    settle(&app, &cl, &addr, &bid.id).await;
+    scan_to_tip(&cl, &db_path).await;
+    let mined =
+        crate::commands::read::read_name_bids(app.state(), name.clone(), Some(PROFILE.to_string()))
+            .await
+            .expect("read bids");
+    let rows = mined["bids"].as_array().expect("bids");
+    assert_eq!(rows.len(), 1, "still exactly one — not duplicated: {mined}");
+    assert!(
+        rows[0].get("pending").is_none(),
+        "served from the chain index now, not from the local commitment"
+    );
+    assert_eq!(rows[0]["mine"], true);
+    assert_eq!(rows[0]["lockup"], LOCKUP);
+    assert_eq!(mined["myBidCount"], 1);
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+/// A name whose auction lapsed can be opened again, and the second auction is
+/// clean: its bid list holds only its own bids, and the lockup left behind by
+/// the first is reported as stranded rather than silently dropped.
+#[tokio::test]
+async fn live_reopened_name_scopes_its_bids_and_strands_the_old_lockup() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_reopened_name_scopes_its_bids_and_strands_the_old_lockup: set HNS_IT_NODE_URL");
+        return;
+    };
+    let (db_path, app) = file_backed_app(&url, &key);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    fund(&cl, &addr, 101).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("relap{tip}");
+
+    // --- First auction: open, bid, then walk away without revealing. --------
+    let open1 = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open 1");
+    execute(&app, &cl, &addr, open1.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+    let first_start = auction_start(&cl, &name).await.expect("first auction");
+
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    const OLD_LOCKUP: i64 = 3_000_000;
+    let bid1 = build_bid_draft(app.state(), name.clone(), 1_000_000, OLD_LOCKUP, Some(1))
+        .await
+        .expect("build bid 1");
+    execute(&app, &cl, &addr, bid1.id).await;
+
+    assert!(
+        mine_until_auction_lapses(&cl, &name, &addr, 60).await,
+        "the unrevealed auction must lapse and free the name"
+    );
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // The tracked row must not keep claiming the dead auction's OPEN height —
+    // `read_name_bids` reads it to decide which auction's bids to serve.
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state)
+             VALUES (?1, ?2, '', 'UNKNOWN')",
+            params![PROFILE, name],
+        )
+        .unwrap();
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let lapsed_height: Option<i64> = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.query_row(
+            "SELECT height FROM tracked_name_states WHERE wallet_profile_id = ?1 AND name = ?2",
+            params![PROFILE, name],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        lapsed_height, None,
+        "a lapsed auction leaves no OPEN height"
+    );
+
+    // --- Second auction: the confirmed OPEN coin must not block a reopen. ---
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let open2 = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("a name the chain has freed must be openable again");
+    execute(&app, &cl, &addr, open2.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+    let second_start = auction_start(&cl, &name).await.expect("second auction");
+    assert_ne!(second_start, first_start, "a genuinely new auction");
+
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    const NEW_LOCKUP: i64 = 4_000_000;
+    let bid2 = build_bid_draft(app.state(), name.clone(), 1_500_000, NEW_LOCKUP, Some(1))
+        .await
+        .expect("build bid 2");
+    execute(&app, &cl, &addr, bid2.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    scan_to_tip(&cl, &db_path).await;
+
+    // The bid list belongs to THIS auction only.
+    let bids =
+        crate::commands::read::read_name_bids(app.state(), name.clone(), Some(PROFILE.to_string()))
+            .await
+            .expect("read bids");
+    let rows = bids["bids"].as_array().expect("bids");
+    assert_eq!(
+        rows.len(),
+        1,
+        "the first auction's bid must not appear: {bids}"
+    );
+    assert_eq!(rows[0]["lockup"], NEW_LOCKUP);
+    assert_eq!(bids["myBidCount"], 1);
+
+    // And the lockup the first auction swallowed is reported, not hidden.
+    let caps = crate::commands::names::get_name_action_capabilities(
+        app.state(),
+        name.clone(),
+        Some(PROFILE.into()),
+    )
+    .await
+    .expect("caps");
+    assert_eq!(caps.my_bid_count, 1, "one bid in the live auction");
+    assert_eq!(caps.stranded_bid_count, 1);
+    assert_eq!(
+        caps.stranded_lockup_doos, OLD_LOCKUP,
+        "the unrevealable lockup from the lapsed auction"
+    );
 
     let _ = std::fs::remove_file(&db_path);
 }
