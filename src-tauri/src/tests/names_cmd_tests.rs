@@ -1648,13 +1648,15 @@ async fn capabilities_node_synced_with_owner_coin_allows_spends() {
         let owner_addr = first_derived_address(&conn, &id);
         // A real owner coin: tracked_utxos row at our derived address, referenced
         // by a CLOSED tracked_name_states row → get_name_coin joins it (the
-        // derived_addresses row was seeded by insert_valid_profile).
+        // derived_addresses row was seeded by insert_valid_profile). The coin
+        // carries a REGISTER covenant (6): a name's owner coin always holds a
+        // name covenant, and only a registered one can be spent as owner.
         let owner_txid = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
         conn.execute(
             "INSERT INTO tracked_utxos
                 (txid, vout, wallet_profile_id, address, script_pubkey_hex,
                  value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
-             VALUES (?1, 0, ?2, ?3, '00', 10000, 0, NULL, 'liquid_hns', NULL)",
+             VALUES (?1, 0, ?2, ?3, '00', 10000, 6, NULL, 'name_control', NULL)",
             rusqlite::params![owner_txid, &id, &owner_addr],
         )
         .unwrap();

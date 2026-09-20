@@ -14,6 +14,7 @@ use crate::commands::names::{
     next_action_for_task, AuctionTaskState, NameActionContext,
 };
 use crate::noncustodial::network::Network;
+use crate::noncustodial::sync::{COV_REGISTER, COV_TRANSFER};
 
 /// Helper to construct a minimal `NameActionContext` with all fields set.
 #[allow(clippy::too_many_arguments)]
@@ -896,8 +897,22 @@ fn cap_closed_phase_cannot_register_already_registered() {
 
 #[test]
 fn cap_owned_can_update_transfer_renew_revoke() {
+    // Owned AND registered. A wallet that can spend a name holds a
+    // REGISTER-or-later owner coin; leaving that unset described a state
+    // production never reaches, and the actions are refused without it.
     let action_ctx = ctx(
-        false, false, false, false, None, None, None, 0, false, None, None, None,
+        false,
+        false,
+        false,
+        true,
+        Some(COV_REGISTER as i64),
+        None,
+        None,
+        0,
+        false,
+        None,
+        None,
+        None,
     );
     let caps = build_name_action_capabilities(
         "example".into(),
@@ -979,12 +994,14 @@ fn cap_spend_locked_disables_all_spend_actions() {
 
 #[test]
 fn cap_transfer_phase_can_finalize_with_items() {
+    // A name mid-transfer is registered by definition — its owner coin is a
+    // TRANSFER covenant, which is past REGISTER.
     let action_ctx = ctx(
         false,
         false,
         false,
-        false,
-        None,
+        true,
+        Some(COV_TRANSFER as i64),
         None,
         Some(true),
         0,

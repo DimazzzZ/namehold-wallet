@@ -1004,26 +1004,44 @@ pub(crate) fn build_name_action_capabilities(
         },
     };
 
+    // Owning the name is not enough to spend it. Until REGISTER, the owner coin
+    // is a REVEAL — and hsd lets a REVEAL go only to a REGISTER or a REDEEM
+    // (`rules.verifyCovenants`), so every action below would be refused by the
+    // node. This is reachable in ordinary use: during REVEAL `getnameinfo`
+    // already names the highest revealer as the owner, so the wallet looked
+    // like it owned a name it had not won yet, and offered Update, Transfer,
+    // Renew and Revoke on it.
+    let name_is_registered = action_ctx
+        .owner_covenant_type
+        .map(|t| t >= COV_REGISTER as i64)
+        .unwrap_or(false);
+    let can_spend_as_owner = owns_name && name_is_registered;
+    let not_registered_reason = "the name is not registered yet";
+
     let can_update = NameActionCapability {
-        allowed: owns_name,
+        allowed: can_spend_as_owner,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
+        } else if !name_is_registered {
+            Some(not_registered_reason.into())
         } else {
             None
         },
     };
 
     let can_transfer = NameActionCapability {
-        allowed: owns_name,
+        allowed: can_spend_as_owner,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
+        } else if !name_is_registered {
+            Some(not_registered_reason.into())
         } else {
             None
         },
     };
 
     let can_finalize = NameActionCapability {
-        allowed: owns_name && action_ctx.transfer_has_items.unwrap_or(false),
+        allowed: can_spend_as_owner && action_ctx.transfer_has_items.unwrap_or(false),
         reason: if !owns_name {
             Some("wallet does not control this name".into())
         } else if !action_ctx.transfer_has_items.unwrap_or(false) {
@@ -1034,27 +1052,33 @@ pub(crate) fn build_name_action_capabilities(
     };
 
     let can_cancel_transfer = NameActionCapability {
-        allowed: owns_name,
+        allowed: can_spend_as_owner,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
+        } else if !name_is_registered {
+            Some(not_registered_reason.into())
         } else {
             None
         },
     };
 
     let can_renew = NameActionCapability {
-        allowed: owns_name,
+        allowed: can_spend_as_owner,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
+        } else if !name_is_registered {
+            Some(not_registered_reason.into())
         } else {
             None
         },
     };
 
     let can_revoke = NameActionCapability {
-        allowed: owns_name,
+        allowed: can_spend_as_owner,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
+        } else if !name_is_registered {
+            Some(not_registered_reason.into())
         } else {
             None
         },
@@ -4327,6 +4351,68 @@ mod tests {
     // build_name_action_capabilities — can_redeem
     // ==================================================================
 
+    /// While the auction is still open, the wallet holding the highest reveal
+    /// is the name's owner as far as `getnameinfo` is concerned — but it owns a
+    /// REVEAL coin, and hsd lets a REVEAL go only to a REGISTER or a REDEEM
+    /// (`rules.verifyCovenants`). Every ownership action is therefore invalid,
+    /// and offering one sends the user at a transaction the node will refuse.
+    #[test]
+    fn ownership_actions_need_a_registered_name_not_just_ownership() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REVEAL as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            /* owns_name */ true,
+            false,
+            None,
+            Network::Main,
+        );
+        for (what, cap) in [
+            ("update", &caps.can_update),
+            ("transfer", &caps.can_transfer),
+            ("cancel_transfer", &caps.can_cancel_transfer),
+            ("renew", &caps.can_renew),
+            ("revoke", &caps.can_revoke),
+        ] {
+            assert!(
+                !cap.allowed,
+                "{what} must not be offered on a name that is not registered yet"
+            );
+        }
+    }
+
+    /// The same actions on a genuinely registered name stay available.
+    #[test]
+    fn ownership_actions_stay_available_once_registered() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(caps.can_update.allowed);
+        assert!(caps.can_transfer.allowed);
+        assert!(caps.can_renew.allowed);
+        assert!(caps.can_revoke.allowed);
+    }
+
     #[test]
     fn build_can_redeem_allowed() {
         let ctx = NameActionContext {
@@ -4581,6 +4667,10 @@ mod tests {
     fn build_owner_actions_allowed_when_owned() {
         let ctx = NameActionContext {
             transfer_has_items: Some(true),
+            // A wallet that owns a name it can spend holds a REGISTER-or-later
+            // coin; leaving this unset described a state production never has.
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
