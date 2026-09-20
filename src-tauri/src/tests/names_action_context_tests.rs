@@ -181,7 +181,10 @@ fn find_name_action_context_with_bid_commitment_no_coin() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     seed_bid_commitment(&conn, NAME, name_hash_hex, ADDRESS);
 
     let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
@@ -198,7 +201,10 @@ fn find_name_action_context_with_bid_coin() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     seed_bid_commitment(&conn, NAME, name_hash_hex, ADDRESS);
 
     let covenant_json = serde_json::json!({
@@ -230,7 +236,10 @@ fn find_name_action_context_with_reveal_coin() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     seed_bid_commitment(&conn, NAME, name_hash_hex, ADDRESS);
 
     let covenant_json = serde_json::json!({
@@ -278,7 +287,10 @@ fn find_name_action_context_with_owner_coin() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     let owner_covenant = serde_json::json!({
         "type": 6,
         "action": "REGISTER",
@@ -491,7 +503,10 @@ fn find_name_action_context_multiple_bids() {
     seed_derived_address(&conn, ADDRESS, 0, 0);
     seed_derived_address(&conn, "hs1qother0000000000000000000000000000000", 0, 1);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     seed_bid_commitment(&conn, NAME, name_hash_hex, ADDRESS);
     // Second bid at a different address with a different blind_hex to avoid
     // the uniqueness constraint on (wallet_profile_id, name, blind_hex).
@@ -521,7 +536,10 @@ fn find_name_action_context_with_reveal_txid() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     db::queries::insert_bid_commitment(
         &conn,
         PROFILE,
@@ -555,7 +573,10 @@ fn find_name_action_context_reveal_draft_status() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     db::queries::insert_bid_commitment(
         &conn,
         PROFILE,
@@ -607,7 +628,10 @@ fn find_name_action_context_transfer_with_items() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     let transfer_covenant = serde_json::json!({
         "type": 8,
         "action": "TRANSFER",
@@ -647,7 +671,10 @@ fn find_name_action_context_transfer_without_items() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     let transfer_covenant = serde_json::json!({
         "type": 8,
         "action": "TRANSFER",
@@ -685,7 +712,10 @@ fn find_name_action_context_spent_coins_ignored() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     seed_bid_commitment(&conn, NAME, name_hash_hex, ADDRESS);
 
     let covenant_json = serde_json::json!({

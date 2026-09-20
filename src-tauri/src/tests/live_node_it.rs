@@ -4059,3 +4059,142 @@ async fn live_reveal_covers_every_bid_this_wallet_placed_on_the_name() {
         "{left} of 3 bids left unrevealed — {stranded} doos of lockup is now unreclaimable"
     );
 }
+
+/// Full lifecycle with several bids from ONE wallet, auditing the money at the
+/// end: OPEN → three BIDs → REVEAL → CLOSED → REGISTER the winner → REDEEM the
+/// losers. Nothing may be left stranded.
+///
+/// A wallet that outbids itself is the ordinary case once several bids per name
+/// are allowed: one of its own bids wins and the rest lose, so it has to
+/// register AND redeem. Every stage after BID was written when a wallet could
+/// hold one bid per name, and this walks all of them at once.
+#[tokio::test]
+async fn live_multi_bid_lifecycle_leaves_no_coin_stranded() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_multi_bid_lifecycle_leaves_no_coin_stranded: set HNS_IT_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    fund(&cl, &addr, 101).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("cycle{tip}");
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(&name).unwrap());
+
+    let unspent = |app: &tauri::App<tauri::test::MockRuntime>, cov: u8| {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::find_unspent_covenant_utxos_by_name_hash(&c, PROFILE, cov as i64, &nh_hex)
+            .unwrap()
+            .len()
+    };
+
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+
+    // Three bids from this one wallet. The highest wins; the other two lose and
+    // must be redeemed, by the same wallet that placed them.
+    for (bid_v, lockup) in [
+        (1_000_000i64, 2_000_000i64),
+        (1_500_000, 3_000_000),
+        (1_200_000, 4_000_000),
+    ] {
+        sync_wallet_state(app.state(), None).await.expect("sync");
+        let d = build_bid_draft(app.state(), name.clone(), bid_v, lockup, Some(1))
+            .await
+            .unwrap_or_else(|e| panic!("build bid {bid_v}: {e:?}"));
+        execute(&app, &cl, &addr, d.id).await;
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    assert_eq!(unspent(&app, crate::noncustodial::sync::COV_BID), 3);
+
+    assert!(mine_until(&cl, &name, "REVEAL", &addr, 30).await);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build reveal");
+    execute(&app, &cl, &addr, reveal.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    assert_eq!(
+        unspent(&app, crate::noncustodial::sync::COV_BID),
+        0,
+        "every bid revealed"
+    );
+    assert_eq!(
+        unspent(&app, crate::noncustodial::sync::COV_REVEAL),
+        3,
+        "three reveal coins: one wins the name, two are redeemable"
+    );
+
+    assert!(mine_until(&cl, &name, "CLOSED", &addr, 40).await);
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state)
+             VALUES (?1, ?2, '', 'UNKNOWN')",
+            params![PROFILE, name],
+        )
+        .unwrap();
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // The winning reveal becomes the name coin; register it.
+    let reg = build_register_draft(app.state(), name.clone(), None, Some(1))
+        .await
+        .expect("build register");
+    execute(&app, &cl, &addr, reg.id).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // The command can reclaim them — but the button has to offer it. Owning the
+    // name and holding losing bids on it is the ordinary outcome of outbidding
+    // yourself, so "you own it" must not disqualify the redeem.
+    let caps = crate::commands::names::get_name_action_capabilities(
+        app.state(),
+        name.clone(),
+        Some(PROFILE.into()),
+    )
+    .await
+    .expect("caps");
+    assert!(
+        caps.can_redeem.allowed,
+        "two losing reveals are sitting there; Redeem must be offered: {:?}",
+        caps.can_redeem.reason
+    );
+    // The guided panel is what tells a user what to do next. Registered, with
+    // its own losing lockups still out there, the wallet must point at them —
+    // an enabled button behind an "advanced" toggle is not being told.
+    assert_eq!(
+        caps.task_state,
+        crate::commands::names::AuctionTaskState::LostNeedsRedeem,
+        "registered, two of its own bids lost: the next thing to do is reclaim them"
+    );
+
+    // …and reclaim the two that lost. Whatever the app offers, until it offers
+    // nothing: the user cannot do more than that.
+    for _ in 0..4 {
+        match build_redeem_draft(app.state(), name.clone(), Some(1)).await {
+            Ok(d) => execute(&app, &cl, &addr, d.id).await,
+            // Nothing left to redeem is the expected end state, not a failure.
+            Err(_) => break,
+        }
+        sync_wallet_state(app.state(), None).await.expect("sync");
+    }
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // The audit: a REVEAL coin still unspent is a losing bid whose lockup the
+    // wallet never reclaimed.
+    assert_eq!(
+        unspent(&app, crate::noncustodial::sync::COV_REVEAL),
+        0,
+        "every losing reveal must be redeemable through the app"
+    );
+}
