@@ -66,6 +66,7 @@ import { ReceiveAddressList } from "./ReceiveAddressList";
 import type { NameActionCapabilities, TxDraftSummary } from "../types";
 import { subscribeAction } from "../lib/actionBus";
 import { Tooltip } from "./ui/Tooltip";
+import { fromInteractiveChild } from "../lib/rowClick";
 
 export function WalletView() {
   const qc = useQueryClient();
@@ -1224,7 +1225,12 @@ export function WalletView() {
                             ? "bg-blue-50 ring-1 ring-blue-300"
                             : ""
                         }`}
-                        onClick={() => setManageName(n.name)}
+                        onClick={(e) => {
+                          // The cells hold their own buttons and the select
+                          // box; those clicks bubble here too.
+                          if (fromInteractiveChild(e)) return;
+                          setManageName(n.name);
+                        }}
                       >
                         <td className="py-1 pr-4">
                           <input

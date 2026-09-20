@@ -25,7 +25,10 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="fixed inset-0 bg-black/50" onClick={onClose} />
+      {/* `role="dialog"` and nothing stronger: `aria-modal` would claim the
+          rest of the page is inert, and this component does not trap focus. */}
       <div
+        role="dialog"
         className={`relative bg-white rounded-lg shadow-xl w-full mx-4 max-h-[90vh] overflow-auto ${className ?? "max-w-lg"}`}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b">
