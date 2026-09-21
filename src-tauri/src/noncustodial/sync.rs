@@ -63,11 +63,19 @@ impl SpendClass {
 }
 
 /// Classify a covenant type into a spend class.
+///
+/// The spendable set follows hsd's own coin selector: `Covenant
+/// ::isNonspendable()` returns false for NONE, OPEN and REDEEM, and true for
+/// everything else. REDEEM is the one that matters here — it is a lockup the
+/// wallet has reclaimed, ordinary money again, and grouping it with the name
+/// covenants kept it out of the balance and out of coin selection. OPEN stays
+/// with the name covenants deliberately: hsd would spend it, but it is a
+/// zero-value marker, so counting it as liquid adds an input and no value.
 pub fn classify_covenant(covenant_type: u8) -> SpendClass {
     match covenant_type {
-        COV_NONE => SpendClass::LiquidHns,
+        COV_NONE | COV_REDEEM => SpendClass::LiquidHns,
         COV_BID => SpendClass::NameLockup,
-        COV_CLAIM | COV_OPEN | COV_REVEAL | COV_REDEEM | COV_REGISTER | COV_UPDATE | COV_RENEW
+        COV_CLAIM | COV_OPEN | COV_REVEAL | COV_REGISTER | COV_UPDATE | COV_RENEW
         | COV_TRANSFER | COV_FINALIZE => SpendClass::NameControl,
         // REVOKE and any unknown future type: don't let coin selection touch it.
         _ => SpendClass::Unsupported,
@@ -504,6 +512,33 @@ mod tests {
         assert_eq!(classify_covenant(COV_TRANSFER), SpendClass::NameControl);
         assert_eq!(classify_covenant(COV_REVOKE), SpendClass::Unsupported);
         assert_eq!(classify_covenant(99), SpendClass::Unsupported);
+    }
+
+    /// A REDEEM output is the wallet's money back. hsd's own coin selector
+    /// says so — `Covenant.isNonspendable()` returns false for NONE, OPEN and
+    /// REDEEM alone — so classifying it with the name covenants left a
+    /// reclaimed lockup out of the spendable balance and out of coin
+    /// selection. Found on a live wallet: 28 HNS redeemed from three losing
+    /// bids landed in `name_control` and could not be spent or seen.
+    #[test]
+    fn a_redeemed_lockup_is_ordinary_money_again() {
+        assert_eq!(classify_covenant(COV_REDEEM), SpendClass::LiquidHns);
+    }
+
+    #[test]
+    fn redeemed_value_counts_as_liquid_balance() {
+        let conn = mem_db();
+        upsert_utxo(&conn, "p1", &coin("aa", 0, 1_000_000, None)).unwrap();
+        upsert_utxo(
+            &conn,
+            "p1",
+            &coin("rr", 0, 28_000_000, Some(cov(COV_REDEEM))),
+        )
+        .unwrap();
+
+        let bal = compute_balances(&conn, "p1", Network::Main).unwrap();
+        assert_eq!(bal.liquid, 29_000_000, "the reclaimed lockup is spendable");
+        assert_eq!(bal.name_control, 0);
     }
 
     #[test]

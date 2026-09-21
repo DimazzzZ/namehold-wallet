@@ -212,6 +212,39 @@ fn create_offer(conn: &rusqlite::Connection, name: &str, buyer: &str, price_doos
     .unwrap();
 }
 
+/// A transaction whose every output goes back to the buyer paid nobody.
+/// `find_payment_output` works by exclusion — any output NOT at the buyer's
+/// address and worth at least the price counts — so this is the case that
+/// exclusion exists to catch, and it is worth pinning at the command level
+/// rather than only on the helper.
+#[tokio::test]
+async fn claim_rejects_a_transaction_whose_outputs_all_return_to_the_buyer() {
+    let mut server = mockito::Server::new_async().await;
+    let _tx = server
+        .mock("GET", "/tx/nopay")
+        .with_status(200)
+        .with_body(
+            r#"{"hash":"nopay","confirmations":7,
+                "outputs":[
+                  {"address":"hs1qbuyer","value":5000000}
+                ]}"#,
+        )
+        .create_async()
+        .await;
+
+    let url = server.url();
+    let app = app_with(|conn| {
+        create_offer(conn, "sale", "hs1qbuyer", 1_000_000);
+        db::queries::set_setting(conn, "node_rpc_url", &url).unwrap();
+    });
+
+    let result = claim_paid_transfer(app.state(), "sale".into(), "nopay".into())
+        .await
+        .expect("the tx exists, so the command answers rather than erroring");
+    assert!(!result.verified);
+    assert_eq!(result.paid_doos, 0);
+}
+
 #[tokio::test]
 async fn claim_verifies_and_marks_claimed_on_valid_payment() {
     let mut server = mockito::Server::new_async().await;

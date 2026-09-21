@@ -1739,6 +1739,42 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
 });
 
 describe("WalletView — Owned Names State column", () => {
+  const capsBase = {
+    name: "n",
+    phase: "CLOSED",
+    taskState: "unavailableOther",
+    ownsName: false,
+    nameIsRegistered: false,
+    transferPending: false,
+    redeemableRevealCount: 0,
+    redeemableValueDoos: 0,
+    hasBidCommitment: false,
+    hasBidCoin: false,
+    hasRevealCoin: false,
+    hasOwnerCoin: false,
+    revealTxid: null,
+    bidValueDoos: null,
+    lockupValueDoos: null,
+    myBidCount: 0,
+    canOpen: { allowed: false, reason: null },
+    canBid: { allowed: false, reason: null },
+    canReveal: { allowed: false, reason: null },
+    canRedeem: { allowed: false, reason: null },
+    canRegister: { allowed: false, reason: null },
+    canUpdate: { allowed: false, reason: null },
+    canTransfer: { allowed: false, reason: null },
+    canFinalize: { allowed: false, reason: null },
+    canCancelTransfer: { allowed: false, reason: null },
+    canRenew: { allowed: false, reason: null },
+    canRevoke: { allowed: false, reason: null },
+    nextActionKey: null,
+    nextActionLabel: null,
+    nextActionReason: null,
+    countdownLabel: null,
+    countdownBlocks: null,
+    countdownHours: null,
+  };
+
   // Reported from a live wallet: the table said "Closed" while the modal it
   // opens said "Won — Register Now". Both were reading real data — the raw
   // auction phase and the task state — but a user sees one name described two
@@ -1804,5 +1840,44 @@ describe("WalletView — Owned Names State column", () => {
 
     expect(await screen.findByText("Won — Register Now")).toBeInTheDocument();
     expect(screen.queryByText("Closed")).not.toBeInTheDocument();
+  });
+
+  // Reported live: the row read "Owned" while the modal it opens was headed
+  // "Redeem · waiting for a block". The modal and the auctions list both
+  // defer to what is in flight; this column was the last one still printing
+  // the task as though nothing had been sent.
+  it("defers to what is in flight, like the modal it opens", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_names_action_capabilities") {
+        return Promise.resolve([
+          {
+            ...capsBase,
+            name: "redeeming",
+            taskState: "lostNeedsRedeem",
+            ownsName: true,
+            nameIsRegistered: true,
+            canRedeem: { allowed: true, reason: null },
+            pendingBroadcastAction: "redeem",
+          },
+        ]);
+      }
+      return routeInvoke({
+        names: [
+          {
+            name: "redeeming",
+            state: "CLOSED",
+            height: 100,
+            renewal: 200,
+            owner: { hash: "tx1", index: 0 },
+            registered: true,
+            stats: null,
+          },
+        ],
+      })(cmd);
+    });
+
+    render(<WalletView />, { wrapper: wrapper() });
+
+    expect(await screen.findByText(/waiting for a block/i)).toBeInTheDocument();
   });
 });

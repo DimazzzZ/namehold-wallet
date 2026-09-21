@@ -1086,24 +1086,6 @@ export function NameActionsModal({
                   onCancelTransfer={() => run("CANCEL", () => build.cancel.mutateAsync({ name }))}
                   onRenew={() => run("RENEW", () => build.renew.mutateAsync({ name }))}
                   onRevoke={() => run("REVOKE", () => build.revoke.mutateAsync({ name }))}
-                  onBuyWithPayment={(paymentAddress, paymentValue) =>
-                    run("FINALIZE_WITH_PAYMENT", () =>
-                      build.finalizeWithPayment.mutateAsync({ name, paymentAddress, paymentValue }),
-                    )
-                  }
-                  onSellWithPayment={(buyerAddress, priceValue) =>
-                    run("SELL_WITH_PAYMENT", async () => {
-                      // 1. Record the offer for later claim verification.
-                      await build.sellWithPayment.mutateAsync({
-                        name,
-                        buyerAddress,
-                        priceDoos: priceValue,
-                      });
-                      // 2. Build the transfer draft to the buyer (normal TRANSFER
-                      //    covenant — the payment happens in the buyer's finalize).
-                      return build.transfer.mutateAsync({ name, recipient: buyerAddress });
-                    })
-                  }
                 />
                 {/* Proving ownership belongs to the ownership section, and needs
                   the same registration: a signature over a name the wallet has

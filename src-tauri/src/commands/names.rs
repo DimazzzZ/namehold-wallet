@@ -231,7 +231,20 @@ fn persist_with_conn(
     let summary = ActionSummary {
         action,
         name,
-        send_total_doos: res.plan.outputs[0].value as i64,
+        // Every output the action carries, change excluded — not the first
+        // one. A name action can have several: revealing a name you bid on
+        // more than once emits one REVEAL per bid, and redeeming reclaims one
+        // per losing reveal. Reporting `outputs[0]` made the confirm dialog
+        // offer to reclaim 28 HNS and print 12, which is the one figure a user
+        // checks before signing.
+        send_total_doos: res
+            .plan
+            .outputs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != res.plan.change_output_index)
+            .map(|(_, o)| o.value as i64)
+            .sum(),
         fee_doos: res.fee as i64,
         change_doos: res.change as i64,
         input_total_doos: res.input_total as i64,
@@ -478,6 +491,14 @@ pub(crate) struct NameActionContext {
     /// broadcast and the chain has not mined. We still own the name — we just
     /// cannot spend it until the block lands.
     pub owner_spend_in_flight: bool,
+    /// The block the name's TRANSFER was recorded in (`getnameinfo.transfer`),
+    /// and the wallet's best idea of the tip. Together with the network's
+    /// `transfer_lockup` they say whether a FINALIZE would be accepted: hsd
+    /// refuses one until `transfer + lockup` blocks have passed
+    /// (`bad-finalize-maturity`). `None` means we cannot tell, and an action
+    /// the node would accept must not be refused on a guess.
+    pub transfer_height: Option<i64>,
+    pub current_height: Option<i64>,
     /// The `reveal_txid` stamped on the bid commitment row (if any).
     pub reveal_txid: Option<String>,
     /// Status of the local tx_draft matching `reveal_txid` (if one exists).
@@ -671,8 +692,12 @@ pub(crate) fn find_name_action_context(
     // about ownership.
     let owner_spend_in_flight = owner_coin.is_none()
         && pending_actions.iter().any(|a| {
+            // A batch draft performs the same covenant for several names at
+            // once and records itself as `batch-<action>`; the owner coin is
+            // spent either way. Matching only the singular names reopened this
+            // very bug for the modal's Transfer button, which batches.
             matches!(
-                a.as_str(),
+                a.strip_prefix("batch-").unwrap_or(a),
                 "register"
                     | "update"
                     | "transfer"
@@ -698,6 +723,14 @@ pub(crate) fn find_name_action_context(
     let bid_value_doos = bid.as_ref().map(|b| b.bid_value_doos);
     let lockup_value_doos = bid.as_ref().map(|b| b.lockup_value_doos);
 
+    let tracked_row = queries::get_tracked_name_state(conn, profile_id, name).unwrap_or(None);
+    let transfer_height = tracked_row
+        .as_ref()
+        .and_then(|t| t.transfer_height)
+        .filter(|h| *h > 0);
+    let current_height =
+        crate::commands::read::estimate_persisted_height(conn, profile_id).unwrap_or(None);
+
     Ok(NameActionContext {
         has_bid_commitment: bid.is_some(),
         has_bid_coin: bid_coin.is_some(),
@@ -706,6 +739,8 @@ pub(crate) fn find_name_action_context(
         owner_covenant_type: owner_cov_type,
         name_height: nh,
         transfer_has_items: transfer,
+        transfer_height,
+        current_height,
         existing_bid_count,
         has_pending_open,
         pending_broadcast_action,
@@ -755,7 +790,8 @@ pub async fn get_name_action_capabilities(
         Some(id) => id,
         None => return Ok(conservative_capabilities(&name, "no active wallet profile")),
     };
-    evaluate_name_action_capabilities(&state, name, &profile_id).await
+    let live_tip = crate::commands::read::node_tip_height_if_synced(&state).await;
+    evaluate_name_action_capabilities(&state, name, &profile_id, live_tip).await
 }
 
 /// Max names accepted by [`get_names_action_capabilities`] per call. Each
@@ -797,9 +833,13 @@ pub async fn get_names_action_capabilities(
                 .collect());
         }
     };
+    // Fetched once for the whole batch, not once per name: the only thing it
+    // is needed for is the transfer-lockup countdown, and a stale tip there
+    // refuses a FINALIZE the node would accept.
+    let live_tip = crate::commands::read::node_tip_height_if_synced(&state).await;
     let mut out = Vec::with_capacity(names.len());
     for name in names {
-        out.push(evaluate_name_action_capabilities(&state, name, &profile_id).await?);
+        out.push(evaluate_name_action_capabilities(&state, name, &profile_id, live_tip).await?);
     }
     Ok(out)
 }
@@ -812,6 +852,7 @@ async fn evaluate_name_action_capabilities(
     state: &State<'_, AppState>,
     name: String,
     profile_id: &str,
+    live_tip: Option<i64>,
 ) -> Result<NameActionCapabilities, AppError> {
     // Resolved once for both branches below: the expiry warning threshold and
     // the renewal window are both per-network.
@@ -866,6 +907,13 @@ async fn evaluate_name_action_capabilities(
             };
             let stats = name_info.get("info").and_then(|i| i.get("stats"));
 
+            // The persisted estimate is deliberately conservative — on regtest
+            // it does not age at all — and the transfer-lockup gate is the one
+            // consumer where a stale tip refuses an action the node accepts.
+            let action_ctx = NameActionContext {
+                current_height: live_tip.or(action_ctx.current_height),
+                ..action_ctx
+            };
             let NameOwnership {
                 owns_name,
                 spend_locked,
@@ -922,6 +970,13 @@ async fn evaluate_name_action_capabilities(
                 .as_deref()
                 .map(|s| s.to_uppercase())
                 .unwrap_or_default();
+            // The persisted estimate is deliberately conservative — on regtest
+            // it does not age at all — and the transfer-lockup gate is the one
+            // consumer where a stale tip refuses an action the node accepts.
+            let action_ctx = NameActionContext {
+                current_height: live_tip.or(action_ctx.current_height),
+                ..action_ctx
+            };
             let NameOwnership {
                 owns_name,
                 spend_locked,
@@ -1100,25 +1155,51 @@ pub(crate) fn build_name_action_capabilities(
         },
     };
 
+    // A TRANSFER coin may go to UPDATE, RENEW, FINALIZE or REVOKE — never to
+    // another TRANSFER (`rules.verifyCovenants`). Offering a second one sends
+    // the user at a transaction the node refuses.
     let can_transfer = NameActionCapability {
-        allowed: can_spend_as_owner,
+        allowed: can_spend_as_owner && !transfer_pending,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
         } else if !name_is_registered {
             Some(not_registered_reason.into())
+        } else if transfer_pending {
+            Some("a transfer is already pending — finalize or cancel it first".into())
         } else {
             None
         },
     };
 
+    // hsd refuses a FINALIZE until `transfer + transfer_lockup` blocks have
+    // passed (`bad-finalize-maturity`). A transaction built now lands in the
+    // next block, so the lockup is over once `tip + 1` reaches that height.
+    // With either height unknown we say nothing: refusing an action the node
+    // would accept is its own kind of wrong.
+    let blocks_until_finalize = action_ctx
+        .transfer_height
+        .zip(action_ctx.current_height)
+        .map(|(transfer, tip)| {
+            let ready_at = transfer + network.name_params().transfer_lockup as i64;
+            (ready_at - (tip + 1)).max(0)
+        });
+    let finalize_matured = blocks_until_finalize.map(|b| b == 0).unwrap_or(true);
+
     let can_finalize = NameActionCapability {
-        allowed: can_spend_as_owner && action_ctx.transfer_has_items.unwrap_or(false),
+        allowed: can_spend_as_owner
+            && action_ctx.transfer_has_items.unwrap_or(false)
+            && finalize_matured,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
         } else if !action_ctx.transfer_has_items.unwrap_or(false) {
             Some("name is not in TRANSFER state".into())
         } else {
-            None
+            blocks_until_finalize.filter(|b| *b > 0).map(|blocks| {
+                format!(
+                    "the transfer is still locked for {blocks} more block{}",
+                    if blocks == 1 { "" } else { "s" }
+                )
+            })
         },
     };
 
@@ -1138,12 +1219,18 @@ pub(crate) fn build_name_action_capabilities(
         },
     };
 
+    // Renew is Update's twin here: hsd's RENEW handler runs `ns.setTransfer(0)`
+    // just as UPDATE does (`chain.js`), so extending the registration ends a
+    // transfer in flight without saying so. Cancel the transfer first and the
+    // renewal is one click away; the reverse order loses the transfer silently.
     let can_renew = NameActionCapability {
-        allowed: can_spend_as_owner,
+        allowed: can_spend_as_owner && !transfer_pending,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
         } else if !name_is_registered {
             Some(not_registered_reason.into())
+        } else if transfer_pending {
+            Some("a transfer is pending — renewing would cancel it".into())
         } else {
             None
         },
@@ -1229,6 +1316,7 @@ pub(crate) fn build_name_action_capabilities(
         action_ctx.owner_covenant_type,
         days_until_expire,
         action_ctx.has_pending_open,
+        transfer_pending,
         action_ctx.reveal_txid.as_deref(),
         action_ctx.reveal_draft_status.as_deref(),
         network,
@@ -1436,6 +1524,11 @@ pub fn derive_auction_task_state(
     owner_covenant_type: Option<i64>,
     days_until_expire: Option<f64>,
     has_pending_open: bool,
+    // `transfer_pending`: a TRANSFER is recorded for this name. NOT derivable
+    // from `phase` — hsd's name states are OPENING / LOCKED / BIDDING /
+    // REVEAL / CLOSED / REVOKED (`namestate.js`), and a transfer leaves the
+    // state at CLOSED, signalling itself through `info.transfer` instead.
+    transfer_pending: bool,
     reveal_txid: Option<&str>,
     reveal_draft_status: Option<&str>,
     network: Network,
@@ -1504,6 +1597,12 @@ pub fn derive_auction_task_state(
                 if already_registered {
                     if expiring_soon {
                         AuctionTaskState::ExpiringSoon
+                    } else if transfer_pending {
+                        // Losing the name outranks completing a transfer of
+                        // it, so this sits behind the renewal alarm — but
+                        // ahead of everything quiet, because finalizing is the
+                        // one thing the name is waiting on.
+                        AuctionTaskState::TransferPendingFinalize
                     } else if has_reveal_coin {
                         // Registered, and still holding a REVEAL coin. The
                         // winning one was spent by that REGISTER, so whatever
@@ -1538,7 +1637,8 @@ pub fn derive_auction_task_state(
                 AuctionTaskState::OwnedNoUrgentAction
             }
         }
-        "TRANSFER" => AuctionTaskState::TransferPendingFinalize,
+        // No `"TRANSFER"` arm: hsd has no such state. A transfer is handled
+        // inside CLOSED above, where the node actually reports it.
         "REVOKED" => AuctionTaskState::UnavailableOther,
         _ => {
             if owns_name {
@@ -3508,6 +3608,8 @@ mod tests {
             redeemable_reveal_count: 0,
             redeemable_value_doos: 0,
             owner_spend_in_flight: false,
+            transfer_height: None,
+            current_height: None,
             reveal_txid: None,
             reveal_draft_status: None,
             bid_value_doos: None,
@@ -3541,6 +3643,7 @@ mod tests {
             owner_covenant_type,
             days_until_expire,
             has_pending_open,
+            false,
             reveal_txid,
             reveal_draft_status,
             Network::Main,
@@ -3969,19 +4072,25 @@ mod tests {
 
     #[test]
     fn derive_transfer() {
+        // The node reports CLOSED for a name being transferred — hsd has no
+        // TRANSFER state — and signals the transfer separately, so this goes
+        // through the full derivation rather than the `derive` helper, which
+        // has no transfer to give it.
         assert_eq!(
-            derive(
-                "TRANSFER",
+            derive_auction_task_state(
+                "CLOSED",
                 true,
                 false,
                 false,
                 false,
                 true,
-                Some(9),
+                Some(COV_TRANSFER as i64),
                 None,
                 false,
+                true,
                 None,
-                None
+                None,
+                Network::Main,
             ),
             AuctionTaskState::TransferPendingFinalize
         );
@@ -4586,6 +4695,144 @@ mod tests {
         assert!(o.spend_locked);
     }
 
+    /// Reported live, mid-transfer: the modal's detail panel said "Transfer in
+    /// progress (height 803)" while the status beside it said "Owned".
+    ///
+    /// hsd has six name states — OPENING, LOCKED, BIDDING, REVEAL, CLOSED,
+    /// REVOKED (`namestate.js`) — and TRANSFER is not among them. A transfer
+    /// is signalled by `info.transfer != 0`, with the state left at CLOSED.
+    /// So the `"TRANSFER" =>` arm never fired against a real node and every
+    /// name mid-transfer fell through to "no urgent action" — on a name whose
+    /// one remaining action is to finalize.
+    #[test]
+    fn a_pending_transfer_is_the_task_even_though_hsd_calls_the_state_closed() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            transfer_height: Some(803),
+            current_height: Some(813),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            // Exactly what the node reports for a name being transferred.
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Regtest,
+        );
+        assert!(
+            matches!(caps.task_state, AuctionTaskState::TransferPendingFinalize),
+            "got {:?}",
+            caps.task_state
+        );
+    }
+
+    /// Losing the name outranks completing a transfer of it.
+    #[test]
+    fn an_expiring_name_outranks_its_pending_transfer() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            Some(1.0),
+            Network::Regtest,
+        );
+        assert!(matches!(caps.task_state, AuctionTaskState::ExpiringSoon));
+    }
+
+    /// hsd refuses a FINALIZE until `transfer + transferLockup` blocks have
+    /// passed (`bad-finalize-maturity`, chain.js). Offering the button before
+    /// then sends the user at a transaction the node throws away — the same
+    /// fault the ownership actions had before REGISTER, one stage along.
+    #[test]
+    fn finalize_waits_out_the_transfer_lockup() {
+        // Regtest locks a transfer for 10 blocks. Transferred at 800, so a
+        // finalize is valid in block 810 — i.e. once the tip reaches 809.
+        let mid_lockup = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            transfer_height: Some(800),
+            current_height: Some(805),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "TRANSFER".into(),
+            "TRANSFER",
+            None,
+            &mid_lockup,
+            true,
+            false,
+            None,
+            Network::Regtest,
+        );
+        assert!(!caps.can_finalize.allowed, "still inside the lockup");
+        let reason = caps.can_finalize.reason.unwrap_or_default();
+        assert!(
+            reason.contains("4"),
+            "the reason must say how many blocks are left, got {reason:?}"
+        );
+
+        let matured = NameActionContext {
+            current_height: Some(809),
+            ..mid_lockup
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "TRANSFER".into(),
+            "TRANSFER",
+            None,
+            &matured,
+            true,
+            false,
+            None,
+            Network::Regtest,
+        );
+        assert!(caps.can_finalize.allowed, "the next block may carry it");
+    }
+
+    /// Without heights we cannot say, and refusing an action the node would
+    /// accept is its own kind of wrong. A transfer with no recorded height
+    /// stays offered.
+    #[test]
+    fn finalize_is_not_blocked_when_the_lockup_is_unknown() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "TRANSFER".into(),
+            "TRANSFER",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Regtest,
+        );
+        assert!(caps.can_finalize.allowed);
+    }
+
     /// `LostNeedsRedeem` is reached two ways and only one is a loss. A wallet
     /// that outbid itself owns the name and holds its own losing reveals, and
     /// "Your bid lost" is false for it — on a name it just registered.
@@ -4742,6 +4989,8 @@ mod tests {
             redeemable_reveal_count: 1,
             redeemable_value_doos: 0,
             owner_spend_in_flight: false,
+            transfer_height: None,
+            current_height: None,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4818,6 +5067,8 @@ mod tests {
             redeemable_reveal_count: 2,
             redeemable_value_doos: 0,
             owner_spend_in_flight: false,
+            transfer_height: None,
+            current_height: None,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4847,6 +5098,8 @@ mod tests {
             redeemable_reveal_count: 0,
             redeemable_value_doos: 0,
             owner_spend_in_flight: false,
+            transfer_height: None,
+            current_height: None,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -5075,6 +5328,68 @@ mod tests {
         // The actions that genuinely belong to a pending transfer stay live.
         assert!(caps.can_finalize.allowed);
         assert!(caps.can_cancel_transfer.allowed);
+    }
+
+    /// Renew is the second way to lose a transfer without being told. hsd's
+    /// RENEW handler runs `ns.setTransfer(0)` exactly as UPDATE does
+    /// (`chain.js`), so "extend my registration" quietly ends a transfer in
+    /// flight. Update was gated for this; its twin was not.
+    #[test]
+    fn renew_is_refused_while_a_transfer_is_pending() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(!caps.can_renew.allowed);
+        assert_eq!(
+            caps.can_renew.reason.as_deref(),
+            Some("a transfer is pending — renewing would cancel it")
+        );
+    }
+
+    /// A second transfer is not a thing hsd allows: a TRANSFER coin may go to
+    /// UPDATE, RENEW, FINALIZE or REVOKE and nothing else, so offering
+    /// Transfer here sends the user at a transaction the node refuses.
+    #[test]
+    fn transfer_is_refused_while_a_transfer_is_already_pending() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(!caps.can_transfer.allowed);
+        assert_eq!(
+            caps.can_transfer.reason.as_deref(),
+            Some("a transfer is already pending — finalize or cancel it first")
+        );
+        // Revoking stays available: consensus allows it and it is not a
+        // surprise, it is the button that destroys the name.
+        assert!(caps.can_revoke.allowed);
     }
 
     /// Cancelling needs something to cancel. `can_finalize` has always

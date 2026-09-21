@@ -31,6 +31,7 @@ fn state_no_owner(
         None,
         None,
         false,
+        false,
         None,
         None,
         Network::Main,
@@ -54,6 +55,7 @@ fn state_registered(
         owns_name,
         Some(6),
         None,
+        false,
         false,
         None,
         None,
@@ -79,6 +81,7 @@ fn state_unregistered(
         Some(4),
         None,
         false,
+        false,
         None,
         None,
         Network::Main,
@@ -96,6 +99,7 @@ fn state_registered_days(phase: &str, days: Option<f64>) -> AuctionTaskState {
         true,
         Some(6),
         days,
+        false,
         false,
         None,
         None,
@@ -144,6 +148,7 @@ fn available_with_pending_open_yields_waiting_for_bidding() {
         None,
         None,
         true,
+        false,
         None,
         None,
         Network::Main,
@@ -163,6 +168,7 @@ fn empty_phase_with_pending_open_yields_waiting_for_bidding() {
         None,
         None,
         true,
+        false,
         None,
         None,
         Network::Main,
@@ -183,6 +189,7 @@ fn available_without_pending_open_still_yields_available_to_open() {
         false,
         None,
         None,
+        false,
         false,
         None,
         None,
@@ -254,6 +261,7 @@ fn reveal_state(
         false,
         None,
         None,
+        false,
         false,
         reveal_txid,
         reveal_draft_status,
@@ -362,8 +370,27 @@ fn closed_without_owner_or_reveal_yields_owned_no_urgent_action() {
 }
 
 #[test]
-fn transfer_phase_yields_transfer_pending_finalize() {
-    let state = state_no_owner("TRANSFER", true, false, false, false);
+fn a_recorded_transfer_yields_transfer_pending_finalize() {
+    // Not a phase. hsd's states are OPENING / LOCKED / BIDDING / REVEAL /
+    // CLOSED / REVOKED; a transfer leaves the state at CLOSED and shows
+    // itself through `info.transfer`. Asserting on a "TRANSFER" phase pinned
+    // a string the node never sends, and the real case fell through to
+    // "no urgent action" on a name waiting to be finalized.
+    let state = derive_auction_task_state(
+        "CLOSED",
+        true,
+        false,
+        false,
+        false,
+        true,
+        Some(crate::noncustodial::sync::COV_TRANSFER as i64),
+        None,
+        false,
+        true,
+        None,
+        None,
+        Network::Main,
+    );
     assert_eq!(state, AuctionTaskState::TransferPendingFinalize);
 }
 
@@ -436,6 +463,7 @@ fn explorer_owned_without_owner_coin_within_threshold_yields_expiring_soon() {
         None,
         Some(5.0),
         false,
+        false,
         None,
         None,
         Network::Main,
@@ -456,6 +484,7 @@ fn won_unregistered_within_threshold_still_needs_register_first() {
         Some(4),
         Some(5.0),
         false,
+        false,
         None,
         None,
         Network::Main,
@@ -475,6 +504,7 @@ fn unowned_closed_within_threshold_is_not_expiring_soon() {
         false,
         None,
         Some(5.0),
+        false,
         false,
         None,
         None,
