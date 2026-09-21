@@ -117,7 +117,9 @@ fn read_indexed_bids_filters_by_name_hash_and_orders_by_height() {
     assert_eq!(out[1].revealed, Some(true));
 
     // Unrelated name hash returns nothing (never leaks other names' bids).
-    assert!(read_indexed_bids(&c, NET, START, "nosuchhash").unwrap().is_empty());
+    assert!(read_indexed_bids(&c, NET, START, "nosuchhash")
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

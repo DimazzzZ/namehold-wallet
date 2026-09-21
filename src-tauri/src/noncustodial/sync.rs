@@ -966,7 +966,11 @@ mod tests {
         upsert_name_state(&conn, "p1", "lapsed", &serde_json::json!({ "info": null })).unwrap();
 
         assert_eq!(text("state"), Some("UNKNOWN".to_string()));
-        assert_eq!(num("height"), None, "a lapsed auction leaves no OPEN height");
+        assert_eq!(
+            num("height"),
+            None,
+            "a lapsed auction leaves no OPEN height"
+        );
         assert_eq!(num("renewal_height"), None);
         assert_eq!(num("transfer_height"), None);
         assert_eq!(num("renewals"), None);
