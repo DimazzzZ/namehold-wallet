@@ -88,6 +88,10 @@ impl Harness {
              \techo '{version}'\n\
              \texit 0\n\
              fi\n\
+             # Record the full argv of a node spawn so tests can assert which\n\
+             # network flag (--regtest/--testnet/...) and --prefix hsd was told\n\
+             # to use. Written next to the binary; one line, space-joined.\n\
+             echo \"$@\" > \"$(dirname \"$0\")/fake-hsd-argv.log\"\n\
              {spawn_body}",
         );
 
@@ -105,6 +109,13 @@ impl Harness {
 
     fn data_dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Read back the argv the fake hsd recorded on its last node spawn.
+    /// Returns `None` if the fake was only asked for `--version` (no spawn),
+    /// or if the script hasn't been invoked as a node yet.
+    fn recorded_argv(&self) -> Option<String> {
+        std::fs::read_to_string(self.dir.join("fake-hsd-argv.log")).ok()
     }
 }
 
@@ -224,6 +235,104 @@ async fn start_hsd_spawns_binary_and_reports_connected_when_rpc_answers() {
     }
 
     // Clean up the spawned child so it doesn't linger.
+    stop_hsd(app.state()).await.expect("stop ok");
+}
+
+// ===========================================================================
+// start_hsd: a regtest active profile MUST spawn hsd with `--network=regtest`
+// (not the silent-mainnet bare `--regtest`). This is the tight red-capable loop
+// for the "network selection" bug: if a future refactor drops the network flag,
+// or resolves the wrong profile, this assertion fails. We also assert `--prefix`
+// is the *un-scoped base* (the `hsd_prefix` setting) — hsd itself appends the
+// `regtest` subdir from `--network`, so passing the already-scoped
+// `<base>/regtest` here would double-nest to `<base>/regtest/regtest`.
+// ===========================================================================
+#[tokio::test]
+async fn start_hsd_passes_regtest_flag_and_scoped_prefix_for_regtest_profile() {
+    let (server, _fail, _up) = spawn_then_up_server(1).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, &server.url());
+    // Swap the seeded mainnet profile out for a regtest one.
+    db::queries::insert_wallet_profile(
+        &conn,
+        "p-regtest",
+        "Regtest",
+        "watch_only_xpub",
+        "regtest",
+        "xpub_placeholder",
+        0,
+        true,
+    )
+    .unwrap();
+    db::queries::set_active_profile(&conn, "p-regtest").unwrap();
+
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+    // The un-scoped base we configured as `hsd_prefix`; hsd must receive exactly
+    // this as `--prefix`, then scope itself via `--network`.
+    let base_prefix = h.data_dir().to_str().unwrap().to_string();
+
+    let v = start_hsd(app.state()).await.expect("start_hsd ok");
+    assert_eq!(v["network"], serde_json::json!("regtest"));
+    assert!(state.hsd_child.lock().unwrap().is_some());
+
+    // The child had a moment to run its `echo` before it started sleeping;
+    // the RPC probe loop in start_hsd waits until mockito answers, which is
+    // more than enough time for our one-line echo. Poll briefly just in case.
+    let mut argv: Option<String> = None;
+    for _ in 0..50 {
+        if let Some(s) = h.recorded_argv() {
+            argv = Some(s);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let argv = argv.expect("fake hsd should have recorded its argv");
+
+    // The two must-have facts for a regtest launch:
+    // hsd 8.x only honors the `--network=<name>` form; a bare `--regtest`
+    // is ignored and silently falls back to mainnet (the contamination bug).
+    assert!(
+        argv.contains("--network=regtest"),
+        "hsd was NOT told to run on regtest via --network=; argv was: {argv}"
+    );
+    // The bare positional form must NOT be used — it's the silent-mainnet trap.
+    assert!(
+        !argv.contains("--regtest"),
+        "hsd was spawned with the bare --regtest flag (silent mainnet fallback); argv was: {argv}"
+    );
+    assert!(
+        argv.contains("--prefix="),
+        "hsd was spawned without --prefix; argv was: {argv}"
+    );
+    // The prefix must be the un-scoped *base*, not a hand-scoped
+    // `<base>/regtest`: hsd appends the `regtest` subdir itself from
+    // `--network=regtest`. Passing `<base>/regtest` here would double-nest the
+    // chain to `<base>/regtest/regtest`. Assert the exact base is present and
+    // that no `<base>/regtest` prefix token leaked in.
+    assert!(
+        argv.contains(&format!("--prefix={base_prefix}")),
+        "hsd --prefix was not the un-scoped base ({base_prefix}); argv was: {argv}"
+    );
+    let scoped = std::path::Path::new(&base_prefix).join("regtest");
+    assert!(
+        !argv.contains(&format!("--prefix={}", scoped.to_str().unwrap())),
+        "hsd --prefix was hand-scoped to <base>/regtest (double-nest risk); argv was: {argv}"
+    );
+    // No cross-network flags leaked in.
+    assert!(
+        !argv.contains("--network=testnet"),
+        "unexpected testnet: {argv}"
+    );
+    assert!(
+        !argv.contains("--network=simnet"),
+        "unexpected simnet: {argv}"
+    );
+    assert!(
+        !argv.contains("--network=main"),
+        "unexpected mainnet: {argv}"
+    );
+
     stop_hsd(app.state()).await.expect("stop ok");
 }
 

@@ -3289,11 +3289,25 @@ async fn live_broadcast_guard_rejects_cross_network() {
     let cl = client(&url, &key);
     let (addr, _, _) = leaf00();
     fund(&cl, &addr, 101).await;
-    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    // First guard: the sync path itself refuses a cross-network node before it
+    // writes anything to this profile's cache (a regtest chain's heights and
+    // name states must never seed a mainnet profile). This fires ahead of the
+    // write-capability check below and is the earliest line of defense.
+    let sync_err = sync_wallet_state(app.state(), None)
+        .await
+        .expect_err("sync must refuse a mainnet profile against a regtest node");
+    let sync_msg = format!("{sync_err}");
+    assert!(
+        sync_msg.contains("mainnet") && sync_msg.contains("regtest"),
+        "sync refusal must name the network mismatch: {sync_msg}"
+    );
+
     unlock(&app);
 
-    // Signer unlocked, but node is on regtest while wallet is mainnet →
-    // broadcast must be blocked with a chain-mismatch reason.
+    // Second guard: even with the signer unlocked, write capability must stay
+    // blocked with a chain-mismatch reason — the broadcast path never treats a
+    // regtest node as authoritative for a mainnet wallet.
     let cap = crate::commands::tx::get_write_capability(app.state())
         .await
         .expect("cap");

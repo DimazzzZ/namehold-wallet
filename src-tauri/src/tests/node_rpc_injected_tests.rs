@@ -287,11 +287,27 @@ async fn tip_height_returns_some_when_progress_is_full() {
     );
 }
 
+/// This asserted the superseded rule: a flat `verificationprogress >= 0.9999`
+/// gate, which left a node that had reached the tip stuck because progress can
+/// plateau just under 1.0. The tip is the ground truth now (`chain_synced`),
+/// and progress only has to clear a loose floor — so 99.98% WITH the blocks
+/// caught up to the headers is synced.
 #[tokio::test]
-async fn tip_height_returns_none_when_progress_below_threshold() {
-    // 99.98% is BELOW the 99.99% threshold — still catching up.
+async fn tip_height_trusts_the_tip_over_a_plateaued_progress() {
     let mock =
         MockNodeRpc::new().with_blockchain_info(info(1000, Some(0.9998), Some(1000), Some("main")));
+    assert_eq!(
+        node_tip_height_if_synced_with_client(&mock, None).await,
+        Some(1000)
+    );
+}
+
+/// The case that rule still has to reject: `blocks == headers` on a node whose
+/// headers are nowhere near the real tip, so it has verified almost nothing.
+#[tokio::test]
+async fn tip_height_returns_none_when_headers_match_but_nothing_is_verified() {
+    let mock =
+        MockNodeRpc::new().with_blockchain_info(info(1000, Some(0.08), Some(1000), Some("main")));
     assert_eq!(
         node_tip_height_if_synced_with_client(&mock, None).await,
         None
@@ -1426,4 +1442,40 @@ fn probe_key_empty_when_nothing_stored() {
         resolve_probe_api_key("http://127.0.0.1:12037", None, &s),
         ""
     );
+}
+
+// ---------------------------------------------------------------------------
+// `chain_synced` — the single "is this node synced?" rule behind the read and
+// write gates, the node-status probe and the remote-connection check. It had
+// no direct coverage; the table below pins each branch.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chain_synced_rule_table() {
+    use crate::noncustodial::rpc::chain_synced;
+
+    // Headers reported: the tip decides, progress only clears a loose floor.
+    assert!(chain_synced(1000, Some(1000), Some(1.0), false));
+    assert!(
+        chain_synced(1000, Some(1000), Some(0.9998), false),
+        "plateau"
+    );
+    assert!(chain_synced(1001, Some(1000), Some(0.999), false), "ahead");
+    assert!(!chain_synced(999, Some(1000), Some(1.0), false), "behind");
+    assert!(
+        !chain_synced(1000, Some(1000), Some(0.08), false),
+        "unverified"
+    );
+    // Headers with no progress reported at all: the tip match is enough.
+    assert!(chain_synced(1000, Some(1000), None, false));
+    // A header height of 0 means no sync target yet — never synced.
+    assert!(!chain_synced(0, Some(0), Some(1.0), true));
+
+    // No headers: fall back to the stricter progress-only gate.
+    assert!(chain_synced(1000, None, Some(0.9999), false));
+    assert!(!chain_synced(1000, None, Some(0.9998), false));
+
+    // Nothing reported at all (regtest with a single miner): the caller decides.
+    assert!(chain_synced(1000, None, None, true));
+    assert!(!chain_synced(1000, None, None, false));
 }

@@ -868,26 +868,52 @@ impl BlockchainInfo {
 /// The one "is this node synced?" rule, shared by the read/write gates, the
 /// node-status probe and the remote-node connection check.
 ///
-/// `verificationprogress` is the most reliable signal when present — a node
-/// can report `blocks == headers` while only ~8% verified if it is far behind
-/// the real tip — so it always wins. Without it, fall back to
-/// `blocks >= headers`; a reported header height of 0 means the node has no
-/// sync target yet and is never "synced". When the node reports neither
-/// (older builds, or regtest with a single miner), the answer is
-/// `assume_when_unknown`: callers gating spends on a configured node pass
-/// `true` so regtest keeps working, while a first-contact probe of an unknown
-/// remote node passes `false`.
+/// The chain tip is the ground truth: when the node reports a header height and
+/// the applied `blocks` have caught up to it (`blocks >= headers`), the node is
+/// synced. `verificationprogress` is only a corroborating signal here, because
+/// it can plateau just under 1.0 (e.g. ~0.9997) even after the tip is reached,
+/// which used to leave a fully caught-up node stuck below the old
+/// `>= 0.9999` gate. We still reject the "`blocks == headers` but far behind"
+/// case — a node only ~8% verified hasn't downloaded the real headers yet — by
+/// requiring progress (when reported) to clear a loose `>= 0.999` floor before
+/// trusting the headers match.
+///
+/// When headers are absent (older builds, or a node that doesn't report them),
+/// fall back to `verificationprogress >= 0.9999`. A reported header height of 0
+/// means the node has no sync target yet and is never "synced". When the node
+/// reports neither headers nor progress (regtest with a single miner), the
+/// answer is `assume_when_unknown`: callers gating spends on a configured node
+/// pass `true` so regtest keeps working, while a first-contact probe of an
+/// unknown remote node passes `false`.
+///
+/// Loose floor below which a `blocks == headers` match is distrusted as
+/// "headers not yet at the real tip" (see the ~8%-verified case above).
+const HEADERS_MATCH_PROGRESS_FLOOR: f64 = 0.999;
+/// Progress gate used when the node reports no header height to compare against.
+const PROGRESS_ONLY_SYNCED_GATE: f64 = 0.9999;
 pub fn chain_synced(
     blocks: i64,
     headers: Option<i64>,
     verification_progress: Option<f64>,
     assume_when_unknown: bool,
 ) -> bool {
-    match verification_progress {
-        Some(p) => p >= 0.9999,
-        None => match headers {
-            Some(h) if h > 0 => blocks >= h,
-            Some(_) => false,
+    match headers {
+        // No sync target yet — never synced.
+        Some(h) if h <= 0 => false,
+        // Headers known: the tip is ground truth. Require the applied blocks to
+        // have caught up, and (when progress is reported) that it clears the
+        // loose floor so a "blocks == headers but only 8% verified" node — one
+        // whose headers aren't at the real tip yet — is still rejected.
+        Some(h) => {
+            blocks >= h
+                && verification_progress
+                    .map(|p| p >= HEADERS_MATCH_PROGRESS_FLOOR)
+                    .unwrap_or(true)
+        }
+        // No headers to compare — fall back to the progress-only gate, then to
+        // the caller's default when nothing is reported at all.
+        None => match verification_progress {
+            Some(p) => p >= PROGRESS_ONLY_SYNCED_GATE,
             None => assume_when_unknown,
         },
     }
@@ -974,15 +1000,29 @@ mod tests {
     }
 
     #[test]
-    fn chain_synced_prefers_progress_then_headers_then_callers_default() {
-        // verificationprogress wins even when blocks == headers.
-        assert!(!chain_synced(1_000, Some(1_000), Some(0.08), true));
+    fn chain_synced_uses_headers_tip_then_progress_then_callers_default() {
+        // Headers are ground truth: blocks caught up to the tip is synced even
+        // when verificationprogress plateaus just under 1.0. This is the
+        // regression guard for the "stuck at 99.9%" bug — a fully caught-up
+        // node must not be judged unsynced because progress sits at ~0.9997.
+        assert!(chain_synced(1_000, Some(1_000), Some(0.9997), false));
+        assert!(chain_synced(1_000, Some(1_000), Some(0.999), false));
         assert!(chain_synced(1_000, Some(1_000), Some(0.9999), false));
-        // No progress: fall back to the headers rule.
-        assert!(chain_synced(1_000, Some(1_000), None, false));
+        assert!(chain_synced(1_000, Some(1_000), Some(1.0), false));
+        // ...but "blocks == headers while only ~8% verified" still isn't synced:
+        // the headers themselves aren't at the real tip yet.
+        assert!(!chain_synced(1_000, Some(1_000), Some(0.08), true));
+        assert!(!chain_synced(1_000, Some(1_000), Some(0.9989), true));
+        // Genuinely behind the header tip is never synced, regardless of progress.
+        assert!(!chain_synced(500, Some(1_000), Some(1.0), true));
         assert!(!chain_synced(500, Some(1_000), None, true));
+        // Headers known but no progress reported: trust the headers match.
+        assert!(chain_synced(1_000, Some(1_000), None, false));
         // headers == 0 means "no sync target yet" — never synced.
         assert!(!chain_synced(0, Some(0), None, true));
+        // No headers to compare: fall back to the progress-only gate.
+        assert!(chain_synced(1_000, None, Some(0.9999), false));
+        assert!(!chain_synced(1_000, None, Some(0.9997), true));
         // Nothing reported at all: the caller decides.
         assert!(chain_synced(10, None, None, true));
         assert!(!chain_synced(10, None, None, false));
@@ -990,19 +1030,29 @@ mod tests {
 
     #[test]
     fn blockchain_info_is_synced_delegates_to_chain_synced() {
-        let info = BlockchainInfo {
+        // Behind the header tip → not synced (progress can't override the tip).
+        let behind = BlockchainInfo {
             blocks: 500,
             headers: Some(1_000),
             verification_progress: None,
             chain: Some("main".to_string()),
             bestblockhash: None,
         };
-        assert!(!info.is_synced(true));
-        let info = BlockchainInfo {
+        assert!(!behind.is_synced(true));
+        // A far-behind node claiming 100% progress is still not synced.
+        let behind_but_full_progress = BlockchainInfo {
             verification_progress: Some(1.0),
-            ..info
+            ..behind.clone()
         };
-        assert!(info.is_synced(false));
+        assert!(!behind_but_full_progress.is_synced(false));
+        // Caught up to the tip (blocks == headers) → synced, even when
+        // verificationprogress plateaus just under 1.0.
+        let caught_up = BlockchainInfo {
+            blocks: 1_000,
+            verification_progress: Some(0.9997),
+            ..behind
+        };
+        assert!(caught_up.is_synced(false));
     }
 
     #[test]

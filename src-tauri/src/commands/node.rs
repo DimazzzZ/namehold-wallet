@@ -145,19 +145,39 @@ fn format_version(v: (u32, u32, u32)) -> String {
 
 /// The configured hsd data directory, or hsd's own default (`~/.hsd`) when unset.
 fn resolve_data_dir(state: &AppState) -> Result<String, AppError> {
-    let configured = {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        db::queries::get_settings(&db)?
-            .get("hsd_prefix")
-            .cloned()
-            .unwrap_or_default()
-    };
-    let configured = configured.trim();
-    if !configured.is_empty() {
-        return Ok(configured.to_string());
+    let network = active_profile_network(state);
+    resolve_data_dir_for_network(state, network)
+}
+
+/// Network-scoped data dir. hsd isolates non-mainnet chains *inside* a single
+/// prefix (`<prefix>/regtest`, `<prefix>/testnet`), while mainnet writes
+/// `blocks/chain/tree` at the prefix root — so one shared prefix lets a mainnet
+/// chain at the root sit beside a regtest subdir, the exact overlap that let a
+/// mainnet chain end up driving a regtest wallet.
+///
+/// The fix gives each network its own data-dir *root*: mainnet keeps the base
+/// unchanged (so existing mainnet data is never moved), and every other network
+/// gets `<base>/<network>`. That is the directory the log, RPC, and migration
+/// treat as the chain root. Note this is the *data dir*, not the hsd
+/// `--prefix`: `start_hsd` passes hsd the un-scoped base as `--prefix` and lets
+/// `--network` create exactly this `<base>/<network>` subdir — so hsd's chain
+/// root coincides with this data dir instead of nesting a second time.
+fn resolve_data_dir_for_network(state: &AppState, network: Network) -> Result<String, AppError> {
+    let base = resolve_configured_base(state)?;
+    Ok(network_scoped_data_dir(&base, network))
+}
+
+/// Pure path rule: mainnet → `base` unchanged; any other network → its own
+/// top-level root `base/<network>`. Kept pure (no IO, no state) so the layout
+/// is unit-testable without a filesystem.
+pub(crate) fn network_scoped_data_dir(base: &str, network: Network) -> String {
+    match network {
+        Network::Main => base.to_string(),
+        other => std::path::Path::new(base)
+            .join(other.as_str())
+            .to_string_lossy()
+            .into_owned(),
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    Ok(format!("{home}/.hsd"))
 }
 
 /// Whether the hsd we started this session is still alive. Reaps a child that has
@@ -188,6 +208,12 @@ struct NodeProbe {
     verification_progress: Option<f64>,
     /// Peers' best header height (the sync target), when reported.
     headers: Option<i64>,
+    /// Network the node reports via `getblockchaininfo.chain` (`"main"` /
+    /// `"testnet"` / `"regtest"` / `"simnet"`), when present. Used to refuse a
+    /// node whose chain disagrees with the active profile's network before the
+    /// wallet ever treats it as authoritative — the guard that stops a regtest
+    /// profile adopting (or spawning into) a mainnet chain.
+    chain: Option<String>,
 }
 
 /// Probe hsd RPC and update the `node_rpc_alive` flag on AppState.
@@ -235,6 +261,7 @@ async fn probe_node(state: &AppState) -> Option<NodeProbe> {
             height: info.blocks,
             verification_progress: info.verification_progress,
             headers: info.headers,
+            chain: info.chain,
         })
 }
 
@@ -334,7 +361,38 @@ pub(crate) fn node_start_error(data_dir: &str) -> Option<(String, bool)> {
     let log_path = std::path::Path::new(data_dir).join("namehold-hsd.log");
     let body = std::fs::read_to_string(&log_path).ok()?;
     let body = body.trim();
-    if body.is_empty() || (!body.contains("Error") && !body.contains("error")) {
+    if body.is_empty() {
+        return None;
+    }
+    // hsd logs benign, non-fatal lines that merely contain the substring
+    // "Error" — most notably peer-connection failures while it is still syncing:
+    //   [debug] (net) Error: Socket Error: ECONNREFUSED (1.2.3.4:12038)
+    // Treating any "error" substring as a startup failure cries wolf over a
+    // healthy node that is mid-rescan (its RPC simply hasn't come up yet).
+    // Only lines that signal a real, fatal startup problem count.
+    let is_fatal_startup_line = |line: &str| -> bool {
+        // Peer/network socket errors are routine during sync — never fatal.
+        let networky = line.contains("(net)") || line.contains("(peer)");
+        if networky {
+            return false;
+        }
+        // hsd's own error-level log lines, plus the well-known fatal shapes:
+        //   - "[error]" level entries
+        //   - "Cannot retroactively enable … indexing" (index mismatch)
+        //   - address-in-use / bind failures (another node already on the port)
+        //   - an uncaught error/exception surfacing on startup
+        line.contains("[error]")
+            || line.contains("Cannot ")
+            || line.contains("EADDRINUSE")
+            || line.contains("bind")
+            || line.contains("already in use")
+            || line.contains("address in use")
+            || line.contains("Uncaught")
+            || line.contains("uncaught exception")
+            || line.contains("cannot open")
+            || line.contains("Cannot open")
+    };
+    if !body.lines().any(is_fatal_startup_line) {
         return None;
     }
     let tail: Vec<&str> = body.lines().rev().take(8).collect();
@@ -367,10 +425,30 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     if is_running(&state)? {
         return Err(AppError::Other("hsd is already running.".to_string()));
     }
+    // Refuse rather than default. Spawning hsd is the one place where guessing
+    // mainnet is an action with consequences: it starts a full mainnet chain
+    // sync into a data dir the user prepared for another network, and the
+    // wallet then reads a chain it has nothing on.
+    //
+    // Resolved BEFORE the adopt probe so we can refuse to adopt a node that
+    // is on the wrong chain (a mainnet node accidentally answering on the
+    // profile's port, a leftover from an earlier misconfiguration, etc.).
+    let network = active_profile_network_opt(&state).ok_or_else(|| {
+        AppError::InvalidInput(
+            "no active wallet profile, so there is no network to start a node for — create or \
+             select a wallet first"
+                .to_string(),
+        )
+    })?;
+
     // A node may already be running (e.g. one started in a previous app session,
-    // or the user's own). If its RPC already answers, adopt it — never spawn a
-    // duplicate, which would only collide on the data-dir lock.
+    // or the user's own). If its RPC already answers AND it is on the right
+    // chain for the active profile, adopt it — never spawn a duplicate, which
+    // would only collide on the data-dir lock. A chain mismatch is refused
+    // rather than silently adopted: a wallet talking to the wrong chain would
+    // treat unrelated coins as its own.
     if let Some(probe) = probe_node(&state).await {
+        guard_probe_network(network, probe.chain.as_deref())?;
         state
             .node_rpc_alive
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -378,10 +456,19 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
             "connected": true,
             "process_alive": is_running(&state)?,
             "height": probe.height,
+            "network": network.as_str(),
+            "chain": probe.chain,
         }));
     }
 
     let data_dir = resolve_data_dir(&state)?;
+    // Network isolation migration. `resolve_data_dir` now hands back a
+    // network-scoped root; make sure the on-disk layout matches before we spawn.
+    // Idempotent and non-destructive: it only creates the scoped root and,
+    // where a legacy layout left this network's data elsewhere, relocates it —
+    // but only when the scoped root does not already hold a chain ("do nothing
+    // if we already have"). Mainnet is never touched.
+    migrate_network_prefix(&state, network, &data_dir)?;
     // Use the same effective api-key the RPC client uses (explicit setting, else
     // the data dir's hsd.conf), so the node we start and the node we talk to agree.
     let (api_key, node_mode) = {
@@ -391,17 +478,6 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
         (api_key, node_mode)
     };
-    // Refuse rather than default. Spawning hsd is the one place where guessing
-    // mainnet is an action with consequences: it starts a full mainnet chain
-    // sync into a data dir the user prepared for another network, and the
-    // wallet then reads a chain it has nothing on.
-    let network = active_profile_network_opt(&state).ok_or_else(|| {
-        AppError::InvalidInput(
-            "no active wallet profile, so there is no network to start a node for — create or \
-             select a wallet first"
-                .to_string(),
-        )
-    })?;
 
     // hsd will listen on this network's RPC port, but `node_rpc_url` keeps
     // whatever was seeded — the mainnet 12037. Left alone, the wallet starts a
@@ -454,7 +530,16 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     }
 
     let mut cmd = Command::new(&binary);
-    cmd.arg(format!("--prefix={data_dir}"));
+    // hsd derives the *chain* location from `--prefix` **plus** `--network`:
+    // given `--prefix=<base> --network=regtest` it writes the chain to
+    // `<base>/regtest`. So we hand hsd the un-scoped *base* as the prefix and
+    // let `--network` create the single scoped subdir. Passing the already
+    // network-scoped `data_dir` here would make hsd nest again
+    // (`<base>/regtest/regtest`); this keeps hsd's chain root identical to the
+    // app's `data_dir` (`<base>/regtest`), which the log, RPC, and migration all
+    // assume. Mainnet's base *is* its data dir, so this is a no-op there.
+    let spawn_prefix = resolve_configured_base(&state)?;
+    cmd.arg(format!("--prefix={spawn_prefix}"));
     if !api_key.trim().is_empty() {
         cmd.arg(format!("--api-key={}", api_key.trim()));
     }
@@ -474,18 +559,13 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         cmd.arg("--index-address");
         cmd.arg("--index-tx");
     }
-    match network {
-        Network::Testnet => {
-            cmd.arg("--testnet");
-        }
-        Network::Regtest => {
-            cmd.arg("--regtest");
-        }
-        Network::Simnet => {
-            cmd.arg("--simnet");
-        }
-        Network::Main => {}
-    }
+    // Select the network with the canonical `--network=<name>` form. hsd 8.x
+    // treats bare positional flags like `--regtest` as unknown and SILENTLY
+    // falls back to mainnet — which caused mainnet chains to be written into
+    // regtest-scoped data dirs (repeated `_mainnet-contamination-*` quarantines).
+    // `--network=` is honored for every network, so we pass it unconditionally,
+    // mainnet included, rather than relying on omission.
+    cmd.arg(format!("--network={}", network.as_str()));
     // Capture hsd's output to a log file so a failed start has a visible reason
     // (port busy, bad data dir, network mismatch) instead of vanishing into null.
     let log_path = std::path::Path::new(&data_dir).join("namehold-hsd.log");
@@ -545,6 +625,13 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
             }
         }
         if let Some(probe) = probe_node(&state).await {
+            // The node we spawned answered — confirm it came up on the network we
+            // asked for before reporting success. A mismatch here means the data
+            // dir already held a foreign chain (e.g. a mainnet chain synced into a
+            // regtest prefix root because an earlier launch omitted the network
+            // flag): hsd loaded that chain instead of an empty one. Refuse rather
+            // than report a green "connected" for the wrong chain.
+            guard_probe_network(network, probe.chain.as_deref())?;
             state
                 .node_rpc_alive
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -554,6 +641,7 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
                 "height": probe.height,
                 "data_dir": data_dir,
                 "network": network.as_str(),
+                "chain": probe.chain,
             }));
         }
         sleep(Duration::from_millis(500)).await;
@@ -650,6 +738,171 @@ pub(crate) fn chain_paths_for_network(data_dir: &str, network: Network) -> Vec<s
         Network::Regtest => vec![base.join("regtest")],
         Network::Simnet => vec![base.join("simnet")],
     }
+}
+
+/// Whether a directory looks like it already holds an hsd chain root — i.e. the
+/// mainnet-style root layout hsd writes at a `--prefix` (`chain/` plus one of
+/// `blocks/` or `tree/`). Used by the migration to honor "do nothing if we
+/// already have": a scoped root that already has a chain is left untouched.
+pub(crate) fn dir_has_chain_root(dir: &std::path::Path) -> bool {
+    dir.join("chain").is_dir() && (dir.join("blocks").is_dir() || dir.join("tree").is_dir())
+}
+
+/// What the network-isolation migration should do for one network, decided
+/// purely from three facts so it is unit-testable without a filesystem:
+///   - `is_mainnet`: mainnet keeps the base root and is never migrated;
+///   - `scoped_has_chain`: the scoped root already holds a chain → leave it;
+///   - `legacy_subdir_has_chain`: hsd's native `<base>/<network>/<network>`
+///     subdir (from a run that passed the bare base as prefix) holds a chain
+///     that belongs at the scoped root.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PrefixMigration {
+    /// Mainnet, or scoped root already populated: do nothing.
+    None,
+    /// Scoped root is empty; create it and let hsd sync fresh.
+    CreateScopedRoot,
+    /// Move a legacy native subdir up into the scoped root, then use it.
+    AdoptLegacySubdir,
+}
+
+pub(crate) fn plan_network_migration(
+    is_mainnet: bool,
+    scoped_has_chain: bool,
+    legacy_subdir_has_chain: bool,
+) -> PrefixMigration {
+    if is_mainnet || scoped_has_chain {
+        // Mainnet is off-limits; a populated scoped root is "already have".
+        return PrefixMigration::None;
+    }
+    if legacy_subdir_has_chain {
+        PrefixMigration::AdoptLegacySubdir
+    } else {
+        PrefixMigration::CreateScopedRoot
+    }
+}
+
+/// Apply [`plan_network_migration`] on disk. Idempotent and non-destructive:
+/// it never deletes, never overwrites a populated scoped root, and never
+/// touches mainnet data at the base root (the migration returns `None` for
+/// mainnet before any IO). The broken case that motivated this — a mainnet
+/// chain wrongly synced into a regtest prefix's *root* — is handled by simply
+/// leaving that root alone and giving regtest its own `<base>/regtest` root.
+pub(crate) fn migrate_network_prefix(
+    state: &AppState,
+    network: Network,
+    scoped_dir: &str,
+) -> Result<(), AppError> {
+    // The un-scoped base the user configured (or the `~/.hsd` default).
+    let base = resolve_configured_base(state)?;
+    let scoped = std::path::Path::new(scoped_dir);
+    // hsd's *native* per-network subdir when the bare base was passed as prefix:
+    // `<base>/<network>/<network>`. (`<base>/<network>` is the scoped root; hsd
+    // nests its own network subdir one level deeper.)
+    let legacy_subdir = if matches!(network, Network::Main) {
+        None
+    } else {
+        Some(
+            std::path::Path::new(&base)
+                .join(network.as_str())
+                .join(network.as_str()),
+        )
+    };
+
+    let plan = plan_network_migration(
+        matches!(network, Network::Main),
+        dir_has_chain_root(scoped),
+        legacy_subdir.as_deref().is_some_and(dir_has_chain_root),
+    );
+
+    match plan {
+        PrefixMigration::None => Ok(()),
+        PrefixMigration::CreateScopedRoot => {
+            std::fs::create_dir_all(scoped).map_err(|e| {
+                AppError::Other(format!("cannot create data dir {scoped_dir}: {e}"))
+            })?;
+            Ok(())
+        }
+        PrefixMigration::AdoptLegacySubdir => {
+            // Move the legacy native subdir's contents up one level into the
+            // scoped root. Only reached when the scoped root has no chain, so
+            // there is nothing to clobber.
+            let from = legacy_subdir.expect("AdoptLegacySubdir implies a non-mainnet subdir");
+            std::fs::create_dir_all(scoped).map_err(|e| {
+                AppError::Other(format!("cannot create data dir {scoped_dir}: {e}"))
+            })?;
+            for entry in std::fs::read_dir(&from)
+                .map_err(|e| AppError::Other(format!("cannot read {}: {e}", from.display())))?
+            {
+                let entry =
+                    entry.map_err(|e| AppError::Other(format!("cannot read entry: {e}")))?;
+                let dest = scoped.join(entry.file_name());
+                if dest.exists() {
+                    // Never overwrite; a partially-migrated layout keeps what it has.
+                    continue;
+                }
+                std::fs::rename(entry.path(), &dest).map_err(|e| {
+                    AppError::Other(format!(
+                        "cannot move {} → {}: {e}",
+                        entry.path().display(),
+                        dest.display()
+                    ))
+                })?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// The configured, un-scoped base prefix (`hsd_prefix` setting, else `~/.hsd`).
+/// Split out from [`resolve_data_dir_for_network`] so the migration can reason
+/// about the base independent of the network scoping.
+fn resolve_configured_base(state: &AppState) -> Result<String, AppError> {
+    let configured = {
+        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::get_settings(&db)?
+            .get("hsd_prefix")
+            .cloned()
+            .unwrap_or_default()
+    };
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        return Ok(configured.to_string());
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    Ok(format!("{home}/.hsd"))
+}
+
+/// Verify that a probed node's reported chain matches the active profile's
+/// network. Returns `Ok(())` when they agree or when the node did not report
+/// its chain (older hsd builds); returns a mismatch error otherwise.
+///
+/// This is the one guard that stops a regtest profile from ever treating a
+/// mainnet node as its own — whether that node was adopted at the top of
+/// [`start_hsd`] or was accidentally launched with the wrong network flag.
+/// String comparison via [`network_name_matches`] tolerates the
+/// `"main"` ↔ `"mainnet"` spelling difference between hsd's
+/// `getblockchaininfo.chain` and the wallet profile schema.
+pub(crate) fn guard_probe_network(
+    profile_network: Network,
+    probed_chain: Option<&str>,
+) -> Result<(), AppError> {
+    let reported = match probed_chain {
+        Some(c) if !c.is_empty() => c,
+        // Old hsd builds don't populate `chain` — same "None skips" rule as the
+        // read gate: we cannot validate, so we don't refuse. The user still gets
+        // a chance to notice via node_status once a modern hsd answers.
+        _ => return Ok(()),
+    };
+    if crate::noncustodial::network::network_name_matches(profile_network.as_str(), reported) {
+        return Ok(());
+    }
+    Err(AppError::Other(format!(
+        "node network mismatch: active profile is {profile}, but the node on this port \
+         reports chain {reported}. Refusing to use it — a wallet talking to the wrong \
+         chain would treat unrelated coins as its own. Stop the other node (or point \
+         the profile at its correct RPC port) and try again.",
+        profile = profile_network.as_str(),
+    )))
 }
 
 /// One-click recovery for an index/flag mismatch: stop the managed node, move the

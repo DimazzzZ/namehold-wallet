@@ -914,19 +914,26 @@ function NodeControl({ dirty, hsdPathConfigured }: { dirty: boolean; hsdPathConf
   const connected = status?.connected ?? false;
   const processAlive = status?.process_alive ?? false;
   // "Synced" = chain tip reached (applied blocks caught up to best header).
-  // verificationProgress can plateau just under 1.0 (e.g. ~0.9997 on regtest), so
-  // it's only a fallback when the node doesn't report headers.
+  // verificationProgress can plateau just under 1.0 (e.g. ~0.9997 on regtest),
+  // so a headers match is the ground truth and progress only corroborates it.
+  // Mirrors the backend `chain_synced` rule in src-tauri/.../rpc.rs — keep the
+  // two in sync, or the label will disagree with what reads actually do.
   const height = status?.height ?? null;
   const headers = status?.headers ?? null;
   const progress = status?.verification_progress ?? null;
-  // When verification_progress is available it is the most reliable signal —
-  // a node can report height == headers while still only ~8% verified if it
-  // is far behind the real chain tip. Always gate on progress when present.
+  // Loose floor below which a height == headers match is distrusted as
+  // "headers not yet at the real tip" (the ~8%-verified case).
+  const HEADERS_MATCH_PROGRESS_FLOOR = 0.999;
   const synced =
-    progress != null
-      ? progress >= 0.9999
-      : headers != null && headers > 0
-        ? height != null && height >= headers
+    headers != null && headers > 0
+      ? // Headers known: blocks caught up to the tip, and (when reported)
+        // progress clears the loose floor so a far-behind node stays unsynced.
+        height != null &&
+        height >= headers &&
+        (progress == null || progress >= HEADERS_MATCH_PROGRESS_FLOOR)
+      : // No headers to compare — fall back to the progress-only gate.
+        progress != null
+        ? progress >= 0.9999
         : true;
   const pct =
     progress != null
