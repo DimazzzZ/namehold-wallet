@@ -122,11 +122,7 @@ export function OwnershipActions({
           </Button>
         </ActionHint>
         <ActionHint reason={actionReason(caps?.canRenew)}>
-          <Button
-            size="sm"
-            disabled={actionDisabled("RENEW", caps?.canRenew)}
-            onClick={onRenew}
-          >
+          <Button size="sm" disabled={actionDisabled("RENEW", caps?.canRenew)} onClick={onRenew}>
             {busy === "RENEW" ? "…" : "Renew"}
           </Button>
         </ActionHint>
