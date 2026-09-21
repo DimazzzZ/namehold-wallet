@@ -5,7 +5,13 @@
 //!
 //! Design:
 //! - Runs only while the node is synced (`node_ready_from_settings`).
-//! - Walks blocks from `chain_scan_cursor.last_height + 1` to the node tip.
+//! - Scoped to the active profile's network: both the cursor and the index are
+//!   keyed by it, because a name hashes to the same value on every chain and a
+//!   mainnet cursor height is meaningless against a regtest tip (see 028).
+//! - Scoped to an auction: a name can be auctioned repeatedly, so rows also
+//!   carry the OPEN height the covenant names (see 029).
+//! - Walks blocks from this network's `chain_scan_cursor.last_height + 1` to
+//!   the node tip.
 //! - For each block: `getblock(hash, verbose, verboseTx)` → iterate outputs →
 //!   BID/REVEAL covenants → upsert into `name_bid_outpoints`.
 //! - Advances the cursor per block so it's resumable and never re-scans genesis.
@@ -87,6 +93,21 @@ pub async fn run_chain_scanner(db_path: String) {
             continue;
         }
 
+        // The cursor and the index are network-keyed, so an unknown chain has
+        // nowhere safe to write: attributing it to a default would file, say,
+        // regtest BIDs under mainnet's nameHashes. No profile also means no
+        // caller — `read_name_bids` is per-profile — so idling costs nothing.
+        let scan_network = match expected_network
+            .as_deref()
+            .and_then(crate::noncustodial::network::Network::from_str_opt)
+        {
+            Some(n) => n.as_str(),
+            None => {
+                sleep(NOT_READY_SLEEP).await;
+                continue;
+            }
+        };
+
         // Use per-profile probe if active profile exists; otherwise fall back to global.
         let tip = if let Some(profile_id) = active_profile_id.as_deref() {
             match crate::commands::read::node_tip_height_if_synced_from_profile_with_network(
@@ -125,7 +146,7 @@ pub async fn run_chain_scanner(db_path: String) {
                     continue;
                 }
             };
-            get_scan_cursor(&conn)
+            get_scan_cursor(&conn, scan_network)
         };
 
         if cursor >= tip {
@@ -160,7 +181,10 @@ pub async fn run_chain_scanner(db_path: String) {
 
         let mut advanced_to = cursor;
         for height in (cursor + 1)..=end {
-            if scan_block(&client, &db_path, height).await.is_err() {
+            if scan_block(&client, &db_path, scan_network, height)
+                .await
+                .is_err()
+            {
                 // Transient RPC/DB error — stop this batch, retry next loop.
                 break;
             }
@@ -170,7 +194,7 @@ pub async fn run_chain_scanner(db_path: String) {
         // Advance cursor to the last successfully scanned height.
         if advanced_to > cursor {
             if let Ok(conn) = open_conn(&db_path) {
-                let _ = set_scan_cursor(&conn, advanced_to);
+                let _ = set_scan_cursor(&conn, scan_network, advanced_to);
             }
         }
 
@@ -188,6 +212,7 @@ pub async fn run_chain_scanner(db_path: String) {
 pub(crate) async fn scan_block(
     client: &dyn crate::noncustodial::node_rpc::NodeRpc,
     db_path: &str,
+    network: &str,
     height: i64,
 ) -> Result<(), crate::error::AppError> {
     let hash = client.get_block_hash(height).await?;
@@ -203,11 +228,21 @@ pub(crate) async fn scan_block(
     let mut reveals: Vec<RevealRow> = Vec::new();
 
     for tx in txs {
-        let txid = tx.get("hash").and_then(|h| h.as_str()).unwrap_or_default();
+        // `txid`, NOT `hash`: hsd's `txToJSON` puts the txid in `txid` and the
+        // WITNESS txid in `hash` (`rpc.js` → `tx.txid()` / `tx.wtxid()`), and on
+        // Handshake every signed tx has a witness, so the two always differ.
+        // `bid_commitments.bid_txid` holds the txid, so indexing under the wtxid
+        // meant a bid could never be recognised as the wallet's own.
+        let txid = tx.get("txid").and_then(|h| h.as_str()).unwrap_or_default();
         if txid.is_empty() {
             continue;
         }
-        let outputs = tx.get("outputs").and_then(|o| o.as_array());
+        // `vout`, NOT `outputs`: `getblock` goes through hsd's JSON-RPC layer,
+        // which emits the bitcoind-shaped `vin`/`vout`. Only hsd's REST/HTTP API
+        // uses `inputs`/`outputs` (what `noncustodial::sync` consumes). Reading
+        // `outputs` here made every block parse as empty, so the scanner walked
+        // the whole chain and indexed nothing while the cursor advanced to tip.
+        let outputs = tx.get("vout").and_then(|o| o.as_array());
         let outputs = match outputs {
             Some(o) => o,
             None => continue,
@@ -229,11 +264,34 @@ pub(crate) async fn scan_block(
                 continue;
             }
 
+            // item[1] of both BID and REVEAL is the u32 OPEN height of the
+            // auction (`covenants::bid`/`covenants::reveal`'s `start`). It is
+            // what separates this auction's bids from those of an earlier,
+            // lapsed auction for the same name.
+            let start_height = match items.get(1).and_then(|v| v.as_str()).and_then(u32le_hex) {
+                Some(h) => h as i64,
+                None => continue,
+            };
+
+            // `address` is an object here (`{version, hash, string}`), not the
+            // bare bech32 string the REST API returns. Read the encoded form
+            // hsd hands us; tolerate the flat shape for other node builds.
             let addr = output
                 .get("address")
-                .and_then(|a| a.as_str())
+                .and_then(|a| {
+                    a.get("string")
+                        .and_then(|s| s.as_str())
+                        .or_else(|| a.as_str())
+                })
                 .map(|s| s.to_string());
-            let value = output.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
+            // `value` is HNS as a JSON number (`Amount.coin(value, true)` →
+            // `fixed.toFloat(value, 6)`), not doos. Every consumer of this table
+            // — and `bid_commitments.lockup_value_doos` beside it — is in doos.
+            let value = output
+                .get("value")
+                .and_then(|v| v.as_f64())
+                .map(doos_from_hns)
+                .unwrap_or(0);
 
             match cov_type {
                 COV_BID => {
@@ -247,6 +305,7 @@ pub(crate) async fn scan_block(
                         bid_txid: txid.to_string(),
                         bid_vout: vout as u32,
                         name_hash_hex: name_hash,
+                        name_start_height: start_height,
                         name: raw_name,
                         lockup_value_doos: value,
                         address: addr,
@@ -257,6 +316,7 @@ pub(crate) async fn scan_block(
                     // REVEAL items: [nameHash, u32(height), nonce]
                     reveals.push(RevealRow {
                         name_hash_hex: name_hash,
+                        name_start_height: start_height,
                         reveal_txid: txid.to_string(),
                         reveal_value_doos: value,
                     });
@@ -275,15 +335,18 @@ pub(crate) async fn scan_block(
     for bid in &bids {
         tx.execute(
             "INSERT INTO name_bid_outpoints
-                (bid_txid, bid_vout, name_hash_hex, name, lockup_value_doos, address, height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(bid_txid, bid_vout) DO UPDATE SET
+                (network, bid_txid, bid_vout, name_hash_hex, name,
+                 name_start_height, lockup_value_doos, address, height)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(network, bid_txid, bid_vout) DO UPDATE SET
                 name = COALESCE(excluded.name, name_bid_outpoints.name)",
             params![
+                network,
                 bid.bid_txid,
                 bid.bid_vout,
                 bid.name_hash_hex,
                 bid.name,
+                bid.name_start_height,
                 bid.lockup_value_doos as i64,
                 bid.address,
                 bid.height,
@@ -301,14 +364,17 @@ pub(crate) async fn scan_block(
              SET reveal_txid = ?1, reveal_value_doos = ?2
              WHERE rowid = (
                  SELECT rowid FROM name_bid_outpoints
-                 WHERE name_hash_hex = ?3 AND reveal_txid IS NULL
+                 WHERE network = ?3 AND name_hash_hex = ?4
+                   AND name_start_height = ?5 AND reveal_txid IS NULL
                  ORDER BY height ASC, bid_txid ASC, bid_vout ASC
                  LIMIT 1
              )",
             params![
                 reveal.reveal_txid,
                 reveal.reveal_value_doos as i64,
+                network,
                 reveal.name_hash_hex,
+                reveal.name_start_height,
             ],
         )?;
     }
@@ -316,12 +382,35 @@ pub(crate) async fn scan_block(
     Ok(())
 }
 
+/// Decode a covenant item that holds a `pushU32` value: hex of up to 4
+/// little-endian bytes. Shorter pushes are zero-extended; anything longer is
+/// not a u32 push and yields `None`.
+fn u32le_hex(hex_str: &str) -> Option<u32> {
+    let bytes = hex::decode(hex_str).ok()?;
+    if bytes.len() > 4 {
+        return None;
+    }
+    let mut buf = [0u8; 4];
+    buf[..bytes.len()].copy_from_slice(&bytes);
+    Some(u32::from_le_bytes(buf))
+}
+
+/// Convert an HNS amount as hsd's JSON-RPC reports it (a float with at most 6
+/// decimals) into doos. Exact for every reachable amount: the 2.04e9 HNS supply
+/// cap is 2.04e15 doos, well inside f64's 2^53 exact-integer range.
+fn doos_from_hns(hns: f64) -> u64 {
+    if !hns.is_finite() || hns <= 0.0 {
+        return 0;
+    }
+    (hns * 1_000_000.0).round() as u64
+}
+
 // --- DB helpers (chain_scan_cursor) ------------------------------------------
 
-fn get_scan_cursor(conn: &rusqlite::Connection) -> i64 {
+fn get_scan_cursor(conn: &rusqlite::Connection, network: &str) -> i64 {
     conn.query_row(
-        "SELECT last_height FROM chain_scan_cursor WHERE id = 1",
-        [],
+        "SELECT last_height FROM chain_scan_cursor WHERE network = ?1",
+        params![network],
         |r| r.get(0),
     )
     .unwrap_or(0)
@@ -332,11 +421,13 @@ fn get_scan_cursor(conn: &rusqlite::Connection) -> i64 {
 /// Zero behavior change — only ever called from `run_chain_scanner`.
 pub(crate) fn set_scan_cursor(
     conn: &rusqlite::Connection,
+    network: &str,
     height: i64,
 ) -> Result<(), crate::error::AppError> {
     conn.execute(
-        "UPDATE chain_scan_cursor SET last_height = ?1 WHERE id = 1",
-        params![height],
+        "INSERT INTO chain_scan_cursor (network, last_height) VALUES (?1, ?2)
+         ON CONFLICT(network) DO UPDATE SET last_height = excluded.last_height",
+        params![network, height],
     )?; // COVERAGE: the Err branch of `?` requires a corrupt/closed DB — not unit-testable.
     Ok(())
 }
@@ -347,6 +438,7 @@ struct BidRow {
     bid_txid: String,
     bid_vout: u32,
     name_hash_hex: String,
+    name_start_height: i64,
     name: Option<String>,
     lockup_value_doos: u64,
     address: Option<String>,
@@ -355,6 +447,7 @@ struct BidRow {
 
 struct RevealRow {
     name_hash_hex: String,
+    name_start_height: i64,
     reveal_txid: String,
     reveal_value_doos: u64,
 }
@@ -367,31 +460,40 @@ struct RevealRow {
 /// and return the same JSON the frontend expects.
 pub fn read_indexed_bids(
     conn: &rusqlite::Connection,
+    network: &str,
+    name_start_height: i64,
     name_hash_hex: &str,
 ) -> Result<Vec<crate::hsd::types::HsdBid>, crate::error::AppError> {
     let mut stmt = conn.prepare(
         "SELECT bid_txid, bid_vout, lockup_value_doos, reveal_value_doos, reveal_txid
          FROM name_bid_outpoints
-         WHERE name_hash_hex = ?1
+         WHERE network = ?1 AND name_hash_hex = ?2 AND name_start_height = ?3
          ORDER BY height ASC, bid_txid ASC, bid_vout ASC",
     )?; // COVERAGE: the Err branch of `?` requires a malformed statement / broken DB — not unit-testable.
-    let rows = stmt.query_map(params![name_hash_hex.to_ascii_lowercase()], |r| {
-        let txid: String = r.get(0)?;
-        let index: u32 = r.get::<_, i64>(1)? as u32;
-        let lockup: i64 = r.get(2)?;
-        let reveal_value: Option<i64> = r.get(3)?;
-        let reveal_txid: Option<String> = r.get(4)?;
-        Ok(crate::hsd::types::HsdBid {
-            txid: Some(txid),
-            index: Some(index),
-            lockup: Some(lockup as u64),
-            value: reveal_value.map(|v| v as u64),
-            revealed: Some(reveal_txid.is_some()),
-            win: None,
-            reveal: None,
-            time: None,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![
+            network,
+            name_hash_hex.to_ascii_lowercase(),
+            name_start_height
+        ],
+        |r| {
+            let txid: String = r.get(0)?;
+            let index: u32 = r.get::<_, i64>(1)? as u32;
+            let lockup: i64 = r.get(2)?;
+            let reveal_value: Option<i64> = r.get(3)?;
+            let reveal_txid: Option<String> = r.get(4)?;
+            Ok(crate::hsd::types::HsdBid {
+                txid: Some(txid),
+                index: Some(index),
+                lockup: Some(lockup as u64),
+                value: reveal_value.map(|v| v as u64),
+                revealed: Some(reveal_txid.is_some()),
+                win: None,
+                reveal: None,
+                time: None,
+            })
+        },
+    )?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
@@ -401,6 +503,6 @@ pub fn read_indexed_bids(
 
 /// The scanner's current cursor height. Exposed so `read_name_bids` can tell
 /// whether the scanner has reached the name's auction window yet.
-pub fn scan_cursor_height(conn: &rusqlite::Connection) -> i64 {
-    get_scan_cursor(conn)
+pub fn scan_cursor_height(conn: &rusqlite::Connection, network: &str) -> i64 {
+    get_scan_cursor(conn, network)
 }

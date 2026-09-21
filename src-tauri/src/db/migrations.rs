@@ -43,6 +43,11 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../sql/026_ledger_hardware_profiles.sql"),
     ),
     ("027", include_str!("../sql/027_profile_settings.sql")),
+    (
+        "028",
+        include_str!("../sql/028_chain_scan_network_scope.sql"),
+    ),
+    ("029", include_str!("../sql/029_bid_auction_scope.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -84,7 +89,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 27, "expected 27 migrations, got {count}");
+        assert_eq!(count, 29, "expected 29 migrations, got {count}");
     }
 
     #[test]
@@ -95,7 +100,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 27);
+        assert_eq!(count, 29);
     }
 
     #[test]
