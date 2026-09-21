@@ -219,32 +219,10 @@ describe("NameActionsModal — guided bid form validation (F4)", () => {
   });
 });
 
-describe("NameActionsModal — advanced bid form validation (F4, duplicated form)", () => {
-  async function openAdvanced() {
-    invokeMock.mockImplementation(route());
-    render(<NameActionsModal name="bidname" open onClose={() => {}} />, { wrapper: wrapper() });
-    await screen.findByText("Place a Bid");
-    fireEvent.click(await screen.findByTestId("all-actions-toggle"));
-    await screen.findByTestId("bid-forfeit-warning-advanced");
-  }
-
-  it("shows the forfeit warning in the advanced form too", async () => {
-    await openAdvanced();
-    expect(screen.getByTestId("bid-forfeit-warning-advanced")).toHaveTextContent(/forfeited/i);
-  });
-
-  it("blocks the advanced Bid button when bid > lockup", async () => {
-    await openAdvanced();
-    const bidInputs = screen.getAllByLabelText(/^Bid \(HNS\)/i);
-    const lockupInputs = screen.getAllByLabelText(/Lockup \(HNS\)/i);
-    // The advanced form's inputs are the second occurrence (guided form first).
-    fireEvent.change(bidInputs[bidInputs.length - 1]!, { target: { value: "50" } });
-    fireEvent.change(lockupInputs[lockupInputs.length - 1]!, { target: { value: "5" } });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("lockup-error-advanced")).toHaveTextContent(
-        /lockup must be at least/i,
-      );
-    });
-  });
-});
+// The "advanced bid form" — a second copy of the bid inputs behind the
+// all-actions toggle — was removed in db0bad1, which de-duplicated the form and
+// hid the toggle in BIDDING. The two tests that lived here pinned that removed
+// UI and had been failing since; `BidForm`'s `variant: "advanced"` is now
+// unreachable, so nothing renders `bid-forfeit-warning-advanced` or
+// `lockup-error-advanced`. The guided describe above already covers the same
+// validation: the forfeit warning, and the bid > lockup block.

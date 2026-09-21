@@ -178,8 +178,16 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
       const call = invokeMock.mock.calls.find((c) => c[0] === "read_name_info");
       expect(call?.[1]).toEqual({ name: "xn--e1adigm" });
     });
-    const capsCall = invokeMock.mock.calls.find((c) => c[0] === "get_name_action_capabilities");
-    expect(capsCall?.[1]).toMatchObject({ name: "xn--e1adigm" });
+    // This used to assert that the modal fetched `get_name_action_capabilities`
+    // for the raw name — which `handleOpenManagement`'s cache bridge, added in
+    // the same commit as this test, deliberately prevents: it seeds the single
+    // capability query from the batch the table already holds, so the modal
+    // opens on the row's task state instead of flashing the raw on-chain phase.
+    // The RAW-name routing is already proven above; what is worth pinning here
+    // is the bridge itself, keyed by the raw name so nothing refetches.
+    expect(invokeMock.mock.calls.some((c) => c[0] === "get_name_action_capabilities")).toBe(false);
+    const batchCall = invokeMock.mock.calls.find((c) => c[0] === "get_names_action_capabilities");
+    expect(batchCall?.[1]).toMatchObject({ names: ["xn--e1adigm"] });
   });
 
   it("dedups a position name that's already owned — no double row, not double-counted", async () => {
