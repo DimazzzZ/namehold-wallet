@@ -1155,12 +1155,17 @@ pub(crate) fn build_name_action_capabilities(
         },
     };
 
+    // A TRANSFER coin may go to UPDATE, RENEW, FINALIZE or REVOKE — never to
+    // another TRANSFER (`rules.verifyCovenants`). Offering a second one sends
+    // the user at a transaction the node refuses.
     let can_transfer = NameActionCapability {
-        allowed: can_spend_as_owner,
+        allowed: can_spend_as_owner && !transfer_pending,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
         } else if !name_is_registered {
             Some(not_registered_reason.into())
+        } else if transfer_pending {
+            Some("a transfer is already pending — finalize or cancel it first".into())
         } else {
             None
         },
@@ -1214,12 +1219,18 @@ pub(crate) fn build_name_action_capabilities(
         },
     };
 
+    // Renew is Update's twin here: hsd's RENEW handler runs `ns.setTransfer(0)`
+    // just as UPDATE does (`chain.js`), so extending the registration ends a
+    // transfer in flight without saying so. Cancel the transfer first and the
+    // renewal is one click away; the reverse order loses the transfer silently.
     let can_renew = NameActionCapability {
-        allowed: can_spend_as_owner,
+        allowed: can_spend_as_owner && !transfer_pending,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
         } else if !name_is_registered {
             Some(not_registered_reason.into())
+        } else if transfer_pending {
+            Some("a transfer is pending — renewing would cancel it".into())
         } else {
             None
         },
@@ -5317,6 +5328,68 @@ mod tests {
         // The actions that genuinely belong to a pending transfer stay live.
         assert!(caps.can_finalize.allowed);
         assert!(caps.can_cancel_transfer.allowed);
+    }
+
+    /// Renew is the second way to lose a transfer without being told. hsd's
+    /// RENEW handler runs `ns.setTransfer(0)` exactly as UPDATE does
+    /// (`chain.js`), so "extend my registration" quietly ends a transfer in
+    /// flight. Update was gated for this; its twin was not.
+    #[test]
+    fn renew_is_refused_while_a_transfer_is_pending() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(!caps.can_renew.allowed);
+        assert_eq!(
+            caps.can_renew.reason.as_deref(),
+            Some("a transfer is pending — renewing would cancel it")
+        );
+    }
+
+    /// A second transfer is not a thing hsd allows: a TRANSFER coin may go to
+    /// UPDATE, RENEW, FINALIZE or REVOKE and nothing else, so offering
+    /// Transfer here sends the user at a transaction the node refuses.
+    #[test]
+    fn transfer_is_refused_while_a_transfer_is_already_pending() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(!caps.can_transfer.allowed);
+        assert_eq!(
+            caps.can_transfer.reason.as_deref(),
+            Some("a transfer is already pending — finalize or cancel it first")
+        );
+        // Revoking stays available: consensus allows it and it is not a
+        // surprise, it is the button that destroys the name.
+        assert!(caps.can_revoke.allowed);
     }
 
     /// Cancelling needs something to cancel. `can_finalize` has always
