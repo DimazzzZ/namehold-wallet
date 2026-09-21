@@ -115,7 +115,18 @@ impl Harness {
     /// Returns `None` if the fake was only asked for `--version` (no spawn),
     /// or if the script hasn't been invoked as a node yet.
     fn recorded_argv(&self) -> Option<String> {
-        std::fs::read_to_string(self.dir.join("fake-hsd-argv.log")).ok()
+        // An EMPTY read is not a recording. The fake hsd records with
+        // `echo "$@" > log`, and the shell creates and truncates that file
+        // before `echo` writes a byte into it — so between the two syscalls
+        // the file exists and is empty. Returning `Some("")` there ended the
+        // caller's poll loop on the first tick and left it asserting against
+        // an empty argv, which is the flake this helper caused: about one run
+        // in twenty, with a message claiming hsd was never told its network.
+        let s = std::fs::read_to_string(self.dir.join("fake-hsd-argv.log")).ok()?;
+        if s.trim().is_empty() {
+            return None;
+        }
+        Some(s)
     }
 }
 

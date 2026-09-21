@@ -1,5 +1,6 @@
 use crate::commands::node;
 use crate::noncustodial::network::Network;
+use serial_test::serial;
 use std::path::Path;
 
 #[test]
@@ -144,6 +145,7 @@ fn test_node_start_error_log_with_index_mismatch() {
 // --- hsd_candidates tests ---
 
 #[test]
+#[serial(hsd_home)]
 fn test_hsd_candidates_returns_default_paths() {
     let candidates = node::hsd_candidates();
     // Should always include the two default paths
@@ -154,6 +156,7 @@ fn test_hsd_candidates_returns_default_paths() {
 }
 
 #[test]
+#[serial(hsd_home)]
 fn test_hsd_candidates_includes_home_paths() {
     // If HOME is set, should include home-based paths
     if std::env::var("HOME").is_ok() {
@@ -174,12 +177,14 @@ fn test_hsd_candidates_includes_home_paths() {
 // --- find_hsd_binary tests ---
 
 #[test]
+#[serial(hsd_home)]
 fn test_find_hsd_binary_with_override() {
     let result = node::find_hsd_binary(Some("/custom/hsd"));
     assert_eq!(result, "/custom/hsd");
 }
 
 #[test]
+#[serial(hsd_home)]
 fn test_find_hsd_binary_with_empty_override() {
     // Empty override should fall through to candidates/which
     let result = node::find_hsd_binary(Some(""));
@@ -188,6 +193,7 @@ fn test_find_hsd_binary_with_empty_override() {
 }
 
 #[test]
+#[serial(hsd_home)]
 fn test_find_hsd_binary_with_none() {
     // None override should use candidates/which
     let result = node::find_hsd_binary(None);
@@ -198,12 +204,14 @@ fn test_find_hsd_binary_with_none() {
 // --- find_hsd_binary additional tests ---
 
 #[test]
+#[serial(hsd_home)]
 fn test_find_hsd_binary_override_whitespace_falls_through() {
     let result = node::find_hsd_binary(Some("  "));
     assert!(!result.is_empty());
 }
 
 #[test]
+#[serial(hsd_home)]
 fn test_find_hsd_binary_override_with_path() {
     let result = node::find_hsd_binary(Some("/usr/local/bin/hsd"));
     assert_eq!(result, "/usr/local/bin/hsd");
@@ -212,6 +220,7 @@ fn test_find_hsd_binary_override_with_path() {
 // --- hsd_candidates edge cases ---
 
 #[test]
+#[serial(hsd_home)]
 fn test_hsd_candidates_does_not_contain_duplicates() {
     let candidates = node::hsd_candidates();
     let mut sorted = candidates.clone();
@@ -344,6 +353,7 @@ fn test_version_prerelease_of_min_is_accepted() {
 // --- hsd_candidates: nvm-managed node discovery loop -------------------------
 
 #[test]
+#[serial(hsd_home)]
 fn test_hsd_candidates_discovers_nvm_managed_hsd() {
     // The nvm branch (`~/.nvm/versions/node/<ver>/bin/hsd`) only runs when that
     // directory tree exists AND contains an hsd binary — otherwise the loop is
@@ -375,6 +385,7 @@ fn test_hsd_candidates_discovers_nvm_managed_hsd() {
 // --- find_hsd_binary: which/PATH fallback (no matching candidate) ------------
 
 #[test]
+#[serial(hsd_home)]
 fn test_find_hsd_binary_none_override_returns_nonempty() {
     // With no override and (typically) no installed hsd on a CI box, this walks
     // candidates → `which hsd` → the bare "hsd" fallback. Whichever branch wins,
