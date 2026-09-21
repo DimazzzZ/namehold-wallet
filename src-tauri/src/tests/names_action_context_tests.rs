@@ -465,6 +465,165 @@ fn find_name_action_context_reports_a_stranded_bid_from_a_lapsed_auction() {
     assert_eq!(own.stranded_bid_count, 0);
 }
 
+/// Reported from a live regtest wallet: Reveal stayed enabled on a name whose
+/// bids had all been revealed, and failed every time with "no unspent bid
+/// coin". `has_bid_coin` was resolved by name hash across the whole profile
+/// while the reveal draft resolves it from the commitments of THIS auction, so
+/// a lockup stranded in a lapsed auction — unspendable by definition — kept
+/// answering "yes, there is a bid coin" forever.
+#[test]
+fn find_name_action_context_does_not_count_a_stranded_coin_as_revealable() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let other = "rs1qotheraddressfortheliveauctionbid00000000";
+    seed_derived_address(&conn, other, 0, 1);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_BID);
+
+    // A lapsed auction's bid whose BID coin is still sitting there.
+    seed_bid_commitment(&conn, NAME, &nh_hex, ADDRESS);
+    db::queries::set_auction_heights(&conn, PROFILE, "blind", 111, 132).unwrap();
+    seed_tracked_utxo(
+        &conn,
+        "oldbid",
+        0,
+        ADDRESS,
+        sync::COV_BID as i64,
+        Some(&cov),
+    );
+
+    // This auction's bid, already revealed — its BID coin is spent, so none is
+    // seeded for it.
+    db::queries::insert_bid_commitment(
+        &conn, PROFILE, NAME, &nh_hex, other, 0, 0, 1_000_000, 3_000_000, "nonce2", "blind2",
+    )
+    .unwrap();
+    db::queries::set_auction_heights(&conn, PROFILE, "blind2", 779, 800).unwrap();
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert_eq!(ctx.existing_bid_count, 1, "one bid belongs to this auction");
+    assert_eq!(
+        ctx.stranded_bid_count, 1,
+        "and one is stranded in the old one"
+    );
+    assert!(
+        !ctx.has_bid_coin,
+        "nothing left to reveal in this auction — the stranded coin is not revealable"
+    );
+}
+
+/// Outbidding yourself leaves you owning the name AND holding losing reveals
+/// on it. "Redeem" names a covenant, not what pressing it does, so the amount
+/// it reclaims travels with the capability.
+#[test]
+fn find_name_action_context_totals_what_a_redeem_would_reclaim() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_REVEAL);
+    // Two losing reveals. No owner coin is recorded, so neither is the winner.
+    seed_tracked_utxo(
+        &conn,
+        "loser1",
+        0,
+        ADDRESS,
+        sync::COV_REVEAL as i64,
+        Some(&cov),
+    );
+    seed_tracked_utxo(
+        &conn,
+        "loser2",
+        0,
+        ADDRESS,
+        sync::COV_REVEAL as i64,
+        Some(&cov),
+    );
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert_eq!(ctx.redeemable_reveal_count, 2);
+    assert_eq!(
+        ctx.redeemable_value_doos, 200_000,
+        "the sum of the coins a REDEEM would spend"
+    );
+}
+
+/// Reported live. Between broadcasting REGISTER and its block, the node stops
+/// reporting the owner coin as unspent — a mempool spend is enough — so `sync`
+/// marks it spent and `get_name_coin` finds nothing. `owns_name` collapsed to
+/// false, and CLOSED + not owned + holding reveals is the shape of a LOST
+/// auction: the modal announced "Lost — Redeem Now" in red over a name the
+/// user had just paid to register.
+///
+/// Note what the wallet cannot know here: `sync` marks a coin spent by
+/// diffing the node's live coin set and writes the sentinel `'spent'`, never
+/// the spending txid. The evidence that ownership survives is our own
+/// unconfirmed draft for this name, and only for the actions that spend the
+/// owner coin.
+#[test]
+fn find_name_action_context_knows_the_owner_coin_is_only_spent_in_flight() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_REVEAL);
+
+    // The winning reveal, marked spent exactly the way `sync` marks one.
+    seed_tracked_utxo(
+        &conn,
+        "winner",
+        0,
+        ADDRESS,
+        sync::COV_REVEAL as i64,
+        Some(&cov),
+    );
+    conn.execute(
+        "UPDATE tracked_utxos SET spent_by_txid = 'spent' WHERE txid = 'winner'",
+        [],
+    )
+    .unwrap();
+    seed_tracked_name_state(
+        &conn,
+        NAME,
+        &nh_hex,
+        "CLOSED",
+        Some("winner"),
+        Some(0),
+        Some(779),
+    );
+
+    // Nothing of ours in flight: the coin really is gone.
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert!(!ctx.has_owner_coin);
+    assert!(!ctx.owner_spend_in_flight);
+
+    // A redeem in flight spends reveals, not the owner coin — it says nothing
+    // about whether we still hold the name.
+    seed_draft(&conn, "d-red", "redeem", NAME);
+    db::queries::update_tx_draft_status(&conn, "d-red", "broadcasted", None, Some("redtx"))
+        .unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert!(
+        !ctx.owner_spend_in_flight,
+        "a redeem does not spend the owner coin"
+    );
+
+    // Our own register, broadcast and unmined, does.
+    seed_draft(&conn, "d-reg", "register", NAME);
+    db::queries::update_tx_draft_status(&conn, "d-reg", "broadcasted", None, Some("regtx"))
+        .unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert!(
+        !ctx.has_owner_coin,
+        "still unspendable — that part was right"
+    );
+    assert!(
+        ctx.owner_spend_in_flight,
+        "our own unconfirmed register spent it, so the name is still ours"
+    );
+}
+
 /// A spent BID coin is a bid that was revealed and settled — nothing stranded.
 #[test]
 fn find_name_action_context_does_not_strand_a_spent_bid() {

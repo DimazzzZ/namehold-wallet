@@ -25,6 +25,8 @@ import { NameBidsPanel } from "./name-actions/NameBidsPanel";
 import { NameSignMessage } from "./name-actions/NameSignMessage";
 import { NameDetails } from "./name-actions/NameDetails";
 import { OwnershipActions } from "./name-actions/OwnershipActions";
+import { UpcomingSection } from "./name-actions/UpcomingSection";
+import { resolveSections } from "../lib/nameSections";
 import { PaidSwapClaim } from "./name-actions/PaidSwapClaim";
 import { useUiStore } from "../stores/ui";
 import { FeeRateOverride } from "./ui/FeeRateOverride";
@@ -41,6 +43,8 @@ import {
   formatCountdown,
   AUCTION_PHASE_GUIDE,
   taskSummaryFromCapabilities,
+  pendingBroadcastBadge,
+  redeemExplainer,
   validateBidInputs,
 } from "../lib/auction";
 import { hnsToDollarydoos } from "../lib/utils";
@@ -175,7 +179,16 @@ export function NameActionsModal({
   const capsPending = capsLoading || !capsFetched;
 
   // Whether the name is owned by the current wallet.
-  const isOwned = caps?.ownsName ?? (!!info?.owner && info?.registered === true);
+  // Which of the advanced sections exist at this stage, and which are still
+  // ahead. `ownsName` cannot answer that: during REVEAL hsd reports the
+  // highest revealer as the owner, so it is true for a name the wallet has
+  // only bid on. See `resolveSections` for the rules.
+  const sections = resolveSections(caps);
+
+  // The editable records section owns the DNS read, the freshness gate and the
+  // one-shot seeding. All three follow the section, so they cannot drift apart
+  // from what is on screen.
+  const recordsLive = sections.records.kind === "live";
 
   // Before REVEAL, hsd reports the on-chain `value`/`highest` as 0 — every bid
   // is blinded, so the network cannot know the amounts yet. But OUR own bid is
@@ -201,7 +214,7 @@ export function NameActionsModal({
     isError: recordsError,
     dataUpdatedAt: recordsUpdatedAt,
     refetch: refetchRecords,
-  } = useNameRecords(open && isOwned ? name : null, profile?.id ?? null, {
+  } = useNameRecords(open && recordsLive ? name : null, profile?.id ?? null, {
     forceFresh: true,
   });
 
@@ -219,7 +232,7 @@ export function NameActionsModal({
   // the editor must not seed and UPDATE must stay disabled.
   const recordsFresh =
     open &&
-    isOwned &&
+    recordsLive &&
     !recordsFetching &&
     !recordsError &&
     currentRecords !== undefined &&
@@ -253,7 +266,7 @@ export function NameActionsModal({
     }
   };
   useEffect(() => {
-    if (!open || !isOwned) return;
+    if (!open || !recordsLive) return;
     if (seededForName.current === name) return;
     // Seed ONLY from a guaranteed-fresh read. Never seed from a stale cache
     // or an in-flight/undefined value — that's the stale-editor bug.
@@ -271,7 +284,7 @@ export function NameActionsModal({
     }
     setRecordsJson(JSON.stringify(currentRecords?.records ?? [], null, 2));
     seededForName.current = name;
-  }, [open, isOwned, name, recordsFresh, currentRecords]);
+  }, [open, recordsLive, name, recordsFresh, currentRecords]);
   useEffect(() => {
     if (!open) seededForName.current = null;
   }, [open]);
@@ -307,21 +320,23 @@ export function NameActionsModal({
   // click "Manage actions" to see their Transfer/Renew/Finalize/Revoke
   // controls. Names still mid-flow (just-won/needs-register, lost/needs-redeem)
   // keep their dedicated guided action up front instead, to avoid duplicating
-  // it inside the advanced section. Gated on `caps` (not the pre-caps `isOwned`
+  // it inside the advanced section. Gated on `caps` (not a pre-caps guess
   // fallback) so a still-loading response can't transiently look like
   // "owned, no task" and expand a section that collapses back once the real
   // taskState arrives. Fires once when this becomes true; the user can still
   // collapse it afterward via the toggle.
   const shouldAutoExpandManagement =
-    caps?.ownsName === true &&
+    caps?.nameIsRegistered === true &&
     caps.taskState !== "wonNeedsRegister" &&
     caps.taskState !== "lostNeedsRedeem";
   useEffect(() => {
     if (shouldAutoExpandManagement) setShowAllActions(true);
   }, [shouldAutoExpandManagement]);
 
-  // Whether there are any user-actionable controls in this modal beyond plain info.
-  // Falls back to phase-based check when capabilities haven't loaded yet.
+  // Whether the modal offers anything beyond plain info, for the guided panel
+  // and the unlock notice. Deliberately looser than `sections.anyLive`, which
+  // governs the advanced area alone: this one has a phase-based fallback for
+  // the window before capabilities load.
   const hasRelevantActions =
     // Phase-based fallback (used when caps are null/loading)
     badge.phase === "AVAILABLE" ||
@@ -331,12 +346,14 @@ export function NameActionsModal({
     caps?.taskState === "wonNeedsRegister" ||
     caps?.taskState === "lostNeedsRedeem" ||
     caps?.taskState === "transferPendingFinalize" ||
-    // Owned names have update/transfer/renew/revoke actions
-    caps?.ownsName === true;
+    // A registered name has update/transfer/renew/revoke actions. Merely
+    // leading an auction does not — the owner coin is still a REVEAL.
+    caps?.nameIsRegistered === true;
 
-  // Once THIS wallet has already bid (one bid per wallet per name) there is
-  // no actionable control left: every auction button is caps-disabled, so
-  // the advanced toggle would only open an all-disabled menu. Suppress it.
+  // A wallet that has bid and is waiting for the window has nothing left to
+  // submit. This no longer reaches the advanced toggle — `sections.anyLive`
+  // decides that — and survives only to keep the "unlock to sign" notice off a
+  // modal with nothing to sign.
   const alreadyBidWaiting = caps?.taskState === "waitingForBidding";
 
   // Whether the modal actually offers something to sign/broadcast right now.
@@ -347,27 +364,11 @@ export function NameActionsModal({
   // instead of the looser `hasRelevantActions`.
   const hasSignableActions = hasRelevantActions && !alreadyBidWaiting;
 
-  // In BIDDING the advanced section holds only the manual Auction fallbacks
-  // (Open / Reveal / Redeem) — the name isn't owned yet, so there are no DNS
-  // or management sections behind the toggle. When every one of those buttons
-  // is caps-disabled (the common BIDDING case: opening is done, reveal hasn't
-  // started, nothing to redeem), the toggle would only reveal an all-disabled
-  // menu. Suppress it unless at least one auction action is actually live.
-  const advancedHasLiveAction =
-    badge.phase !== "BIDDING" ||
-    caps?.canOpen?.allowed === true ||
-    caps?.canReveal?.allowed === true ||
-    caps?.canRedeem?.allowed === true;
-
-  // Show the advanced toggle only when there are meaningful extra actions behind it.
-  const showAdvancedToggle =
-    hasRelevantActions &&
-    !alreadyBidWaiting &&
-    advancedHasLiveAction &&
-    // Auction-phase advanced actions are always meaningful.
-    (badge.phase !== "CLOSED" ||
-      // For CLOSED owned names: only show if there are ownership actions the user may want.
-      caps?.ownsName === true);
+  // One rule for the toggle: open it only when something behind it can be
+  // acted on. Every "is this phase meaningful?" special case this used to
+  // carry is now a section state, so a menu of nothing but upcoming lines
+  // never gets a button to open it.
+  const showAdvancedToggle = sections.anyLive;
 
   // Use capabilities to determine if an action is disabled and why.
   const actionDisabled = (_actionKey: string, cap?: NameActionCapability): boolean => {
@@ -586,7 +587,16 @@ export function NameActionsModal({
               the tests that assert on the phase label follow it. */}
           {!isLoading &&
             !isError &&
-            (summary ? (
+            (summary?.pendingBroadcastAction ? (
+              // A transaction of ours for this name is in flight, so the task
+              // label is a verdict the chain has not reached and an
+              // instruction the user has already followed. The guided panel
+              // below says the same thing; the header used to contradict it
+              // in red. The auctions list already reads this way.
+              <Badge variant="default" data-testid="name-phase">
+                {pendingBroadcastBadge(summary.pendingBroadcastAction)}
+              </Badge>
+            ) : summary ? (
               <Badge variant={summary.variant} data-testid="name-phase">
                 {summary.label}
               </Badge>
@@ -687,8 +697,13 @@ export function NameActionsModal({
             </div>
           )}
 
-        {/* Ownership indicator — shown when the wallet controls this name */}
-        {isOwned && (
+        {/* Ownership indicator — shown when the wallet genuinely holds the
+            name. Not `ownsName`: during REVEAL hsd reports the highest
+            revealer as the owner, and a green "Owned by this wallet" on a
+            name still being auctioned is the claim a user has least reason to
+            question. `wonNeedsRegister` counts — the name is held, only the
+            first resource has yet to be published. */}
+        {(caps?.nameIsRegistered === true || caps?.taskState === "wonNeedsRegister") && (
           <div
             className="bg-green-50 border border-green-200 rounded p-2 text-xs text-green-800"
             data-testid="ownership-indicator"
@@ -837,7 +852,7 @@ export function NameActionsModal({
             name={name}
             profileId={profile?.id ?? null}
             info={info}
-            hideDnsRecords={isOwned}
+            hideDnsRecords={recordsLive}
           />
         )}
 
@@ -852,54 +867,93 @@ export function NameActionsModal({
             >
               {showAllActions
                 ? "Hide advanced actions"
-                : caps?.ownsName
+                : // "Manage" is only true once there is a name to manage; on a
+                  // name still being auctioned it promises controls that the
+                  // sections below deliberately do not render.
+                  caps?.nameIsRegistered
                   ? "Manage actions"
                   : "Show all actions"}
             </button>
           </div>
         )}
 
-        {showAllActions && (
-          <div className="space-y-4 border-t border-gray-200 pt-4">
-            {/* Auction actions - always show for all names */}
-            <section className="space-y-2">
-              <div className="font-medium text-gray-700">Auction</div>
-              <div className="flex flex-wrap gap-2">
-                <ActionHint reason={actionReason(caps?.canOpen)}>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={actionDisabled("OPEN", caps?.canOpen)}
-                    onClick={() => run("OPEN", () => build.open.mutateAsync({ name }))}
-                  >
-                    {busy === "OPEN" ? "…" : "Open"}
-                  </Button>
-                </ActionHint>
-                <ActionHint reason={actionReason(caps?.canReveal)}>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={actionDisabled("REVEAL", caps?.canReveal)}
-                    onClick={() => run("REVEAL", () => build.reveal.mutateAsync({ name }))}
-                  >
-                    {busy === "REVEAL" ? "…" : "Reveal"}
-                  </Button>
-                </ActionHint>
-                <ActionHint reason={actionReason(caps?.canRedeem)}>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={actionDisabled("REDEEM", caps?.canRedeem)}
-                    onClick={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}
-                  >
-                    {busy === "REDEEM" ? "…" : "Redeem"}
-                  </Button>
-                </ActionHint>
-              </div>
-            </section>
+        {/* `anyLive` guards the container as well as the toggle: auto-expand can
+            leave `showAllActions` true while every section has since gone
+            absent — a broadcast going out does exactly that — and the bordered
+            box would render with nothing in it. */}
+        {showAllActions && sections.anyLive && (
+          <div className="space-y-4 border-t border-gray-200 pt-4" data-testid="advanced-actions">
+            {sections.auction.kind === "upcoming" && (
+              <UpcomingSection
+                id="auction"
+                title="Manual auction actions"
+                when={sections.auction.when}
+              />
+            )}
+            {sections.auction.kind === "live" && (
+              <section className="space-y-2">
+                <div className="font-medium text-gray-700">Manual auction actions</div>
+                <div className="text-xs text-gray-500">
+                  The guided panel above already does this. Use these only if it has fallen out of
+                  step with the chain.
+                </div>
+                {/* Only what this stage actually allows. Open / Reveal /
+                    Redeem used to all render here, two of them permanently
+                    greyed, which is the wall of dead controls the section
+                    states exist to remove — and at button granularity it is
+                    worse, because a covenant name with no explanation reads as
+                    a thing the user failed to understand. Each live one says
+                    what pressing it does. */}
+                {caps?.canOpen?.allowed && (
+                  <div className="space-y-1">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={actionDisabled("OPEN", caps?.canOpen)}
+                      onClick={() => run("OPEN", () => build.open.mutateAsync({ name }))}
+                    >
+                      {busy === "OPEN" ? "…" : "Open"}
+                    </Button>
+                    <div className="text-xs text-gray-500">Start the auction for this name.</div>
+                  </div>
+                )}
+                {caps?.canReveal?.allowed && (
+                  <div className="space-y-1">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={actionDisabled("REVEAL", caps?.canReveal)}
+                      onClick={() => run("REVEAL", () => build.reveal.mutateAsync({ name }))}
+                    >
+                      {busy === "REVEAL" ? "…" : "Reveal"}
+                    </Button>
+                    <div className="text-xs text-gray-500">
+                      Disclose what you bid. Every bid you placed on this name reveals together.
+                    </div>
+                  </div>
+                )}
+                {caps?.canRedeem?.allowed && (
+                  <div className="space-y-1">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={actionDisabled("REDEEM", caps?.canRedeem)}
+                      onClick={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}
+                    >
+                      {busy === "REDEEM" ? "…" : "Redeem"}
+                    </Button>
+                    <div className="text-xs text-gray-500" data-testid="redeem-explainer">
+                      {redeemExplainer(caps)}
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
 
-            {/* DNS records (REGISTER / UPDATE) - only show for owned names */}
-            {isOwned && (
+            {sections.records.kind === "upcoming" && (
+              <UpcomingSection id="records" title="DNS records" when={sections.records.when} />
+            )}
+            {recordsLive && (
               <section className="space-y-2">
                 <div className="flex items-center justify-between">
                   <div className="font-medium text-gray-700">DNS records (REGISTER / UPDATE)</div>
@@ -970,22 +1024,28 @@ export function NameActionsModal({
                 )}
 
                 <div className="flex gap-2">
-                  <ActionHint
-                    reason={
-                      !recordsFresh
-                        ? "Waiting for a fresh read of the current on-chain records"
-                        : actionReason(caps?.canRegister)
-                    }
-                  >
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={actionDisabled("REGISTER", caps?.canRegister) || !recordsFresh}
-                      onClick={() => submitRecords("REGISTER")}
+                  {/* The guided panel above owns Register whenever it is the
+                      step the name is on. Two identical live buttons for one
+                      action leave the user choosing between them with nothing
+                      to choose on. */}
+                  {caps?.taskState !== "wonNeedsRegister" && (
+                    <ActionHint
+                      reason={
+                        !recordsFresh
+                          ? "Waiting for a fresh read of the current on-chain records"
+                          : actionReason(caps?.canRegister)
+                      }
                     >
-                      {busy === "REGISTER" ? "…" : "Register"}
-                    </Button>
-                  </ActionHint>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={actionDisabled("REGISTER", caps?.canRegister) || !recordsFresh}
+                        onClick={() => submitRecords("REGISTER")}
+                      >
+                        {busy === "REGISTER" ? "…" : "Register"}
+                      </Button>
+                    </ActionHint>
+                  )}
                   <ActionHint
                     reason={
                       !recordsFresh
@@ -1005,51 +1065,55 @@ export function NameActionsModal({
               </section>
             )}
 
-            {/* Ownership / lifecycle - only show for owned names */}
-            {isOwned && (
-              <OwnershipActions
-                caps={caps}
-                busy={busy}
-                recipient={recipient}
-                onRecipientChange={setRecipient}
-                actionDisabled={actionDisabled}
-                actionReason={actionReason}
-                onTransfer={() =>
-                  run("TRANSFER", () =>
-                    build.transfer.mutateAsync({ name, recipient: recipient.trim() }),
-                  )
-                }
-                onFinalize={() => run("FINALIZE", () => build.finalize.mutateAsync({ name }))}
-                onCancelTransfer={() => run("CANCEL", () => build.cancel.mutateAsync({ name }))}
-                onRenew={() => run("RENEW", () => build.renew.mutateAsync({ name }))}
-                onRevoke={() => run("REVOKE", () => build.revoke.mutateAsync({ name }))}
-                onBuyWithPayment={(paymentAddress, paymentValue) =>
-                  run("FINALIZE_WITH_PAYMENT", () =>
-                    build.finalizeWithPayment.mutateAsync({ name, paymentAddress, paymentValue }),
-                  )
-                }
-                onSellWithPayment={(buyerAddress, priceValue) =>
-                  run("SELL_WITH_PAYMENT", async () => {
-                    // 1. Record the offer for later claim verification.
-                    await build.sellWithPayment.mutateAsync({
-                      name,
-                      buyerAddress,
-                      priceDoos: priceValue,
-                    });
-                    // 2. Build the transfer draft to the buyer (normal TRANSFER
-                    //    covenant — the payment happens in the buyer's finalize).
-                    return build.transfer.mutateAsync({ name, recipient: buyerAddress });
-                  })
-                }
-              />
+            {sections.ownership.kind === "upcoming" && (
+              <UpcomingSection id="ownership" title="Ownership" when={sections.ownership.when} />
+            )}
+            {sections.ownership.kind === "live" && (
+              <>
+                <OwnershipActions
+                  caps={caps}
+                  busy={busy}
+                  recipient={recipient}
+                  onRecipientChange={setRecipient}
+                  actionDisabled={actionDisabled}
+                  actionReason={actionReason}
+                  onTransfer={() =>
+                    run("TRANSFER", () =>
+                      build.transfer.mutateAsync({ name, recipient: recipient.trim() }),
+                    )
+                  }
+                  onFinalize={() => run("FINALIZE", () => build.finalize.mutateAsync({ name }))}
+                  onCancelTransfer={() => run("CANCEL", () => build.cancel.mutateAsync({ name }))}
+                  onRenew={() => run("RENEW", () => build.renew.mutateAsync({ name }))}
+                  onRevoke={() => run("REVOKE", () => build.revoke.mutateAsync({ name }))}
+                  onBuyWithPayment={(paymentAddress, paymentValue) =>
+                    run("FINALIZE_WITH_PAYMENT", () =>
+                      build.finalizeWithPayment.mutateAsync({ name, paymentAddress, paymentValue }),
+                    )
+                  }
+                  onSellWithPayment={(buyerAddress, priceValue) =>
+                    run("SELL_WITH_PAYMENT", async () => {
+                      // 1. Record the offer for later claim verification.
+                      await build.sellWithPayment.mutateAsync({
+                        name,
+                        buyerAddress,
+                        priceDoos: priceValue,
+                      });
+                      // 2. Build the transfer draft to the buyer (normal TRANSFER
+                      //    covenant — the payment happens in the buyer's finalize).
+                      return build.transfer.mutateAsync({ name, recipient: buyerAddress });
+                    })
+                  }
+                />
+                {/* Proving ownership belongs to the ownership section, and needs
+                  the same registration: a signature over a name the wallet has
+                  only bid on is a claim every verifier resolves as false. */}
+                <NameSignMessage name={name} profileId={profile?.id ?? null} caps={caps} />
+              </>
             )}
 
             {/* Paid swap claim: shown when a paid_swap_offer exists for this name */}
             <PaidSwapClaim name={name} />
-
-            {/* Sign message (Task 3) — Namebase-style domain-claim verification,
-                owned names only; the component itself gates on caps.ownsName. */}
-            <NameSignMessage name={name} profileId={profile?.id ?? null} caps={caps} />
           </div>
         )}
 

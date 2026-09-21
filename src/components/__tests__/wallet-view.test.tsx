@@ -1737,3 +1737,72 @@ describe("WalletView — keyboard S key (wallet:send)", () => {
     });
   });
 });
+
+describe("WalletView — Owned Names State column", () => {
+  // Reported from a live wallet: the table said "Closed" while the modal it
+  // opens said "Won — Register Now". Both were reading real data — the raw
+  // auction phase and the task state — but a user sees one name described two
+  // ways. The auction phase is also nearly constant down this column: every
+  // name you own has a closed auction, so it spends a column to say nothing.
+  it("says what the name needs, not which auction phase it is in", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_names_action_capabilities") {
+        return Promise.resolve([
+          {
+            name: "wonname",
+            phase: "CLOSED",
+            taskState: "wonNeedsRegister",
+            ownsName: true,
+            nameIsRegistered: false,
+            transferPending: false,
+            redeemableRevealCount: 0,
+            redeemableValueDoos: 0,
+            hasBidCommitment: false,
+            hasBidCoin: false,
+            hasRevealCoin: true,
+            hasOwnerCoin: true,
+            revealTxid: null,
+            bidValueDoos: null,
+            lockupValueDoos: null,
+            myBidCount: 0,
+            canOpen: { allowed: false, reason: null },
+            canBid: { allowed: false, reason: null },
+            canReveal: { allowed: false, reason: null },
+            canRedeem: { allowed: false, reason: null },
+            canRegister: { allowed: true, reason: null },
+            canUpdate: { allowed: false, reason: null },
+            canTransfer: { allowed: false, reason: null },
+            canFinalize: { allowed: false, reason: null },
+            canCancelTransfer: { allowed: false, reason: null },
+            canRenew: { allowed: false, reason: null },
+            canRevoke: { allowed: false, reason: null },
+            nextActionKey: "REGISTER",
+            nextActionLabel: "Register Name",
+            nextActionReason: null,
+            countdownLabel: null,
+            countdownBlocks: null,
+            countdownHours: null,
+          },
+        ]);
+      }
+      return routeInvoke({
+        names: [
+          {
+            name: "wonname",
+            state: "CLOSED",
+            height: 100,
+            renewal: 200,
+            owner: { hash: "tx1", index: 0 },
+            registered: false,
+            stats: null,
+          },
+        ],
+      })(cmd);
+    });
+
+    render(<WalletView />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("Won — Register Now")).toBeInTheDocument();
+    expect(screen.queryByText("Closed")).not.toBeInTheDocument();
+  });
+});

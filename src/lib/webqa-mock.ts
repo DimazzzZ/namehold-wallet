@@ -275,6 +275,13 @@ function buildCapabilities(name: string): Record<string, unknown> {
     phase,
     taskState,
     ownsName: won,
+    // The mock's won names are registered: it allows update/transfer on them.
+    nameIsRegistered: won,
+    transferPending: false,
+    // A lost auction leaves exactly one reveal to reclaim in this mock — the
+    // same condition `canRedeem` below is built from.
+    redeemableRevealCount: closed && !won && a.hasBid ? 1 : 0,
+    redeemableValueDoos: closed && !won && a.hasBid ? a.bidValueDoos : 0,
     hasBidCommitment: a.hasBid,
     hasBidCoin,
     hasRevealCoin,

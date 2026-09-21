@@ -21,6 +21,7 @@ use crate::noncustodial::address;
 use crate::noncustodial::hd::{self, ExtendedPrivKey, ExtendedPubKey};
 use crate::noncustodial::network::Network;
 use crate::noncustodial::session::SignerSession;
+use crate::noncustodial::sync::{COV_REGISTER, COV_REVEAL};
 use crate::AppState;
 
 const MNEMONIC_A: &str = "april coyote civil finger crane uncle situate moon choice wrong \
@@ -63,6 +64,14 @@ fn leaf00(mnemonic: &str) -> (String, String, String) {
 /// `get_name_coin` requires. Also seeds a second, unrelated profile `PROFILE_B`
 /// (from `MNEMONIC_B`) with no owned names, for the isolation test.
 fn seeded_conn() -> rusqlite::Connection {
+    seeded_conn_with_owner_covenant(COV_REGISTER as i64)
+}
+
+/// As `seeded_conn`, with the owner coin's covenant spelled out. A name is
+/// only genuinely owned once its owner coin is a REGISTER or later; during
+/// REVEAL the highest revealer is reported as the owner while holding nothing
+/// but a REVEAL coin, and that is the case worth seeding on purpose.
+fn seeded_conn_with_owner_covenant(covenant_type: i64) -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     db::migrations::run(&conn).unwrap();
@@ -104,8 +113,8 @@ fn seeded_conn() -> rusqlite::Connection {
         "INSERT INTO tracked_utxos
             (txid, vout, wallet_profile_id, address, script_pubkey_hex,
              value_doos, covenant_type, spend_class, spent_by_txid)
-         VALUES (?1, 0, ?2, ?3, ?4, 1000000, 4, 'name_control', NULL)",
-        params![COIN_TXID, PROFILE_A, addr, spk],
+         VALUES (?1, 0, ?2, ?3, ?4, 1000000, ?5, 'name_control', NULL)",
+        params![COIN_TXID, PROFILE_A, addr, spk, covenant_type],
     )
     .unwrap();
     conn.execute(
@@ -199,6 +208,35 @@ async fn rejects_a_name_the_wallet_does_not_own() {
     .await
     .expect_err("must reject a name with no owner coin");
     assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
+}
+
+/// A signature over a name is a claim to own it, and until REGISTER there is
+/// nothing to claim: during REVEAL `getnameinfo` reports the highest revealer
+/// as the owner, so `tracked_name_states.owner_txid` points at our own REVEAL
+/// coin and `get_name_coin` — which filters on no covenant at all — hands it
+/// over happily. The wallet would emit a well-formed proof of ownership for a
+/// name it has not won, which any verifier resolves as false.
+#[tokio::test]
+async fn rejects_a_name_whose_owner_coin_is_still_a_reveal() {
+    let conn = seeded_conn_with_owner_covenant(COV_REVEAL as i64);
+    let app = app_with(conn);
+    unlock(&app, PROFILE_A, MNEMONIC_A);
+
+    let err = sign_name_message(
+        app.state(),
+        NAME.to_string(),
+        MSG.to_string(),
+        Some(PROFILE_A.to_string()),
+    )
+    .await
+    .expect_err("leading an auction is not owning the name");
+    match err {
+        AppError::InvalidInput(m) => assert!(
+            m.contains("not registered yet"),
+            "the reason must name the missing half, got {m:?}"
+        ),
+        other => panic!("got {other:?}"),
+    }
 }
 
 #[tokio::test]

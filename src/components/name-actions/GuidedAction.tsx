@@ -112,6 +112,8 @@ export function GuidedAction({
   isMainnet,
 }: GuidedActionProps) {
   const [infoTx, setInfoTx] = useState<string | null>(null);
+  // Records are not part of registering — see the Register panel below.
+  const [showRegisterDns, setShowRegisterDns] = useState(false);
   if (!guide) return null;
 
   // A transaction this wallet sent is still in the mempool. The chain has not
@@ -411,13 +413,40 @@ export function GuidedAction({
                   "You won the auction! Register the name to finalize ownership."}
               </div>
               <ActionReasonBanner reason={actionReason(caps?.canRegister)} />
-              <DnsRecordsEditor
-                variant="guided"
-                rows={rows}
-                onRowChange={onRowChange}
-                onAddRow={onAddRow}
-                onRemoveRow={onRemoveRow}
-              />
+              {/* Registering publishes the name's resource, and an empty one
+                  is valid — hsd caps the resource size and nothing requires
+                  it to be non-empty. Putting a record editor in front of the
+                  user with nothing said about it read as "records required",
+                  which is a question the chain never asks. Say it is optional
+                  and keep the editor behind a disclosure, so the ordinary path
+                  is one button. */}
+              <div className="text-xs text-gray-600">
+                Registering claims the name on-chain. DNS records are optional — you can register
+                now and publish records later with Update.
+              </div>
+              {showRegisterDns ? (
+                <DnsRecordsEditor
+                  variant="guided"
+                  rows={rows}
+                  onRowChange={onRowChange}
+                  onAddRow={onAddRow}
+                  onRemoveRow={onRemoveRow}
+                />
+              ) : (
+                // Block wrapper on purpose: a bare inline <button> next to the
+                // inline-flex Register below shared its line, and the two read
+                // as one broken control row. `space-y-*` only separates blocks.
+                <div>
+                  <button
+                    type="button"
+                    className="text-xs text-blue-600 hover:underline"
+                    onClick={() => setShowRegisterDns(true)}
+                    data-testid="register-dns-toggle"
+                  >
+                    Add DNS records now (optional)
+                  </button>
+                </div>
+              )}
               <Button
                 variant="primary"
                 disabled={actionDisabled("REGISTER", caps?.canRegister)}
@@ -431,9 +460,14 @@ export function GuidedAction({
         if (caps?.taskState === "lostNeedsRedeem") {
           return (
             <div className="space-y-2">
-              <div className="text-sm text-red-800">
+              {/* Red and "your bid lost" are wrong for a wallet that outbid
+                  itself: it owns the name and is reclaiming its own losing
+                  bids. The backend refines the reason; the tone follows. */}
+              <div className={caps.ownsName ? "text-sm text-gray-700" : "text-sm text-red-800"}>
                 {caps.nextActionReason ??
-                  "Your bid lost. Redeem your reveal coin to reclaim the funds."}
+                  (caps.ownsName
+                    ? "You own this name. Redeem your own losing bids to reclaim the lockup."
+                    : "Your bid lost. Redeem your reveal coin to reclaim the funds.")}
               </div>
               <Button
                 variant="primary"

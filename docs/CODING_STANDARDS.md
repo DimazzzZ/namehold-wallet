@@ -58,6 +58,22 @@ Locally `cargo test` is enough; CI uses nextest for its two-lane split (see
   produced, never on a forced one (see `cookie_vault.rs::flip_hex_digit`).
 - When a helper is moved, its tests move with it. Never delete a test to make
   a refactor compile.
+- **Process-global state needs a serial key.** `std::env::set_var` /
+  `remove_var` change the variable for the whole process, and the harness runs
+  tests as threads of one process — so a test that swaps `HOME` races every
+  test that reads it, including indirectly. Put `#[serial(<key>)]`
+  (`serial_test`) on the writer **and on every reader**, sharing one key per
+  variable. Rust 2024 marks these functions `unsafe` for exactly this reason.
+  Cost of getting it wrong: `test_hsd_candidates_includes_home_paths` failed
+  about one full run in twenty and passed alone every time.
+- **Wait for content, never for the file.** `fs::read_to_string(p).ok()` is
+  `Some("")` the instant a file exists, and a writer that redirects (`echo x >
+  f`) creates and truncates before it writes a byte. A poll loop keyed on
+  `Some(_)` therefore exits on the empty window and asserts against nothing.
+  Treat an empty read as "not ready" (see `node_lifecycle_tests::recorded_argv`).
+- A test that passes alone and fails in the suite is a defect in the test, not
+  a reason to retry it. Find the shared state; the two rules above are the two
+  ways it has bitten so far.
 
 ## TypeScript ↔ Rust bridge
 

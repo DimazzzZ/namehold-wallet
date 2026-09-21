@@ -605,6 +605,21 @@ export interface NameActionCapabilities {
   phase: string;
   taskState: AuctionTaskState;
   ownsName: boolean;
+  /**
+   * Whether the name is actually REGISTERED — an owner coin at COV_REGISTER or
+   * later. `ownsName` is NOT this: during REVEAL hsd already reports the
+   * highest revealer as the owner, so a wallet merely leading its own auction
+   * reads as an owner while holding nothing but a REVEAL coin. The backend
+   * states it so the UI stops re-deriving a wrong answer.
+   */
+  nameIsRegistered: boolean;
+  /**
+   * Whether a TRANSFER is in flight — the same `transfer_has_items` the
+   * capability gates use. The phase string is a different question and the two
+   * can disagree, which would leave the records section open on a name whose
+   * Update is refused (editing records mid-transfer cancels the transfer).
+   */
+  transferPending: boolean;
   hasBidCommitment: boolean;
   /** Unspent COV_BID coin for this name — what a REVEAL actually spends.
    * Gates `canReveal`. Backend fix (Task 6 / I2 Part 3): `hasRevealCoin`
@@ -668,6 +683,13 @@ export interface NameActionCapabilities {
    */
   strandedBidCount?: number;
   strandedLockupDoos?: number;
+  /**
+   * Losing reveals a REDEEM would reclaim on this name, and what they are
+   * worth. "Redeem" is a covenant name, not an explanation — the button says
+   * what it reclaims, and this is where the figure comes from.
+   */
+  redeemableRevealCount: number;
+  redeemableValueDoos: number;
 }
 
 // ---------------------------------------------------------------------------

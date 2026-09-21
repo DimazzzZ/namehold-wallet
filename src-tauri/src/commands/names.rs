@@ -348,6 +348,20 @@ pub struct NameActionCapabilities {
     pub phase: String,
     pub task_state: AuctionTaskState,
     pub owns_name: bool,
+    /// Whether the name is actually REGISTERED — an owner coin at
+    /// `COV_REGISTER` or later. `owns_name` is NOT this: during REVEAL
+    /// `getnameinfo` already names the highest revealer as the owner, so a
+    /// wallet merely leading its own auction owns a REVEAL coin and nothing
+    /// more. The same value gates `can_update` and its siblings; it is
+    /// reported so the UI decides which sections exist from the backend's
+    /// answer instead of re-deriving a wrong one from `owns_name`.
+    pub name_is_registered: bool,
+    /// Whether a TRANSFER is in flight for this name — the same
+    /// `transfer_has_items` the gates use. Reported because the UI has to
+    /// close the records section for exactly the names `can_update` refuses,
+    /// and the phase string is a different question: it and the items can
+    /// disagree, and then the section and the button inside it disagree too.
+    pub transfer_pending: bool,
     pub has_bid_commitment: bool,
     pub has_bid_coin: bool,
     pub has_reveal_coin: bool,
@@ -407,6 +421,12 @@ pub struct NameActionCapabilities {
     /// bids panel now that it is scoped to the current auction.
     pub stranded_bid_count: i64,
     pub stranded_lockup_doos: i64,
+    /// Losing reveals on this name that a REDEEM would reclaim, and what they
+    /// are worth. Reported so the button can say what it does: "Redeem" alone
+    /// is a covenant name, not an explanation, and this is money the wallet is
+    /// holding for the user.
+    pub redeemable_reveal_count: i64,
+    pub redeemable_value_doos: i64,
 }
 
 /// Context gathered from the DB for a name action evaluation.
@@ -452,6 +472,12 @@ pub(crate) struct NameActionContext {
     /// losing bids this wallet can still redeem. Several, when it outbid
     /// itself.
     pub redeemable_reveal_count: i64,
+    /// What those reveals are worth together — the sum a REDEEM reclaims.
+    pub redeemable_value_doos: i64,
+    /// The owner coin is spent, but only by a transaction this wallet
+    /// broadcast and the chain has not mined. We still own the name — we just
+    /// cannot spend it until the block lands.
+    pub owner_spend_in_flight: bool,
     /// The `reveal_txid` stamped on the bid commitment row (if any).
     pub reveal_txid: Option<String>,
     /// Status of the local tx_draft matching `reveal_txid` (if one exists).
@@ -536,20 +562,30 @@ pub(crate) fn find_name_action_context(
     // lands back on the bid coin's own address, see `build_reveal_draft`), so
     // only the covenant type differs between the two queries below.
     //
-    // Looked up by NAME HASH across the profile, not through one commitment's
-    // address. Every bid lands on its own rotated address, so an address-scoped
-    // lookup answers for a single bid — and which one it picked was not even
-    // well defined: `created_at` has second resolution, so several bids placed
-    // in the same second order arbitrarily.
     let name_hash_hex = hex::encode(names::hash_name(name).unwrap_or([0u8; 32]));
-    let bid_coin = queries::find_unspent_covenant_utxos_by_name_hash(
-        conn,
-        profile_id,
-        sync::COV_BID as i64,
-        &name_hash_hex,
-    )
-    .ok()
-    .and_then(|v| v.into_iter().next());
+    // Every bid of THIS auction, not the newest one and not every bid the
+    // profile has ever placed on the name. Both wrong answers were live:
+    // picking one commitment's address was never well defined (`created_at`
+    // has second resolution, so bids placed in the same second order
+    // arbitrarily), and searching by name hash across the profile let a
+    // lockup stranded in a LAPSED auction answer for this one. A stranded BID
+    // coin can never be revealed — `start == ns.height` is consensus — so it
+    // kept Reveal enabled on a fully revealed name, and every press failed
+    // with "no unspent bid coin". This is the same set `build_reveal_draft`
+    // builds its transaction from, so the button and the builder cannot
+    // disagree.
+    let bid_coin = commitments.iter().find_map(|b| {
+        queries::find_unspent_covenant_utxo(
+            conn,
+            profile_id,
+            &b.address,
+            sync::COV_BID as i64,
+            name,
+            &b.name_hash_hex,
+        )
+        .ok()
+        .flatten()
+    });
     let reveal_coins = queries::find_unspent_covenant_utxos_by_name_hash(
         conn,
         profile_id,
@@ -563,7 +599,7 @@ pub(crate) fn find_name_action_context(
     // A reveal coin that is NOT the name's owner is a losing bid this wallet
     // can still reclaim. Outbidding yourself leaves exactly this: you own the
     // name AND hold losing reveals on it.
-    let redeemable_reveal_count = reveal_coins
+    let (redeemable_reveal_count, redeemable_value_doos) = reveal_coins
         .iter()
         .filter(|c| {
             owner_coin
@@ -571,7 +607,7 @@ pub(crate) fn find_name_action_context(
                 .map(|o| !(o.txid == c.txid && o.vout == c.vout))
                 .unwrap_or(true)
         })
-        .count() as i64;
+        .fold((0i64, 0i64), |(n, sum), c| (n + 1, sum + c.value as i64));
     let reveal_coin = reveal_coins.into_iter().next();
     let owner_cov_type = owner_coin.as_ref().map(|c| c.covenant_type);
     let nh = owner_coin.as_ref().and_then(|c| c.name_height);
@@ -616,8 +652,36 @@ pub(crate) fn find_name_action_context(
     let has_pending_open_draft =
         queries::has_pending_draft_for_name(conn, profile_id, "open", name).unwrap_or(false);
     let has_pending_open = has_pending_open_coin || has_pending_open_draft;
-    let pending_broadcast_action =
-        queries::pending_broadcast_action_for_name(conn, profile_id, name).unwrap_or(None);
+    let pending_actions =
+        queries::pending_broadcast_actions_for_name(conn, profile_id, name).unwrap_or_default();
+    let pending_broadcast_action = pending_actions.first().cloned();
+
+    // `get_name_coin` answers "can we spend it" and returns unspent coins
+    // only. Between our own broadcast and its block the answer is no while the
+    // name is still ours, and conflating the two declared a just-registered
+    // name lost.
+    //
+    // Which transaction spent it is not knowable here: `sync` marks a coin
+    // spent by diffing the node's live coin set and writes the sentinel
+    // `'spent'`, never a txid — and hsd drops a coin from that set as soon as
+    // a MEMPOOL transaction spends it, which is exactly this window. What the
+    // wallet does know is that it has an unconfirmed transaction of its own
+    // for this name, and which action it performs. Only the actions that
+    // spend the owner coin count; a bid or a redeem in flight says nothing
+    // about ownership.
+    let owner_spend_in_flight = owner_coin.is_none()
+        && pending_actions.iter().any(|a| {
+            matches!(
+                a.as_str(),
+                "register"
+                    | "update"
+                    | "transfer"
+                    | "finalize"
+                    | "cancel_transfer"
+                    | "renew"
+                    | "revoke"
+            )
+        });
 
     // Reveal-in-flight evidence: the commitment row's `reveal_txid` (stamped
     // either by our own broadcast in `build_reveal_draft`, or by `chain_scan`
@@ -648,6 +712,8 @@ pub(crate) fn find_name_action_context(
         stranded_bid_count,
         stranded_lockup_doos,
         redeemable_reveal_count,
+        redeemable_value_doos,
+        owner_spend_in_flight,
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
@@ -800,18 +866,14 @@ async fn evaluate_name_action_capabilities(
             };
             let stats = name_info.get("info").and_then(|i| i.get("stats"));
 
-            // Symmetric ownership: even on a synced node the owner-coin scan may
-            // not have reached this name yet. Explorer evidence (recorded owner
-            // address is ours) still classifies it as owned — but WITHOUT a real
-            // node-synced owner coin, every spend stays locked, exactly as on the
-            // node-unreachable path. This keeps the invariant airtight: explorer
-            // evidence gives classification, never spend capability.
-            let explorer_owned = tracked_owner_address
-                .as_deref()
-                .map(|a| profile_addrs.iter().any(|p| p == a))
-                .unwrap_or(false);
-            let owns_name = action_ctx.has_owner_coin || explorer_owned;
-            let spend_locked = !action_ctx.has_owner_coin;
+            let NameOwnership {
+                owns_name,
+                spend_locked,
+            } = derive_name_ownership(
+                &action_ctx,
+                tracked_owner_address.as_deref(),
+                &profile_addrs,
+            );
             Ok(build_name_action_capabilities(
                 name,
                 raw_phase.clone(),
@@ -860,15 +922,14 @@ async fn evaluate_name_action_capabilities(
                 .as_deref()
                 .map(|s| s.to_uppercase())
                 .unwrap_or_default();
-            // Owned per explorer evidence: the recorded owner address is ours.
-            let explorer_owned = tracked
-                .owner_address
-                .as_deref()
-                .map(|a| profile_addrs.iter().any(|p| p == a))
-                .unwrap_or(false);
-            let owns_name = action_ctx.has_owner_coin || explorer_owned;
-            // No node-synced owner coin → nothing may build a spend.
-            let spend_locked = !action_ctx.has_owner_coin;
+            let NameOwnership {
+                owns_name,
+                spend_locked,
+            } = derive_name_ownership(
+                &action_ctx,
+                tracked.owner_address.as_deref(),
+                &profile_addrs,
+            );
             // Days-until-expire from tracked chain evidence, so the modal's
             // `expiringSoon` matches the WalletView banner / Renewals screen
             // instead of staying silent for lack of live node stats.
@@ -1017,13 +1078,23 @@ pub(crate) fn build_name_action_capabilities(
         .unwrap_or(false);
     let can_spend_as_owner = owns_name && name_is_registered;
     let not_registered_reason = "the name is not registered yet";
+    let transfer_pending = action_ctx.transfer_has_items.unwrap_or(false);
 
+    // Update is the one ownership action a pending transfer takes away. hsd
+    // lets a TRANSFER coin go to UPDATE, RENEW, FINALIZE or REVOKE
+    // (`rules.verifyCovenants`), and the UPDATE branch there *is* the cancel:
+    // the node accepts it and the transfer is gone. Offering it as "edit your
+    // DNS records" makes losing a pending transfer a side effect of a button
+    // that says nothing about transfers. Cancelling stays available under its
+    // own name.
     let can_update = NameActionCapability {
-        allowed: can_spend_as_owner,
+        allowed: can_spend_as_owner && !transfer_pending,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
         } else if !name_is_registered {
             Some(not_registered_reason.into())
+        } else if transfer_pending {
+            Some("a transfer is pending — updating records would cancel it".into())
         } else {
             None
         },
@@ -1051,12 +1122,17 @@ pub(crate) fn build_name_action_capabilities(
         },
     };
 
+    // Cancelling needs a transfer to cancel — the same condition `can_finalize`
+    // has always carried. Without it the button was live on every registered
+    // name and built an UPDATE that changes nothing and costs a fee.
     let can_cancel_transfer = NameActionCapability {
-        allowed: can_spend_as_owner,
+        allowed: can_spend_as_owner && transfer_pending,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
         } else if !name_is_registered {
             Some(not_registered_reason.into())
+        } else if !transfer_pending {
+            Some("name is not in TRANSFER state".into())
         } else {
             None
         },
@@ -1177,6 +1253,18 @@ pub(crate) fn build_name_action_capabilities(
         next_action_reason = Some("Your bid is placed. Wait for the reveal window to open.".into());
     }
 
+    // `LostNeedsRedeem` is reached two ways, and only one of them is a loss.
+    // Bidding against yourself and winning leaves you owning the name AND
+    // holding your own losing reveals — the ordinary outcome of placing
+    // several bids, and the whole reason multi-bid exists. Telling that user
+    // "Your bid lost" on a name they just registered is simply false.
+    if matches!(task_state, AuctionTaskState::LostNeedsRedeem) && owns_name {
+        next_action_reason = Some(
+            "You own this name. These are your own losing bids on it — redeem them to reclaim the lockup."
+                .into(),
+        );
+    }
+
     // 7. Extract countdown from stats.
     let (countdown_label, countdown_blocks, countdown_hours) =
         names_pure::extract_countdown(raw_phase, stats);
@@ -1187,6 +1275,8 @@ pub(crate) fn build_name_action_capabilities(
         phase,
         task_state,
         owns_name,
+        name_is_registered,
+        transfer_pending,
         has_bid_commitment: action_ctx.has_bid_commitment,
         has_bid_coin: action_ctx.has_bid_coin,
         has_reveal_coin: action_ctx.has_reveal_coin,
@@ -1217,6 +1307,8 @@ pub(crate) fn build_name_action_capabilities(
         pending_broadcast_action: action_ctx.pending_broadcast_action.clone(),
         stranded_bid_count: action_ctx.stranded_bid_count,
         stranded_lockup_doos: action_ctx.stranded_lockup_doos,
+        redeemable_reveal_count: action_ctx.redeemable_reveal_count,
+        redeemable_value_doos: action_ctx.redeemable_value_doos,
     }
 }
 
@@ -1231,6 +1323,11 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         phase: "UNKNOWN".into(),
         task_state: AuctionTaskState::UnavailableOther,
         owns_name: false,
+        // No node-synced owner coin reached us, so nothing proves the name is
+        // registered. Claiming it would unlock the ownership sections on a
+        // name we cannot even read.
+        name_is_registered: false,
+        transfer_pending: false,
         has_bid_commitment: false,
         has_bid_coin: false,
         has_reveal_coin: false,
@@ -1263,6 +1360,41 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         pending_broadcast_action: None,
         stranded_bid_count: 0,
         stranded_lockup_doos: 0,
+        redeemable_reveal_count: 0,
+        redeemable_value_doos: 0,
+    }
+}
+
+/// What the wallet may claim about a name, and what it may do with it.
+///
+/// Two questions that look like one and are not. Both call sites used to spell
+/// out the same three lines, and the gap between the questions is where a bug
+/// lived: `get_name_coin` returns unspent coins only, so our own unconfirmed
+/// spend of the owner coin made the wallet conclude it did not own the name —
+/// on a CLOSED name still holding reveals, that is the shape of a lost auction.
+pub(crate) struct NameOwnership {
+    /// May we say this name is ours? Survives an unconfirmed spend of the
+    /// owner coin, and explorer evidence alone is enough.
+    pub owns_name: bool,
+    /// May we build a transaction for it? Only a node-synced, unspent owner
+    /// coin unlocks this — explorer evidence classifies, it never unlocks, and
+    /// a spend already in flight must not be raced.
+    pub spend_locked: bool,
+}
+
+/// `owner_address` is the owner recorded for the name (from the node payload
+/// or the tracked row); it counts as ours when it is one of `profile_addrs`.
+pub(crate) fn derive_name_ownership(
+    ctx: &NameActionContext,
+    owner_address: Option<&str>,
+    profile_addrs: &[String],
+) -> NameOwnership {
+    let explorer_owned = owner_address
+        .map(|a| profile_addrs.iter().any(|p| p == a))
+        .unwrap_or(false);
+    NameOwnership {
+        owns_name: ctx.has_owner_coin || ctx.owner_spend_in_flight || explorer_owned,
+        spend_locked: !ctx.has_owner_coin,
     }
 }
 
@@ -3348,6 +3480,9 @@ pub(crate) fn build_finalize_with_payment_draft_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the tests need it: the capability code compares against
+    // COV_REGISTER, not against any particular later covenant.
+    use crate::noncustodial::sync::COV_TRANSFER;
     use serde_json::json;
 
     // ------------------------------------------------------------------
@@ -3371,6 +3506,8 @@ mod tests {
             stranded_bid_count: 0,
             stranded_lockup_doos: 0,
             redeemable_reveal_count: 0,
+            redeemable_value_doos: 0,
+            owner_spend_in_flight: false,
             reveal_txid: None,
             reveal_draft_status: None,
             bid_value_doos: None,
@@ -4388,6 +4525,125 @@ mod tests {
         }
     }
 
+    // ==================================================================
+    // derive_name_ownership
+    // ==================================================================
+
+    fn addrs() -> Vec<String> {
+        vec!["ours1".to_string(), "ours2".to_string()]
+    }
+
+    /// The plain case: we hold the coin, so we own it and may spend it.
+    #[test]
+    fn ownership_owner_coin_owns_and_unlocks() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            ..ctx_default()
+        };
+        let o = derive_name_ownership(&ctx, Some("ours1"), &addrs());
+        assert!(o.owns_name);
+        assert!(!o.spend_locked);
+    }
+
+    /// The bug this function was extracted for. Our own unconfirmed spend of
+    /// the owner coin removes it from the node's unspent set, so the coin
+    /// lookup finds nothing — but the name is still ours, and will be whether
+    /// or not the transaction confirms. Spending stays locked until it does.
+    #[test]
+    fn ownership_survives_our_own_unconfirmed_owner_spend() {
+        let ctx = NameActionContext {
+            has_owner_coin: false,
+            owner_spend_in_flight: true,
+            ..ctx_default()
+        };
+        let o = derive_name_ownership(&ctx, None, &[]);
+        assert!(o.owns_name, "a register in flight is not a lost name");
+        assert!(o.spend_locked, "and we still cannot act until it lands");
+    }
+
+    /// Explorer evidence classifies, it never unlocks: the recorded owner
+    /// address is ours but no node-synced coin backs it.
+    #[test]
+    fn ownership_from_explorer_address_owns_but_stays_locked() {
+        let o = derive_name_ownership(&ctx_default(), Some("ours2"), &addrs());
+        assert!(o.owns_name);
+        assert!(o.spend_locked);
+    }
+
+    /// Someone else's address is not evidence of anything.
+    #[test]
+    fn ownership_of_a_stranger_address_is_not_ours() {
+        let o = derive_name_ownership(&ctx_default(), Some("theirs"), &addrs());
+        assert!(!o.owns_name);
+        assert!(o.spend_locked);
+    }
+
+    /// No coin, nothing in flight, no recorded owner: not ours.
+    #[test]
+    fn ownership_with_no_evidence_at_all() {
+        let o = derive_name_ownership(&ctx_default(), None, &addrs());
+        assert!(!o.owns_name);
+        assert!(o.spend_locked);
+    }
+
+    /// `LostNeedsRedeem` is reached two ways and only one is a loss. A wallet
+    /// that outbid itself owns the name and holds its own losing reveals, and
+    /// "Your bid lost" is false for it — on a name it just registered.
+    #[test]
+    fn redeem_on_a_name_you_own_is_not_described_as_losing() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            has_reveal_coin: true,
+            redeemable_reveal_count: 3,
+            redeemable_value_doos: 28_000_000,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            /* owns_name */ true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(matches!(caps.task_state, AuctionTaskState::LostNeedsRedeem));
+        let reason = caps.next_action_reason.unwrap_or_default();
+        assert!(
+            !reason.contains("lost"),
+            "a name you own and registered did not lose: {reason:?}"
+        );
+        assert!(reason.contains("own this name"), "got {reason:?}");
+    }
+
+    /// And the genuine loss keeps saying so — the branch above must not
+    /// swallow the case it was carved out of.
+    #[test]
+    fn redeem_on_a_name_you_lost_still_says_the_bid_lost() {
+        let ctx = NameActionContext {
+            has_reveal_coin: true,
+            redeemable_reveal_count: 1,
+            redeemable_value_doos: 5_000_000,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            /* owns_name */ false,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(matches!(caps.task_state, AuctionTaskState::LostNeedsRedeem));
+        assert!(caps.next_action_reason.unwrap_or_default().contains("lost"));
+    }
+
     /// The same actions on a genuinely registered name stay available.
     #[test]
     fn ownership_actions_stay_available_once_registered() {
@@ -4413,11 +4669,79 @@ mod tests {
         assert!(caps.can_revoke.allowed);
     }
 
+    /// The UI needs the same "is this name actually registered?" answer the
+    /// capability gates are computed from. Re-deriving it in TypeScript from
+    /// `ownsName` is what put DNS, Ownership and Sign message on screen for a
+    /// name the wallet was merely leading the auction on, so the backend
+    /// states it once and the frontend reads it.
+    #[test]
+    fn name_is_registered_is_reported_alongside_the_gates_it_drives() {
+        let reveal_owner = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REVEAL as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &reveal_owner,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(
+            !caps.name_is_registered,
+            "a REVEAL owner coin means the name is not registered yet"
+        );
+
+        let registered_owner = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &registered_owner,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(caps.name_is_registered);
+    }
+
+    /// With no node-synced owner coin at all there is nothing to prove the name
+    /// is registered, and the conservative fallback must not claim it is.
+    #[test]
+    fn name_is_registered_is_false_without_an_owner_coin() {
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx_default(),
+            false,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(!caps.name_is_registered);
+        assert!(!conservative_capabilities("n", "node unreachable").name_is_registered);
+    }
+
     #[test]
     fn build_can_redeem_allowed() {
         let ctx = NameActionContext {
             has_reveal_coin: true,
             redeemable_reveal_count: 1,
+            redeemable_value_doos: 0,
+            owner_spend_in_flight: false,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4492,6 +4816,8 @@ mod tests {
         let ctx = NameActionContext {
             has_reveal_coin: true,
             redeemable_reveal_count: 2,
+            redeemable_value_doos: 0,
+            owner_spend_in_flight: false,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4519,6 +4845,8 @@ mod tests {
         let ctx = NameActionContext {
             has_reveal_coin: true,
             redeemable_reveal_count: 0,
+            redeemable_value_doos: 0,
+            owner_spend_in_flight: false,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4665,8 +4993,13 @@ mod tests {
 
     #[test]
     fn build_owner_actions_allowed_when_owned() {
+        // An ordinary owned name: registered, with no transfer in flight.
+        // This fixture used to also set `transfer_has_items: Some(true)` and
+        // assert Finalize — two different states in one case, which is what
+        // let "Update is fine" and "a transfer is pending" both look true.
+        // The pending-transfer state has its own test below.
         let ctx = NameActionContext {
-            transfer_has_items: Some(true),
+            transfer_has_items: Some(false),
             // A wallet that owns a name it can spend holds a REGISTER-or-later
             // coin; leaving this unset described a state production never has.
             has_owner_coin: true,
@@ -4688,15 +5021,140 @@ mod tests {
         assert_eq!(caps.can_update.reason, None);
         assert!(caps.can_transfer.allowed);
         assert_eq!(caps.can_transfer.reason, None);
-        assert!(caps.can_cancel_transfer.allowed);
-        assert_eq!(caps.can_cancel_transfer.reason, None);
+        // Nothing to cancel either — same reason as Finalize below.
+        assert!(!caps.can_cancel_transfer.allowed);
+        assert_eq!(
+            caps.can_cancel_transfer.reason.as_deref(),
+            Some("name is not in TRANSFER state")
+        );
         assert!(caps.can_renew.allowed);
         assert_eq!(caps.can_renew.reason, None);
         assert!(caps.can_revoke.allowed);
         assert_eq!(caps.can_revoke.reason, None);
-        // finalize allowed since transfer_has_items = Some(true).
+        // Nothing to finalize: no transfer is in flight.
+        assert!(!caps.can_finalize.allowed);
+        assert_eq!(
+            caps.can_finalize.reason.as_deref(),
+            Some("name is not in TRANSFER state")
+        );
+    }
+
+    /// A pending transfer is not a state Update belongs in. hsd lets a
+    /// TRANSFER coin go to UPDATE, RENEW, FINALIZE or REVOKE
+    /// (`rules.verifyCovenants`) — and that UPDATE *is* how a transfer is
+    /// cancelled. So the node accepts the transaction and the user's pending
+    /// transfer quietly disappears, with nothing on screen having said so.
+    /// Cancelling stays available, as the button that says what it does.
+    #[test]
+    fn update_is_refused_while_a_transfer_is_pending() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "TRANSFER".into(),
+            "TRANSFER",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(
+            !caps.can_update.allowed,
+            "updating records mid-transfer silently cancels the transfer"
+        );
+        assert_eq!(
+            caps.can_update.reason.as_deref(),
+            Some("a transfer is pending — updating records would cancel it")
+        );
+        // The actions that genuinely belong to a pending transfer stay live.
         assert!(caps.can_finalize.allowed);
-        assert_eq!(caps.can_finalize.reason, None);
+        assert!(caps.can_cancel_transfer.allowed);
+    }
+
+    /// Cancelling needs something to cancel. `can_finalize` has always
+    /// required `transfer_has_items`; its sibling did not, so on an ordinary
+    /// registered name the button was live and built an UPDATE that changes
+    /// nothing and costs a fee.
+    #[test]
+    fn cancel_transfer_is_refused_when_no_transfer_is_pending() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            transfer_has_items: Some(false),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(!caps.can_cancel_transfer.allowed);
+        assert_eq!(
+            caps.can_cancel_transfer.reason.as_deref(),
+            Some("name is not in TRANSFER state")
+        );
+    }
+
+    /// The UI has to close the records section for exactly the names
+    /// `can_update` refuses, and the only honest way to know is to be told.
+    /// Deriving it from the phase string instead is a second source of truth:
+    /// `transfer_has_items` and `phase == "TRANSFER"` can disagree, and then
+    /// the section and the button it contains disagree too.
+    #[test]
+    fn transfer_pending_is_reported_and_tracks_the_gate_not_the_phase() {
+        let mid_transfer = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        // Deliberately NOT the TRANSFER phase: the items are what decide.
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &mid_transfer,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(caps.transfer_pending);
+        assert!(!caps.can_update.allowed, "the gate agrees with the flag");
+
+        let settled = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            transfer_has_items: Some(false),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &settled,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(!caps.transfer_pending);
+        assert!(caps.can_update.allowed);
+        assert!(!conservative_capabilities("n", "unreachable").transfer_pending);
     }
 
     #[test]

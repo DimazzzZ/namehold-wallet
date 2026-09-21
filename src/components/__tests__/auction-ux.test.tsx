@@ -66,6 +66,10 @@ describe("WalletView — auction UX", () => {
       phase: "UNKNOWN",
       taskState: "unavailableOther",
       ownsName: false,
+      nameIsRegistered: false,
+      transferPending: false,
+      redeemableRevealCount: 0,
+      redeemableValueDoos: 0,
       hasBidCommitment: false,
       hasRevealCoin: false,
       hasOwnerCoin: false,
@@ -359,6 +363,10 @@ describe("NameActionsModal — phase header + DNS editor", () => {
           phase: "CLOSED",
           taskState: "wonNeedsRegister",
           ownsName: true,
+          nameIsRegistered: false,
+          transferPending: false,
+          redeemableRevealCount: 0,
+          redeemableValueDoos: 0,
           hasBidCommitment: false,
           hasRevealCoin: false,
           hasOwnerCoin: true,
@@ -437,6 +445,9 @@ describe("NameActionsModal — phase header + DNS editor", () => {
     invokeMock.mockImplementation(routeModal(captured));
     render(<NameActionsModal name="cuatesttld" open onClose={() => {}} />, { wrapper: wrapper() });
 
+    // Records are optional on the Register step, so the editor sits behind a
+    // disclosure — whoever does want records up front opens it.
+    fireEvent.click(await screen.findByTestId("register-dns-toggle"));
     await screen.findByTestId("dns-rows");
     // Default first row is a TXT — fill its value, then Register.
     fireEvent.change(screen.getByLabelText("record value"), {
@@ -470,6 +481,10 @@ describe("NameActionsModal — local bid shown before reveal", () => {
           phase: "BIDDING",
           taskState: "waitingForBidding",
           ownsName: false,
+          nameIsRegistered: false,
+          transferPending: false,
+          redeemableRevealCount: 0,
+          redeemableValueDoos: 0,
           hasBidCommitment: opts.hasBidCommitment,
           hasRevealCoin: false,
           hasOwnerCoin: false,
@@ -575,6 +590,10 @@ describe("NameActionsModal — recover bid commitment (Task 2 / C2)", () => {
           phase: "REVEAL",
           taskState: "unavailableOther",
           ownsName: false,
+          nameIsRegistered: false,
+          transferPending: false,
+          redeemableRevealCount: 0,
+          redeemableValueDoos: 0,
           hasBidCommitment,
           hasRevealCoin: false,
           hasOwnerCoin: false,

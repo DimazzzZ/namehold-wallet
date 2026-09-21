@@ -35,6 +35,11 @@ function capsFor(name: string, ownsName: boolean): NameActionCapabilities {
     phase: "CLOSED",
     taskState: "ownedNoUrgentAction",
     ownsName,
+    // Signing proves ownership, which does not exist before REGISTER.
+    nameIsRegistered: ownsName,
+    transferPending: false,
+    redeemableRevealCount: 0,
+    redeemableValueDoos: 0,
     hasBidCommitment: false,
     hasBidCoin: false,
     hasRevealCoin: false,

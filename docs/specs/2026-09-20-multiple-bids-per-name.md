@@ -43,6 +43,15 @@ showing a stale state the user reads as a bug.
   is not the current one. Its only valid spend was a REVEAL inside that
   auction's window, so it is unrecoverable; it is reported, never offered as
   an action.
+- **Registered** — the name's owner coin is at `COV_REGISTER` or later.
+  Distinct from **owned**: during REVEAL hsd reports the highest revealer as
+  the owner, so a wallet leading its own auction is "owned" while holding
+  nothing but a REVEAL coin. `nameIsRegistered` carries the distinction to the
+  UI.
+- **Live / upcoming / absent** — the three states a modal section can be in
+  (R19). Live has at least one allowed action. Upcoming belongs to a later
+  stage and renders as one muted line. Absent cannot apply and renders
+  nothing.
 - **Waiting for a block** — we broadcast a transaction and the chain has not
   mined it. Not an error and not a phase: a state the UI names so the user
   does not read the unchanged phase as a failure.
@@ -152,9 +161,28 @@ highest revealer as owner, and a REVEAL coin may become only a REGISTER or a
 REDEEM — every one of those transactions would have been refused by the node.
 The reason says which half is missing (`"the name is not registered yet"`).
 `can_register` is untouched: it is the action that moves the coin to REGISTER.
-*Enforced:* `commands/names.rs::build_name_action_capabilities`.
+
+Signing a message for a name is the same claim without a transaction, and is
+refused under the same rule. `get_name_coin` resolves whatever
+`tracked_name_states.owner_txid` points at and filters on no covenant, so
+during REVEAL it hands back our own REVEAL coin; the command signed it and
+returned a well-formed proof of ownership that every verifier resolves as
+false.
+*Enforced:* `commands/names.rs::build_name_action_capabilities`,
+`commands/tx.rs::sign_name_message`.
 *Pinned:* `names::tests::ownership_actions_need_a_registered_name_not_just_ownership`,
-`names::tests::ownership_actions_stay_available_once_registered`.
+`names::tests::ownership_actions_stay_available_once_registered`,
+`sign_name_message_tests::rejects_a_name_whose_owner_coin_is_still_a_reveal`.
+
+**R11b — The two transfer capabilities answer for the transfer.** Update is
+refused while a transfer is pending: hsd lets a TRANSFER coin go to UPDATE,
+RENEW, FINALIZE or REVOKE, and that UPDATE branch *is* the cancel, so a button
+labelled "edit your DNS records" was a way to lose a transfer in flight.
+Cancel transfer requires a transfer to cancel — the condition `can_finalize`
+has always carried — instead of building a no-op UPDATE that costs a fee.
+*Enforced:* `commands/names.rs::build_name_action_capabilities`.
+*Pinned:* `names::tests::update_is_refused_while_a_transfer_is_pending`,
+`names::tests::cancel_transfer_is_refused_when_no_transfer_is_pending`.
 
 **R12 — A name whose auction lapsed can be opened again.** Only an
 *unconfirmed* OPEN coin counts as a pending OPEN. The OPEN output is a
@@ -224,6 +252,31 @@ came from a control handling them itself.
 `wallet-view.test.tsx :: clicking a cell button in an Owned Names row opens only that button's dialog`,
 `rowClick.test.ts`.
 
+**R19 — The modal's sections are a map of the lifecycle, not a catalogue of
+verbs.** Each of the three — manual auction actions, DNS records, ownership
+(which now contains signing) — is **live** when something inside is allowed,
+**upcoming** when it belongs to a later stage (one muted line naming what
+unlocks it, no controls), or **absent** when it cannot apply. Four rules carry
+the weight: Register lives in the records section, so that section opens
+before the name is registered; a pending transfer closes it again (R11b),
+read from the backend's `transferPending` rather than re-derived from the
+phase; while a broadcast waits for a block every section is absent, since
+offering alternatives then only invites a competing transaction; and the
+advanced area — toggle and container both — appears only when at least one
+section is live, so an upcoming line is shown beside a live section and never
+as a menu whose whole content is "come back later". Every gate that read
+`ownsName` — the section filter, auto-expand, the toggle and its label, the
+read-only DNS suppression, and the "Owned by this wallet" badge — now reads
+the stage.
+*Enforced:* `src/lib/nameSections.ts::resolveSections`,
+`src/components/NameActionsModal.tsx`,
+`src/components/name-actions/UpcomingSection.tsx`,
+capability fields `nameIsRegistered` and `transferPending`.
+*Pinned:* `nameSections.test.ts` (the stage matrix),
+`name-modal-sections.test.tsx`,
+`name-actions-bid-gate.test.tsx :: offers no advanced section at all during OPENING, so no bid can be invited`,
+`name-actions-gating.test.tsx :: states the reason once and offers no menu when the node can't write`.
+
 ## 4. Explicitly not enforced
 
 - **A stranded lockup is not recoverable.** R10 reports it; nothing reclaims
@@ -240,8 +293,16 @@ came from a control handling them itself.
 - **A commitment with no recorded auction is not attributed to one.** R3
   counts it in the current auction deliberately. It is not proof the bid is
   live.
-- **`Sign message` is not gated on registration.** R11 covers the five
-  ownership *spends*; signing is offline and does not produce a transaction.
+- **An upcoming section is not shown on its own.** R19 renders it as one muted
+  line naming what unlocks it, but only inside the advanced area, which needs
+  a live section to exist at all. On a name where nothing is actionable — a
+  reveal already sent, say — there is no menu and no line: a menu whose whole
+  content is "come back later" is the empty menu R19 exists to remove. It is
+  also not expandable, since expanding would reveal nothing.
+- **The three states are not permissions.** A live section can still hold
+  buttons that are individually refused — an owner coin that has not synced,
+  a locked signer — each with its own reason. The section answers "does this
+  stage have this?", the capability answers "can you press it?".
 
 ## 5. Known gaps
 
@@ -251,11 +312,6 @@ came from a control handling them itself.
   moved (the fee and the transaction itself are correct). Accepted for now:
   it is a display figure on a self-spend, and every output returns to the
   wallet.
-- **Advanced sections render disabled rather than hidden.** On a name where
-  the whole section is unavailable — DNS records before REGISTER, say — the
-  buttons are shown disabled with their reason (R17) instead of the section
-  being hidden. Accepted: a visible reason teaches the phase order; an absent
-  section reads as a missing feature.
 - **`DataTable` still carries an `onRowClick` prop with no caller.** Kept
   because the guard in R18 is the thing worth keeping, and the next table that
   wants a row click should get the guarded version.
@@ -289,6 +345,9 @@ came from a control handling them itself.
   `ActionReasonBanner.tsx`.
 - `src/lib/rowClick.ts`, `src/components/ui/DataTable.tsx`,
   `src/components/WalletView.tsx`.
+- `src/lib/nameSections.ts` — the stage matrix, and the only place that
+  decides which sections exist.
+- `src/components/name-actions/UpcomingSection.tsx`.
 
 **Tests**
 - `src-tauri/src/tests/live_node_it.rs` — the regtest end-to-end passes, gated
@@ -296,6 +355,7 @@ came from a control handling them itself.
   about: they mine.
 - `src-tauri/src/tests/{chain_scan,read_cmd,names_action_context,name_capabilities,names_cmd,deadlines_cmd}_tests.rs`.
 - `src/lib/auction.test.ts`, `src/lib/rowClick.test.ts`,
+  `src/lib/nameSections.test.ts`,
   `src/components/__tests__/{wallet-view,name-acquisition,auction-positions,tooltip}.test.tsx`,
   `src/components/name-actions/__tests__/name-bids-panel.test.tsx`.
 

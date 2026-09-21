@@ -7,6 +7,7 @@
 // every function degrades to "unknown" rather than throwing.
 
 import type { HsdNameStats, AuctionTaskState, NameActionCapabilities } from "../types";
+import { formatHns } from "./utils";
 
 export type AuctionPhase =
   "AVAILABLE" | "OPENING" | "BIDDING" | "REVEAL" | "CLOSED" | "REVOKED" | "TRANSFER" | "OTHER";
@@ -342,12 +343,26 @@ export function taskSummaryFromCapabilities(
     caps.phase === "BIDDING" &&
     caps.hasBidCommitment &&
     (caps.taskState === "readyToBid" || caps.taskState === "waitingForBidding");
+  // `lostNeedsRedeem` is reached two ways and only one is a loss. A wallet
+  // that outbid itself owns the name and holds its own losing reveals — the
+  // ordinary outcome of placing several bids. "Lost" on a name it just
+  // registered is false, and it is the first word the user reads.
+  const reclaimingOwnBids = caps.taskState === "lostNeedsRedeem" && caps.ownsName;
   return {
     taskState: caps.taskState,
-    label: isReallyBidding ? "Bidding" : taskStateLabel(caps.taskState),
+    label: isReallyBidding
+      ? "Bidding"
+      : reclaimingOwnBids
+        ? "Reclaim Your Lockup"
+        : taskStateLabel(caps.taskState),
     // Match the modal's auctionPhase("BIDDING") badge variant so the two
     // surfaces are visually identical, not just textually.
-    variant: isReallyBidding ? "warning" : taskStateBadgeVariant(caps.taskState),
+    // Not an error either: nothing went wrong on a name the wallet holds.
+    variant: isReallyBidding
+      ? "warning"
+      : reclaimingOwnBids
+        ? "info"
+        : taskStateBadgeVariant(caps.taskState),
     urgency: taskStateUrgency(caps.taskState),
     nextActionKey: caps.nextActionKey,
     nextActionLabel: caps.nextActionLabel,
@@ -479,6 +494,21 @@ function actionTitle(action: string): string {
 export function pendingBroadcastText(action: string | null | undefined): string | null {
   if (!action) return null;
   return `${actionTitle(action)} is broadcast and waiting to be mined. Nothing changes on-chain until it lands in a block.`;
+}
+
+/**
+ * What pressing Redeem actually reclaims. "Redeem" names a covenant; on its
+ * own it tells the user nothing about money the wallet is holding for them.
+ * Falls back to the plain sentence when the backend could not total it.
+ */
+export function redeemExplainer(caps: NameActionCapabilities | null | undefined): string {
+  const n = caps?.redeemableRevealCount ?? 0;
+  const doos = caps?.redeemableValueDoos ?? 0;
+  if (n <= 0 || doos <= 0) {
+    return "Reclaim the funds locked in your losing bids on this name.";
+  }
+  const bids = n === 1 ? "losing bid" : "losing bids";
+  return `Reclaim ${formatHns(doos)} HNS locked in ${n} ${bids} on this name.`;
 }
 
 /** The compact form for a list row: "Reveal · waiting for a block". */

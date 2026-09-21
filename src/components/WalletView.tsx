@@ -26,7 +26,7 @@ import {
 import { useStartFullSync, useSyncStatus, useCancelFullSync } from "../queries/sync";
 import { useNodeLive, useStartHsd } from "../queries/node";
 import { useSyncTriggerStore } from "../stores/syncTrigger";
-import { auctionPhase, formatCountdown } from "../lib/auction";
+import { auctionPhase, formatCountdown, taskSummaryFromCapabilities } from "../lib/auction";
 import { displayName } from "../lib/idn";
 import { NameActionsModal } from "./NameActionsModal";
 import { BlockInfoModal } from "./BlockInfoModal";
@@ -111,6 +111,14 @@ export function WalletView() {
   const { data: nameCaps = [], isError: nameCapsError } = useNamesActionCapabilities(
     profile?.watchOnly ? [] : names.map((n) => n.name),
     profile?.id ?? null,
+  );
+
+  // One index over the batch, for the urgency alerts, the batch-action
+  // eligibility and the Owned Names State column — they must all describe a
+  // name the same way.
+  const capsByName = useMemo(
+    () => new Map<string, NameActionCapabilities>(nameCaps.map((c) => [c.name, c])),
+    [nameCaps],
   );
 
   const startSync = useStartFullSync();
@@ -293,7 +301,6 @@ export function WalletView() {
     if (selectedNames.size === 0 || nameCaps.length === 0) {
       return { canReveal: false, canRedeem: false, canFinalize: false, canTransfer: false };
     }
-    const capsByName = new Map(nameCaps.map((c) => [c.name, c]));
     let canReveal = true;
     let canRedeem = true;
     let canFinalize = true;
@@ -969,9 +976,6 @@ export function WalletView() {
           registerable coin for this name". */}
       {!isWatchOnly &&
         (() => {
-          const capsByName = new Map<string, NameActionCapabilities>(
-            nameCaps.map((c) => [c.name, c]),
-          );
           // Countdown fragment for a name's capabilities — honest: when the
           // backend has no live countdown (e.g. node unreachable/no stats),
           // this is null and the banner renders WITHOUT a countdown fragment
@@ -1254,13 +1258,28 @@ export function WalletView() {
                           </Tooltip>
                         </td>
                         <td className="py-1 pr-4">
-                          {n.state ? (
-                            <Badge variant={auctionPhase(n.state).variant}>
-                              {auctionPhase(n.state).label}
-                            </Badge>
-                          ) : (
-                            "—"
-                          )}
+                          {/* What the name needs, not which auction phase it
+                              is in. The same summary the Auctions list and the
+                              name modal show, so one name is never described
+                              two ways — a row reading "Closed" opened a modal
+                              headed "Won — Register Now". The raw phase is
+                              also nearly constant here: every name you own has
+                              a closed auction. It stays as the fallback for
+                              the window before capabilities load, and for a
+                              watch-only profile that never fetches them. */}
+                          {(() => {
+                            const task = taskSummaryFromCapabilities(capsByName.get(n.name));
+                            if (task) {
+                              return <Badge variant={task.variant}>{task.label}</Badge>;
+                            }
+                            return n.state ? (
+                              <Badge variant={auctionPhase(n.state).variant}>
+                                {auctionPhase(n.state).label}
+                              </Badge>
+                            ) : (
+                              "—"
+                            );
+                          })()}
                         </td>
                         <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
                           {n.height ? (
