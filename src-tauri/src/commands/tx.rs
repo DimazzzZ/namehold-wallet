@@ -197,7 +197,9 @@ pub(crate) async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Opti
         }
     };
     let profile_id = match state.db.lock() {
-        Ok(conn) => db::queries::get_active_profile_id(&conn).ok().filter(|id| !id.is_empty()),
+        Ok(conn) => db::queries::get_active_profile_id(&conn)
+            .ok()
+            .filter(|id| !id.is_empty()),
         Err(_) => None,
     };
     match settings {
@@ -1970,16 +1972,25 @@ pub async fn get_write_capability(
         let (source, effective_url, client_opt) = match active_profile(&conn) {
             Ok(profile) => {
                 match crate::noncustodial::node_config::effective_node_config_for_profile(
-                    &conn, &profile.id,
+                    &conn,
+                    &profile.id,
                 ) {
                     Ok(cfg) => {
                         let client = NodeRpcClient::for_profile(&conn, &profile.id).ok();
                         (cfg.chain_source, cfg.node_rpc_url, client)
                     }
-                    Err(_) => (ChainSource::from_settings(&settings), "your node".to_string(), None),
+                    Err(_) => (
+                        ChainSource::from_settings(&settings),
+                        "your node".to_string(),
+                        None,
+                    ),
                 }
             }
-            Err(_) => (ChainSource::from_settings(&settings), "your node".to_string(), None),
+            Err(_) => (
+                ChainSource::from_settings(&settings),
+                "your node".to_string(),
+                None,
+            ),
         };
         let allow_remote = crate::noncustodial::rpc::remote_broadcast_allowed(&settings);
         // One address to probe the node's address index (if a profile exists).
@@ -1990,7 +2001,15 @@ pub async fn get_write_capability(
         let expected_network = db::queries::get_active_profile_network(&conn)
             .ok()
             .flatten();
-        (source, allow_remote, settings, probe_addr, expected_network, effective_url, client_opt)
+        (
+            source,
+            allow_remote,
+            settings,
+            probe_addr,
+            expected_network,
+            effective_url,
+            client_opt,
+        )
     };
     let mut cap =
         crate::providers::WriteCapability::evaluate(signer_unlocked, source, allow_remote);

@@ -112,7 +112,11 @@ fn test_fee_rate_explicit_overrides_settings() {
         change_address: "tb1qchange".into(),
         funding: vec![],
         settings: HashMap::new(),
-        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
+        node: crate::noncustodial::rpc::NodeRpcClient::new(
+            "http://127.0.0.1:1",
+            "",
+            crate::noncustodial::rpc::ChainSource::LocalNode,
+        ),
     };
 
     // Explicit fee_rate takes priority
@@ -134,7 +138,11 @@ fn test_fee_rate_from_settings_falls_back() {
         change_address: "tb1qchange".into(),
         funding: vec![],
         settings: HashMap::new(),
-        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
+        node: crate::noncustodial::rpc::NodeRpcClient::new(
+            "http://127.0.0.1:1",
+            "",
+            crate::noncustodial::rpc::ChainSource::LocalNode,
+        ),
     };
 
     // No explicit fee_rate and no settings → default
@@ -160,7 +168,11 @@ fn test_fee_rate_from_settings_kvb() {
         change_address: "tb1qchange".into(),
         funding: vec![],
         settings,
-        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
+        node: crate::noncustodial::rpc::NodeRpcClient::new(
+            "http://127.0.0.1:1",
+            "",
+            crate::noncustodial::rpc::ChainSource::LocalNode,
+        ),
     };
 
     let rate = names::fee_rate(&ctx, None);
@@ -186,7 +198,11 @@ fn test_fee_rate_from_settings_large_kvb() {
         change_address: "tb1qchange".into(),
         funding: vec![],
         settings,
-        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
+        node: crate::noncustodial::rpc::NodeRpcClient::new(
+            "http://127.0.0.1:1",
+            "",
+            crate::noncustodial::rpc::ChainSource::LocalNode,
+        ),
     };
 
     assert_eq!(names::fee_rate(&ctx, None), 100);
@@ -210,7 +226,11 @@ fn test_fee_rate_invalid_kvb_string_falls_back() {
         change_address: "tb1qchange".into(),
         funding: vec![],
         settings,
-        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
+        node: crate::noncustodial::rpc::NodeRpcClient::new(
+            "http://127.0.0.1:1",
+            "",
+            crate::noncustodial::rpc::ChainSource::LocalNode,
+        ),
     };
 
     // Invalid parse → falls back to default
@@ -3794,13 +3814,9 @@ async fn capabilities_uses_per_profile_node_override() {
     };
 
     let app = mock_app_with(state);
-    let caps = names::get_name_action_capabilities(
-        app.state(),
-        "routed".into(),
-        Some(profile_id),
-    )
-    .await
-    .expect("capabilities should resolve via the override node");
+    let caps = names::get_name_action_capabilities(app.state(), "routed".into(), Some(profile_id))
+        .await
+        .expect("capabilities should resolve via the override node");
 
     // The phase came from the override node's getnameinfo — proving the client
     // was built from the per-profile effective config, not the global URL.

@@ -386,13 +386,9 @@ impl NodeRpcClient {
     /// client from global settings uses this instead, so per-profile overrides
     /// take effect uniformly. Propagates [`AppError::NotFound`] for a missing
     /// profile rather than silently defaulting.
-    pub fn for_profile(
-        conn: &rusqlite::Connection,
-        profile_id: &str,
-    ) -> Result<Self, AppError> {
-        let cfg = crate::noncustodial::node_config::effective_node_config_for_profile(
-            conn, profile_id,
-        )?;
+    pub fn for_profile(conn: &rusqlite::Connection, profile_id: &str) -> Result<Self, AppError> {
+        let cfg =
+            crate::noncustodial::node_config::effective_node_config_for_profile(conn, profile_id)?;
         Ok(Self::from_effective_config(&cfg))
     }
 

@@ -1860,12 +1860,7 @@ mod tests {
 
     // --- Per-profile node config resolution for the watched-names daemon -----
 
-    fn set_profile_override(
-        conn: &rusqlite::Connection,
-        profile_id: &str,
-        key: &str,
-        value: &str,
-    ) {
+    fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
         conn.execute(
             "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
              ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
@@ -1878,7 +1873,14 @@ mod tests {
     fn resolve_watched_client_uses_active_profile_override() {
         let conn = test_conn();
         queries::insert_wallet_profile(
-            &conn, "p1", "Primary", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+            &conn,
+            "p1",
+            "Primary",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
         )
         .unwrap();
         set_profile_override(&conn, "p1", "node_rpc_url", "http://override.local:12037");
@@ -1891,7 +1893,14 @@ mod tests {
     fn resolve_watched_client_falls_back_to_global_when_no_override() {
         let conn = test_conn();
         queries::insert_wallet_profile(
-            &conn, "p1", "Primary", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+            &conn,
+            "p1",
+            "Primary",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
         )
         .unwrap();
         queries::set_setting(&conn, "node_rpc_url", "http://global.local:12037").unwrap();
@@ -1904,7 +1913,14 @@ mod tests {
     fn resolve_watched_client_uses_builtin_default_when_no_override_or_global() {
         let conn = test_conn();
         queries::insert_wallet_profile(
-            &conn, "p1", "Primary", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+            &conn,
+            "p1",
+            "Primary",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
         )
         .unwrap();
 
@@ -1954,7 +1970,14 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let conn = crate::commands::sync::open_conn(path.to_str().unwrap()).unwrap();
         queries::insert_wallet_profile(
-            &conn, "p1", "Primary", "mnemonic_hot", "mainnet", "xpubFAKE", 0, false,
+            &conn,
+            "p1",
+            "Primary",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
         )
         .unwrap();
         queries::set_active_profile(&conn, "p1").unwrap();

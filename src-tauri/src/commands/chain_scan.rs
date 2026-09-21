@@ -71,7 +71,9 @@ pub async fn run_chain_scanner(db_path: String) {
                 }
             };
             let network = queries::get_active_profile_network(&conn).ok().flatten();
-            let profile_id = queries::get_active_profile_id(&conn).ok().filter(|s| !s.is_empty());
+            let profile_id = queries::get_active_profile_id(&conn)
+                .ok()
+                .filter(|s| !s.is_empty());
             (settings, network, profile_id)
         };
 

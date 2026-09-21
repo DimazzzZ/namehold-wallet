@@ -885,9 +885,9 @@ pub async fn read_name_info(
         let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
         let explorer_opt = explorer_client(&settings, network);
         let node_opt = match queries::get_active_profile_id(&conn) {
-            Ok(id) if !id.is_empty() => {
-                Some(crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &id)?)
-            }
+            Ok(id) if !id.is_empty() => Some(crate::noncustodial::rpc::NodeRpcClient::for_profile(
+                &conn, &id,
+            )?),
             _ => None,
         };
         (explorer_opt, node_opt)
@@ -1242,9 +1242,9 @@ pub async fn get_resource(
         let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
         let explorer_opt = explorer_client(&s, network);
         let node_opt = match queries::get_active_profile_id(&conn) {
-            Ok(id) if !id.is_empty() => {
-                Some(crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &id)?)
-            }
+            Ok(id) if !id.is_empty() => Some(crate::noncustodial::rpc::NodeRpcClient::for_profile(
+                &conn, &id,
+            )?),
             _ => None,
         };
         (explorer_opt, node_opt)
@@ -1270,12 +1270,12 @@ pub async fn get_resource(
     };
 
     // 2. Fetch resource records (node only).
-    let records: Vec<serde_json::Value> = if let (true, Some(node)) = (node_ready, node_opt.as_ref())
-    {
-        get_resource_records_with_client(node, &name).await
-    } else {
-        vec![]
-    };
+    let records: Vec<serde_json::Value> =
+        if let (true, Some(node)) = (node_ready, node_opt.as_ref()) {
+            get_resource_records_with_client(node, &name).await
+        } else {
+            vec![]
+        };
 
     // 3. Assemble the shape the frontend expects.
     let state_str = info.get("state").and_then(|v| v.as_str()).unwrap_or("");

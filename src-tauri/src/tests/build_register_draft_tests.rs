@@ -166,7 +166,11 @@ fn setup(owner_value: u64, funding_value: i64) -> (rusqlite::Connection, Ctx, Na
             child_index: 0,
         }],
         settings: HashMap::new(),
-        node: crate::noncustodial::rpc::NodeRpcClient::new("http://127.0.0.1:1", "", crate::noncustodial::rpc::ChainSource::LocalNode),
+        node: crate::noncustodial::rpc::NodeRpcClient::new(
+            "http://127.0.0.1:1",
+            "",
+            crate::noncustodial::rpc::ChainSource::LocalNode,
+        ),
     };
     let coin = owner_coin(&owner_txid, &recv0.address, owner_value);
     let rblock = [0x55u8; 32]; // arbitrary renewal block hash

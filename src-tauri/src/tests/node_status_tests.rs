@@ -660,10 +660,11 @@ async fn probe_uses_profile_override_over_global() {
     set_profile_override(&conn, "W1", "node_rpc_url", &server_override.url());
     drop(conn);
 
-    let h = node_tip_height_if_synced_from_profile_with_network(&db_path, "W1", Some("mainnet"))
-        .await;
+    let h =
+        node_tip_height_if_synced_from_profile_with_network(&db_path, "W1", Some("mainnet")).await;
     assert_eq!(
-        h, Some(500),
+        h,
+        Some(500),
         "should use profile override, not unreachable global URL"
     );
 }
@@ -694,8 +695,8 @@ async fn probe_falls_back_to_global_when_no_override() {
     create_test_profile(&conn, "W1", "regtest");
     drop(conn);
 
-    let h = node_tip_height_if_synced_from_profile_with_network(&db_path, "W1", Some("regtest"))
-        .await;
+    let h =
+        node_tip_height_if_synced_from_profile_with_network(&db_path, "W1", Some("regtest")).await;
     assert_eq!(h, Some(200), "should fall back to global settings");
 }
 
@@ -710,8 +711,8 @@ async fn probe_uses_builtin_default_when_no_override_or_global() {
     create_test_profile(&conn, "W1", "regtest");
     drop(conn);
 
-    let h = node_tip_height_if_synced_from_profile_with_network(&db_path, "W1", Some("regtest"))
-        .await;
+    let h =
+        node_tip_height_if_synced_from_profile_with_network(&db_path, "W1", Some("regtest")).await;
     assert_eq!(
         h, None,
         "unreachable built-in default should return None, not panic"
@@ -744,8 +745,8 @@ async fn probe_respects_network_mismatch_with_profile_override() {
     set_profile_override(&conn, "W1", "node_rpc_url", &server_override.url());
     drop(conn);
 
-    let h = node_tip_height_if_synced_from_profile_with_network(&db_path, "W1", Some("mainnet"))
-        .await;
+    let h =
+        node_tip_height_if_synced_from_profile_with_network(&db_path, "W1", Some("mainnet")).await;
     assert_eq!(
         h, None,
         "network mismatch (mainnet profile vs regtest node) must be rejected"
@@ -781,7 +782,10 @@ async fn node_ready_from_profile_returns_true_when_synced_and_network_matches() 
     drop(conn);
 
     let ready = node_ready_from_profile(&db_path, "W1", Some("mainnet")).await;
-    assert!(ready, "node should be ready when synced and network matches");
+    assert!(
+        ready,
+        "node should be ready when synced and network matches"
+    );
 }
 
 #[tokio::test]
@@ -1272,7 +1276,10 @@ async fn probe_and_update_falls_back_to_global_when_no_override() {
     let app = app_with(conn);
     let state = app.state::<AppState>();
     let alive = crate::commands::node::probe_and_update(&state).await;
-    assert!(alive, "probe must fall back to global settings when no override");
+    assert!(
+        alive,
+        "probe must fall back to global settings when no override"
+    );
 }
 
 #[tokio::test]
@@ -1317,5 +1324,8 @@ async fn probe_and_update_uses_global_when_no_active_profile() {
     let app = app_with(conn);
     let state = app.state::<AppState>();
     let alive = crate::commands::node::probe_and_update(&state).await;
-    assert!(alive, "probe must use global settings when there is no active profile");
+    assert!(
+        alive,
+        "probe must use global settings when there is no active profile"
+    );
 }

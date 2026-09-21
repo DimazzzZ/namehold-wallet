@@ -127,7 +127,10 @@ fn override_takes_precedence_over_global() {
     assert_eq!(cfg.node_rpc_url, "http://127.0.0.1:14037");
     assert_eq!(cfg.node_rpc_api_key, "localkey");
     assert_eq!(cfg.chain_source, ChainSource::LocalNode);
-    assert!(cfg.from_override, "any override key must flag from_override");
+    assert!(
+        cfg.from_override,
+        "any override key must flag from_override"
+    );
 }
 
 #[test]
@@ -172,7 +175,10 @@ fn get_profile_settings_returns_only_that_profiles_rows() {
     set_override(&conn, "p1", "node_rpc_url", "http://127.0.0.1:14037");
     set_override(&conn, "p2", "node_rpc_url", "http://127.0.0.1:12037");
     let m = get_profile_settings(&conn, "p1").unwrap();
-    assert_eq!(m.get("node_rpc_url").map(String::as_str), Some("http://127.0.0.1:14037"));
+    assert_eq!(
+        m.get("node_rpc_url").map(String::as_str),
+        Some("http://127.0.0.1:14037")
+    );
     assert_eq!(m.len(), 1, "must not leak other profiles' overrides");
 }
 

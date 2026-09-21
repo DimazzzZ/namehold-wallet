@@ -564,8 +564,17 @@ fn get_deserializes_claimed_flag_and_txid() {
 /// Helper: create a wallet profile with the minimal required columns and make
 /// it active. Matches the shape used by the other per-profile command tests.
 fn add_active_profile(conn: &rusqlite::Connection, id: &str, network: &str) {
-    db::queries::insert_wallet_profile(conn, id, id, "mnemonic_hot", network, "xpubDUMMY", 0, false)
-        .unwrap();
+    db::queries::insert_wallet_profile(
+        conn,
+        id,
+        id,
+        "mnemonic_hot",
+        network,
+        "xpubDUMMY",
+        0,
+        false,
+    )
+    .unwrap();
     db::queries::set_active_profile(conn, id).unwrap();
 }
 

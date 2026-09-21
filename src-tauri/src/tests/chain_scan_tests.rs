@@ -948,8 +948,6 @@ async fn scan_block_assigns_correct_vout_index() {
     assert_eq!(bids[1].index, Some(1));
 }
 
-
-
 // --- Per-profile node config resolution for chain_scan ----------------------
 
 fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
@@ -963,11 +961,11 @@ fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str
 
 #[test]
 fn resolve_scanner_client_uses_active_profile_override() {
-    use crate::noncustodial::rpc::NodeRpcClient;
     use crate::db::queries::insert_wallet_profile;
-    
+    use crate::noncustodial::rpc::NodeRpcClient;
+
     let c = conn();
-    
+
     // Create a profile on mainnet
     insert_wallet_profile(
         &c,
@@ -978,14 +976,15 @@ fn resolve_scanner_client_uses_active_profile_override() {
         "xpubFAKE",
         0,
         false,
-    ).unwrap();
-    
+    )
+    .unwrap();
+
     // Set a per-profile override for this profile
     set_profile_override(&c, "p1", "node_rpc_url", "http://override.local:12037");
-    
+
     // Resolve the client for the scanner using the profile
     let client = NodeRpcClient::for_profile(&c, "p1").unwrap();
-    
+
     // Verify it uses the override URL, not the global default
     #[cfg(test)]
     {
@@ -995,11 +994,11 @@ fn resolve_scanner_client_uses_active_profile_override() {
 
 #[test]
 fn resolve_scanner_client_falls_back_to_global_when_no_override() {
+    use crate::db::queries::{insert_wallet_profile, set_setting};
     use crate::noncustodial::rpc::NodeRpcClient;
-    use crate::db::queries::{set_setting, insert_wallet_profile};
-    
+
     let c = conn();
-    
+
     // Create a profile on mainnet with no per-profile override
     insert_wallet_profile(
         &c,
@@ -1010,14 +1009,15 @@ fn resolve_scanner_client_falls_back_to_global_when_no_override() {
         "xpubFAKE",
         0,
         false,
-    ).unwrap();
-    
+    )
+    .unwrap();
+
     // Set a global node URL
     set_setting(&c, "node_rpc_url", "http://global.local:12037").unwrap();
-    
+
     // Resolve the client for the scanner
     let client = NodeRpcClient::for_profile(&c, "p1").unwrap();
-    
+
     // Verify it uses the global URL
     #[cfg(test)]
     {
@@ -1027,11 +1027,11 @@ fn resolve_scanner_client_falls_back_to_global_when_no_override() {
 
 #[test]
 fn resolve_scanner_client_uses_builtin_default_when_no_override_or_global() {
-    use crate::noncustodial::rpc::NodeRpcClient;
     use crate::db::queries::insert_wallet_profile;
-    
+    use crate::noncustodial::rpc::NodeRpcClient;
+
     let c = conn();
-    
+
     // Create a profile on mainnet with no override and no global setting
     insert_wallet_profile(
         &c,
@@ -1042,15 +1042,15 @@ fn resolve_scanner_client_uses_builtin_default_when_no_override_or_global() {
         "xpubFAKE",
         0,
         false,
-    ).unwrap();
-    
+    )
+    .unwrap();
+
     // No override, no global setting — should use built-in default
     let client = NodeRpcClient::for_profile(&c, "p1").unwrap();
-    
+
     // Built-in default for mainnet is http://127.0.0.1:12037
     #[cfg(test)]
     {
         assert_eq!(client.node_url(), "http://127.0.0.1:12037");
     }
 }
-

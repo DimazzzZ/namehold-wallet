@@ -42,8 +42,7 @@ pub fn get_profile_settings(
     conn: &rusqlite::Connection,
     profile_id: &str,
 ) -> Result<HashMap<String, String>, AppError> {
-    let mut stmt =
-        conn.prepare("SELECT key, value FROM profile_settings WHERE profile_id = ?1")?;
+    let mut stmt = conn.prepare("SELECT key, value FROM profile_settings WHERE profile_id = ?1")?;
     let rows = stmt.query_map([profile_id], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;

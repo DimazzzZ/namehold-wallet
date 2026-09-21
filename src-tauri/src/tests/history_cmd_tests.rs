@@ -67,8 +67,7 @@ async fn history_uses_active_profile_override() {
     let _m = server_override
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(
-            serde_json::to_string(&vec![receive_tx("aa", 100, "hs1qmine", 100_000_000)])
-                .unwrap(),
+            serde_json::to_string(&vec![receive_tx("aa", 100, "hs1qmine", 100_000_000)]).unwrap(),
         )
         .expect_at_least(1)
         .create_async()
@@ -101,8 +100,7 @@ async fn history_falls_back_to_global_when_no_override() {
     let _m = server_global
         .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
         .with_body(
-            serde_json::to_string(&vec![receive_tx("bb", 200, "hs1qmine", 200_000_000)])
-                .unwrap(),
+            serde_json::to_string(&vec![receive_tx("bb", 200, "hs1qmine", 200_000_000)]).unwrap(),
         )
         .expect_at_least(1)
         .create_async()
