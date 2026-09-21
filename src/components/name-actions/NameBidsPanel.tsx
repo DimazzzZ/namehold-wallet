@@ -28,10 +28,20 @@ export function NameBidsPanel({
   name,
   profileId,
   phase,
+  suppressEmptyHint = false,
 }: {
   name: string;
   profileId: string | null;
   phase: string;
+  /**
+   * When true, the "No bids yet" empty-state hint is not rendered even in
+   * OPENING/BIDDING. Set this once THIS wallet has already bid
+   * (`taskState === "waitingForBidding"`): the guided panel above already
+   * says "Your bid is placed. Reveal opens in …", so an empty explorer bid
+   * list (mock / not-yet-indexed) rendering "No bids yet" right below it
+   * reads as a direct contradiction.
+   */
+  suppressEmptyHint?: boolean;
 }) {
   const { data, isLoading, isError } = useNameBids(name, profileId);
 
@@ -41,7 +51,7 @@ export function NameBidsPanel({
   const showEmptyHint = phase === "OPENING" || phase === "BIDDING";
 
   if (bids.length === 0) {
-    if (!showEmptyHint) return null;
+    if (!showEmptyHint || suppressEmptyHint) return null;
     return (
       <div className="text-xs text-gray-400" data-testid="name-bids">
         No bids yet
@@ -78,6 +88,13 @@ export function NameBidsPanel({
 function BidRow({ bid }: { bid: NameBid }) {
   const revealed = bid.revealed === true;
 
+  // A bid that belongs to THIS wallet is highlighted so it's unmistakable in
+  // the shared list — a tinted background + left accent bar + rounded padding.
+  // Multi-bid: several rows can be `mine`, each independently distinguished.
+  const rowClass = bid.mine
+    ? "flex items-center gap-2 text-xs text-gray-800 bg-blue-50 border-l-2 border-blue-400 rounded px-1.5 py-0.5"
+    : "flex items-center gap-2 text-xs text-gray-700";
+
   if (!revealed) {
     // BIDDING-style row: only the public lockup is knowable — a competitor's
     // `value` is hidden (or 0) pre-reveal, and rendering it as "their bid"
@@ -85,7 +102,7 @@ function BidRow({ bid }: { bid: NameBid }) {
     // (`myValue`) is a local secret, not derived from the explorer, so it's
     // safe to show.
     return (
-      <li className="flex items-center gap-2 text-xs text-gray-700">
+      <li className={rowClass} data-testid={bid.mine ? "name-bid-row-mine" : "name-bid-row"}>
         <span>lockup: {formatHns(bid.lockup)} HNS</span>
         <span className="text-gray-400">(max, not the actual bid)</span>
         {bid.mine && (
@@ -100,7 +117,7 @@ function BidRow({ bid }: { bid: NameBid }) {
 
   // REVEAL/CLOSED-style row: the true value is public.
   return (
-    <li className="flex items-center gap-2 text-xs text-gray-700">
+    <li className={rowClass} data-testid={bid.mine ? "name-bid-row-mine" : "name-bid-row"}>
       <span>bid: {formatHns(bid.value)} HNS</span>
       {bid.win === true && <Badge variant="success">Winner</Badge>}
       {bid.mine && <Badge variant="info">You</Badge>}

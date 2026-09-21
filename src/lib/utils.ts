@@ -99,6 +99,21 @@ export function formatHns(dollarydoos: number | null | undefined): string {
 }
 
 /**
+ * Compact HNS for tight UI (e.g. the auction modal header): thousands
+ * separators and at most 2 fractional digits, trailing zeros trimmed
+ * ("10", "10.5", "12,345.67"). Pair it with a `title`/Tooltip carrying the
+ * full-precision `formatHns` value so the exact amount is one hover away —
+ * the same short-display/full-tooltip contract used by the Activity amount cell.
+ */
+export function formatHnsShort(dollarydoos: number | null | undefined): string {
+  if (dollarydoos == null) return "—";
+  return (dollarydoos / 1_000_000).toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+}
+
+/**
  * Format a decimal HNS amount with thousands separators and exactly 6
  * fractional digits — matching the precision used by `formatHns` (which
  * converts from dollarydoos via `.toFixed(6)`).

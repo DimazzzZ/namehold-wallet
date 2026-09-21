@@ -409,6 +409,81 @@ describe("NameActionsModal — guided acquisition flow", () => {
     expect(screen.getByText("Bid")).toBeInTheDocument();
   });
 
+  // Regression: a name whose on-chain phase is still BIDDING but for which
+  // THIS wallet already placed a bid resolves to taskState `waitingForBidding`
+  // — but because it IS genuinely bidding (phase BIDDING + a placed bid), the
+  // badge now unifies with the modal's on-chain phase and reads "Bidding".
+  // The guided body used to key purely on the raw phase and render a
+  // "Place a Bid"-flavored panel; it must render the wait-for-reveal panel
+  // and offer no bid CTA.
+  it("shows a wait-for-reveal panel (not a bid CTA) for a BIDDING name already bid by this wallet", async () => {
+    invokeMock.mockImplementation(
+      routeModal(
+        {
+          name: "bidname",
+          state: "BIDDING",
+          height: 100,
+          renewal: 200,
+          owner: null,
+          value: null,
+          highest: 5_000_000,
+          // No reveal-countdown stats: nextTransition() returns null, so the
+          // guided panel renders its no-countdown branch — the branch whose
+          // copy must match the backend next_action_reason verbatim. (The
+          // countdown branch appends "Reveal opens in …" and is covered
+          // implicitly elsewhere.)
+          stats: {},
+        },
+        {
+          capabilities: {
+            name: "bidname",
+            phase: "BIDDING",
+            taskState: "waitingForBidding",
+            ownsName: false,
+            hasBidCommitment: true,
+            hasRevealCoin: false,
+            hasOwnerCoin: false,
+            canOpen: { allowed: false, reason: null },
+            canBid: {
+              allowed: false,
+              reason:
+                "you already have a bid commitment for this name (one bid per wallet per name)",
+            },
+            canReveal: { allowed: false, reason: "Reveal not open yet" },
+            canRedeem: { allowed: false, reason: null },
+            canRegister: { allowed: false, reason: "Phase is BIDDING" },
+            canUpdate: { allowed: false, reason: null },
+            canTransfer: { allowed: false, reason: null },
+            canFinalize: { allowed: false, reason: null },
+            nextActionKey: "WAIT",
+            nextActionLabel: "Wait for Bidding",
+            // Backend refines this reason for the already-bid BIDDING case
+            // (see the next_action override in names.rs). The frontend
+            // no-countdown panel renders the SAME string verbatim.
+            nextActionReason: "Your bid is placed. Wait for the reveal window to open.",
+            countdownLabel: null,
+            countdownBlocks: null,
+            countdownHours: null,
+          },
+        },
+      ),
+    );
+    render(<NameActionsModal name="bidname" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    // The badge reads "Bidding" (genuine-bidding unification), matching the
+    // on-chain phase — not "Waiting for Bidding".
+    expect(await screen.findByText("Bidding")).toBeInTheDocument();
+    expect(screen.queryByText("Waiting for Bidding")).not.toBeInTheDocument();
+    // The guided body is the wait-for-reveal panel, not the bid panel.
+    expect(screen.getByTestId("bidding-waiting")).toBeInTheDocument();
+    // Exact unified copy (verbatim match with backend next_action_reason).
+    expect(
+      screen.getByText("Your bid is placed. Wait for the reveal window to open."),
+    ).toBeInTheDocument();
+    // No bid-flavored guided copy under the "Bidding" badge.
+    expect(screen.queryByText("Place a Bid")).not.toBeInTheDocument();
+  });
+
   it("shows Reveal for a REVEAL name", async () => {
     invokeMock.mockImplementation(
       routeModal({

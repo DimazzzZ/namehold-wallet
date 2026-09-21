@@ -129,7 +129,12 @@ describe("NameActionsModal — node-readiness gating", () => {
     expect(screen.getAllByRole("button", { name: /^Open$/i }).slice(-1)[0]).toBeDisabled();
     expect(screen.getByRole("button", { name: /^Reveal$/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^Redeem$/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /^Bid$/i })).toBeDisabled();
+    // In CLOSED (an owned, registered name) the BidGate hides the Bid /
+    // Lockup inputs and their submit entirely — there is no meaningful "Bid"
+    // action for a name whose auction is over. This is a stronger guarantee
+    // than "disabled" and replaces the earlier assertion.
+    expect(screen.queryByRole("button", { name: /^Bid$/i })).toBeNull();
+    expect(screen.queryByLabelText("Bid (HNS)")).not.toBeInTheDocument();
     // Close stays available.
     expect(screen.getByRole("button", { name: /^Close$/i })).not.toBeDisabled();
   });

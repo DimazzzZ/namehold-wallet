@@ -29,7 +29,6 @@ import { useSyncTriggerStore } from "../stores/syncTrigger";
 import { auctionPhase, formatCountdown } from "../lib/auction";
 import { displayName } from "../lib/idn";
 import { NameActionsModal } from "./NameActionsModal";
-import { NameInfoModal } from "./NameInfoModal";
 import { BlockInfoModal } from "./BlockInfoModal";
 import { TxInfoModal } from "./TxInfoModal";
 import { ActivityRow } from "./ActivityView";
@@ -152,7 +151,6 @@ export function WalletView() {
   const [startNodeFailed, setStartNodeFailed] = useState(false);
   const navigate = useNavigate();
   const [manageName, setManageName] = useState<string | null>(null);
-  const [infoName, setInfoName] = useState<string | null>(null);
   const [infoBlock, setInfoBlock] = useState<number | null>(null);
   const [infoTx, setInfoTx] = useState<string | null>(null);
   // Batch confirmation modal state.
@@ -1232,7 +1230,7 @@ export function WalletView() {
                           <button
                             type="button"
                             className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                            onClick={() => setInfoName(n.name)}
+                            onClick={() => setManageName(n.name)}
                             title="View name info"
                             data-testid="owned-name-info-link"
                           >
@@ -1428,7 +1426,7 @@ export function WalletView() {
                     <ActivityRow
                       key={row.key}
                       row={row}
-                      onNameClick={setInfoName}
+                      onNameClick={setManageName}
                       onBlockClick={setInfoBlock}
                       onTxClick={setInfoTx}
                       enableDraftActions
@@ -1472,10 +1470,6 @@ export function WalletView() {
           open={!!manageName}
           onClose={() => setManageName(null)}
         />
-      )}
-
-      {infoName && (
-        <NameInfoModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
       )}
 
       {infoBlock != null && (

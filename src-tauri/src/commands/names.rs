@@ -356,9 +356,22 @@ pub struct NameActionCapabilities {
     /// frontend can render an explorer link + copy button on the pending/done
     /// card without re-deriving from raw data.
     pub reveal_txid: Option<String>,
-    /// The wallet's true bid value (doos) from the local commitment row.
-    /// Surfaced so the confirm-before-broadcast panel can show the amount.
+    /// The wallet's LATEST true bid value (doos), from the most-recent local
+    /// commitment row (`get_bid_commitment` orders by `created_at DESC`).
+    /// Multi-bid: a wallet can hold several bids per name — this is the one
+    /// the modal header shows as "latest bid". Surfaced so the
+    /// confirm-before-broadcast panel can show the amount.
     pub bid_value_doos: Option<i64>,
+    /// The LATEST lockup (doos) the wallet locked in its own BID output — the
+    /// amount the NETWORK sees on-chain before reveal (the true bid is hidden
+    /// inside the blind). OUR own value, so we can show it pre-reveal instead
+    /// of the on-chain 0. Pairs with `bid_value_doos` in the modal header.
+    pub lockup_value_doos: Option<i64>,
+    /// How many bid commitments THIS wallet holds for this name. `0` when we
+    /// have not bid; `>= 1` once we have. Multi-bid: with the single-bid rule
+    /// gone, this can exceed 1, and it drives the "(N of yours)" hint next to
+    /// the latest-bid header plus the distinguished "yours" rows in the list.
+    pub my_bid_count: i64,
     pub can_open: NameActionCapability,
     pub can_bid: NameActionCapability,
     pub can_reveal: NameActionCapability,
@@ -412,6 +425,8 @@ pub(crate) struct NameActionContext {
     pub reveal_draft_status: Option<String>,
     /// The wallet's true bid value (doos) from the commitment row.
     pub bid_value_doos: Option<i64>,
+    /// The lockup value (doos) from the local commitment row, if any.
+    pub lockup_value_doos: Option<i64>,
 }
 
 /// Gather wallet evidence from the DB for a name.
@@ -513,6 +528,7 @@ pub(crate) fn find_name_action_context(
             .flatten()
     });
     let bid_value_doos = bid.as_ref().map(|b| b.bid_value_doos);
+    let lockup_value_doos = bid.as_ref().map(|b| b.lockup_value_doos);
 
     Ok(NameActionContext {
         has_bid_commitment: bid.is_some(),
@@ -527,6 +543,7 @@ pub(crate) fn find_name_action_context(
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
+        lockup_value_doos,
     })
 }
 
@@ -792,18 +809,16 @@ pub(crate) fn build_name_action_capabilities(
     };
 
     let is_bidding_compatible = phase == "BIDDING" || phase == "OPENING";
-    // Product rule: only allow bidding if wallet has no existing bid commitment
-    // for this name (single-bid-per-wallet-per-name).
-    let bid_allowed = is_bidding_compatible && action_ctx.existing_bid_count == 0;
+    // Product rule (Namebase-style): a wallet may place multiple independent
+    // bids on the same name, each with its own bid value and lockup. Bidding
+    // is allowed for the whole BIDDING/OPENING window regardless of how many
+    // commitments this wallet already holds — `existing_bid_count` is now
+    // informational only (drives the "latest bid" header + "N of yours" list).
+    let bid_allowed = is_bidding_compatible;
     let can_bid = NameActionCapability {
         allowed: bid_allowed,
         reason: if !is_bidding_compatible {
             Some(format!("bidding is not open (phase: '{phase}')"))
-        } else if action_ctx.existing_bid_count > 0 {
-            Some(
-                "you already have a bid commitment for this name (one bid per wallet per name)"
-                    .into(),
-            )
         } else {
             None
         },
@@ -994,8 +1009,23 @@ pub(crate) fn build_name_action_capabilities(
     );
 
     // 6. Determine next action.
-    let (next_action_key, next_action_label, next_action_reason) =
+    let (next_action_key, next_action_label, mut next_action_reason) =
         next_action_for_task(&task_state);
+
+    // `WaitingForBidding` is reused for two distinct situations: a pending OPEN
+    // that hasn't reached BIDDING yet (default reason "The auction opens for
+    // bidding soon.") and a name already in the on-chain BIDDING phase that
+    // THIS wallet has already bid on (one bid per wallet per name). For the
+    // latter the default reason reads wrong — bidding is already open and the
+    // wallet's action is to wait for the reveal window, not for bidding to
+    // start — so refine the reason to match the "your bid is placed" panel the
+    // guided UI renders for this case.
+    if matches!(task_state, AuctionTaskState::WaitingForBidding)
+        && phase == "BIDDING"
+        && action_ctx.has_bid_commitment
+    {
+        next_action_reason = Some("Your bid is placed. Wait for the reveal window to open.".into());
+    }
 
     // 7. Extract countdown from stats.
     let (countdown_label, countdown_blocks, countdown_hours) =
@@ -1012,6 +1042,8 @@ pub(crate) fn build_name_action_capabilities(
         has_owner_coin: action_ctx.has_owner_coin,
         reveal_txid: action_ctx.reveal_txid.clone(),
         bid_value_doos: action_ctx.bid_value_doos,
+        lockup_value_doos: action_ctx.lockup_value_doos,
+        my_bid_count: action_ctx.existing_bid_count,
         can_open,
         can_bid,
         can_reveal,
@@ -1049,6 +1081,8 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         has_owner_coin: false,
         reveal_txid: None,
         bid_value_doos: None,
+        lockup_value_doos: None,
+        my_bid_count: 0,
         can_open: disallowed.clone(),
         can_bid: disallowed.clone(),
         can_reveal: disallowed.clone(),
@@ -1124,11 +1158,15 @@ pub fn derive_auction_task_state(
         }
         "OPENING" => AuctionTaskState::WaitingForBidding,
         "BIDDING" => {
-            if has_bid_commitment {
-                AuctionTaskState::WaitingForBidding
-            } else {
-                AuctionTaskState::ReadyToBid
-            }
+            // Multi-bid: even after this wallet has bid, more independent bids
+            // are allowed for the rest of the window, so stay in ReadyToBid
+            // (the modal keeps the bid form + advanced controls available and
+            // the guided card invites another bid). The "latest bid · lockup"
+            // header + the distinguished "yours" rows in the bid list convey
+            // that a bid is already placed; we no longer collapse to a
+            // terminal WaitingForBidding state that hides the form.
+            let _ = has_bid_commitment;
+            AuctionTaskState::ReadyToBid
         }
         "REVEAL" => {
             if !has_bid_commitment {
@@ -1433,49 +1471,26 @@ pub(crate) fn build_bid_draft_inner(
         rate,
     )?;
 
-    // --- Bid-multiplicity guard (I2) + commitment persist + draft
-    // insert/reservation, ALL under the caller's held MutexGuard.
+    // --- Commitment persist + draft insert/reservation, ALL under the
+    // caller's held MutexGuard.
     //
-    // Product rule: one bid per wallet per name. The UI already gates this
-    // (`build_name_action_capabilities` / `existing_bid_count`), but that's
-    // advisory only — a second window, a stale UI, or a replayed call can
-    // still reach this command directly, so the rule must be enforced here
-    // too. Two checks, either of which blocks a second bid:
-    //   (a) an unspent COV_BID coin for this name anywhere in the profile —
-    //       a bid is already live on-chain (or awaiting confirmation);
-    //   (b) a not-yet-terminal `bid` draft for this name — one is already
-    //       queued/signed/broadcast and might still land.
+    // Multi-bid (Namebase-style): a wallet may place multiple independent
+    // bids on the same name — different value/address ⇒ different nonce/blind
+    // ⇒ a distinct `(profile, name, blind_hex)` commitment row and a distinct
+    // BID coin. So there is NO "one bid per name" rejection here anymore.
+    //
+    // The one collision that MUST still error is a byte-for-byte duplicate:
+    // the same value bid to the same address recomputes the same blind, whose
+    // ON CONFLICT(profile, name, blind_hex) would otherwise silently drop the
+    // new commitment and leave an unrevealable BID coin. `bid_addr` rotates to
+    // the next unused receive address per bid, so two same-value bids land on
+    // different addresses (distinct blinds) in normal use; the
+    // `insert_bid_commitment` ON CONFLICT error below is the backstop if a
+    // replayed call ever reuses the exact same address+value.
     //
     // Atomicity: the caller (the `#[tauri::command]` wrapper) locks the DB
-    // mutex ONCE for this whole function — no unlock/relock. Without that,
-    // two concurrent calls could both pass the checks before either had
-    // written anything (classic TOCTOU). Tests call this function directly
-    // with an owned `&Connection` (no mutex), which is fine because tests
-    // are single-threaded.
-    //
-    // This mostly SUBSUMES the `insert_bid_commitment` ON CONFLICT fix
-    // (I2 part 2, defense-in-depth in `queries::insert_bid_commitment`): with
-    // this guard in place, a second bid on the same name is rejected here,
-    // before a conflicting commitment row could ever be attempted. The
-    // ON CONFLICT fix still matters as a second line of defense — e.g. if
-    // this guard's on-chain/draft evidence is somehow stale — a same-value
-    // re-bid must error instead of silently dropping its commitment row.
-    let existing_bid_coins = queries::find_unspent_covenant_utxos_by_name_hash(
-        conn,
-        &ctx.profile_id,
-        sync::COV_BID as i64,
-        &nh_hex,
-    )?;
-    if !existing_bid_coins.is_empty() {
-        return Err(AppError::InvalidInput(format!(
-            "wallet already has an unspent bid for '{name}' — one bid per wallet per name"
-        )));
-    }
-    if queries::has_pending_bid_draft_for_name(conn, &ctx.profile_id, name)? {
-        return Err(AppError::InvalidInput(format!(
-            "a bid draft for '{name}' is already pending — one bid per wallet per name"
-        )));
-    }
+    // mutex ONCE for this whole function — no unlock/relock — so the
+    // commitment + draft persist stay atomic.
 
     // Persist the bid commitment (secret nonce/blind) before building the
     // draft. If this fails — including the honest ON CONFLICT error above —
@@ -1638,30 +1653,14 @@ pub(crate) fn build_batch_bid_draft_inner(
         }
     }
 
-    // Guard: check that NO name in the batch already has an unspent bid coin
-    // or pending bid draft.
-    for spec in &name_specs {
-        let existing_bid_coins = queries::find_unspent_covenant_utxos_by_name_hash(
-            conn,
-            &ctx.profile_id,
-            sync::COV_BID as i64,
-            &spec.nh_hex,
-        )?;
-        if !existing_bid_coins.is_empty() {
-            return Err(AppError::InvalidInput(format!(
-                "wallet already has an unspent bid for '{}' — one bid per wallet per name",
-                spec.name
-            )));
-        }
-        if queries::has_pending_bid_draft_for_name(conn, &ctx.profile_id, &spec.name)? {
-            return Err(AppError::InvalidInput(format!(
-                "a bid draft for '{}' is already pending — one bid per wallet per name",
-                spec.name
-            )));
-        }
-    }
-
-    // All guards passed. Now derive addresses, compute nonces/blinds, and
+    // Multi-bid (Namebase-style): a wallet may hold several independent bids
+    // per name, so there is no "already has an unspent bid / pending draft"
+    // rejection here anymore. Each bid rotates to its own receive address
+    // (distinct nonce/blind ⇒ distinct commitment row + BID coin); the
+    // `insert_bid_commitment` ON CONFLICT error remains the backstop against
+    // a byte-for-byte duplicate (same address + value).
+    //
+    // Now derive addresses, compute nonces/blinds, and
     // persist commitments for all names. Collect one `BidOutcome` per name so
     // the plan-output list and the blind-hex list stay index-coupled by
     // construction (no risk of a `primaries[i]` / `blind_hexes[i]` mismatch).
@@ -3073,6 +3072,7 @@ mod tests {
             reveal_txid: None,
             reveal_draft_status: None,
             bid_value_doos: None,
+            lockup_value_doos: None,
         }
     }
 
@@ -3179,9 +3179,12 @@ mod tests {
 
     #[test]
     fn derive_bidding_with_commitment() {
+        // Multi-bid: holding a commitment during BIDDING no longer parks the
+        // wallet in WaitingForBidding — another independent bid is allowed for
+        // the rest of the window, so it stays ReadyToBid.
         assert_eq!(
             derive("BIDDING", false, true, false, false, false, None, None, false, None, None),
-            AuctionTaskState::WaitingForBidding
+            AuctionTaskState::ReadyToBid
         );
     }
 
@@ -3881,9 +3884,13 @@ mod tests {
     }
 
     #[test]
-    fn build_can_bid_existing_bid_count() {
+    fn build_can_bid_allows_multiple_bids() {
+        // Multi-bid (Namebase-style): an existing bid no longer disables
+        // `can_bid`. During BIDDING the wallet may place another independent
+        // bid, and `my_bid_count` reflects how many it already holds.
         let ctx = NameActionContext {
             existing_bid_count: 1,
+            has_bid_commitment: true,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -3897,11 +3904,9 @@ mod tests {
             None,
             Network::Main,
         );
-        assert!(!caps.can_bid.allowed);
-        assert_eq!(
-            caps.can_bid.reason.as_deref(),
-            Some("you already have a bid commitment for this name (one bid per wallet per name)")
-        );
+        assert!(caps.can_bid.allowed);
+        assert_eq!(caps.can_bid.reason, None);
+        assert_eq!(caps.my_bid_count, 1);
     }
 
     // ==================================================================

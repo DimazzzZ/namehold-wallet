@@ -44,6 +44,7 @@ fn ctx(
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
+        lockup_value_doos: None,
     }
 }
 
@@ -143,7 +144,9 @@ fn task_state_bidding_with_commitment() {
         None,
         Network::Main,
     );
-    assert_eq!(state, AuctionTaskState::WaitingForBidding);
+    // Multi-bid: an existing commitment during BIDDING keeps the wallet in
+    // ReadyToBid (another independent bid is allowed).
+    assert_eq!(state, AuctionTaskState::ReadyToBid);
 }
 
 #[test]
@@ -623,7 +626,10 @@ fn cap_bidding_phase_can_bid_without_commitment() {
 }
 
 #[test]
-fn cap_bidding_phase_cannot_bid_with_commitment() {
+fn cap_bidding_phase_can_bid_again_with_commitment() {
+    // Multi-bid (Namebase-style): an existing commitment no longer blocks a
+    // new bid during BIDDING. `can_bid` stays allowed and `my_bid_count`
+    // reports how many bids this wallet already holds.
     let action_ctx = ctx(
         true, false, false, false, None, None, None, 1, false, None, None, None,
     );
@@ -638,13 +644,32 @@ fn cap_bidding_phase_cannot_bid_with_commitment() {
         None,
         Network::Main,
     );
-    assert!(!caps.can_bid.allowed);
-    assert!(caps
-        .can_bid
-        .reason
-        .as_ref()
-        .unwrap()
-        .contains("one bid per wallet"));
+    assert!(caps.can_bid.allowed);
+    assert_eq!(caps.can_bid.reason, None);
+    assert_eq!(caps.my_bid_count, 1);
+}
+
+#[test]
+fn cap_bidding_phase_already_bid_stays_ready_to_bid() {
+    // Multi-bid: a name in BIDDING that THIS wallet already bid on stays
+    // ReadyToBid (another independent bid is allowed), so the guided next
+    // action keeps inviting a bid rather than parking on "wait for reveal".
+    let action_ctx = ctx(
+        true, false, false, false, None, None, None, 1, false, None, None, None,
+    );
+    let caps = build_name_action_capabilities(
+        "example".into(),
+        "BIDDING".into(),
+        "BIDDING",
+        None,
+        &action_ctx,
+        false,
+        false,
+        None,
+        Network::Main,
+    );
+    assert_eq!(caps.task_state, AuctionTaskState::ReadyToBid);
+    assert_eq!(caps.next_action_label.as_deref(), Some("Place Bid"));
 }
 
 #[test]
@@ -1037,6 +1062,43 @@ fn cap_preserves_bid_value_and_reveal_txid() {
     );
     assert_eq!(caps.bid_value_doos, Some(100_000));
     assert_eq!(caps.reveal_txid, Some("abc123def456".into()));
+}
+
+// The wallet's own lockup (the on-chain value of its BID output) is OUR value,
+// so `build_name_action_capabilities` must surface it from the context onto the
+// capability response. Lets the modal show the user both their true bid and the
+// blinded on-chain amount during BIDDING/OPENING instead of the on-chain 0.
+#[test]
+fn capabilities_surface_local_lockup_value() {
+    let mut action_ctx = ctx(
+        true,
+        true,
+        false,
+        false,
+        None,
+        Some(10),
+        None,
+        1,
+        false,
+        None,
+        None,
+        Some(200_000),
+    );
+    action_ctx.lockup_value_doos = Some(500_000);
+
+    let caps = build_name_action_capabilities(
+        "example".into(),
+        "BIDDING".into(),
+        "BIDDING",
+        None,
+        &action_ctx,
+        false,
+        false,
+        None,
+        Network::Main,
+    );
+    assert_eq!(caps.lockup_value_doos, Some(500_000));
+    assert_eq!(caps.bid_value_doos, Some(200_000));
 }
 
 // ============================================================================

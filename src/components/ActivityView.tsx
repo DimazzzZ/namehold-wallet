@@ -10,6 +10,7 @@ import {
 } from "../queries/wallet";
 import { PageHeader } from "./ui/PageHeader";
 import { Badge } from "./ui/Badge";
+import { Tooltip } from "./ui/Tooltip";
 import { Input } from "./ui/Input";
 import { Select } from "./ui/Select";
 import { formatHns, formatDate, amountTone } from "../lib/utils";
@@ -17,7 +18,7 @@ import { displayName, nameMatches } from "../lib/idn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "../stores/ui";
 import { mapError, StagedError } from "../lib/errors";
-import { NameInfoModal } from "./NameInfoModal";
+import { NameActionsModal } from "./NameActionsModal";
 import { BlockInfoModal } from "./BlockInfoModal";
 import { TxInfoModal } from "./TxInfoModal";
 import { mergeActivity, type MergedRow } from "../lib/activity";
@@ -47,6 +48,20 @@ export const ACTION_META: Record<
 const ALL_ACTIONS = Object.keys(ACTION_META);
 
 export const FALLBACK_META = { label: "Other", variant: "default" as const };
+
+// Actions whose covenant output re-homes the name's locked value onto the
+// wallet's own new coin. For these, the Amount cell shows the locked value as
+// an informational "⤷ N" (not a spend) with a tooltip; net flow stays 0.
+const NAME_COVENANT_ACTIONS = new Set([
+  "bid",
+  "reveal",
+  "redeem",
+  "register",
+  "update",
+  "renew",
+  "transfer",
+  "finalize",
+]);
 
 // Client-side page size for the full Activity table. The backend returns the
 // whole classified history in one call today, so pagination is purely a
@@ -274,7 +289,7 @@ export function ActivityView() {
       )}
 
       {infoName && (
-        <NameInfoModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
+        <NameActionsModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
       )}
 
       {infoBlock != null && (
@@ -424,6 +439,11 @@ export function ActivityRow({
     tone === "income" ? "text-green-600" : tone === "spend" ? "text-red-600" : "text-gray-700";
   const sign = tone === "income" ? "+" : tone === "spend" ? "-" : "";
 
+  // A covenant row whose net flow is 0 (locked value re-homed to our own coin,
+  // only the fee spent) but which still has a name value worth surfacing.
+  const showNameValue =
+    NAME_COVENANT_ACTIONS.has(row.action) && row.valueDoos === 0 && row.nameValueDoos != null;
+
   const badge = statusBadge(row.status);
   // For onchain-only rows, use the confirmed/pending badge; for drafts,
   // use the status badge.
@@ -485,20 +505,25 @@ export function ActivityRow({
           <span className="text-gray-400">—</span>
         )}
       </td>
-      <td
-        className="py-1 pr-4 text-right text-xs font-mono whitespace-nowrap"
-        title={
-          row.nameValueDoos != null
-            ? `Name value ${formatHns(row.nameValueDoos)} HNS is carried to your own new coin — not spent; only the fee applies.`
-            : row.valueDoos === 0 && row.direction !== "receive"
-              ? "Name's locked value is re-homed to your own coin — no HNS spent beyond the fee."
-              : undefined
-        }
-      >
-        <span className={toneClass}>
-          {sign}
-          {formatHns(Math.abs(row.valueDoos))}
-        </span>
+      <td className="py-1 pr-4 text-right text-xs font-mono whitespace-nowrap">
+        {showNameValue ? (
+          <Tooltip
+            content={
+              <>
+                <span className="font-medium">{formatHns(row.nameValueDoos!)} HNS</span> is the
+                name's locked value, carried onto your own new coin — not spent. Only the network
+                fee leaves your wallet.
+              </>
+            }
+          >
+            <span className="text-gray-500">⤷&nbsp;{formatHns(row.nameValueDoos!)}</span>
+          </Tooltip>
+        ) : (
+          <span className={toneClass}>
+            {sign}
+            {formatHns(Math.abs(row.valueDoos))}
+          </span>
+        )}
       </td>
       <td className="py-1 pr-4 text-right text-xs font-mono text-gray-500">
         {row.feeDoos == null ? "—" : formatHns(row.feeDoos)}

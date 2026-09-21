@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useActiveProfile } from "../queries/wallet";
 import { useReadNames, useNamesActionCapabilities, useAuctionPositions } from "../queries/read";
 import {
@@ -9,7 +10,6 @@ import {
   type AuctionTaskSummary,
 } from "../lib/auction";
 import { NameActionsModal } from "./NameActionsModal";
-import { NameInfoModal } from "./NameInfoModal";
 import { BatchBidModal } from "./BatchBidModal";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
@@ -56,6 +56,7 @@ export function AuctionsView() {
   // Resolve the active wallet once here (not inside the inline TaskRow, which
   // remounts every render and would trigger a profile-refetch storm) so every
   // capability fetch is pinned to this wallet.
+  const qc = useQueryClient();
   const activeProfile = useActiveProfile().data ?? null;
   const activeProfileId = activeProfile?.id ?? null;
   // Watch-only wallets can't sign, so batch bidding is hidden for them.
@@ -64,7 +65,6 @@ export function AuctionsView() {
 
   const [lookupName, setLookupName] = useState("");
   const [manageName, setManageName] = useState<string | null>(null);
-  const [infoName, setInfoName] = useState<string | null>(null);
   // Standalone batch-bid modal (paste names + shared bid/lockup). Lives here
   // on the Auctions page because bidding is a name-acquisition action.
   const [batchBidOpen, setBatchBidOpen] = useState(false);
@@ -166,6 +166,16 @@ export function AuctionsView() {
   };
 
   const handleOpenManagement = (name: string) => {
+    // Cache bridge: seed the modal's SINGLE capability query from the batch
+    // result the table already fetched, so the modal opens already showing the
+    // same task-state badge as the row the user clicked — no fetch-window flash
+    // where it would fall back to the raw on-chain phase and visibly contradict
+    // the table. Keyed identically to `useNameActionCapabilities` in read.ts:
+    // ["read","nameCapabilities", profileId, name].
+    const rowCaps = capsByName.get(name);
+    if (rowCaps) {
+      qc.setQueryData(["read", "nameCapabilities", activeProfileId, name], rowCaps);
+    }
     setManageName(name);
   };
 
@@ -205,7 +215,7 @@ export function AuctionsView() {
           <button
             type="button"
             className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-            onClick={() => setInfoName(n.name)}
+            onClick={() => setManageName(n.name)}
             title="View name info"
             data-testid="auction-name-info-link"
           >
@@ -322,10 +332,6 @@ export function AuctionsView() {
             setManageName(null);
           }}
         />
-      )}
-
-      {infoName && (
-        <NameInfoModal name={infoName} open={!!infoName} onClose={() => setInfoName(null)} />
       )}
 
       <BatchBidModal

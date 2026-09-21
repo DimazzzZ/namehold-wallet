@@ -10,6 +10,7 @@ import {
   taskStateBadgeVariant,
   taskStateUrgency,
   taskStateUrgencyRank,
+  taskSummaryFromCapabilities,
   validateBidInputs,
 } from "./auction";
 import { hnsToDollarydoos } from "./utils";
@@ -229,5 +230,73 @@ describe("validateBidInputs (Task 12 / F4 — client-side bid validation)", () =
     expect(v.lockupValid).toBe(false);
     expect(v.formValid).toBe(false);
     expect(v.lockupError).toMatch(/greater than 0/i);
+  });
+});
+
+describe("taskSummaryFromCapabilities — genuine-bidding label unification", () => {
+  function caps(
+    over: Partial<import("../types").NameActionCapabilities>,
+  ): import("../types").NameActionCapabilities {
+    return {
+      name: "n",
+      phase: "BIDDING",
+      taskState: "waitingForBidding",
+      ownsName: false,
+      hasBidCommitment: true,
+      hasBidCoin: true,
+      hasRevealCoin: false,
+      hasOwnerCoin: false,
+      revealTxid: null,
+      bidValueDoos: null,
+      canOpen: { allowed: false, reason: null },
+      canBid: { allowed: false, reason: null },
+      canReveal: { allowed: false, reason: null },
+      canRedeem: { allowed: false, reason: null },
+      canRegister: { allowed: false, reason: null },
+      canUpdate: { allowed: false, reason: null },
+      canTransfer: { allowed: false, reason: null },
+      canFinalize: { allowed: false, reason: null },
+      canCancelTransfer: { allowed: false, reason: null },
+      canRenew: { allowed: false, reason: null },
+      canRevoke: { allowed: false, reason: null },
+      nextActionKey: null,
+      nextActionLabel: null,
+      nextActionReason: null,
+      countdownLabel: null,
+      countdownBlocks: null,
+      countdownHours: null,
+      ...over,
+    } as import("../types").NameActionCapabilities;
+  }
+
+  it("labels a genuinely-bidding, already-bid name 'Bidding' (matches the modal phase badge)", () => {
+    const s = taskSummaryFromCapabilities(
+      caps({ phase: "BIDDING", taskState: "waitingForBidding", hasBidCommitment: true }),
+    );
+    expect(s?.label).toBe("Bidding");
+    expect(s?.variant).toBe("warning");
+    // taskState itself is preserved so the guided body still keys on it.
+    expect(s?.taskState).toBe("waitingForBidding");
+  });
+
+  it("keeps 'Waiting for Bidding' for the pre-bid OPENING period", () => {
+    const s = taskSummaryFromCapabilities(
+      caps({ phase: "OPENING", taskState: "waitingForBidding", hasBidCommitment: false }),
+    );
+    expect(s?.label).toBe("Waiting for Bidding");
+  });
+
+  it("keeps 'Waiting for Bidding' for a pending OPEN on an AVAILABLE name", () => {
+    const s = taskSummaryFromCapabilities(
+      caps({ phase: "AVAILABLE", taskState: "waitingForBidding", hasBidCommitment: false }),
+    );
+    expect(s?.label).toBe("Waiting for Bidding");
+  });
+
+  it("does not relabel BIDDING without a bid commitment (readyToBid keeps its label)", () => {
+    const s = taskSummaryFromCapabilities(
+      caps({ phase: "BIDDING", taskState: "readyToBid", hasBidCommitment: false }),
+    );
+    expect(s?.label).toBe("Ready to Bid");
   });
 });

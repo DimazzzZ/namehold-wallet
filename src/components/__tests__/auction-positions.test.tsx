@@ -178,8 +178,16 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
       const call = invokeMock.mock.calls.find((c) => c[0] === "read_name_info");
       expect(call?.[1]).toEqual({ name: "xn--e1adigm" });
     });
-    const capsCall = invokeMock.mock.calls.find((c) => c[0] === "get_name_action_capabilities");
-    expect(capsCall?.[1]).toMatchObject({ name: "xn--e1adigm" });
+    // This used to assert that the modal fetched `get_name_action_capabilities`
+    // for the raw name — which `handleOpenManagement`'s cache bridge, added in
+    // the same commit as this test, deliberately prevents: it seeds the single
+    // capability query from the batch the table already holds, so the modal
+    // opens on the row's task state instead of flashing the raw on-chain phase.
+    // The RAW-name routing is already proven above; what is worth pinning here
+    // is the bridge itself, keyed by the raw name so nothing refetches.
+    expect(invokeMock.mock.calls.some((c) => c[0] === "get_name_action_capabilities")).toBe(false);
+    const batchCall = invokeMock.mock.calls.find((c) => c[0] === "get_names_action_capabilities");
+    expect(batchCall?.[1]).toMatchObject({ names: ["xn--e1adigm"] });
   });
 
   it("dedups a position name that's already owned — no double row, not double-counted", async () => {
@@ -272,5 +280,45 @@ describe("AuctionsView — auction positions merged with live caps (Task 2)", ()
     // Folded into the count, not the empty state.
     expect(screen.getByText(/Active Auctions \(1\)/i)).toBeInTheDocument();
     expect(screen.queryByText(/No active auctions/i)).not.toBeInTheDocument();
+  });
+
+  it("filters a dropped-open position (no live caps) while keeping a live bidding sibling — the vmp3rt3/vmp3rt4 case", async () => {
+    // Mirrors an observed regtest sequence: `vmp3rt4`'s open tx was broadcast
+    // but never confirmed, so its draft settled to `dropped`; `vmp3rt3`'s open
+    // confirmed and its bid confirmed. Even if the backend were to leak the
+    // dropped name into positions, it has no live caps in an active-position
+    // task state, so the client must not render it — only `vmp3rt3` shows.
+    invokeMock.mockImplementation(
+      baseRoutes({
+        positions: ["vmp3rt3", "vmp3rt4"],
+        names: [],
+        capsByName: {
+          vmp3rt3: baseCaps("vmp3rt3", {
+            phase: "BIDDING",
+            taskState: "readyToBid",
+            hasBidCommitment: true,
+            canBid: { allowed: true, reason: null },
+            nextActionKey: "BID",
+            nextActionLabel: "Place Bid",
+            countdownLabel: "Reveal starts in",
+            countdownBlocks: 5,
+            countdownHours: 1,
+          }),
+          // Dropped open: node has no auction for it, so its caps land in a
+          // non-active state (nothing to do).
+          vmp3rt4: baseCaps("vmp3rt4", { taskState: "unavailableOther" }),
+        },
+      }),
+    );
+    render(<AuctionsView />, { wrapper: wrapper() });
+
+    expect(await screen.findByText(".vmp3rt3")).toBeInTheDocument();
+    // Multi-bid: a BIDDING row that already holds a commitment (readyToBid +
+    // hasBidCommitment) is labeled "Bidding" to match the modal's phase badge,
+    // while still inviting another independent bid.
+    expect(screen.getByText(/Bidding/i)).toBeInTheDocument();
+    // vmp3rt4 must not render as a row, and the count reflects only the live one.
+    expect(screen.queryByText(".vmp3rt4")).not.toBeInTheDocument();
+    expect(screen.getByText(/Active Auctions \(1\)/i)).toBeInTheDocument();
   });
 });

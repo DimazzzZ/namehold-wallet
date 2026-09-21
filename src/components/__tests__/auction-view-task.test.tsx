@@ -128,6 +128,22 @@ const CAPS_BY_NAME: Record<string, Record<string, unknown>> = {
     nextActionLabel: "Redeem Lockup",
     nextActionReason: "Your bid lost. Redeem your reveal coin.",
   }),
+  // Pre-bid opening period: on-chain phase is OPENING (raw label "Opening"),
+  // but the task state is waitingForBidding (label "Waiting for Bidding").
+  // This is the row↔modal divergence case: the modal must show the SAME
+  // task-state label as the table, not the raw on-chain phase.
+  openingname: baseCaps("openingname", {
+    phase: "OPENING",
+    taskState: "waitingForBidding",
+    canOpen: { allowed: false, reason: "Auction already open" },
+    canBid: { allowed: false, reason: "Bidding has not started" },
+    nextActionKey: "NONE",
+    nextActionLabel: "Wait for Bidding",
+    nextActionReason: "Bidding opens automatically after the opening period.",
+    countdownLabel: "Bidding starts in",
+    countdownBlocks: 20,
+    countdownHours: 3,
+  }),
 };
 
 function routeInvoke() {
@@ -476,5 +492,95 @@ describe("AuctionsView — batch-bid button", () => {
     await waitFor(() => {
       expect(screen.queryByText("Batch Bid")).not.toBeInTheDocument();
     });
+  });
+});
+
+describe("AuctionsView ↔ NameActionsModal — task-state label consistency", () => {
+  // Regression: the row showed the capability-derived task-state label
+  // ("Waiting for Bidding") while the modal, on open, briefly showed the raw
+  // on-chain phase ("Opening") until its own single-name capability fetch
+  // resolved. That flash is a state divergence the user can see: the row and
+  // the modal for the SAME name disagree about the phase.
+  //
+  // Fix under test: (1) a cache bridge in AuctionsView.handleOpenManagement
+  // that seeds the modal's single-name caps query from the batch result the
+  // table already has, and (2) a loading gate in the modal that suppresses
+  // the raw-phase fallback until caps has settled. Together, the modal must
+  // open already displaying the same task-state label as the row.
+  function routeOpening(cmd: string, args?: Record<string, unknown>) {
+    if (cmd === "get_names_action_capabilities") {
+      const names = (args as { names?: string[] })?.names ?? [];
+      return Promise.resolve(names.map((n) => CAPS_BY_NAME[n] ?? baseCaps(n, {})));
+    }
+    switch (cmd) {
+      case "list_wallet_profiles":
+        return Promise.resolve([profile]);
+      case "get_signer_session":
+        return Promise.resolve({
+          walletProfileId: profile.id,
+          unlocked: true,
+          unlockedUntilEpochMs: Date.now() + 60000,
+        });
+      case "get_write_capability":
+        return Promise.resolve({
+          signerUnlocked: true,
+          broadcasterAvailable: true,
+          canWrite: true,
+          reason: null,
+        });
+      case "read_names":
+        return Promise.resolve([
+          {
+            name: "openingname",
+            state: "OPENING",
+            height: 100,
+            renewal: 200,
+            owner: null,
+            stats: null,
+          },
+        ]);
+      case "read_name_info":
+        // Modal's own phase-fallback source. Deliberately the raw OPENING
+        // state — if the modal ever fell back to `badge.label`, it would show
+        // "Opening", the exact divergence this test guards against.
+        return Promise.resolve({
+          name: (args as { name?: string })?.name ?? "openingname",
+          state: "OPENING",
+          height: 100,
+          renewal: 200,
+          owner: null,
+          stats: null,
+        });
+      default:
+        return Promise.resolve(null);
+    }
+  }
+
+  it("modal shows the SAME task-state label as the row it opened from", async () => {
+    invokeMock.mockImplementation(routeOpening);
+    render(<AuctionsView />, { wrapper: wrapper() });
+
+    // The row shows the capability-derived task-state label — the baseline the
+    // modal must match — and never the raw on-chain phase.
+    const rowLabel = await screen.findByText(/^Waiting for Bidding$/);
+    expect(rowLabel).toBeInTheDocument();
+    expect(screen.queryByText(/^Opening$/)).not.toBeInTheDocument();
+
+    // Open the modal via the row's action button. For a waitingForBidding row
+    // the button label collapses to "View" (no inline action).
+    const viewBtn = screen.getByRole("button", { name: /^View$/ });
+    await act(async () => {
+      fireEvent.click(viewBtn);
+    });
+
+    // The modal's phase badge (data-testid="name-phase") must show the same
+    // task-state label — never the raw "Opening" phase, never the transient
+    // "Checking…" placeholder (the cache bridge seeds caps on open).
+    const phase = await screen.findByTestId("name-phase");
+    await waitFor(() => {
+      expect(phase).toHaveTextContent(/Waiting for Bidding/);
+    });
+    expect(phase).not.toHaveTextContent(/Opening/);
+    expect(phase).not.toHaveTextContent(/Checking/);
   });
 });

@@ -162,14 +162,14 @@ describe("Watchlist", () => {
     });
   });
 
-  it("name cell click opens NameInfoModal", async () => {
+  it("name cell click opens the unified name modal", async () => {
     invokeMock.mockImplementation(route());
     render(<Watchlist />, { wrapper: wrapper() });
 
     const nameButton = await screen.findByText(/\.example/);
     fireEvent.click(nameButton);
 
-    // NameInfoModal renders — it typically shows the name prominently
+    // NameActionsModal renders — it typically shows the name prominently
     await waitFor(() => {
       // The modal will call invoke to fetch name info; just confirm it rendered
       expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "example" });
