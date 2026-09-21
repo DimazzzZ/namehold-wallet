@@ -343,12 +343,26 @@ export function taskSummaryFromCapabilities(
     caps.phase === "BIDDING" &&
     caps.hasBidCommitment &&
     (caps.taskState === "readyToBid" || caps.taskState === "waitingForBidding");
+  // `lostNeedsRedeem` is reached two ways and only one is a loss. A wallet
+  // that outbid itself owns the name and holds its own losing reveals — the
+  // ordinary outcome of placing several bids. "Lost" on a name it just
+  // registered is false, and it is the first word the user reads.
+  const reclaimingOwnBids = caps.taskState === "lostNeedsRedeem" && caps.ownsName;
   return {
     taskState: caps.taskState,
-    label: isReallyBidding ? "Bidding" : taskStateLabel(caps.taskState),
+    label: isReallyBidding
+      ? "Bidding"
+      : reclaimingOwnBids
+        ? "Reclaim Your Lockup"
+        : taskStateLabel(caps.taskState),
     // Match the modal's auctionPhase("BIDDING") badge variant so the two
     // surfaces are visually identical, not just textually.
-    variant: isReallyBidding ? "warning" : taskStateBadgeVariant(caps.taskState),
+    // Not an error either: nothing went wrong on a name the wallet holds.
+    variant: isReallyBidding
+      ? "warning"
+      : reclaimingOwnBids
+        ? "info"
+        : taskStateBadgeVariant(caps.taskState),
     urgency: taskStateUrgency(caps.taskState),
     nextActionKey: caps.nextActionKey,
     nextActionLabel: caps.nextActionLabel,

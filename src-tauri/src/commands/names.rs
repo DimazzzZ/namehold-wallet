@@ -1225,6 +1225,18 @@ pub(crate) fn build_name_action_capabilities(
         next_action_reason = Some("Your bid is placed. Wait for the reveal window to open.".into());
     }
 
+    // `LostNeedsRedeem` is reached two ways, and only one of them is a loss.
+    // Bidding against yourself and winning leaves you owning the name AND
+    // holding your own losing reveals — the ordinary outcome of placing
+    // several bids, and the whole reason multi-bid exists. Telling that user
+    // "Your bid lost" on a name they just registered is simply false.
+    if matches!(task_state, AuctionTaskState::LostNeedsRedeem) && owns_name {
+        next_action_reason = Some(
+            "You own this name. These are your own losing bids on it — redeem them to reclaim the lockup."
+                .into(),
+        );
+    }
+
     // 7. Extract countdown from stats.
     let (countdown_label, countdown_blocks, countdown_hours) =
         names_pure::extract_countdown(raw_phase, stats);
@@ -4449,6 +4461,64 @@ mod tests {
                 "{what} must not be offered on a name that is not registered yet"
             );
         }
+    }
+
+    /// `LostNeedsRedeem` is reached two ways and only one is a loss. A wallet
+    /// that outbid itself owns the name and holds its own losing reveals, and
+    /// "Your bid lost" is false for it — on a name it just registered.
+    #[test]
+    fn redeem_on_a_name_you_own_is_not_described_as_losing() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            has_reveal_coin: true,
+            redeemable_reveal_count: 3,
+            redeemable_value_doos: 28_000_000,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            /* owns_name */ true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(matches!(caps.task_state, AuctionTaskState::LostNeedsRedeem));
+        let reason = caps.next_action_reason.unwrap_or_default();
+        assert!(
+            !reason.contains("lost"),
+            "a name you own and registered did not lose: {reason:?}"
+        );
+        assert!(reason.contains("own this name"), "got {reason:?}");
+    }
+
+    /// And the genuine loss keeps saying so — the branch above must not
+    /// swallow the case it was carved out of.
+    #[test]
+    fn redeem_on_a_name_you_lost_still_says_the_bid_lost() {
+        let ctx = NameActionContext {
+            has_reveal_coin: true,
+            redeemable_reveal_count: 1,
+            redeemable_value_doos: 5_000_000,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            /* owns_name */ false,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(matches!(caps.task_state, AuctionTaskState::LostNeedsRedeem));
+        assert!(caps.next_action_reason.unwrap_or_default().contains("lost"));
     }
 
     /// The same actions on a genuinely registered name stay available.

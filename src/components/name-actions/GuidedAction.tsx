@@ -460,9 +460,14 @@ export function GuidedAction({
         if (caps?.taskState === "lostNeedsRedeem") {
           return (
             <div className="space-y-2">
-              <div className="text-sm text-red-800">
+              {/* Red and "your bid lost" are wrong for a wallet that outbid
+                  itself: it owns the name and is reclaiming its own losing
+                  bids. The backend refines the reason; the tone follows. */}
+              <div className={caps.ownsName ? "text-sm text-gray-700" : "text-sm text-red-800"}>
                 {caps.nextActionReason ??
-                  "Your bid lost. Redeem your reveal coin to reclaim the funds."}
+                  (caps.ownsName
+                    ? "You own this name. Redeem your own losing bids to reclaim the lockup."
+                    : "Your bid lost. Redeem your reveal coin to reclaim the funds.")}
               </div>
               <Button
                 variant="primary"
