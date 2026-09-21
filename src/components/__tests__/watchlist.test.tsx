@@ -143,7 +143,7 @@ describe("Watchlist", () => {
     await screen.findByText("auction");
     // Click the tag cell for "example" row (has "auction, hot" tags).
     // There's one tag button per row; the first row is "example".
-    const tagButtons = screen.getAllByTitle("Click to edit tags");
+    const tagButtons = screen.getAllByTestId("watchlist-tags-cell");
     fireEvent.click(tagButtons[0]!);
 
     // Input appears with current value

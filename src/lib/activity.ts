@@ -114,7 +114,11 @@ export function mergeActivity(rows: ActionRow[], drafts: TxDraftSummary[]): Merg
       txid: row.txid,
       draftId: draft?.id ?? null,
       action: row.action,
-      name: row.name ?? null,
+      // The chain row's name comes from the covenant, which only carries a raw
+      // name for OPEN, BID and FINALIZE. For every other name action the draft
+      // this wallet built is the only place the name exists — without this
+      // fallback a confirmed REVEAL or REGISTER listed itself as "—".
+      name: row.name ?? draft?.summary?.name ?? null,
       nameList: draft?.summary?.nameList ?? null,
       valueDoos: row.valueDoos,
       direction: row.direction,

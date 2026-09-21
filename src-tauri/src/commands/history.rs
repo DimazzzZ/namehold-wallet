@@ -163,9 +163,13 @@ pub fn classify_tx(tx: &serde_json::Value, our_addrs: &HashSet<String>) -> Optio
                                 name_hash_hex = Some(h.to_ascii_lowercase());
                             }
                         }
-                        // BID covenant carries the raw name at items[2] (see
-                        // chain_scan.rs:162-167). Decode hex -> utf8.
-                        if kind == COV_BID {
+                        // OPEN, BID and FINALIZE carry the raw name at
+                        // items[2] (`noncustodial::covenants`); every other
+                        // covenant puts something else there — a nonce, a
+                        // resource, an address — so decoding it as a name would
+                        // produce garbage. Only BID was handled here, which is
+                        // why a confirmed OPEN showed its action but no name.
+                        if matches!(kind, COV_OPEN | COV_BID | COV_FINALIZE) {
                             if let Some(raw_hex) = items.get(2).and_then(|v| v.as_str()) {
                                 if let Ok(bytes) = hex::decode(raw_hex) {
                                     if let Ok(s) = String::from_utf8(bytes) {
@@ -496,6 +500,58 @@ mod tests {
         assert_eq!(row.name_value_doos, Some(5_000_000));
     }
 
+    /// Regression: only BID's raw name was decoded, so a confirmed OPEN — the
+    /// very first action on a name — listed itself in Activity with an empty
+    /// Name cell, even though the covenant carries the name at items[2].
+    #[test]
+    fn classify_open_carries_raw_name() {
+        let ours = addrs(&["hs1qmine"]);
+        // OPEN items = [nameHash, u32(0), rawName]. "vmp3rt3" -> 766d7033727433.
+        let tx = json!({
+            "hash": "oo",
+            "height": 779,
+            "inputs": [
+                {"prevout": {"hash": "pp", "index": 0},
+                 "coin": {"value": 1_000_000_000, "address": "hs1qmine",
+                          "covenant": {"type": 0, "items": []}}}
+            ],
+            "outputs": [
+                {"value": 0, "address": "hs1qmine",
+                 "covenant": {"type": 2, "action": "OPEN",
+                              "items": ["deadbeef", "00000000", "766d7033727433"]}}
+            ]
+        });
+        let row = classify_tx(&tx, &ours).unwrap();
+        assert_eq!(row.action, "open");
+        assert_eq!(row.name.as_deref(), Some("vmp3rt3"));
+    }
+
+    /// FINALIZE also carries the raw name at items[2].
+    #[test]
+    fn classify_finalize_carries_raw_name() {
+        let ours = addrs(&["hs1qmine"]);
+        let tx = json!({
+            "hash": "ff",
+            "height": 900,
+            "inputs": [
+                {"prevout": {"hash": "pp", "index": 0},
+                 "coin": {"value": 1_000_000_000, "address": "hs1qmine",
+                          "covenant": {"type": 0, "items": []}}}
+            ],
+            "outputs": [
+                {"value": 1_000_000, "address": "hs1qmine",
+                 "covenant": {"type": 10, "action": "FINALIZE",
+                              "items": ["deadbeef", "00000384", "666f6f", "00", "00000000",
+                                        "00000000", "cafebabe"]}}
+            ]
+        });
+        let row = classify_tx(&tx, &ours).unwrap();
+        assert_eq!(row.action, "finalize");
+        assert_eq!(row.name.as_deref(), Some("foo"));
+    }
+
+    /// The covenants that put something OTHER than a name at items[2] — a
+    /// nonce here — must not have it decoded as one.
     #[test]
     fn classify_reveal_no_raw_name() {
         let ours = addrs(&["hs1qmine"]);

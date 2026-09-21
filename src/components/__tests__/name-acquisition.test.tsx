@@ -390,6 +390,76 @@ describe("NameActionsModal — guided acquisition flow", () => {
     expect(screen.getByText("Open")).toBeInTheDocument();
   });
 
+  /// Regression: while our own OPEN sits in the mempool the chain still calls
+  /// the name AVAILABLE, so the panel rendered the AVAILABLE copy — "Start a
+  /// Vickrey auction" plus an Open button disabled with "an auction is already
+  /// opening" — underneath a heading that already read "Wait for Bidding". It
+  /// told the user to do the thing they had just done.
+  it("says the OPEN is waiting to be mined, with no Open button", async () => {
+    invokeMock.mockImplementation(
+      routeModal(
+        {
+          name: "pendingopen",
+          state: "AVAILABLE",
+          height: null,
+          renewal: null,
+          owner: null,
+          value: null,
+          highest: null,
+          stats: null,
+        },
+        {
+          capabilities: {
+            name: "pendingopen",
+            phase: "AVAILABLE",
+            taskState: "waitingForBidding",
+            ownsName: false,
+            hasBidCommitment: false,
+            hasBidCoin: false,
+            hasRevealCoin: false,
+            hasOwnerCoin: false,
+            canOpen: {
+              allowed: false,
+              reason: "an auction is already opening for this name (pending confirmation)",
+            },
+            canBid: { allowed: false, reason: "bidding is not open (phase: 'AVAILABLE')" },
+            canReveal: { allowed: false, reason: null },
+            canRedeem: { allowed: false, reason: null },
+            canRegister: { allowed: false, reason: null },
+            canUpdate: { allowed: false, reason: null },
+            canTransfer: { allowed: false, reason: null },
+            canFinalize: { allowed: false, reason: null },
+            canCancelTransfer: { allowed: false, reason: null },
+            canRenew: { allowed: false, reason: null },
+            canRevoke: { allowed: false, reason: null },
+            nextActionKey: null,
+            nextActionLabel: "Wait for Bidding",
+            nextActionReason: null,
+            countdownLabel: null,
+            countdownBlocks: null,
+            countdownHours: null,
+            auctionBiddingBlocks: 5,
+            auctionRevealBlocks: 10,
+            pendingBroadcastAction: "open",
+          },
+        },
+      ),
+    );
+    render(<NameActionsModal name="pendingopen" open onClose={() => {}} />, {
+      wrapper: wrapper(),
+    });
+
+    const panel = await screen.findByTestId("action-pending-block");
+    expect(panel).toHaveTextContent(/Open is broadcast and waiting to be mined/i);
+    // The window still helps: it says what happens once it lands.
+    expect(panel).toHaveTextContent("Bidding runs 5 blocks, then 10 blocks to reveal.");
+
+    // None of the AVAILABLE copy, and no button inviting a second OPEN.
+    expect(screen.queryByText(/Start a Vickrey auction/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Open$/ })).toBeNull();
+    expect(screen.queryByText(/already opening for this name/i)).toBeNull();
+  });
+
   it("shows Bid for a BIDDING name", async () => {
     invokeMock.mockImplementation(
       routeModal({

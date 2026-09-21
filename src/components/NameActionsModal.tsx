@@ -45,6 +45,7 @@ import {
 } from "../lib/auction";
 import { hnsToDollarydoos } from "../lib/utils";
 import { rowsToRecords, recordsToRows, type DnsRow } from "../lib/dnsRecords";
+import { ActionHint } from "./name-actions/ActionHint";
 import type { NameActionCapability } from "../types";
 
 /**
@@ -381,6 +382,20 @@ export function NameActionsModal({
     return null;
   };
 
+  // Whether the modal-wide write gate below is on screen. It already states the
+  // write-capability reason and carries its own Unlock button.
+  const writeGateVisible = !canWrite && hasSignableActions;
+
+  // The reason a guided panel shows in its banner. Same as `actionReason`,
+  // except it does not repeat the write-capability reason while the gate is
+  // showing it — otherwise the same sentence, and its Unlock button, appear
+  // twice. Tooltips keep using `actionReason`: a title on a disabled button
+  // isn't a duplicate of anything.
+  const guidedReason = (cap?: NameActionCapability): string | null => {
+    if (!canWrite) return writeGateVisible ? null : actionReason(cap);
+    return actionReason(cap);
+  };
+
   const run = async (label: string, builder: () => Promise<{ id: string }>) => {
     if (!profile) return;
     setBusy(label);
@@ -692,7 +707,7 @@ export function NameActionsModal({
         {/* Write-capability gate — only when there is actually something to
             sign. If the modal has nothing to submit (e.g. this wallet already
             bid and is just waiting), the "unlock to sign" notice is noise. */}
-        {!canWrite && hasSignableActions && (
+        {writeGateVisible && (
           <div
             className="bg-red-50 border border-red-300 rounded p-2 text-xs text-red-800"
             role="alert"
@@ -732,7 +747,7 @@ export function NameActionsModal({
                 summary={summary}
                 busy={busy}
                 actionDisabled={actionDisabled}
-                actionReason={actionReason}
+                actionReason={guidedReason}
                 onOpen={() => run("OPEN", () => build.open.mutateAsync({ name }))}
                 onRedeem={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}
                 onRegister={() => submitRecords("REGISTER")}
@@ -829,33 +844,36 @@ export function NameActionsModal({
             <section className="space-y-2">
               <div className="font-medium text-gray-700">Auction</div>
               <div className="flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={actionDisabled("OPEN", caps?.canOpen)}
-                  title={actionReason(caps?.canOpen) ?? ""}
-                  onClick={() => run("OPEN", () => build.open.mutateAsync({ name }))}
-                >
-                  {busy === "OPEN" ? "…" : "Open"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={actionDisabled("REVEAL", caps?.canReveal)}
-                  title={actionReason(caps?.canReveal) ?? ""}
-                  onClick={() => run("REVEAL", () => build.reveal.mutateAsync({ name }))}
-                >
-                  {busy === "REVEAL" ? "…" : "Reveal"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={actionDisabled("REDEEM", caps?.canRedeem)}
-                  title={actionReason(caps?.canRedeem) ?? ""}
-                  onClick={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}
-                >
-                  {busy === "REDEEM" ? "…" : "Redeem"}
-                </Button>
+                <ActionHint reason={actionReason(caps?.canOpen)}>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={actionDisabled("OPEN", caps?.canOpen)}
+                    onClick={() => run("OPEN", () => build.open.mutateAsync({ name }))}
+                  >
+                    {busy === "OPEN" ? "…" : "Open"}
+                  </Button>
+                </ActionHint>
+                <ActionHint reason={actionReason(caps?.canReveal)}>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={actionDisabled("REVEAL", caps?.canReveal)}
+                    onClick={() => run("REVEAL", () => build.reveal.mutateAsync({ name }))}
+                  >
+                    {busy === "REVEAL" ? "…" : "Reveal"}
+                  </Button>
+                </ActionHint>
+                <ActionHint reason={actionReason(caps?.canRedeem)}>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={actionDisabled("REDEEM", caps?.canRedeem)}
+                    onClick={() => run("REDEEM", () => build.redeem.mutateAsync({ name }))}
+                  >
+                    {busy === "REDEEM" ? "…" : "Redeem"}
+                  </Button>
+                </ActionHint>
               </div>
             </section>
 
@@ -931,31 +949,37 @@ export function NameActionsModal({
                 )}
 
                 <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={actionDisabled("REGISTER", caps?.canRegister) || !recordsFresh}
-                    title={
+                  <ActionHint
+                    reason={
                       !recordsFresh
                         ? "Waiting for a fresh read of the current on-chain records"
-                        : (actionReason(caps?.canRegister) ?? "")
+                        : actionReason(caps?.canRegister)
                     }
-                    onClick={() => submitRecords("REGISTER")}
                   >
-                    {busy === "REGISTER" ? "…" : "Register"}
-                  </Button>
-                  <Button
-                    size="sm"
-                    disabled={actionDisabled("UPDATE", caps?.canUpdate) || !recordsFresh}
-                    title={
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={actionDisabled("REGISTER", caps?.canRegister) || !recordsFresh}
+                      onClick={() => submitRecords("REGISTER")}
+                    >
+                      {busy === "REGISTER" ? "…" : "Register"}
+                    </Button>
+                  </ActionHint>
+                  <ActionHint
+                    reason={
                       !recordsFresh
                         ? "Waiting for a fresh read of the current on-chain records"
-                        : (actionReason(caps?.canUpdate) ?? "")
+                        : actionReason(caps?.canUpdate)
                     }
-                    onClick={() => submitRecords("UPDATE")}
                   >
-                    {busy === "UPDATE" ? "…" : "Update"}
-                  </Button>
+                    <Button
+                      size="sm"
+                      disabled={actionDisabled("UPDATE", caps?.canUpdate) || !recordsFresh}
+                      onClick={() => submitRecords("UPDATE")}
+                    >
+                      {busy === "UPDATE" ? "…" : "Update"}
+                    </Button>
+                  </ActionHint>
                 </div>
               </section>
             )}

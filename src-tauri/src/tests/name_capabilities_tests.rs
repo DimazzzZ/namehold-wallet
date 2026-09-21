@@ -41,6 +41,7 @@ fn ctx(
         transfer_has_items,
         existing_bid_count,
         has_pending_open,
+        pending_broadcast_action: None,
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,

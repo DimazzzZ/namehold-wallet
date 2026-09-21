@@ -319,25 +319,44 @@ export function ActivityView() {
 function statusBadge(status: string): {
   variant: "default" | "success" | "warning" | "error" | "info";
   label: string;
+  /** What the status means and what it is waiting on. */
+  hint: string;
 } {
   if (status === "onchain") {
     // Handled by the caller (confirmed/pending badge).
-    return { variant: "default", label: "Onchain" };
+    return { variant: "default", label: "Onchain", hint: "Seen on-chain." };
   }
   if (status === "confirmed") {
-    return { variant: "success", label: "Confirmed" };
+    return { variant: "success", label: "Confirmed", hint: "Mined into a block. Done." };
   }
   if (status === "broadcasted" || status === "broadcast_pending") {
-    return { variant: "warning", label: "Pending" };
+    return {
+      variant: "warning",
+      label: "Pending",
+      hint: "Sent to the network and waiting in the mempool. Nothing changes on-chain until a block includes it.",
+    };
   }
   if (status === "dropped") {
-    return { variant: "error", label: "Not confirmed" };
+    return {
+      variant: "error",
+      label: "Not confirmed",
+      hint: "The network no longer has it. It was never mined, so nothing happened on-chain.",
+    };
   }
   if (status === "failed") {
-    return { variant: "error", label: "Failed" };
+    return {
+      variant: "error",
+      label: "Failed",
+      hint: "It could not be sent. Nothing left this wallet.",
+    };
   }
-  // draft, signed, etc.
-  return { variant: "default", label: status };
+  if (status === "signed") {
+    return { variant: "default", label: status, hint: "Signed but not sent yet." };
+  }
+  if (status === "draft") {
+    return { variant: "default", label: status, hint: "Built but neither signed nor sent." };
+  }
+  return { variant: "default", label: status, hint: "" };
 }
 
 /**
@@ -451,6 +470,13 @@ export function ActivityRow({
     row.status === "onchain" ? (row.confirmed ? "success" : "warning") : badge.variant;
   const badgeLabel =
     row.status === "onchain" ? (row.confirmed ? "Confirmed" : "Pending") : badge.label;
+  // The height is already its own column; the badge's hint explains the state.
+  const badgeHint =
+    row.status === "onchain"
+      ? row.confirmed
+        ? `Mined into a block${row.height != null ? ` (#${row.height})` : ""}.`
+        : "Seen by the node but not in a block yet."
+      : badge.hint;
 
   const linkClass = "text-blue-500 hover:text-blue-700 hover:underline cursor-pointer";
 
@@ -464,43 +490,46 @@ export function ActivityRow({
         {row.nameList && row.nameList.length > 1 ? (
           // Batch action: collapsed summary with expand-on-click
           <div>
-            <button
-              type="button"
-              className="text-gray-600 hover:text-gray-900 hover:underline cursor-pointer text-left"
-              onClick={() => setBatchExpanded(!batchExpanded)}
-              title={batchExpanded ? "Collapse" : "Expand"}
-              data-testid="activity-batch-summary-toggle"
-            >
-              .{displayName(row.name ?? "")}
-            </button>
+            <Tooltip content={batchExpanded ? "Collapse" : "Expand"}>
+              <button
+                type="button"
+                className="text-gray-600 hover:text-gray-900 hover:underline cursor-pointer text-left"
+                onClick={() => setBatchExpanded(!batchExpanded)}
+                data-testid="activity-batch-summary-toggle"
+              >
+                .{displayName(row.name ?? "")}
+              </button>
+            </Tooltip>
             {batchExpanded && (
               <ul className="text-xs space-y-0.5 mt-1">
                 {row.nameList.map((n) => (
                   <li key={n}>
-                    <button
-                      type="button"
-                      className={linkClass}
-                      onClick={() => onNameClick(n)}
-                      title="View name info"
-                      data-testid="activity-name-info-link"
-                    >
-                      .{displayName(n)}
-                    </button>
+                    <Tooltip content="View name info">
+                      <button
+                        type="button"
+                        className={linkClass}
+                        onClick={() => onNameClick(n)}
+                        data-testid="activity-name-info-link"
+                      >
+                        .{displayName(n)}
+                      </button>
+                    </Tooltip>
                   </li>
                 ))}
               </ul>
             )}
           </div>
         ) : row.name ? (
-          <button
-            type="button"
-            className={linkClass}
-            onClick={() => onNameClick(row.name!)}
-            title="View name info"
-            data-testid="activity-name-info-link"
-          >
-            .{displayName(row.name)}
-          </button>
+          <Tooltip content="View name info">
+            <button
+              type="button"
+              className={linkClass}
+              onClick={() => onNameClick(row.name!)}
+              data-testid="activity-name-info-link"
+            >
+              .{displayName(row.name)}
+            </button>
+          </Tooltip>
         ) : (
           <span className="text-gray-400">—</span>
         )}
@@ -529,10 +558,7 @@ export function ActivityRow({
         {row.feeDoos == null ? "—" : formatHns(row.feeDoos)}
       </td>
       <td className="py-1 pr-4">
-        <Badge
-          variant={badgeVariant}
-          title={row.height != null ? `Height #${row.height}` : "Mempool"}
-        >
+        <Badge variant={badgeVariant} title={badgeHint}>
           {badgeLabel}
         </Badge>
       </td>
@@ -540,56 +566,63 @@ export function ActivityRow({
         {row.height == null ? (
           <span className="text-gray-400">—</span>
         ) : (
-          <button
-            type="button"
-            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-            onClick={() => onBlockClick(row.height!)}
-            title="View block info"
-            data-testid="activity-block-info-link"
-          >
-            #{row.height}
-          </button>
+          <Tooltip content="View block info">
+            <button
+              type="button"
+              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+              onClick={() => onBlockClick(row.height!)}
+              data-testid="activity-block-info-link"
+            >
+              #{row.height}
+            </button>
+          </Tooltip>
         )}
       </td>
-      <td className="py-1 pr-4 text-xs font-mono text-gray-500" title={row.txid ?? undefined}>
+      <td className="py-1 pr-4 text-xs font-mono text-gray-500">
         {row.txid ? (
-          <button
-            type="button"
-            className="inline-block max-w-[140px] truncate align-bottom text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-            onClick={() => onTxClick(row.txid!)}
-            title="View transaction info"
-            data-testid="activity-tx-info-link"
+          <Tooltip
+            content={`View transaction info — ${row.txid}`}
+            className="inline-flex align-bottom"
           >
-            {row.txid.slice(0, 10)}…
-          </button>
+            <button
+              type="button"
+              className="inline-block max-w-[140px] truncate text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+              onClick={() => onTxClick(row.txid!)}
+              data-testid="activity-tx-info-link"
+            >
+              {row.txid.slice(0, 10)}…
+            </button>
+          </Tooltip>
         ) : (
           <span className="text-gray-400">—</span>
         )}
       </td>
       <td className="py-1 pr-2 text-xs whitespace-nowrap">
         {canAct && draftActions.execute && (
-          <button
-            type="button"
-            className="px-2 py-0.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-            onClick={handleExecute}
-            disabled={actionBusy || execDraft.pending}
-            title={draftActions.execute}
-            data-testid="activity-draft-execute"
-          >
-            {draftActions.execute}
-          </button>
+          <Tooltip content={draftActions.execute}>
+            <button
+              type="button"
+              className="px-2 py-0.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleExecute}
+              disabled={actionBusy || execDraft.pending}
+              data-testid="activity-draft-execute"
+            >
+              {draftActions.execute}
+            </button>
+          </Tooltip>
         )}
         {canAct && draftActions.discard && (
-          <button
-            type="button"
-            className="ml-1 px-2 py-0.5 bg-red-50 text-red-600 hover:bg-red-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-            onClick={handleDiscard}
-            disabled={actionBusy || deleteDraft.isPending}
-            title="Discard draft"
-            data-testid="activity-draft-discard"
-          >
-            Discard
-          </button>
+          <Tooltip content="Discard draft">
+            <button
+              type="button"
+              className="ml-1 px-2 py-0.5 bg-red-50 text-red-600 hover:bg-red-100 rounded text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleDiscard}
+              disabled={actionBusy || deleteDraft.isPending}
+              data-testid="activity-draft-discard"
+            >
+              Discard
+            </button>
+          </Tooltip>
         )}
       </td>
     </tr>

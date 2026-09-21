@@ -13,7 +13,7 @@ code-smell heuristics a reviewer might otherwise apply.
 | Rust     | `cargo test` (`src-tauri/`) — CI runs the same tests via `cargo nextest run --manifest-path src-tauri/Cargo.toml --locked` |
 | Frontend | `npx tsc -b && npx vite build` (repo root)                  |
 | Frontend | `npx vitest run` (repo root)                                |
-| Frontend | `npm run lint:format` (prettier) and `npm run lint:secure-imports` |
+| Frontend | `npm run lint:format` (prettier), `npm run lint:secure-imports` and `npm run lint:native-title` |
 
 Locally `cargo test` is enough; CI uses nextest for its two-lane split (see
 `src-tauri/.config/nextest.toml`).
@@ -79,6 +79,22 @@ Locally `cargo test` is enough; CI uses nextest for its two-lane split (see
   a word like "connected" means.
 - Untyped form state is cast **once** into a typed local at the top of the
   component, not at every use.
+- Hover hints use the `Tooltip` component, never the native `title` attribute
+  — `npm run lint:native-title` enforces it. A `title` cannot be styled or
+  positioned, has no delay we control, and is **never shown on an element with
+  `pointer-events: none`**, which every disabled `Button` sets: the hint
+  disappears exactly when it has something to say. `title` remains an ordinary
+  prop on `Dialog`, `PageHeader`, `Card`, `Alert` and `EmptyState` (a heading,
+  not a hint) and on `Badge`, which renders a Tooltip itself.
+  - The Tooltip's trigger wrapper is a real element — floating-ui measures it,
+    so it cannot be `display: contents`. It defaults to `inline-flex`; pass
+    `className` (which **replaces** that default) whenever the parent's layout
+    depends on the trigger, e.g. a block list item or a `flex-1` / `shrink-0`
+    flex child.
+  - A Tooltip renders a `span`, so it cannot wrap a `<td>` or `<tr>`. Wrap the
+    cell's contents instead.
+  - When the `title` was also the element's accessible name (an icon with no
+    text), add an `aria-label` — the Tooltip does not name the trigger.
 - Components use `data-testid` for anything a test clicks or asserts on.
   Tests use Vitest + Testing Library, mock `invoke` per command name, and
   build **complete** fixtures (every field of the type, no partials).

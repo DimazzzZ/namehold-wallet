@@ -65,6 +65,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { ReceiveAddressList } from "./ReceiveAddressList";
 import type { NameActionCapabilities, TxDraftSummary } from "../types";
 import { subscribeAction } from "../lib/actionBus";
+import { Tooltip } from "./ui/Tooltip";
 
 export function WalletView() {
   const qc = useQueryClient();
@@ -742,24 +743,25 @@ export function WalletView() {
         </Button>
         {!isWatchOnly && (
           <div className="ml-auto flex items-center gap-2">
-            <span
-              className="text-xs text-gray-500"
-              title={
+            <Tooltip
+              content={
                 unlocked
                   ? "Your keys are in memory. They lock automatically after the session timeout."
                   : undefined
               }
             >
-              Signer {unlocked ? "unlocked" : "locked"}
-              {!unlocked && (
-                <span className="hidden sm:inline">
-                  {" — "}
-                  {profile.hasPassphrase
-                    ? "Unlock with your passphrase (in a secure window)"
-                    : "no passphrase — just click Unlock"}
-                </span>
-              )}
-            </span>
+              <span className="text-xs text-gray-500">
+                Signer {unlocked ? "unlocked" : "locked"}
+                {!unlocked && (
+                  <span className="hidden sm:inline">
+                    {" — "}
+                    {profile.hasPassphrase
+                      ? "Unlock with your passphrase (in a secure window)"
+                      : "no passphrase — just click Unlock"}
+                  </span>
+                )}
+              </span>
+            </Tooltip>
             {unlocked ? (
               <Button size="sm" variant="secondary" onClick={handleLock}>
                 Lock
@@ -906,12 +908,14 @@ export function WalletView() {
           </div>
           {immature > 0 && (
             <div data-testid="balance-immature">
-              <div title="Freshly mined coins — spendable once they mature">
-                Immature
-                {immatureInBlocks !== null && immatureInBlocks > 0
-                  ? ` (${immatureInBlocks} ${immatureInBlocks === 1 ? "block" : "blocks"})`
-                  : ""}
-              </div>
+              <Tooltip content="Freshly mined coins — spendable once they mature">
+                <div>
+                  Immature
+                  {immatureInBlocks !== null && immatureInBlocks > 0
+                    ? ` (${immatureInBlocks} ${immatureInBlocks === 1 ? "block" : "blocks"})`
+                    : ""}
+                </div>
+              </Tooltip>
               <div className="text-sm text-gray-800 tabular-nums font-mono">
                 {formatHns(immature)}
               </div>
@@ -919,7 +923,9 @@ export function WalletView() {
           )}
           {(balances?.nameLockupDoos ?? 0) > 0 && (
             <div data-testid="balance-locked-auctions">
-              <div title="In-flight bids — returned on reveal/redeem">Locked in Auctions</div>
+              <Tooltip content="In-flight bids — returned on reveal/redeem">
+                <div>Locked in Auctions</div>
+              </Tooltip>
               <div className="text-sm text-gray-800 tabular-nums font-mono">
                 {formatHns(balances!.nameLockupDoos)}
               </div>
@@ -927,7 +933,9 @@ export function WalletView() {
           )}
           {(balances?.nameControlDoos ?? 0) > 0 && (
             <div data-testid="balance-name-value">
-              <div title="Value bound to names you control">Name Value</div>
+              <Tooltip content="Value bound to names you control">
+                <div>Name Value</div>
+              </Tooltip>
               <div className="text-sm text-gray-800 tabular-nums font-mono">
                 {formatHns(balances!.nameControlDoos)}
               </div>
@@ -1227,15 +1235,16 @@ export function WalletView() {
                           />
                         </td>
                         <td className="py-1 pr-4 text-xs font-mono">
-                          <button
-                            type="button"
-                            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                            onClick={() => setManageName(n.name)}
-                            title="View name info"
-                            data-testid="owned-name-info-link"
-                          >
-                            .{displayName(n.name)}
-                          </button>
+                          <Tooltip content="View name info">
+                            <button
+                              type="button"
+                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                              onClick={() => setManageName(n.name)}
+                              data-testid="owned-name-info-link"
+                            >
+                              .{displayName(n.name)}
+                            </button>
+                          </Tooltip>
                         </td>
                         <td className="py-1 pr-4">
                           {n.state ? (
@@ -1248,30 +1257,32 @@ export function WalletView() {
                         </td>
                         <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
                           {n.height ? (
-                            <button
-                              type="button"
-                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                              onClick={() => setInfoBlock(n.height!)}
-                              title="View block info"
-                              data-testid="owned-name-height-info-link"
-                            >
-                              #{n.height}
-                            </button>
+                            <Tooltip content="View block info">
+                              <button
+                                type="button"
+                                className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                                onClick={() => setInfoBlock(n.height!)}
+                                data-testid="owned-name-height-info-link"
+                              >
+                                #{n.height}
+                              </button>
+                            </Tooltip>
                           ) : (
                             "—"
                           )}
                         </td>
                         <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
                           {n.renewal ? (
-                            <button
-                              type="button"
-                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                              onClick={() => setInfoBlock(n.renewal!)}
-                              title="View block info"
-                              data-testid="owned-name-renewal-info-link"
-                            >
-                              #{n.renewal}
-                            </button>
+                            <Tooltip content="View block info">
+                              <button
+                                type="button"
+                                className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                                onClick={() => setInfoBlock(n.renewal!)}
+                                data-testid="owned-name-renewal-info-link"
+                              >
+                                #{n.renewal}
+                              </button>
+                            </Tooltip>
                           ) : (
                             "—"
                           )}
@@ -1298,48 +1309,57 @@ export function WalletView() {
                     <Button size="sm" variant="primary" onClick={handleBatchRenew}>
                       Renew Selected
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      onClick={handleBatchReveal}
-                      disabled={!batchEligibility.canReveal}
-                      title={
+                    <Tooltip
+                      content={
                         batchEligibility.canReveal
                           ? undefined
                           : "All selected names must be in the REVEAL phase"
                       }
-                      data-testid="batch-reveal-btn"
                     >
-                      Reveal Selected
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      onClick={handleBatchRedeem}
-                      disabled={!batchEligibility.canRedeem}
-                      title={
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={handleBatchReveal}
+                        disabled={!batchEligibility.canReveal}
+                        data-testid="batch-reveal-btn"
+                      >
+                        Reveal Selected
+                      </Button>
+                    </Tooltip>
+                    <Tooltip
+                      content={
                         batchEligibility.canRedeem
                           ? undefined
                           : "All selected names must have redeemable losing bids"
                       }
-                      data-testid="batch-redeem-btn"
                     >
-                      Redeem Selected
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      onClick={handleBatchFinalize}
-                      disabled={!batchEligibility.canFinalize}
-                      title={
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={handleBatchRedeem}
+                        disabled={!batchEligibility.canRedeem}
+                        data-testid="batch-redeem-btn"
+                      >
+                        Redeem Selected
+                      </Button>
+                    </Tooltip>
+                    <Tooltip
+                      content={
                         batchEligibility.canFinalize
                           ? undefined
                           : "All selected names must have a transfer ready to finalize"
                       }
-                      data-testid="batch-finalize-btn"
                     >
-                      Finalize Selected
-                    </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={handleBatchFinalize}
+                        disabled={!batchEligibility.canFinalize}
+                        data-testid="batch-finalize-btn"
+                      >
+                        Finalize Selected
+                      </Button>
+                    </Tooltip>
                     <Input
                       className="w-56"
                       placeholder="Transfer to hs1q… / rs1q…"
@@ -1347,22 +1367,25 @@ export function WalletView() {
                       onChange={(e) => setBatchRecipient(e.target.value)}
                       data-testid="batch-transfer-recipient-input"
                     />
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      onClick={handleBatchTransfer}
-                      disabled={!batchEligibility.canTransfer || !batchRecipient.trim()}
-                      title={
+                    <Tooltip
+                      content={
                         !batchEligibility.canTransfer
                           ? "All selected names must be transferable (owned, not mid-transfer)"
                           : !batchRecipient.trim()
                             ? "Enter a recipient address"
                             : undefined
                       }
-                      data-testid="batch-transfer-btn"
                     >
-                      Transfer Selected
-                    </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={handleBatchTransfer}
+                        disabled={!batchEligibility.canTransfer || !batchRecipient.trim()}
+                        data-testid="batch-transfer-btn"
+                      >
+                        Transfer Selected
+                      </Button>
+                    </Tooltip>
                     <Button size="sm" variant="ghost" onClick={clearSelection}>
                       Clear
                     </Button>
@@ -1522,15 +1545,16 @@ export function WalletView() {
                     step="0.000001"
                   />
                 </div>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={!canMax || buildDraft.isPending}
-                  onClick={() => handleBuildDraft({ max: true })}
-                  title="Send your entire spendable balance (minus the network fee)"
-                >
-                  Max
-                </Button>
+                <Tooltip content="Send your entire spendable balance (minus the network fee)">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={!canMax || buildDraft.isPending}
+                    onClick={() => handleBuildDraft({ max: true })}
+                  >
+                    Max
+                  </Button>
+                </Tooltip>
               </div>
               {amountError && (
                 <div className="mt-1 text-xs text-red-600" data-testid="send-amount-error">

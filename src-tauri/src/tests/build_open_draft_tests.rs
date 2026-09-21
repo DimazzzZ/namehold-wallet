@@ -161,10 +161,10 @@ fn build_open_draft_rejects_when_open_coin_exists() {
     seed_profile(&conn);
     let ctx = seed_ctx_with_funding(&conn, HashMap::new());
 
-    // Seed an unspent COV_OPEN coin for this name → double-open guard (a).
-    // The detection query JOINs tracked_utxos → derived_addresses on address
-    // and matches the name hash from covenant_json items[0], so we need both
-    // a derived_addresses row and a covenant_json carrying the name hash.
+    // Seed an unspent, UNCONFIRMED COV_OPEN coin for this name (no height =
+    // mempool) → double-open guard (a). The detection matches the name hash
+    // from covenant_json items[0], so the covenant_json must carry it; the
+    // derived_addresses row keeps the fixture consistent with a real coin.
     let nh = names::hash_name(NAME).unwrap();
     let nh_hex = hex::encode(nh);
     let open_addr = "hs1qopencoin";
@@ -197,6 +197,50 @@ fn build_open_draft_rejects_when_open_coin_exists() {
         AppError::InvalidInput(msg) => assert!(msg.contains("already being opened")),
         other => panic!("expected InvalidInput, got {other:?}"),
     }
+}
+
+/// Regression: a name whose auction lapsed must be openable again.
+///
+/// The OPEN output is a zero-value marker nothing ever spends, so the wallet
+/// keeps it after the auction ends. The guard used to block on any unspent
+/// OPEN coin, which meant a name this wallet had opened once could never be
+/// opened again — even after its auction lapsed and the chain reported it
+/// available. Only an in-flight (mempool) OPEN is a duplicate risk.
+#[test]
+fn build_open_draft_allows_reopening_after_a_confirmed_open_coin() {
+    let conn = test_db();
+    seed_profile(&conn);
+    let ctx = seed_ctx_with_funding(&conn, HashMap::new());
+
+    let nh_hex = hex::encode(names::hash_name(NAME).unwrap());
+    let open_addr = "hs1qoldopencoin";
+    conn.execute(
+        "INSERT INTO derived_addresses
+            (wallet_profile_id, account_index, branch, child_index, address,
+             script_pubkey_hex, public_key_hex)
+         VALUES (?1, 0, 0, 98, ?2, 'deadbeef', 'deadbeef')",
+        rusqlite::params![PROFILE, open_addr],
+    )
+    .unwrap();
+    let cov_json = format!(r#"{{"type":{},"items":["{}"]}}"#, sync::COV_OPEN, nh_hex);
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, height, covenant_type, covenant_json, spend_class, spent_by_txid)
+         VALUES (?1, 0, ?2, ?3, 'deadbeef', 0, 111, ?4, ?5, 'name_control', NULL)",
+        rusqlite::params![
+            "cc".repeat(32),
+            PROFILE,
+            open_addr,
+            sync::COV_OPEN as i64,
+            cov_json
+        ],
+    )
+    .unwrap();
+
+    let summary = build_open_draft_inner(&conn, &ctx, NAME, Some(10))
+        .expect("a confirmed OPEN coin from a finished auction must not block a new OPEN");
+    assert_eq!(summary.action, "open");
 }
 
 #[test]

@@ -389,6 +389,19 @@ pub struct NameActionCapabilities {
     pub countdown_label: Option<String>,
     pub countdown_blocks: Option<i64>,
     pub countdown_hours: Option<f64>,
+    /// How long this network's auction phases run, in blocks. Static per
+    /// network (`NameParams`), not per name — but the UI needs it BEFORE an
+    /// auction exists, to describe what opening one commits to. The periods
+    /// differ by two orders of magnitude between mainnet (720/1440) and
+    /// regtest (5/10), so a hardcoded "about a week" is wrong nearly
+    /// everywhere. `None` when we could not determine the network.
+    pub auction_bidding_blocks: Option<i64>,
+    pub auction_reveal_blocks: Option<i64>,
+    /// Set while a transaction this wallet sent for the name is still in the
+    /// mempool: the action it performs (`"open"`, `"reveal"`, …). Until it is
+    /// mined the chain reports the name's previous state, so without this the
+    /// UI can only describe a world where the user never pressed the button.
+    pub pending_broadcast_action: Option<String>,
 }
 
 /// Context gathered from the DB for a name action evaluation.
@@ -417,6 +430,11 @@ pub(crate) struct NameActionContext {
     /// already opened the name is a phase change (AVAILABLE -> OPENING),
     /// which `can_open`'s phase check already handles separately.
     pub has_pending_open: bool,
+    /// The action this wallet has broadcast for the name and the chain has not
+    /// confirmed yet. Drives the "sent, waiting for a block" copy — the one
+    /// state no phase-derived label can describe, because on-chain nothing has
+    /// happened yet.
+    pub pending_broadcast_action: Option<String>,
     /// The `reveal_txid` stamped on the bid commitment row (if any).
     pub reveal_txid: Option<String>,
     /// Status of the local tx_draft matching `reveal_txid` (if one exists).
@@ -493,27 +511,35 @@ pub(crate) fn find_name_action_context(
         .unwrap_or(0);
 
     // Task 1: pending-OPEN evidence, mirroring the two checks
-    // `build_open_draft`'s guard enforces — (a) an unspent COV_OPEN coin for
-    // this name anywhere in the profile, OR (b) a not-yet-terminal `open`
+    // `build_open_draft`'s guard enforces — (a) an UNCONFIRMED COV_OPEN coin
+    // for this name anywhere in the profile, OR (b) a not-yet-terminal `open`
     // draft. Either makes `can_open` reflect the pending state instead of
     // staying "allowed" until the user hits the guard directly.
+    //
+    // Unconfirmed, not merely unspent: an OPEN output is a zero-value marker
+    // that nothing ever spends, so the wallet keeps it forever. Treating a
+    // confirmed one as "pending" made every name this wallet had ever opened
+    // permanently un-openable — including one whose auction had since lapsed
+    // and which the chain now reports as available again. A live auction is
+    // already handled by the phase check in `build_name_action_capabilities`.
     let has_pending_open_coin = names::hash_name(name)
         .ok()
         .map(hex::encode)
         .map(|nh_hex| {
-            queries::find_unspent_covenant_utxos_by_name_hash(
+            queries::has_unconfirmed_covenant_utxo_by_name_hash(
                 conn,
                 profile_id,
                 sync::COV_OPEN as i64,
                 &nh_hex,
             )
-            .map(|v| !v.is_empty())
             .unwrap_or(false)
         })
         .unwrap_or(false);
     let has_pending_open_draft =
         queries::has_pending_draft_for_name(conn, profile_id, "open", name).unwrap_or(false);
     let has_pending_open = has_pending_open_coin || has_pending_open_draft;
+    let pending_broadcast_action =
+        queries::pending_broadcast_action_for_name(conn, profile_id, name).unwrap_or(None);
 
     // Reveal-in-flight evidence: the commitment row's `reveal_txid` (stamped
     // either by our own broadcast in `build_reveal_draft`, or by `chain_scan`
@@ -540,6 +566,7 @@ pub(crate) fn find_name_action_context(
         transfer_has_items: transfer,
         existing_bid_count,
         has_pending_open,
+        pending_broadcast_action,
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
@@ -1030,6 +1057,7 @@ pub(crate) fn build_name_action_capabilities(
     // 7. Extract countdown from stats.
     let (countdown_label, countdown_blocks, countdown_hours) =
         names_pure::extract_countdown(raw_phase, stats);
+    let name_params = network.name_params();
 
     NameActionCapabilities {
         name,
@@ -1061,6 +1089,9 @@ pub(crate) fn build_name_action_capabilities(
         countdown_label,
         countdown_blocks,
         countdown_hours,
+        auction_bidding_blocks: Some(name_params.bidding_period as i64),
+        auction_reveal_blocks: Some(name_params.reveal_period as i64),
+        pending_broadcast_action: action_ctx.pending_broadcast_action.clone(),
     }
 }
 
@@ -1100,6 +1131,11 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         countdown_label: None,
         countdown_blocks: None,
         countdown_hours: None,
+        // This is the "we could not read anything" fallback, and the caller
+        // has no network in hand here — so don't claim auction periods either.
+        auction_bidding_blocks: None,
+        auction_reveal_blocks: None,
+        pending_broadcast_action: None,
     }
 }
 
@@ -1357,8 +1393,14 @@ pub(crate) fn build_open_draft_inner(
     // window, a stale UI, or a replayed call can still reach this command
     // directly, so the rule must be enforced here. Two checks, either of
     // which blocks a second open:
-    //   (a) an unspent COV_OPEN coin for this name anywhere in the profile —
-    //       our OPEN is already live on-chain (or awaiting confirmation);
+    //   (a) an UNCONFIRMED COV_OPEN coin for this name anywhere in the profile
+    //       — our OPEN is in the mempool and might still land. A CONFIRMED one
+    //       is not a duplicate risk: the name is then in OPENING/BIDDING and
+    //       consensus rejects a second OPEN, while an OPEN coin left over from
+    //       an auction that has since lapsed is stale evidence — nothing spends
+    //       a zero-value OPEN marker, so the wallet holds it forever, and
+    //       blocking on it made a name that is available again impossible to
+    //       reopen;
     //   (b) a not-yet-terminal `open` draft for this name — one is already
     //       queued/signed/broadcast and might still land.
     // This deliberately does NOT fetch node state to detect someone ELSE
@@ -1372,13 +1414,13 @@ pub(crate) fn build_open_draft_inner(
     // written anything (classic TOCTOU). Tests call this function directly
     // with an owned `&Connection` (no mutex), which is fine because tests
     // are single-threaded.
-    let existing_open_coins = queries::find_unspent_covenant_utxos_by_name_hash(
+    let open_in_flight = queries::has_unconfirmed_covenant_utxo_by_name_hash(
         conn,
         &ctx.profile_id,
         sync::COV_OPEN as i64,
         &nh_hex,
     )?;
-    if !existing_open_coins.is_empty() {
+    if open_in_flight {
         return Err(AppError::InvalidInput(format!(
             "an auction for '{name}' is already being opened — wait for it to confirm"
         )));
@@ -3069,6 +3111,7 @@ mod tests {
             transfer_has_items: None,
             existing_bid_count: 0,
             has_pending_open: false,
+            pending_broadcast_action: None,
             reveal_txid: None,
             reveal_draft_status: None,
             bid_value_doos: None,
@@ -3796,6 +3839,43 @@ mod tests {
             caps.can_open.reason.as_deref(),
             Some("name is in phase 'BIDDING', not AVAILABLE")
         );
+    }
+
+    /// The auction window must come from the ACTIVE network, not a constant.
+    /// mainnet bids for 720 blocks and regtest for 5 — the UI used to promise
+    /// "about a week" on both.
+    #[test]
+    fn capabilities_carry_this_networks_auction_window() {
+        let ctx = ctx_default();
+        let caps_for = |network| {
+            build_name_action_capabilities(
+                "n".into(),
+                "AVAILABLE".into(),
+                "AVAILABLE",
+                None,
+                &ctx,
+                false,
+                false,
+                None,
+                network,
+            )
+        };
+
+        let main = caps_for(Network::Main);
+        assert_eq!(main.auction_bidding_blocks, Some(720));
+        assert_eq!(main.auction_reveal_blocks, Some(1440));
+
+        let regtest = caps_for(Network::Regtest);
+        assert_eq!(regtest.auction_bidding_blocks, Some(5));
+        assert_eq!(regtest.auction_reveal_blocks, Some(10));
+    }
+
+    /// The "we could not read anything" fallback must not invent periods.
+    #[test]
+    fn conservative_capabilities_claim_no_auction_window() {
+        let caps = conservative_capabilities("n", "node unreachable");
+        assert_eq!(caps.auction_bidding_blocks, None);
+        assert_eq!(caps.auction_reveal_blocks, None);
     }
 
     #[test]

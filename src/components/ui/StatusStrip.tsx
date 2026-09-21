@@ -7,6 +7,7 @@ import type { ShellStatusItem, StatusTone } from "../../types";
 import { Popover, PopoverItem } from "./Popover";
 import { useUiStore } from "../../stores/ui";
 import { mapError } from "../../lib/errors";
+import { Tooltip } from "./Tooltip";
 
 const TONE_DOT: Record<StatusTone, string> = {
   default: "bg-gray-400",
@@ -147,15 +148,16 @@ export function StatusStrip({ className }: { className?: string }) {
             <Popover
               key={item.key}
               trigger={({ toggle }) => (
-                <button
-                  type="button"
-                  title={item.detail}
-                  onClick={toggle}
-                  className={pillClasses}
-                  data-testid="status-strip-node"
-                >
-                  {pillInner(item)}
-                </button>
+                <Tooltip content={item.detail}>
+                  <button
+                    type="button"
+                    onClick={toggle}
+                    className={pillClasses}
+                    data-testid="status-strip-node"
+                  >
+                    {pillInner(item)}
+                  </button>
+                </Tooltip>
               )}
             >
               {({ close }) => (
@@ -225,15 +227,15 @@ export function StatusStrip({ className }: { className?: string }) {
         }
 
         return (
-          <button
-            key={item.key}
-            type="button"
-            title={item.detail}
-            onClick={() => item.route && navigate(item.route)}
-            className={pillClasses}
-          >
-            {pillInner(item)}
-          </button>
+          <Tooltip key={item.key} content={item.detail}>
+            <button
+              type="button"
+              onClick={() => item.route && navigate(item.route)}
+              className={pillClasses}
+            >
+              {pillInner(item)}
+            </button>
+          </Tooltip>
         );
       })}
     </div>

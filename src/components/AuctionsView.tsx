@@ -7,6 +7,7 @@ import {
   taskSummaryFromCapabilities,
   taskStateUrgencyRank,
   formatCountdown,
+  pendingBroadcastBadge,
   type AuctionTaskSummary,
 } from "../lib/auction";
 import { NameActionsModal } from "./NameActionsModal";
@@ -19,6 +20,7 @@ import { normalizeNameInputAce } from "../lib/utils";
 import { displayName } from "../lib/idn";
 import type { HsdName, NameActionCapabilities, AuctionTaskState } from "../types";
 import { subscribeAction } from "../lib/actionBus";
+import { Tooltip } from "./ui/Tooltip";
 
 /**
  * Live task states that count as "still in the auction" for a position name
@@ -197,6 +199,7 @@ export function AuctionsView() {
       : (summary?.label ?? auctionPhase(n.state).label);
     const displayVariant = summary?.variant ?? auctionPhase(n.state).variant;
     const nextLabel = summary?.nextActionLabel ?? auctionPhase(n.state).label;
+    const pendingBadge = pendingBroadcastBadge(summary?.pendingBroadcastAction);
 
     // Countdown column (F5 fix — this used to show the raw sync height,
     // which tells the user nothing about how much time an action has left).
@@ -212,24 +215,35 @@ export function AuctionsView() {
     return (
       <tr key={n.name} className="border-t border-gray-100 hover:bg-gray-50">
         <td className="py-1 pr-4 text-xs font-mono">
-          <button
-            type="button"
-            className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-            onClick={() => setManageName(n.name)}
-            title="View name info"
-            data-testid="auction-name-info-link"
-          >
-            .{displayName(n.name)}
-          </button>
+          <Tooltip content="View name info">
+            <button
+              type="button"
+              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+              onClick={() => setManageName(n.name)}
+              data-testid="auction-name-info-link"
+            >
+              .{displayName(n.name)}
+            </button>
+          </Tooltip>
         </td>
         <td className="py-1 pr-4">
-          <Badge variant={displayVariant}>{displayLabel}</Badge>
+          {/* An action of ours in the mempool outranks the phase label: the
+              chain still shows the old phase, so "Ready to Bid" next to a bid
+              the user just sent reads as if it never happened. */}
+          {pendingBadge ? (
+            <Badge
+              variant="info"
+              title="Sent from this wallet. Nothing changes on-chain until it lands in a block."
+              data-testid="auction-pending-block"
+            >
+              {pendingBadge}
+            </Badge>
+          ) : (
+            <Badge variant={displayVariant}>{displayLabel}</Badge>
+          )}
         </td>
-        <td
-          className="py-1 pr-4 text-xs text-gray-500"
-          title={summary?.countdownLabel ?? undefined}
-        >
-          {countdownText ?? "—"}
+        <td className="py-1 pr-4 text-xs text-gray-500">
+          <Tooltip content={summary?.countdownLabel ?? undefined}>{countdownText ?? "—"}</Tooltip>
         </td>
         <td className="py-1 text-right">
           <Button size="sm" variant="ghost" onClick={() => handleOpenManagement(n.name)}>

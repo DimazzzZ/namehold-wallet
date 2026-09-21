@@ -13,6 +13,7 @@ import { useReadNames } from "../queries/read";
 import type { HsdName } from "../types";
 import { NameActionsModal } from "./NameActionsModal";
 import { subscribeAction } from "../lib/actionBus";
+import { Tooltip } from "./ui/Tooltip";
 
 interface WatchedName {
   name: string;
@@ -311,9 +312,11 @@ export function Watchlist() {
                       </td>
                       <td className="py-1 pr-4 text-xs text-gray-600 whitespace-nowrap">
                         {countdown ? (
-                          <span title={countdown.label}>
-                            {countdown.label}: {formatCountdown(countdown)}
-                          </span>
+                          <Tooltip content={countdown.label}>
+                            <span>
+                              {countdown.label}: {formatCountdown(countdown)}
+                            </span>
+                          </Tooltip>
                         ) : (
                           <span className="text-gray-500">{"\u2014"}</span>
                         )}
@@ -345,27 +348,30 @@ export function Watchlist() {
                             placeholder="tag1, tag2"
                           />
                         ) : (
-                          <button
-                            type="button"
-                            className="text-left cursor-pointer hover:bg-gray-100 rounded px-1 py-0.5 min-w-[4rem]"
-                            onClick={() => startEditTags(w.name, w.tags)}
-                            title="Click to edit tags"
-                          >
-                            {tags.length > 0 ? (
-                              <span className="flex flex-wrap gap-1">
-                                {tags.map((t) => (
-                                  <span
-                                    key={t}
-                                    className="inline-block bg-gray-100 text-gray-600 text-xs px-1.5 py-0.5 rounded"
-                                  >
-                                    {t}
-                                  </span>
-                                ))}
-                              </span>
-                            ) : (
-                              <span className="text-gray-500 text-xs">{"\u2014"}</span>
-                            )}
-                          </button>
+                          <Tooltip content="Click to edit tags">
+                            <button
+                              type="button"
+                              className="text-left cursor-pointer hover:bg-gray-100 rounded px-1 py-0.5 min-w-[4rem]"
+                              onClick={() => startEditTags(w.name, w.tags)}
+                              aria-label={`Edit tags for ${w.name}`}
+                              data-testid="watchlist-tags-cell"
+                            >
+                              {tags.length > 0 ? (
+                                <span className="flex flex-wrap gap-1">
+                                  {tags.map((t) => (
+                                    <span
+                                      key={t}
+                                      className="inline-block bg-gray-100 text-gray-600 text-xs px-1.5 py-0.5 rounded"
+                                    >
+                                      {t}
+                                    </span>
+                                  ))}
+                                </span>
+                              ) : (
+                                <span className="text-gray-500 text-xs">{"\u2014"}</span>
+                              )}
+                            </button>
+                          </Tooltip>
                         )}
                       </td>
                       <td className="py-1 pr-4 text-xs text-gray-500">

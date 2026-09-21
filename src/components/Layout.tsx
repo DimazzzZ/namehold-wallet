@@ -11,6 +11,7 @@ import { isTauri } from "../lib/runtime";
 import { useAppHotkeys } from "../hooks/useAppHotkeys";
 import { Cheatsheet } from "./Cheatsheet";
 import { CommandPalette } from "./CommandPalette";
+import { Tooltip } from "./ui/Tooltip";
 
 export function Layout() {
   const { data: profile } = useActiveProfile();
@@ -45,20 +46,20 @@ export function Layout() {
         </div>
         <nav className="flex-1 py-2">
           {PRIMARY_ROUTES.map((item) => (
-            <NavLink
-              key={item.key}
-              to={item.to}
-              end={item.to === "/"}
-              title={item.description}
-              className={({ isActive }) =>
-                cn(
-                  "block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100",
-                  isActive && "bg-blue-50 text-blue-700 font-medium border-r-2 border-blue-700",
-                )
-              }
-            >
-              {item.label}
-            </NavLink>
+            <Tooltip key={item.key} content={item.description} className="block">
+              <NavLink
+                to={item.to}
+                end={item.to === "/"}
+                className={({ isActive }) =>
+                  cn(
+                    "block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100",
+                    isActive && "bg-blue-50 text-blue-700 font-medium border-r-2 border-blue-700",
+                  )
+                }
+              >
+                {item.label}
+              </NavLink>
+            </Tooltip>
           ))}
         </nav>
         <div className="px-4 py-2 border-t border-gray-200">
@@ -69,22 +70,21 @@ export function Layout() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setCheatsheetOpen(true)}
-                title="Keyboard shortcuts (Shift+?)"
-                aria-label="Keyboard shortcuts"
-                className="text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
-              >
-                ⌨️
-              </button>
-              <Link
-                to="/about"
-                className="text-gray-400 hover:text-gray-600 transition-colors"
-                title="About"
-              >
-                ℹ️
-              </Link>
+              <Tooltip content="Keyboard shortcuts (Shift+?)">
+                <button
+                  type="button"
+                  onClick={() => setCheatsheetOpen(true)}
+                  aria-label="Keyboard shortcuts"
+                  className="text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
+                >
+                  ⌨️
+                </button>
+              </Tooltip>
+              <Tooltip content="About">
+                <Link to="/about" className="text-gray-400 hover:text-gray-600 transition-colors">
+                  ℹ️
+                </Link>
+              </Tooltip>
             </div>
           </div>
         </div>

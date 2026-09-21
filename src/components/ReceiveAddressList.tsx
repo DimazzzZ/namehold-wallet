@@ -9,6 +9,7 @@ import { explorerAddressUrl } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { mapError } from "../lib/errors";
 import { QRCodeSVG } from "qrcode.react";
+import { Tooltip } from "./ui/Tooltip";
 
 /**
  * Expandable list of all receive-branch addresses for the active wallet.
@@ -61,39 +62,42 @@ export function ReceiveAddressList() {
                 data-testid={`addr-row-${row.index}`}
               >
                 <span className="text-gray-400 w-6 text-right font-mono">{row.index}</span>
-                <span className="font-mono text-gray-700 flex-1 truncate" title={row.address}>
-                  {truncateMiddle(row.address, 10, 8)}
-                </span>
+                <Tooltip content={row.address} className="flex-1 min-w-0">
+                  <span className="font-mono text-gray-700 block truncate">
+                    {truncateMiddle(row.address, 10, 8)}
+                  </span>
+                </Tooltip>
                 <Badge variant={row.used ? "default" : "success"}>
                   {row.used ? "used" : "fresh"}
                 </Badge>
-                <span
-                  className="text-gray-400 font-mono"
-                  data-testid={`first-seen-${row.index}`}
-                  title={`First derived ${row.firstSeenAt}`}
-                >
-                  {formatDate(row.firstSeenAt)}
-                </span>
+                <Tooltip content={`First derived ${row.firstSeenAt}`}>
+                  <span className="text-gray-400 font-mono" data-testid={`first-seen-${row.index}`}>
+                    {formatDate(row.firstSeenAt)}
+                  </span>
+                </Tooltip>
                 {profile?.network === "mainnet" && (
-                  <a
-                    href={explorerAddressUrl(row.address)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-500 hover:underline"
-                    title="View on explorer"
-                  >
-                    ↗
-                  </a>
+                  <Tooltip content="View on explorer">
+                    <a
+                      href={explorerAddressUrl(row.address)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-500 hover:underline"
+                      aria-label="View on explorer"
+                    >
+                      ↗
+                    </a>
+                  </Tooltip>
                 )}
-                <button
-                  type="button"
-                  className="text-blue-600 hover:underline"
-                  onClick={() => setQrIdx(qrIdx === row.index ? null : row.index)}
-                  data-testid={`qr-btn-${row.index}`}
-                  title="Show QR code"
-                >
-                  {qrIdx === row.index ? "Hide" : "QR"}
-                </button>
+                <Tooltip content="Show QR code">
+                  <button
+                    type="button"
+                    className="text-blue-600 hover:underline"
+                    onClick={() => setQrIdx(qrIdx === row.index ? null : row.index)}
+                    data-testid={`qr-btn-${row.index}`}
+                  >
+                    {qrIdx === row.index ? "Hide" : "QR"}
+                  </button>
+                </Tooltip>
                 <button
                   type="button"
                   className="text-blue-600 hover:underline"
