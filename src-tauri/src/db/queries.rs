@@ -1572,6 +1572,35 @@ pub fn has_pending_draft_for_name(
 /// not left the device, and `confirmed`/`dropped`/`failed` are settled. When
 /// several qualify — a name can legitimately have more than one in flight — the
 /// most recent wins, which is the one the user just sent.
+/// Every action this wallet has broadcast for `name` and the chain has not
+/// mined, newest first. More than one can be in flight at once — a register
+/// and a redeem on the same name spend different coins and are independent —
+/// so a single answer has to pick, and `created_at` has second resolution:
+/// two drafts made in the same second order arbitrarily. Callers that ask
+/// "is a transaction of this kind in flight?" must look at all of them.
+pub fn pending_broadcast_actions_for_name(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+) -> Result<Vec<String>, AppError> {
+    let sql = format!(
+        "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
+         WHERE wallet_profile_id = ?1
+           AND status IN ('broadcast_pending','broadcasted')
+         ORDER BY created_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![profile_id], row_to_draft)?;
+    let mut out = Vec::new();
+    for r in rows {
+        let row = r?;
+        if draft_summary_covers_name(&row.summary_json, name) {
+            out.push(row.action);
+        }
+    }
+    Ok(out)
+}
+
 pub fn pending_broadcast_action_for_name(
     conn: &rusqlite::Connection,
     profile_id: &str,

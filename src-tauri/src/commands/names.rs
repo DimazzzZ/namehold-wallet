@@ -474,6 +474,10 @@ pub(crate) struct NameActionContext {
     pub redeemable_reveal_count: i64,
     /// What those reveals are worth together — the sum a REDEEM reclaims.
     pub redeemable_value_doos: i64,
+    /// The owner coin is spent, but only by a transaction this wallet
+    /// broadcast and the chain has not mined. We still own the name — we just
+    /// cannot spend it until the block lands.
+    pub owner_spend_in_flight: bool,
     /// The `reveal_txid` stamped on the bid commitment row (if any).
     pub reveal_txid: Option<String>,
     /// Status of the local tx_draft matching `reveal_txid` (if one exists).
@@ -648,8 +652,36 @@ pub(crate) fn find_name_action_context(
     let has_pending_open_draft =
         queries::has_pending_draft_for_name(conn, profile_id, "open", name).unwrap_or(false);
     let has_pending_open = has_pending_open_coin || has_pending_open_draft;
-    let pending_broadcast_action =
-        queries::pending_broadcast_action_for_name(conn, profile_id, name).unwrap_or(None);
+    let pending_actions =
+        queries::pending_broadcast_actions_for_name(conn, profile_id, name).unwrap_or_default();
+    let pending_broadcast_action = pending_actions.first().cloned();
+
+    // `get_name_coin` answers "can we spend it" and returns unspent coins
+    // only. Between our own broadcast and its block the answer is no while the
+    // name is still ours, and conflating the two declared a just-registered
+    // name lost.
+    //
+    // Which transaction spent it is not knowable here: `sync` marks a coin
+    // spent by diffing the node's live coin set and writes the sentinel
+    // `'spent'`, never a txid — and hsd drops a coin from that set as soon as
+    // a MEMPOOL transaction spends it, which is exactly this window. What the
+    // wallet does know is that it has an unconfirmed transaction of its own
+    // for this name, and which action it performs. Only the actions that
+    // spend the owner coin count; a bid or a redeem in flight says nothing
+    // about ownership.
+    let owner_spend_in_flight = owner_coin.is_none()
+        && pending_actions.iter().any(|a| {
+            matches!(
+                a.as_str(),
+                "register"
+                    | "update"
+                    | "transfer"
+                    | "finalize"
+                    | "cancel_transfer"
+                    | "renew"
+                    | "revoke"
+            )
+        });
 
     // Reveal-in-flight evidence: the commitment row's `reveal_txid` (stamped
     // either by our own broadcast in `build_reveal_draft`, or by `chain_scan`
@@ -681,6 +713,7 @@ pub(crate) fn find_name_action_context(
         stranded_lockup_doos,
         redeemable_reveal_count,
         redeemable_value_doos,
+        owner_spend_in_flight,
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
@@ -843,7 +876,11 @@ async fn evaluate_name_action_capabilities(
                 .as_deref()
                 .map(|a| profile_addrs.iter().any(|p| p == a))
                 .unwrap_or(false);
-            let owns_name = action_ctx.has_owner_coin || explorer_owned;
+            // Our own unconfirmed spend of the owner coin does not stop us
+            // owning the name — `spend_locked` below still says we cannot
+            // act on it until the block lands.
+            let owns_name =
+                action_ctx.has_owner_coin || action_ctx.owner_spend_in_flight || explorer_owned;
             let spend_locked = !action_ctx.has_owner_coin;
             Ok(build_name_action_capabilities(
                 name,
@@ -899,7 +936,11 @@ async fn evaluate_name_action_capabilities(
                 .as_deref()
                 .map(|a| profile_addrs.iter().any(|p| p == a))
                 .unwrap_or(false);
-            let owns_name = action_ctx.has_owner_coin || explorer_owned;
+            // Our own unconfirmed spend of the owner coin does not stop us
+            // owning the name — `spend_locked` below still says we cannot
+            // act on it until the block lands.
+            let owns_name =
+                action_ctx.has_owner_coin || action_ctx.owner_spend_in_flight || explorer_owned;
             // No node-synced owner coin → nothing may build a spend.
             let spend_locked = !action_ctx.has_owner_coin;
             // Days-until-expire from tracked chain evidence, so the modal's
@@ -3446,6 +3487,7 @@ mod tests {
             stranded_lockup_doos: 0,
             redeemable_reveal_count: 0,
             redeemable_value_doos: 0,
+            owner_spend_in_flight: false,
             reveal_txid: None,
             reveal_draft_status: None,
             bid_value_doos: None,
@@ -4618,6 +4660,7 @@ mod tests {
             has_reveal_coin: true,
             redeemable_reveal_count: 1,
             redeemable_value_doos: 0,
+            owner_spend_in_flight: false,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4693,6 +4736,7 @@ mod tests {
             has_reveal_coin: true,
             redeemable_reveal_count: 2,
             redeemable_value_doos: 0,
+            owner_spend_in_flight: false,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4721,6 +4765,7 @@ mod tests {
             has_reveal_coin: true,
             redeemable_reveal_count: 0,
             redeemable_value_doos: 0,
+            owner_spend_in_flight: false,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(

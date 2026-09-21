@@ -43,6 +43,7 @@ import {
   formatCountdown,
   AUCTION_PHASE_GUIDE,
   taskSummaryFromCapabilities,
+  pendingBroadcastBadge,
   redeemExplainer,
   validateBidInputs,
 } from "../lib/auction";
@@ -586,7 +587,16 @@ export function NameActionsModal({
               the tests that assert on the phase label follow it. */}
           {!isLoading &&
             !isError &&
-            (summary ? (
+            (summary?.pendingBroadcastAction ? (
+              // A transaction of ours for this name is in flight, so the task
+              // label is a verdict the chain has not reached and an
+              // instruction the user has already followed. The guided panel
+              // below says the same thing; the header used to contradict it
+              // in red. The auctions list already reads this way.
+              <Badge variant="default" data-testid="name-phase">
+                {pendingBroadcastBadge(summary.pendingBroadcastAction)}
+              </Badge>
+            ) : summary ? (
               <Badge variant={summary.variant} data-testid="name-phase">
                 {summary.label}
               </Badge>

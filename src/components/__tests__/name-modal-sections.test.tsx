@@ -420,3 +420,54 @@ describe("NameActionsModal — the Register step, laid out", () => {
     expect(screen.queryByRole("button", { name: "Reveal" })).not.toBeInTheDocument();
   });
 });
+
+describe("NameActionsModal — the window between broadcasting and the block", () => {
+  // Reported live on a just-registered name. The root cause was the backend
+  // losing track of ownership while our own register was unmined (pinned in
+  // `names_action_context_tests`), but the header had a fault of its own: it
+  // renders the task label whatever is in flight, so it kept urging an action
+  // the wallet had already sent. The shape below is the one that survives the
+  // backend fix — a genuinely lost auction whose redeem is on its way — and it
+  // shows the same contradiction: a red "Lost — Redeem Now" over a panel
+  // saying the redeem is already broadcast.
+  const redeemInFlight = capsFor({
+    name: "lostname",
+    phase: "CLOSED",
+    taskState: "lostNeedsRedeem",
+    ownsName: false,
+    nameIsRegistered: false,
+    hasOwnerCoin: false,
+    hasRevealCoin: true,
+    redeemableRevealCount: 1,
+    redeemableValueDoos: 5_000_000,
+    pendingBroadcastAction: "redeem",
+  });
+  const lostInfo = {
+    name: "lostname",
+    state: "CLOSED",
+    height: 779,
+    renewal: 779,
+    owner: { hash: "someoneelse", index: 0 },
+    registered: true,
+    value: 12_000_000,
+    highest: 1_000_000_000,
+    stats: { blocksUntilExpire: 4979, daysUntilExpire: 34.5 },
+  };
+
+  it("does not urge an action the wallet has already broadcast", async () => {
+    invokeMock.mockImplementation(route(lostInfo, redeemInFlight));
+    render(<NameActionsModal name="lostname" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    const badge = await screen.findByTestId("name-phase");
+    expect(badge).not.toHaveTextContent(/redeem now/i);
+    expect(badge).toHaveTextContent(/waiting for a block/i);
+  });
+
+  it("keeps the panel and the header telling the same story", async () => {
+    invokeMock.mockImplementation(route(lostInfo, redeemInFlight));
+    render(<NameActionsModal name="lostname" open onClose={() => {}} />, { wrapper: wrapper() });
+
+    expect(await screen.findByText(/broadcast and waiting to be mined/i)).toBeInTheDocument();
+    expect(screen.getByTestId("name-phase")).not.toHaveTextContent(/lost/i);
+  });
+});

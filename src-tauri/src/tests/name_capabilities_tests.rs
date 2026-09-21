@@ -47,6 +47,7 @@ fn ctx(
         stranded_lockup_doos: 0,
         redeemable_reveal_count: 0,
         redeemable_value_doos: 0,
+        owner_spend_in_flight: false,
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
@@ -754,6 +755,7 @@ fn cap_closed_phase_can_redeem_lost_bid() {
         // A reveal coin that is not the name's owner — a bid that lost.
         redeemable_reveal_count: 1,
         redeemable_value_doos: 0,
+        owner_spend_in_flight: false,
         ..ctx(
             false, false, true, false, None, None, None, 0, false, None, None, None,
         )
@@ -780,6 +782,7 @@ fn cap_closed_phase_cannot_redeem_when_the_only_reveal_won() {
     let action_ctx = NameActionContext {
         redeemable_reveal_count: 0,
         redeemable_value_doos: 0,
+        owner_spend_in_flight: false,
         ..ctx(
             false, false, true, false, None, None, None, 0, false, None, None, None,
         )
@@ -811,6 +814,7 @@ fn cap_closed_phase_can_redeem_own_losing_bids_while_owning_the_name() {
     let action_ctx = NameActionContext {
         redeemable_reveal_count: 2,
         redeemable_value_doos: 0,
+        owner_spend_in_flight: false,
         ..ctx(
             false, false, true, false, None, None, None, 0, false, None, None, None,
         )
