@@ -359,6 +359,46 @@ describe("WalletView (non-custodial)", () => {
     expect(await screen.findByText(/\.example/)).toBeInTheDocument();
   });
 
+  /// An Owned Names row is not clickable as a whole — its actions are its own
+  /// controls. It used to be, and since the cells hold buttons, pressing one
+  /// ran the cell's handler and then the row's as the click bubbled: two
+  /// dialogs, stacked.
+  it("clicking a cell button in an Owned Names row opens only that button's dialog", async () => {
+    invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText(/\.example/);
+
+    fireEvent.click(screen.getByTestId("owned-name-height-info-link"));
+
+    const dialogs = await screen.findAllByRole("dialog");
+    expect(dialogs).toHaveLength(1);
+    // …and it is the block dialog, not the name one the row would have opened.
+    expect(dialogs[0]).toHaveTextContent(/Block #100/i);
+  });
+
+  it("checking the select box in an Owned Names row does not open the name dialog", async () => {
+    invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
+    render(<WalletView />, { wrapper: wrapper() });
+    await screen.findByText(/\.example/);
+
+    fireEvent.click(screen.getByLabelText(/^Select example$/i));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("clicking the row itself does nothing — only its controls act", async () => {
+    invokeMock.mockImplementation(routeInvoke({ unlocked: false }));
+    render(<WalletView />, { wrapper: wrapper() });
+    const nameCell = await screen.findByText(/\.example/);
+
+    const row = nameCell.closest("tr")!;
+    fireEvent.click(row);
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // The row is still reachable — by its own controls.
+    fireEvent.click(screen.getByTestId("owned-name-info-link"));
+    expect(await screen.findAllByRole("dialog")).toHaveLength(1);
+  });
+
   it("Recent transactions: a covenant UPDATE shows net Amount 0 (name value carried, not spent), a send shows its amount", async () => {
     const drafts = [
       {

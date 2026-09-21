@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -25,7 +25,7 @@ beforeEach(() => {
 });
 
 describe("NameBidsPanel — phase-aware honest bid display (Task 2)", () => {
-  it("BIDDING: shows bid count + own bid count, lockups labeled as not the actual bid, hides a competitor's true value, shows own plaintext bid + You badge", async () => {
+  it("BIDDING: shows bid count + own bid count, explains lockup on hover, hides a competitor's true value, shows own plaintext bid + You badge", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "read_name_bids") {
         return Promise.resolve({
@@ -72,10 +72,20 @@ describe("NameBidsPanel — phase-aware honest bid display (Task 2)", () => {
     expect(await screen.findByText(/2 bids/i)).toBeInTheDocument();
     expect(screen.getByText(/yours: 1/i)).toBeInTheDocument();
 
-    // Lockups shown, explicitly labeled as NOT the actual bid.
-    expect(screen.getByText(/lockup: 0\.660000 HNS/i)).toBeInTheDocument();
-    expect(screen.getByText(/lockup: 2\.000000 HNS/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/not the actual bid/i).length).toBeGreaterThan(0);
+    // Lockups shown. Matched on the panel rather than a single element: the
+    // word "lockup" is its own tooltip trigger now, so the figure beside it
+    // lives in a sibling text node.
+    const panel = screen.getByTestId("name-bids");
+    expect(panel).toHaveTextContent("lockup: 0.660000 HNS");
+    expect(panel).toHaveTextContent("lockup: 2.000000 HNS");
+    // The caveat used to be inline on every row as "(max, not the actual bid)" —
+    // the panel's most repeated string, and nothing a Vickrey bidder needs told
+    // twice. It hangs off the word now.
+    expect(screen.queryByText(/not the actual bid/i)).toBeNull();
+    fireEvent.mouseEnter(screen.getAllByText("lockup")[0]!);
+    await waitFor(() =>
+      expect(screen.getByRole("tooltip")).toHaveTextContent(/sealed until the reveal phase/i),
+    );
 
     // The competitor's `value` (0) must NEVER be rendered as their bid.
     expect(screen.queryByText(/bid: 0\.000000 HNS/i)).not.toBeInTheDocument();
@@ -223,7 +233,74 @@ describe("NameBidsPanel — phase-aware honest bid display (Task 2)", () => {
     const call = invokeMock.mock.calls.find((c) => c[0] === "read_name_bids");
     expect(call?.[1]).toMatchObject({ name: "xn--e1adigm" });
 
-    expect(screen.getByText(/Bids for козел/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Bids for xn--e1adigm/i)).not.toBeInTheDocument();
+    // The panel's heading used to read "Bids for козел". The modal's own title
+    // already names the domain, so the heading is bare now and this component
+    // renders the name nowhere — the RAW-name call above is what it owes.
+    expect(screen.getByTestId("name-bids")).toHaveTextContent("Bids");
+    expect(screen.queryByText(/Bids for/i)).toBeNull();
+  });
+
+  it("lists a bid of ours still waiting for a block, and counts it apart", async () => {
+    // The list is fed by the chain scanner's index, which only holds BID
+    // outputs found in BLOCKS. A bid just sent sits in the mempool, so it used
+    // to be absent entirely: place a second bid and the panel still read
+    // "1 bids so far", as if the transaction had never happened.
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "read_name_bids"
+        ? Promise.resolve({
+            name: "vmp3rt3",
+            state: null,
+            highest: null,
+            value: null,
+            bids: [
+              {
+                txid: "mined",
+                index: 0,
+                lockup: 189_000_000,
+                value: null,
+                revealed: false,
+                win: null,
+                reveal: null,
+                time: null,
+                mine: true,
+                myValue: 11_000_000,
+              },
+              {
+                txid: "inflight",
+                index: null,
+                lockup: 372_000_000,
+                value: null,
+                revealed: false,
+                win: null,
+                reveal: null,
+                time: null,
+                mine: true,
+                myValue: 12_000_000,
+                pending: true,
+              },
+            ],
+            myBidCount: 2,
+          })
+        : Promise.resolve(null),
+    );
+
+    render(<NameBidsPanel name="vmp3rt3" profileId="p1" phase="BIDDING" />, {
+      wrapper: wrapper(),
+    });
+
+    const pending = await screen.findByTestId("name-bid-row-pending");
+    expect(pending).toHaveTextContent("lockup: 372.000000 HNS");
+    expect(pending).toHaveTextContent("your bid: 12.000000 HNS");
+    expect(pending).toHaveTextContent(/waiting for a block/i);
+
+    // The headline count is what the CHAIN has; ours is called out beside it
+    // rather than folded in as though it were already on-chain.
+    const panel = screen.getByTestId("name-bids");
+    expect(panel).toHaveTextContent("1 bids so far");
+    expect(panel).toHaveTextContent("1 of yours waiting for a block");
+
+    // "You" ends its row, so it lands in the same column on every row instead
+    // of drifting with whatever figures precede it.
+    expect(pending.textContent?.trimEnd().endsWith("You")).toBe(true);
   });
 });

@@ -806,6 +806,27 @@ export function NameActionsModal({
           suppressEmptyHint={alreadyBidWaiting}
         />
 
+        {/* A bid this wallet placed in an EARLIER auction of this name whose
+            lockup is stranded. The bids panel above is scoped to the current
+            auction, so without this the coin is simply missing from the UI
+            with nothing to explain where the money went. */}
+        {(caps?.strandedBidCount ?? 0) > 0 && (
+          <div
+            className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2"
+            data-testid="stranded-bids"
+          >
+            <span className="font-semibold">
+              {caps!.strandedBidCount === 1
+                ? "1 bid from an earlier auction of this name"
+                : `${caps!.strandedBidCount} bids from earlier auctions of this name`}
+            </span>{" "}
+            {formatHnsShort(caps!.strandedLockupDoos ?? 0)} HNS is still locked in{" "}
+            {caps!.strandedBidCount === 1 ? "it" : "them"}. That auction closed without a reveal,
+            and a bid can only be revealed while its own auction is running — so the lockup cannot
+            be recovered.
+          </div>
+        )}
+
         {/* Read-only on-chain details (heights, transfer, owner UTXO, closed
             values, DNS records) — the former NameInfoModal, folded in so one
             modal serves both inspection and actions. For owned names the

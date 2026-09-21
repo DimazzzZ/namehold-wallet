@@ -162,7 +162,7 @@ fn find_name_action_context_no_evidence() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert!(!ctx.has_bid_commitment);
     assert!(!ctx.has_bid_coin);
     assert!(!ctx.has_reveal_coin);
@@ -181,10 +181,13 @@ fn find_name_action_context_with_bid_commitment_no_coin() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     seed_bid_commitment(&conn, NAME, name_hash_hex, ADDRESS);
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert!(ctx.has_bid_commitment);
     assert!(!ctx.has_bid_coin); // No coin synced yet
     assert!(!ctx.has_reveal_coin);
@@ -198,7 +201,10 @@ fn find_name_action_context_with_bid_coin() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     seed_bid_commitment(&conn, NAME, name_hash_hex, ADDRESS);
 
     let covenant_json = serde_json::json!({
@@ -217,7 +223,7 @@ fn find_name_action_context_with_bid_coin() {
         Some(&covenant_json),
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert!(ctx.has_bid_commitment);
     assert!(ctx.has_bid_coin);
     assert!(!ctx.has_reveal_coin); // No reveal coin yet
@@ -230,7 +236,10 @@ fn find_name_action_context_with_reveal_coin() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     seed_bid_commitment(&conn, NAME, name_hash_hex, ADDRESS);
 
     let covenant_json = serde_json::json!({
@@ -265,7 +274,7 @@ fn find_name_action_context_with_reveal_coin() {
         Some(&reveal_covenant),
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert!(ctx.has_bid_commitment);
     assert!(ctx.has_bid_coin);
     assert!(ctx.has_reveal_coin);
@@ -278,7 +287,10 @@ fn find_name_action_context_with_owner_coin() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     let owner_covenant = serde_json::json!({
         "type": 6,
         "action": "REGISTER",
@@ -306,7 +318,7 @@ fn find_name_action_context_with_owner_coin() {
         Some(12345),
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert!(ctx.has_owner_coin);
     assert_eq!(ctx.owner_covenant_type, Some(6));
     assert_eq!(ctx.name_height, Some(12345)); // height from tracked_name_states
@@ -321,7 +333,7 @@ fn find_name_action_context_with_pending_open_draft() {
 
     seed_draft(&conn, "draft_open_1", "open", NAME);
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert!(ctx.has_pending_open);
 }
 
@@ -336,7 +348,7 @@ fn find_name_action_context_with_unconfirmed_open_coin() {
     let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_OPEN);
     seed_tracked_utxo_at_height(&conn, "aa", ADDRESS, sync::COV_OPEN as i64, &cov, Some(-1));
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert!(
         ctx.has_pending_open,
         "a mempool OPEN coin is an open still in flight"
@@ -361,11 +373,126 @@ fn find_name_action_context_ignores_a_confirmed_open_coin() {
     let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_OPEN);
     seed_tracked_utxo_at_height(&conn, "bb", ADDRESS, sync::COV_OPEN as i64, &cov, Some(111));
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert!(
         !ctx.has_pending_open,
         "an OPEN coin confirmed at height 111 is history, not a pending open"
     );
+}
+
+/// Regression: a bid from an auction that has since lapsed counted as one of
+/// this wallet's bids on the live one. The modal's header read "Latest bid …
+/// · 2 of yours" while the bids panel below it, which scopes by auction (029),
+/// said "yours: 1" — and the header's bid/lockup figures came from whichever
+/// commitment was newest, regardless of which auction it belonged to.
+#[test]
+fn find_name_action_context_counts_only_this_auctions_bids() {
+    let conn = test_db();
+    seed_profile(&conn);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+
+    // A bid in the auction that opened at 111, and one in the live auction at 779.
+    seed_bid_commitment(&conn, NAME, &nh_hex, ADDRESS);
+    db::queries::set_auction_heights(&conn, PROFILE, "blind", 111, 132).unwrap();
+    db::queries::insert_bid_commitment(
+        &conn,
+        PROFILE,
+        NAME,
+        &nh_hex,
+        ADDRESS,
+        0,
+        1,
+        11_000_000,
+        189_000_000,
+        "nonce2",
+        "blind2",
+    )
+    .unwrap();
+    db::queries::set_auction_heights(&conn, PROFILE, "blind2", 779, 800).unwrap();
+
+    let live = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert_eq!(
+        live.existing_bid_count, 1,
+        "only the bid placed in this auction"
+    );
+    assert_eq!(live.bid_value_doos, Some(11_000_000));
+    assert_eq!(live.lockup_value_doos, Some(189_000_000));
+
+    // The lapsed auction still sees its own bid — nothing was destroyed.
+    let lapsed = find_name_action_context(&conn, PROFILE, NAME, Some(111)).unwrap();
+    assert_eq!(lapsed.existing_bid_count, 1);
+    assert_eq!(lapsed.bid_value_doos, Some(1_000_000));
+
+    // Unknown auction (no node, no cached state) filters nothing.
+    let unknown = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    assert_eq!(unknown.existing_bid_count, 2);
+}
+
+/// A bid from a lapsed auction whose BID coin is still unspent is stranded:
+/// it can never be revealed (a REVEAL is only valid while `start == ns.height`,
+/// and the name has reopened at a new height) nor redeemed (REDEEM spends a
+/// REVEAL output that was never created). Scoping the bids panel by auction
+/// hid it, so the wallet has to report it explicitly or the money just vanishes
+/// from the UI.
+#[test]
+fn find_name_action_context_reports_a_stranded_bid_from_a_lapsed_auction() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+
+    // The lapsed auction's bid, with its BID coin still unspent.
+    seed_bid_commitment(&conn, NAME, &nh_hex, ADDRESS);
+    db::queries::set_auction_heights(&conn, PROFILE, "blind", 111, 132).unwrap();
+    let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_BID);
+    seed_tracked_utxo(
+        &conn,
+        "oldbid",
+        0,
+        ADDRESS,
+        sync::COV_BID as i64,
+        Some(&cov),
+    );
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert_eq!(ctx.existing_bid_count, 0, "not a bid in THIS auction");
+    assert_eq!(ctx.stranded_bid_count, 1);
+    assert_eq!(ctx.stranded_lockup_doos, 2_000_000);
+
+    // Viewed from its own auction it is an ordinary bid, not stranded.
+    let own = find_name_action_context(&conn, PROFILE, NAME, Some(111)).unwrap();
+    assert_eq!(own.existing_bid_count, 1);
+    assert_eq!(own.stranded_bid_count, 0);
+}
+
+/// A spent BID coin is a bid that was revealed and settled — nothing stranded.
+#[test]
+fn find_name_action_context_does_not_strand_a_spent_bid() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    seed_bid_commitment(&conn, NAME, &nh_hex, ADDRESS);
+    db::queries::set_auction_heights(&conn, PROFILE, "blind", 111, 132).unwrap();
+    // No BID coin seeded at all — it was spent by the reveal.
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert_eq!(ctx.stranded_bid_count, 0);
+    assert_eq!(ctx.stranded_lockup_doos, 0);
+}
+
+/// A commitment recovered from the chain has no recorded auction. Counting one
+/// that may be dead is a wrong number; hiding a live one is a bid the user is
+/// never told to reveal, and the lockup burns. Keep it.
+#[test]
+fn find_name_action_context_keeps_a_commitment_with_no_known_auction() {
+    let conn = test_db();
+    seed_profile(&conn);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    seed_bid_commitment(&conn, NAME, &nh_hex, ADDRESS); // no set_auction_heights
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert_eq!(ctx.existing_bid_count, 1);
 }
 
 #[test]
@@ -376,7 +503,10 @@ fn find_name_action_context_multiple_bids() {
     seed_derived_address(&conn, ADDRESS, 0, 0);
     seed_derived_address(&conn, "hs1qother0000000000000000000000000000000", 0, 1);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     seed_bid_commitment(&conn, NAME, name_hash_hex, ADDRESS);
     // Second bid at a different address with a different blind_hex to avoid
     // the uniqueness constraint on (wallet_profile_id, name, blind_hex).
@@ -395,7 +525,7 @@ fn find_name_action_context_multiple_bids() {
     )
     .unwrap();
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert_eq!(ctx.existing_bid_count, 2);
 }
 
@@ -406,7 +536,10 @@ fn find_name_action_context_with_reveal_txid() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     db::queries::insert_bid_commitment(
         &conn,
         PROFILE,
@@ -429,7 +562,7 @@ fn find_name_action_context_with_reveal_txid() {
     )
     .unwrap();
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert_eq!(ctx.reveal_txid.as_deref(), Some("reveal_tx_123"));
 }
 
@@ -440,7 +573,10 @@ fn find_name_action_context_reveal_draft_status() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     db::queries::insert_bid_commitment(
         &conn,
         PROFILE,
@@ -481,7 +617,7 @@ fn find_name_action_context_reveal_draft_status() {
     )
     .unwrap();
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert_eq!(ctx.reveal_draft_status.as_deref(), Some("confirmed"));
 }
 
@@ -492,7 +628,10 @@ fn find_name_action_context_transfer_with_items() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     let transfer_covenant = serde_json::json!({
         "type": 8,
         "action": "TRANSFER",
@@ -520,7 +659,7 @@ fn find_name_action_context_transfer_with_items() {
         None,
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert_eq!(ctx.transfer_has_items, Some(true));
 }
 
@@ -532,7 +671,10 @@ fn find_name_action_context_transfer_without_items() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     let transfer_covenant = serde_json::json!({
         "type": 8,
         "action": "TRANSFER",
@@ -559,7 +701,7 @@ fn find_name_action_context_transfer_without_items() {
         None,
     );
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert_eq!(ctx.transfer_has_items, Some(false));
 }
 
@@ -570,7 +712,10 @@ fn find_name_action_context_spent_coins_ignored() {
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
 
-    let name_hash_hex = "aabbccdd";
+    // The real hash: production always stores `hash_name(name)`, and the
+    // coin lookup derives it from the name rather than trusting the stored
+    // copy — an arbitrary placeholder here was never a reachable state.
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
     seed_bid_commitment(&conn, NAME, name_hash_hex, ADDRESS);
 
     let covenant_json = serde_json::json!({
@@ -598,7 +743,7 @@ fn find_name_action_context_spent_coins_ignored() {
     )
     .unwrap();
 
-    let ctx = find_name_action_context(&conn, PROFILE, NAME).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert!(ctx.has_bid_commitment);
     assert!(!ctx.has_bid_coin); // Spent coin is ignored
 }

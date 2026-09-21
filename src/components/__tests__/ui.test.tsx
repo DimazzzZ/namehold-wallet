@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
 import { Input, inputSizes } from "../ui/Input";
@@ -208,5 +208,30 @@ describe("StatusBadge", () => {
   it("shows correct label for failed_or_stuck", () => {
     render(<StatusBadge status="failed_or_stuck" />);
     expect(screen.getByText("Failed/Stuck")).toBeTruthy();
+  });
+});
+
+describe("Badge — title renders as a Tooltip, not a native attribute", () => {
+  it("shows its explanation on hover and sets no title attribute", async () => {
+    render(
+      <Badge variant="warning" title="Sent to the network and waiting in the mempool.">
+        Pending
+      </Badge>,
+    );
+    const badge = screen.getByText("Pending");
+    // A native title would be unstyleable and, on a disabled control,
+    // invisible — `lint:native-title` bans it and Badge honours that.
+    expect(badge).not.toHaveAttribute("title");
+
+    fireEvent.mouseEnter(badge.parentElement!);
+    await waitFor(() =>
+      expect(screen.getByRole("tooltip")).toHaveTextContent("waiting in the mempool"),
+    );
+  });
+
+  it("renders no wrapper hover behaviour when it has nothing to explain", async () => {
+    render(<Badge variant="default">Plain</Badge>);
+    fireEvent.mouseEnter(screen.getByText("Plain").parentElement!);
+    await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
   });
 });

@@ -660,6 +660,14 @@ export interface NameActionCapabilities {
    * the name's previous state, so nothing phase-derived can describe it.
    */
   pendingBroadcastAction?: string | null;
+  /**
+   * Bids placed in an EARLIER auction of the same name whose lockup is
+   * stranded — the auction closed without a reveal, so it can be neither
+   * revealed nor redeemed. Scoping the bids panel by auction hid these, which
+   * leaves money missing with nothing on screen to explain it.
+   */
+  strandedBidCount?: number;
+  strandedLockupDoos?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -683,6 +691,13 @@ export interface NameBid {
   mine: boolean;
   /** MY plaintext true bid (doos) — present only when `mine` is true. */
   myValue: number | null;
+  /**
+   * True for one of MY bids the chain scanner has not seen yet — still in the
+   * mempool, or mined but not scanned. The index only holds BID outputs found
+   * in blocks, so without this entry a just-placed bid is missing from the
+   * list entirely.
+   */
+  pending?: boolean;
 }
 
 export interface NameBids {

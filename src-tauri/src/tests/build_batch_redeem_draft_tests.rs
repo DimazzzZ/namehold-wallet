@@ -119,6 +119,7 @@ fn bid_row(name: &str, addr: &str) -> BidCommitmentRow {
         bid_txid: None,
         reveal_txid: None,
         reveal_end_height: None,
+        name_start_height: None,
     }
 }
 

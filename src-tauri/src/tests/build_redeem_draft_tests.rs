@@ -169,7 +169,15 @@ fn build_redeem_draft_succeeds_and_persists() {
     let (conn, ctx, coin) = setup(2_000_000, 10_000_000);
     let ns = closed_name_state();
 
-    let summary = build_redeem_draft_inner(&conn, &ctx, NAME, Some(10), &ns, &coin).unwrap();
+    let summary = build_redeem_draft_inner(
+        &conn,
+        &ctx,
+        NAME,
+        Some(10),
+        &ns,
+        std::slice::from_ref(&coin),
+    )
+    .unwrap();
     assert_eq!(summary.action, "redeem");
 
     // The REVEAL coin is reserved as the redeem's name input.
@@ -192,7 +200,15 @@ fn build_redeem_draft_reclaims_reveal_value_to_its_address() {
     let (conn, ctx, coin) = setup(2_000_000, 10_000_000);
     let ns = closed_name_state();
 
-    let summary = build_redeem_draft_inner(&conn, &ctx, NAME, Some(10), &ns, &coin).unwrap();
+    let summary = build_redeem_draft_inner(
+        &conn,
+        &ctx,
+        NAME,
+        Some(10),
+        &ns,
+        std::slice::from_ref(&coin),
+    )
+    .unwrap();
     // The redeem output value equals the reveal coin value (reclaimed).
     let send_total = summary
         .summary
@@ -210,7 +226,15 @@ fn build_redeem_draft_uses_explicit_fee_rate() {
     let (conn, ctx, coin) = setup(2_000_000, 10_000_000);
     let ns = closed_name_state();
 
-    let summary = build_redeem_draft_inner(&conn, &ctx, NAME, Some(300), &ns, &coin).unwrap();
+    let summary = build_redeem_draft_inner(
+        &conn,
+        &ctx,
+        NAME,
+        Some(300),
+        &ns,
+        std::slice::from_ref(&coin),
+    )
+    .unwrap();
     assert_eq!(summary.action, "redeem");
 }
 
@@ -220,7 +244,15 @@ fn build_redeem_draft_funds_fee_when_reveal_has_no_slack() {
     let (conn, ctx, coin) = setup(1_000_000, 10_000_000);
     let ns = closed_name_state();
 
-    let summary = build_redeem_draft_inner(&conn, &ctx, NAME, Some(10), &ns, &coin).unwrap();
+    let summary = build_redeem_draft_inner(
+        &conn,
+        &ctx,
+        NAME,
+        Some(10),
+        &ns,
+        std::slice::from_ref(&coin),
+    )
+    .unwrap();
     assert_eq!(summary.action, "redeem");
     // Both the REVEAL coin and the funding coin should be reserved.
     let reserved: i64 = conn
@@ -243,7 +275,15 @@ fn build_redeem_draft_fails_with_insufficient_funds() {
     let (conn, ctx, coin) = setup(1_000_000, 1);
     let ns = closed_name_state();
 
-    let err = build_redeem_draft_inner(&conn, &ctx, NAME, Some(100), &ns, &coin).unwrap_err();
+    let err = build_redeem_draft_inner(
+        &conn,
+        &ctx,
+        NAME,
+        Some(100),
+        &ns,
+        std::slice::from_ref(&coin),
+    )
+    .unwrap_err();
     assert!(matches!(
         err,
         AppError::InvalidInput(_) | AppError::Other(_)

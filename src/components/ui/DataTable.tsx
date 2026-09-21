@@ -13,6 +13,7 @@ import { useState, useRef, useMemo } from "react";
 import { cn } from "../../lib/utils";
 import { nameMatches } from "../../lib/idn";
 import { Input } from "./Input";
+import { fromInteractiveChild } from "../../lib/rowClick";
 
 /**
  * Global filter that matches BOTH the raw string form and the
@@ -173,7 +174,12 @@ export function DataTable<T extends { id: number }>({
                     height: `${vi.size}px`,
                     transform: `translateY(${vi.start}px)`,
                   }}
-                  onClick={() => onRowClick?.(row.original)}
+                  onClick={(e) => {
+                    // Same rule as any clickable row: a cell's own control
+                    // handles its click, and the row must not handle it again.
+                    if (fromInteractiveChild(e)) return;
+                    onRowClick?.(row.original);
+                  }}
                 >
                   {row.getVisibleCells().map((cell) => (
                     <td key={cell.id} className="px-3 py-1.5 whitespace-nowrap">

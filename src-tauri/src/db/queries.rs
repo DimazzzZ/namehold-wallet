@@ -2449,6 +2449,9 @@ pub struct BidCommitmentRow {
     /// see `014_reveal_end_height.sql`. `None` for commitments recovered via
     /// `recover_bid_commitment` or written before this column existed.
     pub reveal_end_height: Option<i64>,
+    /// OPEN height of the auction this bid was placed in (030). `None` for a
+    /// commitment recovered from the chain, where the auction is unknown.
+    pub name_start_height: Option<i64>,
 }
 
 /// Insert a bid commitment row. Errors (rather than silently no-op'ing) when a
@@ -2531,7 +2534,7 @@ pub fn bid_commitment_exists(
 
 const BID_COLS: &str = "name, name_hash_hex, address, branch, child_index, \
      bid_value_doos, lockup_value_doos, nonce_hex, blind_hex, bid_txid, reveal_txid, \
-     reveal_end_height";
+     reveal_end_height, name_start_height";
 
 fn row_to_bid(row: &rusqlite::Row) -> rusqlite::Result<BidCommitmentRow> {
     Ok(BidCommitmentRow {
@@ -2547,22 +2550,26 @@ fn row_to_bid(row: &rusqlite::Row) -> rusqlite::Result<BidCommitmentRow> {
         bid_txid: row.get(9)?,
         reveal_txid: row.get(10)?,
         reveal_end_height: row.get(11)?,
+        name_start_height: row.get(12)?,
     })
 }
 
-/// Persist the reveal-window-close height estimate for the bid commitment
-/// just inserted by `build_bid_draft` (the only caller with a live auction
-/// `start` height to compute it from — see `014_reveal_end_height.sql`).
-pub fn set_reveal_end_height(
+/// Persist the auction a bid commitment belongs to, and the reveal-window-close
+/// height derived from it, for the commitment `build_bid_draft` just inserted —
+/// the only caller with the live auction `start` height in hand (see
+/// `014_reveal_end_height.sql` and `030_bid_commitment_auction.sql`).
+pub fn set_auction_heights(
     conn: &rusqlite::Connection,
     profile_id: &str,
     blind_hex: &str,
+    name_start_height: i64,
     reveal_end_height: i64,
 ) -> Result<(), AppError> {
     conn.execute(
-        "UPDATE bid_commitments SET reveal_end_height = ?3
-         WHERE wallet_profile_id = ?1 AND blind_hex = ?2",
-        params![profile_id, blind_hex, reveal_end_height],
+        "UPDATE bid_commitments
+            SET reveal_end_height = ?3, name_start_height = ?4
+          WHERE wallet_profile_id = ?1 AND blind_hex = ?2",
+        params![profile_id, blind_hex, reveal_end_height, name_start_height],
     )?;
     Ok(())
 }
@@ -2695,12 +2702,13 @@ pub fn set_bid_reveal_txid(
     conn: &rusqlite::Connection,
     profile_id: &str,
     name: &str,
+    blind_hex: &str,
     txid: &str,
 ) -> Result<(), AppError> {
     conn.execute(
-        "UPDATE bid_commitments SET reveal_txid = ?3
-         WHERE wallet_profile_id = ?1 AND name = ?2",
-        params![profile_id, name, txid],
+        "UPDATE bid_commitments SET reveal_txid = ?4
+         WHERE wallet_profile_id = ?1 AND name = ?2 AND blind_hex = ?3",
+        params![profile_id, name, blind_hex, txid],
     )?;
     Ok(())
 }
@@ -5097,6 +5105,44 @@ mod noncustodial_query_tests {
     }
 
     /// Coverage: list_pending_reveal_deadlines with revealed bids excluded
+    /// Stamping a reveal must mark the ONE bid it revealed.
+    ///
+    /// The column was keyed by name, from when a wallet could hold only one bid
+    /// per name. Once several were allowed, revealing one marked them all — and
+    /// `list_pending_reveal_deadlines` filters on `reveal_txid IS NULL`, so the
+    /// bids that were NOT revealed stopped being warned about, right up to the
+    /// block where their lockup became unreclaimable.
+    #[test]
+    fn set_bid_reveal_txid_marks_only_its_own_commitment() {
+        let conn = db();
+        seed_profile(&conn, "p1");
+        for (blind, lockup) in [("b1", 200), ("b2", 300), ("b3", 400)] {
+            insert_bid_commitment(
+                &conn, "p1", "multi", "h", "rs1q", 0, 0, 100, lockup, "n", blind,
+            )
+            .unwrap();
+            set_auction_heights(&conn, "p1", blind, 100, 121).unwrap();
+        }
+
+        set_bid_reveal_txid(&conn, "p1", "multi", "b2", "revealtx").unwrap();
+
+        let revealed: Vec<String> = list_bid_commitments(&conn, "p1")
+            .unwrap()
+            .into_iter()
+            .filter(|b| b.reveal_txid.is_some())
+            .map(|b| b.blind_hex)
+            .collect();
+        assert_eq!(revealed, vec!["b2".to_string()], "only the revealed bid");
+
+        // The other two must still be chased by the deadline scanner.
+        let pending = list_pending_reveal_deadlines(&conn).unwrap();
+        assert_eq!(
+            pending.len(),
+            2,
+            "the unrevealed bids must keep their deadline warning"
+        );
+    }
+
     #[test]
     fn list_pending_reveal_deadlines_excludes_revealed() {
         let conn = db();
@@ -5121,11 +5167,11 @@ mod noncustodial_query_tests {
         )
         .unwrap();
 
-        set_reveal_end_height(&conn, "p1", "b1", 500).unwrap();
-        set_reveal_end_height(&conn, "p1", "b2", 600).unwrap();
+        set_auction_heights(&conn, "p1", "b1", 0, 500).unwrap();
+        set_auction_heights(&conn, "p1", "b2", 0, 600).unwrap();
 
         // Mark one as revealed
-        set_bid_reveal_txid(&conn, "p1", "revealed", "reveal_txid").unwrap();
+        set_bid_reveal_txid(&conn, "p1", "revealed", "b2", "reveal_txid").unwrap();
 
         let deadlines = list_pending_reveal_deadlines(&conn).unwrap();
         assert_eq!(deadlines.len(), 1);
@@ -5143,7 +5189,7 @@ mod noncustodial_query_tests {
         )
         .unwrap();
         set_bid_txid(&conn, "p1", "blind1", "bid_txid_1").unwrap();
-        set_bid_reveal_txid(&conn, "p1", "name1", "reveal_txid_1").unwrap();
+        set_bid_reveal_txid(&conn, "p1", "name1", "blind1", "reveal_txid_1").unwrap();
 
         let bids = list_bid_commitments(&conn, "p1").unwrap();
         assert_eq!(bids.len(), 1);

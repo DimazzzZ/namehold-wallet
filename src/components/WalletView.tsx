@@ -1219,12 +1219,19 @@ export function WalletView() {
                         }
                         aria-selected={filteredNames.indexOf(n) === selectedNameIndex}
                         tabIndex={filteredNames.indexOf(n) === selectedNameIndex ? 0 : -1}
-                        className={`border-t border-gray-100 hover:bg-gray-50 cursor-pointer ${
+                        // Not clickable: the row's actions are its own
+                        // controls — the name, the block heights, Manage. A
+                        // whole-row handler only duplicated them, and stacked a
+                        // second dialog on top of whichever one was pressed.
+                        // Keyboard selection is unaffected: `wallet:list:open`
+                        // opens the selected row directly. `hover` stays for
+                        // tracking a row across a wide table; `cursor-pointer`
+                        // goes, since nothing here is clicking.
+                        className={`border-t border-gray-100 hover:bg-gray-50 ${
                           filteredNames.indexOf(n) === selectedNameIndex
                             ? "bg-blue-50 ring-1 ring-blue-300"
                             : ""
                         }`}
-                        onClick={() => setManageName(n.name)}
                       >
                         <td className="py-1 pr-4">
                           <input

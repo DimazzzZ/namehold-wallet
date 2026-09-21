@@ -14,6 +14,7 @@ use crate::commands::names::{
     next_action_for_task, AuctionTaskState, NameActionContext,
 };
 use crate::noncustodial::network::Network;
+use crate::noncustodial::sync::{COV_REGISTER, COV_TRANSFER};
 
 /// Helper to construct a minimal `NameActionContext` with all fields set.
 #[allow(clippy::too_many_arguments)]
@@ -42,6 +43,9 @@ fn ctx(
         existing_bid_count,
         has_pending_open,
         pending_broadcast_action: None,
+        stranded_bid_count: 0,
+        stranded_lockup_doos: 0,
+        redeemable_reveal_count: 0,
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
@@ -745,9 +749,13 @@ fn cap_reveal_phase_cannot_reveal_without_bid_coin() {
 
 #[test]
 fn cap_closed_phase_can_redeem_lost_bid() {
-    let action_ctx = ctx(
-        false, false, true, false, None, None, None, 0, false, None, None, None,
-    );
+    let action_ctx = NameActionContext {
+        // A reveal coin that is not the name's owner — a bid that lost.
+        redeemable_reveal_count: 1,
+        ..ctx(
+            false, false, true, false, None, None, None, 0, false, None, None, None,
+        )
+    };
     let caps = build_name_action_capabilities(
         "example".into(),
         "CLOSED".into(),
@@ -762,11 +770,17 @@ fn cap_closed_phase_can_redeem_lost_bid() {
     assert!(caps.can_redeem.allowed);
 }
 
+/// Owning the name is no longer what blocks a redeem — holding no reveal coin
+/// besides the winning one is. A wallet that outbids itself owns the name AND
+/// has losing bids to reclaim; the old rule refused those, stranding them.
 #[test]
-fn cap_closed_phase_cannot_redeem_if_owns() {
-    let action_ctx = ctx(
-        false, false, true, false, None, None, None, 0, false, None, None, None,
-    );
+fn cap_closed_phase_cannot_redeem_when_the_only_reveal_won() {
+    let action_ctx = NameActionContext {
+        redeemable_reveal_count: 0,
+        ..ctx(
+            false, false, true, false, None, None, None, 0, false, None, None, None,
+        )
+    };
     let caps = build_name_action_capabilities(
         "example".into(),
         "CLOSED".into(),
@@ -784,7 +798,35 @@ fn cap_closed_phase_cannot_redeem_if_owns() {
         .reason
         .as_ref()
         .unwrap()
-        .contains("won this auction"));
+        .contains("won the auction"));
+}
+
+/// The case the old rule got wrong: owns the name, and still holds losing
+/// reveals from its own other bids.
+#[test]
+fn cap_closed_phase_can_redeem_own_losing_bids_while_owning_the_name() {
+    let action_ctx = NameActionContext {
+        redeemable_reveal_count: 2,
+        ..ctx(
+            false, false, true, false, None, None, None, 0, false, None, None, None,
+        )
+    };
+    let caps = build_name_action_capabilities(
+        "example".into(),
+        "CLOSED".into(),
+        "CLOSED",
+        None,
+        &action_ctx,
+        true, // owns the name
+        false,
+        None,
+        Network::Main,
+    );
+    assert!(
+        caps.can_redeem.allowed,
+        "winning one bid does not forfeit the others: {:?}",
+        caps.can_redeem.reason
+    );
 }
 
 #[test]
@@ -855,8 +897,22 @@ fn cap_closed_phase_cannot_register_already_registered() {
 
 #[test]
 fn cap_owned_can_update_transfer_renew_revoke() {
+    // Owned AND registered. A wallet that can spend a name holds a
+    // REGISTER-or-later owner coin; leaving that unset described a state
+    // production never reaches, and the actions are refused without it.
     let action_ctx = ctx(
-        false, false, false, false, None, None, None, 0, false, None, None, None,
+        false,
+        false,
+        false,
+        true,
+        Some(COV_REGISTER as i64),
+        None,
+        None,
+        0,
+        false,
+        None,
+        None,
+        None,
     );
     let caps = build_name_action_capabilities(
         "example".into(),
@@ -938,12 +994,14 @@ fn cap_spend_locked_disables_all_spend_actions() {
 
 #[test]
 fn cap_transfer_phase_can_finalize_with_items() {
+    // A name mid-transfer is registered by definition — its owner coin is a
+    // TRANSFER covenant, which is past REGISTER.
     let action_ctx = ctx(
         false,
         false,
         false,
-        false,
-        None,
+        true,
+        Some(COV_TRANSFER as i64),
         None,
         Some(true),
         0,

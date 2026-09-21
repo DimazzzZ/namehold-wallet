@@ -107,7 +107,7 @@ pub(crate) fn fee_rate(ctx: &Ctx, fee_rate: Option<u64>) -> u64 {
 }
 
 /// Minimal view of `getnameinfo` we need to build covenants.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct NameState {
     pub(crate) height: u32,
     pub(crate) value: u64,
@@ -402,6 +402,11 @@ pub struct NameActionCapabilities {
     /// mined the chain reports the name's previous state, so without this the
     /// UI can only describe a world where the user never pressed the button.
     pub pending_broadcast_action: Option<String>,
+    /// Bids this wallet placed in an EARLIER auction of the same name whose
+    /// lockup is stranded: unrevealable and unredeemable, and invisible in the
+    /// bids panel now that it is scoped to the current auction.
+    pub stranded_bid_count: i64,
+    pub stranded_lockup_doos: i64,
 }
 
 /// Context gathered from the DB for a name action evaluation.
@@ -435,6 +440,18 @@ pub(crate) struct NameActionContext {
     /// state no phase-derived label can describe, because on-chain nothing has
     /// happened yet.
     pub pending_broadcast_action: Option<String>,
+    /// Bids from an EARLIER auction of this name whose BID coin is still
+    /// unspent. They can never be revealed (a REVEAL is only valid while
+    /// `start == ns.height`) nor redeemed (REDEEM spends a REVEAL output that
+    /// was never created), so the lockup is gone — and scoping the bids panel
+    /// by auction made them invisible, which is worse than the wrong count it
+    /// replaced: the money is missing with nothing on screen to explain it.
+    pub stranded_bid_count: i64,
+    pub stranded_lockup_doos: i64,
+    /// Unspent REVEAL coins for this name that are NOT the name's owner — the
+    /// losing bids this wallet can still redeem. Several, when it outbid
+    /// itself.
+    pub redeemable_reveal_count: i64,
     /// The `reveal_txid` stamped on the bid commitment row (if any).
     pub reveal_txid: Option<String>,
     /// Status of the local tx_draft matching `reveal_txid` (if one exists).
@@ -448,14 +465,66 @@ pub(crate) struct NameActionContext {
 }
 
 /// Gather wallet evidence from the DB for a name.
+/// `auction_start` is the OPEN height of the auction currently running for
+/// `name`, when the caller knows it. Bids belong to an auction, not to a name —
+/// a name can be auctioned repeatedly — so a commitment from an auction that
+/// has since lapsed must not be read as one of this wallet's bids on the live
+/// one. `None` means "we could not tell", and then nothing is filtered.
 pub(crate) fn find_name_action_context(
     conn: &rusqlite::Connection,
     profile_id: &str,
     name: &str,
+    auction_start: Option<i64>,
 ) -> Result<NameActionContext, AppError> {
-    let bid = queries::get_bid_commitment(conn, profile_id, name)
-        .ok()
-        .flatten();
+    // Newest first, so the first match is the most recent bid in this auction.
+    let for_name: Vec<queries::BidCommitmentRow> = queries::list_bid_commitments(conn, profile_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|b| b.name == name)
+        .collect();
+    let belongs_here = |b: &queries::BidCommitmentRow| match (auction_start, b.name_start_height) {
+        (Some(start), Some(placed)) => placed == start,
+        // A commitment recovered from the chain has no recorded auction (030).
+        // Counting one that may be dead is a wrong number; hiding a live one is
+        // a bid the user never gets told to reveal.
+        (Some(_), None) => true,
+        (None, _) => true,
+    };
+    let commitments: Vec<queries::BidCommitmentRow> = for_name
+        .iter()
+        .filter(|b| belongs_here(b))
+        .cloned()
+        .collect();
+    let bid = commitments.first().cloned();
+
+    // Bids this wallet placed in an EARLIER auction of the same name whose BID
+    // coin is still unspent. They can never be revealed — a REVEAL is only
+    // valid while `start == ns.height` (hsd `chain.js`, `bad-reveal-nonlocal`)
+    // and the name has since reopened at a new height — and REDEEM spends a
+    // REVEAL output, which was never created. The lockup is gone for good.
+    //
+    // Scoping the bids panel by auction (029/030) made these invisible, which
+    // is worse than the wrong count it replaced: the money is simply missing
+    // with nothing on screen to explain it.
+    let (stranded_bid_count, stranded_lockup_doos) = for_name
+        .iter()
+        .filter(|b| !belongs_here(b))
+        .filter(|b| {
+            queries::find_unspent_covenant_utxo(
+                conn,
+                profile_id,
+                &b.address,
+                sync::COV_BID as i64,
+                name,
+                &b.name_hash_hex,
+            )
+            .ok()
+            .flatten()
+            .is_some()
+        })
+        .fold((0i64, 0i64), |(n, sum), b| {
+            (n + 1, sum + b.lockup_value_doos)
+        });
     // Part 3 (confirmed pre-existing bug, folded in from the Task 2 review):
     // revealing SPENDS the COV_BID coin and CREATES a COV_REVEAL coin — so a
     // COV_REVEAL coin can only exist AFTER a successful reveal, never before.
@@ -466,33 +535,44 @@ pub(crate) fn find_name_action_context(
     // bid. Both lookups share the same address (a reveal's output always
     // lands back on the bid coin's own address, see `build_reveal_draft`), so
     // only the covenant type differs between the two queries below.
-    let bid_coin = bid.as_ref().and_then(|b| {
-        queries::find_unspent_covenant_utxo(
-            conn,
-            profile_id,
-            &b.address,
-            sync::COV_BID as i64,
-            name,
-            &b.name_hash_hex,
-        )
-        .ok()
-        .flatten()
-    });
-    let reveal_coin = bid.as_ref().and_then(|b| {
-        queries::find_unspent_covenant_utxo(
-            conn,
-            profile_id,
-            &b.address,
-            COV_REVEAL as i64,
-            name,
-            &b.name_hash_hex,
-        )
-        .ok()
-        .flatten()
-    });
+    //
+    // Looked up by NAME HASH across the profile, not through one commitment's
+    // address. Every bid lands on its own rotated address, so an address-scoped
+    // lookup answers for a single bid — and which one it picked was not even
+    // well defined: `created_at` has second resolution, so several bids placed
+    // in the same second order arbitrarily.
+    let name_hash_hex = hex::encode(names::hash_name(name).unwrap_or([0u8; 32]));
+    let bid_coin = queries::find_unspent_covenant_utxos_by_name_hash(
+        conn,
+        profile_id,
+        sync::COV_BID as i64,
+        &name_hash_hex,
+    )
+    .ok()
+    .and_then(|v| v.into_iter().next());
+    let reveal_coins = queries::find_unspent_covenant_utxos_by_name_hash(
+        conn,
+        profile_id,
+        COV_REVEAL as i64,
+        &name_hash_hex,
+    )
+    .unwrap_or_default();
     let owner_coin = queries::get_name_coin(conn, profile_id, name)
         .ok()
         .flatten();
+    // A reveal coin that is NOT the name's owner is a losing bid this wallet
+    // can still reclaim. Outbidding yourself leaves exactly this: you own the
+    // name AND hold losing reveals on it.
+    let redeemable_reveal_count = reveal_coins
+        .iter()
+        .filter(|c| {
+            owner_coin
+                .as_ref()
+                .map(|o| !(o.txid == c.txid && o.vout == c.vout))
+                .unwrap_or(true)
+        })
+        .count() as i64;
+    let reveal_coin = reveal_coins.into_iter().next();
     let owner_cov_type = owner_coin.as_ref().map(|c| c.covenant_type);
     let nh = owner_coin.as_ref().and_then(|c| c.name_height);
 
@@ -505,10 +585,8 @@ pub(crate) fn find_name_action_context(
         })
     });
 
-    // Count existing bids for bid multiplicity rule.
-    let existing_bid_count = queries::list_bid_commitments(conn, profile_id)
-        .map(|v| v.iter().filter(|b| b.name == name).count() as i64)
-        .unwrap_or(0);
+    // Count existing bids for bid multiplicity rule — this auction's only.
+    let existing_bid_count = commitments.len() as i64;
 
     // Task 1: pending-OPEN evidence, mirroring the two checks
     // `build_open_draft`'s guard enforces — (a) an UNCONFIRMED COV_OPEN coin
@@ -567,6 +645,9 @@ pub(crate) fn find_name_action_context(
         existing_bid_count,
         has_pending_open,
         pending_broadcast_action,
+        stranded_bid_count,
+        stranded_lockup_doos,
+        redeemable_reveal_count,
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,
@@ -702,9 +783,15 @@ async fn evaluate_name_action_capabilities(
                 .map(|s| s.to_uppercase())
                 .unwrap_or_else(|| "AVAILABLE".to_string());
 
+            // The auction running right now, straight from the node.
+            let auction_start = name_info
+                .get("info")
+                .and_then(|i| i.get("height"))
+                .and_then(|h| h.as_i64());
+
             let (action_ctx, tracked_owner_address, profile_addrs) = {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-                let action_ctx = find_name_action_context(&conn, profile_id, &name)?;
+                let action_ctx = find_name_action_context(&conn, profile_id, &name, auction_start)?;
                 let tracked_owner_address =
                     queries::get_tracked_name_state(&conn, profile_id, &name)?
                         .and_then(|t| t.owner_address);
@@ -743,7 +830,16 @@ async fn evaluate_name_action_capabilities(
             let (tracked, action_ctx, profile_addrs, renewal_window, current_height) = {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
                 let tracked = queries::get_tracked_name_state(&conn, profile_id, &name)?;
-                let action_ctx = find_name_action_context(&conn, profile_id, &name)?;
+                // No live node — the cached `getnameinfo` payload is the best
+                // evidence of which auction is running. `upsert_name_state`
+                // clears it when the node reports none.
+                let cached_auction_start = tracked
+                    .as_ref()
+                    .and_then(|t| t.raw_json.as_deref())
+                    .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+                    .and_then(|v| v.get("info")?.get("height")?.as_i64());
+                let action_ctx =
+                    find_name_action_context(&conn, profile_id, &name, cached_auction_start)?;
                 let addrs = queries::get_profile_addresses(&conn, profile_id)?;
                 // Same expiry math as `read_renewals::compute_renewals`: network
                 // renewal window + the best persisted height estimate (no live
@@ -869,14 +965,17 @@ pub(crate) fn build_name_action_capabilities(
         },
     };
 
+    // Owning the name does NOT disqualify a redeem: a wallet that outbid itself
+    // wins with one bid and loses with the rest, and those lockups are its own
+    // to reclaim. What matters is holding a reveal coin that is not the owner.
     let can_redeem = NameActionCapability {
-        allowed: phase == "CLOSED" && action_ctx.has_reveal_coin && !owns_name,
+        allowed: phase == "CLOSED" && action_ctx.redeemable_reveal_count > 0,
         reason: if phase != "CLOSED" {
             Some(format!("auction not yet closed (phase: '{phase}')"))
-        } else if !action_ctx.has_reveal_coin {
-            Some("no unspent reveal coin to redeem".into())
+        } else if action_ctx.has_reveal_coin {
+            Some("your only reveal here won the auction (nothing to redeem)".into())
         } else {
-            Some("you won this auction (redeem not applicable)".into())
+            Some("no unspent reveal coin to redeem".into())
         },
     };
 
@@ -905,26 +1004,44 @@ pub(crate) fn build_name_action_capabilities(
         },
     };
 
+    // Owning the name is not enough to spend it. Until REGISTER, the owner coin
+    // is a REVEAL — and hsd lets a REVEAL go only to a REGISTER or a REDEEM
+    // (`rules.verifyCovenants`), so every action below would be refused by the
+    // node. This is reachable in ordinary use: during REVEAL `getnameinfo`
+    // already names the highest revealer as the owner, so the wallet looked
+    // like it owned a name it had not won yet, and offered Update, Transfer,
+    // Renew and Revoke on it.
+    let name_is_registered = action_ctx
+        .owner_covenant_type
+        .map(|t| t >= COV_REGISTER as i64)
+        .unwrap_or(false);
+    let can_spend_as_owner = owns_name && name_is_registered;
+    let not_registered_reason = "the name is not registered yet";
+
     let can_update = NameActionCapability {
-        allowed: owns_name,
+        allowed: can_spend_as_owner,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
+        } else if !name_is_registered {
+            Some(not_registered_reason.into())
         } else {
             None
         },
     };
 
     let can_transfer = NameActionCapability {
-        allowed: owns_name,
+        allowed: can_spend_as_owner,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
+        } else if !name_is_registered {
+            Some(not_registered_reason.into())
         } else {
             None
         },
     };
 
     let can_finalize = NameActionCapability {
-        allowed: owns_name && action_ctx.transfer_has_items.unwrap_or(false),
+        allowed: can_spend_as_owner && action_ctx.transfer_has_items.unwrap_or(false),
         reason: if !owns_name {
             Some("wallet does not control this name".into())
         } else if !action_ctx.transfer_has_items.unwrap_or(false) {
@@ -935,27 +1052,33 @@ pub(crate) fn build_name_action_capabilities(
     };
 
     let can_cancel_transfer = NameActionCapability {
-        allowed: owns_name,
+        allowed: can_spend_as_owner,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
+        } else if !name_is_registered {
+            Some(not_registered_reason.into())
         } else {
             None
         },
     };
 
     let can_renew = NameActionCapability {
-        allowed: owns_name,
+        allowed: can_spend_as_owner,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
+        } else if !name_is_registered {
+            Some(not_registered_reason.into())
         } else {
             None
         },
     };
 
     let can_revoke = NameActionCapability {
-        allowed: owns_name,
+        allowed: can_spend_as_owner,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
+        } else if !name_is_registered {
+            Some(not_registered_reason.into())
         } else {
             None
         },
@@ -1092,6 +1215,8 @@ pub(crate) fn build_name_action_capabilities(
         auction_bidding_blocks: Some(name_params.bidding_period as i64),
         auction_reveal_blocks: Some(name_params.reveal_period as i64),
         pending_broadcast_action: action_ctx.pending_broadcast_action.clone(),
+        stranded_bid_count: action_ctx.stranded_bid_count,
+        stranded_lockup_doos: action_ctx.stranded_lockup_doos,
     }
 }
 
@@ -1136,6 +1261,8 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         auction_bidding_blocks: None,
         auction_reveal_blocks: None,
         pending_broadcast_action: None,
+        stranded_bid_count: 0,
+        stranded_lockup_doos: 0,
     }
 }
 
@@ -1245,6 +1372,16 @@ pub fn derive_auction_task_state(
                 if already_registered {
                     if expiring_soon {
                         AuctionTaskState::ExpiringSoon
+                    } else if has_reveal_coin {
+                        // Registered, and still holding a REVEAL coin. The
+                        // winning one was spent by that REGISTER, so whatever
+                        // is left lost — this wallet outbid itself, and those
+                        // lockups are reclaimable. Nothing else on the screen
+                        // says so: the guided panel drives from this state, and
+                        // "no urgent action" is how the money stayed put.
+                        // Renewal still outranks it: losing the name costs more
+                        // than a lockup sitting idle.
+                        AuctionTaskState::LostNeedsRedeem
                     } else {
                         AuctionTaskState::OwnedNoUrgentAction
                     }
@@ -1564,10 +1701,11 @@ pub(crate) fn build_bid_draft_inner(
     // leaves this NULL.
     let params = ctx.network.name_params();
     let reveal_end_height = names_pure::reveal_end_height(ns.height as i64, &params);
-    queries::set_reveal_end_height(
+    queries::set_auction_heights(
         conn,
         &ctx.profile_id,
         &hex::encode(blind),
+        ns.height as i64,
         reveal_end_height,
     )?;
 
@@ -1758,7 +1896,13 @@ pub(crate) fn build_batch_bid_draft_inner(
 
         // Estimate reveal-end height and stamp it.
         let reveal_end_height = names_pure::reveal_end_height(spec.ns.height as i64, &params);
-        queries::set_reveal_end_height(conn, &ctx.profile_id, &blind_hex, reveal_end_height)?;
+        queries::set_auction_heights(
+            conn,
+            &ctx.profile_id,
+            &blind_hex,
+            spec.ns.height as i64,
+            reveal_end_height,
+        )?;
 
         outcomes.push(BidOutcome {
             primary: PrimaryOutput {
@@ -1820,28 +1964,57 @@ pub async fn build_reveal_draft(
     let client = ctx.node.clone();
     let ns = fetch_name_state(&client, &name).await?;
 
-    // Look up our bid commitment + the unspent BID coin at that address.
-    let (bid, bid_coin) = {
+    // EVERY bid this wallet placed in the auction now running, each with its
+    // own unspent BID coin. A wallet may hold several bids on one name, and a
+    // BID coin is spendable only by its own REVEAL — so taking just one (the
+    // newest, as `get_bid_commitment` returns) revealed one and abandoned the
+    // rest to the end of the reveal window, where their lockups stop being
+    // reclaimable at all.
+    let bids = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let nh = names::hash_name(&name)?;
-        let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, &name)?
-            .ok_or_else(|| AppError::NotFound(format!("no bid commitment for '{name}'")))?;
-        let coin = queries::find_unspent_covenant_utxo(
-            &conn,
-            &ctx.profile_id,
-            &bid.address,
-            sync::COV_BID as i64,
-            &name,
-            &hex::encode(nh),
-        )?
-        .ok_or_else(|| {
-            AppError::NotFound(format!("no unspent bid coin for '{name}' (sync first?)"))
-        })?;
-        (bid, coin)
+        let nh_hex = hex::encode(names::hash_name(&name)?);
+        let auction_start = ns.height as i64;
+        let commitments: Vec<queries::BidCommitmentRow> =
+            queries::list_bid_commitments(&conn, &ctx.profile_id)?
+                .into_iter()
+                .filter(|b| b.name == name)
+                // Bids belong to an auction (030). One from a lapsed auction
+                // can no longer be revealed — `start != ns.height` is a
+                // consensus error — so it would poison the whole transaction.
+                .filter(|b| {
+                    b.name_start_height
+                        .map(|h| h == auction_start)
+                        .unwrap_or(true)
+                })
+                .collect();
+        if commitments.is_empty() {
+            return Err(AppError::NotFound(format!(
+                "no bid commitment for '{name}'"
+            )));
+        }
+        let mut out: Vec<(queries::BidCommitmentRow, queries::NameCoin)> = Vec::new();
+        for bid in commitments {
+            if let Some(coin) = queries::find_unspent_covenant_utxo(
+                &conn,
+                &ctx.profile_id,
+                &bid.address,
+                sync::COV_BID as i64,
+                &name,
+                &nh_hex,
+            )? {
+                out.push((bid, coin));
+            }
+        }
+        out
     };
+    if bids.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "no unspent bid coin for '{name}' (sync first?)"
+        )));
+    }
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    let summary = build_reveal_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &bid, &bid_coin)?;
+    let summary = build_reveal_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &bids)?;
 
     Ok(summary)
 }
@@ -1860,42 +2033,59 @@ pub(crate) fn build_reveal_draft_inner(
     name: &str,
     fee_rate: Option<u64>,
     ns: &NameState,
-    bid: &queries::BidCommitmentRow,
-    bid_coin: &queries::NameCoin,
+    bids: &[(queries::BidCommitmentRow, queries::NameCoin)],
 ) -> Result<TxDraftSummary, AppError> {
+    if bids.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "no unspent bid coin for '{name}' (sync first?)"
+        )));
+    }
     let rate = self::fee_rate(ctx, fee_rate);
     let nh = names::hash_name(name)?;
 
-    let mut nonce = [0u8; 32];
-    let nb = hex::decode(&bid.nonce_hex).map_err(|e| AppError::Crypto(format!("nonce: {e}")))?;
-    if nb.len() != 32 {
-        return Err(AppError::Crypto("stored nonce not 32 bytes".into()));
-    }
-    nonce.copy_from_slice(&nb);
+    // One REVEAL per bid, in ONE transaction. A wallet may hold several bids on
+    // the same name, and each has its own BID coin that only its own REVEAL can
+    // spend — so revealing "the" bid left the rest to expire, and their lockups
+    // with them. The covenants are independent, so they ride together.
+    let mut name_inputs = Vec::with_capacity(bids.len());
+    let mut primaries = Vec::with_capacity(bids.len());
+    for (bid, bid_coin) in bids {
+        let mut nonce = [0u8; 32];
+        let nb =
+            hex::decode(&bid.nonce_hex).map_err(|e| AppError::Crypto(format!("nonce: {e}")))?;
+        if nb.len() != 32 {
+            return Err(AppError::Crypto("stored nonce not 32 bytes".into()));
+        }
+        nonce.copy_from_slice(&nb);
 
-    let cov = covenants::reveal(&nh, ns.height, &nonce);
-    // Reveal output value = the true bid value; output address = the bid coin's
-    // address. The lockup − bid difference returns as change automatically.
-    let res = actions::build_plan(
-        ctx.network,
-        ctx.account,
-        Some(name_input_from(bid_coin.clone())),
-        PrimaryOutput {
+        name_inputs.push(name_input_from(bid_coin.clone()));
+        // Reveal output value = the true bid value; output address = the bid
+        // coin's address. The lockup − bid difference returns as change.
+        primaries.push(PrimaryOutput {
             value: bid.bid_value_doos as u64,
             address: bid_coin.address.clone(),
-            covenant: cov,
-        },
+            covenant: covenants::reveal(&nh, ns.height, &nonce),
+        });
+    }
+
+    let res = actions::build_batch_plan(
+        ctx.network,
+        ctx.account,
+        &name_inputs,
+        &primaries,
         &ctx.funding,
         &ctx.change_address,
         rate,
     )?;
     let summary = persist_with_conn(conn, &ctx.profile_id, "reveal", name, None, None, &res)?;
-    // Task 1 fix (companion to build_bid_draft): stamp the reveal txid onto
-    // the SAME commitment row (keyed by name — `set_bid_reveal_txid`), so the
-    // reveal-deadline scanner (which reads `reveal_txid`) can see this bid as
-    // resolved. Done under the caller's held lock, right after the draft
-    // persist — `res.txid` is the deterministic pre-signing Handshake txid.
-    queries::set_bid_reveal_txid(conn, &ctx.profile_id, name, &res.txid)?;
+    // Stamp the reveal txid onto each commitment this draft actually reveals —
+    // keyed by its own `blind_hex`, not by name. Keyed by name, one reveal
+    // marked every bid on that name as resolved, and the reveal-deadline
+    // scanner (which reads `reveal_txid`) fell silent on the ones still at
+    // risk. `res.txid` is the deterministic pre-signing Handshake txid.
+    for (bid, _) in bids {
+        queries::set_bid_reveal_txid(conn, &ctx.profile_id, name, &bid.blind_hex, &res.txid)?;
+    }
     Ok(summary)
 }
 
@@ -1912,27 +2102,42 @@ pub async fn build_redeem_draft(
     let client = ctx.node.clone();
     let ns = fetch_name_state(&client, &name).await?;
 
-    let coin = {
+    // EVERY losing reveal the wallet still holds for this name. A wallet can
+    // outbid itself, so one auction can leave it several — each on its own
+    // rotated address, which is why this looks the coins up by name hash
+    // instead of through one commitment's address. Taking only the newest
+    // commitment's coin redeemed one and left the rest unreclaimable.
+    let coins = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let nh = names::hash_name(&name)?;
-        let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, &name)?
-            .ok_or_else(|| AppError::NotFound(format!("no bid for '{name}'")))?;
-        queries::find_unspent_covenant_utxo(
+        let nh_hex = hex::encode(names::hash_name(&name)?);
+        let all = queries::find_unspent_covenant_utxos_by_name_hash(
             &conn,
             &ctx.profile_id,
-            &bid.address,
             sync::COV_REVEAL as i64,
-            &name,
-            &hex::encode(nh),
-        )?
-        .ok_or_else(|| {
-            AppError::NotFound(format!(
-                "no unspent losing reveal coin for '{name}' (sync first?)"
-            ))
-        })?
+            &nh_hex,
+        )?;
+        // The winning reveal IS the name's owner coin until REGISTER spends it,
+        // and consensus rejects redeeming it (`bad-redeem-owner`) — which would
+        // take the whole transaction down with it.
+        let owner = queries::get_name_coin(&conn, &ctx.profile_id, &name)
+            .ok()
+            .flatten();
+        all.into_iter()
+            .filter(|c| {
+                owner
+                    .as_ref()
+                    .map(|o| !(o.txid == c.txid && o.vout == c.vout))
+                    .unwrap_or(true)
+            })
+            .collect::<Vec<_>>()
     };
+    if coins.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "no unspent losing reveal coin for '{name}' (sync first?)"
+        )));
+    }
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    build_redeem_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &coin)
+    build_redeem_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &coins)
 }
 
 /// Pure inner logic for `build_redeem_draft`, testable without a Tauri
@@ -1949,21 +2154,33 @@ pub(crate) fn build_redeem_draft_inner(
     name: &str,
     fee_rate: Option<u64>,
     ns: &NameState,
-    reveal_coin: &queries::NameCoin,
+    reveal_coins: &[queries::NameCoin],
 ) -> Result<TxDraftSummary, AppError> {
+    if reveal_coins.is_empty() {
+        return Err(AppError::NotFound(format!(
+            "no unspent losing reveal coin for '{name}' (sync first?)"
+        )));
+    }
     let rate = self::fee_rate(ctx, fee_rate);
     let nh = names::hash_name(name)?;
 
-    // REDEEM reclaims the reveal output value back to the wallet.
-    let res = actions::build_plan(
+    // One REDEEM per losing reveal, in ONE transaction — a wallet that outbid
+    // itself has several, and each reclaims its own coin's value.
+    let mut name_inputs = Vec::with_capacity(reveal_coins.len());
+    let mut primaries = Vec::with_capacity(reveal_coins.len());
+    for coin in reveal_coins {
+        name_inputs.push(name_input_from(coin.clone()));
+        primaries.push(PrimaryOutput {
+            value: coin.value,
+            address: coin.address.clone(),
+            covenant: covenants::redeem(&nh, ns.height),
+        });
+    }
+    let res = actions::build_batch_plan(
         ctx.network,
         ctx.account,
-        Some(name_input_from(reveal_coin.clone())),
-        PrimaryOutput {
-            value: reveal_coin.value,
-            address: reveal_coin.address.clone(),
-            covenant: covenants::redeem(&nh, ns.height),
-        },
+        &name_inputs,
+        &primaries,
         &ctx.funding,
         &ctx.change_address,
         rate,
@@ -2615,27 +2832,56 @@ pub async fn build_batch_reveal_draft(
     )> = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
-        // DB reads — lock is held only briefly, dropped before any await.
-        let (bid, bid_coin) = {
-            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-            let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, name)?
-                .ok_or_else(|| AppError::NotFound(format!("no bid commitment for '{}'", name)))?;
-            let coin = queries::find_unspent_covenant_utxo(
-                &conn,
-                &ctx.profile_id,
-                &bid.address,
-                sync::COV_BID as i64,
-                name,
-                &hex::encode(nh),
-            )?
-            .ok_or_else(|| {
-                AppError::NotFound(format!("no unspent bid coin for '{}' (sync first?)", name))
-            })?;
-            (bid, coin)
-        };
-        // Async RPC — no DB lock held here.
+        // Async RPC first — its `height` says which auction is running, and a
+        // bid from an earlier one can no longer be revealed.
         let ns = fetch_name_state(&client, name).await?;
-        per_name.push((name.clone(), nh, bid, bid_coin, ns));
+        // DB reads — lock is held only briefly, dropped before the next await.
+        let bids = {
+            let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+            let nh_hex = hex::encode(nh);
+            let auction_start = ns.height as i64;
+            let commitments: Vec<queries::BidCommitmentRow> =
+                queries::list_bid_commitments(&conn, &ctx.profile_id)?
+                    .into_iter()
+                    .filter(|b| &b.name == name)
+                    .filter(|b| {
+                        b.name_start_height
+                            .map(|h| h == auction_start)
+                            .unwrap_or(true)
+                    })
+                    .collect();
+            if commitments.is_empty() {
+                return Err(AppError::NotFound(format!(
+                    "no bid commitment for '{}'",
+                    name
+                )));
+            }
+            let mut out: Vec<(queries::BidCommitmentRow, queries::NameCoin)> = Vec::new();
+            for bid in commitments {
+                if let Some(coin) = queries::find_unspent_covenant_utxo(
+                    &conn,
+                    &ctx.profile_id,
+                    &bid.address,
+                    sync::COV_BID as i64,
+                    name,
+                    &nh_hex,
+                )? {
+                    out.push((bid, coin));
+                }
+            }
+            out
+        };
+        if bids.is_empty() {
+            return Err(AppError::NotFound(format!(
+                "no unspent bid coin for '{}' (sync first?)",
+                name
+            )));
+        }
+        // Every bid on the name, not just its newest — same reason as the
+        // single-name command: each BID coin needs its own REVEAL.
+        for (bid, bid_coin) in bids {
+            per_name.push((name.clone(), nh, bid, bid_coin, ns.clone()));
+        }
     }
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -2664,6 +2910,7 @@ pub(crate) fn build_batch_reveal_draft_inner(
     let mut primaries = Vec::with_capacity(per_name.len());
     let mut name_inputs = Vec::with_capacity(per_name.len());
     let mut batch_names = Vec::with_capacity(per_name.len());
+    let mut stamped: Vec<(String, String)> = Vec::with_capacity(per_name.len());
 
     for (name, nh, bid, bid_coin, ns) in per_name {
         let mut nonce = [0u8; 32];
@@ -2683,6 +2930,7 @@ pub(crate) fn build_batch_reveal_draft_inner(
             address: bid_coin.address.clone(),
             covenant: cov,
         });
+        stamped.push((name.clone(), bid.blind_hex.clone()));
         batch_names.push(name);
     }
 
@@ -2697,7 +2945,7 @@ pub(crate) fn build_batch_reveal_draft_inner(
     )?;
     let display_name = names_pure::display_names(&batch_names);
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
-    persist_with_conn(
+    let summary = persist_with_conn(
         conn,
         &ctx.profile_id,
         "batch-reveal",
@@ -2705,7 +2953,15 @@ pub(crate) fn build_batch_reveal_draft_inner(
         None,
         Some(&name_refs),
         &res,
-    )
+    )?;
+    // Stamp each commitment this batch reveals. The batch path never did, so
+    // its bids stayed `reveal_txid IS NULL` and the deadline scanner kept
+    // warning about bids it had already revealed — the mirror image of the
+    // single-name path's fault, which marked bids it had NOT revealed.
+    for (name, blind_hex) in stamped {
+        queries::set_bid_reveal_txid(conn, &ctx.profile_id, &name, &blind_hex, &res.txid)?;
+    }
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -3112,6 +3368,9 @@ mod tests {
             existing_bid_count: 0,
             has_pending_open: false,
             pending_broadcast_action: None,
+            stranded_bid_count: 0,
+            stranded_lockup_doos: 0,
+            redeemable_reveal_count: 0,
             reveal_txid: None,
             reveal_draft_status: None,
             bid_value_doos: None,
@@ -4092,10 +4351,73 @@ mod tests {
     // build_name_action_capabilities — can_redeem
     // ==================================================================
 
+    /// While the auction is still open, the wallet holding the highest reveal
+    /// is the name's owner as far as `getnameinfo` is concerned — but it owns a
+    /// REVEAL coin, and hsd lets a REVEAL go only to a REGISTER or a REDEEM
+    /// (`rules.verifyCovenants`). Every ownership action is therefore invalid,
+    /// and offering one sends the user at a transaction the node will refuse.
+    #[test]
+    fn ownership_actions_need_a_registered_name_not_just_ownership() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REVEAL as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "REVEAL".into(),
+            "REVEAL",
+            None,
+            &ctx,
+            /* owns_name */ true,
+            false,
+            None,
+            Network::Main,
+        );
+        for (what, cap) in [
+            ("update", &caps.can_update),
+            ("transfer", &caps.can_transfer),
+            ("cancel_transfer", &caps.can_cancel_transfer),
+            ("renew", &caps.can_renew),
+            ("revoke", &caps.can_revoke),
+        ] {
+            assert!(
+                !cap.allowed,
+                "{what} must not be offered on a name that is not registered yet"
+            );
+        }
+    }
+
+    /// The same actions on a genuinely registered name stay available.
+    #[test]
+    fn ownership_actions_stay_available_once_registered() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(caps.can_update.allowed);
+        assert!(caps.can_transfer.allowed);
+        assert!(caps.can_renew.allowed);
+        assert!(caps.can_revoke.allowed);
+    }
+
     #[test]
     fn build_can_redeem_allowed() {
         let ctx = NameActionContext {
             has_reveal_coin: true,
+            redeemable_reveal_count: 1,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4110,14 +4432,6 @@ mod tests {
             Network::Main,
         );
         assert!(caps.can_redeem.allowed);
-        // NOTE: `can_redeem.reason`'s if/else chain in the source falls into
-        // the "you won this auction" branch whenever CLOSED + has_reveal_coin
-        // regardless of `owns_name`, so the reason string is present even in
-        // the allowed path. We only assert `allowed == true` here.
-        assert_eq!(
-            caps.can_redeem.reason.as_deref(),
-            Some("you won this auction (redeem not applicable)")
-        );
     }
 
     #[test]
@@ -4165,11 +4479,46 @@ mod tests {
         );
     }
 
+    /// Owning the name must NOT disqualify a redeem.
+    ///
+    /// This asserted the opposite, from when a wallet could hold one bid per
+    /// name: if you owned it, your one reveal was the winning one and there was
+    /// nothing to reclaim. With several bids allowed, outbidding yourself is
+    /// ordinary — you win with one and lose with the rest, and those lockups
+    /// are yours. What disqualifies a redeem is holding no reveal coin OTHER
+    /// than the one that owns the name.
     #[test]
-    fn build_can_redeem_owns_name_not_applicable() {
-        // has_reveal_coin + owns_name → "you won this auction".
+    fn build_can_redeem_owns_name_but_still_has_losing_reveals() {
         let ctx = NameActionContext {
             has_reveal_coin: true,
+            redeemable_reveal_count: 2,
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            /* owns_name */ true,
+            false,
+            None,
+            Network::Main,
+        );
+        assert!(
+            caps.can_redeem.allowed,
+            "winning one bid does not forfeit the others: {:?}",
+            caps.can_redeem.reason
+        );
+    }
+
+    #[test]
+    fn build_can_redeem_only_reveal_is_the_winner() {
+        // The single-bid case the old rule was written for: the one reveal
+        // this wallet holds IS the name's owner, so there is nothing to redeem.
+        let ctx = NameActionContext {
+            has_reveal_coin: true,
+            redeemable_reveal_count: 0,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4186,7 +4535,7 @@ mod tests {
         assert!(!caps.can_redeem.allowed);
         assert_eq!(
             caps.can_redeem.reason.as_deref(),
-            Some("you won this auction (redeem not applicable)")
+            Some("your only reveal here won the auction (nothing to redeem)")
         );
     }
 
@@ -4318,6 +4667,10 @@ mod tests {
     fn build_owner_actions_allowed_when_owned() {
         let ctx = NameActionContext {
             transfer_has_items: Some(true),
+            // A wallet that owns a name it can spend holds a REGISTER-or-later
+            // coin; leaving this unset described a state production never has.
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(

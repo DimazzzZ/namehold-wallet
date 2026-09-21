@@ -1086,7 +1086,9 @@ pub(crate) fn merge_indexed_bids(
     let highest = indexed.iter().filter_map(|b| b.value).max();
 
     let mut my_bid_count: u32 = 0;
-    let bids: Vec<serde_json::Value> = indexed
+    let indexed_txids: std::collections::HashSet<&str> =
+        indexed.iter().filter_map(|b| b.txid.as_deref()).collect();
+    let mut bids: Vec<serde_json::Value> = indexed
         .iter()
         .map(|bid| {
             let my_value = bid
@@ -1111,6 +1113,36 @@ pub(crate) fn merge_indexed_bids(
             })
         })
         .collect();
+
+    // A bid this wallet sent that the chain scanner has not seen yet — it is
+    // still in the mempool, or mined but not scanned. The index only ever
+    // contains BID outputs found in blocks, so without this the user's own
+    // just-placed bid is absent from the panel entirely and the count reads as
+    // if it never happened. Marked `pending` so the UI can say which it is.
+    for c in commitments.iter().filter(|c| c.name == name) {
+        // No txid means nothing was ever broadcast — a draft, not a bid in
+        // flight. There is nothing for a block to confirm.
+        let Some(txid) = c.bid_txid.as_deref() else {
+            continue;
+        };
+        if indexed_txids.contains(txid) {
+            continue;
+        }
+        my_bid_count += 1;
+        bids.push(serde_json::json!({
+            "txid": c.bid_txid,
+            "index": serde_json::Value::Null,
+            "lockup": c.lockup_value_doos,
+            "value": serde_json::Value::Null,
+            "revealed": false,
+            "win": serde_json::Value::Null,
+            "reveal": serde_json::Value::Null,
+            "time": serde_json::Value::Null,
+            "mine": true,
+            "myValue": c.bid_value_doos,
+            "pending": true,
+        }));
+    }
 
     serde_json::json!({
         "name": name,
@@ -1185,6 +1217,18 @@ pub async fn read_name_bids(
                 )?,
                 None => Vec::new(),
             };
+            // Scope the commitments to this auction too (030). Otherwise the
+            // merge below would append a bid from a LAPSED auction as one
+            // "waiting for a block" — it is stranded, not pending, and the
+            // modal reports those separately.
+            let comms: Vec<queries::BidCommitmentRow> = comms
+                .into_iter()
+                .filter(|c| match (nh, c.name_start_height) {
+                    (Some(start), Some(placed)) => placed == start,
+                    (Some(_), None) => true,
+                    (None, _) => true,
+                })
+                .collect();
             (indexed, comms, cursor_h, nh)
         };
 
