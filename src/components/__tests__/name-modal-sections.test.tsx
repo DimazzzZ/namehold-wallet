@@ -303,6 +303,46 @@ describe("NameActionsModal — sections on a name the wallet really owns", () =>
     expect(await screen.findByRole("button", { name: "Renew" })).toBeInTheDocument();
     expect(await screen.findByText(/Sign message for/)).toBeInTheDocument();
   });
+
+  // The paid-swap entry points are withdrawn. Only the holder of the TRANSFER
+  // coin can finalize, which is the sender, so "Buy with payment" could never
+  // be pressed by a buyer; and with every input signed SIGHASH_ALL nothing
+  // about the flow is atomic. See docs/specs/2026-09-21-paid-name-swaps.md.
+  // Claiming an offer already recorded is untouched — that panel renders
+  // itself only when one exists.
+  it("offers no way to start a paid swap", async () => {
+    invokeMock.mockImplementation(
+      route(
+        {
+          name: "ownedname",
+          state: "CLOSED",
+          height: 100,
+          renewal: 200,
+          owner: { hash: profile.receiveAddress, index: 0 },
+          registered: true,
+          value: 1_000_000,
+          highest: 2_000_000,
+          stats: { blocksUntilExpire: 100 },
+        },
+        capsFor({
+          name: "ownedname",
+          taskState: "ownedNoUrgentAction",
+          ownsName: true,
+          nameIsRegistered: true,
+          hasOwnerCoin: true,
+          canUpdate: ok,
+          canTransfer: ok,
+          canFinalize: ok,
+          canRenew: ok,
+        }),
+      ),
+    );
+    render(<NameActionsModal name="ownedname" open onClose={() => {}} />, { wrapper: wrapper() });
+    await screen.findByTestId("name-phase");
+
+    expect(screen.queryByRole("button", { name: /sell with payment/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /buy with payment/i })).not.toBeInTheDocument();
+  });
 });
 
 describe("NameActionsModal — the Register step", () => {
