@@ -1960,6 +1960,12 @@ pub struct TrackedNameRow {
     /// network renewal window vs. a persisted height estimate) instead of
     /// leaving the expiry alarm silent for lack of live node stats.
     pub renewal_height: Option<i64>,
+    /// The block the name's TRANSFER was recorded in
+    /// (`getnameinfo().info.transfer`), or `None`/0 when none is pending.
+    /// hsd refuses a FINALIZE until `transfer + transfer_lockup` blocks have
+    /// passed, so the capability gate needs it to avoid offering one the node
+    /// will throw away.
+    pub transfer_height: Option<i64>,
 }
 
 /// Resolve the name for a given nameHash (hex) under a profile. Returns None if
@@ -1990,7 +1996,7 @@ pub fn get_tracked_name_state(
 ) -> Result<Option<TrackedNameRow>, AppError> {
     let row = conn
         .query_row(
-            "SELECT name, state, owner_address, raw_json, renewal_height
+            "SELECT name, state, owner_address, raw_json, renewal_height, transfer_height
              FROM tracked_name_states
              WHERE wallet_profile_id = ?1 AND name = ?2",
             params![profile_id, name],
@@ -2001,6 +2007,7 @@ pub fn get_tracked_name_state(
                     owner_address: row.get(2)?,
                     raw_json: row.get(3)?,
                     renewal_height: row.get(4)?,
+                    transfer_height: row.get(5)?,
                 })
             },
         )

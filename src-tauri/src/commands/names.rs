@@ -491,6 +491,14 @@ pub(crate) struct NameActionContext {
     /// broadcast and the chain has not mined. We still own the name — we just
     /// cannot spend it until the block lands.
     pub owner_spend_in_flight: bool,
+    /// The block the name's TRANSFER was recorded in (`getnameinfo.transfer`),
+    /// and the wallet's best idea of the tip. Together with the network's
+    /// `transfer_lockup` they say whether a FINALIZE would be accepted: hsd
+    /// refuses one until `transfer + lockup` blocks have passed
+    /// (`bad-finalize-maturity`). `None` means we cannot tell, and an action
+    /// the node would accept must not be refused on a guess.
+    pub transfer_height: Option<i64>,
+    pub current_height: Option<i64>,
     /// The `reveal_txid` stamped on the bid commitment row (if any).
     pub reveal_txid: Option<String>,
     /// Status of the local tx_draft matching `reveal_txid` (if one exists).
@@ -711,6 +719,14 @@ pub(crate) fn find_name_action_context(
     let bid_value_doos = bid.as_ref().map(|b| b.bid_value_doos);
     let lockup_value_doos = bid.as_ref().map(|b| b.lockup_value_doos);
 
+    let tracked_row = queries::get_tracked_name_state(conn, profile_id, name).unwrap_or(None);
+    let transfer_height = tracked_row
+        .as_ref()
+        .and_then(|t| t.transfer_height)
+        .filter(|h| *h > 0);
+    let current_height =
+        crate::commands::read::estimate_persisted_height(conn, profile_id).unwrap_or(None);
+
     Ok(NameActionContext {
         has_bid_commitment: bid.is_some(),
         has_bid_coin: bid_coin.is_some(),
@@ -719,6 +735,8 @@ pub(crate) fn find_name_action_context(
         owner_covenant_type: owner_cov_type,
         name_height: nh,
         transfer_has_items: transfer,
+        transfer_height,
+        current_height,
         existing_bid_count,
         has_pending_open,
         pending_broadcast_action,
@@ -1124,14 +1142,35 @@ pub(crate) fn build_name_action_capabilities(
         },
     };
 
+    // hsd refuses a FINALIZE until `transfer + transfer_lockup` blocks have
+    // passed (`bad-finalize-maturity`). A transaction built now lands in the
+    // next block, so the lockup is over once `tip + 1` reaches that height.
+    // With either height unknown we say nothing: refusing an action the node
+    // would accept is its own kind of wrong.
+    let blocks_until_finalize = action_ctx
+        .transfer_height
+        .zip(action_ctx.current_height)
+        .map(|(transfer, tip)| {
+            let ready_at = transfer + network.name_params().transfer_lockup as i64;
+            (ready_at - (tip + 1)).max(0)
+        });
+    let finalize_matured = blocks_until_finalize.map(|b| b == 0).unwrap_or(true);
+
     let can_finalize = NameActionCapability {
-        allowed: can_spend_as_owner && action_ctx.transfer_has_items.unwrap_or(false),
+        allowed: can_spend_as_owner
+            && action_ctx.transfer_has_items.unwrap_or(false)
+            && finalize_matured,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
         } else if !action_ctx.transfer_has_items.unwrap_or(false) {
             Some("name is not in TRANSFER state".into())
         } else {
-            None
+            blocks_until_finalize.filter(|b| *b > 0).map(|blocks| {
+                format!(
+                    "the transfer is still locked for {blocks} more block{}",
+                    if blocks == 1 { "" } else { "s" }
+                )
+            })
         },
     };
 
@@ -3521,6 +3560,8 @@ mod tests {
             redeemable_reveal_count: 0,
             redeemable_value_doos: 0,
             owner_spend_in_flight: false,
+            transfer_height: None,
+            current_height: None,
             reveal_txid: None,
             reveal_draft_status: None,
             bid_value_doos: None,
@@ -4599,6 +4640,83 @@ mod tests {
         assert!(o.spend_locked);
     }
 
+    /// hsd refuses a FINALIZE until `transfer + transferLockup` blocks have
+    /// passed (`bad-finalize-maturity`, chain.js). Offering the button before
+    /// then sends the user at a transaction the node throws away — the same
+    /// fault the ownership actions had before REGISTER, one stage along.
+    #[test]
+    fn finalize_waits_out_the_transfer_lockup() {
+        // Regtest locks a transfer for 10 blocks. Transferred at 800, so a
+        // finalize is valid in block 810 — i.e. once the tip reaches 809.
+        let mid_lockup = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            transfer_height: Some(800),
+            current_height: Some(805),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "TRANSFER".into(),
+            "TRANSFER",
+            None,
+            &mid_lockup,
+            true,
+            false,
+            None,
+            Network::Regtest,
+        );
+        assert!(!caps.can_finalize.allowed, "still inside the lockup");
+        let reason = caps.can_finalize.reason.unwrap_or_default();
+        assert!(
+            reason.contains("4"),
+            "the reason must say how many blocks are left, got {reason:?}"
+        );
+
+        let matured = NameActionContext {
+            current_height: Some(809),
+            ..mid_lockup
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "TRANSFER".into(),
+            "TRANSFER",
+            None,
+            &matured,
+            true,
+            false,
+            None,
+            Network::Regtest,
+        );
+        assert!(caps.can_finalize.allowed, "the next block may carry it");
+    }
+
+    /// Without heights we cannot say, and refusing an action the node would
+    /// accept is its own kind of wrong. A transfer with no recorded height
+    /// stays offered.
+    #[test]
+    fn finalize_is_not_blocked_when_the_lockup_is_unknown() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "TRANSFER".into(),
+            "TRANSFER",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Regtest,
+        );
+        assert!(caps.can_finalize.allowed);
+    }
+
     /// `LostNeedsRedeem` is reached two ways and only one is a loss. A wallet
     /// that outbid itself owns the name and holds its own losing reveals, and
     /// "Your bid lost" is false for it — on a name it just registered.
@@ -4755,6 +4873,8 @@ mod tests {
             redeemable_reveal_count: 1,
             redeemable_value_doos: 0,
             owner_spend_in_flight: false,
+            transfer_height: None,
+            current_height: None,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4831,6 +4951,8 @@ mod tests {
             redeemable_reveal_count: 2,
             redeemable_value_doos: 0,
             owner_spend_in_flight: false,
+            transfer_height: None,
+            current_height: None,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
@@ -4860,6 +4982,8 @@ mod tests {
             redeemable_reveal_count: 0,
             redeemable_value_doos: 0,
             owner_spend_in_flight: false,
+            transfer_height: None,
+            current_height: None,
             ..ctx_default()
         };
         let caps = build_name_action_capabilities(
