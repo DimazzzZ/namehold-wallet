@@ -231,7 +231,20 @@ fn persist_with_conn(
     let summary = ActionSummary {
         action,
         name,
-        send_total_doos: res.plan.outputs[0].value as i64,
+        // Every output the action carries, change excluded — not the first
+        // one. A name action can have several: revealing a name you bid on
+        // more than once emits one REVEAL per bid, and redeeming reclaims one
+        // per losing reveal. Reporting `outputs[0]` made the confirm dialog
+        // offer to reclaim 28 HNS and print 12, which is the one figure a user
+        // checks before signing.
+        send_total_doos: res
+            .plan
+            .outputs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != res.plan.change_output_index)
+            .map(|(_, o)| o.value as i64)
+            .sum(),
         fee_doos: res.fee as i64,
         change_doos: res.change as i64,
         input_total_doos: res.input_total as i64,

@@ -221,6 +221,68 @@ fn build_redeem_draft_reclaims_reveal_value_to_its_address() {
     );
 }
 
+/// Reported from a live wallet: the confirm dialog offered to reclaim three
+/// losing bids worth 28 HNS and showed 12 — the value of the first output
+/// alone. Outbidding yourself is the ordinary case this whole path exists for,
+/// so a multi-output redeem is not an edge, and the one figure the user checks
+/// before signing was wrong on every one of them.
+#[test]
+fn build_redeem_draft_totals_every_output_it_reclaims() {
+    let conn = test_db();
+    seed_profile(&conn);
+    let network = Network::Main;
+    let xpub = test_xpub();
+    let change = derivation::derive_one(network, &xpub, BRANCH_CHANGE, 0).unwrap();
+    let recv0 = derivation::derive_one(network, &xpub, derivation::BRANCH_RECEIVE, 0).unwrap();
+
+    let funding_txid = "aa".repeat(32);
+    seed_liquid_coin(&conn, &funding_txid, 10_000_000, &recv0.address);
+
+    // Three losing reveals, as a wallet that bid three times against itself
+    // ends up holding.
+    let values = [12_000_000u64, 5_000_000, 11_000_000];
+    let mut coins = Vec::new();
+    for (i, v) in values.iter().enumerate() {
+        let txid = format!("{:02x}", 0xb0 + i).repeat(32);
+        seed_reveal_coin(&conn, &txid, *v as i64, &recv0.address);
+        coins.push(reveal_coin(&txid, &recv0.address, *v));
+    }
+
+    let ctx = Ctx {
+        profile_id: PROFILE.into(),
+        network,
+        account: 0,
+        account_xpub: xpub,
+        change_address: change.address,
+        funding: vec![SpendableCoin {
+            txid: funding_txid,
+            vout: 0,
+            value: 10_000_000,
+            branch: derivation::BRANCH_RECEIVE,
+            child_index: 0,
+        }],
+        settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new(
+            "http://127.0.0.1:1",
+            "",
+            crate::noncustodial::rpc::ChainSource::LocalNode,
+        ),
+    };
+
+    let summary =
+        build_redeem_draft_inner(&conn, &ctx, NAME, Some(10), &closed_name_state(), &coins)
+            .unwrap();
+    let send_total = summary
+        .summary
+        .get("sendTotalDoos")
+        .and_then(|v| v.as_i64());
+    assert_eq!(
+        send_total,
+        Some(28_000_000),
+        "every reclaimed reveal counts, not just the first"
+    );
+}
+
 #[test]
 fn build_redeem_draft_uses_explicit_fee_rate() {
     let (conn, ctx, coin) = setup(2_000_000, 10_000_000);

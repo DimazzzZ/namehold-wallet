@@ -26,7 +26,12 @@ import {
 import { useStartFullSync, useSyncStatus, useCancelFullSync } from "../queries/sync";
 import { useNodeLive, useStartHsd } from "../queries/node";
 import { useSyncTriggerStore } from "../stores/syncTrigger";
-import { auctionPhase, formatCountdown, taskSummaryFromCapabilities } from "../lib/auction";
+import {
+  auctionPhase,
+  formatCountdown,
+  pendingBroadcastBadge,
+  taskSummaryFromCapabilities,
+} from "../lib/auction";
 import { displayName } from "../lib/idn";
 import { NameActionsModal } from "./NameActionsModal";
 import { BlockInfoModal } from "./BlockInfoModal";
@@ -1269,6 +1274,18 @@ export function WalletView() {
                               watch-only profile that never fetches them. */}
                           {(() => {
                             const task = taskSummaryFromCapabilities(capsByName.get(n.name));
+                            // A transaction of ours for this name is in flight:
+                            // the task is a verdict the chain has not reached
+                            // and an instruction already followed. The modal
+                            // and the auctions list both say so; this column
+                            // was the last one still printing the task.
+                            if (task?.pendingBroadcastAction) {
+                              return (
+                                <Badge variant="default">
+                                  {pendingBroadcastBadge(task.pendingBroadcastAction)}
+                                </Badge>
+                              );
+                            }
                             if (task) {
                               return <Badge variant={task.variant}>{task.label}</Badge>;
                             }
