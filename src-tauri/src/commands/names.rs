@@ -1305,6 +1305,7 @@ pub(crate) fn build_name_action_capabilities(
         action_ctx.owner_covenant_type,
         days_until_expire,
         action_ctx.has_pending_open,
+        transfer_pending,
         action_ctx.reveal_txid.as_deref(),
         action_ctx.reveal_draft_status.as_deref(),
         network,
@@ -1512,6 +1513,11 @@ pub fn derive_auction_task_state(
     owner_covenant_type: Option<i64>,
     days_until_expire: Option<f64>,
     has_pending_open: bool,
+    // `transfer_pending`: a TRANSFER is recorded for this name. NOT derivable
+    // from `phase` — hsd's name states are OPENING / LOCKED / BIDDING /
+    // REVEAL / CLOSED / REVOKED (`namestate.js`), and a transfer leaves the
+    // state at CLOSED, signalling itself through `info.transfer` instead.
+    transfer_pending: bool,
     reveal_txid: Option<&str>,
     reveal_draft_status: Option<&str>,
     network: Network,
@@ -1580,6 +1586,12 @@ pub fn derive_auction_task_state(
                 if already_registered {
                     if expiring_soon {
                         AuctionTaskState::ExpiringSoon
+                    } else if transfer_pending {
+                        // Losing the name outranks completing a transfer of
+                        // it, so this sits behind the renewal alarm — but
+                        // ahead of everything quiet, because finalizing is the
+                        // one thing the name is waiting on.
+                        AuctionTaskState::TransferPendingFinalize
                     } else if has_reveal_coin {
                         // Registered, and still holding a REVEAL coin. The
                         // winning one was spent by that REGISTER, so whatever
@@ -1614,7 +1626,8 @@ pub fn derive_auction_task_state(
                 AuctionTaskState::OwnedNoUrgentAction
             }
         }
-        "TRANSFER" => AuctionTaskState::TransferPendingFinalize,
+        // No `"TRANSFER"` arm: hsd has no such state. A transfer is handled
+        // inside CLOSED above, where the node actually reports it.
         "REVOKED" => AuctionTaskState::UnavailableOther,
         _ => {
             if owns_name {
@@ -3619,6 +3632,7 @@ mod tests {
             owner_covenant_type,
             days_until_expire,
             has_pending_open,
+            false,
             reveal_txid,
             reveal_draft_status,
             Network::Main,
@@ -4047,19 +4061,25 @@ mod tests {
 
     #[test]
     fn derive_transfer() {
+        // The node reports CLOSED for a name being transferred — hsd has no
+        // TRANSFER state — and signals the transfer separately, so this goes
+        // through the full derivation rather than the `derive` helper, which
+        // has no transfer to give it.
         assert_eq!(
-            derive(
-                "TRANSFER",
+            derive_auction_task_state(
+                "CLOSED",
                 true,
                 false,
                 false,
                 false,
                 true,
-                Some(9),
+                Some(COV_TRANSFER as i64),
                 None,
                 false,
+                true,
                 None,
-                None
+                None,
+                Network::Main,
             ),
             AuctionTaskState::TransferPendingFinalize
         );
@@ -4662,6 +4682,67 @@ mod tests {
         let o = derive_name_ownership(&ctx_default(), None, &addrs());
         assert!(!o.owns_name);
         assert!(o.spend_locked);
+    }
+
+    /// Reported live, mid-transfer: the modal's detail panel said "Transfer in
+    /// progress (height 803)" while the status beside it said "Owned".
+    ///
+    /// hsd has six name states — OPENING, LOCKED, BIDDING, REVEAL, CLOSED,
+    /// REVOKED (`namestate.js`) — and TRANSFER is not among them. A transfer
+    /// is signalled by `info.transfer != 0`, with the state left at CLOSED.
+    /// So the `"TRANSFER" =>` arm never fired against a real node and every
+    /// name mid-transfer fell through to "no urgent action" — on a name whose
+    /// one remaining action is to finalize.
+    #[test]
+    fn a_pending_transfer_is_the_task_even_though_hsd_calls_the_state_closed() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            transfer_height: Some(803),
+            current_height: Some(813),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            // Exactly what the node reports for a name being transferred.
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            None,
+            Network::Regtest,
+        );
+        assert!(
+            matches!(caps.task_state, AuctionTaskState::TransferPendingFinalize),
+            "got {:?}",
+            caps.task_state
+        );
+    }
+
+    /// Losing the name outranks completing a transfer of it.
+    #[test]
+    fn an_expiring_name_outranks_its_pending_transfer() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..ctx_default()
+        };
+        let caps = build_name_action_capabilities(
+            "n".into(),
+            "CLOSED".into(),
+            "CLOSED",
+            None,
+            &ctx,
+            true,
+            false,
+            Some(1.0),
+            Network::Regtest,
+        );
+        assert!(matches!(caps.task_state, AuctionTaskState::ExpiringSoon));
     }
 
     /// hsd refuses a FINALIZE until `transfer + transferLockup` blocks have
