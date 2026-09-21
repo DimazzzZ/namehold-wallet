@@ -866,22 +866,14 @@ async fn evaluate_name_action_capabilities(
             };
             let stats = name_info.get("info").and_then(|i| i.get("stats"));
 
-            // Symmetric ownership: even on a synced node the owner-coin scan may
-            // not have reached this name yet. Explorer evidence (recorded owner
-            // address is ours) still classifies it as owned — but WITHOUT a real
-            // node-synced owner coin, every spend stays locked, exactly as on the
-            // node-unreachable path. This keeps the invariant airtight: explorer
-            // evidence gives classification, never spend capability.
-            let explorer_owned = tracked_owner_address
-                .as_deref()
-                .map(|a| profile_addrs.iter().any(|p| p == a))
-                .unwrap_or(false);
-            // Our own unconfirmed spend of the owner coin does not stop us
-            // owning the name — `spend_locked` below still says we cannot
-            // act on it until the block lands.
-            let owns_name =
-                action_ctx.has_owner_coin || action_ctx.owner_spend_in_flight || explorer_owned;
-            let spend_locked = !action_ctx.has_owner_coin;
+            let NameOwnership {
+                owns_name,
+                spend_locked,
+            } = derive_name_ownership(
+                &action_ctx,
+                tracked_owner_address.as_deref(),
+                &profile_addrs,
+            );
             Ok(build_name_action_capabilities(
                 name,
                 raw_phase.clone(),
@@ -930,19 +922,14 @@ async fn evaluate_name_action_capabilities(
                 .as_deref()
                 .map(|s| s.to_uppercase())
                 .unwrap_or_default();
-            // Owned per explorer evidence: the recorded owner address is ours.
-            let explorer_owned = tracked
-                .owner_address
-                .as_deref()
-                .map(|a| profile_addrs.iter().any(|p| p == a))
-                .unwrap_or(false);
-            // Our own unconfirmed spend of the owner coin does not stop us
-            // owning the name — `spend_locked` below still says we cannot
-            // act on it until the block lands.
-            let owns_name =
-                action_ctx.has_owner_coin || action_ctx.owner_spend_in_flight || explorer_owned;
-            // No node-synced owner coin → nothing may build a spend.
-            let spend_locked = !action_ctx.has_owner_coin;
+            let NameOwnership {
+                owns_name,
+                spend_locked,
+            } = derive_name_ownership(
+                &action_ctx,
+                tracked.owner_address.as_deref(),
+                &profile_addrs,
+            );
             // Days-until-expire from tracked chain evidence, so the modal's
             // `expiringSoon` matches the WalletView banner / Renewals screen
             // instead of staying silent for lack of live node stats.
@@ -1375,6 +1362,39 @@ pub(crate) fn conservative_capabilities(name: &str, reason: &str) -> NameActionC
         stranded_lockup_doos: 0,
         redeemable_reveal_count: 0,
         redeemable_value_doos: 0,
+    }
+}
+
+/// What the wallet may claim about a name, and what it may do with it.
+///
+/// Two questions that look like one and are not. Both call sites used to spell
+/// out the same three lines, and the gap between the questions is where a bug
+/// lived: `get_name_coin` returns unspent coins only, so our own unconfirmed
+/// spend of the owner coin made the wallet conclude it did not own the name —
+/// on a CLOSED name still holding reveals, that is the shape of a lost auction.
+pub(crate) struct NameOwnership {
+    /// May we say this name is ours? Survives an unconfirmed spend of the
+    /// owner coin, and explorer evidence alone is enough.
+    pub owns_name: bool,
+    /// May we build a transaction for it? Only a node-synced, unspent owner
+    /// coin unlocks this — explorer evidence classifies, it never unlocks, and
+    /// a spend already in flight must not be raced.
+    pub spend_locked: bool,
+}
+
+/// `owner_address` is the owner recorded for the name (from the node payload
+/// or the tracked row); it counts as ours when it is one of `profile_addrs`.
+pub(crate) fn derive_name_ownership(
+    ctx: &NameActionContext,
+    owner_address: Option<&str>,
+    profile_addrs: &[String],
+) -> NameOwnership {
+    let explorer_owned = owner_address
+        .map(|a| profile_addrs.iter().any(|p| p == a))
+        .unwrap_or(false);
+    NameOwnership {
+        owns_name: ctx.has_owner_coin || ctx.owner_spend_in_flight || explorer_owned,
+        spend_locked: !ctx.has_owner_coin,
     }
 }
 
@@ -4503,6 +4523,67 @@ mod tests {
                 "{what} must not be offered on a name that is not registered yet"
             );
         }
+    }
+
+    // ==================================================================
+    // derive_name_ownership
+    // ==================================================================
+
+    fn addrs() -> Vec<String> {
+        vec!["ours1".to_string(), "ours2".to_string()]
+    }
+
+    /// The plain case: we hold the coin, so we own it and may spend it.
+    #[test]
+    fn ownership_owner_coin_owns_and_unlocks() {
+        let ctx = NameActionContext {
+            has_owner_coin: true,
+            ..ctx_default()
+        };
+        let o = derive_name_ownership(&ctx, Some("ours1"), &addrs());
+        assert!(o.owns_name);
+        assert!(!o.spend_locked);
+    }
+
+    /// The bug this function was extracted for. Our own unconfirmed spend of
+    /// the owner coin removes it from the node's unspent set, so the coin
+    /// lookup finds nothing — but the name is still ours, and will be whether
+    /// or not the transaction confirms. Spending stays locked until it does.
+    #[test]
+    fn ownership_survives_our_own_unconfirmed_owner_spend() {
+        let ctx = NameActionContext {
+            has_owner_coin: false,
+            owner_spend_in_flight: true,
+            ..ctx_default()
+        };
+        let o = derive_name_ownership(&ctx, None, &[]);
+        assert!(o.owns_name, "a register in flight is not a lost name");
+        assert!(o.spend_locked, "and we still cannot act until it lands");
+    }
+
+    /// Explorer evidence classifies, it never unlocks: the recorded owner
+    /// address is ours but no node-synced coin backs it.
+    #[test]
+    fn ownership_from_explorer_address_owns_but_stays_locked() {
+        let o = derive_name_ownership(&ctx_default(), Some("ours2"), &addrs());
+        assert!(o.owns_name);
+        assert!(o.spend_locked);
+    }
+
+    /// Someone else's address is not evidence of anything.
+    #[test]
+    fn ownership_of_a_stranger_address_is_not_ours() {
+        let o = derive_name_ownership(&ctx_default(), Some("theirs"), &addrs());
+        assert!(!o.owns_name);
+        assert!(o.spend_locked);
+    }
+
+    /// No coin, nothing in flight, no recorded owner: not ours.
+    #[test]
+    fn ownership_with_no_evidence_at_all() {
+        let o = derive_name_ownership(&ctx_default(), None, &addrs());
+        assert!(!o.owns_name);
+        assert!(o.spend_locked);
     }
 
     /// `LostNeedsRedeem` is reached two ways and only one is a loss. A wallet
