@@ -624,6 +624,83 @@ fn find_name_action_context_knows_the_owner_coin_is_only_spent_in_flight() {
     );
 }
 
+/// Caught running a transfer end to end: the modal's Transfer button persists
+/// its draft as `batch-transfer`, and the owner-spend list only knew the
+/// singular names. So the moment a transfer went out, ownership collapsed
+/// again — the exact fault this flag was added to close, reopened for every
+/// action the batch builders emit.
+#[test]
+fn find_name_action_context_recognises_a_batched_owner_spend() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_REGISTER);
+    seed_tracked_utxo(
+        &conn,
+        "owner",
+        0,
+        ADDRESS,
+        sync::COV_REGISTER as i64,
+        Some(&cov),
+    );
+    conn.execute(
+        "UPDATE tracked_utxos SET spent_by_txid = 'spent' WHERE txid = 'owner'",
+        [],
+    )
+    .unwrap();
+    seed_tracked_name_state(
+        &conn,
+        NAME,
+        &nh_hex,
+        "CLOSED",
+        Some("owner"),
+        Some(0),
+        Some(779),
+    );
+
+    seed_draft(&conn, "d-bt", "batch-transfer", NAME);
+    db::queries::update_tx_draft_status(&conn, "d-bt", "broadcasted", None, Some("bttx")).unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert!(
+        ctx.owner_spend_in_flight,
+        "a batched transfer spends the owner coin just as a single one does"
+    );
+
+    // And a batched action that does NOT touch the owner coin still says
+    // nothing about ownership.
+    let conn2 = test_db();
+    seed_profile(&conn2);
+    seed_derived_address(&conn2, ADDRESS, 0, 0);
+    seed_tracked_utxo(
+        &conn2,
+        "owner",
+        0,
+        ADDRESS,
+        sync::COV_REGISTER as i64,
+        Some(&cov),
+    );
+    conn2
+        .execute(
+            "UPDATE tracked_utxos SET spent_by_txid = 'spent' WHERE txid = 'owner'",
+            [],
+        )
+        .unwrap();
+    seed_tracked_name_state(
+        &conn2,
+        NAME,
+        &nh_hex,
+        "CLOSED",
+        Some("owner"),
+        Some(0),
+        Some(779),
+    );
+    seed_draft(&conn2, "d-br", "batch-redeem", NAME);
+    db::queries::update_tx_draft_status(&conn2, "d-br", "broadcasted", None, Some("brtx")).unwrap();
+    let ctx2 = find_name_action_context(&conn2, PROFILE, NAME, Some(779)).unwrap();
+    assert!(!ctx2.owner_spend_in_flight);
+}
+
 /// A spent BID coin is a bid that was revealed and settled — nothing stranded.
 #[test]
 fn find_name_action_context_does_not_strand_a_spent_bid() {

@@ -692,8 +692,12 @@ pub(crate) fn find_name_action_context(
     // about ownership.
     let owner_spend_in_flight = owner_coin.is_none()
         && pending_actions.iter().any(|a| {
+            // A batch draft performs the same covenant for several names at
+            // once and records itself as `batch-<action>`; the owner coin is
+            // spent either way. Matching only the singular names reopened this
+            // very bug for the modal's Transfer button, which batches.
             matches!(
-                a.as_str(),
+                a.strip_prefix("batch-").unwrap_or(a),
                 "register"
                     | "update"
                     | "transfer"
@@ -786,7 +790,8 @@ pub async fn get_name_action_capabilities(
         Some(id) => id,
         None => return Ok(conservative_capabilities(&name, "no active wallet profile")),
     };
-    evaluate_name_action_capabilities(&state, name, &profile_id).await
+    let live_tip = crate::commands::read::node_tip_height_if_synced(&state).await;
+    evaluate_name_action_capabilities(&state, name, &profile_id, live_tip).await
 }
 
 /// Max names accepted by [`get_names_action_capabilities`] per call. Each
@@ -828,9 +833,13 @@ pub async fn get_names_action_capabilities(
                 .collect());
         }
     };
+    // Fetched once for the whole batch, not once per name: the only thing it
+    // is needed for is the transfer-lockup countdown, and a stale tip there
+    // refuses a FINALIZE the node would accept.
+    let live_tip = crate::commands::read::node_tip_height_if_synced(&state).await;
     let mut out = Vec::with_capacity(names.len());
     for name in names {
-        out.push(evaluate_name_action_capabilities(&state, name, &profile_id).await?);
+        out.push(evaluate_name_action_capabilities(&state, name, &profile_id, live_tip).await?);
     }
     Ok(out)
 }
@@ -843,6 +852,7 @@ async fn evaluate_name_action_capabilities(
     state: &State<'_, AppState>,
     name: String,
     profile_id: &str,
+    live_tip: Option<i64>,
 ) -> Result<NameActionCapabilities, AppError> {
     // Resolved once for both branches below: the expiry warning threshold and
     // the renewal window are both per-network.
@@ -897,6 +907,13 @@ async fn evaluate_name_action_capabilities(
             };
             let stats = name_info.get("info").and_then(|i| i.get("stats"));
 
+            // The persisted estimate is deliberately conservative — on regtest
+            // it does not age at all — and the transfer-lockup gate is the one
+            // consumer where a stale tip refuses an action the node accepts.
+            let action_ctx = NameActionContext {
+                current_height: live_tip.or(action_ctx.current_height),
+                ..action_ctx
+            };
             let NameOwnership {
                 owns_name,
                 spend_locked,
@@ -953,6 +970,13 @@ async fn evaluate_name_action_capabilities(
                 .as_deref()
                 .map(|s| s.to_uppercase())
                 .unwrap_or_default();
+            // The persisted estimate is deliberately conservative — on regtest
+            // it does not age at all — and the transfer-lockup gate is the one
+            // consumer where a stale tip refuses an action the node accepts.
+            let action_ctx = NameActionContext {
+                current_height: live_tip.or(action_ctx.current_height),
+                ..action_ctx
+            };
             let NameOwnership {
                 owns_name,
                 spend_locked,
