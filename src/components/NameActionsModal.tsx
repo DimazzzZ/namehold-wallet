@@ -184,8 +184,7 @@ export function NameActionsModal({
   // of a misleading on-chain 0. On-chain `highest`/`value` are only meaningful
   // once amounts are revealed (REVEAL/CLOSED), so we defer to them there.
   const preReveal = badge.phase === "BIDDING" || badge.phase === "OPENING";
-  const showLocalBid =
-    preReveal && caps?.hasBidCommitment === true && caps?.bidValueDoos != null;
+  const showLocalBid = preReveal && caps?.hasBidCommitment === true && caps?.bidValueDoos != null;
 
   // Current DNS records for owned names, read from the node (`getnameresource`).
   // Used to seed the editor once per open so the user sees/edits/deletes the
@@ -630,48 +629,48 @@ export function NameActionsModal({
         {!isLoading &&
           !isError &&
           (countdown || showLocalBid || (info?.highest ?? info?.value) != null) && (
-          <div className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded p-2">
-            <div className="flex items-center gap-2">
-              {countdown && (
-                <span className="text-xs text-gray-600" data-testid="name-countdown">
-                  {countdown.label} {formatCountdown(countdown)}
+            <div className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded p-2">
+              <div className="flex items-center gap-2">
+                {countdown && (
+                  <span className="text-xs text-gray-600" data-testid="name-countdown">
+                    {countdown.label} {formatCountdown(countdown)}
+                  </span>
+                )}
+              </div>
+              {showLocalBid ? (
+                <span className="text-xs text-gray-700" data-testid="name-your-bid">
+                  {(caps?.myBidCount ?? 0) > 1 ? "Latest bid" : "Your bid"}{" "}
+                  <Tooltip content={<>{formatHns(caps?.bidValueDoos)} HNS</>}>
+                    <span className="cursor-help underline decoration-dotted underline-offset-2">
+                      {formatHnsShort(caps?.bidValueDoos)} HNS
+                    </span>
+                  </Tooltip>
+                  {caps?.lockupValueDoos != null && (
+                    <span data-testid="name-your-lockup">
+                      {" · lockup "}
+                      <Tooltip content={<>{formatHns(caps.lockupValueDoos)} HNS</>}>
+                        <span className="cursor-help underline decoration-dotted underline-offset-2">
+                          {formatHnsShort(caps.lockupValueDoos)} HNS
+                        </span>
+                      </Tooltip>
+                    </span>
+                  )}
+                  {(caps?.myBidCount ?? 0) > 1 && (
+                    <span className="text-gray-400" data-testid="name-your-bid-count">
+                      {` · ${caps?.myBidCount} of yours`}
+                    </span>
+                  )}
                 </span>
+              ) : (
+                (info?.highest ?? info?.value) != null && (
+                  <span className="text-xs text-gray-500">
+                    {info?.highest != null ? `High bid ${formatHns(info.highest)} HNS` : ""}
+                    {info?.value != null ? ` · value ${formatHns(info.value)} HNS` : ""}
+                  </span>
+                )
               )}
             </div>
-            {showLocalBid ? (
-              <span className="text-xs text-gray-700" data-testid="name-your-bid">
-                {(caps?.myBidCount ?? 0) > 1 ? "Latest bid" : "Your bid"}{" "}
-                <Tooltip content={<>{formatHns(caps?.bidValueDoos)} HNS</>}>
-                  <span className="cursor-help underline decoration-dotted underline-offset-2">
-                    {formatHnsShort(caps?.bidValueDoos)} HNS
-                  </span>
-                </Tooltip>
-                {caps?.lockupValueDoos != null && (
-                  <span data-testid="name-your-lockup">
-                    {" · lockup "}
-                    <Tooltip content={<>{formatHns(caps.lockupValueDoos)} HNS</>}>
-                      <span className="cursor-help underline decoration-dotted underline-offset-2">
-                        {formatHnsShort(caps.lockupValueDoos)} HNS
-                      </span>
-                    </Tooltip>
-                  </span>
-                )}
-                {(caps?.myBidCount ?? 0) > 1 && (
-                  <span className="text-gray-400" data-testid="name-your-bid-count">
-                    {` · ${caps?.myBidCount} of yours`}
-                  </span>
-                )}
-              </span>
-            ) : (
-              (info?.highest ?? info?.value) != null && (
-                <span className="text-xs text-gray-500">
-                  {info?.highest != null ? `High bid ${formatHns(info.highest)} HNS` : ""}
-                  {info?.value != null ? ` · value ${formatHns(info.value)} HNS` : ""}
-                </span>
-              )
-            )}
-          </div>
-        )}
+          )}
 
         {/* Ownership indicator — shown when the wallet controls this name */}
         {isOwned && (

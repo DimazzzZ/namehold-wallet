@@ -169,7 +169,7 @@ describe("Watchlist", () => {
     const nameButton = await screen.findByText(/\.example/);
     fireEvent.click(nameButton);
 
-   // NameActionsModal renders — it typically shows the name prominently
+    // NameActionsModal renders — it typically shows the name prominently
     await waitFor(() => {
       // The modal will call invoke to fetch name info; just confirm it rendered
       expect(invokeMock).toHaveBeenCalledWith("read_name_info", { name: "example" });

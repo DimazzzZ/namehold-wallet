@@ -157,8 +157,8 @@ export function GuidedAction({
         if (caps?.taskState === "waitingForBidding") {
           return (
             <div className="text-sm text-gray-600" data-testid="bidding-waiting">
-              You already placed a bid for this name (one bid per wallet per
-              name). Wait for the reveal window, then reveal your bid.
+              You already placed a bid for this name (one bid per wallet per name). Wait for the
+              reveal window, then reveal your bid.
               <div className="mt-1 font-medium">
                 {countdown
                   ? `Your bid is placed. Reveal opens in ${formatCountdown(countdown)}.`

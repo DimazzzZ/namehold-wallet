@@ -2419,7 +2419,10 @@ async fn build_bid_draft_allows_second_independent_bid() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(draft_count, 2, "each independent bid persists its own draft");
+    assert_eq!(
+        draft_count, 2,
+        "each independent bid persists its own draft"
+    );
     let commitment_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM bid_commitments WHERE wallet_profile_id = ?1 AND name = 'duplicatename'",

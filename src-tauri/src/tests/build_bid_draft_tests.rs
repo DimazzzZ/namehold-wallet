@@ -288,7 +288,10 @@ fn build_bid_draft_allows_multiple_independent_bids() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(commit_count, 2, "each independent bid persists its own commitment");
+    assert_eq!(
+        commit_count, 2,
+        "each independent bid persists its own commitment"
+    );
 }
 
 #[test]

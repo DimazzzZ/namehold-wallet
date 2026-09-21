@@ -1071,7 +1071,17 @@ fn cap_preserves_bid_value_and_reveal_txid() {
 #[test]
 fn capabilities_surface_local_lockup_value() {
     let mut action_ctx = ctx(
-        true, true, false, false, None, Some(10), None, 1, false, None, None,
+        true,
+        true,
+        false,
+        false,
+        None,
+        Some(10),
+        None,
+        1,
+        false,
+        None,
+        None,
         Some(200_000),
     );
     action_ctx.lockup_value_doos = Some(500_000);

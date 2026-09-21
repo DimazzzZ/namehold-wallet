@@ -341,9 +341,7 @@ export function taskSummaryFromCapabilities(
     label: isReallyBidding ? "Bidding" : taskStateLabel(caps.taskState),
     // Match the modal's auctionPhase("BIDDING") badge variant so the two
     // surfaces are visually identical, not just textually.
-    variant: isReallyBidding
-      ? "warning"
-      : taskStateBadgeVariant(caps.taskState),
+    variant: isReallyBidding ? "warning" : taskStateBadgeVariant(caps.taskState),
     urgency: taskStateUrgency(caps.taskState),
     nextActionKey: caps.nextActionKey,
     nextActionLabel: caps.nextActionLabel,

@@ -331,7 +331,7 @@ describe("ActivityView — canonical table design", () => {
     // A batch-bid draft with 2 names. Backend persists the synthetic label
     // "js + 1 more" as `name`, and the true list as `nameList`. The activity
     // row shows the composite as a collapsed toggle; clicking expands into
-   // clickable individual names, and clicking one opens NameActionsModal
+    // clickable individual names, and clicking one opens NameActionsModal
     // (the unified name modal).
     invokeMock.mockImplementation((cmd: string) => {
       switch (cmd) {

@@ -212,10 +212,9 @@ describe("NameActionsModal — built-but-not-broadcast draft cleanup", () => {
       });
     invokeMock.mockImplementation(route({ sign_tx_draft: hangingSign }));
 
-    const utils = render(
-      <NameActionsModal name="bidname" open onClose={onClose} />,
-      { wrapper: wrapper() },
-    );
+    const utils = render(<NameActionsModal name="bidname" open onClose={onClose} />, {
+      wrapper: wrapper(),
+    });
     await screen.findByText("Place a Bid");
     fireEvent.change(screen.getByLabelText(/^Bid \(HNS\)/i), { target: { value: "10" } });
     fireEvent.change(screen.getByLabelText(/Lockup \(HNS\)/i), { target: { value: "12" } });

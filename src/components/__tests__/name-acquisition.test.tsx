@@ -460,8 +460,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
             // Backend refines this reason for the already-bid BIDDING case
             // (see the next_action override in names.rs). The frontend
             // no-countdown panel renders the SAME string verbatim.
-            nextActionReason:
-              "Your bid is placed. Wait for the reveal window to open.",
+            nextActionReason: "Your bid is placed. Wait for the reveal window to open.",
             countdownLabel: null,
             countdownBlocks: null,
             countdownHours: null,
@@ -479,9 +478,7 @@ describe("NameActionsModal — guided acquisition flow", () => {
     expect(screen.getByTestId("bidding-waiting")).toBeInTheDocument();
     // Exact unified copy (verbatim match with backend next_action_reason).
     expect(
-      screen.getByText(
-        "Your bid is placed. Wait for the reveal window to open.",
-      ),
+      screen.getByText("Your bid is placed. Wait for the reveal window to open."),
     ).toBeInTheDocument();
     // No bid-flavored guided copy under the "Bidding" badge.
     expect(screen.queryByText("Place a Bid")).not.toBeInTheDocument();

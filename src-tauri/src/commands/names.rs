@@ -1024,8 +1024,7 @@ pub(crate) fn build_name_action_capabilities(
         && phase == "BIDDING"
         && action_ctx.has_bid_commitment
     {
-        next_action_reason =
-            Some("Your bid is placed. Wait for the reveal window to open.".into());
+        next_action_reason = Some("Your bid is placed. Wait for the reveal window to open.".into());
     }
 
     // 7. Extract countdown from stats.
