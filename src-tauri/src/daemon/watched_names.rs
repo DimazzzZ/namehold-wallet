@@ -456,7 +456,16 @@ pub async fn run_watched_scan(db_path: &str) {
 
 async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
     // 1. Load config + settings + previously-notified set.
-    let (settings, expected_network, config, previously_notified, watched, prev_states, poll_meta) = {
+    let (
+        settings,
+        expected_network,
+        active_profile_id,
+        config,
+        previously_notified,
+        watched,
+        prev_states,
+        poll_meta,
+    ) = {
         let conn = crate::commands::sync::open_conn(db_path)?;
         let settings = queries::get_settings(&conn)?;
         let config = load_config(&settings);
@@ -469,9 +478,13 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
         let prev_states = load_prev_snapshots(&conn)?;
         let poll_meta = load_poll_meta(&conn)?;
         let expected_network = queries::get_active_profile_network(&conn).ok().flatten();
+        let active_profile_id = queries::get_active_profile_id(&conn)
+            .ok()
+            .filter(|s| !s.is_empty());
         (
             settings,
             expected_network,
+            active_profile_id,
             config,
             previously_notified,
             watched,
@@ -484,11 +497,38 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
         return Ok(());
     }
 
-    // 2. Build node client from settings.
-    let node = NodeRpcClient::from_settings(&settings);
-    let node_ready =
+    // 2. Build node client from the active profile's effective node config.
+    //    Per-profile overrides take precedence per ADR-001; fall back to global
+    //    settings when no profile is active (e.g. onboarding).
+    let node = if let Some(profile_id) = active_profile_id.as_deref() {
+        let conn = crate::commands::sync::open_conn(db_path)?;
+        match NodeRpcClient::for_profile(&conn, profile_id) {
+            Ok(c) => c,
+            Err(_) => {
+                // Profile went away or is misconfigured — skip this pass rather
+                // than silently defaulting to global settings.
+                return Ok(());
+            }
+        }
+    } else {
+        NodeRpcClient::from_settings(&settings)
+    };
+    // Gate readiness against the SAME node the client above targets. With an
+    // active profile that carries a per-profile override (ADR-001), the client
+    // points at the override node, so readiness must probe that node too —
+    // `node_ready_from_profile` resolves the effective config identically.
+    // Only the no-active-profile fallback uses global settings.
+    let node_ready = if let Some(profile_id) = active_profile_id.as_deref() {
+        crate::commands::read::node_ready_from_profile(
+            db_path,
+            profile_id,
+            expected_network.as_deref(),
+        )
+        .await
+    } else {
         crate::commands::read::node_ready_from_settings(&settings, expected_network.as_deref())
-            .await;
+            .await
+    };
 
     // 3. Adaptive skip + fetch. Bounded concurrency (4) to avoid hammering hsd.
     let now_secs = chrono::Utc::now().timestamp();
@@ -1814,6 +1854,156 @@ mod tests {
             "state must not be upserted when the node is unreachable"
         );
         drop(conn);
+
+        cleanup_db(&path);
+    }
+
+    // --- Per-profile node config resolution for the watched-names daemon -----
+
+    fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
+        conn.execute(
+            "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
+             ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![profile_id, key, value],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resolve_watched_client_uses_active_profile_override() {
+        let conn = test_conn();
+        queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Primary",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
+        )
+        .unwrap();
+        set_profile_override(&conn, "p1", "node_rpc_url", "http://override.local:12037");
+
+        let client = NodeRpcClient::for_profile(&conn, "p1").unwrap();
+        assert_eq!(client.node_url(), "http://override.local:12037");
+    }
+
+    #[test]
+    fn resolve_watched_client_falls_back_to_global_when_no_override() {
+        let conn = test_conn();
+        queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Primary",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
+        )
+        .unwrap();
+        queries::set_setting(&conn, "node_rpc_url", "http://global.local:12037").unwrap();
+
+        let client = NodeRpcClient::for_profile(&conn, "p1").unwrap();
+        assert_eq!(client.node_url(), "http://global.local:12037");
+    }
+
+    #[test]
+    fn resolve_watched_client_uses_builtin_default_when_no_override_or_global() {
+        let conn = test_conn();
+        queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Primary",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
+        )
+        .unwrap();
+
+        let client = NodeRpcClient::for_profile(&conn, "p1").unwrap();
+        assert_eq!(client.node_url(), "http://127.0.0.1:12037");
+    }
+
+    /// Regression (ADR-001): the watched-name daemon must gate readiness against
+    /// the *active profile's* node (per-profile override), not global settings.
+    ///
+    /// Setup: profile `p1` has a per-profile override pointing at a reachable,
+    /// synced mock node that resolves the watched name, while GLOBAL settings
+    /// point at an unreachable port. If readiness is (incorrectly) probed via
+    /// global settings, the gate reports "not ready", nothing is fetched, and no
+    /// state row is written. With the correct per-profile readiness probe the
+    /// override node answers, the name is fetched, and a state row is upserted.
+    #[tokio::test]
+    async fn watched_scan_gates_readiness_against_active_profile_override() {
+        let mut server = mockito::Server::new_async().await;
+        // Reachable, fully-synced node on the OVERRIDE endpoint.
+        let _bci = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_status(200)
+            .with_body(
+                serde_json::json!({
+                    "result": { "blocks": 1000, "headers": 1000, "verification_progress": 1.0 },
+                    "error": null, "id": null
+                })
+                .to_string(),
+            )
+            .expect_at_least(1)
+            .create_async()
+            .await;
+        // getnameinfo → a resolvable CLOSED name so `fetch_all` yields one entry.
+        let _gni = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getnameinfo".into()))
+            .with_status(200)
+            .with_body(
+                r#"{"result":{"info":{"name":"example","state":"CLOSED"}},"error":null,"id":1}"#,
+            )
+            .create_async()
+            .await;
+
+        let path = temp_watched_db("profile_override_readiness");
+        let _ = std::fs::remove_file(&path);
+        let conn = crate::commands::sync::open_conn(path.to_str().unwrap()).unwrap();
+        queries::insert_wallet_profile(
+            &conn,
+            "p1",
+            "Primary",
+            "mnemonic_hot",
+            "mainnet",
+            "xpubFAKE",
+            0,
+            false,
+        )
+        .unwrap();
+        queries::set_active_profile(&conn, "p1").unwrap();
+        crate::db::queries::set_setting(&conn, SETTING_ENABLED, "true").unwrap();
+        // Per-profile override → the reachable mock server.
+        set_profile_override(&conn, "p1", "node_rpc_url", &server.url());
+        // GLOBAL settings → an unreachable port. If readiness is (wrongly)
+        // probed here, the gate fails and nothing is fetched.
+        crate::db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+        conn.execute("INSERT INTO watched_names (name) VALUES ('example')", [])
+            .unwrap();
+        drop(conn);
+
+        let out = try_run_watched_scan(path.to_str().unwrap()).await;
+        assert!(out.is_ok(), "scan must return Ok(()): {out:?}");
+
+        let conn = crate::commands::sync::open_conn(path.to_str().unwrap()).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM watched_name_states", [], |r| r.get(0))
+            .unwrap();
+        drop(conn);
+        assert_eq!(
+            count, 1,
+            "readiness must be gated against the profile override node (reachable), \
+             so the watched name is fetched and its state upserted"
+        );
 
         cleanup_db(&path);
     }

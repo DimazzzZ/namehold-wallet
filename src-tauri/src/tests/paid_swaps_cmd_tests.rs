@@ -551,3 +551,160 @@ fn get_deserializes_claimed_flag_and_txid() {
     assert!(offer.claimed);
     assert_eq!(offer.transfer_txid.as_deref(), Some("set-txid"));
 }
+
+// ===========================================================================
+// Per-profile node config resolution for claim_paid_transfer (ADR-001)
+//
+// A paid swap is verified against a node on the active profile's network.
+// claim_paid_transfer must resolve the effective node config for the active
+// profile (per-profile override -> global settings -> built-in default),
+// mirroring the routing used by read_action_history.
+// ===========================================================================
+
+/// Helper: create a wallet profile with the minimal required columns and make
+/// it active. Matches the shape used by the other per-profile command tests.
+fn add_active_profile(conn: &rusqlite::Connection, id: &str, network: &str) {
+    db::queries::insert_wallet_profile(
+        conn,
+        id,
+        id,
+        "mnemonic_hot",
+        network,
+        "xpubDUMMY",
+        0,
+        false,
+    )
+    .unwrap();
+    db::queries::set_active_profile(conn, id).unwrap();
+}
+
+/// Helper: set a per-profile node config override.
+fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
+    conn.execute(
+        "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
+         ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![profile_id, key, value],
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn claim_uses_active_profile_override_over_global() {
+    // The active profile's override points to the working server; the global
+    // node_rpc_url is unreachable. The claim must succeed via the override.
+    let mut server_override = mockito::Server::new_async().await;
+    let _tx = server_override
+        .mock("GET", "/tx/paytx")
+        .with_status(200)
+        .with_body(
+            r#"{"hash":"paytx","confirmations":6,
+                "outputs":[
+                  {"address":"hs1qbuyer","value":5000000},
+                  {"address":"hs1qseller","value":1000000}
+                ]}"#,
+        )
+        .create_async()
+        .await;
+
+    let override_url = server_override.url();
+    let app = app_with(|conn| {
+        add_active_profile(conn, "W1", "regtest");
+        create_offer(conn, "sale", "hs1qbuyer", 1_000_000);
+        // Global points at an unreachable URL; override at the working server.
+        db::queries::set_setting(conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+        set_profile_override(conn, "W1", "node_rpc_url", &override_url);
+    });
+
+    let result = claim_paid_transfer(app.state(), "sale".into(), "paytx".into())
+        .await
+        .expect("claim must use the profile override, not the unreachable global URL");
+    assert!(result.verified);
+    assert_eq!(result.paid_doos, 1_000_000);
+    assert_eq!(result.confirmations, 6);
+}
+
+#[tokio::test]
+async fn claim_falls_back_to_global_when_no_override() {
+    // The active profile has no override; the claim must fall back to the
+    // global node_rpc_url.
+    let mut server_global = mockito::Server::new_async().await;
+    let _tx = server_global
+        .mock("GET", "/tx/paytx")
+        .with_status(200)
+        .with_body(
+            r#"{"hash":"paytx","confirmations":4,
+                "outputs":[
+                  {"address":"hs1qbuyer","value":5000000},
+                  {"address":"hs1qseller","value":2000000}
+                ]}"#,
+        )
+        .create_async()
+        .await;
+
+    let global_url = server_global.url();
+    let app = app_with(|conn| {
+        add_active_profile(conn, "W1", "regtest");
+        create_offer(conn, "sale", "hs1qbuyer", 2_000_000);
+        db::queries::set_setting(conn, "node_rpc_url", &global_url).unwrap();
+    });
+
+    let result = claim_paid_transfer(app.state(), "sale".into(), "paytx".into())
+        .await
+        .expect("claim must fall back to global settings when no override");
+    assert!(result.verified);
+    assert_eq!(result.paid_doos, 2_000_000);
+    assert_eq!(result.confirmations, 4);
+}
+
+#[tokio::test]
+async fn claim_uses_builtin_default_when_no_override_or_global() {
+    // No override, no global node_rpc_url: resolution falls through to the
+    // built-in default (localhost:12037), which is unreachable in tests. The
+    // per-node RPC error must surface as an Err (claim does not swallow it),
+    // proving the resolution path reached the built-in default without panic.
+    let app = app_with(|conn| {
+        add_active_profile(conn, "W1", "regtest");
+        create_offer(conn, "sale", "hs1qbuyer", 1_000_000);
+        // No node_rpc_url set; no per-profile override.
+    });
+
+    let err = claim_paid_transfer(app.state(), "sale".into(), "paytx".into())
+        .await
+        .expect_err("unreachable built-in default must surface as an error, not panic");
+    assert!(
+        matches!(err, AppError::Http(_) | AppError::Rpc(_)),
+        "expected a transport/RPC error from the unreachable built-in default, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn claim_works_without_active_profile_via_global() {
+    // No active profile at all: the command must still resolve the global
+    // settings rather than erroring on profile resolution.
+    let mut server_global = mockito::Server::new_async().await;
+    let _tx = server_global
+        .mock("GET", "/tx/paytx")
+        .with_status(200)
+        .with_body(
+            r#"{"hash":"paytx","confirmations":9,
+                "outputs":[
+                  {"address":"hs1qbuyer","value":5000000},
+                  {"address":"hs1qseller","value":3000000}
+                ]}"#,
+        )
+        .create_async()
+        .await;
+
+    let global_url = server_global.url();
+    let app = app_with(|conn| {
+        // No profile created; no active profile.
+        create_offer(conn, "sale", "hs1qbuyer", 3_000_000);
+        db::queries::set_setting(conn, "node_rpc_url", &global_url).unwrap();
+    });
+
+    let result = claim_paid_transfer(app.state(), "sale".into(), "paytx".into())
+        .await
+        .expect("claim must fall back to global settings when there is no active profile");
+    assert!(result.verified);
+    assert_eq!(result.paid_doos, 3_000_000);
+}

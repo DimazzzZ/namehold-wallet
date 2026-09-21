@@ -193,44 +193,100 @@ async fn explorer_unreachable_still_returns_true_and_advances_cursor() {
 }
 
 // ---------------------------------------------------------------------------
-// set_sync_cursor error path: unknown profile_id -> FK constraint fails.
-// The function still returns true (cursor-update failure is logged, not fatal).
+// Unknown profile_id -> effective-node-config resolution is NotFound.
+// Step 2 (ADR-001) resolves the profile's effective node config BEFORE any
+// node/explorer traffic, so an unknown profile now short-circuits to `false`
+// rather than reaching the node and failing later at the cursor write. A
+// missing profile is a hard error, never a silent path to a default node.
 // ---------------------------------------------------------------------------
 
-/// If `set_sync_cursor` fails (e.g. the profile_id does not exist and the
-/// FK constraint rejects the INSERT), `sync_spv_step` logs the error and
-/// still returns `true` — reaching the SPV node and probing the explorer
-/// already succeeded, and a cursor-write hiccup is not a sync-level failure.
+/// An unknown `profile_id` cannot resolve an effective node config, so
+/// `sync_spv_step` returns `false` immediately — before it opens any RPC to
+/// the (mocked) node. This pins the ADR-001 rule that a missing profile is a
+/// hard error, not a fallback to global/default node settings.
 #[tokio::test]
-async fn set_sync_cursor_error_still_returns_true() {
+async fn unknown_profile_short_circuits_without_node_traffic() {
     let mut server = mockito::Server::new_async().await;
     let path = seeded_db();
     let _guard = TempDbGuard(path.clone());
 
-    let _bi = server
+    // These mocks assert-by-absence: if the step wrongly reached the node, the
+    // `getblockchaininfo` mock would be hit. We instead expect ZERO calls.
+    let bi = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .expect(0)
         .with_body(
             r#"{"result":{"chain":"mainnet","blocks":7,"headers":7,"verificationprogress":1.0},"error":null,"id":1}"#,
         )
-        .create_async()
-        .await;
-    let _health = server
-        .mock("GET", mockito::Matcher::Regex("^/api/txs".into()))
-        .with_body(r#"{"result":[]}"#)
         .create_async()
         .await;
 
     set_setting(&path, "node_rpc_url", &server.url());
     set_setting(&path, "explorer_api_url", &server.url());
 
-    // Profile id that does not exist in `wallet_profiles` — the FK on
-    // `sync_cursors.wallet_profile_id` will reject the INSERT.
+    // Profile id that does not exist in `wallet_profiles` — effective-node-
+    // config resolution returns NotFound, so the step bails before any RPC.
     let result = sync_spv_step(path.to_str().unwrap(), "no_such_profile").await;
     assert!(
-        result,
-        "sync_spv_step returns true even if the cursor update fails"
+        !result,
+        "sync_spv_step must return false for an unknown profile"
     );
+    bi.assert_async().await;
+}
+
+// ---------------------------------------------------------------------------
+// Per-profile override routing (ADR-001 / step 2).
+// ---------------------------------------------------------------------------
+
+fn set_override(path: &std::path::Path, profile_id: &str, key: &str, val: &str) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute(
+        "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
+         ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![profile_id, key, val],
+    )
+    .unwrap();
+}
+
+/// With a per-profile `node_rpc_url` override set, `sync_spv_step` talks to the
+/// OVERRIDE node, not the global one. The global URL points at an unroutable
+/// address; if the step wrongly used it, `getblockchaininfo` would never
+/// succeed and the step would return `false`. The override URL (the mock)
+/// answers, so the step advances the cursor and returns `true`.
+#[tokio::test]
+async fn per_profile_override_routes_sync_to_override_node() {
+    let mut server = mockito::Server::new_async().await;
+    let path = seeded_db();
+    let _guard = TempDbGuard(path.clone());
+
+    let bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .expect_at_least(1)
+        .with_body(
+            r#"{"result":{"chain":"mainnet","blocks":9,"headers":9,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .create_async()
+        .await;
+
+    // Global points nowhere useful; the per-profile override points at the mock.
+    set_setting(&path, "node_rpc_url", "http://127.0.0.1:1");
+    set_override(&path, PROFILE, "node_rpc_url", &server.url());
+    // Explorer unroutable is fine — its health probe is non-blocking.
+    set_setting(&path, "explorer_api_url", "http://127.0.0.1:1");
+
+    let result = sync_spv_step(path.to_str().unwrap(), PROFILE).await;
+    assert!(
+        result,
+        "sync_spv_step must succeed using the per-profile override node"
+    );
+    bi.assert_async().await;
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let height =
+        crate::noncustodial::sync::get_sync_height(&conn, PROFILE).expect("read sync height");
+    assert_eq!(height, 9, "cursor advances to the override node's height");
 }
 
 // ---------------------------------------------------------------------------

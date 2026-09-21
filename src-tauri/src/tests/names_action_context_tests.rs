@@ -678,6 +678,11 @@ mod rpc_injected_tests {
             change_address: "addr".into(),
             funding: vec![],
             settings,
+            node: crate::noncustodial::rpc::NodeRpcClient::new(
+                "http://127.0.0.1:1",
+                "",
+                crate::noncustodial::rpc::ChainSource::LocalNode,
+            ),
         }
     }
     #[test]

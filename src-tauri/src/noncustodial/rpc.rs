@@ -191,6 +191,19 @@ pub struct NodeRpcClient {
     source: ChainSource,
 }
 
+// Manual `Debug` that redacts `api_key` — the key is a bearer credential for
+// the node RPC and must never appear in logs or debug output (including when a
+// `Ctx` holding this client is debug-printed).
+impl std::fmt::Debug for NodeRpcClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeRpcClient")
+            .field("node_url", &self.node_url)
+            .field("api_key", &"<redacted>")
+            .field("source", &self.source)
+            .finish()
+    }
+}
+
 /// The JSON-RPC envelope returned by hsd's node RPC.
 #[derive(Debug, Deserialize)]
 struct RpcEnvelope<T> {
@@ -355,8 +368,44 @@ impl NodeRpcClient {
         Self::new(url, &key, source)
     }
 
+    /// Construct from a resolved [`EffectiveNodeConfig`] (ADR-001).
+    ///
+    /// This is the seam Step 2 routes call sites through: the caller resolves
+    /// the profile's effective node config (override -> global -> default) and
+    /// hands the tuple here, so no path re-reads `node_rpc_url` from global
+    /// settings directly.
+    pub fn from_effective_config(
+        cfg: &crate::noncustodial::node_config::EffectiveNodeConfig,
+    ) -> Self {
+        Self::new(&cfg.node_rpc_url, &cfg.node_rpc_api_key, cfg.chain_source)
+    }
+
+    /// Resolve the effective node config for `profile_id` and build a client.
+    ///
+    /// The thin wrapper the ADR names: every call site that used to build the
+    /// client from global settings uses this instead, so per-profile overrides
+    /// take effect uniformly. Propagates [`AppError::NotFound`] for a missing
+    /// profile rather than silently defaulting.
+    pub fn for_profile(conn: &rusqlite::Connection, profile_id: &str) -> Result<Self, AppError> {
+        let cfg =
+            crate::noncustodial::node_config::effective_node_config_for_profile(conn, profile_id)?;
+        Ok(Self::from_effective_config(&cfg))
+    }
+
     pub fn source(&self) -> ChainSource {
         self.source
+    }
+
+    /// Test-only accessor for the resolved node URL (after trailing-slash trim).
+    #[cfg(test)]
+    pub fn node_url(&self) -> &str {
+        &self.node_url
+    }
+
+    /// Test-only accessor for the resolved api-key.
+    #[cfg(test)]
+    pub fn api_key(&self) -> &str {
+        &self.api_key
     }
 
     /// Perform a JSON-RPC call and deserialize the `result` field into `T`.

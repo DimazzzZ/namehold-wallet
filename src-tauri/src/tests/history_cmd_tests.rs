@@ -45,6 +45,109 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
         .expect("mock app")
 }
 
+// ===========================================================================
+// Per-profile node config resolution for read_action_history (ADR-001)
+// ===========================================================================
+
+/// Helper: set a per-profile node config override.
+fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
+    conn.execute(
+        "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
+         ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![profile_id, key, value],
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn history_uses_active_profile_override() {
+    // Profile W1 has a per-profile node_rpc_url override.
+    // read_action_history should use it, not the global settings.
+    let mut server_override = mockito::Server::new_async().await;
+    let _m = server_override
+        .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
+        .with_body(
+            serde_json::to_string(&vec![receive_tx("aa", 100, "hs1qmine", 100_000_000)]).unwrap(),
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_derived_address(&conn, "W1", 0, "hs1qmine");
+
+    // Set global settings to a different (unreachable) URL.
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    // Set per-profile override to the working mockito server.
+    set_profile_override(&conn, "W1", "node_rpc_url", &server_override.url());
+
+    let app = app_with(conn);
+    let rows = read_action_history(app.state(), Some("W1".into()))
+        .await
+        .unwrap();
+    // Should succeed because it used the override, not the global URL.
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "receive");
+}
+
+#[tokio::test]
+async fn history_falls_back_to_global_when_no_override() {
+    // Profile W1 has no per-profile override.
+    // read_action_history should fall back to global settings.
+    let mut server_global = mockito::Server::new_async().await;
+    let _m = server_global
+        .mock("GET", mockito::Matcher::Regex(r"^/tx/address/".into()))
+        .with_body(
+            serde_json::to_string(&vec![receive_tx("bb", 200, "hs1qmine", 200_000_000)]).unwrap(),
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_derived_address(&conn, "W1", 0, "hs1qmine");
+    // Set global settings to the working mockito server.
+    db::queries::set_setting(&conn, "node_rpc_url", &server_global.url()).unwrap();
+
+    let app = app_with(conn);
+    let rows = read_action_history(app.state(), Some("W1".into()))
+        .await
+        .unwrap();
+    // Should succeed because it fell back to global settings.
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, "receive");
+}
+
+#[tokio::test]
+async fn history_uses_builtin_default_when_no_override_or_global() {
+    // Profile W1 has no per-profile override and no global settings.
+    // read_action_history should use the built-in default (localhost:12037).
+    // The built-in default is unreachable in the test environment; the command
+    // swallows per-address node errors (see history_node_error_is_swallowed_*)
+    // and returns an empty result rather than erroring. This pins that the
+    // resolution path falls through to the built-in default without panicking.
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_derived_address(&conn, "W1", 0, "hs1qmine");
+    // No global node_rpc_url set; no per-profile override.
+
+    let app = app_with(conn);
+    // Unreachable built-in default → per-address fetch errors are swallowed →
+    // empty rows, no panic, no Err.
+    let rows = read_action_history(app.state(), Some("W1".into()))
+        .await
+        .expect("unreachable built-in default must not surface as Err");
+    assert!(
+        rows.is_empty(),
+        "unreachable built-in default yields no rows"
+    );
+}
+
 fn empty_db() -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();

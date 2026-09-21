@@ -209,6 +209,11 @@ fn setup(
             child_index: 0,
         }],
         settings: HashMap::new(),
+        node: crate::noncustodial::rpc::NodeRpcClient::new(
+            "http://127.0.0.1:1",
+            "",
+            crate::noncustodial::rpc::ChainSource::LocalNode,
+        ),
     };
     let coin = transfer_coin(&owner_txid, &recv0.address, owner_value, &target_h160);
     let rblock = [0x77u8; 32]; // arbitrary renewal block hash

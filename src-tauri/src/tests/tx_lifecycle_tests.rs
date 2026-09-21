@@ -2529,3 +2529,243 @@ async fn sign_tx_draft_inner_loads_covenant_names_for_ledger_profiles() {
         "expected a device/hardware error after covenant name load, got: {err}"
     );
 }
+
+// ===========================================================================
+// Per-profile node override routing (ADR-001, Step 2 — tx subsystem).
+//
+// Every tx-subsystem command must build its node client from the *effective*
+// config for the target profile: per-profile override -> global -> default.
+// Each test below points the GLOBAL `node_rpc_url` at an inert node (answers
+// only the readiness probe) and the PER-PROFILE override at the node that
+// actually serves the data / accepts the broadcast. If a command wrongly read
+// the global URL, the override mock would never be hit and the assertion on
+// its `.assert_async()` (or on the shaped result) would fail.
+// ===========================================================================
+
+/// Insert a per-profile `node_rpc_url` override into `profile_settings` for the
+/// default test PROFILE. Mirrors the read-subsystem override tests.
+fn set_profile_node_override(app: &tauri::App<tauri::test::MockRuntime>, url: &str) {
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    conn.execute(
+        "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, 'node_rpc_url', ?2)",
+        params![PROFILE, url],
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn broadcast_tx_draft_uses_per_profile_node_override() {
+    // Global node: answers the pre-broadcast chain-identity probe but is NOT
+    // the intended broadcaster.
+    let mut global = mockito::Server::new_async().await;
+    let _g = global
+        .mock("POST", "/")
+        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+
+    // Override node: answers the probe AND accepts the raw transaction. The
+    // sendrawtransaction body carries the signed hex (not "getblockchaininfo"),
+    // so we match on the method name to prove the broadcast landed here.
+    let node_txid = "abc0000000000000000000000000000000000000000000000000000000000def";
+    let mut override_node = mockito::Server::new_async().await;
+    let _o_probe = override_node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let o_send = override_node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("sendrawtransaction".into()))
+        .with_body(format!(r#"{{"result":"{node_txid}","error":null,"id":1}}"#))
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    // Global points at the inert node; the profile override at the broadcaster.
+    let conn = seeded_conn(&global.url(), 2_000_000);
+    let app = app_with(conn);
+    set_profile_node_override(&app, &override_node.url());
+
+    let to = recv_addr();
+    let draft = build_send_hns_draft(app.state(), to, 500_000, Some(1), None)
+        .await
+        .expect("build draft");
+    unlock(&app, PROFILE);
+    sign_tx_draft_inner(&app.state(), &draft.id)
+        .await
+        .expect("sign");
+
+    let result = broadcast_tx_draft(app.state(), draft.id.clone())
+        .await
+        .expect("broadcast via override node");
+    assert_eq!(result.txid, node_txid);
+    // Proves the broadcast routed through the per-profile effective config.
+    o_send.assert_async().await;
+}
+
+#[tokio::test]
+async fn sync_wallet_state_uses_per_profile_node_override() {
+    // Global node: only answers the readiness probe; serves no coins.
+    let mut global = mockito::Server::new_async().await;
+    let _g = global
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+
+    // Override node: synced AND serves the coin that marks the address used.
+    let addr = recv_addr();
+    let coin = format!(
+        r#"{{"hash":"{COIN_TXID}","index":0,"value":3000000,"address":"{addr}","height":200,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
+    );
+    let mut override_node = mockito::Server::new_async().await;
+    let _o_bi = override_node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let o_coins = override_node
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body(format!(r#"[{coin}]"#))
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    let _o_other = override_node
+        .mock("POST", "/")
+        .with_body(r#"{"result":null,"error":{"message":"not found"},"id":1}"#)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&global.url(), 2_000_000);
+    let app = app_with(conn);
+    set_profile_node_override(&app, &override_node.url());
+
+    let res = sync_wallet_state(app.state(), None).await.expect("sync ok");
+    assert_eq!(res["nodeReachable"], serde_json::json!(true));
+
+    // The coin (hence the used-height mark) came from the override node.
+    o_coins.assert_async().await;
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    let last_seen_height: Option<i64> = c
+        .query_row(
+            "SELECT last_seen_height FROM derived_addresses WHERE address = ?1",
+            [&addr],
+            |r| r.get(0),
+        )
+        .ok();
+    assert_eq!(last_seen_height, Some(200));
+}
+
+#[tokio::test]
+async fn refresh_tx_confirmations_uses_per_profile_node_override() {
+    // Global node: inert readiness probe only (would soft no-op a tip read).
+    let mut global = mockito::Server::new_async().await;
+    let _g = global
+        .mock("POST", "/")
+        .with_body(r#"{"result":null,"error":{"message":"blip"},"id":1}"#)
+        .create_async()
+        .await;
+
+    // Override node: answers getblockchaininfo so the tip read succeeds.
+    let mut override_node = mockito::Server::new_async().await;
+    let o_tip = override_node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"main","blocks":300},"error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn(&global.url(), 2_000_000);
+    let app = app_with(conn);
+    set_profile_node_override(&app, &override_node.url());
+
+    let res = refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh ok");
+    // nodeReachable == true proves the tip probe hit the (reachable) override
+    // node rather than the erroring global node.
+    assert_eq!(res["nodeReachable"], serde_json::json!(true));
+    o_tip.assert_async().await;
+}
+
+#[tokio::test]
+async fn get_write_capability_uses_per_profile_node_override() {
+    // Global node: unreachable (nothing bound) → if write-capability read the
+    // global URL it would downgrade to read-only ("node not reachable").
+    // Override node: synced + address-indexed → writes are enabled.
+    let addr = recv_addr();
+    let coin = format!(
+        r#"{{"hash":"{COIN_TXID}","index":0,"value":3000000,"address":"{addr}","height":200,"covenant":{{"type":0,"action":"NONE","items":[]}}}}"#
+    );
+    let mut override_node = mockito::Server::new_async().await;
+    let _o_bi = override_node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"main","blocks":200},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _o_coins = override_node
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body(format!(r#"[{coin}]"#))
+        .create_async()
+        .await;
+
+    // Global URL points at a closed port so it is unreachable.
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    let app = app_with(conn);
+    set_profile_node_override(&app, &override_node.url());
+    unlock(&app, PROFILE);
+
+    let cap = get_write_capability(app.state())
+        .await
+        .expect("write capability");
+    assert!(
+        cap.can_write,
+        "override node is synced + indexed → writes enabled; got reason: {:?}",
+        cap.reason
+    );
+}
+
+#[tokio::test]
+async fn resolve_fee_rate_uses_per_profile_node_override() {
+    // No fee_rate_doos_per_kvb setting → resolve_fee_rate asks the node's
+    // estimatesmartfee. Global points at a closed port; the override serves a
+    // fee estimate. If the fallback read the global URL, the estimate would
+    // fail and the default (1) would be returned instead of the override value.
+    let mut override_node = mockito::Server::new_async().await;
+    // estimatesmartfee returns fee in HNS/kvB; 0.01 HNS/kvB → 10000 doos/kvB
+    // → 10 doos/byte after the /1000 conversion inside estimate_smart_fee.
+    let o_fee = override_node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("estimatesmartfee".into()))
+        .with_body(r#"{"result":{"fee":0.01},"error":null,"id":1}"#)
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = seeded_conn("http://127.0.0.1:1", 2_000_000);
+    // Clear the migration-seeded `fee_rate_doos_per_kvb` so `resolve_fee_rate`
+    // falls through to the node estimatesmartfee branch (the one we care about
+    // for override routing). Without this the resolver short-circuits on the
+    // explicit user setting and never touches the node.
+    db::queries::set_setting(&conn, "fee_rate_doos_per_kvb", "").unwrap();
+    let app = app_with(conn);
+    set_profile_node_override(&app, &override_node.url());
+
+    let rate = resolve_fee_rate(&app.state(), None).await;
+    o_fee.assert_async().await;
+    // 0.01 HNS/kvB -> (0.01 * 1e6) / 1000 = 10 doos/byte. An exact value that
+    // is impossible to reach via the default (1) fallback — proving the
+    // estimate came from the per-profile override node.
+    assert_eq!(
+        rate, 10,
+        "fee estimate must come from the override node, not the default fallback"
+    );
+}

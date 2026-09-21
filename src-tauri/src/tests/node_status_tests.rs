@@ -589,6 +589,243 @@ async fn synced_with_no_chain_in_response_skips_check() {
 // is mocked with mockito so no live hsd is needed.
 // ===========================================================================
 
+// ===========================================================================
+// Per-profile node config resolution for readiness probe (ADR-001)
+// ===========================================================================
+
+use crate::commands::read::node_tip_height_if_synced_from_profile_with_network;
+
+/// Helper: create a temp file-backed DB (in-memory won't work because the
+/// async probe re-opens the connection from a path — see the Send bound
+/// on tauri's async runtime).
+fn temp_db_conn() -> (String, rusqlite::Connection) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "namehold_probe_test_{}_{}.db",
+        std::process::id(),
+        n
+    ));
+    // Ensure a clean slate: remove any leftover file from a prior run.
+    let _ = std::fs::remove_file(&path);
+    let path_str = path.to_str().unwrap();
+    let conn = crate::commands::sync::open_conn(path_str).unwrap();
+    (path_str.to_string(), conn)
+}
+
+/// Helper: set a per-profile node config override.
+fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
+    conn.execute(
+        "INSERT OR REPLACE INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)",
+        rusqlite::params![profile_id, key, value],
+    )
+    .unwrap();
+}
+
+/// Helper: create a test profile with minimal required fields.
+fn create_test_profile(conn: &rusqlite::Connection, profile_id: &str, network: &str) {
+    conn.execute(
+        "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, receive_depth, change_depth, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, 0, datetime('now'))",
+        rusqlite::params![profile_id, format!("Test {}", profile_id), "watch_only_xpub", network, "xpub_test"],
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn probe_uses_profile_override_over_global() {
+    // Profile W1 has a per-profile node_rpc_url override pointing to a working server.
+    // Global settings point to an unreachable URL.
+    // The probe should use the override and succeed.
+    let mut server_override = mockito::Server::new_async().await;
+    let _m = server_override
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "result": { "blocks": 500, "headers": 500, "verificationprogress": 1.0, "chain": "main" },
+                "error": null, "id": null
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let (_tf, conn) = temp_db_conn();
+    let db_path = _tf;
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    // Add a profile and set its override to the working server.
+    create_test_profile(&conn, "W1", "mainnet");
+    set_profile_override(&conn, "W1", "node_rpc_url", &server_override.url());
+    drop(conn);
+
+    let h =
+        node_tip_height_if_synced_from_profile_with_network(&db_path, "W1", Some("mainnet")).await;
+    assert_eq!(
+        h,
+        Some(500),
+        "should use profile override, not unreachable global URL"
+    );
+}
+
+#[tokio::test]
+async fn probe_falls_back_to_global_when_no_override() {
+    // Profile W1 has no per-profile override.
+    // Global settings point to a working server.
+    // The probe should fall back to global and succeed.
+    let mut server_global = mockito::Server::new_async().await;
+    let _m = server_global
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "result": { "blocks": 200, "headers": 200, "verificationprogress": 1.0, "chain": "regtest" },
+                "error": null, "id": null
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let (_tf, conn) = temp_db_conn();
+    let db_path = _tf;
+    db::queries::set_setting(&conn, "node_rpc_url", &server_global.url()).unwrap();
+    // Add a profile with no override.
+    create_test_profile(&conn, "W1", "regtest");
+    drop(conn);
+
+    let h =
+        node_tip_height_if_synced_from_profile_with_network(&db_path, "W1", Some("regtest")).await;
+    assert_eq!(h, Some(200), "should fall back to global settings");
+}
+
+#[tokio::test]
+async fn probe_uses_builtin_default_when_no_override_or_global() {
+    // Profile W1 has no per-profile override and no global settings.
+    // The probe should use the built-in default (localhost:12037).
+    // This will fail to connect, returning None.
+    let (_tf, conn) = temp_db_conn();
+    let db_path = _tf;
+    // Add a profile with no override and no global settings.
+    create_test_profile(&conn, "W1", "regtest");
+    drop(conn);
+
+    let h =
+        node_tip_height_if_synced_from_profile_with_network(&db_path, "W1", Some("regtest")).await;
+    assert_eq!(
+        h, None,
+        "unreachable built-in default should return None, not panic"
+    );
+}
+
+#[tokio::test]
+async fn probe_respects_network_mismatch_with_profile_override() {
+    // Profile W1 expects "mainnet" but the override points to a "regtest" node.
+    // The probe should reject the node (return None) due to network mismatch.
+    let mut server_override = mockito::Server::new_async().await;
+    let _m = server_override
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "result": { "blocks": 50, "headers": 50, "verificationprogress": 1.0, "chain": "regtest" },
+                "error": null, "id": null
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let (_tf, conn) = temp_db_conn();
+    let db_path = _tf;
+    // Add a profile expecting mainnet.
+    create_test_profile(&conn, "W1", "mainnet");
+    // Override points to a regtest node.
+    set_profile_override(&conn, "W1", "node_rpc_url", &server_override.url());
+    drop(conn);
+
+    let h =
+        node_tip_height_if_synced_from_profile_with_network(&db_path, "W1", Some("mainnet")).await;
+    assert_eq!(
+        h, None,
+        "network mismatch (mainnet profile vs regtest node) must be rejected"
+    );
+}
+
+// ===========================================================================
+// Per-profile readiness gate (boolean wrapper)
+// ===========================================================================
+
+use crate::commands::read::node_ready_from_profile;
+
+#[tokio::test]
+async fn node_ready_from_profile_returns_true_when_synced_and_network_matches() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "result": { "blocks": 500, "headers": 500, "verificationprogress": 1.0, "chain": "main" },
+                "error": null, "id": null
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let (_tf, conn) = temp_db_conn();
+    let db_path = _tf;
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    create_test_profile(&conn, "W1", "mainnet");
+    drop(conn);
+
+    let ready = node_ready_from_profile(&db_path, "W1", Some("mainnet")).await;
+    assert!(
+        ready,
+        "node should be ready when synced and network matches"
+    );
+}
+
+#[tokio::test]
+async fn node_ready_from_profile_returns_false_when_network_mismatches() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            serde_json::json!({
+                "result": { "blocks": 50, "headers": 50, "verificationprogress": 1.0, "chain": "regtest" },
+                "error": null, "id": null
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let (_tf, conn) = temp_db_conn();
+    let db_path = _tf;
+    db::queries::set_setting(&conn, "node_rpc_url", &server.url()).unwrap();
+    create_test_profile(&conn, "W1", "mainnet");
+    drop(conn);
+
+    let ready = node_ready_from_profile(&db_path, "W1", Some("mainnet")).await;
+    assert!(!ready, "node should not be ready when network mismatches");
+}
+
+#[tokio::test]
+async fn node_ready_from_profile_returns_false_when_node_unreachable() {
+    let (_tf, conn) = temp_db_conn();
+    let db_path = _tf;
+    // No global settings, no override — will use built-in default which is unreachable.
+    create_test_profile(&conn, "W1", "regtest");
+    drop(conn);
+
+    let ready = node_ready_from_profile(&db_path, "W1", Some("regtest")).await;
+    assert!(!ready, "node should not be ready when unreachable");
+}
+
 /// A blank in-memory DB (no node_rpc_url yet — the caller sets it to the
 /// mockito URL), so we can point the probe at a controllable server.
 fn blank_conn() -> rusqlite::Connection {
@@ -970,5 +1207,125 @@ async fn node_status_falls_back_to_mainnet_for_missing_profile_row() {
         v["network"],
         serde_json::json!("main"),
         "missing profile should default to mainnet"
+    );
+}
+
+// ===========================================================================
+// probe_node routes through the active profile's effective node config (ADR-001)
+//
+// The tray/status probe (node_status -> probe_node, and the backend loop's
+// probe_and_update) must resolve the active profile's effective node config
+// (per-profile override -> global settings -> built-in default) so the status
+// reflects the node for the active profile, not just global settings.
+// ===========================================================================
+
+#[tokio::test]
+async fn probe_and_update_uses_active_profile_override_over_global() {
+    // Active profile W1 overrides node_rpc_url to a working server; global is
+    // unreachable. probe_and_update must answer true via the override.
+    let mut server_override = mockito::Server::new_async().await;
+    let _m = server_override
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":77,"headers":77,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
+    create_test_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    set_profile_override(&conn, "W1", "node_rpc_url", &server_override.url());
+
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+    let alive = crate::commands::node::probe_and_update(&state).await;
+    assert!(
+        alive,
+        "probe must use the active profile override, not the unreachable global URL"
+    );
+}
+
+#[tokio::test]
+async fn probe_and_update_falls_back_to_global_when_no_override() {
+    // Active profile W1 has no override; probe must fall back to the global
+    // node_rpc_url and answer true.
+    let mut server_global = mockito::Server::new_async().await;
+    let _m = server_global
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":88,"headers":88,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server_global.url()).unwrap();
+    create_test_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+    let alive = crate::commands::node::probe_and_update(&state).await;
+    assert!(
+        alive,
+        "probe must fall back to global settings when no override"
+    );
+}
+
+#[tokio::test]
+async fn probe_and_update_uses_builtin_default_when_no_override_or_global() {
+    // No override, no global node_rpc_url: probe resolves to the built-in
+    // default (localhost:12037), which is unreachable in tests → false, no panic.
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    create_test_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+    let alive = crate::commands::node::probe_and_update(&state).await;
+    assert!(
+        !alive,
+        "unreachable built-in default must yield false without panicking"
+    );
+}
+
+#[tokio::test]
+async fn probe_and_update_uses_global_when_no_active_profile() {
+    // No active profile at all: probe must resolve global settings and succeed.
+    let mut server_global = mockito::Server::new_async().await;
+    let _m = server_global
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":99,"headers":99,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server_global.url()).unwrap();
+    // No profile, no active profile.
+
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+    let alive = crate::commands::node::probe_and_update(&state).await;
+    assert!(
+        alive,
+        "probe must use global settings when there is no active profile"
     );
 }
