@@ -179,11 +179,9 @@ fn setup(
 #[test]
 fn batch_renew_happy_path_persists_draft() {
     let (conn, ctx, per_name) = setup(&["alpha", "bravo"]);
-    let names: Vec<String> = vec!["alpha".into(), "bravo".into()];
     let rblock = [0x55u8; 32];
 
-    let summary =
-        build_batch_renew_draft_inner(&conn, &ctx, &names, per_name, &rblock, 10).unwrap();
+    let summary = build_batch_renew_draft_inner(&conn, &ctx, per_name, &rblock, 10).unwrap();
     assert_eq!(summary.action, "batch-renew");
 
     let drafts: i64 = conn
@@ -208,8 +206,7 @@ fn batch_renew_empty_persists_zero_input_draft() {
     // The async wrapper rejects empty `names` up front; if the inner is
     // called with an empty batch, `build_batch_plan` refuses (no outputs).
     let (conn, ctx, _per_name) = setup(&[]);
-    let err =
-        build_batch_renew_draft_inner(&conn, &ctx, &[], Vec::new(), &[0u8; 32], 10).unwrap_err();
+    let err = build_batch_renew_draft_inner(&conn, &ctx, Vec::new(), &[0u8; 32], 10).unwrap_err();
     match err {
         AppError::InvalidInput(msg) => assert!(msg.contains("at least one output"), "got {msg}"),
         other => panic!("expected InvalidInput, got {other:?}"),
@@ -219,9 +216,7 @@ fn batch_renew_empty_persists_zero_input_draft() {
 #[test]
 fn batch_renew_single_name() {
     let (conn, ctx, per_name) = setup(&["solo"]);
-    let names: Vec<String> = vec!["solo".into()];
-    let summary =
-        build_batch_renew_draft_inner(&conn, &ctx, &names, per_name, &[0x11u8; 32], 20).unwrap();
+    let summary = build_batch_renew_draft_inner(&conn, &ctx, per_name, &[0x11u8; 32], 20).unwrap();
     assert_eq!(summary.action, "batch-renew");
     let name_list = summary.summary.get("nameList");
     assert!(name_list.is_some(), "batch draft records the name list");

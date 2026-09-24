@@ -198,11 +198,9 @@ fn setup(names_in: &[&str]) -> Fixture {
 #[test]
 fn batch_transfer_happy_path_persists_draft() {
     let f = setup(&["alpha", "bravo"]);
-    let names: Vec<String> = vec!["alpha".into(), "bravo".into()];
     let summary = build_batch_transfer_draft_inner(
         &f.conn,
         &f.ctx,
-        &names,
         f.per_name,
         &f.recipient,
         f.version,
@@ -249,7 +247,6 @@ fn batch_transfer_uses_owner_address_for_output() {
     // the recipient lives only in the covenant items. Guard both by parsing
     // the persisted plan.
     let f = setup(&["alpha", "bravo"]);
-    let names: Vec<String> = vec!["alpha".into(), "bravo".into()];
     let owner_addr = f.owner_addr.clone();
     let program_hex = hex::encode(&f.program);
     let version = f.version;
@@ -257,7 +254,6 @@ fn batch_transfer_uses_owner_address_for_output() {
     build_batch_transfer_draft_inner(
         &f.conn,
         &f.ctx,
-        &names,
         f.per_name,
         &f.recipient,
         f.version,
@@ -311,11 +307,9 @@ fn batch_transfer_uses_owner_address_for_output() {
 #[test]
 fn batch_transfer_single_name() {
     let f = setup(&["solo"]);
-    let names: Vec<String> = vec!["solo".into()];
     let summary = build_batch_transfer_draft_inner(
         &f.conn,
         &f.ctx,
-        &names,
         f.per_name,
         &f.recipient,
         f.version,
@@ -334,7 +328,6 @@ fn batch_transfer_empty_errors() {
     let err = build_batch_transfer_draft_inner(
         &f.conn,
         &f.ctx,
-        &[],
         Vec::new(),
         &f.recipient,
         f.version,

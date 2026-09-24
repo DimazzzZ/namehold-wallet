@@ -1551,7 +1551,6 @@ pub fn derive_auction_task_state(
             // header + the distinguished "yours" rows in the bid list convey
             // that a bid is already placed; we no longer collapse to a
             // terminal WaitingForBidding state that hides the form.
-            let _ = has_bid_commitment;
             AuctionTaskState::ReadyToBid
         }
         "REVEAL" => {
@@ -2873,7 +2872,7 @@ pub async fn build_batch_renew_draft(
     }
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    build_batch_renew_draft_inner(&conn, &ctx, &names, per_name, &rblock, rate)
+    build_batch_renew_draft_inner(&conn, &ctx, per_name, &rblock, rate)
 }
 
 /// Pure inner logic for `build_batch_renew_draft`, testable without a Tauri
@@ -2885,7 +2884,6 @@ pub async fn build_batch_renew_draft(
 pub(crate) fn build_batch_renew_draft_inner(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
-    names: &[String],
     per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)>,
     rblock: &[u8; 32],
     rate: u64,
@@ -2917,7 +2915,6 @@ pub(crate) fn build_batch_renew_draft_inner(
     )?;
     // Persist with first name as primary; the draft plan contains all names.
     let display_name = names_pure::display_names(&batch_names);
-    let _ = names; // kept for API parity; batch_names carries the actual list
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist_with_conn(
         conn,
@@ -2963,9 +2960,7 @@ pub async fn build_batch_transfer_draft(
     }
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    build_batch_transfer_draft_inner(
-        &conn, &ctx, &names, per_name, &recipient, version, &program, rate,
-    )
+    build_batch_transfer_draft_inner(&conn, &ctx, per_name, &recipient, version, &program, rate)
 }
 
 /// Pure inner logic for `build_batch_transfer_draft`, testable without a Tauri
@@ -2982,7 +2977,6 @@ pub async fn build_batch_transfer_draft(
 pub(crate) fn build_batch_transfer_draft_inner(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
-    names: &[String],
     per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)>,
     recipient: &str,
     version: u8,
@@ -3015,7 +3009,6 @@ pub(crate) fn build_batch_transfer_draft_inner(
         rate,
     )?;
     let display_name = names_pure::display_names(&batch_names);
-    let _ = names; // kept for API parity; batch_names carries the actual list
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist_with_conn(
         conn,

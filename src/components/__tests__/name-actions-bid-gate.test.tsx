@@ -130,7 +130,12 @@ function wrapper() {
 
 beforeEach(() => invokeMock.mockReset());
 
-describe("NameActionsModal — BidGate hides inputs off the bidding phase", () => {
+// `BidGate` is gone: it existed to decide whether the advanced section should
+// draw the Bid/Lockup inputs, and `resolveSections` now decides whether that
+// section exists at all. These tests keep the behaviour it was written for —
+// no phase outside BIDDING may invite a bid — pinned on the modal itself,
+// which is where a regression would actually show.
+describe("NameActionsModal — no phase outside BIDDING invites a bid", () => {
   it("offers no advanced section at all during OPENING, so no bid can be invited", async () => {
     invokeMock.mockImplementation(route("OPENING", false));
     render(<NameActionsModal name="examplename" open onClose={() => {}} />, {
@@ -145,7 +150,6 @@ describe("NameActionsModal — BidGate hides inputs off the bidding phase", () =
     expect(screen.queryByTestId("all-actions-toggle")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Bid (HNS)")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Lockup (HNS)")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("bid-gate-placeholder")).not.toBeInTheDocument();
   });
 
   it("shows the Bid/Lockup inputs during BIDDING when canBid is allowed", async () => {
@@ -158,7 +162,6 @@ describe("NameActionsModal — BidGate hides inputs off the bidding phase", () =
     await waitFor(() => {
       expect(screen.getAllByLabelText("Bid (HNS)").length).toBeGreaterThan(0);
     });
-    expect(screen.queryByTestId("bid-gate-placeholder")).not.toBeInTheDocument();
   });
 
   it("hides the Show-all-actions toggle in BIDDING when every advanced action is disabled", async () => {
