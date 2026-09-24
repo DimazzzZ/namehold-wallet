@@ -2,6 +2,7 @@
 //! whether we spawned a child. With no node reachable, `connected` is false and
 //! `process_alive` is false — and it never falsely reports a connection.
 
+use crate::tests::command_helpers::set_profile_override;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
@@ -638,15 +639,6 @@ fn temp_db_conn() -> (String, rusqlite::Connection) {
     let path_str = path.to_str().unwrap();
     let conn = crate::commands::sync::open_conn(path_str).unwrap();
     (path_str.to_string(), conn)
-}
-
-/// Helper: set a per-profile node config override.
-fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
-    conn.execute(
-        "INSERT OR REPLACE INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)",
-        rusqlite::params![profile_id, key, value],
-    )
-    .unwrap();
 }
 
 /// Helper: create a test profile with minimal required fields.
@@ -1662,4 +1654,66 @@ fn migrate_adopts_legacy_nested_subdir_into_scoped_root() {
         !nested.join("chain").join("LEGACY").exists(),
         "moved, not copied"
     );
+}
+
+// --- Which hsd log lines mean the node failed to start ---
+
+use crate::commands::node::is_fatal_startup_line;
+
+#[test]
+fn routine_sync_noise_is_not_a_startup_failure() {
+    // The line that made this predicate necessary: hsd logs peer failures with
+    // the word "Error" throughout a healthy sync.
+    for benign in [
+        "[debug] (net) Error: Socket Error: ECONNREFUSED (1.2.3.4:12038)",
+        "[warning] (peer) Error: Peer timed out.",
+        "[info] (chain) Block 000000 (1) added to chain.",
+        "[debug] (mempool) Added transaction to mempool.",
+    ] {
+        assert!(
+            !is_fatal_startup_line(benign),
+            "should not read as a startup failure: {benign}"
+        );
+    }
+}
+
+#[test]
+fn the_known_fatal_shapes_are_recognised() {
+    for fatal in [
+        "[error] (node) Cannot retroactively enable address indexing.",
+        "Error: bind EADDRINUSE 0.0.0.0:12037",
+        "Error: listen EADDRINUSE: address already in use :::12037",
+        "Uncaught Error: Could not open database.",
+        "[error] (chain) cannot open chain database",
+    ] {
+        assert!(
+            is_fatal_startup_line(fatal),
+            "should read as a startup failure: {fatal}"
+        );
+    }
+}
+
+#[test]
+fn a_data_dir_path_that_merely_contains_bind_is_not_a_failure() {
+    // `bind` used to be matched on its own, so a prefix like this — or any
+    // "binding"/"rebinding" progress line — reported a healthy node as broken.
+    // The address-in-use case it existed for arrives as `bind EADDRINUSE`,
+    // which is still caught above.
+    assert!(!is_fatal_startup_line(
+        "[info] (node) Opening /Volumes/bind-drive/hsd-data"
+    ));
+    assert!(!is_fatal_startup_line(
+        "[debug] (chain) Rebinding handlers."
+    ));
+}
+
+#[test]
+fn a_broad_matcher_is_documented_rather_than_quietly_wrong() {
+    // `Cannot ` is deliberately broad: this predicate only runs when the RPC is
+    // already unreachable, so over-reporting relabels "still starting" on a node
+    // that is down either way, while under-reporting leaves a broken node
+    // silent. This pins that it is a choice, not an oversight.
+    assert!(is_fatal_startup_line(
+        "[info] (chain) Cannot find checkpoint."
+    ));
 }

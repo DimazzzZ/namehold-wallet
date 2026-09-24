@@ -20,7 +20,7 @@ mod build_reveal_draft_tests;
 mod build_transfer_draft_tests;
 mod build_update_draft_tests;
 mod chain_scan_tests;
-mod command_helpers;
+pub(crate) mod command_helpers;
 mod connection_tests;
 mod contract_shape_tests;
 mod csv_cmd_tests;

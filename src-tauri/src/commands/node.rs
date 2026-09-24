@@ -369,6 +369,42 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
     }))
 }
 
+/// Whether one hsd log line signals that the node failed to start, as opposed
+/// to the noise a healthy node makes while it syncs.
+///
+/// Pure so it can be tested against real log shapes without a filesystem. Its
+/// only caller runs when the node's RPC is *not* answering, which sets the
+/// trade-off: a false positive relabels "still starting" as "failed to start"
+/// on a node that is unreachable either way, while a false negative leaves a
+/// genuinely broken node reporting nothing at all. The matchers are therefore
+/// deliberately broad, and `Cannot ` stays broad for that reason even though it
+/// would match a benign "Cannot find …" outside a tagged module line.
+///
+/// `bind` on its own is gone: the address-in-use failure it was there for
+/// arrives as `bind EADDRINUSE`, which `EADDRINUSE` already catches, while the
+/// bare substring also matched "binding", "rebinding" and any data-dir path
+/// with those letters in it.
+pub(crate) fn is_fatal_startup_line(line: &str) -> bool {
+    // Peer/network socket errors are routine during sync — never fatal.
+    if line.contains("(net)") || line.contains("(peer)") {
+        return false;
+    }
+    // hsd's own error-level log lines, plus the well-known fatal shapes:
+    //   - "[error]" level entries
+    //   - "Cannot retroactively enable … indexing" (index mismatch)
+    //   - address-in-use failures (another node already on the port)
+    //   - an uncaught error/exception surfacing on startup
+    line.contains("[error]")
+        || line.contains("Cannot ")
+        || line.contains("EADDRINUSE")
+        || line.contains("already in use")
+        || line.contains("address in use")
+        || line.contains("Uncaught")
+        || line.contains("uncaught exception")
+        || line.contains("cannot open")
+        || line.contains("Cannot open")
+}
+
 /// If `<data_dir>/namehold-hsd.log` records a startup failure, return
 /// `(human_reason, is_index_mismatch)`. `None` when there's no log or it doesn't
 /// look like an error. The index-mismatch case (hsd can't retro-enable an index)
@@ -386,28 +422,6 @@ pub(crate) fn node_start_error(data_dir: &str) -> Option<(String, bool)> {
     // Treating any "error" substring as a startup failure cries wolf over a
     // healthy node that is mid-rescan (its RPC simply hasn't come up yet).
     // Only lines that signal a real, fatal startup problem count.
-    let is_fatal_startup_line = |line: &str| -> bool {
-        // Peer/network socket errors are routine during sync — never fatal.
-        let networky = line.contains("(net)") || line.contains("(peer)");
-        if networky {
-            return false;
-        }
-        // hsd's own error-level log lines, plus the well-known fatal shapes:
-        //   - "[error]" level entries
-        //   - "Cannot retroactively enable … indexing" (index mismatch)
-        //   - address-in-use / bind failures (another node already on the port)
-        //   - an uncaught error/exception surfacing on startup
-        line.contains("[error]")
-            || line.contains("Cannot ")
-            || line.contains("EADDRINUSE")
-            || line.contains("bind")
-            || line.contains("already in use")
-            || line.contains("address in use")
-            || line.contains("Uncaught")
-            || line.contains("uncaught exception")
-            || line.contains("cannot open")
-            || line.contains("Cannot open")
-    };
     if !body.lines().any(is_fatal_startup_line) {
         return None;
     }

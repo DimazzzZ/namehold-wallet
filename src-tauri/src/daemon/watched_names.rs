@@ -1862,14 +1862,7 @@ mod tests {
 
     // --- Per-profile node config resolution for the watched-names daemon -----
 
-    fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
-        conn.execute(
-            "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
-             ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
-            rusqlite::params![profile_id, key, value],
-        )
-        .unwrap();
-    }
+    use crate::tests::command_helpers::set_profile_override;
 
     #[test]
     fn resolve_watched_client_uses_active_profile_override() {
