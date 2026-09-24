@@ -23,6 +23,19 @@ pub use signer::{
     WriteCapability,
 };
 
+/// What to tell the user when [`explorer_client_from_settings`] returns `None`
+/// and the caller needed it.
+///
+/// One sentence, in one place, because it was written four different ways
+/// across the read and sync paths — and it has to cover both reasons the
+/// factory refuses: the profile's network has no explorer configured, or the
+/// network could not be read at all. Either way the actionable part is the
+/// same, and naming the setting beats degrading to empty or to mainnet data.
+pub const EXPLORER_UNAVAILABLE: &str =
+    "No explorer is available for this wallet's network, and the local node is \
+     not synced. Set 'explorer_api_url' in Settings, or wait for the node to \
+     finish syncing.";
+
 /// The ONE place settings turn into an explorer client (Task 11 / S1, G2).
 ///
 /// Before this, `HnsFansClient::new(...)` was constructed at three separate

@@ -110,7 +110,7 @@ pub async fn run_chain_scanner(db_path: String) {
 
         // Use per-profile probe if active profile exists; otherwise fall back to global.
         let tip = if let Some(profile_id) = active_profile_id.as_deref() {
-            match crate::commands::read::node_tip_height_if_synced_from_profile_with_network(
+            match crate::commands::node_readiness::node_tip_height_if_synced_from_profile_with_network(
                 &db_path,
                 profile_id,
                 expected_network.as_deref(),
@@ -124,7 +124,7 @@ pub async fn run_chain_scanner(db_path: String) {
                 }
             }
         } else {
-            match crate::commands::read::node_tip_height_if_synced_from_settings_with_network(
+            match crate::commands::node_readiness::node_tip_height_if_synced_from_settings_with_network(
                 &settings,
                 expected_network.as_deref(),
             )

@@ -16,6 +16,7 @@ pub mod namebase_history;
 pub mod names;
 pub mod names_pure;
 pub mod node;
+pub mod node_readiness;
 pub mod paid_swaps;
 pub mod read;
 pub mod read_pure;

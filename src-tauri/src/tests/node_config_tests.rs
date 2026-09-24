@@ -14,7 +14,7 @@ use rusqlite::Connection;
 
 use crate::db::queries::get_profile_settings;
 use crate::error::AppError;
-use crate::noncustodial::node_config::{effective_node_config_for_profile, DEFAULT_NODE_RPC_URL};
+use crate::noncustodial::node_config::{default_node_rpc_url, effective_node_config_for_profile};
 use crate::noncustodial::rpc::ChainSource;
 
 /// A migrated in-memory DB with the migrations the resolver depends on, plus
@@ -94,7 +94,7 @@ fn missing_profile_is_not_found() {
 fn falls_back_to_builtin_default_when_nothing_set() {
     let conn = db_with_profile();
     let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
-    assert_eq!(cfg.node_rpc_url, DEFAULT_NODE_RPC_URL);
+    assert_eq!(cfg.node_rpc_url, default_node_rpc_url());
     assert_eq!(cfg.node_rpc_api_key, "");
     assert_eq!(cfg.chain_source, ChainSource::LocalNode);
     assert!(!cfg.from_override, "pure default must not be an override");
@@ -220,7 +220,7 @@ fn for_profile_falls_through_to_global_then_default() {
     // No override, no global url -> built-in default; global key present.
     set_global(&conn, "node_rpc_api_key", "global-key");
     let client = NodeRpcClient::for_profile(&conn, "p1").unwrap();
-    assert_eq!(client.node_url(), DEFAULT_NODE_RPC_URL);
+    assert_eq!(client.node_url(), default_node_rpc_url());
     assert_eq!(client.api_key(), "global-key");
 }
 

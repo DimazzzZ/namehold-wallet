@@ -519,15 +519,18 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
     // `node_ready_from_profile` resolves the effective config identically.
     // Only the no-active-profile fallback uses global settings.
     let node_ready = if let Some(profile_id) = active_profile_id.as_deref() {
-        crate::commands::read::node_ready_from_profile(
+        crate::commands::node_readiness::node_ready_from_profile(
             db_path,
             profile_id,
             expected_network.as_deref(),
         )
         .await
     } else {
-        crate::commands::read::node_ready_from_settings(&settings, expected_network.as_deref())
-            .await
+        crate::commands::node_readiness::node_ready_from_settings(
+            &settings,
+            expected_network.as_deref(),
+        )
+        .await
     };
 
     // 3. Adaptive skip + fetch. Bounded concurrency (4) to avoid hammering hsd.

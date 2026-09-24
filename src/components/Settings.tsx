@@ -14,6 +14,7 @@ import {
 import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
 import { StickyFooter } from "./ui/StickyFooter";
+import { AllowRemoteBroadcastToggle } from "./ui/AllowRemoteBroadcastToggle";
 import { RemoteNodeFields } from "./ui/RemoteNodeFields";
 import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
 import type { ChainSource, NodeMode } from "../types";
@@ -330,22 +331,11 @@ export function Settings() {
             saved node.
           </div>
           {chainSource === "remote_node" && (
-            <label className="flex items-center gap-2 text-sm pt-2">
-              <input
-                type="checkbox"
-                checked={settingToBool(form.allow_remote_broadcast)}
-                onChange={(e) =>
-                  updateField("allow_remote_broadcast", boolToSetting(e.target.checked))
-                }
-                data-testid="allow-remote-broadcast-checkbox"
-              />
-              <span>
-                Allow sending via remote node
-                <div className="text-xs text-gray-500 font-normal">
-                  Off by default. Required to broadcast when chain source is Remote node.
-                </div>
-              </span>
-            </label>
+            <AllowRemoteBroadcastToggle
+              checked={settingToBool(form.allow_remote_broadcast)}
+              onChange={(v) => updateField("allow_remote_broadcast", boolToSetting(v))}
+              showDescription
+            />
           )}
         </div>
 

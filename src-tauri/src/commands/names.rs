@@ -728,7 +728,8 @@ pub(crate) fn find_name_action_context(
     // The same call is already propagated further down this file; a failure
     // here read as "height unknown", which quietly widens every gate that
     // compares a height against the tip.
-    let current_height = crate::commands::read::estimate_persisted_height(conn, profile_id)?;
+    let current_height =
+        crate::commands::node_readiness::estimate_persisted_height(conn, profile_id)?;
 
     Ok(NameActionContext {
         has_bid_commitment: bid.is_some(),
@@ -789,7 +790,7 @@ pub async fn get_name_action_capabilities(
         Some(id) => id,
         None => return Ok(conservative_capabilities(&name, "no active wallet profile")),
     };
-    let live_tip = crate::commands::read::node_tip_height_if_synced(&state).await;
+    let live_tip = crate::commands::node_readiness::node_tip_height_if_synced(&state).await;
     evaluate_name_action_capabilities(&state, name, &profile_id, live_tip).await
 }
 
@@ -835,7 +836,7 @@ pub async fn get_names_action_capabilities(
     // Fetched once for the whole batch, not once per name: the only thing it
     // is needed for is the transfer-lockup countdown, and a stale tip there
     // refuses a FINALIZE the node would accept.
-    let live_tip = crate::commands::read::node_tip_height_if_synced(&state).await;
+    let live_tip = crate::commands::node_readiness::node_tip_height_if_synced(&state).await;
     let mut out = Vec::with_capacity(names.len());
     for name in names {
         out.push(evaluate_name_action_capabilities(&state, name, &profile_id, live_tip).await?);
@@ -874,7 +875,7 @@ async fn evaluate_name_action_capabilities(
     //    spuriously false for names we actually own. Treat "reachable but not
     //    synced" exactly like unreachable: fall back to local Sync evidence.
     //    Reuses the same gate as `read_balance`/`read_names` — no duplicate logic.
-    let name_info = if crate::commands::read::is_node_ready_for_local_reads(state).await {
+    let name_info = if crate::commands::node_readiness::is_node_ready_for_local_reads(state).await {
         client.get_name_info(&name).await.ok()
     } else {
         None
@@ -956,7 +957,7 @@ async fn evaluate_name_action_capabilities(
                 // duplicated — both read the same helpers.
                 let renewal_window = network.name_params().renewal_window as i64;
                 let current_height =
-                    crate::commands::read::estimate_persisted_height(&conn, profile_id)?;
+                    crate::commands::node_readiness::estimate_persisted_height(&conn, profile_id)?;
                 (tracked, action_ctx, addrs, renewal_window, current_height)
             };
             let tracked = match tracked {

@@ -6,6 +6,7 @@ import { Button } from "./ui/Button";
 import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
 import { fromConnectionMode } from "../lib/connectionMode";
 import { boolToSetting } from "../lib/settingsBool";
+import { AllowRemoteBroadcastToggle } from "./ui/AllowRemoteBroadcastToggle";
 import { RemoteNodeFields } from "./ui/RemoteNodeFields";
 import type { WalletNetwork } from "../types";
 
@@ -164,15 +165,11 @@ function ConnectionChoice({
                 apiKeyTestId="remote-api-key-input"
                 actionsLayout="stack"
               />
-              <label className="flex items-center gap-2 text-xs">
-                <input
-                  type="checkbox"
-                  checked={allowRemoteBroadcast}
-                  onChange={(e) => setAllowRemoteBroadcast(e.target.checked)}
-                  data-testid="allow-remote-broadcast-checkbox"
-                />
-                Allow sending via remote node
-              </label>
+              <AllowRemoteBroadcastToggle
+                checked={allowRemoteBroadcast}
+                onChange={setAllowRemoteBroadcast}
+                size="xs"
+              />
               <Button
                 size="sm"
                 onClick={selectRemote}

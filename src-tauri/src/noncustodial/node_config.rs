@@ -16,9 +16,16 @@ use crate::error::AppError;
 use crate::noncustodial::rpc::{resolve_node_api_key, ChainSource};
 
 /// The built-in default node RPC URL when neither an override nor a global
-/// setting supplies one. Mainnet's default hsd node port; realign fixes the
-/// port for other networks when this comes from the global fallback.
-pub const DEFAULT_NODE_RPC_URL: &str = "http://127.0.0.1:12037";
+/// setting supplies one: mainnet's default hsd port, from
+/// [`Network::default_rpc_url`] rather than spelled out again here. Realign
+/// fixes the port for other networks when this came from the global fallback.
+///
+/// Resolution has no profile network to consult — it resolves the endpoint
+/// tuple and deliberately does not touch the profile's network — so mainnet is
+/// the only defensible default, and realign is what corrects it.
+pub fn default_node_rpc_url() -> String {
+    crate::noncustodial::network::Network::Main.default_rpc_url()
+}
 
 /// The `profile_settings` keys that make up the ADR-001 node-config tuple.
 /// A profile may hold other per-profile settings; those say nothing about
@@ -89,7 +96,7 @@ pub fn effective_node_config_for_profile(
     let node_rpc_url = merged
         .get("node_rpc_url")
         .map(String::to_string)
-        .unwrap_or_else(|| DEFAULT_NODE_RPC_URL.to_string());
+        .unwrap_or_else(default_node_rpc_url);
     let node_rpc_api_key = resolve_node_api_key(&merged);
     let chain_source = ChainSource::from_settings(&merged);
 

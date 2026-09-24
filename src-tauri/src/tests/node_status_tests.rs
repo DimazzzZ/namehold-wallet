@@ -62,7 +62,7 @@ async fn node_status_reports_disconnected_when_no_node() {
 
 // --- is_node_ready_for_local_reads -------------------------------------------
 
-use crate::commands::read::is_node_ready_for_local_reads;
+use crate::commands::node_readiness::is_node_ready_for_local_reads;
 
 #[tokio::test]
 async fn local_reads_not_ready_when_not_connected() {
@@ -76,7 +76,7 @@ async fn local_reads_not_ready_when_not_connected() {
 // --- node_ready_from_settings (the settings-based gate used by the background
 //     sync thread, which has no State<AppState>) --------------------------------
 
-use crate::commands::read::node_ready_from_settings;
+use crate::commands::node_readiness::node_ready_from_settings;
 
 /// Build a settings map pointing the node RPC at a mockito server URL.
 fn settings_for_url(url: &str) -> std::collections::HashMap<String, String> {
@@ -501,7 +501,7 @@ async fn probe_and_update_sets_flag_true_when_node_answers() {
 
 // --- node_tip_height_if_synced_from_settings_with_network ---------------------
 
-use crate::commands::read::node_tip_height_if_synced_from_settings_with_network;
+use crate::commands::node_readiness::node_tip_height_if_synced_from_settings_with_network;
 
 #[tokio::test]
 async fn synced_with_matching_network_returns_height() {
@@ -619,7 +619,7 @@ async fn synced_with_no_chain_in_response_skips_check() {
 // Per-profile node config resolution for readiness probe (ADR-001)
 // ===========================================================================
 
-use crate::commands::read::node_tip_height_if_synced_from_profile_with_network;
+use crate::commands::node_readiness::node_tip_height_if_synced_from_profile_with_network;
 
 /// Helper: create a temp file-backed DB (in-memory won't work because the
 /// async probe re-opens the connection from a path — see the Send bound
@@ -783,7 +783,7 @@ async fn probe_respects_network_mismatch_with_profile_override() {
 // Per-profile readiness gate (boolean wrapper)
 // ===========================================================================
 
-use crate::commands::read::node_ready_from_profile;
+use crate::commands::node_readiness::node_ready_from_profile;
 
 #[tokio::test]
 async fn node_ready_from_profile_returns_true_when_synced_and_network_matches() {

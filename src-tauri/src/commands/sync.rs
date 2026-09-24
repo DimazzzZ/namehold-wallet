@@ -469,8 +469,12 @@ pub async fn run_sync_steps(
             .ok()
             .and_then(|c| queries::get_wallet_profile(&c, profile_id).ok().flatten())
             .map(|p| p.network);
-        crate::commands::read::node_ready_from_profile(db_path, profile_id, network.as_deref())
-            .await
+        crate::commands::node_readiness::node_ready_from_profile(
+            db_path,
+            profile_id,
+            network.as_deref(),
+        )
+        .await
     };
 
     // Step 2: Repair owned names from inventory + tracked (explorer only).
@@ -839,10 +843,8 @@ pub async fn repair_step_windowed(
         Some(e) => e,
         None => {
             let mut s = status.lock().await;
-            s.errors.push(
-                "no explorer for this profile — its network could not be read, or the network has no explorer configured; set explorer_api_url or wait for the local node to sync"
-                    .to_string(),
-            );
+            s.errors
+                .push(crate::providers::EXPLORER_UNAVAILABLE.to_string());
             return;
         }
     };
@@ -1116,10 +1118,8 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
         Some(e) => e,
         None => {
             let mut s = status.lock().await;
-            s.errors.push(
-                "no explorer for this profile — its network could not be read, or the network has no explorer configured; set explorer_api_url or wait for the local node to sync"
-                    .to_string(),
-            );
+            s.errors
+                .push(crate::providers::EXPLORER_UNAVAILABLE.to_string());
             return;
         }
     };
