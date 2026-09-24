@@ -338,14 +338,15 @@ pub enum AuctionTaskState {
     UnavailableOther,
 }
 
-/// Days-until-expiry threshold below which an owned name's task state becomes
-/// [`AuctionTaskState::ExpiringSoon`] (and the Renewals screen flags the row).
-/// A missed renewal on Handshake loses the name forever, so this errs early.
-/// (A settings-configurable threshold was considered and skipped for now —
-/// the constant is the single source of truth, surfaced to the frontend via
-/// `read_renewals.expiringSoonThresholdDays`.)
-/// Mainnet's expiry warning threshold, kept as a named constant because tests
-/// and the notification default both pin the historical 30-day behaviour.
+/// Mainnet's days-until-expiry threshold below which an owned name's task
+/// state becomes [`AuctionTaskState::ExpiringSoon`] (and the Renewals screen
+/// flags the row). A missed renewal on Handshake loses the name forever, so
+/// this errs early. Kept as a named constant because tests and the
+/// notification default both pin the historical 30-day behaviour, and
+/// surfaced to the frontend via `read_renewals.expiringSoonThresholdDays`.
+///
+/// Not configurable: a settings-controlled threshold was considered and
+/// skipped.
 /// Live code reads
 /// [`crate::noncustodial::network::Network::expiring_soon_threshold_days`]
 /// instead, which scales this to the network's own renewal window — a flat 30
@@ -1327,7 +1328,7 @@ pub(crate) fn build_name_action_capabilities(
     // `WaitingForBidding` is reused for two distinct situations: a pending OPEN
     // that hasn't reached BIDDING yet (default reason "The auction opens for
     // bidding soon.") and a name already in the on-chain BIDDING phase that
-    // THIS wallet has already bid on (one bid per wallet per name). For the
+    // THIS wallet has already bid on. For the
     // latter the default reason reads wrong — bidding is already open and the
     // wallet's action is to wait for the reveal window, not for bidding to
     // start — so refine the reason to match the "your bid is placed" panel the

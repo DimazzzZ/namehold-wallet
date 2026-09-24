@@ -350,19 +350,18 @@ export function NameActionsModal({
     // leading an auction does not — the owner coin is still a REVEAL.
     caps?.nameIsRegistered === true;
 
-  // A wallet that has bid and is waiting for the window has nothing left to
-  // submit. This no longer reaches the advanced toggle — `sections.anyLive`
-  // decides that — and survives only to keep the "unlock to sign" notice off a
-  // modal with nothing to sign.
-  const alreadyBidWaiting = caps?.taskState === "waitingForBidding";
+  // The auction exists but its bidding window has not opened: the name is in
+  // OPENING, or an OPEN this wallet broadcast is still waiting for a block.
+  // (It once also meant "this wallet has already bid", back when a second bid
+  // was refused; several bids are allowed now, so BIDDING never reports this.)
+  const biddingNotOpenYet = caps?.taskState === "waitingForBidding";
 
   // Whether the modal actually offers something to sign/broadcast right now.
-  // `hasRelevantActions` includes a phase-based fallback that is true during
-  // BIDDING even after THIS wallet has already bid — in that state every
-  // action is caps-disabled and there is nothing left to submit, so the
-  // "unlock to sign" notice would be pointless. Gate signable UI on this
-  // instead of the looser `hasRelevantActions`.
-  const hasSignableActions = hasRelevantActions && !alreadyBidWaiting;
+  // `hasRelevantActions` includes a phase-based fallback that is true before
+  // the bidding window opens, when every action is caps-disabled and there is
+  // nothing to submit — the "unlock to sign" notice would be pointless there.
+  // Gate signable UI on this instead of the looser `hasRelevantActions`.
+  const hasSignableActions = hasRelevantActions && !biddingNotOpenYet;
 
   // One rule for the toggle: open it only when something behind it can be
   // acted on. Every "is this phase meaningful?" special case this used to
@@ -818,7 +817,7 @@ export function NameActionsModal({
           name={name}
           profileId={profile?.id ?? null}
           phase={badge.phase}
-          suppressEmptyHint={alreadyBidWaiting}
+          suppressEmptyHint={biddingNotOpenYet}
         />
 
         {/* A bid this wallet placed in an EARLIER auction of this name whose

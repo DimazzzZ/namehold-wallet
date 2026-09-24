@@ -96,8 +96,8 @@ pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -
         // different chain (e.g. regtest node vs mainnet wallet).
         // A DB failure here degrades to "no network to compare" — the read
         // gate is a routing decision, not a security boundary, and the SPV /
-        // sync gates below still apply. The connection probe (commands/node.rs)
-        // propagates the same error instead.
+        // sync gates below still apply. A caller that must not proceed on an
+        // unknown network propagates the error instead of degrading.
         let net = queries::get_active_profile_network(&db).ok().flatten();
         (mode, net)
     };
@@ -144,9 +144,9 @@ pub(crate) async fn node_tip_height_if_synced(state: &State<'_, AppState>) -> Op
     node_tip_height_if_synced_for_network(state, expected_network.as_deref()).await
 }
 
-/// Same as [`node_tip_height_if_synced_from_settings`], but additionally
-/// rejects (returns `None`) when the node's reported `chain` disagrees with
-/// `expected_network`. Set `expected_network` to the active profile's stored
+/// Resolve the node's tip height from a settings map, returning `None` unless
+/// the node is reachable and fully synced — and additionally rejecting when
+/// its reported `chain` disagrees with `expected_network`. Set `expected_network` to the active profile's stored
 /// network string — the schema allows only `"mainnet"`, `"testnet"` and
 /// `"regtest"`; `"main"` and `"simnet"` are accepted defensively by the
 /// comparison. Leave it `None` to skip the network check.

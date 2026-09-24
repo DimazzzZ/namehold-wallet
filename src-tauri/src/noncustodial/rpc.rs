@@ -869,6 +869,12 @@ impl BlockchainInfo {
     }
 }
 
+/// Loose floor below which a `blocks == headers` match is distrusted as
+/// "headers not yet at the real tip" (see `chain_synced`'s ~8%-verified case).
+const HEADERS_MATCH_PROGRESS_FLOOR: f64 = 0.999;
+/// Progress gate used when the node reports no header height to compare against.
+const PROGRESS_ONLY_SYNCED_GATE: f64 = 0.9999;
+
 /// The one "is this node synced?" rule, shared by the read/write gates, the
 /// node-status probe and the remote-node connection check.
 ///
@@ -889,12 +895,6 @@ impl BlockchainInfo {
 /// answer is `assume_when_unknown`: callers gating spends on a configured node
 /// pass `true` so regtest keeps working, while a first-contact probe of an
 /// unknown remote node passes `false`.
-///
-/// Loose floor below which a `blocks == headers` match is distrusted as
-/// "headers not yet at the real tip" (see the ~8%-verified case above).
-const HEADERS_MATCH_PROGRESS_FLOOR: f64 = 0.999;
-/// Progress gate used when the node reports no header height to compare against.
-const PROGRESS_ONLY_SYNCED_GATE: f64 = 0.9999;
 pub fn chain_synced(
     blocks: i64,
     headers: Option<i64>,

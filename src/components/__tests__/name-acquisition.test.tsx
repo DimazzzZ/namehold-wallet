@@ -545,14 +545,11 @@ describe("NameActionsModal — guided acquisition flow", () => {
     expect(screen.getByText("Bid")).toBeInTheDocument();
   });
 
-  // Regression: a name whose on-chain phase is still BIDDING but for which
-  // THIS wallet already placed a bid resolves to taskState `waitingForBidding`
-  // — but because it IS genuinely bidding (phase BIDDING + a placed bid), the
-  // badge now unifies with the modal's on-chain phase and reads "Bidding".
-  // The guided body used to key purely on the raw phase and render a
-  // "Place a Bid"-flavored panel; it must render the wait-for-reveal panel
-  // and offer no bid CTA.
-  it("shows a wait-for-reveal panel (not a bid CTA) for a BIDDING name already bid by this wallet", async () => {
+  // Regression: a BIDDING name this wallet has already bid on still invites
+  // another bid. Several independent bids per name are allowed, so the guided
+  // panel must keep the bid form rather than collapsing to the wait-for-reveal
+  // panel it used to show once one bid was placed.
+  it("still offers the bid form for a BIDDING name this wallet has already bid on", async () => {
     invokeMock.mockImplementation(
       routeModal(
         {
@@ -574,33 +571,27 @@ describe("NameActionsModal — guided acquisition flow", () => {
           capabilities: {
             name: "bidname",
             phase: "BIDDING",
-            taskState: "waitingForBidding",
+            taskState: "readyToBid",
             ownsName: false,
             nameIsRegistered: false,
             transferPending: false,
             redeemableRevealCount: 0,
             redeemableValueDoos: 0,
             hasBidCommitment: true,
+            myBidCount: 1,
             hasRevealCoin: false,
             hasOwnerCoin: false,
             canOpen: { allowed: false, reason: null },
-            canBid: {
-              allowed: false,
-              reason:
-                "you already have a bid commitment for this name (one bid per wallet per name)",
-            },
+            canBid: { allowed: true, reason: null },
             canReveal: { allowed: false, reason: "Reveal not open yet" },
             canRedeem: { allowed: false, reason: null },
             canRegister: { allowed: false, reason: "Phase is BIDDING" },
             canUpdate: { allowed: false, reason: null },
             canTransfer: { allowed: false, reason: null },
             canFinalize: { allowed: false, reason: null },
-            nextActionKey: "WAIT",
-            nextActionLabel: "Wait for Bidding",
-            // Backend refines this reason for the already-bid BIDDING case
-            // (see the next_action override in names.rs). The frontend
-            // no-countdown panel renders the SAME string verbatim.
-            nextActionReason: "Your bid is placed. Wait for the reveal window to open.",
+            nextActionKey: "BID",
+            nextActionLabel: "Place a Bid",
+            nextActionReason: null,
             countdownLabel: null,
             countdownBlocks: null,
             countdownHours: null,
@@ -610,18 +601,12 @@ describe("NameActionsModal — guided acquisition flow", () => {
     );
     render(<NameActionsModal name="bidname" open onClose={() => {}} />, { wrapper: wrapper() });
 
-    // The badge reads "Bidding" (genuine-bidding unification), matching the
-    // on-chain phase — not "Waiting for Bidding".
+    // The badge matches the on-chain phase.
     expect(await screen.findByText("Bidding")).toBeInTheDocument();
     expect(screen.queryByText("Waiting for Bidding")).not.toBeInTheDocument();
-    // The guided body is the wait-for-reveal panel, not the bid panel.
-    expect(screen.getByTestId("bidding-waiting")).toBeInTheDocument();
-    // Exact unified copy (verbatim match with backend next_action_reason).
-    expect(
-      screen.getByText("Your bid is placed. Wait for the reveal window to open."),
-    ).toBeInTheDocument();
-    // No bid-flavored guided copy under the "Bidding" badge.
-    expect(screen.queryByText("Place a Bid")).not.toBeInTheDocument();
+    // The bid form is still offered, holding an existing bid notwithstanding.
+    expect(screen.getAllByLabelText("Bid (HNS)").length).toBeGreaterThan(0);
+    expect(screen.getAllByLabelText("Lockup (HNS)").length).toBeGreaterThan(0);
   });
 
   it("shows Reveal for a REVEAL name", async () => {

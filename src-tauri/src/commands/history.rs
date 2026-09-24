@@ -13,21 +13,22 @@
 //! (`db/queries.rs:1820-1875`). The critical simplification vs. block scanning
 //! is that `/tx/address` returns fully-decoded inputs with a resolved
 //! `coin { value, address, covenant }` (see hsd api-docs), so spend attribution
-//!
-//! COVERAGE: 97.63% line / 97.51% region — realistic ceiling. Remaining ~9
-//! missed lines are all llvm-cov region-boundary artifacts, not real gaps:
-//! closing braces inside `classify_tx`'s covenant loop, the `load_wallet_addresses`
-//! `query_map` row-closure, `#[tauri::command]` async-wrapper attribute lines,
-//! and one sort-comparator arm the stdlib sort never invokes in a<->b order for
-//! the tested inputs. The surrounding logic is all exercised. Test harness in
-//! `src/tests/history_cmd_tests.rs` uses `MockNodeRpc` for unit tests and
-//! mockito regex-match on `GET /tx/address/:addr` for integration tests.
 //! needs no extra `getrawtransaction` roundtrips.
 //!
 //! Covenant constants come from `noncustodial::sync` (verified against hsd
 //! `lib/covenants/rules.js`). We rely on the numeric `covenant.type`, NOT the
 //! symbolic `action` string, because the `POST /tx/address` bulk route omits
 //! the string (and we may add bulk later); the numeric type is always present.
+//!
+//! Coverage: what this module does not reach is llvm-cov region boundaries
+//! rather than untested logic — closing braces inside `classify_tx`'s covenant
+//! loop, the `load_wallet_addresses` `query_map` row closure,
+//! `#[tauri::command]` async-wrapper attribute lines, and a sort-comparator arm
+//! the stdlib sort never invokes in a<->b order for the tested inputs. The test
+//! harness in `src/tests/history_cmd_tests.rs` drives `MockNodeRpc` for unit
+//! tests and a mockito regex match on `GET /tx/address/:addr` for integration
+//! tests. (A percentage used to be quoted here; it went stale the first time
+//! anyone touched the file, so the shape of the gap is written down instead.)
 
 use std::collections::{BTreeMap, HashSet};
 

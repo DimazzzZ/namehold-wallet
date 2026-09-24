@@ -42,9 +42,6 @@ export function OwnershipActions({
   onRenew,
   onRevoke,
 }: OwnershipActionsProps) {
-  // Paid swap: show "Buy with payment" button + payment address input when
-  // the name is in TRANSFER state (transferPendingFinalize).
-
   return (
     <section className="space-y-2">
       <div className="font-medium text-gray-700">Ownership</div>

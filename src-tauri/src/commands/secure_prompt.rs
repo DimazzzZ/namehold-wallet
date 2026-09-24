@@ -13,20 +13,19 @@
 //!   3. The secure window calls [`secure_prompt_fetch`] to read its request, then
 //!      [`secure_prompt_submit`] with the user's answer, which fulfils the oneshot.
 //!   4. The originating flow receives the [`SecurePromptResult`] and the window is
-//!
-//! COVERAGE: 14% — most functions require a live Tauri window (`secure-prompt-<id>`
-//! webview) and IPC dispatch. `prompt_secure`, `secure_prompt_fetch`,
-//! `secure_prompt_submit`, and `assert_owning_window` all open/manage/close Tauri
-//! windows and await oneshot channels from frontend IPC calls — impossible to
-//! exercise from a unit test without a full Tauri desktop runtime. The only
-//! testable functions are `random_id` (pure RNG) and `push_test_answer` (test
-//! helper). All real logic (secret handling, passphrase validation) is in the
-//! callers (`commands::secure_wallet`) which ARE tested via the secure-window
-//! flow in integration tests. This module is the plumbing.
 //!      closed by the backend.
 //!
 //! The secret value (passphrase or mnemonic) only ever flows window <-> backend.
 //! It is never the return value of a React-invoked command.
+//!
+//! Coverage here is low and stays low: `prompt_secure`, `secure_prompt_fetch`,
+//! `secure_prompt_submit` and `assert_owning_window` open, manage and close
+//! Tauri windows and await oneshot channels fulfilled by frontend IPC, which a
+//! unit test cannot drive without a full desktop runtime. Only `random_id` and
+//! the `push_test_answer` helper are reachable. The logic worth testing —
+//! secret handling and passphrase validation — lives in the callers
+//! (`commands::secure_wallet`) and is covered through the secure-window
+//! integration flow. This module is the plumbing.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

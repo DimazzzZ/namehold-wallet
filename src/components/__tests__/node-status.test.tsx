@@ -40,6 +40,7 @@ type NodeOver = Partial<{
   height: number | null;
   verification_progress: number | null;
   headers: number | null;
+  synced: boolean;
   last_error: string | null;
   index_mismatch: boolean;
   read_source: "local" | "explorer";
@@ -57,6 +58,11 @@ function nodeStatus(over: NodeOver = {}) {
     height: null,
     verification_progress: null,
     headers: null,
+    // The backend's own `chain_synced` verdict. The rule itself is tested in
+    // Rust (`chain_synced`); these tests pin what the UI renders when handed
+    // each answer, so each case states the verdict it is exercising rather
+    // than re-deriving one here.
+    synced: false,
     last_error: null,
     index_mismatch: false,
     read_source: "explorer",
@@ -105,7 +111,7 @@ beforeEach(() => {
 describe("Node status (truthful, RPC-based)", () => {
   it("Settings shows Connected · block N when the RPC answers", async () => {
     invokeMock.mockImplementation(
-      route(nodeStatus({ connected: true, process_alive: true, height: 218456 })),
+      route(nodeStatus({ connected: true, process_alive: true, height: 218456, synced: true })),
     );
     render(<Settings />, { wrapper: wrapper() });
 
@@ -123,6 +129,7 @@ describe("Node status (truthful, RPC-based)", () => {
           height: 40000,
           headers: 100000,
           verification_progress: 0.4,
+          synced: false,
         }),
       ),
     );
@@ -146,6 +153,7 @@ describe("Node status (truthful, RPC-based)", () => {
           height: 65027,
           headers: 65027,
           verification_progress: 0.19,
+          synced: false,
         }),
       ),
     );
@@ -172,6 +180,7 @@ describe("Node status (truthful, RPC-based)", () => {
           height: 317,
           headers: 317,
           verification_progress: 0.9997,
+          synced: true,
         }),
       ),
     );
@@ -193,6 +202,7 @@ describe("Node status (truthful, RPC-based)", () => {
           height: 317,
           headers: 317,
           verification_progress: 0.08,
+          synced: false,
         }),
       ),
     );
@@ -211,6 +221,7 @@ describe("Node status (truthful, RPC-based)", () => {
           height: 317,
           headers: 317,
           verification_progress: 0.9999,
+          synced: true,
         }),
       ),
     );

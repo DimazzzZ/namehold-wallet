@@ -345,6 +345,11 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         "height": probe.as_ref().map(|p| p.height),
         "verification_progress": probe.as_ref().and_then(|p| p.verification_progress),
         "headers": probe.as_ref().and_then(|p| p.headers),
+        // The shared `chain_synced` verdict (and, in SPV mode, the
+        // connected-means-synced convention). Reported so the UI reads the one
+        // rule the read/write gates use rather than re-deriving it from
+        // height/headers/progress and drifting from what reads actually do.
+        "synced": node_synced,
         "last_error": last_error,
         // True when the failure is a chain/index-flag mismatch hsd can't fix in
         // place — the UI offers a one-click re-sync for this case.

@@ -369,11 +369,11 @@ pub(crate) async fn scan_block(
             ],
         )?;
     }
-    // Match REVEALs to their BIDs by nameHash (within the same block or earlier
-    // blocks). A REVEAL output's value IS the true bid value; the BID output's
-    // value is the lockup (bid + mask). We update the FIRST matching BID that
-    // doesn't already have a reveal_txid — this is a best-effort heuristic;
-    // in practice each bidder has one BID per name per auction.
+    // Match REVEALs to their BIDs. A REVEAL output's value IS the true bid
+    // value; the BID output's value is the lockup (bid + mask). The pairing is
+    // exact, not a heuristic: each reveal names the outpoint of the bid it
+    // spends, which is the only thing that still works once a wallet holds
+    // several bids on one name.
     for reveal in &reveals {
         // Address the exact BID this reveal spends. The previous rule — "the
         // earliest bid not yet matched" — was indistinguishable from the truth

@@ -1559,8 +1559,8 @@ pub fn has_pending_draft_for_name(
     Ok(false)
 }
 
-/// The action of a transaction this wallet has BROADCAST for `name` that the
-/// chain has not confirmed yet — `Some("open")`, `Some("reveal")`, and so on.
+/// Every action this wallet has BROADCAST for `name` that the chain has not
+/// mined yet — `"open"`, `"reveal"` and so on — newest first.
 ///
 /// This is the gap the UI has to narrate. Between broadcast and the next block
 /// the chain still reports the name's previous state, so every phase-derived
@@ -1569,15 +1569,13 @@ pub fn has_pending_draft_for_name(
 /// is indefinite.
 ///
 /// Only `broadcast_pending`/`broadcasted` count: a `draft` or `signed` row has
-/// not left the device, and `confirmed`/`dropped`/`failed` are settled. When
-/// several qualify — a name can legitimately have more than one in flight — the
-/// most recent wins, which is the one the user just sent.
-/// Every action this wallet has broadcast for `name` and the chain has not
-/// mined, newest first. More than one can be in flight at once — a register
-/// and a redeem on the same name spend different coins and are independent —
-/// so a single answer has to pick, and `created_at` has second resolution:
-/// two drafts made in the same second order arbitrarily. Callers that ask
-/// "is a transaction of this kind in flight?" must look at all of them.
+/// not left the device, and `confirmed`/`dropped`/`failed` are settled.
+///
+/// More than one can be in flight at once — a register and a redeem on the
+/// same name spend different coins and are independent — so a caller asking
+/// "is a transaction of this kind in flight?" must look at all of them rather
+/// than at the first. `created_at` has second resolution, so two drafts made
+/// in the same second order arbitrarily between themselves.
 pub fn pending_broadcast_actions_for_name(
     conn: &rusqlite::Connection,
     profile_id: &str,
@@ -1601,6 +1599,14 @@ pub fn pending_broadcast_actions_for_name(
     Ok(out)
 }
 
+/// The most recent of [`pending_broadcast_actions_for_name`], or `None` when
+/// nothing this wallet sent for `name` is still waiting for a block.
+///
+/// "Most recent" is the one the user just pressed, which is what a single
+/// "waiting for a block" label should name. Ordering is by `created_at`, which
+/// has second resolution, so two drafts made in the same second pick between
+/// themselves arbitrarily — a caller that must not miss one of several in
+/// flight wants the plural form instead.
 pub fn pending_broadcast_action_for_name(
     conn: &rusqlite::Connection,
     profile_id: &str,

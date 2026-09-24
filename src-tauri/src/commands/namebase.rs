@@ -2,10 +2,10 @@
 // * #[tauri::command] macro attribute lines are structurally uncoverable — the
 //   macro is expanded at compile time and does not execute at runtime.
 // * The `read_cookie` keyring-unavailable branch (Err(_e) => ... return legacy)
-//   fires only when `cookie_vault::encrypt_cookie` fails because the OS keyring
-//   is unreachable. Tests install a fixed test DEK (so encryption always
-//   succeeds); forcing this branch would require an OS-level keyring failure
-//   that the test harness can't produce deterministically.
+//   fires when `cookie_vault::encrypt_cookie` fails because the OS keyring is
+//   unreachable. `cookie_vault::set_keyring_unavailable_for_test` installs an
+//   always-failing backend to drive it; see
+//   `namebase_cmd_tests::read_cookie_returns_legacy_plaintext_when_keyring_unavailable`.
 // * The poisoned-Mutex fallback in `commands::active_profile::active_profile_network`
 //   (Err(_) => Network::Main) requires a panicked lock holder — not reachable
 //   through the command surface.
