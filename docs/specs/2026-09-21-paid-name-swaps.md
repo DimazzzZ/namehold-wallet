@@ -86,3 +86,7 @@ and broadcasts. There is no separate "finalize with payment" command for them.
 - `src-tauri/src/noncustodial/actions.rs` — the `sighash::ALL` of W2.
 - `name-modal-sections.test.tsx :: offers no way to start a paid swap` — pins
   the withdrawal.
+- User-facing copy that described the withdrawn flows, corrected to match:
+  `docs/USER_MANUAL.md` ("Paid name swaps", and the owned-name action table),
+  `README.md` (feature list), `docs/QA_WORKFLOWS.md` (section J). Any future
+  attempt has to update these three in the same PR as the code.

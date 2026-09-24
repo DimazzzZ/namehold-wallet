@@ -18,8 +18,9 @@ Each spec has these sections, in this order:
 
 | Spec | Status |
 |------|--------|
-| [2026-09-11 Remote-node connection & broadcast guard](./2026-09-11-remote-node-connection-and-broadcast-guard.md) | Implemented on `feat/spv-broadcast-guard-and-remote-node-onboarding` |
-| [2026-09-14 Network-derived behaviour](./2026-09-14-network-derived-behaviour.md) | Implemented on `feat/batch-transfer` |
+| [2026-09-11 Remote-node connection & broadcast guard](./2026-09-11-remote-node-connection-and-broadcast-guard.md) | Implemented |
+| [2026-09-14 Network-derived behaviour](./2026-09-14-network-derived-behaviour.md) | Implemented |
+| [2026-09-15 Batch name operations](./2026-09-15-batch-name-operations.md) | Implemented; spec written after the fact |
 | [2026-09-15 Per-profile node banner & preflight](./2026-09-15-per-profile-node-banner-and-preflight.md) | Steps 1-2 of 9 implemented — see the spec's own status table |
-| [2026-09-20 Multiple bids per name](./2026-09-20-multiple-bids-per-name.md) | Implemented on `feat/batch-reveal-redeem-finalize-ui` |
+| [2026-09-20 Multiple bids per name](./2026-09-20-multiple-bids-per-name.md) | Implemented |
 | [2026-09-21 Paid name swaps](./2026-09-21-paid-name-swaps.md) | Not implemented — UI withdrawn, see spec |
