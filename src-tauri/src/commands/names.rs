@@ -662,24 +662,16 @@ pub(crate) fn find_name_action_context(
     // permanently un-openable — including one whose auction had since lapsed
     // and which the chain now reports as available again. A live auction is
     // already handled by the phase check in `build_name_action_capabilities`.
-    let has_pending_open_coin = names::hash_name(name)
-        .ok()
-        .map(hex::encode)
-        .map(|nh_hex| {
-            queries::has_unconfirmed_covenant_utxo_by_name_hash(
-                conn,
-                profile_id,
-                sync::COV_OPEN as i64,
-                &nh_hex,
-            )
-            .unwrap_or(false)
-        })
-        .unwrap_or(false);
+    let has_pending_open_coin = queries::has_unconfirmed_covenant_utxo_by_name_hash(
+        conn,
+        profile_id,
+        sync::COV_OPEN as i64,
+        &hex::encode(names::hash_name(name)?),
+    )?;
     let has_pending_open_draft =
-        queries::has_pending_draft_for_name(conn, profile_id, "open", name).unwrap_or(false);
+        queries::has_pending_draft_for_name(conn, profile_id, "open", name)?;
     let has_pending_open = has_pending_open_coin || has_pending_open_draft;
-    let pending_actions =
-        queries::pending_broadcast_actions_for_name(conn, profile_id, name).unwrap_or_default();
+    let pending_actions = queries::pending_broadcast_actions_for_name(conn, profile_id, name)?;
     let pending_broadcast_action = pending_actions.first().cloned();
 
     // `get_name_coin` answers "can we spend it" and returns unspent coins
@@ -720,21 +712,22 @@ pub(crate) fn find_name_action_context(
     // dropped/failed; when there's no draft (restored/cross-device wallet), the
     // caller falls back to the bid-coin-spent chain fact.
     let reveal_txid = bid.as_ref().and_then(|b| b.reveal_txid.clone());
-    let reveal_draft_status = reveal_txid.as_ref().and_then(|txid| {
-        queries::get_draft_status_by_txid(conn, profile_id, txid)
-            .ok()
-            .flatten()
-    });
+    let reveal_draft_status = match reveal_txid.as_ref() {
+        Some(txid) => queries::get_draft_status_by_txid(conn, profile_id, txid)?,
+        None => None,
+    };
     let bid_value_doos = bid.as_ref().map(|b| b.bid_value_doos);
     let lockup_value_doos = bid.as_ref().map(|b| b.lockup_value_doos);
 
-    let tracked_row = queries::get_tracked_name_state(conn, profile_id, name).unwrap_or(None);
+    let tracked_row = queries::get_tracked_name_state(conn, profile_id, name)?;
     let transfer_height = tracked_row
         .as_ref()
         .and_then(|t| t.transfer_height)
         .filter(|h| *h > 0);
-    let current_height =
-        crate::commands::read::estimate_persisted_height(conn, profile_id).unwrap_or(None);
+    // The same call is already propagated further down this file; a failure
+    // here read as "height unknown", which quietly widens every gate that
+    // compares a height against the tip.
+    let current_height = crate::commands::read::estimate_persisted_height(conn, profile_id)?;
 
     Ok(NameActionContext {
         has_bid_commitment: bid.is_some(),
