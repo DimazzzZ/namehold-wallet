@@ -1256,6 +1256,7 @@ async fn node_status_reflects_seeded_profile_network_testnet() {
 // ===========================================================================
 
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn node_status_data_dir_defaults_to_home_dot_hsd_when_prefix_unset() {
     let conn = blank_conn();
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();

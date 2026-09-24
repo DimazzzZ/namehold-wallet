@@ -582,7 +582,6 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
 /// every 60s, so simple sequential polling is preferable to pulling in a
 /// streaming-concurrency dependency. Names that error out or return
 /// null/unparsable data are silently dropped; they'll be retried next cycle.
-#[cfg_attr(coverage_nightly, coverage(off))]
 async fn fetch_all(
     node: &dyn crate::noncustodial::node_rpc::NodeRpc,
     names: &[String],

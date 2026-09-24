@@ -1272,7 +1272,6 @@ async fn sign_via_ledger(
 /// Convert pre-resolved `(output_index, name)` pairs into the
 /// [`OutputName`](crate::providers::ledger::parse_mode::OutputName) entries
 /// that the parse-mode builder expects.
-#[cfg_attr(coverage_nightly, coverage(off))]
 fn output_names_from_pairs(
     pairs: &[(usize, String)],
 ) -> Vec<crate::providers::ledger::parse_mode::OutputName> {
@@ -1431,7 +1430,6 @@ pub(crate) async fn classify_broadcast_outcome_with_client(
 /// silently skipped — the tx cache is best-effort, not authoritative.
 ///
 /// Testable against a mock without an AppState.
-#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) async fn fetch_wallet_coins_and_txs_with_client(
     client: &dyn crate::noncustodial::node_rpc::NodeRpc,
     addresses: &[String],
@@ -2622,5 +2620,24 @@ mod pure_helper_tests {
     #[test]
     fn local_txid_from_summary_none_when_json_is_invalid() {
         assert_eq!(local_txid_from_summary("not { valid json"), None);
+    }
+
+    #[test]
+    fn output_names_from_pairs_keeps_each_index_with_its_name() {
+        // The Ledger parse-mode builder is told which output carries which
+        // name; pairing them by position is the whole job, and getting it
+        // wrong labels a covenant on the device with another output's name.
+        let out =
+            output_names_from_pairs(&[(0, "example".to_string()), (2, "another".to_string())]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].output_index, 0);
+        assert_eq!(out[0].name, "example");
+        assert_eq!(out[1].output_index, 2);
+        assert_eq!(out[1].name, "another");
+    }
+
+    #[test]
+    fn output_names_from_pairs_maps_an_empty_slice_to_an_empty_vec() {
+        assert!(output_names_from_pairs(&[]).is_empty());
     }
 }

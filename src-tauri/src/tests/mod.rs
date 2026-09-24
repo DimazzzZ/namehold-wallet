@@ -36,6 +36,7 @@ mod history_cmd_tests;
 mod hsd_extra_tests;
 mod hsd_parity_tests;
 mod hsd_types_tests;
+mod ledger_hid_transport_tests;
 mod live_node_it;
 mod migration_tests;
 mod mock_node_rpc;
