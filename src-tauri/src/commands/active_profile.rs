@@ -48,3 +48,22 @@ pub(crate) fn active_profile_network_opt(state: &AppState) -> Option<Network> {
     let conn = state.db.lock().ok()?;
     active_profile_network_opt_from_conn(&conn)
 }
+
+/// The `Network` of one *named* profile, or `None` when the profile is
+/// missing, the DB errors, or the stored string does not parse.
+///
+/// The three failures collapse into one answer on purpose: every caller of
+/// this refuses to act rather than guess, and the guess would be mainnet. A
+/// sync step that guessed would read another chain's explorer into this
+/// profile's cache, which is the cross-network read the network guard exists
+/// to prevent. Callers that only need a *label* should keep using
+/// [`active_profile_network_from_conn`].
+pub(crate) fn profile_network_opt_from_conn(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Option<Network> {
+    db::queries::get_wallet_profile(conn, profile_id)
+        .ok()
+        .flatten()
+        .and_then(|p| Network::from_str_opt(&p.network))
+}

@@ -90,3 +90,46 @@ fn the_optional_form_reads_the_active_profile_network() {
         Some(Network::Regtest)
     );
 }
+
+// --- profile_network_opt_from_conn: a named profile, unknown means unknown ---
+
+#[test]
+fn a_named_profiles_network_is_read_without_the_active_profile() {
+    // The sync steps work on a profile id they were handed, which need not be
+    // the active one.
+    let conn = db();
+    seed_profile(&conn, "p-regtest", "regtest");
+    seed_profile(&conn, "p-main", "mainnet");
+    set_active_profile(&conn, "p-main").unwrap();
+    assert_eq!(
+        crate::commands::active_profile::profile_network_opt_from_conn(&conn, "p-regtest"),
+        Some(Network::Regtest)
+    );
+}
+
+#[test]
+fn a_missing_profile_reads_as_unknown_not_mainnet() {
+    let conn = db();
+    assert_eq!(
+        crate::commands::active_profile::profile_network_opt_from_conn(&conn, "nobody"),
+        None
+    );
+}
+
+#[test]
+fn an_unparseable_network_string_reads_as_unknown_not_mainnet() {
+    let conn = db();
+    // Same smuggling as the fallback test above: the schema's CHECK keeps
+    // unknown networks out, so this branch is defensive (an older DB, a future
+    // network name) rather than a state the app can produce.
+    conn.pragma_update(None, "ignore_check_constraints", true)
+        .unwrap();
+    seed_profile(&conn, "p1", "weirdnet");
+    conn.pragma_update(None, "ignore_check_constraints", false)
+        .unwrap();
+    assert_eq!(
+        crate::commands::active_profile::profile_network_opt_from_conn(&conn, "p1"),
+        None,
+        "unknown must not resolve to mainnet for a step that acts on the answer"
+    );
+}
