@@ -524,8 +524,10 @@ pub(crate) fn find_name_action_context(
     auction_start: Option<i64>,
 ) -> Result<NameActionContext, AppError> {
     // Newest first, so the first match is the most recent bid in this auction.
-    let for_name: Vec<queries::BidCommitmentRow> = queries::list_bid_commitments(conn, profile_id)
-        .unwrap_or_default()
+    // A DB failure is returned, not read as "this wallet has never bid": the
+    // capabilities built from it decide whether Reveal and Redeem are offered,
+    // and an empty list withdraws both from a wallet that has money locked up.
+    let for_name: Vec<queries::BidCommitmentRow> = queries::list_bid_commitments(conn, profile_id)?
         .into_iter()
         .filter(|b| b.name == name)
         .collect();
@@ -583,7 +585,11 @@ pub(crate) fn find_name_action_context(
     // lands back on the bid coin's own address, see `build_reveal_draft`), so
     // only the covenant type differs between the two queries below.
     //
-    let name_hash_hex = hex::encode(names::hash_name(name).unwrap_or([0u8; 32]));
+    // A zero hash is not a name. `hash_name` only fails on a name that is not
+    // valid, and the coin lookups below are keyed by this hash — so the
+    // fallback answered "no reveal coins" for every name, which reads as
+    // nothing to redeem.
+    let name_hash_hex = hex::encode(names::hash_name(name)?);
     // Every bid of THIS auction, not the newest one and not every bid the
     // profile has ever placed on the name. Both wrong answers were live:
     // picking one commitment's address was never well defined (`created_at`
@@ -595,28 +601,27 @@ pub(crate) fn find_name_action_context(
     // with "no unspent bid coin". This is the same set `build_reveal_draft`
     // builds its transaction from, so the button and the builder cannot
     // disagree.
-    let bid_coin = commitments.iter().find_map(|b| {
-        queries::find_unspent_covenant_utxo(
+    let mut bid_coin = None;
+    for b in &commitments {
+        if let Some(coin) = queries::find_unspent_covenant_utxo(
             conn,
             profile_id,
             &b.address,
             sync::COV_BID as i64,
             name,
             &b.name_hash_hex,
-        )
-        .ok()
-        .flatten()
-    });
+        )? {
+            bid_coin = Some(coin);
+            break;
+        }
+    }
     let reveal_coins = queries::find_unspent_covenant_utxos_by_name_hash(
         conn,
         profile_id,
         COV_REVEAL as i64,
         &name_hash_hex,
-    )
-    .unwrap_or_default();
-    let owner_coin = queries::get_name_coin(conn, profile_id, name)
-        .ok()
-        .flatten();
+    )?;
+    let owner_coin = queries::get_name_coin(conn, profile_id, name)?;
     // A reveal coin that is NOT the name's owner is a losing bid this wallet
     // can still reclaim. Outbidding yourself leaves exactly this: you own the
     // name AND hold losing reveals on it.
