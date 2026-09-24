@@ -396,8 +396,12 @@ impl NodeRpcClient {
         self.source
     }
 
-    /// Test-only accessor for the resolved node URL (after trailing-slash trim).
-    #[cfg(test)]
+    /// The node URL this client actually talks to (after trailing-slash trim).
+    ///
+    /// A message that names the node must read it from here rather than from
+    /// global settings: a profile may resolve to its own endpoint (ADR-001),
+    /// and naming the global URL then sends the user to fix a node the failing
+    /// request never touched.
     pub fn node_url(&self) -> &str {
         &self.node_url
     }

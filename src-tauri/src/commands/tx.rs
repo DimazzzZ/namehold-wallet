@@ -215,20 +215,25 @@ pub(crate) async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Opti
             }
             // 2) Ask the node for an estimate — same behavior as before.
             // Per-profile node override routing (ADR-001): if an active profile
-            // exists, use its effective node config; otherwise fall back to global.
-            let client = if let Some(id) = profile_id {
-                match state.db.lock() {
-                    Ok(conn) => NodeRpcClient::for_profile(&conn, &id)
-                        .unwrap_or_else(|_| NodeRpcClient::from_settings(&s)),
-                    Err(_) => NodeRpcClient::from_settings(&s),
-                }
-            } else {
-                NodeRpcClient::from_settings(&s)
+            // exists, use its effective node config; with no profile at all
+            // there is no override to honour, so global is the whole answer.
+            // A profile whose config will not resolve falls through to the
+            // built-in rate rather than to global's node: a fee estimate from
+            // another chain's node is worse than no estimate.
+            let client = match profile_id.filter(|id| !id.is_empty()) {
+                Some(id) => match state.db.lock() {
+                    Ok(conn) => NodeRpcClient::for_profile(&conn, &id).ok(),
+                    Err(_) => None,
+                },
+                None => Some(NodeRpcClient::from_settings(&s)),
             };
-            client
-                .estimate_smart_fee(6)
-                .await
-                .unwrap_or(send::DEFAULT_FEE_RATE_PER_BYTE)
+            match client {
+                Some(c) => c
+                    .estimate_smart_fee(6)
+                    .await
+                    .unwrap_or(send::DEFAULT_FEE_RATE_PER_BYTE),
+                None => send::DEFAULT_FEE_RATE_PER_BYTE,
+            }
         }
         None => send::DEFAULT_FEE_RATE_PER_BYTE,
     }
@@ -246,7 +251,7 @@ pub async fn sync_wallet_state(
 ) -> Result<serde_json::Value, AppError> {
     // 1. Snapshot addresses + settings under the lock, then release it before
     //    any network I/O.
-    let (profile_id, profile_network, addresses, settings, client) = {
+    let (profile_id, profile_network, addresses, client) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let profile = match wallet_profile_id {
             Some(id) => db::queries::get_wallet_profile(&conn, &id)?
@@ -285,13 +290,12 @@ pub async fn sync_wallet_state(
                 }
             }
         }
-        let settings = db::queries::get_settings(&conn)?;
         // Per-profile node override routing (ADR-001): the sync must use the
         // profile's effective node config (override -> global -> default), not
         // the raw global settings. Build the client while the lock is held so
         // the effective-config resolver can read `profile_settings`.
         let client = NodeRpcClient::for_profile(&conn, &profile.id)?;
-        (profile.id, profile.network, addresses, settings, client)
+        (profile.id, profile.network, addresses, client)
     };
 
     // Probe the node first. If it's unreachable, that's expected in explorer /
@@ -326,13 +330,13 @@ pub async fn sync_wallet_state(
         }
     };
 
-    // 2. Fetch coins per address (network I/O, no lock held).
-    let node_url = settings
-        .get("node_rpc_url")
-        .map(|s| s.as_str())
-        .unwrap_or("the configured node");
+    // 2. Fetch coins per address (network I/O, no lock held). The URL named in
+    // any failure is the one this client resolved through the profile, not the
+    // global setting: they differ whenever the profile overrides it, and the
+    // global one would send the user to fix a node that was never asked.
+    let node_url = client.node_url().to_string();
     let (all_coins, txs) =
-        fetch_wallet_coins_and_txs_with_client(&client, &addresses, node_url).await?;
+        fetch_wallet_coins_and_txs_with_client(&client, &addresses, &node_url).await?;
     // Balances below are split on coinbase maturity, which is per-network.
     let sync_network = derivation::network_from_profile(&profile_network)?;
 

@@ -28,9 +28,10 @@ _Avoid_: Sync mode
 The tuple `(node_rpc_url, node_rpc_api_key, chain_source)` that tells the wallet how to reach a node. Can be global (applies to all profiles) or per-profile (applies only to that profile). Per-profile overrides the global.
 _Avoid_: Connection settings (too vague)
 
-**Per-slot per-profile override**:
-A per-profile override of a single slot's source that takes precedence over the global default for that slot. A profile resolves two independent slots — the read slot and the write (send) slot — and each carries its own override flag. A profile may override its read slot (e.g. read via explorer) while inheriting the write slot from global, or vice versa. Stored in `profile_settings` table. If an override is set and invalid (unreachable, mismatched network), it is a configuration error for that slot, not a fallback to global.
-_Avoid_: Per-profile override (imprecise now that override is per-slot), profile-specific node, profile node setting
+**Per-profile override**:
+A per-profile choice of node configuration that takes precedence over the global default. Stored in the `profile_settings` table, one row per key. If an override is set and invalid (unreachable, mismatched network), it is a configuration error for that profile, not a fallback to global.
+_Planned, not built_: splitting this per *slot*, so a profile could override its read slot (e.g. read via explorer) while inheriting the write slot from global. The table has no slot column and resolution returns one tuple; see step 8 of the [per-profile node spec](./docs/specs/2026-09-15-per-profile-node-banner-and-preflight.md). Until then "per-slot per-profile override" names something the wallet does not do.
+_Avoid_: Profile-specific node, profile node setting
 
 **Preflight**:
 A check performed before an operation (sync, read, broadcast) to ensure the node is reachable and on the correct network for the active profile. Returns a status (ready, missing, misconfigured) and optionally a suggested fix.
@@ -41,5 +42,5 @@ The node's reported chain (from `getblockchaininfo`) does not match the profile'
 _Avoid_: Chain mismatch (same thing, but "network" is the profile's term)
 
 **Effective node config**:
-The resolved sources for a profile after applying the resolution order per slot: per-slot per-profile override (if set) → global settings (if set) → built-in default. Resolution runs independently for the read slot and the write (send) slot, so the effective read source and effective write source can differ (e.g. read via explorer, write via a local node). Each resolved slot is a `(node_rpc_url, node_rpc_api_key, chain_source)` tuple; the write slot may resolve to none when no node is available to send through.
+The resolved node configuration for a profile after applying the resolution order, evaluated independently per key: per-profile override (if set and non-empty) → global settings (if set) → built-in default. The result is one `(node_rpc_url, node_rpc_api_key, chain_source)` tuple, plus whether the profile's own override supplied it — which is what keeps the loopback-port realign off a URL the user chose. A profile that does not resolve is an error, never a fallback to global.
 _Avoid_: Resolved config (same meaning, but "effective" emphasizes the resolution order)

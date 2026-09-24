@@ -35,7 +35,6 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::commands::read::resolve_profile;
-use crate::db::queries;
 use crate::error::AppError;
 use crate::noncustodial::sync::{
     COV_BID, COV_CLAIM, COV_FINALIZE, COV_NONE, COV_OPEN, COV_REDEEM, COV_REGISTER, COV_RENEW,
@@ -326,17 +325,13 @@ pub async fn read_action_history(
     };
 
     // Snapshot addresses + build the node client under a short DB lock; drop before .await.
-    // Per-profile node override routing (ADR-001): if an active profile exists,
-    // use its effective node config; otherwise fall back to global settings.
+    // Per-profile node override routing (ADR-001): this profile's effective
+    // node config, and an error when it will not resolve. Falling back to
+    // global would list another node's view of this wallet's history.
     let (addresses, node) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let addrs = load_wallet_addresses(&conn, &profile_id)?;
-        let client = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &profile_id)
-            .unwrap_or_else(|_| {
-                // Fallback to global settings if profile config is missing or misconfigured.
-                let settings = queries::get_settings(&conn).unwrap_or_default();
-                crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings)
-            });
+        let client = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &profile_id)?;
         (addrs, client)
     };
     if addresses.is_empty() {

@@ -304,17 +304,18 @@ pub async fn claim_paid_transfer(
         // Per-profile node override routing (ADR-001): a paid swap is verified
         // against a node on the active profile's network. Use the active
         // profile's effective node config (per-profile override -> global
-        // settings -> built-in default). Fall back to global settings when
-        // there is no active profile or its config is missing/misconfigured.
-        let client = match queries::get_active_profile_id(&db) {
-            Ok(profile_id) => NodeRpcClient::for_profile(&db, &profile_id).unwrap_or_else(|_| {
-                let settings = queries::get_settings(&db).unwrap_or_default();
-                NodeRpcClient::from_settings(&settings)
-            }),
-            Err(_) => {
+        // settings -> built-in default). A profile whose config will not
+        // resolve is returned as the configuration error it is: this decides
+        // whether a payment arrived, and asking a node on another chain
+        // answers a different question.
+        let client = match queries::get_active_profile_id(&db)? {
+            // No active profile — the id is stored as an empty string, not an
+            // error — so there is nothing that could override.
+            id if id.is_empty() => {
                 let settings = queries::get_settings(&db)?;
                 NodeRpcClient::from_settings(&settings)
             }
+            profile_id => NodeRpcClient::for_profile(&db, &profile_id)?,
         };
         (offer, client)
     };

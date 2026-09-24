@@ -238,19 +238,22 @@ async fn probe_node(state: &AppState) -> Option<NodeProbe> {
     // Per-profile node override routing (ADR-001): probe the active profile's
     // effective node config (per-profile override -> global settings ->
     // built-in default) so the tray/status reflects the active profile's node.
-    // Fall back to global settings when there is no active profile or its
-    // config is missing/misconfigured.
+    // With no active profile at all there is no override to honour, so global
+    // is the whole answer; a profile whose own config will not resolve is a
+    // configuration error, and this probe reports "cannot tell" rather than
+    // quietly describing a node the profile does not use.
     let client = {
         let db = state.db.lock().ok()?;
         match db::queries::get_active_profile_id(&db) {
-            Ok(profile_id) => NodeRpcClient::for_profile(&db, &profile_id).unwrap_or_else(|_| {
-                let settings = db::queries::get_settings(&db).unwrap_or_default();
-                NodeRpcClient::from_settings(&settings)
-            }),
-            Err(_) => {
+            // No active profile — the id is stored as an empty string, not an
+            // error — so there is nothing that could override, and global is
+            // the whole answer.
+            Ok(id) if id.is_empty() => {
                 let settings = db::queries::get_settings(&db).ok()?;
                 NodeRpcClient::from_settings(&settings)
             }
+            Ok(profile_id) => NodeRpcClient::for_profile(&db, &profile_id).ok()?,
+            Err(_) => return None,
         }
     };
     client
@@ -469,31 +472,43 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
     // but only when the scoped root does not already hold a chain ("do nothing
     // if we already have"). Mainnet is never touched.
     migrate_network_prefix(&state, network, &data_dir)?;
-    // Use the same effective api-key the RPC client uses (explicit setting, else
-    // the data dir's hsd.conf), so the node we start and the node we talk to agree.
+    // Use the same effective api-key the RPC client uses, resolved through the
+    // active profile (per-profile override -> global -> hsd.conf) so the node
+    // we start and the node we talk to agree. Reading global settings here
+    // handed a profile with its own key a node started with somebody else's.
+    // `node_mode` stays global: it is not part of the ADR-001 tuple.
+    //
+    // The same resolution decides whether realign may touch the URL, so both
+    // are taken under one lock.
     let (api_key, node_mode) = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let profile_id = db::queries::get_active_profile_id(&db)?;
+        let effective =
+            crate::noncustodial::node_config::effective_node_config_for_profile(&db, &profile_id)?;
         let settings = db::queries::get_settings(&db)?;
-        let api_key = crate::noncustodial::rpc::resolve_node_api_key(&settings);
         let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
-        (api_key, node_mode)
-    };
 
-    // hsd will listen on this network's RPC port, but `node_rpc_url` keeps
-    // whatever was seeded — the mainnet 12037. Left alone, the wallet starts a
-    // regtest node and then talks to a port nothing is listening on. Realign a
-    // stale loopback default now; a custom port or a remote host is left as the
-    // user set it (see `realign_loopback_rpc_url`).
-    {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let current = db::queries::get_settings(&db)?
-            .get("node_rpc_url")
-            .cloned()
-            .unwrap_or_default();
-        if let Some(fixed) = crate::noncustodial::rpc::realign_loopback_rpc_url(&current, network) {
-            db::queries::set_setting(&db, "node_rpc_url", &fixed)?;
+        // hsd will listen on this network's RPC port, but a globally seeded
+        // `node_rpc_url` keeps whatever it was given — the mainnet 12037. Left
+        // alone, the wallet starts a regtest node and then talks to a port
+        // nothing is listening on. Realign a stale loopback default now; a
+        // custom port or a remote host is left as the user set it (see
+        // `realign_loopback_rpc_url`).
+        //
+        // ADR-001 (Interaction with N11): a profile that supplies its own URL
+        // has made an explicit choice, and rewriting it — even a "stale
+        // default" — is the silent abandonment ADR-002 refuses. Realign
+        // therefore applies only to a URL that came from the global fallback,
+        // and it writes back to the global setting it came from.
+        if !effective.url_from_override {
+            if let Some(fixed) =
+                crate::noncustodial::rpc::realign_loopback_rpc_url(&effective.node_rpc_url, network)
+            {
+                db::queries::set_setting(&db, "node_rpc_url", &fixed)?;
+            }
         }
-    }
+        (effective.node_rpc_api_key, node_mode)
+    };
 
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| AppError::Other(format!("cannot create data dir {data_dir}: {e}")))?;
@@ -694,19 +709,20 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
     // answering to stop. Best-effort: if nothing's reachable, that's fine.
     // Per-profile node override routing (ADR-001): stop the node the active
     // profile is actually pointed at (per-profile override -> global settings
-    // -> built-in default). Fall back to global settings when there is no
-    // active profile or its config is missing/misconfigured.
+    // -> built-in default). With no active profile there is no override to
+    // honour; a profile whose own config will not resolve is returned as the
+    // configuration error it is, because "stop the node" aimed at the wrong
+    // endpoint can stop somebody else's.
     let client = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        match db::queries::get_active_profile_id(&db) {
-            Ok(profile_id) => NodeRpcClient::for_profile(&db, &profile_id).unwrap_or_else(|_| {
-                let settings = db::queries::get_settings(&db).unwrap_or_default();
-                NodeRpcClient::from_settings(&settings)
-            }),
-            Err(_) => {
+        match db::queries::get_active_profile_id(&db)? {
+            // No active profile — the id is stored as an empty string, not an
+            // error — so there is nothing that could override.
+            id if id.is_empty() => {
                 let settings = db::queries::get_settings(&db)?;
                 NodeRpcClient::from_settings(&settings)
             }
+            profile_id => NodeRpcClient::for_profile(&db, &profile_id)?,
         }
     };
     let _ = client.stop().await;

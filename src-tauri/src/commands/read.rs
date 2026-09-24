@@ -182,12 +182,11 @@ pub(crate) async fn node_tip_height_if_synced_from_profile_with_network(
         Ok(c) => c,
         Err(_) => return None,
     };
-    let client = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, profile_id)
-        .unwrap_or_else(|_| {
-            // Fallback to global settings if profile config is missing or misconfigured.
-            let settings = queries::get_settings(&conn).unwrap_or_default();
-            crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings)
-        });
+    // ADR-001: a profile whose node config will not resolve is a configuration
+    // error for that profile, not a fallback to global. This gate answers
+    // "is this profile's node authoritative?", and global's node is not an
+    // answer to that question — it may be another chain entirely.
+    let client = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, profile_id).ok()?;
     node_tip_height_if_synced_with_client(&client, expected_network).await
 }
 

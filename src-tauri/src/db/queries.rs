@@ -2749,6 +2749,42 @@ pub fn set_bid_reveal_txid(
     Ok(())
 }
 
+/// Whether a wallet profile row exists.
+///
+/// Node-config resolution (ADR-001) treats a missing profile as a hard error
+/// rather than a fallback to global settings, so it has to ask this before it
+/// merges anything.
+pub fn wallet_profile_exists(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<bool, AppError> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) > 0 FROM wallet_profiles WHERE id = ?1",
+        [profile_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// All `profile_settings` rows for one profile, as a key/value map.
+///
+/// These are the per-profile overrides of ADR-001. An absent key means "no
+/// choice made here", which resolution reads as "fall back to global".
+pub fn get_profile_settings(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<std::collections::HashMap<String, String>, AppError> {
+    let mut stmt = conn.prepare("SELECT key, value FROM profile_settings WHERE profile_id = ?1")?;
+    let rows = stmt.query_map([profile_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (k, v) = row?;
+        map.insert(k, v);
+    }
+    Ok(map)
+}
+
 #[cfg(test)]
 mod noncustodial_query_tests {
     use super::*;

@@ -1427,6 +1427,40 @@ use crate::commands::node::{
     PrefixMigration,
 };
 
+#[tokio::test]
+async fn probe_refuses_a_profile_whose_node_config_will_not_resolve() {
+    // ADR-001: "a per-profile override that fails is not a fallback — it is a
+    // user-facing error". The probe used to swallow the failure and describe
+    // whatever node global happens to name, which on another chain is a
+    // confident answer about somebody else's node.
+    let mut server_global = mockito::Server::new_async().await;
+    let m = server_global
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":99,"headers":99,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .expect(0)
+        .create_async()
+        .await;
+
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server_global.url()).unwrap();
+    // An active id pointing at a profile that does not exist: resolution
+    // returns NotFound, which is exactly the "will not resolve" case.
+    db::queries::set_setting(&conn, "active_wallet_profile_id", "ghost").unwrap();
+
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+    assert!(
+        !crate::commands::node::probe_and_update(&state).await,
+        "an unresolvable profile config must read as no node, not as global's"
+    );
+    m.assert_async().await;
+}
+
 /// A unique scratch dir under the OS temp dir, cleaned on drop.
 struct Scratch(std::path::PathBuf);
 impl Scratch {

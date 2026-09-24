@@ -458,23 +458,19 @@ pub async fn run_sync_steps(
     let node_authoritative = if node_mode.is_spv() {
         false
     } else {
-        // The network belongs to the profile being synced, not to whichever
-        // profile happens to be active: a node on another chain must never be
-        // authoritative for this one.
-        let snapshot = open_conn(db_path).ok().and_then(|c| {
-            let settings = queries::get_settings(&c).ok()?;
-            let network = queries::get_wallet_profile(&c, profile_id)
-                .ok()
-                .flatten()
-                .map(|p| p.network);
-            Some((settings, network))
-        });
-        match snapshot {
-            Some((s, network)) => {
-                crate::commands::read::node_ready_from_settings(&s, network.as_deref()).await
-            }
-            None => false,
-        }
+        // Both the network and the node belong to the profile being synced,
+        // not to whichever profile happens to be active. The network, because
+        // a node on another chain must never be authoritative for this one.
+        // The node, because this profile may point at its own (ADR-001) — and
+        // the steps this gate governs already build their client per profile,
+        // so asking the global node whether it is caught up decided what to do
+        // with a node nobody was going to talk to.
+        let network = open_conn(db_path)
+            .ok()
+            .and_then(|c| queries::get_wallet_profile(&c, profile_id).ok().flatten())
+            .map(|p| p.network);
+        crate::commands::read::node_ready_from_profile(db_path, profile_id, network.as_deref())
+            .await
     };
 
     // Step 2: Repair owned names from inventory + tracked (explorer only).
