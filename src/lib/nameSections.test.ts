@@ -1,55 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { resolveSections } from "./nameSections";
-import type { NameActionCapabilities, NameActionCapability } from "../types";
-
-const no = (reason: string): NameActionCapability => ({ allowed: false, reason });
-const yes: NameActionCapability = { allowed: true, reason: null };
-
-/** A capabilities object with everything refused; each test says what it allows. */
-function caps(over: Partial<NameActionCapabilities> = {}): NameActionCapabilities {
-  const denied = no("not now");
-  return {
-    name: "example",
-    phase: "CLOSED",
-    taskState: "unavailableOther",
-    ownsName: false,
-    transferPending: false,
-    redeemableRevealCount: 0,
-    redeemableValueDoos: 0,
-    nameIsRegistered: false,
-    hasBidCommitment: false,
-    hasBidCoin: false,
-    hasRevealCoin: false,
-    hasOwnerCoin: false,
-    revealTxid: null,
-    bidValueDoos: null,
-    lockupValueDoos: null,
-    myBidCount: 0,
-    canOpen: denied,
-    canBid: denied,
-    canReveal: denied,
-    canRedeem: denied,
-    canRegister: denied,
-    canUpdate: denied,
-    canTransfer: denied,
-    canFinalize: denied,
-    canCancelTransfer: denied,
-    canRenew: denied,
-    canRevoke: denied,
-    nextActionKey: null,
-    nextActionLabel: null,
-    nextActionReason: null,
-    countdownLabel: null,
-    countdownBlocks: null,
-    countdownHours: null,
-    auctionBiddingBlocks: null,
-    auctionRevealBlocks: null,
-    pendingBroadcastAction: null,
-    strandedBidCount: 0,
-    strandedLockupDoos: 0,
-    ...over,
-  };
-}
+import {
+  allowed as yes,
+  makeCapabilities as caps,
+  refused as no,
+} from "../test/fixtures/capabilities";
 
 describe("resolveSections — leading your own auction is not owning the name", () => {
   // The case the whole three-state split exists for. During REVEAL hsd reports

@@ -251,3 +251,44 @@ fn migration_032_keeps_an_explorer_url_the_user_chose() {
         .unwrap();
     assert_eq!(value, "https://explorer.example.test");
 }
+
+// --- 030's backfill offsets must still describe the consensus they encode ---
+
+/// Migration 030 backfills `name_start_height` from `reveal_end_height` using a
+/// per-network offset spelled out as a literal: 2197, 469, 21.
+///
+/// The literals are deliberate. A migration is a one-shot transformation of
+/// rows written under the rules of its own time, so deriving the offset from
+/// live constants would let a later consensus change silently rewrite history
+/// differently. But nothing then tells anyone editing `NameParams` that a
+/// migration encodes the old values — which is what this test is for. If it
+/// fails, 030 is not wrong; it is a record of what was true, and the failure
+/// says the rules have moved since.
+#[test]
+fn migration_030_offsets_match_the_name_params_they_were_derived_from() {
+    use crate::noncustodial::network::Network;
+
+    // reveal_end = start + (tree_interval + 1) + bidding_period + reveal_period
+    let offset = |n: Network| {
+        let p = n.name_params();
+        (p.tree_interval + 1 + p.bidding_period + p.reveal_period) as i64
+    };
+
+    assert_eq!(offset(Network::Main), 2197, "mainnet offset in 030");
+    assert_eq!(offset(Network::Testnet), 469, "testnet offset in 030");
+    assert_eq!(offset(Network::Regtest), 21, "regtest offset in 030");
+
+    // The migration's CASE has no arm for simnet. That is safe only while the
+    // schema refuses to store one.
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&conn).unwrap();
+    let rejected = conn.execute(
+        "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub)
+         VALUES ('sim', 'Sim', 'watch_only_xpub', 'simnet', 'xpubSIM')",
+        [],
+    );
+    assert!(
+        rejected.is_err(),
+        "030 assumes simnet cannot be stored; the CHECK must keep it out"
+    );
+}

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { makeCapabilities } from "../../test/fixtures/capabilities";
 import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -476,38 +477,21 @@ describe("NameActionsModal — local bid shown before reveal", () => {
   }) {
     return (cmd: string) => {
       if (cmd === "get_name_action_capabilities") {
-        return Promise.resolve({
-          name: "biddingtld",
-          phase: "BIDDING",
-          taskState: "waitingForBidding",
-          ownsName: false,
-          nameIsRegistered: false,
-          transferPending: false,
-          redeemableRevealCount: 0,
-          redeemableValueDoos: 0,
-          hasBidCommitment: opts.hasBidCommitment,
-          hasRevealCoin: false,
-          hasOwnerCoin: false,
-          bidValueDoos: opts.bidValueDoos,
-          lockupValueDoos: opts.lockupValueDoos ?? null,
-          canOpen: { allowed: false, reason: null },
-          canBid: { allowed: false, reason: "Already bid" },
-          canReveal: { allowed: false, reason: "Reveal not open" },
-          canRedeem: { allowed: false, reason: null },
-          canRegister: { allowed: false, reason: null },
-          canUpdate: { allowed: false, reason: null },
-          canTransfer: { allowed: false, reason: null },
-          canFinalize: { allowed: false, reason: null },
-          canCancelTransfer: { allowed: false, reason: null },
-          canRenew: { allowed: false, reason: null },
-          canRevoke: { allowed: false, reason: null },
-          nextActionKey: null,
-          nextActionLabel: null,
-          nextActionReason: null,
-          countdownLabel: null,
-          countdownBlocks: null,
-          countdownHours: null,
-        });
+        return Promise.resolve(
+          makeCapabilities({
+            name: "biddingtld",
+            phase: "BIDDING",
+            // What the backend derives for BIDDING: more bids are allowed for
+            // the rest of the window, however many this wallet already holds.
+            taskState: "readyToBid",
+            hasBidCommitment: opts.hasBidCommitment,
+            myBidCount: opts.hasBidCommitment ? 1 : 0,
+            bidValueDoos: opts.bidValueDoos,
+            lockupValueDoos: opts.lockupValueDoos ?? null,
+            canBid: { allowed: true, reason: null },
+            canReveal: { allowed: false, reason: "Reveal not open" },
+          }),
+        );
       }
       switch (cmd) {
         case "list_wallet_profiles":

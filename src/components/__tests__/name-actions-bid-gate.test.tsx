@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { makeCapabilities } from "../../test/fixtures/capabilities";
 import "@testing-library/jest-dom";
 import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -39,42 +40,24 @@ const profile = {
 function route(phase: "OPENING" | "BIDDING", canBidAllowed: boolean) {
   return (cmd: string) => {
     if (cmd === "get_name_action_capabilities") {
-      return Promise.resolve({
-        name: "examplename",
-        phase,
-        taskState: "none",
-        ownsName: false,
-        nameIsRegistered: false,
-        transferPending: false,
-        redeemableRevealCount: 0,
-        redeemableValueDoos: 0,
-        hasBidCommitment: canBidAllowed ? false : phase === "BIDDING",
-        hasBidCoin: false,
-        hasRevealCoin: false,
-        hasOwnerCoin: false,
-        revealTxid: null,
-        bidValueDoos: null,
-        canOpen: { allowed: false, reason: null },
-        canBid: {
-          allowed: canBidAllowed,
-          reason: canBidAllowed ? null : phase === "OPENING" ? "Auction is opening" : "Already bid",
-        },
-        canReveal: { allowed: false, reason: null },
-        canRedeem: { allowed: false, reason: null },
-        canRegister: { allowed: false, reason: null },
-        canUpdate: { allowed: false, reason: null },
-        canTransfer: { allowed: false, reason: null },
-        canFinalize: { allowed: false, reason: null },
-        canCancelTransfer: { allowed: false, reason: null },
-        canRenew: { allowed: false, reason: null },
-        canRevoke: { allowed: false, reason: null },
-        nextActionKey: null,
-        nextActionLabel: null,
-        nextActionReason: null,
-        countdownLabel: null,
-        countdownBlocks: null,
-        countdownHours: null,
-      });
+      return Promise.resolve(
+        makeCapabilities({
+          name: "examplename",
+          phase,
+          // What the backend actually derives for these phases.
+          taskState: phase === "OPENING" ? "waitingForBidding" : "readyToBid",
+          hasBidCommitment: canBidAllowed ? false : phase === "BIDDING",
+          myBidCount: canBidAllowed || phase === "OPENING" ? 0 : 1,
+          canBid: {
+            allowed: canBidAllowed,
+            reason: canBidAllowed
+              ? null
+              : phase === "OPENING"
+                ? "Auction is opening"
+                : "Already bid",
+          },
+        }),
+      );
     }
     switch (cmd) {
       case "list_wallet_profiles":

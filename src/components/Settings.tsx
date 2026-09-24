@@ -6,13 +6,10 @@ import { open, save } from "../lib/dialog";
 import { isTauri } from "../lib/runtime";
 import { defaultNodeRpcUrl } from "../lib/utils";
 import { invoke } from "../lib/invoke";
-import {
-  checkNotificationPermission,
-  requestNotificationPermission,
-  type PermissionStatus,
-} from "../lib/notifications";
+import { requestNotificationPermission } from "../lib/notifications";
 import { Input } from "./ui/Input";
 import { Button } from "./ui/Button";
+import { NotificationToggle } from "./ui/NotificationToggle";
 import { StickyFooter } from "./ui/StickyFooter";
 import { AllowRemoteBroadcastToggle } from "./ui/AllowRemoteBroadcastToggle";
 import { RemoteNodeFields } from "./ui/RemoteNodeFields";
@@ -663,58 +660,18 @@ function UpdateNotificationSettings({
   form: Record<string, string>;
   updateField: (key: string, value: string) => void;
 }) {
-  const [permission, setPermission] = useState<PermissionStatus | null>(null);
-  const [requesting, setRequesting] = useState(false);
-  const enabled = settingToBool(form.update_notify_enabled);
-
-  useEffect(() => {
-    checkNotificationPermission().then(setPermission);
-  }, []);
-
-  const onToggle = async (checked: boolean) => {
-    updateField("update_notify_enabled", boolToSetting(checked));
-    if (!checked) return;
-    setRequesting(true);
-    try {
-      const status = await requestNotificationPermission();
-      setPermission(status);
-    } finally {
-      setRequesting(false);
-    }
-  };
-
   return (
-    <div className="space-y-3">
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => onToggle(e.target.checked)}
-          data-testid="update-notify-toggle"
-        />
-        Notify when a new version is available
-      </label>
-
-      {enabled && (
-        <>
-          {permission === "denied" && (
-            <div
-              className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2"
-              data-testid="update-notification-permission-denied"
-            >
-              OS notifications are blocked for this app. Enable them in your system notification
-              settings — otherwise you won&apos;t get an alert when a new version is available.
-            </div>
-          )}
-          {permission === "unsupported" && (
-            <div className="text-xs text-gray-500">
-              OS notifications aren&apos;t available outside the desktop app.
-            </div>
-          )}
-          {requesting && <div className="text-xs text-gray-500">Requesting permission…</div>}
-        </>
-      )}
-    </div>
+    <NotificationToggle
+      settingKey="update_notify_enabled"
+      label="Notify when a new version is available"
+      testId="update-notify-toggle"
+      deniedTestId="update-notification-permission-denied"
+      deniedConsequence={
+        <>otherwise you won&apos;t get an alert when a new version is available.</>
+      }
+      form={form}
+      updateField={updateField}
+    />
   );
 }
 
@@ -1078,74 +1035,36 @@ function NotificationSettings({
   form: Record<string, string>;
   updateField: (key: string, value: string) => void;
 }) {
-  const [permission, setPermission] = useState<PermissionStatus | null>(null);
-  const [requesting, setRequesting] = useState(false);
-  const enabled = settingToBool(form.deadline_notify_enabled);
-
-  useEffect(() => {
-    checkNotificationPermission().then(setPermission);
-  }, []);
-
-  const onToggle = async (checked: boolean) => {
-    updateField("deadline_notify_enabled", boolToSetting(checked));
-    if (!checked) return;
-    setRequesting(true);
-    try {
-      const status = await requestNotificationPermission();
-      setPermission(status);
-    } finally {
-      setRequesting(false);
-    }
-  };
-
   return (
-    <div className="space-y-3">
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => onToggle(e.target.checked)}
-          data-testid="deadline-notify-toggle"
-        />
-        Enable deadline notifications
-      </label>
-
-      {enabled && (
+    <NotificationToggle
+      settingKey="deadline_notify_enabled"
+      label="Enable deadline notifications"
+      testId="deadline-notify-toggle"
+      deniedTestId="notification-permission-denied"
+      deniedConsequence={
         <>
-          {permission === "denied" && (
-            <div
-              className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2"
-              data-testid="notification-permission-denied"
-            >
-              OS notifications are blocked for this app. Enable them in your system notification
-              settings — deadlines will still show in-app, but you won&apos;t get an alert when the
-              app isn&apos;t open.
-            </div>
-          )}
-          {permission === "unsupported" && (
-            <div className="text-xs text-gray-500">
-              OS notifications aren&apos;t available outside the desktop app.
-            </div>
-          )}
-          {requesting && <div className="text-xs text-gray-500">Requesting permission…</div>}
-
-          <div className="grid grid-cols-2 gap-3">
-            <Input
-              label="Reveal window lead time (blocks)"
-              value={form.deadline_notify_reveal_lead_blocks ?? ""}
-              onChange={(e) => updateField("deadline_notify_reveal_lead_blocks", e.target.value)}
-              placeholder="144"
-            />
-            <Input
-              label="Renewal lead time (days)"
-              value={form.deadline_notify_renewal_lead_days ?? ""}
-              onChange={(e) => updateField("deadline_notify_renewal_lead_days", e.target.value)}
-              placeholder="30"
-            />
-          </div>
+          deadlines will still show in-app, but you won&apos;t get an alert when the app isn&apos;t
+          open.
         </>
-      )}
-    </div>
+      }
+      form={form}
+      updateField={updateField}
+    >
+      <div className="grid grid-cols-2 gap-3">
+        <Input
+          label="Reveal window lead time (blocks)"
+          value={form.deadline_notify_reveal_lead_blocks ?? ""}
+          onChange={(e) => updateField("deadline_notify_reveal_lead_blocks", e.target.value)}
+          placeholder="144"
+        />
+        <Input
+          label="Renewal lead time (days)"
+          value={form.deadline_notify_renewal_lead_days ?? ""}
+          onChange={(e) => updateField("deadline_notify_renewal_lead_days", e.target.value)}
+          placeholder="30"
+        />
+      </div>
+    </NotificationToggle>
   );
 }
 
@@ -1156,81 +1075,37 @@ function WatchlistNotificationSettings({
   form: Record<string, string>;
   updateField: (key: string, value: string) => void;
 }) {
-  const [permission, setPermission] = useState<PermissionStatus | null>(null);
-  const [requesting, setRequesting] = useState(false);
-  const enabled = settingToBool(form.watchlist_notify_enabled);
-
-  useEffect(() => {
-    checkNotificationPermission().then(setPermission);
-  }, []);
-
-  const onToggle = async (checked: boolean) => {
-    updateField("watchlist_notify_enabled", boolToSetting(checked));
-    if (!checked) return;
-    setRequesting(true);
-    try {
-      const status = await requestNotificationPermission();
-      setPermission(status);
-    } finally {
-      setRequesting(false);
-    }
-  };
-
   return (
-    <div className="space-y-3">
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => onToggle(e.target.checked)}
-          data-testid="watchlist-notify-toggle"
+    <NotificationToggle
+      settingKey="watchlist_notify_enabled"
+      label="Enable watchlist notifications"
+      testId="watchlist-notify-toggle"
+      deniedTestId="watchlist-notification-permission-denied"
+      deniedConsequence={<>otherwise watchlist alerts won&apos;t reach you.</>}
+      form={form}
+      updateField={updateField}
+    >
+      <div className="grid grid-cols-2 gap-3">
+        <Input
+          label="Bidding-soon lead time (blocks)"
+          type="number"
+          value={form.watchlist_notify_bidding_soon_lead_blocks ?? ""}
+          onChange={(e) => updateField("watchlist_notify_bidding_soon_lead_blocks", e.target.value)}
+          placeholder="144"
+          data-testid="watchlist-notify-bidding-lead-input"
         />
-        Enable watchlist notifications
-      </label>
-
-      {enabled && (
-        <>
-          {permission === "denied" && (
-            <div
-              className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2"
-              data-testid="watchlist-notification-permission-denied"
-            >
-              OS notifications are blocked for this app. Enable them in your system notification
-              settings — otherwise watchlist alerts won&apos;t reach you.
-            </div>
-          )}
-          {permission === "unsupported" && (
-            <div className="text-xs text-gray-500">
-              OS notifications aren&apos;t available outside the desktop app.
-            </div>
-          )}
-          {requesting && <div className="text-xs text-gray-500">Requesting permission…</div>}
-
-          <div className="grid grid-cols-2 gap-3">
-            <Input
-              label="Bidding-soon lead time (blocks)"
-              type="number"
-              value={form.watchlist_notify_bidding_soon_lead_blocks ?? ""}
-              onChange={(e) =>
-                updateField("watchlist_notify_bidding_soon_lead_blocks", e.target.value)
-              }
-              placeholder="144"
-              data-testid="watchlist-notify-bidding-lead-input"
-            />
-            <Input
-              label="Highest-bid threshold (HNS)"
-              type="number"
-              step="0.01"
-              value={form.watchlist_notify_highest_bid_threshold_hns ?? ""}
-              onChange={(e) =>
-                updateField("watchlist_notify_highest_bid_threshold_hns", e.target.value)
-              }
-              placeholder="e.g. 100"
-              data-testid="watchlist-notify-highbid-input"
-            />
-          </div>
-        </>
-      )}
-    </div>
+        <Input
+          label="Highest-bid threshold (HNS)"
+          type="number"
+          step="0.01"
+          value={form.watchlist_notify_highest_bid_threshold_hns ?? ""}
+          onChange={(e) =>
+            updateField("watchlist_notify_highest_bid_threshold_hns", e.target.value)
+          }
+          placeholder="e.g. 100"
+          data-testid="watchlist-notify-highbid-input"
+        />
+      </div>
+    </NotificationToggle>
   );
 }
