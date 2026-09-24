@@ -163,10 +163,11 @@ simnet mine on demand, so the old arithmetic invented six blocks for every idle
 hour and every renewal countdown drifted. A stale height is reported as stale.
 Pinned by `test_has_wall_clock_block_timing_all_variants`.
 
-**N14 — Mainnet-only explorer links appear only on mainnet.** `NameInfoModal`
-and `NameActionsModal` gate their "View on explorer" link on
+**N14 — Mainnet-only explorer links appear only on mainnet.**
+`NameActionsModal` gates its "View on explorer" link on
 `profile.network === "mainnet"`, as `TxInfoModal`, `BlockInfoModal`,
-`ReceiveAddressList` and `WalletView` already did. Shakeshift indexes no other
+`ReceiveAddressList` and `WalletView` already did. (`NameInfoModal` carried the
+same gate and was folded into `NameActionsModal` in #57.) Shakeshift indexes no other
 chain, so the link 404s elsewhere.
 
 **N15 — Starting a node refuses rather than guessing mainnet.**

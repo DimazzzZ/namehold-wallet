@@ -85,9 +85,12 @@ reported as "syncing", not "synced". (The read gate uses `true` for the same
 call because a regtest miner never reports progress — the two call sites are
 deliberately different and each says why.)
 
-**R7 — Network comparison in the probe.** `check_node_connection` reads
+**R7 — Network comparison in the probe.** `check_node_connection` takes the
+network to compare against from its caller when one is supplied — which is how
+onboarding compares before any profile exists — and otherwise reads
 `db::queries::get_active_profile_network(&conn)` (a DB error is returned to
-the UI, not swallowed) and passes it to `check_node_connection_with_client`,
+the UI, not swallowed). Either way it passes the answer to
+`check_node_connection_with_client`,
 which sets `network_matches = noncustodial::network::network_check(expected,
 info.chain)`. Semantics: `Some(false)` = mismatch; `Some(true)` = match;
 `None` = nothing to compare (no active profile, or node reports no `chain`).

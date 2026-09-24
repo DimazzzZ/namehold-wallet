@@ -208,7 +208,7 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 
 ### H. Watchlist
 - [ ] Watchlist page visible in sidebar
-- [ ] Add a name to the watchlist from NameActionsModal or NameInfoModal
+- [ ] Add a name to the watchlist from the name modal
 - [ ] Remove a name from the watchlist
 - [ ] Watchlist table shows Countdown, Highest bid, Expires columns
 - [ ] Owned names get an inline Owned badge
@@ -226,10 +226,12 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] "Reveal Selected" / "Redeem Selected" / "Finalize Selected" work similarly
 - [ ] Deselecting all hides the batch action bar
 
-### J. Paid name swaps
-- [ ] Names in TRANSFER state show "Buy with payment" button (buyer side)
-- [ ] "Sell with payment" flow available for owned names in TRANSFER
-- [ ] Saved offers list shows pending offers
+### J. Paid name swaps (withdrawn)
+The two entry points were removed on 2026-09-21; see
+`docs/specs/2026-09-21-paid-name-swaps.md`. What remains is the claim path for
+an offer recorded before that.
+- [ ] No "Buy with payment" or "Sell with payment" button appears on any name
+- [ ] Saved offers list shows pending offers recorded earlier
 - [ ] claim_paid_transfer verifies the broadcast tx before marking paid
 
 ### K. Bid recovery

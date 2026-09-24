@@ -347,7 +347,6 @@ In the Name Actions modal for an owned name, click **Show all actions**:
 | **Finalize** | Complete a transfer after the lockup period (mainnet: ~2 days). |
 | **Cancel** | Revert a pending transfer before it's finalized. |
 | **Revoke** | Permanently burn the name (irreversible). |
-| **Buy with payment** | Finalize a transfer AND pay the seller in a single transaction (atomic swap). |
 
 All of these need the signer unlocked and a synced node.
 
@@ -367,34 +366,29 @@ Each batch action opens a **confirmation modal** showing the count, estimated
 fee, and a collapsible list of the selected names. Cancel closes without
 broadcasting; Confirm signs + broadcasts the draft in one step.
 
-Batch operations use hsd's `createbatch` RPC, which handles consensus limits
-automatically (chunking to stay under block-size limits).
-
-**Note:** The description above is inaccurate and kept only until the next
-manual pass rewrites this section. In reality, batch operations are built
-client-side as a single transaction (there is no `createbatch` RPC in hsd).
-The client enforces a conservative `MAX_BATCH_SIZE=100` names per batch,
-well below hsd's per-transaction covenant limits (300 OPENS, 600 UPDATES,
-600 RENEWALS). Per-block limits are identical to per-tx limits, so a
-100-item batch will never be rejected on covenant-count grounds. Chunking
-is not implemented — each batch is one atomic transaction with one txid.
+A batch is built in the wallet as one transaction with one txid, so it either
+all lands or none of it does. There is no chunking and no `createbatch` RPC in
+hsd. The wallet caps a batch at 100 names, well under hsd's per-transaction
+covenant limits (300 OPENs, 600 UPDATEs, 600 RENEWs), and per-block limits are
+the same as per-transaction ones — so a full batch is never refused for
+carrying too many covenants.
 
 ### Paid name swaps
 
-To sell a name for HNS (**Sell with payment** flow):
-1. Open the name in **Manage** → **Sell with payment** section.
-2. Enter the buyer's address, your price (HNS), and confirm. This transfers
-   the name to the buyer with a lockup period recorded as a saved offer.
-3. Wait for the buyer to broadcast their finalize-with-payment tx.
-4. Once the buyer's tx confirms, the app verifies it (checks the payment
-   output matches your offer) and marks the offer paid — HNS lands in your
-   wallet atomically.
+Not available. The wallet once offered "Sell with payment" and "Buy with
+payment"; both were withdrawn on 2026-09-21 because the shape they implemented
+could not do what the names promised. A transfer's coin stays at the seller's
+address, so only the seller can finalize — which left "Buy with payment"
+pressable only by the party with nobody to pay — and nothing about the
+transaction was atomic, so "one transaction" meant one wallet funding both
+halves of its own trade.
 
-To buy a name:
-1. Wait for the seller to transfer the name to your address (name shows TRANSFER state).
-2. Click **Buy with payment** → enter seller's address + amount.
-3. Review the draft → sign → broadcast.
-4. The name is finalized and the seller is paid in the same transaction.
+Selling a name for HNS therefore means transferring it and being paid
+separately, with the trust that implies. If you recorded an offer before the
+buttons were withdrawn, its claim panel still appears and still works.
+
+`docs/specs/2026-09-21-paid-name-swaps.md` has the consensus rules behind this
+and what a working implementation would need.
 
 ---
 

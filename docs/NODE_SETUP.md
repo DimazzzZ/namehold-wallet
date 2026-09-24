@@ -57,13 +57,13 @@ Instead of running hsd locally, you can point the wallet at an existing hsd RPC:
   back), so "Test connection" reuses your stored key when the URL you probe matches the
   saved node. A freshly typed URL is probed without the stored key — the secret is never
   sent to an endpoint you just typed.
-- **Network mismatch:** once a wallet profile exists, "Test connection" compares the node's
-  reported network with your wallet's and flags a mismatch (e.g. a testnet node for a
-  mainnet wallet). A mismatched node is refused everywhere: the app will not read from it,
-  will not sync from it, reports it as unable to send, and refuses to broadcast through it —
-  the signed transaction never leaves your device. Settings will not save one either.
-  During first-run onboarding there is no wallet yet, so the comparison starts applying in
-  Settings.
+- **Network mismatch:** "Test connection" compares the node's reported network with the
+  wallet's and flags a mismatch (e.g. a testnet node for a mainnet wallet). A mismatched
+  node is refused everywhere: the app will not read from it, will not sync from it, reports
+  it as unable to send, and refuses to broadcast through it — the signed transaction never
+  leaves your device. Settings will not save one either. This applies during first-run
+  onboarding too: there is no wallet profile yet, so the comparison uses the network you
+  picked on the previous step.
 - **To send:** enable "Allow sending via remote node" (off by default for safety; shown in
   the onboarding Remote step and in Settings → Connections). This sets the
   `allow_remote_broadcast` flag, which gates the broadcast path. Your recovery phrase
@@ -118,15 +118,38 @@ rows inside the shared database or in the node's own datadir.
 
 | Path | What it holds |
 |------|---------------|
-| `~/.namehold/portfolio.db` | The shared SQLite database: wallet profiles, portfolio (UTXOs, name states, transactions), and **all node configuration** (global + per-profile `node_rpc_url`, `node_rpc_api_key`, `chain_source`, per-slot overrides). Used by both the GUI and the `namehold-syncd` daemon. |
+| `~/.namehold/portfolio.db` | The shared SQLite database: wallet profiles, portfolio (UTXOs, name states, transactions), and **all node configuration** (global + per-profile `node_rpc_url`, `node_rpc_api_key`, `chain_source`). Used by both the GUI and the `namehold-syncd` daemon. |
 | `~/.namehold/syncd.pid` | PID file for the background sync daemon (see above). |
 
-**Node RPC config is not stored in files.** The regtest/testnet/mainnet
-connection settings you enter under **Settings → Node RPC** are written as rows
-in `portfolio.db` (keyed by wallet profile, plus a global default), not as a
-per-network config file. Resolution runs independently for the read slot and
-the write (send) slot: per-slot per-profile override → global setting →
-built-in default.
+**Node RPC config is not stored in files.** The connection settings you enter
+under **Settings → Connections** are written as rows in `portfolio.db` (a global
+default, plus per-profile overrides), not as a per-network config file. Each key
+resolves on its own: per-profile override → global setting → built-in default.
+Splitting the read and write sides so a profile could read through one source
+and send through another is planned, not built — see step 8 of
+`docs/specs/2026-09-15-per-profile-node-banner-and-preflight.md`.
+
+### When the wallet calls a node "synced"
+
+The chain tip is the test: the node is synced once the blocks it has applied
+have caught up to the best header it knows about. `verificationprogress` only
+corroborates that, because it can plateau just below 1.0 — around 0.9997 on
+regtest — and a node sitting at the tip would otherwise never qualify. To keep
+a node that reports `blocks == headers` while barely verified from passing,
+progress (when reported at all) must also clear a loose 0.999 floor.
+
+Two fallbacks matter in practice:
+
+- **No header height reported.** Older builds and some nodes do not send one.
+  The wallet falls back to `verificationprogress >= 0.9999`.
+- **Neither reported.** A regtest node with a single miner reports no sync
+  metadata at all. A gate on a node you configured assumes synced, so regtest
+  keeps working; a first-contact probe of a node you have just typed in assumes
+  the opposite, so an unknown node is not trusted on no evidence.
+
+One rule answers this everywhere — the read gate, the write gate, the node
+status panel and "Test connection" — so the label in Settings cannot disagree
+with what reads actually do.
 
 ### Node (hsd) datadirs and default RPC ports
 
@@ -158,7 +181,9 @@ For users who don't need to send transactions or want faster initial setup:
   explorer.
 - **Explorer failover** — set a fallback URL in Settings for when the primary
   explorer is unreachable.
-- **To enable:** Settings → Connections → Node mode → select "SPV" → Save.
+- **To enable:** Settings → Connections → Chain source → select "Local node (SPV)"
+  → Save. There is no separate "Node mode" dropdown; the one selector sets both
+  the source and, for a local node, whether it runs full or SPV.
 - **Status indicator:** StatusStrip shows "Explorer (SPV)" when SPV mode is active.
 
 SPV mode is ideal for:
