@@ -1243,3 +1243,38 @@ fn conservative_no_evidence() {
     assert_eq!(caps.reveal_txid, None);
     assert_eq!(caps.bid_value_doos, None);
 }
+
+// --- The one predicate the ownership rule is spelled with ---
+
+#[test]
+fn only_a_register_or_later_covenant_counts_as_registered() {
+    use crate::noncustodial::covenants::is_registered_owner_covenant;
+    use crate::noncustodial::sync::{
+        COV_BID, COV_FINALIZE, COV_OPEN, COV_REDEEM, COV_REGISTER, COV_RENEW, COV_REVEAL,
+        COV_REVOKE, COV_TRANSFER, COV_UPDATE,
+    };
+
+    // Not registered: the auction covenants, and a REDEEM of a losing bid.
+    for cov in [COV_OPEN, COV_BID, COV_REVEAL, COV_REDEEM] {
+        assert!(
+            !is_registered_owner_covenant(Some(cov as i64)),
+            "covenant {cov} must not read as a registered name"
+        );
+    }
+    // Registered: REGISTER and everything a registered name can become.
+    for cov in [
+        COV_REGISTER,
+        COV_UPDATE,
+        COV_RENEW,
+        COV_TRANSFER,
+        COV_FINALIZE,
+        COV_REVOKE,
+    ] {
+        assert!(
+            is_registered_owner_covenant(Some(cov as i64)),
+            "covenant {cov} must read as a registered name"
+        );
+    }
+    // No owner coin is not registered either — the conservative answer.
+    assert!(!is_registered_owner_covenant(None));
+}

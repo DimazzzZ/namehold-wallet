@@ -1047,11 +1047,7 @@ pub async fn read_name_bids(
             // modal reports those separately.
             let comms: Vec<queries::BidCommitmentRow> = comms
                 .into_iter()
-                .filter(|c| match (nh, c.name_start_height) {
-                    (Some(start), Some(placed)) => placed == start,
-                    (Some(_), None) => true,
-                    (None, _) => true,
-                })
+                .filter(|c| c.belongs_to_auction(nh))
                 .collect();
             (indexed, comms, cursor_h, nh)
         };

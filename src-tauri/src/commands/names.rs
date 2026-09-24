@@ -532,17 +532,9 @@ pub(crate) fn find_name_action_context(
         .into_iter()
         .filter(|b| b.name == name)
         .collect();
-    let belongs_here = |b: &queries::BidCommitmentRow| match (auction_start, b.name_start_height) {
-        (Some(start), Some(placed)) => placed == start,
-        // A commitment recovered from the chain has no recorded auction (030).
-        // Counting one that may be dead is a wrong number; hiding a live one is
-        // a bid the user never gets told to reveal.
-        (Some(_), None) => true,
-        (None, _) => true,
-    };
     let commitments: Vec<queries::BidCommitmentRow> = for_name
         .iter()
-        .filter(|b| belongs_here(b))
+        .filter(|b| b.belongs_to_auction(auction_start))
         .cloned()
         .collect();
     let bid = commitments.first().cloned();
@@ -558,7 +550,7 @@ pub(crate) fn find_name_action_context(
     // with nothing on screen to explain it.
     let (stranded_bid_count, stranded_lockup_doos) = for_name
         .iter()
-        .filter(|b| !belongs_here(b))
+        .filter(|b| !b.belongs_to_auction(auction_start))
         .filter(|b| {
             queries::find_unspent_covenant_utxo(
                 conn,
@@ -1099,21 +1091,18 @@ pub(crate) fn build_name_action_capabilities(
     // the covenant type is below REGISTER (i.e. not already registered).
     let registration_needed = phase == "CLOSED"
         && action_ctx.has_owner_coin
-        && action_ctx
-            .owner_covenant_type
-            .map(|t| t < COV_REGISTER as i64)
-            .unwrap_or(true);
+        && !crate::noncustodial::covenants::is_registered_owner_covenant(
+            action_ctx.owner_covenant_type,
+        );
     let can_register = NameActionCapability {
         allowed: registration_needed,
         reason: if phase != "CLOSED" {
             Some(format!("auction not yet closed (phase: '{phase}')"))
         } else if !action_ctx.has_owner_coin {
             Some("wallet does not own the winning name coin".into())
-        } else if action_ctx
-            .owner_covenant_type
-            .map(|t| t >= COV_REGISTER as i64)
-            .unwrap_or(false)
-        {
+        } else if crate::noncustodial::covenants::is_registered_owner_covenant(
+            action_ctx.owner_covenant_type,
+        ) {
             Some("name is already registered".into())
         } else {
             None
@@ -1127,10 +1116,9 @@ pub(crate) fn build_name_action_capabilities(
     // already names the highest revealer as the owner, so the wallet looked
     // like it owned a name it had not won yet, and offered Update, Transfer,
     // Renew and Revoke on it.
-    let name_is_registered = action_ctx
-        .owner_covenant_type
-        .map(|t| t >= COV_REGISTER as i64)
-        .unwrap_or(false);
+    let name_is_registered = crate::noncustodial::covenants::is_registered_owner_covenant(
+        action_ctx.owner_covenant_type,
+    );
     let can_spend_as_owner = owns_name && name_is_registered;
     let not_registered_reason = "the name is not registered yet";
     let transfer_pending = action_ctx.transfer_has_items.unwrap_or(false);

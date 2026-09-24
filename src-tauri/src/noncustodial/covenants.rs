@@ -15,6 +15,29 @@ use crate::noncustodial::sync::{
 };
 use crate::noncustodial::tx::Covenant;
 
+/// Whether an owner coin's covenant type means the name is REGISTERED — the
+/// point at which holding the coin becomes the right to act on the name.
+///
+/// Owning is not the same question. During REVEAL `getnameinfo` already names
+/// the highest revealer as the owner, so a wallet merely leading its own
+/// auction holds a REVEAL coin and nothing more — and hsd lets a REVEAL coin go
+/// only to a REGISTER or a REDEEM (`rules.verifyCovenants`), so every ownership
+/// action would be refused by the node. `None` is "we do not hold the coin",
+/// which is not registered either.
+///
+/// The comparison is `>= COV_REGISTER` rather than `== `: REGISTER, UPDATE,
+/// RENEW, TRANSFER, FINALIZE and REVOKE all sit above it and all mean the name
+/// has been registered at some point.
+///
+/// One predicate because the capability gates, the task-state derivation and
+/// `sign_name_message` all need the same answer, and spelling it out separately
+/// is how they came to disagree about what "owned" means.
+pub fn is_registered_owner_covenant(covenant_type: Option<i64>) -> bool {
+    covenant_type
+        .map(|t| t >= COV_REGISTER as i64)
+        .unwrap_or(false)
+}
+
 fn u32le(n: u32) -> Vec<u8> {
     n.to_le_bytes().to_vec()
 }

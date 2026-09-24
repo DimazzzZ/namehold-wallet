@@ -2496,6 +2496,29 @@ pub struct BidCommitmentRow {
     pub name_start_height: Option<i64>,
 }
 
+impl BidCommitmentRow {
+    /// Whether this commitment belongs to the auction that opened at
+    /// `auction_start`.
+    ///
+    /// A name can be auctioned many times: one nobody reveals in lapses and the
+    /// name becomes available again, so a commitment from a dead auction must
+    /// not count as a bid on the live one.
+    ///
+    /// Two unknowns are deliberately permissive. A commitment recovered from
+    /// the chain rather than built here has no recorded auction (migration
+    /// 030), and a caller that could not resolve the auction's start passes
+    /// `None`; in both cases counting one that may be dead is a wrong number on
+    /// screen, while hiding a live one is a bid the user is never told to
+    /// reveal. Only a recorded mismatch excludes.
+    pub fn belongs_to_auction(&self, auction_start: Option<i64>) -> bool {
+        match (auction_start, self.name_start_height) {
+            (Some(start), Some(placed)) => placed == start,
+            (Some(_), None) => true,
+            (None, _) => true,
+        }
+    }
+}
+
 /// Insert a bid commitment row. Errors (rather than silently no-op'ing) when a
 /// row with the same `(wallet_profile_id, name, blind_hex)` already exists.
 ///

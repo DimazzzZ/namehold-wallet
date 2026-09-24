@@ -526,3 +526,52 @@ pub fn read_indexed_bids(
 pub fn scan_cursor_height(conn: &rusqlite::Connection, network: &str) -> i64 {
     get_scan_cursor(conn, network)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Both helpers are private to this module, so their tests live here rather
+    // than in `tests/chain_scan_tests.rs`.
+
+    #[test]
+    fn u32le_hex_zero_extends_a_short_push() {
+        // hsd's `pushU32` trims leading zero bytes, so a small height arrives
+        // as fewer than four bytes and must not be read as a different number.
+        assert_eq!(u32le_hex(""), Some(0));
+        assert_eq!(u32le_hex("2a"), Some(42));
+        assert_eq!(u32le_hex("2a00"), Some(42));
+        assert_eq!(u32le_hex("2a000000"), Some(42));
+        assert_eq!(u32le_hex("ffffffff"), Some(u32::MAX));
+    }
+
+    #[test]
+    fn u32le_hex_refuses_what_is_not_a_u32_push() {
+        // More than four bytes is some other covenant item — a name hash, say —
+        // and truncating it would silently invent a height.
+        assert_eq!(u32le_hex("2a0000000000"), None);
+        // Not hex at all.
+        assert_eq!(u32le_hex("zz"), None);
+        // An odd number of hex digits is not a byte string.
+        assert_eq!(u32le_hex("abc"), None);
+    }
+
+    #[test]
+    fn doos_from_hns_converts_the_amounts_hsd_reports() {
+        assert_eq!(doos_from_hns(1.0), 1_000_000);
+        assert_eq!(doos_from_hns(0.000001), 1);
+        // Six decimals is hsd's full precision; rounding is exact there.
+        assert_eq!(doos_from_hns(12.345678), 12_345_678);
+        // Well inside f64's exact-integer range, as the doc claims: the whole
+        // supply cap converts without loss.
+        assert_eq!(doos_from_hns(2_040_000_000.0), 2_040_000_000_000_000);
+    }
+
+    #[test]
+    fn doos_from_hns_treats_nothing_and_nonsense_as_zero() {
+        assert_eq!(doos_from_hns(0.0), 0);
+        assert_eq!(doos_from_hns(-1.0), 0);
+        assert_eq!(doos_from_hns(f64::NAN), 0);
+        assert_eq!(doos_from_hns(f64::INFINITY), 0);
+    }
+}

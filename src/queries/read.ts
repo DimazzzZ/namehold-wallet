@@ -172,13 +172,28 @@ export function useReadNameInfo(name: string | null | undefined): UseQueryResult
  * Fetches `get_name_action_capabilities` to evaluate what actions are
  * available right now for the active wallet.
  */
+/**
+ * The cache key [`useNameActionCapabilities`] stores under.
+ *
+ * Exported because the auctions table seeds this cache from its own batch
+ * result, so that opening a name's modal shows the badge the clicked row
+ * already showed instead of flashing the raw on-chain phase. That seeding
+ * used to spell the key out again under a comment asking for the two to be
+ * kept identical — and a key that is merely meant to match is a key that can
+ * stop matching, silently, with the only symptom a flash nobody reports.
+ */
+export const nameCapabilitiesQueryKey = (
+  profileId: string | null,
+  name: string | null | undefined,
+) => ["read", "nameCapabilities", profileId, name ?? ""] as const;
+
 export function useNameActionCapabilities(
   name: string | null | undefined,
   walletProfileId?: string | null,
 ): UseQueryResult<NameActionCapabilities | null> {
   const profileId = walletProfileId ?? null;
   return useQuery<NameActionCapabilities | null>({
-    queryKey: ["read", "nameCapabilities", profileId, name ?? ""],
+    queryKey: nameCapabilitiesQueryKey(profileId, name),
     enabled: Boolean(name && name.trim().length > 0),
     queryFn: async () => {
       // Pin the evaluation to THIS wallet so capabilities can never reflect

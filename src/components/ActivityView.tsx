@@ -52,6 +52,13 @@ export const FALLBACK_META = { label: "Other", variant: "default" as const };
 // Actions whose covenant output re-homes the name's locked value onto the
 // wallet's own new coin. For these, the Amount cell shows the locked value as
 // an informational "⤷ N" (not a spend) with a tooltip; net flow stays 0.
+//
+// Deliberately a subset of the action labels the backend emits — "open",
+// "revoke" and "claim" move no locked value — so which actions belong here is
+// this screen's decision, not the backend's. What the backend does own is the
+// spelling: a renamed label would silently stop matching and quietly change
+// what the Amount cell shows. A Rust test reads this list and fails if any
+// entry is not a label `classify_tx` can produce.
 const NAME_COVENANT_ACTIONS = new Set([
   "bid",
   "reveal",

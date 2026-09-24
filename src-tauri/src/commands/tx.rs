@@ -1332,8 +1332,8 @@ pub async fn sign_name_message(
         // during REVEAL that is our own REVEAL coin — hsd reports the highest
         // revealer as the owner long before anyone has won. Signing it would
         // produce a well-formed claim of ownership that every verifier
-        // resolves as false. Same rule as the ownership capabilities.
-        if coin.covenant_type < crate::noncustodial::sync::COV_REGISTER as i64 {
+        // resolves as false.
+        if !crate::noncustodial::covenants::is_registered_owner_covenant(Some(coin.covenant_type)) {
             return Err(AppError::InvalidInput(format!(
                 "the name '{name}' is not registered yet — there is no ownership to prove"
             )));
