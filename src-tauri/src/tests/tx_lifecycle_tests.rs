@@ -1143,6 +1143,53 @@ async fn write_capability_allows_when_synced_indexed_and_unlocked() {
     );
 }
 
+/// A node on another chain must not seed this profile's cache: neither the
+/// cursor coin selection reads for coinbase maturity nor the tracked name
+/// states. The refusal happens before the coin fetch, so the coin route is
+/// never asked.
+#[tokio::test]
+async fn sync_wallet_state_refuses_a_node_on_another_chain() {
+    let mut server = mockito::Server::new_async().await;
+    let _bi = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"chain":"regtest","blocks":150000},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let coins = server
+        .mock("GET", mockito::Matcher::Regex("^/coin/address/".into()))
+        .with_body("[]")
+        .expect(0)
+        .create_async()
+        .await;
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+
+    let err = sync_wallet_state(app.state(), None)
+        .await
+        .expect_err("a regtest node must not sync a mainnet profile");
+    assert!(
+        matches!(&err, AppError::InvalidInput(msg) if msg.contains("refusing to sync")),
+        "expected the cross-network refusal, got {err:?}"
+    );
+    coins.assert_async().await;
+    let state = app.state::<AppState>();
+    let cursor: Option<i64> = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT last_height FROM sync_cursors WHERE wallet_profile_id = ?1",
+            [PROFILE],
+            |r| r.get(0),
+        )
+        .ok();
+    assert_eq!(
+        cursor, None,
+        "the foreign height must never land in sync_cursors"
+    );
+}
+
 #[tokio::test]
 async fn sync_wallet_state_reports_unreachable_node_softly() {
     // An unreachable node is NOT an error — reads come from the explorer; we just

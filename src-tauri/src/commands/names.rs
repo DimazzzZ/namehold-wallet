@@ -4756,6 +4756,28 @@ mod tests {
     /// Without heights we cannot say, and refusing an action the node would
     /// accept is its own kind of wrong. A transfer with no recorded height
     /// stays offered.
+    /// The persisted estimate is conservative on purpose (regtest never ages
+    /// it), so a synced node's tip replaces it; with no node to ask, nothing
+    /// changes.
+    #[test]
+    fn a_live_tip_replaces_the_persisted_estimate() {
+        let ctx = NameActionContext {
+            current_height: Some(805),
+            ..ctx_default()
+        };
+        assert_eq!(ctx.with_live_tip(Some(812)).current_height, Some(812));
+        let ctx = NameActionContext {
+            current_height: Some(805),
+            ..ctx_default()
+        };
+        assert_eq!(ctx.with_live_tip(None).current_height, Some(805));
+        let ctx = NameActionContext {
+            current_height: None,
+            ..ctx_default()
+        };
+        assert_eq!(ctx.with_live_tip(Some(812)).current_height, Some(812));
+    }
+
     #[test]
     fn finalize_is_not_blocked_when_the_lockup_is_unknown() {
         let ctx = NameActionContext {
