@@ -465,16 +465,28 @@ pub async fn run_sync_steps(
         // the steps this gate governs already build their client per profile,
         // so asking the global node whether it is caught up decided what to do
         // with a node nobody was going to talk to.
-        let network = open_conn(db_path)
+        //
+        // A network this step cannot read makes the node not authoritative,
+        // rather than authoritative without the comparison. Passing `None`
+        // here tells the readiness gate there is nothing to compare, which is
+        // right during onboarding and wrong for a profile that has a network
+        // and simply could not be read: it would let a node on another chain
+        // seed this profile's cache. The explorer path this falls back to is
+        // the conservative one and already exists.
+        match open_conn(db_path)
             .ok()
             .and_then(|c| queries::get_wallet_profile(&c, profile_id).ok().flatten())
-            .map(|p| p.network);
-        crate::commands::node_readiness::node_ready_from_profile(
-            db_path,
-            profile_id,
-            network.as_deref(),
-        )
-        .await
+        {
+            Some(p) => {
+                crate::commands::node_readiness::node_ready_from_profile(
+                    db_path,
+                    profile_id,
+                    Some(&p.network),
+                )
+                .await
+            }
+            None => false,
+        }
     };
 
     // Step 2: Repair owned names from inventory + tracked (explorer only).
