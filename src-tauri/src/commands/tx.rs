@@ -312,11 +312,11 @@ pub async fn sync_wallet_state(
                 info.chain.as_deref(),
             ) == Some(false)
             {
-                let reported = info.chain.as_deref().unwrap_or("unknown");
-                return Err(AppError::InvalidInput(format!(
-                    "node is on network '{reported}' but this wallet is '{profile_network}' — \
-                     refusing to sync; point the wallet at a {profile_network} node"
-                )));
+                return Err(cross_network_refusal(
+                    info.chain.as_deref(),
+                    &profile_network,
+                    &format!("refusing to sync; point the wallet at a {profile_network} node"),
+                ));
             }
             info.blocks
         }
@@ -1533,13 +1533,26 @@ pub(crate) async fn broadcast_network_guard_with_client(
     if crate::noncustodial::network::network_check(Some(expected), info.chain.as_deref())
         == Some(false)
     {
-        let reported = info.chain.as_deref().unwrap_or("unknown");
-        return Err(AppError::InvalidInput(format!(
-            "node is on network '{reported}' but this wallet is '{expected}' — refusing to \
-             broadcast; the transaction was not sent and the draft is unchanged"
-        )));
+        return Err(cross_network_refusal(
+            info.chain.as_deref(),
+            expected,
+            "refusing to broadcast; the transaction was not sent and the draft is unchanged",
+        ));
     }
     Ok(())
+}
+
+/// The refusal a cross-network node earns, with what the caller was about to do.
+///
+/// Two guards raise it — the sync path and the broadcast path — and each used
+/// to spell it out, so the sentence the user reads depended on which one fired
+/// first. `consequence` is the only part that legitimately differs: what did
+/// not happen, and what state was left alone.
+fn cross_network_refusal(reported: Option<&str>, expected: &str, consequence: &str) -> AppError {
+    let reported = reported.unwrap_or("unknown");
+    AppError::InvalidInput(format!(
+        "node is on network '{reported}' but this wallet is '{expected}' — {consequence}"
+    ))
 }
 
 /// Broadcast a signed draft via node RPC.

@@ -904,13 +904,7 @@ async fn evaluate_name_action_capabilities(
             };
             let stats = name_info.get("info").and_then(|i| i.get("stats"));
 
-            // The persisted estimate is deliberately conservative — on regtest
-            // it does not age at all — and the transfer-lockup gate is the one
-            // consumer where a stale tip refuses an action the node accepts.
-            let action_ctx = NameActionContext {
-                current_height: live_tip.or(action_ctx.current_height),
-                ..action_ctx
-            };
+            let action_ctx = action_ctx.with_live_tip(live_tip);
             let NameOwnership {
                 owns_name,
                 spend_locked,
@@ -967,13 +961,7 @@ async fn evaluate_name_action_capabilities(
                 .as_deref()
                 .map(|s| s.to_uppercase())
                 .unwrap_or_default();
-            // The persisted estimate is deliberately conservative — on regtest
-            // it does not age at all — and the transfer-lockup gate is the one
-            // consumer where a stale tip refuses an action the node accepts.
-            let action_ctx = NameActionContext {
-                current_height: live_tip.or(action_ctx.current_height),
-                ..action_ctx
-            };
+            let action_ctx = action_ctx.with_live_tip(live_tip);
             let NameOwnership {
                 owns_name,
                 spend_locked,
@@ -1448,6 +1436,21 @@ pub(crate) struct NameOwnership {
     /// coin unlocks this — explorer evidence classifies, it never unlocks, and
     /// a spend already in flight must not be raced.
     pub spend_locked: bool,
+}
+
+impl NameActionContext {
+    /// Prefer a tip read from a synced node over the persisted estimate.
+    ///
+    /// The estimate is deliberately conservative — on regtest it does not age
+    /// at all — and the transfer-lockup gate is the one consumer where a stale
+    /// tip refuses an action the node would accept. `None` leaves the estimate
+    /// in place, which is what happens with no synced node to ask.
+    pub(crate) fn with_live_tip(self, live_tip: Option<i64>) -> Self {
+        Self {
+            current_height: live_tip.or(self.current_height),
+            ..self
+        }
+    }
 }
 
 /// `owner_address` is the owner recorded for the name (from the node payload
@@ -2845,8 +2848,7 @@ pub async fn build_batch_renew_draft(
     let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
 
-    let mut per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)> =
-        Vec::with_capacity(names.len());
+    let mut per_name: PerNameOwner = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         let (coin, ns) = owner_coin_and_state(&state, &ctx, name).await?;
@@ -2866,7 +2868,7 @@ pub async fn build_batch_renew_draft(
 pub(crate) fn build_batch_renew_draft_inner(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
-    per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)>,
+    per_name: PerNameOwner,
     rblock: &[u8; 32],
     rate: u64,
 ) -> Result<TxDraftSummary, AppError> {
@@ -2933,8 +2935,7 @@ pub async fn build_batch_transfer_draft(
     // whole batch before any owner-coin prefetch or DB write.
     let (version, program) = address::decode(ctx.network, &recipient)?;
 
-    let mut per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)> =
-        Vec::with_capacity(names.len());
+    let mut per_name: PerNameOwner = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         let (coin, ns) = owner_coin_and_state(&state, &ctx, name).await?;
@@ -2959,7 +2960,7 @@ pub async fn build_batch_transfer_draft(
 pub(crate) fn build_batch_transfer_draft_inner(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
-    per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)>,
+    per_name: PerNameOwner,
     recipient: &str,
     version: u8,
     program: &[u8],
@@ -3028,13 +3029,7 @@ pub async fn build_batch_reveal_draft(
     // then async RPC with NO lock held — preserving the original per-name
     // lock/unlock discipline. The pure computation (nonce parse + covenant +
     // plan + persist) runs afterward under one final held lock in the inner.
-    let mut per_name: Vec<(
-        String,
-        [u8; 32],
-        queries::BidCommitmentRow,
-        queries::NameCoin,
-        NameState,
-    )> = Vec::with_capacity(names.len());
+    let mut per_name: PerNameBid = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         // Async RPC first — its `height` says which auction is running, and a
@@ -3103,13 +3098,7 @@ pub async fn build_batch_reveal_draft(
 pub(crate) fn build_batch_reveal_draft_inner(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
-    per_name: Vec<(
-        String,
-        [u8; 32],
-        queries::BidCommitmentRow,
-        queries::NameCoin,
-        NameState,
-    )>,
+    per_name: PerNameBid,
     rate: u64,
 ) -> Result<TxDraftSummary, AppError> {
     let mut primaries = Vec::with_capacity(per_name.len());
@@ -3194,13 +3183,7 @@ pub async fn build_batch_redeem_draft(
     // commitment + reveal-coin lookup — preserving the original per-iteration
     // RPC-then-lock discipline. The pure computation (covenant + plan +
     // persist) runs afterward under one final held lock in the inner.
-    let mut per_name: Vec<(
-        String,
-        [u8; 32],
-        queries::BidCommitmentRow,
-        queries::NameCoin,
-        NameState,
-    )> = Vec::with_capacity(names.len());
+    let mut per_name: PerNameBid = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         let ns = fetch_name_state(&client, name).await?;
@@ -3241,13 +3224,7 @@ pub async fn build_batch_redeem_draft(
 pub(crate) fn build_batch_redeem_draft_inner(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
-    per_name: Vec<(
-        String,
-        [u8; 32],
-        queries::BidCommitmentRow,
-        queries::NameCoin,
-        NameState,
-    )>,
+    per_name: PerNameBid,
     rate: u64,
 ) -> Result<TxDraftSummary, AppError> {
     let mut primaries = Vec::with_capacity(per_name.len());
@@ -3323,6 +3300,25 @@ pub async fn build_batch_finalize_draft(
 
 /// Per-name row for [`build_batch_finalize_draft_inner`]:
 /// `(name, name_hash, raw_name, owner_coin, on_chain_state)`.
+/// Per-name prefetch for a batch that spends the name's owner coin: the name,
+/// its hash, that coin, and the on-chain state it was read with.
+///
+/// Named for the same reason [`PerNameFinalize`] is: four signatures carried
+/// this shape written out, and a bare tuple says nothing about which
+/// `[u8; 32]` or which of two coins is which.
+pub(crate) type PerNameOwner = Vec<(String, [u8; 32], queries::NameCoin, NameState)>;
+
+/// Per-name prefetch for a batch that spends a bid: the name, its hash, the
+/// commitment row the bid was made from, the coin it created, and the on-chain
+/// state. Used by reveal and by redeem, which ignores the commitment.
+pub(crate) type PerNameBid = Vec<(
+    String,
+    [u8; 32],
+    queries::BidCommitmentRow,
+    queries::NameCoin,
+    NameState,
+)>;
+
 pub(crate) type PerNameFinalize = Vec<(String, [u8; 32], Vec<u8>, queries::NameCoin, NameState)>;
 
 /// Pure inner logic for `build_batch_finalize_draft`, testable without a Tauri
