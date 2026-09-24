@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { invoke } from "../lib/invoke";
-import type { NodeConnectionCheck } from "../types";
+import type { NodeConnectionCheck, WalletNetwork } from "../types";
 
 export interface NodeConnectionCheckState {
   /** A probe is in flight. */
@@ -19,7 +19,7 @@ export interface NodeConnectionCheckState {
    * network — which during onboarding is `None`, making every probe pass
    * regardless of the node's actual chain.
    */
-  run: (url: string, apiKey?: string, expectedNetwork?: string) => Promise<void>;
+  run: (url: string, apiKey?: string, expectedNetwork?: WalletNetwork) => Promise<void>;
   /** Forget the last outcome — call whenever the URL or key being probed changes. */
   reset: () => void;
 }
@@ -53,7 +53,7 @@ export function useNodeConnectionCheck(): NodeConnectionCheckState {
     setTesting(false);
   };
 
-  const run = async (url: string, apiKey?: string, expectedNetwork?: string) => {
+  const run = async (url: string, apiKey?: string, expectedNetwork?: WalletNetwork) => {
     requestId.current += 1;
     const myRequestId = requestId.current;
     const trimmed = url.trim();

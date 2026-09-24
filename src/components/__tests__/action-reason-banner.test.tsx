@@ -6,57 +6,72 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ActionReasonBanner } from "../name-actions/ActionReasonBanner";
+import { makeProfile, makeSession } from "../../test/fixtures/wallet";
 
-vi.mock("../../queries/wallet", () => ({
-  useActiveProfile: vi.fn(),
-  useSignerSession: vi.fn(),
-  useUnlockSigner: vi.fn(),
-}));
-vi.mock("../../stores/ui", () => ({
-  useUiStore: vi.fn((selector: (s: { showToast: () => void }) => unknown) =>
-    selector({ showToast: vi.fn() }),
-  ),
-}));
-vi.mock("../../lib/errors", () => ({
-  mapError: vi.fn((e: unknown) => String(e)),
+const invokeMock = vi.fn();
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
-import { useActiveProfile, useSignerSession, useUnlockSigner } from "../../queries/wallet";
-
-/* eslint-disable @typescript-eslint/no-explicit-any */
 function signer(unlocked: boolean) {
-  (useActiveProfile as any).mockReturnValue({ data: { id: "p1" } });
-  (useSignerSession as any).mockReturnValue({ data: { unlocked } });
-  (useUnlockSigner as any).mockReturnValue({ isPending: false, mutateAsync: vi.fn() });
+  invokeMock.mockImplementation((cmd: string) => {
+    switch (cmd) {
+      case "list_wallet_profiles":
+        return Promise.resolve([makeProfile()]);
+      case "get_signer_session":
+        return Promise.resolve(makeSession({ unlocked }));
+      default:
+        return Promise.reject(new Error(`unexpected command ${cmd}`));
+    }
+  });
 }
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
-beforeEach(() => vi.clearAllMocks());
+function renderBanner(reason: string | null) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <ActionReasonBanner reason={reason} />
+    </QueryClientProvider>,
+  );
+}
+
+/** The button decides once both queries have answered. */
+const sessionLoaded = () =>
+  waitFor(() => {
+    expect(invokeMock).toHaveBeenCalledWith("list_wallet_profiles", undefined);
+    expect(invokeMock).toHaveBeenCalledWith("get_signer_session", undefined);
+  });
+
+beforeEach(() => {
+  invokeMock.mockReset();
+});
 
 describe("ActionReasonBanner", () => {
   it("renders nothing without a reason", () => {
     signer(false);
-    const { container } = render(<ActionReasonBanner reason={null} />);
+    const { container } = renderBanner(null);
     expect(container.firstChild).toBeNull();
   });
 
-  it("puts an Unlock button beside the reason when the wallet is locked", () => {
+  it("puts an Unlock button beside the reason when the wallet is locked", async () => {
     signer(false);
-    render(<ActionReasonBanner reason="Unlock your wallet to sign transactions." />);
+    renderBanner("Unlock your wallet to sign transactions.");
 
     expect(screen.getByTestId("action-reason")).toHaveTextContent(
       "Unlock your wallet to sign transactions.",
     );
-    expect(screen.getByTestId("unlock-now")).toBeInTheDocument();
+    expect(await screen.findByTestId("unlock-now")).toBeInTheDocument();
   });
 
-  it("stays text-only for a reason unlocking cannot fix", () => {
+  it("stays text-only for a reason unlocking cannot fix", async () => {
     // Signer already unlocked — the action is blocked by the auction phase, so
     // offering "Unlock" would be a dead end.
     signer(true);
-    render(<ActionReasonBanner reason="Reveal has not started yet." />);
+    renderBanner("Reveal has not started yet.");
+    await sessionLoaded();
 
     expect(screen.getByTestId("action-reason")).toHaveTextContent("Reveal has not started yet.");
     expect(screen.queryByTestId("unlock-now")).toBeNull();

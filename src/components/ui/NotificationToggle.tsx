@@ -5,10 +5,11 @@ import {
   type PermissionStatus,
 } from "../../lib/notifications";
 import { boolToSetting, settingToBool } from "../../lib/settingsBool";
+import type { Settings } from "../../types";
 
 export interface NotificationToggleProps {
   /** The `Settings` key this toggle writes ("true" / "false"). */
-  settingKey: string;
+  settingKey: keyof Settings;
   /** Checkbox label. */
   label: string;
   /** testid for the checkbox. */

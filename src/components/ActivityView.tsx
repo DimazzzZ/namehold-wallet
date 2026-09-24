@@ -1,3 +1,4 @@
+import { explorerCoversNetwork } from "../lib/openExternal";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useActionHistory } from "../queries/read";
@@ -95,7 +96,7 @@ export function ActivityView() {
   const { data: rows = [], isLoading, isError, error } = useActionHistory();
   const { data: drafts = [] } = useTxDrafts();
   const { data: profile } = useActiveProfile();
-  const isMainnet = profile?.network === "mainnet";
+  const isMainnet = explorerCoversNetwork(profile?.network);
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 

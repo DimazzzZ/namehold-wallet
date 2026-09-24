@@ -393,7 +393,7 @@ export interface Settings {
    * for updates every ~4 hours and fires an OS notification if one is found,
    * deduped against `last_notified_update_version`.
    */
-  update_notify_enabled?: string;
+  update_notify_enabled: string;
 }
 
 // ---------------------------------------------------------------------------
