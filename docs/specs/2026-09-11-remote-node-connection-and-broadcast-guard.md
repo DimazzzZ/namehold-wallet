@@ -85,6 +85,28 @@ reported as "syncing", not "synced". (The read gate uses `true` for the same
 call because a regtest miner never reports progress — the two call sites are
 deliberately different and each says why.)
 
+**R6b — One rule decides "synced", and the chain tip is it.** A node is synced
+once the blocks it has applied have caught up to the best header it knows
+about. `verificationprogress` only corroborates that: it can plateau just below
+1.0 — around 0.9997 on regtest — so a node sitting at the tip would otherwise
+never qualify. To keep a node reporting `blocks == headers` while barely
+verified from passing, progress (when reported) must also clear a loose 0.999
+floor.
+
+Two fallbacks: with no header height reported (older builds), the rule falls
+back to `verificationprogress >= 0.9999`; with neither reported, the answer is
+the caller's `assume_when_unknown`, which is what R6 above is about.
+
+The same function answers for the read gate, the write gate, the node-status
+panel and "Test connection", so the label a user reads cannot disagree with
+what reads actually do. The status payload reports the verdict rather than
+letting the frontend re-derive it.
+*Enforced:* `noncustodial/rpc.rs::chain_synced`, surfaced as `synced` by
+`commands/node.rs::node_status`.
+*Pinned:* `rpc::tests` (the `chain_synced` cases),
+`node-status.test.tsx` (what each verdict renders).
+Documented in `docs/NODE_SETUP.md` ("When the wallet calls a node 'synced'").
+
 **R7 — Network comparison in the probe.** `check_node_connection` takes the
 network to compare against from its caller when one is supplied — which is how
 onboarding compares before any profile exists — and otherwise reads

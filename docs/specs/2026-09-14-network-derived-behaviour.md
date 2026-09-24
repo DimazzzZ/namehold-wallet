@@ -179,6 +179,50 @@ form stays for callers that only *label* a network (status payloads, the
 mainnet-only Namebase paths). Pinned by
 `the_optional_form_reports_no_profile_as_none`.
 
+**N16 — Each network gets its own data-dir root.** hsd isolates non-mainnet
+chains *inside* a prefix (`<prefix>/regtest`) while mainnet writes
+`blocks/chain/tree` at the prefix root, so one shared prefix let a mainnet
+chain at the root sit beside a regtest subdir — the overlap that allowed a
+mainnet chain to drive a regtest wallet. Mainnet keeps the base unchanged, so
+existing mainnet data is never moved; every other network gets `<base>/<network>`
+as its own root. This applies to a user-configured `hsd_prefix` too, not only
+the default. The wallet passes hsd the un-scoped base as `--prefix` and lets
+`--network` create that subdir, so hsd's chain root and the wallet's data dir
+are the same directory rather than nesting twice.
+*Enforced:* `commands/node.rs::network_scoped_data_dir`,
+`commands/node.rs::resolve_data_dir_for_network`.
+*Pinned:* `node_status_tests` (the `network_scoped_data_dir` cases).
+Documented in `docs/NODE_SETUP.md` ("Node (hsd) datadirs and default RPC ports").
+
+**N17 — An existing chain is relocated once, and never mainnet's.** A wallet
+upgrading from the shared-prefix layout has this network's chain in the legacy
+place. Starting a node moves it into the scoped root. The move is the only
+place the wallet relocates a user's chain files, so it is narrow: it refuses
+outright on mainnet, does nothing when the scoped root already holds a chain
+("do nothing if we already have"), and otherwise either adopts the legacy
+subdirectory or creates an empty scoped root. It is idempotent, so a repeated
+start is a no-op.
+*Enforced:* `commands/node.rs::plan_network_migration` (the pure decision) and
+`migrate_network_prefix` (the move).
+*Pinned:* `node_status_tests::plan_network_migration_never_touches_mainnet` and
+its neighbours.
+
+**N18 — A node that failed to start says why.** When the RPC does not answer,
+the wallet reads the hsd log and, if it records a fatal startup line, shows the
+last eight lines with a reason. An index mismatch — hsd cannot enable an index
+on an existing chain — gets specific guidance and offers the one-click re-sync;
+anything else reports as a failed start. Routine peer and socket errors during
+sync are explicitly not fatal, because hsd logs the word "Error" throughout a
+healthy sync. The matching is deliberately broad rather than precise: this runs
+only when the node is already unreachable, so over-reporting relabels "still
+starting" on a node that is down either way, while under-reporting leaves a
+broken node silent.
+*Enforced:* `commands/node.rs::is_fatal_startup_line`, `node_start_error`.
+*Pinned:* `node_status_tests::routine_sync_noise_is_not_a_startup_failure`,
+`the_known_fatal_shapes_are_recognised`,
+`a_data_dir_path_that_merely_contains_bind_is_not_a_failure`,
+`a_broad_matcher_is_documented_rather_than_quietly_wrong`.
+
 ## 4. Explicitly not enforced
 
 - **The app does not verify the node is honest about its chain.** Every guard
