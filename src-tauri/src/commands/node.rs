@@ -143,7 +143,15 @@ fn format_version(v: (u32, u32, u32)) -> String {
     format!("{}.{}.{}", v.0, v.1, v.2)
 }
 
-/// The configured hsd data directory, or hsd's own default (`~/.hsd`) when unset.
+/// The configured hsd data directory, or hsd's own default (`~/.hsd`) when
+/// unset, for the active profile's network.
+///
+/// The network is read through the reader that degrades to mainnet, which is
+/// fine for *reporting* a path and not for acting on one. A caller that
+/// spawns a node, moves chain data, or otherwise commits to a directory
+/// resolves the network itself and calls
+/// [`resolve_data_dir_for_network`], so the answer it refused to guess is the
+/// answer it uses.
 fn resolve_data_dir(state: &AppState) -> Result<String, AppError> {
     let network = active_profile_network(state);
     resolve_data_dir_for_network(state, network)
@@ -469,8 +477,12 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         }));
     }
 
-    let data_dir = resolve_data_dir(&state)?;
-    // Network isolation migration. `resolve_data_dir` now hands back a
+    // Derived from the network resolved above, not re-read: `resolve_data_dir`
+    // asks again through a reader that degrades to mainnet, and this is the
+    // directory the chain gets written into. Refusing to guess and then
+    // guessing three lines later would be the same bug with extra steps.
+    let data_dir = resolve_data_dir_for_network(&state, network)?;
+    // Network isolation migration. `resolve_data_dir_for_network` hands back a
     // network-scoped root; make sure the on-disk layout matches before we spawn.
     // Idempotent and non-destructive: it only creates the scoped root and,
     // where a legacy layout left this network's data elsewhere, relocates it —
@@ -948,8 +960,20 @@ pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::
         }
     }
 
-    let data_dir = resolve_data_dir(&state)?;
-    let network = active_profile_network(&state);
+    // Resolved once and refused when unknown. This command moves chain data
+    // out of the way, so a guess of mainnet would back up — and then re-sync
+    // over — a directory belonging to a network the user is not on. Reading the
+    // network and the data dir separately also let the two disagree, with the
+    // backup aimed at whichever answer came first.
+    let network =
+        crate::commands::active_profile::active_profile_network_opt(&state).ok_or_else(|| {
+            AppError::InvalidInput(
+                "no active wallet profile, so there is no chain to re-sync — create or select a \
+                 wallet first"
+                    .to_string(),
+            )
+        })?;
+    let data_dir = resolve_data_dir_for_network(&state, network)?;
 
     // 2. Move existing chain artifacts into a timestamped backup dir.
     let ts = std::time::SystemTime::now()

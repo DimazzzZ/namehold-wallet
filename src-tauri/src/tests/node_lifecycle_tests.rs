@@ -530,8 +530,9 @@ async fn stop_hsd_kills_spawned_child_and_clears_handle() {
 async fn resync_hsd_chain_backs_up_chain_data_and_respawns() {
     let (server, _fail, _up) = spawn_then_up_server(1).await;
     let h = Harness::new(FakeMode::StayAlive, "8.5.0");
-    // Mainnet layout: blocks/, chain/, tree/ directly under the prefix. No
-    // active profile → active_profile_network defaults to mainnet.
+    // Mainnet layout: blocks/, chain/, tree/ directly under the prefix — the
+    // harness seeds a mainnet profile, and mainnet is the one network whose
+    // data dir is the prefix root rather than a subdirectory of it.
     for sub in ["blocks", "chain", "tree"] {
         let p = h.data_dir().join(sub);
         std::fs::create_dir_all(&p).unwrap();
@@ -581,4 +582,27 @@ async fn resync_hsd_chain_backs_up_chain_data_and_respawns() {
     }
 
     stop_hsd(app.state()).await.expect("stop ok");
+}
+
+/// `resync_hsd_chain` moves chain data out of the way, so it must know which
+/// network's data that is. Without an active profile it refuses, for the same
+/// reason `start_hsd` does: guessing mainnet would back up — and then re-sync
+/// over — a directory belonging to a network the user is not on.
+#[tokio::test]
+async fn resync_hsd_chain_refuses_without_an_active_profile() {
+    let (server, _fail, _up) = spawn_then_up_server(1).await;
+    let h = Harness::new(FakeMode::StayAlive, "8.5.0");
+    let conn = conn_for(&h, &server.url());
+    // Drop the profile the harness seeds, leaving the wallet with none.
+    db::queries::set_setting(&conn, "active_wallet_profile_id", "").unwrap();
+    conn.execute("DELETE FROM wallet_profiles", []).unwrap();
+
+    let app = app_with(conn);
+    let err = resync_hsd_chain(app.state())
+        .await
+        .expect_err("no profile means no chain to re-sync");
+    assert!(
+        format!("{err}").contains("no active wallet profile"),
+        "the refusal should say what is missing, got: {err}"
+    );
 }
