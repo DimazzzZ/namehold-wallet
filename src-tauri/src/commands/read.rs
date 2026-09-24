@@ -706,8 +706,14 @@ pub async fn read_name_info(
     let (explorer_opt, node_opt) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
-        let explorer_opt = explorer_client(&settings, network);
+        // A network that cannot be read is unknown, not mainnet. `Network`
+        // defaults to `Main`, so the defaulting reader turned "we could not
+        // tell" into a live request to the mainnet explorer for a wallet that
+        // may be on another chain — the cross-network read G2 exists to close,
+        // and the opposite of what the no-explorer path below already does.
+        let explorer_opt =
+            crate::commands::active_profile::active_profile_network_opt_from_conn(&conn)
+                .and_then(|network| explorer_client(&settings, network));
         let node_opt = match queries::get_active_profile_id(&conn) {
             Ok(id) if !id.is_empty() => Some(crate::noncustodial::rpc::NodeRpcClient::for_profile(
                 &conn, &id,
@@ -1012,11 +1018,20 @@ pub async fn read_name_bids(
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             // Both the index and the cursor are network-keyed (028): a name
             // hashes identically on every chain, and a cursor from another
-            // chain says nothing about this one's coverage.
-            let network =
-                crate::commands::active_profile::active_profile_network_from_conn(&conn).as_str();
+            // chain says nothing about this one's coverage. Which makes the
+            // defaulting reader the wrong one here too — an unknown network
+            // resolving to mainnet would read mainnet's cursor to decide
+            // whether this chain's index may be trusted. Unknown falls through
+            // to the explorer path below instead, as an uncovered scanner
+            // already does.
+            let network = profile_network(&conn, &id).ok();
             let comms = queries::list_bid_commitments(&conn, &id)?;
-            let cursor_h = crate::commands::chain_scan::scan_cursor_height(&conn, network);
+            // With no network there is no cursor to read: leaving the coverage
+            // at 0 makes `scanner_covers` false, which is the path an
+            // un-caught-up scanner already takes.
+            let cursor_h = network
+                .map(|n| crate::commands::chain_scan::scan_cursor_height(&conn, n.as_str()))
+                .unwrap_or(0);
             // The OPEN height of the name's CURRENT auction. `upsert_name_state`
             // clears it when the node reports no auction, so `None` means the
             // name has none open right now — not merely that we haven't looked.
@@ -1033,12 +1048,15 @@ pub async fn read_name_bids(
             // still indexed, and serving them is what made a name sitting at
             // "Waiting for Bidding" list bids from its previous auction.
             let indexed = match nh {
-                Some(start) => crate::commands::chain_scan::read_indexed_bids(
-                    &conn,
-                    network,
-                    start,
-                    &name_hash_hex,
-                )?,
+                Some(start) => match network {
+                    Some(n) => crate::commands::chain_scan::read_indexed_bids(
+                        &conn,
+                        n.as_str(),
+                        start,
+                        &name_hash_hex,
+                    )?,
+                    None => Vec::new(),
+                },
                 None => Vec::new(),
             };
             // Scope the commitments to this auction too (030). Otherwise the
@@ -1067,11 +1085,13 @@ pub async fn read_name_bids(
     let (client_opt, commitments) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
-        (
-            explorer_client(&settings, network),
-            queries::list_bid_commitments(&conn, &id)?,
-        )
+        // The network belongs to the profile this command was handed, which
+        // need not be the active one — and a profile whose network cannot be
+        // read leaves no explorer rather than defaulting to mainnet's.
+        let explorer_opt = profile_network(&conn, &id)
+            .ok()
+            .and_then(|network| explorer_client(&settings, network));
+        (explorer_opt, queries::list_bid_commitments(&conn, &id)?)
     };
     // G2: no explorer for this network and the node hasn't indexed the name
     // yet — return empty bids (same shape as when the name has no bids) rather
@@ -1121,8 +1141,10 @@ pub async fn get_resource(
     let (explorer_opt, node_opt) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let s = queries::get_settings(&conn)?;
-        let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
-        let explorer_opt = explorer_client(&s, network);
+        // Unknown is not mainnet — see the note on the same resolution above.
+        let explorer_opt =
+            crate::commands::active_profile::active_profile_network_opt_from_conn(&conn)
+                .and_then(|network| explorer_client(&s, network));
         let node_opt = match queries::get_active_profile_id(&conn) {
             Ok(id) if !id.is_empty() => Some(crate::noncustodial::rpc::NodeRpcClient::for_profile(
                 &conn, &id,

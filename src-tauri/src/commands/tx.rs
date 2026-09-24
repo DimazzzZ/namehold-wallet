@@ -2011,9 +2011,11 @@ pub async fn get_write_capability(
             .ok()
             .and_then(|p| db::queries::get_profile_addresses(&conn, &p.id).ok())
             .and_then(|addrs| addrs.into_iter().next());
-        let expected_network = db::queries::get_active_profile_network(&conn)
-            .ok()
-            .flatten();
+        // Returned, not swallowed. `Ok(None)` already means "no profile to
+        // compare against" and leaves the chain check permissive by design; a
+        // DB failure reaching the same `None` would report a wallet as ready to
+        // send through a node whose chain was never compared.
+        let expected_network = db::queries::get_active_profile_network(&conn)?;
         (
             source,
             allow_remote,

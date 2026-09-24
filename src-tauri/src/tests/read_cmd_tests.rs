@@ -3195,3 +3195,42 @@ async fn read_block_info_uses_per_profile_node_override() {
     o_hash.assert_async().await;
     o_block.assert_async().await;
 }
+
+// --- An unknown network selects no explorer, rather than mainnet's ---
+
+/// `Network` derives `Default = Main`, so a network the wallet cannot read used
+/// to resolve to mainnet and send a live request to the mainnet explorer for a
+/// wallet that may be on another chain. These pin the refusal on the three
+/// reads that pick an explorer.
+#[tokio::test]
+async fn read_name_bids_serves_nothing_when_its_profiles_network_is_unreadable() {
+    let conn = empty_db();
+    // An explicit explorer URL is configured, so the only thing standing
+    // between the command and a cross-network read is the network check.
+    db::queries::set_setting(&conn, "explorer_api_url", "http://127.0.0.1:1").unwrap();
+    // No profile row at all: the id the command is handed does not resolve.
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "foo".into(), Some("ghost".into()))
+        .await
+        .expect("an unreadable network is an empty answer, not an error");
+    assert_eq!(
+        val["bids"].as_array().map(|b| b.len()).unwrap_or(0),
+        0,
+        "no explorer means no bids, not mainnet's bids"
+    );
+}
+
+#[tokio::test]
+async fn read_name_info_refuses_when_the_active_profiles_network_is_unreadable() {
+    let conn = empty_db();
+    db::queries::set_setting(&conn, "explorer_api_url", "http://127.0.0.1:1").unwrap();
+    // No active profile: nothing says which chain this wallet is on.
+    let app = app_with(conn);
+    let err = read_name_info(app.state(), "foo".into())
+        .await
+        .expect_err("with no explorer available this surfaces, it does not guess");
+    assert!(
+        format!("{err}").contains("No explorer is available"),
+        "should say the explorer is unavailable, got: {err}"
+    );
+}
