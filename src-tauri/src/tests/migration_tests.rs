@@ -68,7 +68,9 @@ fn test_schema_version_tracking() {
     // 029 (bid_auction_scope: bid index keyed by the auction's OPEN height),
     // 030 (bid_commitment_auction: commitments carry their auction too),
     // 031 (rescan_reveal_pairing: reveal values may sit on the wrong bid).
-    assert_eq!(count, 31);
+    // 032 (clear_seeded_mainnet_explorer: 009 seeded a mainnet URL that
+    //      outranked the network default on every other network).
+    assert_eq!(count, 32);
 }
 
 #[test]
@@ -193,4 +195,59 @@ fn test_connection_open() {
     assert_eq!(fk, 1);
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- 032: the seeded mainnet explorer is cleared, a chosen one is kept ---
+
+/// Migration 009 seeded this value; 032 removes exactly it.
+const SEEDED_MAINNET_EXPLORER: &str = "https://e.hnsfans.com";
+
+#[test]
+fn migration_032_clears_the_explorer_url_009_seeded() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&conn).unwrap();
+    // Re-seed the way an installation that ran the original 009 looks, then
+    // replay 032 over it: migrations run once, so this is the state such a
+    // database is already in when the new build starts.
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('explorer_api_url', ?1)",
+        [SEEDED_MAINNET_EXPLORER],
+    )
+    .unwrap();
+    conn.execute_batch(include_str!("../sql/032_clear_seeded_mainnet_explorer.sql"))
+        .unwrap();
+
+    let remaining: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'explorer_api_url'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        remaining, 0,
+        "the seeded mainnet URL must be gone so the network default applies"
+    );
+}
+
+#[test]
+fn migration_032_keeps_an_explorer_url_the_user_chose() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&conn).unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('explorer_api_url', ?1)",
+        ["https://explorer.example.test"],
+    )
+    .unwrap();
+    conn.execute_batch(include_str!("../sql/032_clear_seeded_mainnet_explorer.sql"))
+        .unwrap();
+
+    let value: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'explorer_api_url'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, "https://explorer.example.test");
 }
