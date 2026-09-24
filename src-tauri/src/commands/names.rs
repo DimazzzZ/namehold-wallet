@@ -444,6 +444,11 @@ pub struct NameActionCapabilities {
 }
 
 /// Context gathered from the DB for a name action evaluation.
+///
+/// `Default` is the no-evidence state — nothing held, nothing pending, nothing
+/// known — which is what the capability model falls back to and what a test
+/// wants as a base before naming the one or two facts it is about.
+#[derive(Default)]
 pub(crate) struct NameActionContext {
     pub has_bid_commitment: bool,
     /// Unspent COV_BID coin for this name (the coin a REVEAL spends). Gates
@@ -1294,21 +1299,8 @@ pub(crate) fn build_name_action_capabilities(
                 })
         })
     });
-    let task_state = derive_auction_task_state(
-        &phase,
-        owns_name,
-        action_ctx.has_bid_commitment,
-        action_ctx.has_bid_coin,
-        action_ctx.has_reveal_coin,
-        action_ctx.has_owner_coin,
-        action_ctx.owner_covenant_type,
-        days_until_expire,
-        action_ctx.has_pending_open,
-        transfer_pending,
-        action_ctx.reveal_txid.as_deref(),
-        action_ctx.reveal_draft_status.as_deref(),
-        network,
-    );
+    let task_state =
+        derive_auction_task_state(action_ctx, &phase, owns_name, days_until_expire, network);
 
     // 6. Determine next action.
     let (next_action_key, next_action_label, mut next_action_reason) =
@@ -1502,31 +1494,30 @@ pub(crate) fn derive_name_ownership(
 /// variant (its "Wait for Bidding" label reads fine for "your OPEN is
 /// confirming") rather than adding a new one.
 #[allow(clippy::too_many_arguments)]
-pub fn derive_auction_task_state(
+///
+/// Nine of the facts this needs travel together in [`NameActionContext`] and
+/// are read from it by name. They used to be nine positional parameters, six
+/// of them `bool`, where swapping two adjacent ones compiled silently and
+/// changed the answer.
+///
+/// A pending transfer comes from the context too, and is NOT derivable from
+/// `phase`: hsd's name states are OPENING / LOCKED / BIDDING / REVEAL / CLOSED
+/// / REVOKED (`namestate.js`), and a transfer leaves the state at CLOSED,
+/// signalling itself through `info.transfer` instead.
+pub(crate) fn derive_auction_task_state(
+    ctx: &NameActionContext,
     phase: &str,
     owns_name: bool,
-    has_bid_commitment: bool,
-    has_bid_coin: bool,
-    has_reveal_coin: bool,
-    has_owner_coin: bool,
-    owner_covenant_type: Option<i64>,
     days_until_expire: Option<f64>,
-    has_pending_open: bool,
-    // `transfer_pending`: a TRANSFER is recorded for this name. NOT derivable
-    // from `phase` — hsd's name states are OPENING / LOCKED / BIDDING /
-    // REVEAL / CLOSED / REVOKED (`namestate.js`), and a transfer leaves the
-    // state at CLOSED, signalling itself through `info.transfer` instead.
-    transfer_pending: bool,
-    reveal_txid: Option<&str>,
-    reveal_draft_status: Option<&str>,
     network: Network,
 ) -> AuctionTaskState {
+    let transfer_pending = ctx.transfer_has_items.unwrap_or(false);
     let expiring_soon = days_until_expire
         .map(|d| d <= network.expiring_soon_threshold_days())
         .unwrap_or(false);
     match phase {
         "AVAILABLE" | "" => {
-            if has_pending_open {
+            if ctx.has_pending_open {
                 AuctionTaskState::WaitingForBidding
             } else {
                 AuctionTaskState::AvailableToOpen
@@ -1544,7 +1535,7 @@ pub fn derive_auction_task_state(
             AuctionTaskState::ReadyToBid
         }
         "REVEAL" => {
-            if !has_bid_commitment {
+            if !ctx.has_bid_commitment {
                 return AuctionTaskState::UnavailableOther;
             }
             // Reveal state machine (grilled design): prefer a local draft's
@@ -1552,18 +1543,18 @@ pub fn derive_auction_task_state(
             //  1. Local draft exists: broadcasted/broadcast_pending → pending;
             //     confirmed → done; dropped/failed → back to ReadyToReveal so
             //     the user can re-broadcast (the bid coin is still unspent).
-            //  2. No draft but reveal_txid set AND the bid coin is spent
-            //     (!has_bid_coin) → done (chain ground truth; covers restored /
+            //  2. No draft but ctx.reveal_txid.as_deref() set AND the bid coin is spent
+            //     (!ctx.has_bid_coin) → done (chain ground truth; covers restored /
             //     cross-device wallets that revealed elsewhere).
             //  3. Otherwise → ReadyToReveal (still prompt; `can_reveal.allowed`,
-            //     which requires has_bid_coin, is the real button gate).
-            match reveal_draft_status {
+            //     which requires ctx.has_bid_coin, is the real button gate).
+            match ctx.reveal_draft_status.as_deref() {
                 Some("broadcasted") | Some("broadcast_pending") => {
                     AuctionTaskState::RevealBroadcastPending
                 }
                 Some("confirmed") => AuctionTaskState::RevealDoneWaitingForClose,
                 _ => {
-                    if reveal_txid.is_some() && !has_bid_coin {
+                    if ctx.reveal_txid.as_deref().is_some() && !ctx.has_bid_coin {
                         AuctionTaskState::RevealDoneWaitingForClose
                     } else {
                         AuctionTaskState::ReadyToReveal
@@ -1572,13 +1563,14 @@ pub fn derive_auction_task_state(
             }
         }
         "CLOSED" => {
-            if owns_name && has_owner_coin {
+            if owns_name && ctx.has_owner_coin {
                 // If the owner coin is already REGISTER (6) or higher (UPDATE,
                 // RENEW, TRANSFER, etc.), the name is already registered — no
                 // REGISTER action needed. A coin with covenant type < COV_REGISTER
                 // (e.g. OPEN=2, REVEAL=4) means the wallet just won but has not
                 // yet registered.
-                let already_registered = owner_covenant_type
+                let already_registered = ctx
+                    .owner_covenant_type
                     .map(|t| t >= COV_REGISTER as i64)
                     .unwrap_or(false);
                 if already_registered {
@@ -1590,7 +1582,7 @@ pub fn derive_auction_task_state(
                         // ahead of everything quiet, because finalizing is the
                         // one thing the name is waiting on.
                         AuctionTaskState::TransferPendingFinalize
-                    } else if has_reveal_coin {
+                    } else if ctx.has_reveal_coin {
                         // Registered, and still holding a REVEAL coin. The
                         // winning one was spent by that REGISTER, so whatever
                         // is left lost — this wallet outbid itself, and those
@@ -1618,7 +1610,7 @@ pub fn derive_auction_task_state(
                 } else {
                     AuctionTaskState::OwnedNoUrgentAction
                 }
-            } else if has_reveal_coin {
+            } else if ctx.has_reveal_coin {
                 AuctionTaskState::LostNeedsRedeem
             } else {
                 AuctionTaskState::OwnedNoUrgentAction
@@ -3615,18 +3607,20 @@ mod tests {
         reveal_draft_status: Option<&str>,
     ) -> AuctionTaskState {
         derive_auction_task_state(
+            &NameActionContext {
+                has_bid_commitment,
+                has_bid_coin,
+                has_reveal_coin,
+                has_owner_coin,
+                owner_covenant_type,
+                has_pending_open,
+                reveal_txid: reveal_txid.map(str::to_string),
+                reveal_draft_status: reveal_draft_status.map(str::to_string),
+                ..Default::default()
+            },
             phase,
             owns_name,
-            has_bid_commitment,
-            has_bid_coin,
-            has_reveal_coin,
-            has_owner_coin,
-            owner_covenant_type,
             days_until_expire,
-            has_pending_open,
-            false,
-            reveal_txid,
-            reveal_draft_status,
             Network::Main,
         )
     }
@@ -4059,17 +4053,14 @@ mod tests {
         // has no transfer to give it.
         assert_eq!(
             derive_auction_task_state(
+                &NameActionContext {
+                    has_owner_coin: true,
+                    owner_covenant_type: Some(COV_TRANSFER as i64),
+                    transfer_has_items: Some(true),
+                    ..Default::default()
+                },
                 "CLOSED",
-                true,
-                false,
-                false,
-                false,
-                true,
-                Some(COV_TRANSFER as i64),
-                None,
-                false,
-                true,
-                None,
+                /* owns_name */ true,
                 None,
                 Network::Main,
             ),

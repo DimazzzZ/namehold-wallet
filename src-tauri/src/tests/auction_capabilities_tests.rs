@@ -5,7 +5,8 @@
 //! the pure derivation functions directly.
 
 use crate::commands::names::{
-    derive_auction_task_state, next_action_for_task, AuctionTaskState, EXPIRING_SOON_THRESHOLD_DAYS,
+    derive_auction_task_state, next_action_for_task, AuctionTaskState, NameActionContext,
+    EXPIRING_SOON_THRESHOLD_DAYS,
 };
 use crate::noncustodial::network::Network;
 
@@ -22,17 +23,15 @@ fn state_no_owner(
     has_reveal: bool,
 ) -> AuctionTaskState {
     derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: has_bid,
+            has_bid_coin,
+            has_reveal_coin: has_reveal,
+            has_owner_coin: owns_name,
+            ..Default::default()
+        },
         phase,
         owns_name,
-        has_bid,
-        has_bid_coin,
-        has_reveal,
-        owns_name,
-        None,
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     )
@@ -47,17 +46,16 @@ fn state_registered(
     has_reveal: bool,
 ) -> AuctionTaskState {
     derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: has_bid,
+            has_bid_coin,
+            has_reveal_coin: has_reveal,
+            has_owner_coin: owns_name,
+            owner_covenant_type: Some(6),
+            ..Default::default()
+        },
         phase,
         owns_name,
-        has_bid,
-        has_bid_coin,
-        has_reveal,
-        owns_name,
-        Some(6),
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     )
@@ -72,17 +70,16 @@ fn state_unregistered(
     has_reveal: bool,
 ) -> AuctionTaskState {
     derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: has_bid,
+            has_bid_coin,
+            has_reveal_coin: has_reveal,
+            has_owner_coin: owns_name,
+            owner_covenant_type: Some(4),
+            ..Default::default()
+        },
         phase,
         owns_name,
-        has_bid,
-        has_bid_coin,
-        has_reveal,
-        owns_name,
-        Some(4),
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     )
@@ -91,18 +88,14 @@ fn state_unregistered(
 // Helper: registered owner coin + a known days-until-expire value.
 fn state_registered_days(phase: &str, days: Option<f64>) -> AuctionTaskState {
     derive_auction_task_state(
+        &NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(6),
+            ..Default::default()
+        },
         phase,
         true,
-        false,
-        false,
-        false,
-        true,
-        Some(6),
         days,
-        false,
-        false,
-        None,
-        None,
         Network::Main,
     )
 }
@@ -139,17 +132,12 @@ fn available_with_pending_open_yields_waiting_for_bidding() {
     // WaitingForBidding variant instead of AvailableToOpen, before the phase
     // itself has advanced to OPENING.
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_pending_open: true,
+            ..Default::default()
+        },
         "AVAILABLE",
         false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        true,
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -159,17 +147,12 @@ fn available_with_pending_open_yields_waiting_for_bidding() {
 #[test]
 fn empty_phase_with_pending_open_yields_waiting_for_bidding() {
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_pending_open: true,
+            ..Default::default()
+        },
         "",
         false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        true,
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -181,17 +164,9 @@ fn available_without_pending_open_still_yields_available_to_open() {
     // Regression: has_pending_open=false must not change the pre-existing
     // AVAILABLE behavior.
     let state = derive_auction_task_state(
+        &NameActionContext::default(),
         "AVAILABLE",
         false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -253,18 +228,16 @@ fn reveal_state(
     reveal_draft_status: Option<&str>,
 ) -> AuctionTaskState {
     derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin,
+            reveal_txid: reveal_txid.map(str::to_string),
+            reveal_draft_status: reveal_draft_status.map(str::to_string),
+            ..Default::default()
+        },
         "REVEAL",
         false,
-        true, // has_bid_commitment
-        has_bid_coin,
-        false, // has_reveal_coin
-        false,
         None,
-        None,
-        false,
-        false,
-        reveal_txid,
-        reveal_draft_status,
         Network::Main,
     )
 }
@@ -377,17 +350,14 @@ fn a_recorded_transfer_yields_transfer_pending_finalize() {
     // a string the node never sends, and the real case fell through to
     // "no urgent action" on a name waiting to be finalized.
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(crate::noncustodial::sync::COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..Default::default()
+        },
         "CLOSED",
         true,
-        false,
-        false,
-        false,
-        true,
-        Some(crate::noncustodial::sync::COV_TRANSFER as i64),
-        None,
-        false,
-        true,
-        None,
         None,
         Network::Main,
     );
@@ -454,18 +424,10 @@ fn explorer_owned_without_owner_coin_within_threshold_yields_expiring_soon() {
     // must still fire — renewals are exactly the case where staying silent
     // loses the name.
     let state = derive_auction_task_state(
+        &NameActionContext::default(),
         "CLOSED",
         true,
-        false,
-        false,
-        false,
-        false,
-        None,
         Some(5.0),
-        false,
-        false,
-        None,
-        None,
         Network::Main,
     );
     assert_eq!(state, AuctionTaskState::ExpiringSoon);
@@ -475,18 +437,14 @@ fn explorer_owned_without_owner_coin_within_threshold_yields_expiring_soon() {
 fn won_unregistered_within_threshold_still_needs_register_first() {
     // Registration takes precedence: an unregistered win can't be renewed.
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(4),
+            ..Default::default()
+        },
         "CLOSED",
         true,
-        false,
-        false,
-        false,
-        true,
-        Some(4),
         Some(5.0),
-        false,
-        false,
-        None,
-        None,
         Network::Main,
     );
     assert_eq!(state, AuctionTaskState::WonNeedsRegister);
@@ -496,18 +454,10 @@ fn won_unregistered_within_threshold_still_needs_register_first() {
 fn unowned_closed_within_threshold_is_not_expiring_soon() {
     // Not our name — no renewal alarm.
     let state = derive_auction_task_state(
+        &NameActionContext::default(),
         "CLOSED",
         false,
-        false,
-        false,
-        false,
-        false,
-        None,
         Some(5.0),
-        false,
-        false,
-        None,
-        None,
         Network::Main,
     );
     assert_eq!(state, AuctionTaskState::OwnedNoUrgentAction);

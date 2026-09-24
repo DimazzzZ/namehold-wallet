@@ -64,17 +64,9 @@ fn ctx(
 #[test]
 fn task_state_available_no_pending_open() {
     let state = derive_auction_task_state(
+        &NameActionContext::default(),
         "AVAILABLE",
         false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -84,17 +76,12 @@ fn task_state_available_no_pending_open() {
 #[test]
 fn task_state_available_with_pending_open() {
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_pending_open: true,
+            ..Default::default()
+        },
         "AVAILABLE",
         false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        true, // has_pending_open
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -104,17 +91,9 @@ fn task_state_available_with_pending_open() {
 #[test]
 fn task_state_empty_phase_treated_as_available() {
     let state = derive_auction_task_state(
+        &NameActionContext::default(),
         "",
         false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -124,17 +103,9 @@ fn task_state_empty_phase_treated_as_available() {
 #[test]
 fn task_state_opening_phase() {
     let state = derive_auction_task_state(
+        &NameActionContext::default(),
         "OPENING",
         false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -144,17 +115,13 @@ fn task_state_opening_phase() {
 #[test]
 fn task_state_bidding_with_commitment() {
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: false,
+            ..Default::default()
+        },
         "BIDDING",
         false,
-        true, // has_bid_commitment
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -166,17 +133,9 @@ fn task_state_bidding_with_commitment() {
 #[test]
 fn task_state_bidding_without_commitment() {
     let state = derive_auction_task_state(
+        &NameActionContext::default(),
         "BIDDING",
         false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -186,17 +145,12 @@ fn task_state_bidding_without_commitment() {
 #[test]
 fn task_state_reveal_no_commitment_returns_unavailable() {
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_coin: false,
+            ..Default::default()
+        },
         "REVEAL",
         false,
-        false, // no commitment
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -206,18 +160,15 @@ fn task_state_reveal_no_commitment_returns_unavailable() {
 #[test]
 fn task_state_reveal_with_broadcasted_draft() {
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            reveal_draft_status: Some("broadcasted".to_string()),
+            ..Default::default()
+        },
         "REVEAL",
         false,
-        true,
-        true,
-        false,
-        false,
         None,
-        None,
-        false,
-        false,
-        None,
-        Some("broadcasted"),
         Network::Main,
     );
     assert_eq!(state, AuctionTaskState::RevealBroadcastPending);
@@ -226,18 +177,15 @@ fn task_state_reveal_with_broadcasted_draft() {
 #[test]
 fn task_state_reveal_with_broadcast_pending_draft() {
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            reveal_draft_status: Some("broadcast_pending".to_string()),
+            ..Default::default()
+        },
         "REVEAL",
         false,
-        true,
-        true,
-        false,
-        false,
         None,
-        None,
-        false,
-        false,
-        None,
-        Some("broadcast_pending"),
         Network::Main,
     );
     assert_eq!(state, AuctionTaskState::RevealBroadcastPending);
@@ -246,18 +194,15 @@ fn task_state_reveal_with_broadcast_pending_draft() {
 #[test]
 fn task_state_reveal_with_confirmed_draft() {
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            reveal_draft_status: Some("confirmed".to_string()),
+            ..Default::default()
+        },
         "REVEAL",
         false,
-        true,
-        true,
-        false,
-        false,
         None,
-        None,
-        false,
-        false,
-        None,
-        Some("confirmed"),
         Network::Main,
     );
     assert_eq!(state, AuctionTaskState::RevealDoneWaitingForClose);
@@ -267,18 +212,16 @@ fn task_state_reveal_with_confirmed_draft() {
 fn task_state_reveal_with_dropped_draft_and_unspent_bid_coin() {
     // Dropped draft but bid coin still unspent → ReadyToReveal (can retry).
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_bid_coin: true,
+            has_reveal_coin: false,
+            reveal_draft_status: Some("dropped".to_string()),
+            ..Default::default()
+        },
         "REVEAL",
         false,
-        true,
-        true, // has_bid_coin
-        false,
-        false,
         None,
-        None,
-        false,
-        false,
-        None,
-        Some("dropped"),
         Network::Main,
     );
     assert_eq!(state, AuctionTaskState::ReadyToReveal);
@@ -288,17 +231,14 @@ fn task_state_reveal_with_dropped_draft_and_unspent_bid_coin() {
 fn task_state_reveal_with_txid_and_spent_bid_coin() {
     // reveal_txid set but bid coin spent (cross-device reveal) → done.
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: true,
+            has_reveal_coin: false,
+            reveal_txid: Some("abc123".to_string()),
+            ..Default::default()
+        },
         "REVEAL",
         false,
-        true,
-        false, // bid coin spent
-        false,
-        false,
-        None,
-        None,
-        false,
-        false,
-        Some("abc123"),
         None,
         Network::Main,
     );
@@ -308,17 +248,15 @@ fn task_state_reveal_with_txid_and_spent_bid_coin() {
 #[test]
 fn task_state_closed_owns_name_unregistered() {
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: false,
+            has_owner_coin: true,
+            owner_covenant_type: Some(2),
+            ..Default::default()
+        },
         "CLOSED",
-        true, // owns_name
-        false,
-        false,
-        false,
-        true,    // has_owner_coin
-        Some(2), // COV_OPEN < COV_REGISTER
-        None,
-        false,
-        false,
-        None,
+        true,
+        // COV_OPEN < COV_REGISTER
         None,
         Network::Main,
     );
@@ -328,17 +266,14 @@ fn task_state_closed_owns_name_unregistered() {
 #[test]
 fn task_state_closed_owns_name_already_registered() {
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(6),
+            ..Default::default()
+        },
         "CLOSED",
         true,
-        false,
-        false,
-        false,
-        true,
-        Some(6), // COV_REGISTER
-        None,
-        false,
-        false,
-        None,
+        // COV_REGISTER
         None,
         Network::Main,
     );
@@ -348,18 +283,15 @@ fn task_state_closed_owns_name_already_registered() {
 #[test]
 fn task_state_closed_owns_name_registered_expiring_soon() {
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(6),
+            has_pending_open: false,
+            ..Default::default()
+        },
         "CLOSED",
         true,
-        false,
-        false,
-        false,
-        true,
-        Some(6),
-        Some(15.0), // days_until_expire = 15 (below 30-day threshold)
-        false,
-        false,
-        None,
-        None,
+        Some(15.0),
         Network::Main,
     );
     assert_eq!(state, AuctionTaskState::ExpiringSoon);
@@ -369,17 +301,12 @@ fn task_state_closed_owns_name_registered_expiring_soon() {
 fn task_state_closed_owns_name_no_coin_synced() {
     // Owned per explorer but coin not synced locally.
     let state = derive_auction_task_state(
+        &NameActionContext {
+            owner_covenant_type: None,
+            ..Default::default()
+        },
         "CLOSED",
         true,
-        false,
-        false,
-        false,
-        false, // no owner coin
-        None,
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -389,17 +316,14 @@ fn task_state_closed_owns_name_no_coin_synced() {
 #[test]
 fn task_state_closed_lost_has_reveal_coin() {
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: false,
+            has_reveal_coin: true,
+            has_owner_coin: false,
+            ..Default::default()
+        },
         "CLOSED",
-        false, // doesn't own
         false,
-        false,
-        true, // has_reveal_coin (losing bid)
-        false,
-        None,
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -411,17 +335,14 @@ fn task_state_recorded_transfer() {
     // hsd leaves the state at CLOSED while a transfer is pending — there is
     // no TRANSFER state — so the transfer flag is what decides this.
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_TRANSFER as i64),
+            transfer_has_items: Some(true),
+            ..Default::default()
+        },
         "CLOSED",
         true,
-        false,
-        false,
-        false,
-        true,
-        Some(COV_TRANSFER as i64),
-        None,
-        false,
-        true,
-        None,
         None,
         Network::Main,
     );
@@ -431,17 +352,9 @@ fn task_state_recorded_transfer() {
 #[test]
 fn task_state_revoked_phase() {
     let state = derive_auction_task_state(
+        &NameActionContext::default(),
         "REVOKED",
         false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     );
@@ -451,17 +364,12 @@ fn task_state_revoked_phase() {
 #[test]
 fn task_state_unknown_phase_owned() {
     let state = derive_auction_task_state(
+        &NameActionContext {
+            has_bid_commitment: false,
+            ..Default::default()
+        },
         "UNKNOWN_PHASE",
-        true, // owns_name
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        false,
-        None,
+        true,
         None,
         Network::Main,
     );
@@ -471,17 +379,9 @@ fn task_state_unknown_phase_owned() {
 #[test]
 fn task_state_unknown_phase_not_owned() {
     let state = derive_auction_task_state(
+        &NameActionContext::default(),
         "UNKNOWN_PHASE",
         false,
-        false,
-        false,
-        false,
-        false,
-        None,
-        None,
-        false,
-        false,
-        None,
         None,
         Network::Main,
     );
