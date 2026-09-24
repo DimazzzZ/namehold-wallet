@@ -68,7 +68,9 @@ fn test_schema_version_tracking() {
     // 029 (bid_auction_scope: bid index keyed by the auction's OPEN height),
     // 030 (bid_commitment_auction: commitments carry their auction too),
     // 031 (rescan_reveal_pairing: reveal values may sit on the wrong bid).
-    assert_eq!(count, 31);
+    // 032 (clear_seeded_mainnet_explorer: 009 seeded a mainnet URL that
+    //      outranked the network default on every other network).
+    assert_eq!(count, 32);
 }
 
 #[test]
@@ -193,4 +195,100 @@ fn test_connection_open() {
     assert_eq!(fk, 1);
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- 032: the seeded mainnet explorer is cleared, a chosen one is kept ---
+
+/// Migration 009 seeded this value; 032 removes exactly it.
+const SEEDED_MAINNET_EXPLORER: &str = "https://e.hnsfans.com";
+
+#[test]
+fn migration_032_clears_the_explorer_url_009_seeded() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&conn).unwrap();
+    // Re-seed the way an installation that ran the original 009 looks, then
+    // replay 032 over it: migrations run once, so this is the state such a
+    // database is already in when the new build starts.
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('explorer_api_url', ?1)",
+        [SEEDED_MAINNET_EXPLORER],
+    )
+    .unwrap();
+    conn.execute_batch(include_str!("../sql/032_clear_seeded_mainnet_explorer.sql"))
+        .unwrap();
+
+    let remaining: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'explorer_api_url'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        remaining, 0,
+        "the seeded mainnet URL must be gone so the network default applies"
+    );
+}
+
+#[test]
+fn migration_032_keeps_an_explorer_url_the_user_chose() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&conn).unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('explorer_api_url', ?1)",
+        ["https://explorer.example.test"],
+    )
+    .unwrap();
+    conn.execute_batch(include_str!("../sql/032_clear_seeded_mainnet_explorer.sql"))
+        .unwrap();
+
+    let value: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'explorer_api_url'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, "https://explorer.example.test");
+}
+
+// --- 030's backfill offsets must still describe the consensus they encode ---
+
+/// Migration 030 backfills `name_start_height` from `reveal_end_height` using a
+/// per-network offset spelled out as a literal: 2197, 469, 21.
+///
+/// The literals are deliberate. A migration is a one-shot transformation of
+/// rows written under the rules of its own time, so deriving the offset from
+/// live constants would let a later consensus change silently rewrite history
+/// differently. But nothing then tells anyone editing `NameParams` that a
+/// migration encodes the old values — which is what this test is for. If it
+/// fails, 030 is not wrong; it is a record of what was true, and the failure
+/// says the rules have moved since.
+#[test]
+fn migration_030_offsets_match_the_name_params_they_were_derived_from() {
+    use crate::noncustodial::network::Network;
+
+    // reveal_end = start + (tree_interval + 1) + bidding_period + reveal_period
+    let offset = |n: Network| {
+        let p = n.name_params();
+        (p.tree_interval + 1 + p.bidding_period + p.reveal_period) as i64
+    };
+
+    assert_eq!(offset(Network::Main), 2197, "mainnet offset in 030");
+    assert_eq!(offset(Network::Testnet), 469, "testnet offset in 030");
+    assert_eq!(offset(Network::Regtest), 21, "regtest offset in 030");
+
+    // The migration's CASE has no arm for simnet. That is safe only while the
+    // schema refuses to store one.
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&conn).unwrap();
+    let rejected = conn.execute(
+        "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub)
+         VALUES ('sim', 'Sim', 'watch_only_xpub', 'simnet', 'xpubSIM')",
+        [],
+    );
+    assert!(
+        rejected.is_err(),
+        "030 assumes simnet cannot be stored; the CHECK must keep it out"
+    );
 }

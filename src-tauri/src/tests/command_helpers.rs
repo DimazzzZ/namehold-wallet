@@ -27,3 +27,19 @@ pub fn create_test_state() -> crate::AppState {
         )),
     }
 }
+
+/// Set one per-profile node-config override (ADR-001), upserting.
+///
+/// Four test files and the watched-name daemon's own test module each carried
+/// their own copy of this. Four were byte-identical; the fifth used
+/// `INSERT OR REPLACE`, which differs on an existing row — it rewrites the
+/// whole row rather than the value, so a future column would silently be
+/// reset. One copy, and the shapes cannot drift again.
+pub fn set_profile_override(conn: &Connection, profile_id: &str, key: &str, value: &str) {
+    conn.execute(
+        "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
+         ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![profile_id, key, value],
+    )
+    .unwrap();
+}

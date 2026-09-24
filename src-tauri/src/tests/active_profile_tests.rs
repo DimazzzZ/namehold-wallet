@@ -3,8 +3,10 @@
 
 use crate::commands::active_profile::{
     active_profile_network_from_conn, active_profile_network_opt_from_conn,
+    profile_network_from_conn,
 };
 use crate::db::queries::{insert_wallet_profile, set_active_profile};
+use crate::error::AppError;
 use crate::noncustodial::network::Network;
 use rusqlite::Connection;
 
@@ -89,4 +91,68 @@ fn the_optional_form_reads_the_active_profile_network() {
         active_profile_network_opt_from_conn(&conn),
         Some(Network::Regtest)
     );
+}
+
+// --- profile_network_opt_from_conn: a named profile, unknown means unknown ---
+
+#[test]
+fn a_named_profiles_network_is_read_without_the_active_profile() {
+    // The sync steps work on a profile id they were handed, which need not be
+    // the active one.
+    let conn = db();
+    seed_profile(&conn, "p-regtest", "regtest");
+    seed_profile(&conn, "p-main", "mainnet");
+    set_active_profile(&conn, "p-main").unwrap();
+    assert_eq!(
+        crate::commands::active_profile::profile_network_opt_from_conn(&conn, "p-regtest"),
+        Some(Network::Regtest)
+    );
+}
+
+#[test]
+fn a_missing_profile_reads_as_unknown_not_mainnet() {
+    let conn = db();
+    assert_eq!(
+        crate::commands::active_profile::profile_network_opt_from_conn(&conn, "nobody"),
+        None
+    );
+}
+
+#[test]
+fn an_unparseable_network_string_reads_as_unknown_not_mainnet() {
+    let conn = db();
+    // Same smuggling as the fallback test above: the schema's CHECK keeps
+    // unknown networks out, so this branch is defensive (an older DB, a future
+    // network name) rather than a state the app can produce.
+    conn.pragma_update(None, "ignore_check_constraints", true)
+        .unwrap();
+    seed_profile(&conn, "p1", "weirdnet");
+    conn.pragma_update(None, "ignore_check_constraints", false)
+        .unwrap();
+    assert_eq!(
+        crate::commands::active_profile::profile_network_opt_from_conn(&conn, "p1"),
+        None,
+        "unknown must not resolve to mainnet for a step that acts on the answer"
+    );
+}
+
+#[test]
+fn the_named_profile_form_reads_that_profile_network() {
+    let conn = db();
+    seed_profile(&conn, "p1", "regtest");
+    seed_profile(&conn, "p2", "testnet");
+    set_active_profile(&conn, "p1").unwrap();
+    assert_eq!(
+        profile_network_from_conn(&conn, "p2").unwrap(),
+        Network::Testnet
+    );
+}
+
+#[test]
+fn the_named_profile_form_errors_rather_than_guessing_mainnet() {
+    let conn = db();
+    assert!(matches!(
+        profile_network_from_conn(&conn, "missing"),
+        Err(AppError::NotFound(_))
+    ));
 }

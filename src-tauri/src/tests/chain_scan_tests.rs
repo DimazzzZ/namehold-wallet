@@ -6,6 +6,7 @@
 //! implicitly exercised by the DB shape here — an integration test against a
 //! real node would go through `live_node_it` (see the "live_node_it" pattern).
 
+use crate::tests::command_helpers::set_profile_override;
 use rusqlite::{params, Connection};
 
 use crate::commands::chain_scan::{read_indexed_bids, scan_cursor_height};
@@ -1195,15 +1196,6 @@ async fn scan_block_assigns_correct_vout_index() {
 }
 
 // --- Per-profile node config resolution for chain_scan ----------------------
-
-fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
-    conn.execute(
-        "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
-         ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
-        rusqlite::params![profile_id, key, value],
-    )
-    .unwrap();
-}
 
 #[test]
 fn resolve_scanner_client_uses_active_profile_override() {

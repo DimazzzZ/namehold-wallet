@@ -338,14 +338,15 @@ pub enum AuctionTaskState {
     UnavailableOther,
 }
 
-/// Days-until-expiry threshold below which an owned name's task state becomes
-/// [`AuctionTaskState::ExpiringSoon`] (and the Renewals screen flags the row).
-/// A missed renewal on Handshake loses the name forever, so this errs early.
-/// (A settings-configurable threshold was considered and skipped for now —
-/// the constant is the single source of truth, surfaced to the frontend via
-/// `read_renewals.expiringSoonThresholdDays`.)
-/// Mainnet's expiry warning threshold, kept as a named constant because tests
-/// and the notification default both pin the historical 30-day behaviour.
+/// Mainnet's days-until-expiry threshold below which an owned name's task
+/// state becomes [`AuctionTaskState::ExpiringSoon`] (and the Renewals screen
+/// flags the row). A missed renewal on Handshake loses the name forever, so
+/// this errs early. Kept as a named constant because tests and the
+/// notification default both pin the historical 30-day behaviour, and
+/// surfaced to the frontend via `read_renewals.expiringSoonThresholdDays`.
+///
+/// Not configurable: a settings-controlled threshold was considered and
+/// skipped.
 /// Live code reads
 /// [`crate::noncustodial::network::Network::expiring_soon_threshold_days`]
 /// instead, which scales this to the network's own renewal window — a flat 30
@@ -443,6 +444,11 @@ pub struct NameActionCapabilities {
 }
 
 /// Context gathered from the DB for a name action evaluation.
+///
+/// `Default` is the no-evidence state — nothing held, nothing pending, nothing
+/// known — which is what the capability model falls back to and what a test
+/// wants as a base before naming the one or two facts it is about.
+#[derive(Default)]
 pub(crate) struct NameActionContext {
     pub has_bid_commitment: bool,
     /// Unspent COV_BID coin for this name (the coin a REVEAL spends). Gates
@@ -524,22 +530,16 @@ pub(crate) fn find_name_action_context(
     auction_start: Option<i64>,
 ) -> Result<NameActionContext, AppError> {
     // Newest first, so the first match is the most recent bid in this auction.
-    let for_name: Vec<queries::BidCommitmentRow> = queries::list_bid_commitments(conn, profile_id)
-        .unwrap_or_default()
+    // A DB failure is returned, not read as "this wallet has never bid": the
+    // capabilities built from it decide whether Reveal and Redeem are offered,
+    // and an empty list withdraws both from a wallet that has money locked up.
+    let for_name: Vec<queries::BidCommitmentRow> = queries::list_bid_commitments(conn, profile_id)?
         .into_iter()
         .filter(|b| b.name == name)
         .collect();
-    let belongs_here = |b: &queries::BidCommitmentRow| match (auction_start, b.name_start_height) {
-        (Some(start), Some(placed)) => placed == start,
-        // A commitment recovered from the chain has no recorded auction (030).
-        // Counting one that may be dead is a wrong number; hiding a live one is
-        // a bid the user never gets told to reveal.
-        (Some(_), None) => true,
-        (None, _) => true,
-    };
     let commitments: Vec<queries::BidCommitmentRow> = for_name
         .iter()
-        .filter(|b| belongs_here(b))
+        .filter(|b| b.belongs_to_auction(auction_start))
         .cloned()
         .collect();
     let bid = commitments.first().cloned();
@@ -555,7 +555,7 @@ pub(crate) fn find_name_action_context(
     // with nothing on screen to explain it.
     let (stranded_bid_count, stranded_lockup_doos) = for_name
         .iter()
-        .filter(|b| !belongs_here(b))
+        .filter(|b| !b.belongs_to_auction(auction_start))
         .filter(|b| {
             queries::find_unspent_covenant_utxo(
                 conn,
@@ -583,7 +583,11 @@ pub(crate) fn find_name_action_context(
     // lands back on the bid coin's own address, see `build_reveal_draft`), so
     // only the covenant type differs between the two queries below.
     //
-    let name_hash_hex = hex::encode(names::hash_name(name).unwrap_or([0u8; 32]));
+    // A zero hash is not a name. `hash_name` only fails on a name that is not
+    // valid, and the coin lookups below are keyed by this hash — so the
+    // fallback answered "no reveal coins" for every name, which reads as
+    // nothing to redeem.
+    let name_hash_hex = hex::encode(names::hash_name(name)?);
     // Every bid of THIS auction, not the newest one and not every bid the
     // profile has ever placed on the name. Both wrong answers were live:
     // picking one commitment's address was never well defined (`created_at`
@@ -595,28 +599,27 @@ pub(crate) fn find_name_action_context(
     // with "no unspent bid coin". This is the same set `build_reveal_draft`
     // builds its transaction from, so the button and the builder cannot
     // disagree.
-    let bid_coin = commitments.iter().find_map(|b| {
-        queries::find_unspent_covenant_utxo(
+    let mut bid_coin = None;
+    for b in &commitments {
+        if let Some(coin) = queries::find_unspent_covenant_utxo(
             conn,
             profile_id,
             &b.address,
             sync::COV_BID as i64,
             name,
             &b.name_hash_hex,
-        )
-        .ok()
-        .flatten()
-    });
+        )? {
+            bid_coin = Some(coin);
+            break;
+        }
+    }
     let reveal_coins = queries::find_unspent_covenant_utxos_by_name_hash(
         conn,
         profile_id,
         COV_REVEAL as i64,
         &name_hash_hex,
-    )
-    .unwrap_or_default();
-    let owner_coin = queries::get_name_coin(conn, profile_id, name)
-        .ok()
-        .flatten();
+    )?;
+    let owner_coin = queries::get_name_coin(conn, profile_id, name)?;
     // A reveal coin that is NOT the name's owner is a losing bid this wallet
     // can still reclaim. Outbidding yourself leaves exactly this: you own the
     // name AND hold losing reveals on it.
@@ -657,24 +660,16 @@ pub(crate) fn find_name_action_context(
     // permanently un-openable — including one whose auction had since lapsed
     // and which the chain now reports as available again. A live auction is
     // already handled by the phase check in `build_name_action_capabilities`.
-    let has_pending_open_coin = names::hash_name(name)
-        .ok()
-        .map(hex::encode)
-        .map(|nh_hex| {
-            queries::has_unconfirmed_covenant_utxo_by_name_hash(
-                conn,
-                profile_id,
-                sync::COV_OPEN as i64,
-                &nh_hex,
-            )
-            .unwrap_or(false)
-        })
-        .unwrap_or(false);
+    let has_pending_open_coin = queries::has_unconfirmed_covenant_utxo_by_name_hash(
+        conn,
+        profile_id,
+        sync::COV_OPEN as i64,
+        &hex::encode(names::hash_name(name)?),
+    )?;
     let has_pending_open_draft =
-        queries::has_pending_draft_for_name(conn, profile_id, "open", name).unwrap_or(false);
+        queries::has_pending_draft_for_name(conn, profile_id, "open", name)?;
     let has_pending_open = has_pending_open_coin || has_pending_open_draft;
-    let pending_actions =
-        queries::pending_broadcast_actions_for_name(conn, profile_id, name).unwrap_or_default();
+    let pending_actions = queries::pending_broadcast_actions_for_name(conn, profile_id, name)?;
     let pending_broadcast_action = pending_actions.first().cloned();
 
     // `get_name_coin` answers "can we spend it" and returns unspent coins
@@ -715,21 +710,23 @@ pub(crate) fn find_name_action_context(
     // dropped/failed; when there's no draft (restored/cross-device wallet), the
     // caller falls back to the bid-coin-spent chain fact.
     let reveal_txid = bid.as_ref().and_then(|b| b.reveal_txid.clone());
-    let reveal_draft_status = reveal_txid.as_ref().and_then(|txid| {
-        queries::get_draft_status_by_txid(conn, profile_id, txid)
-            .ok()
-            .flatten()
-    });
+    let reveal_draft_status = match reveal_txid.as_ref() {
+        Some(txid) => queries::get_draft_status_by_txid(conn, profile_id, txid)?,
+        None => None,
+    };
     let bid_value_doos = bid.as_ref().map(|b| b.bid_value_doos);
     let lockup_value_doos = bid.as_ref().map(|b| b.lockup_value_doos);
 
-    let tracked_row = queries::get_tracked_name_state(conn, profile_id, name).unwrap_or(None);
+    let tracked_row = queries::get_tracked_name_state(conn, profile_id, name)?;
     let transfer_height = tracked_row
         .as_ref()
         .and_then(|t| t.transfer_height)
         .filter(|h| *h > 0);
+    // The same call is already propagated further down this file; a failure
+    // here read as "height unknown", which quietly widens every gate that
+    // compares a height against the tip.
     let current_height =
-        crate::commands::read::estimate_persisted_height(conn, profile_id).unwrap_or(None);
+        crate::commands::node_readiness::estimate_persisted_height(conn, profile_id)?;
 
     Ok(NameActionContext {
         has_bid_commitment: bid.is_some(),
@@ -790,7 +787,7 @@ pub async fn get_name_action_capabilities(
         Some(id) => id,
         None => return Ok(conservative_capabilities(&name, "no active wallet profile")),
     };
-    let live_tip = crate::commands::read::node_tip_height_if_synced(&state).await;
+    let live_tip = crate::commands::node_readiness::node_tip_height_if_synced(&state).await;
     evaluate_name_action_capabilities(&state, name, &profile_id, live_tip).await
 }
 
@@ -836,7 +833,7 @@ pub async fn get_names_action_capabilities(
     // Fetched once for the whole batch, not once per name: the only thing it
     // is needed for is the transfer-lockup countdown, and a stale tip there
     // refuses a FINALIZE the node would accept.
-    let live_tip = crate::commands::read::node_tip_height_if_synced(&state).await;
+    let live_tip = crate::commands::node_readiness::node_tip_height_if_synced(&state).await;
     let mut out = Vec::with_capacity(names.len());
     for name in names {
         out.push(evaluate_name_action_capabilities(&state, name, &profile_id, live_tip).await?);
@@ -863,9 +860,8 @@ async fn evaluate_name_action_capabilities(
     let (client, network) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let client = NodeRpcClient::for_profile(&conn, profile_id)?;
-        let network = queries::get_wallet_profile(&conn, profile_id)?
-            .and_then(|p| Network::from_str_opt(&p.network))
-            .unwrap_or_default();
+        let network =
+            crate::commands::active_profile::profile_network_from_conn(&conn, profile_id)?;
         (client, network)
     };
 
@@ -875,7 +871,7 @@ async fn evaluate_name_action_capabilities(
     //    spuriously false for names we actually own. Treat "reachable but not
     //    synced" exactly like unreachable: fall back to local Sync evidence.
     //    Reuses the same gate as `read_balance`/`read_names` — no duplicate logic.
-    let name_info = if crate::commands::read::is_node_ready_for_local_reads(state).await {
+    let name_info = if crate::commands::node_readiness::is_node_ready_for_local_reads(state).await {
         client.get_name_info(&name).await.ok()
     } else {
         None
@@ -907,13 +903,7 @@ async fn evaluate_name_action_capabilities(
             };
             let stats = name_info.get("info").and_then(|i| i.get("stats"));
 
-            // The persisted estimate is deliberately conservative — on regtest
-            // it does not age at all — and the transfer-lockup gate is the one
-            // consumer where a stale tip refuses an action the node accepts.
-            let action_ctx = NameActionContext {
-                current_height: live_tip.or(action_ctx.current_height),
-                ..action_ctx
-            };
+            let action_ctx = action_ctx.with_live_tip(live_tip);
             let NameOwnership {
                 owns_name,
                 spend_locked,
@@ -957,7 +947,7 @@ async fn evaluate_name_action_capabilities(
                 // duplicated — both read the same helpers.
                 let renewal_window = network.name_params().renewal_window as i64;
                 let current_height =
-                    crate::commands::read::estimate_persisted_height(&conn, profile_id)?;
+                    crate::commands::node_readiness::estimate_persisted_height(&conn, profile_id)?;
                 (tracked, action_ctx, addrs, renewal_window, current_height)
             };
             let tracked = match tracked {
@@ -970,13 +960,7 @@ async fn evaluate_name_action_capabilities(
                 .as_deref()
                 .map(|s| s.to_uppercase())
                 .unwrap_or_default();
-            // The persisted estimate is deliberately conservative — on regtest
-            // it does not age at all — and the transfer-lockup gate is the one
-            // consumer where a stale tip refuses an action the node accepts.
-            let action_ctx = NameActionContext {
-                current_height: live_tip.or(action_ctx.current_height),
-                ..action_ctx
-            };
+            let action_ctx = action_ctx.with_live_tip(live_tip);
             let NameOwnership {
                 owns_name,
                 spend_locked,
@@ -1099,21 +1083,18 @@ pub(crate) fn build_name_action_capabilities(
     // the covenant type is below REGISTER (i.e. not already registered).
     let registration_needed = phase == "CLOSED"
         && action_ctx.has_owner_coin
-        && action_ctx
-            .owner_covenant_type
-            .map(|t| t < COV_REGISTER as i64)
-            .unwrap_or(true);
+        && !crate::noncustodial::covenants::is_registered_owner_covenant(
+            action_ctx.owner_covenant_type,
+        );
     let can_register = NameActionCapability {
         allowed: registration_needed,
         reason: if phase != "CLOSED" {
             Some(format!("auction not yet closed (phase: '{phase}')"))
         } else if !action_ctx.has_owner_coin {
             Some("wallet does not own the winning name coin".into())
-        } else if action_ctx
-            .owner_covenant_type
-            .map(|t| t >= COV_REGISTER as i64)
-            .unwrap_or(false)
-        {
+        } else if crate::noncustodial::covenants::is_registered_owner_covenant(
+            action_ctx.owner_covenant_type,
+        ) {
             Some("name is already registered".into())
         } else {
             None
@@ -1127,13 +1108,23 @@ pub(crate) fn build_name_action_capabilities(
     // already names the highest revealer as the owner, so the wallet looked
     // like it owned a name it had not won yet, and offered Update, Transfer,
     // Renew and Revoke on it.
-    let name_is_registered = action_ctx
-        .owner_covenant_type
-        .map(|t| t >= COV_REGISTER as i64)
-        .unwrap_or(false);
+    let name_is_registered = crate::noncustodial::covenants::is_registered_owner_covenant(
+        action_ctx.owner_covenant_type,
+    );
     let can_spend_as_owner = owns_name && name_is_registered;
-    let not_registered_reason = "the name is not registered yet";
     let transfer_pending = action_ctx.transfer_has_items.unwrap_or(false);
+    // Why an ownership action is refused before its own condition is looked
+    // at. Every owner action opens with the same two questions, in this order;
+    // the sentence each answers with is written here once.
+    let owner_gate = || -> Option<String> {
+        if !owns_name {
+            Some("wallet does not control this name".into())
+        } else if !name_is_registered {
+            Some("the name is not registered yet".into())
+        } else {
+            None
+        }
+    };
 
     // Update is the one ownership action a pending transfer takes away. hsd
     // lets a TRANSFER coin go to UPDATE, RENEW, FINALIZE or REVOKE
@@ -1144,15 +1135,10 @@ pub(crate) fn build_name_action_capabilities(
     // own name.
     let can_update = NameActionCapability {
         allowed: can_spend_as_owner && !transfer_pending,
-        reason: if !owns_name {
-            Some("wallet does not control this name".into())
-        } else if !name_is_registered {
-            Some(not_registered_reason.into())
-        } else if transfer_pending {
-            Some("a transfer is pending — updating records would cancel it".into())
-        } else {
-            None
-        },
+        reason: owner_gate().or_else(|| {
+            transfer_pending
+                .then(|| "a transfer is pending — updating records would cancel it".into())
+        }),
     };
 
     // A TRANSFER coin may go to UPDATE, RENEW, FINALIZE or REVOKE — never to
@@ -1160,15 +1146,10 @@ pub(crate) fn build_name_action_capabilities(
     // the user at a transaction the node refuses.
     let can_transfer = NameActionCapability {
         allowed: can_spend_as_owner && !transfer_pending,
-        reason: if !owns_name {
-            Some("wallet does not control this name".into())
-        } else if !name_is_registered {
-            Some(not_registered_reason.into())
-        } else if transfer_pending {
-            Some("a transfer is already pending — finalize or cancel it first".into())
-        } else {
-            None
-        },
+        reason: owner_gate().or_else(|| {
+            transfer_pending
+                .then(|| "a transfer is already pending — finalize or cancel it first".into())
+        }),
     };
 
     // hsd refuses a FINALIZE until `transfer + transfer_lockup` blocks have
@@ -1186,12 +1167,10 @@ pub(crate) fn build_name_action_capabilities(
     let finalize_matured = blocks_until_finalize.map(|b| b == 0).unwrap_or(true);
 
     let can_finalize = NameActionCapability {
-        allowed: can_spend_as_owner
-            && action_ctx.transfer_has_items.unwrap_or(false)
-            && finalize_matured,
+        allowed: can_spend_as_owner && transfer_pending && finalize_matured,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
-        } else if !action_ctx.transfer_has_items.unwrap_or(false) {
+        } else if !transfer_pending {
             Some("name is not in TRANSFER state".into())
         } else {
             blocks_until_finalize.filter(|b| *b > 0).map(|blocks| {
@@ -1208,15 +1187,8 @@ pub(crate) fn build_name_action_capabilities(
     // name and built an UPDATE that changes nothing and costs a fee.
     let can_cancel_transfer = NameActionCapability {
         allowed: can_spend_as_owner && transfer_pending,
-        reason: if !owns_name {
-            Some("wallet does not control this name".into())
-        } else if !name_is_registered {
-            Some(not_registered_reason.into())
-        } else if !transfer_pending {
-            Some("name is not in TRANSFER state".into())
-        } else {
-            None
-        },
+        reason: owner_gate()
+            .or_else(|| (!transfer_pending).then(|| "name is not in TRANSFER state".into())),
     };
 
     // Renew is Update's twin here: hsd's RENEW handler runs `ns.setTransfer(0)`
@@ -1225,26 +1197,14 @@ pub(crate) fn build_name_action_capabilities(
     // renewal is one click away; the reverse order loses the transfer silently.
     let can_renew = NameActionCapability {
         allowed: can_spend_as_owner && !transfer_pending,
-        reason: if !owns_name {
-            Some("wallet does not control this name".into())
-        } else if !name_is_registered {
-            Some(not_registered_reason.into())
-        } else if transfer_pending {
-            Some("a transfer is pending — renewing would cancel it".into())
-        } else {
-            None
-        },
+        reason: owner_gate().or_else(|| {
+            transfer_pending.then(|| "a transfer is pending — renewing would cancel it".into())
+        }),
     };
 
     let can_revoke = NameActionCapability {
         allowed: can_spend_as_owner,
-        reason: if !owns_name {
-            Some("wallet does not control this name".into())
-        } else if !name_is_registered {
-            Some(not_registered_reason.into())
-        } else {
-            None
-        },
+        reason: owner_gate(),
     };
 
     // 4b. Spend lock: when we can't build a spend (no node-synced owner coin),
@@ -1306,21 +1266,8 @@ pub(crate) fn build_name_action_capabilities(
                 })
         })
     });
-    let task_state = derive_auction_task_state(
-        &phase,
-        owns_name,
-        action_ctx.has_bid_commitment,
-        action_ctx.has_bid_coin,
-        action_ctx.has_reveal_coin,
-        action_ctx.has_owner_coin,
-        action_ctx.owner_covenant_type,
-        days_until_expire,
-        action_ctx.has_pending_open,
-        transfer_pending,
-        action_ctx.reveal_txid.as_deref(),
-        action_ctx.reveal_draft_status.as_deref(),
-        network,
-    );
+    let task_state =
+        derive_auction_task_state(action_ctx, &phase, owns_name, days_until_expire, network);
 
     // 6. Determine next action.
     let (next_action_key, next_action_label, mut next_action_reason) =
@@ -1329,7 +1276,7 @@ pub(crate) fn build_name_action_capabilities(
     // `WaitingForBidding` is reused for two distinct situations: a pending OPEN
     // that hasn't reached BIDDING yet (default reason "The auction opens for
     // bidding soon.") and a name already in the on-chain BIDDING phase that
-    // THIS wallet has already bid on (one bid per wallet per name). For the
+    // THIS wallet has already bid on. For the
     // latter the default reason reads wrong — bidding is already open and the
     // wallet's action is to wait for the reveal window, not for bidding to
     // start — so refine the reason to match the "your bid is placed" panel the
@@ -1470,6 +1417,21 @@ pub(crate) struct NameOwnership {
     pub spend_locked: bool,
 }
 
+impl NameActionContext {
+    /// Prefer a tip read from a synced node over the persisted estimate.
+    ///
+    /// The estimate is deliberately conservative — on regtest it does not age
+    /// at all — and the transfer-lockup gate is the one consumer where a stale
+    /// tip refuses an action the node would accept. `None` leaves the estimate
+    /// in place, which is what happens with no synced node to ask.
+    pub(crate) fn with_live_tip(self, live_tip: Option<i64>) -> Self {
+        Self {
+            current_height: live_tip.or(self.current_height),
+            ..self
+        }
+    }
+}
+
 /// `owner_address` is the owner recorded for the name (from the node payload
 /// or the tracked row); it counts as ours when it is one of `profile_addrs`.
 pub(crate) fn derive_name_ownership(
@@ -1514,31 +1476,30 @@ pub(crate) fn derive_name_ownership(
 /// variant (its "Wait for Bidding" label reads fine for "your OPEN is
 /// confirming") rather than adding a new one.
 #[allow(clippy::too_many_arguments)]
-pub fn derive_auction_task_state(
+///
+/// Nine of the facts this needs travel together in [`NameActionContext`] and
+/// are read from it by name. They used to be nine positional parameters, six
+/// of them `bool`, where swapping two adjacent ones compiled silently and
+/// changed the answer.
+///
+/// A pending transfer comes from the context too, and is NOT derivable from
+/// `phase`: hsd's name states are OPENING / LOCKED / BIDDING / REVEAL / CLOSED
+/// / REVOKED (`namestate.js`), and a transfer leaves the state at CLOSED,
+/// signalling itself through `info.transfer` instead.
+pub(crate) fn derive_auction_task_state(
+    ctx: &NameActionContext,
     phase: &str,
     owns_name: bool,
-    has_bid_commitment: bool,
-    has_bid_coin: bool,
-    has_reveal_coin: bool,
-    has_owner_coin: bool,
-    owner_covenant_type: Option<i64>,
     days_until_expire: Option<f64>,
-    has_pending_open: bool,
-    // `transfer_pending`: a TRANSFER is recorded for this name. NOT derivable
-    // from `phase` — hsd's name states are OPENING / LOCKED / BIDDING /
-    // REVEAL / CLOSED / REVOKED (`namestate.js`), and a transfer leaves the
-    // state at CLOSED, signalling itself through `info.transfer` instead.
-    transfer_pending: bool,
-    reveal_txid: Option<&str>,
-    reveal_draft_status: Option<&str>,
     network: Network,
 ) -> AuctionTaskState {
+    let transfer_pending = ctx.transfer_has_items.unwrap_or(false);
     let expiring_soon = days_until_expire
         .map(|d| d <= network.expiring_soon_threshold_days())
         .unwrap_or(false);
     match phase {
         "AVAILABLE" | "" => {
-            if has_pending_open {
+            if ctx.has_pending_open {
                 AuctionTaskState::WaitingForBidding
             } else {
                 AuctionTaskState::AvailableToOpen
@@ -1553,11 +1514,10 @@ pub fn derive_auction_task_state(
             // header + the distinguished "yours" rows in the bid list convey
             // that a bid is already placed; we no longer collapse to a
             // terminal WaitingForBidding state that hides the form.
-            let _ = has_bid_commitment;
             AuctionTaskState::ReadyToBid
         }
         "REVEAL" => {
-            if !has_bid_commitment {
+            if !ctx.has_bid_commitment {
                 return AuctionTaskState::UnavailableOther;
             }
             // Reveal state machine (grilled design): prefer a local draft's
@@ -1565,18 +1525,18 @@ pub fn derive_auction_task_state(
             //  1. Local draft exists: broadcasted/broadcast_pending → pending;
             //     confirmed → done; dropped/failed → back to ReadyToReveal so
             //     the user can re-broadcast (the bid coin is still unspent).
-            //  2. No draft but reveal_txid set AND the bid coin is spent
-            //     (!has_bid_coin) → done (chain ground truth; covers restored /
+            //  2. No draft but ctx.reveal_txid.as_deref() set AND the bid coin is spent
+            //     (!ctx.has_bid_coin) → done (chain ground truth; covers restored /
             //     cross-device wallets that revealed elsewhere).
             //  3. Otherwise → ReadyToReveal (still prompt; `can_reveal.allowed`,
-            //     which requires has_bid_coin, is the real button gate).
-            match reveal_draft_status {
+            //     which requires ctx.has_bid_coin, is the real button gate).
+            match ctx.reveal_draft_status.as_deref() {
                 Some("broadcasted") | Some("broadcast_pending") => {
                     AuctionTaskState::RevealBroadcastPending
                 }
                 Some("confirmed") => AuctionTaskState::RevealDoneWaitingForClose,
                 _ => {
-                    if reveal_txid.is_some() && !has_bid_coin {
+                    if ctx.reveal_txid.as_deref().is_some() && !ctx.has_bid_coin {
                         AuctionTaskState::RevealDoneWaitingForClose
                     } else {
                         AuctionTaskState::ReadyToReveal
@@ -1585,13 +1545,14 @@ pub fn derive_auction_task_state(
             }
         }
         "CLOSED" => {
-            if owns_name && has_owner_coin {
+            if owns_name && ctx.has_owner_coin {
                 // If the owner coin is already REGISTER (6) or higher (UPDATE,
                 // RENEW, TRANSFER, etc.), the name is already registered — no
                 // REGISTER action needed. A coin with covenant type < COV_REGISTER
                 // (e.g. OPEN=2, REVEAL=4) means the wallet just won but has not
                 // yet registered.
-                let already_registered = owner_covenant_type
+                let already_registered = ctx
+                    .owner_covenant_type
                     .map(|t| t >= COV_REGISTER as i64)
                     .unwrap_or(false);
                 if already_registered {
@@ -1603,7 +1564,7 @@ pub fn derive_auction_task_state(
                         // ahead of everything quiet, because finalizing is the
                         // one thing the name is waiting on.
                         AuctionTaskState::TransferPendingFinalize
-                    } else if has_reveal_coin {
+                    } else if ctx.has_reveal_coin {
                         // Registered, and still holding a REVEAL coin. The
                         // winning one was spent by that REGISTER, so whatever
                         // is left lost — this wallet outbid itself, and those
@@ -1631,7 +1592,7 @@ pub fn derive_auction_task_state(
                 } else {
                     AuctionTaskState::OwnedNoUrgentAction
                 }
-            } else if has_reveal_coin {
+            } else if ctx.has_reveal_coin {
                 AuctionTaskState::LostNeedsRedeem
             } else {
                 AuctionTaskState::OwnedNoUrgentAction
@@ -2351,9 +2312,7 @@ pub async fn build_redeem_draft(
         // The winning reveal IS the name's owner coin until REGISTER spends it,
         // and consensus rejects redeeming it (`bad-redeem-owner`) — which would
         // take the whole transaction down with it.
-        let owner = queries::get_name_coin(&conn, &ctx.profile_id, &name)
-            .ok()
-            .flatten();
+        let owner = queries::get_name_coin(&conn, &ctx.profile_id, &name)?;
         all.into_iter()
             .filter(|c| {
                 owner
@@ -2866,8 +2825,7 @@ pub async fn build_batch_renew_draft(
     let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
 
-    let mut per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)> =
-        Vec::with_capacity(names.len());
+    let mut per_name: PerNameOwner = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         let (coin, ns) = owner_coin_and_state(&state, &ctx, name).await?;
@@ -2875,7 +2833,7 @@ pub async fn build_batch_renew_draft(
     }
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    build_batch_renew_draft_inner(&conn, &ctx, &names, per_name, &rblock, rate)
+    build_batch_renew_draft_inner(&conn, &ctx, per_name, &rblock, rate)
 }
 
 /// Pure inner logic for `build_batch_renew_draft`, testable without a Tauri
@@ -2887,8 +2845,7 @@ pub async fn build_batch_renew_draft(
 pub(crate) fn build_batch_renew_draft_inner(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
-    names: &[String],
-    per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)>,
+    per_name: PerNameOwner,
     rblock: &[u8; 32],
     rate: u64,
 ) -> Result<TxDraftSummary, AppError> {
@@ -2919,7 +2876,6 @@ pub(crate) fn build_batch_renew_draft_inner(
     )?;
     // Persist with first name as primary; the draft plan contains all names.
     let display_name = names_pure::display_names(&batch_names);
-    let _ = names; // kept for API parity; batch_names carries the actual list
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist_with_conn(
         conn,
@@ -2956,8 +2912,7 @@ pub async fn build_batch_transfer_draft(
     // whole batch before any owner-coin prefetch or DB write.
     let (version, program) = address::decode(ctx.network, &recipient)?;
 
-    let mut per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)> =
-        Vec::with_capacity(names.len());
+    let mut per_name: PerNameOwner = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         let (coin, ns) = owner_coin_and_state(&state, &ctx, name).await?;
@@ -2965,9 +2920,7 @@ pub async fn build_batch_transfer_draft(
     }
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    build_batch_transfer_draft_inner(
-        &conn, &ctx, &names, per_name, &recipient, version, &program, rate,
-    )
+    build_batch_transfer_draft_inner(&conn, &ctx, per_name, &recipient, version, &program, rate)
 }
 
 /// Pure inner logic for `build_batch_transfer_draft`, testable without a Tauri
@@ -2984,8 +2937,7 @@ pub async fn build_batch_transfer_draft(
 pub(crate) fn build_batch_transfer_draft_inner(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
-    names: &[String],
-    per_name: Vec<(String, [u8; 32], queries::NameCoin, NameState)>,
+    per_name: PerNameOwner,
     recipient: &str,
     version: u8,
     program: &[u8],
@@ -3017,7 +2969,6 @@ pub(crate) fn build_batch_transfer_draft_inner(
         rate,
     )?;
     let display_name = names_pure::display_names(&batch_names);
-    let _ = names; // kept for API parity; batch_names carries the actual list
     let name_refs: Vec<&str> = batch_names.iter().map(|s| s.as_str()).collect();
     persist_with_conn(
         conn,
@@ -3055,13 +3006,7 @@ pub async fn build_batch_reveal_draft(
     // then async RPC with NO lock held — preserving the original per-name
     // lock/unlock discipline. The pure computation (nonce parse + covenant +
     // plan + persist) runs afterward under one final held lock in the inner.
-    let mut per_name: Vec<(
-        String,
-        [u8; 32],
-        queries::BidCommitmentRow,
-        queries::NameCoin,
-        NameState,
-    )> = Vec::with_capacity(names.len());
+    let mut per_name: PerNameBid = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         // Async RPC first — its `height` says which auction is running, and a
@@ -3130,13 +3075,7 @@ pub async fn build_batch_reveal_draft(
 pub(crate) fn build_batch_reveal_draft_inner(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
-    per_name: Vec<(
-        String,
-        [u8; 32],
-        queries::BidCommitmentRow,
-        queries::NameCoin,
-        NameState,
-    )>,
+    per_name: PerNameBid,
     rate: u64,
 ) -> Result<TxDraftSummary, AppError> {
     let mut primaries = Vec::with_capacity(per_name.len());
@@ -3221,13 +3160,7 @@ pub async fn build_batch_redeem_draft(
     // commitment + reveal-coin lookup — preserving the original per-iteration
     // RPC-then-lock discipline. The pure computation (covenant + plan +
     // persist) runs afterward under one final held lock in the inner.
-    let mut per_name: Vec<(
-        String,
-        [u8; 32],
-        queries::BidCommitmentRow,
-        queries::NameCoin,
-        NameState,
-    )> = Vec::with_capacity(names.len());
+    let mut per_name: PerNameBid = Vec::with_capacity(names.len());
     for name in &names {
         let nh = names::hash_name(name)?;
         let ns = fetch_name_state(&client, name).await?;
@@ -3268,13 +3201,7 @@ pub async fn build_batch_redeem_draft(
 pub(crate) fn build_batch_redeem_draft_inner(
     conn: &rusqlite::Connection,
     ctx: &Ctx,
-    per_name: Vec<(
-        String,
-        [u8; 32],
-        queries::BidCommitmentRow,
-        queries::NameCoin,
-        NameState,
-    )>,
+    per_name: PerNameBid,
     rate: u64,
 ) -> Result<TxDraftSummary, AppError> {
     let mut primaries = Vec::with_capacity(per_name.len());
@@ -3350,6 +3277,25 @@ pub async fn build_batch_finalize_draft(
 
 /// Per-name row for [`build_batch_finalize_draft_inner`]:
 /// `(name, name_hash, raw_name, owner_coin, on_chain_state)`.
+/// Per-name prefetch for a batch that spends the name's owner coin: the name,
+/// its hash, that coin, and the on-chain state it was read with.
+///
+/// Named for the same reason [`PerNameFinalize`] is: four signatures carried
+/// this shape written out, and a bare tuple says nothing about which
+/// `[u8; 32]` or which of two coins is which.
+pub(crate) type PerNameOwner = Vec<(String, [u8; 32], queries::NameCoin, NameState)>;
+
+/// Per-name prefetch for a batch that spends a bid: the name, its hash, the
+/// commitment row the bid was made from, the coin it created, and the on-chain
+/// state. Used by reveal and by redeem, which ignores the commitment.
+pub(crate) type PerNameBid = Vec<(
+    String,
+    [u8; 32],
+    queries::BidCommitmentRow,
+    queries::NameCoin,
+    NameState,
+)>;
+
 pub(crate) type PerNameFinalize = Vec<(String, [u8; 32], Vec<u8>, queries::NameCoin, NameState)>;
 
 /// Pure inner logic for `build_batch_finalize_draft`, testable without a Tauri
@@ -3634,18 +3580,20 @@ mod tests {
         reveal_draft_status: Option<&str>,
     ) -> AuctionTaskState {
         derive_auction_task_state(
+            &NameActionContext {
+                has_bid_commitment,
+                has_bid_coin,
+                has_reveal_coin,
+                has_owner_coin,
+                owner_covenant_type,
+                has_pending_open,
+                reveal_txid: reveal_txid.map(str::to_string),
+                reveal_draft_status: reveal_draft_status.map(str::to_string),
+                ..Default::default()
+            },
             phase,
             owns_name,
-            has_bid_commitment,
-            has_bid_coin,
-            has_reveal_coin,
-            has_owner_coin,
-            owner_covenant_type,
             days_until_expire,
-            has_pending_open,
-            false,
-            reveal_txid,
-            reveal_draft_status,
             Network::Main,
         )
     }
@@ -4078,17 +4026,14 @@ mod tests {
         // has no transfer to give it.
         assert_eq!(
             derive_auction_task_state(
+                &NameActionContext {
+                    has_owner_coin: true,
+                    owner_covenant_type: Some(COV_TRANSFER as i64),
+                    transfer_has_items: Some(true),
+                    ..Default::default()
+                },
                 "CLOSED",
-                true,
-                false,
-                false,
-                false,
-                true,
-                Some(COV_TRANSFER as i64),
-                None,
-                false,
-                true,
-                None,
+                /* owns_name */ true,
                 None,
                 Network::Main,
             ),
@@ -4811,6 +4756,28 @@ mod tests {
     /// Without heights we cannot say, and refusing an action the node would
     /// accept is its own kind of wrong. A transfer with no recorded height
     /// stays offered.
+    /// The persisted estimate is conservative on purpose (regtest never ages
+    /// it), so a synced node's tip replaces it; with no node to ask, nothing
+    /// changes.
+    #[test]
+    fn a_live_tip_replaces_the_persisted_estimate() {
+        let ctx = NameActionContext {
+            current_height: Some(805),
+            ..ctx_default()
+        };
+        assert_eq!(ctx.with_live_tip(Some(812)).current_height, Some(812));
+        let ctx = NameActionContext {
+            current_height: Some(805),
+            ..ctx_default()
+        };
+        assert_eq!(ctx.with_live_tip(None).current_height, Some(805));
+        let ctx = NameActionContext {
+            current_height: None,
+            ..ctx_default()
+        };
+        assert_eq!(ctx.with_live_tip(Some(812)).current_height, Some(812));
+    }
+
     #[test]
     fn finalize_is_not_blocked_when_the_lockup_is_unknown() {
         let ctx = NameActionContext {

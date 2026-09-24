@@ -5,7 +5,7 @@ import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { writeText } from "../lib/clipboard";
 import { formatDate, truncateMiddle } from "../lib/utils";
-import { explorerAddressUrl } from "../lib/openExternal";
+import { explorerAddressUrl, explorerCoversNetwork } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { mapError } from "../lib/errors";
 import { QRCodeSVG } from "qrcode.react";
@@ -75,7 +75,7 @@ export function ReceiveAddressList() {
                     {formatDate(row.firstSeenAt)}
                   </span>
                 </Tooltip>
-                {profile?.network === "mainnet" && (
+                {explorerCoversNetwork(profile?.network) && (
                   <Tooltip content="View on explorer">
                     <a
                       href={explorerAddressUrl(row.address)}

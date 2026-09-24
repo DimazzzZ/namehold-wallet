@@ -109,3 +109,90 @@ fn read_balance_explorer_path_returns_frontend_snake_case() {
     assert_eq!(wire["locked_confirmed"], 0);
     assert_eq!(wire["locked_unconfirmed"], 0);
 }
+
+// --- The frontend's copy of the per-network RPC ports ---
+
+/// `src/lib/utils.ts::defaultNodeRpcUrl` re-spells hsd's per-network loopback
+/// RPC ports so Settings can show one as a placeholder. Its doc used to ask
+/// whoever changed [`Network::default_rpc_url`] to remember it, which is a plea
+/// rather than a guard — exactly the drift this module exists to catch.
+///
+/// Reading the TypeScript is the cheap half of the fix: a wrong placeholder is
+/// cosmetic, so a round-trip to the backend for it would cost more than the
+/// bug, but the two tables still have to agree.
+#[test]
+fn the_frontend_default_rpc_urls_match_the_backend_port_table() {
+    use crate::noncustodial::network::Network;
+
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/lib/utils.ts"),
+    )
+    .expect("src/lib/utils.ts should be readable from the crate");
+
+    let body = src
+        .split_once("export function defaultNodeRpcUrl(")
+        .expect("defaultNodeRpcUrl should exist in src/lib/utils.ts")
+        .1;
+
+    for network in [
+        Network::Main,
+        Network::Testnet,
+        Network::Regtest,
+        Network::Simnet,
+    ] {
+        let expected = network.default_rpc_url();
+        assert!(
+            body.contains(&format!("\"{expected}\"")),
+            "{network:?}: src/lib/utils.ts should offer {expected}; \
+             update defaultNodeRpcUrl to match Network::default_rpc_url"
+        );
+    }
+}
+
+// --- The frontend's list of value-re-homing name actions ---
+
+/// `src/components/ActivityView.tsx::NAME_COVENANT_ACTIONS` names the actions
+/// whose covenant output re-homes a name's locked value onto the wallet's own
+/// coin, so the Amount cell shows it as information rather than a spend.
+///
+/// Which actions belong there is the screen's decision — it is deliberately a
+/// subset, since OPEN, REVOKE and CLAIM move no locked value. The spelling is
+/// not: these are the labels `classify_tx` emits, and renaming one on the Rust
+/// side would leave the set silently never matching, changing what the Amount
+/// column shows with nothing failing.
+#[test]
+fn the_activity_view_name_actions_are_labels_the_backend_emits() {
+    let backend = [
+        "open", "bid", "reveal", "redeem", "register", "update", "renew", "transfer", "finalize",
+        "revoke", "claim", "other",
+    ];
+
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/components/ActivityView.tsx"),
+    )
+    .expect("ActivityView.tsx should be readable from the crate");
+    let set = src
+        .split_once("const NAME_COVENANT_ACTIONS = new Set([")
+        .expect("NAME_COVENANT_ACTIONS should exist")
+        .1
+        .split_once("]);")
+        .expect("its literal should be closed")
+        .0;
+
+    let listed: Vec<String> = set
+        .split(',')
+        .filter_map(|s| {
+            let s = s.trim().trim_matches('"');
+            (!s.is_empty()).then(|| s.to_string())
+        })
+        .collect();
+    assert!(!listed.is_empty(), "failed to parse the set");
+
+    for action in &listed {
+        assert!(
+            backend.contains(&action.as_str()),
+            "ActivityView lists '{action}', which classify_tx never emits — \
+             a label was renamed on one side only"
+        );
+    }
+}

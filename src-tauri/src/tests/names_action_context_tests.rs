@@ -1188,3 +1188,25 @@ mod rpc_injected_tests {
         );
     }
 }
+
+// --- A name that cannot be hashed is an error, not an empty answer ---
+
+#[test]
+fn an_invalid_name_is_refused_rather_than_read_as_nothing_to_reveal() {
+    // The coin lookups are keyed by the name's hash. Hashing an invalid name
+    // fails, and the old fallback substituted a zero hash — which matches no
+    // coin, so every name that reached it reported no reveal coins and no
+    // owner coin. That is the same answer as "you have nothing to redeem" on
+    // a wallet that may have money locked up.
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+
+    let Err(err) = find_name_action_context(&conn, PROFILE, "NotAName", None) else {
+        panic!("an unhashable name must not resolve to an empty context");
+    };
+    assert!(
+        format!("{err:?}").contains("NotAName"),
+        "the error should name what it refused, got: {err:?}"
+    );
+}

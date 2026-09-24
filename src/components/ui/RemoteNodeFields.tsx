@@ -2,6 +2,7 @@ import { Input } from "./Input";
 import { Button } from "./Button";
 import { ConnectionCheckStatus } from "./ConnectionCheckStatus";
 import type { NodeConnectionCheckState } from "../../hooks/useNodeConnectionCheck";
+import type { WalletNetwork } from "../../types";
 
 export interface RemoteNodeFieldsProps {
   /** RPC URL value. */
@@ -22,7 +23,7 @@ export interface RemoteNodeFieldsProps {
    * Threaded straight into `probe.run` — Settings, which has an active
    * profile, may omit it and let the backend fall back to the stored network.
    */
-  expectedNetwork?: string;
+  expectedNetwork?: WalletNetwork;
   /** Label above the URL input. Omit for a placeholder-only field. */
   urlLabel?: string;
   /** Label above the API key input. Omit for a placeholder-only field. */

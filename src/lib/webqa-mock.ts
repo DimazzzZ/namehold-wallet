@@ -10,6 +10,9 @@
  */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
+import { DEFAULT_SETTINGS } from "./settingsDefaults";
+import type { NodeConnectionCheck, Settings } from "../types";
+
 type Handler = (args?: Record<string, unknown>) => unknown;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -344,22 +347,31 @@ function auctionPositionNames(): string[] {
 
 const handlers: Record<string, Handler> = {
   // ── Settings ──────────────────────────────────────────────────────────
-  get_settings: () => ({
-    node_rpc_url: "http://127.0.0.1:12037",
-    node_rpc_api_key: "",
-    hsd_prefix: "",
-    hsd_path: "",
-    explorer_api_url: "https://e.hnsfans.com",
-    address_gap_limit: "20",
-    signer_session_timeout_seconds: "900",
+  // Built from the typed defaults rather than hand-listed: this map used to
+  // omit settings the real backend always returns (`allow_remote_broadcast`
+  // among them), so a screen that reads one saw `undefined` in browser QA and
+  // nowhere else. Spreading the typed object means a new setting cannot be
+  // forgotten here.
+  get_settings: (): Settings => ({
+    ...DEFAULT_SETTINGS,
     onboarding_complete: "true",
-    background_sync_enabled: "1",
-    node_mode: "full",
-    explorer_fallback_url: "",
-    chain_source: "local_node",
   }),
 
   update_setting: () => null,
+
+  // Browser QA has no node to probe. Answer as a reachable, synced, matching
+  // node so "Test connection" completes instead of falling through to the
+  // unknown-command warning and returning null, which the caller reads as a
+  // failure it cannot explain.
+  check_node_connection: (): NodeConnectionCheck => ({
+    reachable: true,
+    height: 100_000,
+    headers: 100_000,
+    synced: true,
+    network: "regtest",
+    networkMatches: true,
+    error: null,
+  }),
 
   // ── Daemon control ────────────────────────────────────────────────────
   is_background_sync_enabled: () => true,

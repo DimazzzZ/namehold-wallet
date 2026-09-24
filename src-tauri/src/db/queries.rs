@@ -1559,8 +1559,8 @@ pub fn has_pending_draft_for_name(
     Ok(false)
 }
 
-/// The action of a transaction this wallet has BROADCAST for `name` that the
-/// chain has not confirmed yet — `Some("open")`, `Some("reveal")`, and so on.
+/// Every action this wallet has BROADCAST for `name` that the chain has not
+/// mined yet — `"open"`, `"reveal"` and so on — newest first.
 ///
 /// This is the gap the UI has to narrate. Between broadcast and the next block
 /// the chain still reports the name's previous state, so every phase-derived
@@ -1569,15 +1569,13 @@ pub fn has_pending_draft_for_name(
 /// is indefinite.
 ///
 /// Only `broadcast_pending`/`broadcasted` count: a `draft` or `signed` row has
-/// not left the device, and `confirmed`/`dropped`/`failed` are settled. When
-/// several qualify — a name can legitimately have more than one in flight — the
-/// most recent wins, which is the one the user just sent.
-/// Every action this wallet has broadcast for `name` and the chain has not
-/// mined, newest first. More than one can be in flight at once — a register
-/// and a redeem on the same name spend different coins and are independent —
-/// so a single answer has to pick, and `created_at` has second resolution:
-/// two drafts made in the same second order arbitrarily. Callers that ask
-/// "is a transaction of this kind in flight?" must look at all of them.
+/// not left the device, and `confirmed`/`dropped`/`failed` are settled.
+///
+/// More than one can be in flight at once — a register and a redeem on the
+/// same name spend different coins and are independent — so a caller asking
+/// "is a transaction of this kind in flight?" must look at all of them rather
+/// than at the first. `created_at` has second resolution, so two drafts made
+/// in the same second order arbitrarily between themselves.
 pub fn pending_broadcast_actions_for_name(
     conn: &rusqlite::Connection,
     profile_id: &str,
@@ -1601,26 +1599,22 @@ pub fn pending_broadcast_actions_for_name(
     Ok(out)
 }
 
+/// The most recent of [`pending_broadcast_actions_for_name`], or `None` when
+/// nothing this wallet sent for `name` is still waiting for a block.
+///
+/// "Most recent" is the one the user just pressed, which is what a single
+/// "waiting for a block" label should name. Ordering is by `created_at`, which
+/// has second resolution, so two drafts made in the same second pick between
+/// themselves arbitrarily — a caller that must not miss one of several in
+/// flight wants the plural form instead.
 pub fn pending_broadcast_action_for_name(
     conn: &rusqlite::Connection,
     profile_id: &str,
     name: &str,
 ) -> Result<Option<String>, AppError> {
-    let sql = format!(
-        "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
-         WHERE wallet_profile_id = ?1
-           AND status IN ('broadcast_pending','broadcasted')
-         ORDER BY created_at DESC"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![profile_id], row_to_draft)?;
-    for r in rows {
-        let row = r?;
-        if draft_summary_covers_name(&row.summary_json, name) {
-            return Ok(Some(row.action));
-        }
-    }
-    Ok(None)
+    Ok(pending_broadcast_actions_for_name(conn, profile_id, name)?
+        .into_iter()
+        .next())
 }
 
 /// True when a draft's `summary_json` names `name` — either as its single
@@ -2490,6 +2484,29 @@ pub struct BidCommitmentRow {
     pub name_start_height: Option<i64>,
 }
 
+impl BidCommitmentRow {
+    /// Whether this commitment belongs to the auction that opened at
+    /// `auction_start`.
+    ///
+    /// A name can be auctioned many times: one nobody reveals in lapses and the
+    /// name becomes available again, so a commitment from a dead auction must
+    /// not count as a bid on the live one.
+    ///
+    /// Two unknowns are deliberately permissive. A commitment recovered from
+    /// the chain rather than built here has no recorded auction (migration
+    /// 030), and a caller that could not resolve the auction's start passes
+    /// `None`; in both cases counting one that may be dead is a wrong number on
+    /// screen, while hiding a live one is a bid the user is never told to
+    /// reveal. Only a recorded mismatch excludes.
+    pub fn belongs_to_auction(&self, auction_start: Option<i64>) -> bool {
+        match (auction_start, self.name_start_height) {
+            (Some(start), Some(placed)) => placed == start,
+            (Some(_), None) => true,
+            (None, _) => true,
+        }
+    }
+}
+
 /// Insert a bid commitment row. Errors (rather than silently no-op'ing) when a
 /// row with the same `(wallet_profile_id, name, blind_hex)` already exists.
 ///
@@ -2747,6 +2764,42 @@ pub fn set_bid_reveal_txid(
         params![profile_id, name, blind_hex, txid],
     )?;
     Ok(())
+}
+
+/// Whether a wallet profile row exists.
+///
+/// Node-config resolution (ADR-001) treats a missing profile as a hard error
+/// rather than a fallback to global settings, so it has to ask this before it
+/// merges anything.
+pub fn wallet_profile_exists(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<bool, AppError> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) > 0 FROM wallet_profiles WHERE id = ?1",
+        [profile_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// All `profile_settings` rows for one profile, as a key/value map.
+///
+/// These are the per-profile overrides of ADR-001. An absent key means "no
+/// choice made here", which resolution reads as "fall back to global".
+pub fn get_profile_settings(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<std::collections::HashMap<String, String>, AppError> {
+    let mut stmt = conn.prepare("SELECT key, value FROM profile_settings WHERE profile_id = ?1")?;
+    let rows = stmt.query_map([profile_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (k, v) = row?;
+        map.insert(k, v);
+    }
+    Ok(map)
 }
 
 #[cfg(test)]
@@ -4133,7 +4186,7 @@ mod noncustodial_query_tests {
 
     // --- Coverage: reachable branches flagged uncovered in Phase 4 ----------
 
-    /// Item 1 (queries.rs:1185-1189): a coin already reserved by a *different*
+    /// `insert_tx_draft_reserving_coins`: a coin already reserved by a *different*
     /// live draft cannot be stolen — the conditional UPDATE claims 0 rows, so
     /// the whole transaction rolls back with `InvalidInput` and draft B never
     /// persists.

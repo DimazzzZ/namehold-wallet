@@ -109,8 +109,9 @@ each bid lands on its own rotated address.
 `set_bid_reveal_txid` is keyed by `blind_hex`. Stamping by name marked every
 commitment revealed, which silenced the reveal-deadline warning for exactly
 the bids still at risk. The batch path stamps too.
-*Enforced:* `db/queries.rs::set_bid_reveal_txid`, `commands/names.rs`,
-`noncustodial/actions.rs` (`build_batch_plan`).
+*Enforced:* `db/queries.rs::set_bid_reveal_txid`, called from both reveal
+builders in `commands/names.rs` (`build_reveal_draft_inner` and the batch
+reveal command) — the plan in `noncustodial/actions.rs` carries no txid.
 *Pinned:* `names_cmd_tests::build_reveal_draft_persists_reveal_txid_on_its_commitment`,
 `deadlines_cmd_tests::revealed_bid_is_excluded_even_if_the_window_would_be_imminent`.
 
@@ -174,21 +175,60 @@ false.
 `names::tests::ownership_actions_stay_available_once_registered`,
 `sign_name_message_tests::rejects_a_name_whose_owner_coin_is_still_a_reveal`.
 
-**R11b — The two transfer capabilities answer for the transfer.** Update is
-refused while a transfer is pending: hsd lets a TRANSFER coin go to UPDATE,
-RENEW, FINALIZE or REVOKE, and that UPDATE branch *is* the cancel, so a button
-labelled "edit your DNS records" was a way to lose a transfer in flight.
-Cancel transfer requires a transfer to cancel — the condition `can_finalize`
-has always carried — instead of building a no-op UPDATE that costs a fee.
+**R11b — Every capability answers for a transfer in flight.** hsd lets a
+TRANSFER coin go to UPDATE, RENEW, FINALIZE or REVOKE, and consensus decides
+which of those a button may offer.
+
+- **Update** is refused: its UPDATE branch *is* the cancel, so a button
+  labelled "edit your DNS records" was a way to lose a transfer in flight.
+- **Renew** is refused for the same reason. hsd's RENEW handler runs
+  `ns.setTransfer(0)` exactly as UPDATE does, so "extend my registration"
+  ended a transfer and said nothing about transfers.
+- **Transfer** is refused: a TRANSFER coin may become an UPDATE, RENEW,
+  FINALIZE or REVOKE and nothing else, so a second one is a transaction the
+  node rejects.
+- **Revoke** stays offered. Consensus allows it from a TRANSFER coin, and
+  destroying the name is exactly what that button says it does.
+- **Cancel transfer** requires a transfer to cancel — the condition
+  `can_finalize` has always carried — instead of building a no-op UPDATE that
+  costs a fee.
+
 *Enforced:* `commands/names.rs::build_name_action_capabilities`.
 *Pinned:* `names::tests::update_is_refused_while_a_transfer_is_pending`,
-`names::tests::cancel_transfer_is_refused_when_no_transfer_is_pending`.
+`names::tests::cancel_transfer_is_refused_when_no_transfer_is_pending`,
+`names::tests::renew_is_refused_while_a_transfer_is_pending`,
+`names::tests::transfer_is_refused_while_a_transfer_is_already_pending`.
+
+**R11c — Finalize waits out the transfer lockup.** hsd refuses a FINALIZE
+until `transfer + transferLockup` blocks have passed (`bad-finalize-maturity`),
+so offering it the moment a transfer is mined sends the user at a transaction
+the node throws away — two days on mainnet, ten blocks on regtest. The gate
+compares the transfer's height against the tip and the reason counts the
+blocks left rather than only saying no. It prefers the live tip, fetched once
+per call, and falls back to the persisted estimate when no synced node answers;
+with either height unknown the action stays offered, because refusing one the
+node would accept is its own kind of wrong.
+*Enforced:* `commands/names.rs::build_name_action_capabilities`,
+`commands/names.rs::evaluate_name_action_capabilities` (live tip).
+*Pinned:* `names::tests::finalize_waits_out_the_transfer_lockup`,
+`names::tests::finalize_is_not_blocked_when_the_lockup_is_unknown`,
+`names::tests::a_live_tip_replaces_the_persisted_estimate`.
+
+**R11d — A batched owner spend is still an owner spend.** The draft a batch
+builder persists records itself as `batch-<action>`, so an owner-spend check
+matching only the singular action names read a batched transfer as no transfer
+at all — collapsing ownership the moment one went out. The match strips a
+`batch-` prefix, which leaves `batch-bid` and `batch-redeem` correctly saying
+nothing about ownership.
+*Enforced:* `commands/names.rs::find_name_action_context`.
+*Pinned:* `names_action_context_tests::find_name_action_context_recognises_a_batched_owner_spend`.
 
 **R12 — A name whose auction lapsed can be opened again.** Only an
 *unconfirmed* OPEN coin counts as a pending OPEN. The OPEN output is a
 zero-value marker nothing ever spends, so treating "we hold one" as "one is
 pending" made every name this wallet had ever opened permanently un-openable.
-*Enforced:* `commands/names.rs::has_pending_open_coin` →
+*Enforced:* `commands/names.rs::find_name_action_context` (its
+`has_pending_open_coin` value) →
 `db/queries.rs::has_unconfirmed_covenant_utxo_by_name_hash`.
 *Pinned:* `names_action_context_tests` (pending-open cases),
 `build_open_draft_tests`, `live_node_it::live_double_open_and_double_bid_guarded`.
@@ -196,14 +236,57 @@ pending" made every name this wallet had ever opened permanently un-openable.
 ### Saying what is happening
 
 **R13 — An action sent but not yet mined says so, everywhere it appears.** The
-name modal, the auctions list and the guided panel all read the same
-`pendingBroadcastAction` and render "waiting for a block" naming the action,
-rather than the unchanged phase.
+name modal, the auctions list, the guided panel and the Owned Names table's
+State column all read the same `pendingBroadcastAction` and render "waiting for
+a block" naming the action, rather than the unchanged phase. The State column
+was the last surface that did not, so a row read "Owned" while the modal it
+opened read "Redeem · waiting for a block".
 *Enforced:* `db/queries.rs::pending_broadcast_action_for_name`,
-`src/lib/auction.ts` (`pendingBroadcastText`, `pendingBroadcastBadge`).
+`src/lib/auction.ts` (`pendingBroadcastText`, `pendingBroadcastBadge`),
+`src/components/WalletView.tsx` (State column).
 *Pinned:* `auction.test.ts :: names the action that is waiting for a block`,
+`wallet-view.test.tsx :: defers to what is in flight, like the modal it opens`,
 `auction-positions.test.tsx :: a broadcasted open the node/explorer hasn't caught up to (waitingForBidding) shows Waiting for Bidding / View`,
 `name-acquisition.test.tsx :: says the OPEN is waiting to be mined, with no Open button`.
+
+**R13b — A pending transfer is a task, not a phase that never arrives.** hsd
+has six name states — OPENING, LOCKED, BIDDING, REVEAL, CLOSED, REVOKED — and
+TRANSFER is not among them: a transfer leaves the state at CLOSED and shows
+itself through `info.transfer`. A task derivation keyed on a `"TRANSFER"` phase
+string therefore never fired, and every name being transferred fell through to
+"no urgent action" — on a name whose one remaining action is to finalize it.
+The task reads the transfer the node actually reports, and ranks behind the
+renewal alarm but ahead of everything quiet: losing the name outranks
+completing a transfer of it, and nothing else does. That includes R8: a name
+mid-transfer that still holds losing reveals reports the transfer, not the
+redeem, because the transfer is the task the user started and the name is on
+its way out of the wallet, while the reveals are reclaimable at any time —
+from the bids panel, the manual auction actions, or Redeem Selected.
+*Enforced:* `commands/names.rs::derive_auction_task_state`.
+*Pinned:* `auction_capabilities_tests::a_recorded_transfer_yields_transfer_pending_finalize`.
+
+**R13c — A reclaimed lockup is money again.** REDEEM is classified as
+spendable, not name-bound. hsd draws the same line in
+`Covenant::isNonspendable()`, which returns false for NONE, OPEN and REDEEM: a
+redeemed coin spends like any other output. Without this, HNS reclaimed from
+losing bids landed in `name_control`, so the balance card did not show it as
+spendable and coin selection would not draw on it — the user had just paid a
+fee to get it back and it stayed invisible. OPEN stays name-bound on purpose:
+hsd would spend it too, but it is a zero-value marker, so counting it as liquid
+would add an input and no value. No migration is needed; the sync upsert
+rewrites `spend_class` on conflict.
+*Enforced:* `noncustodial/sync.rs` (spend-class match).
+*Pinned:* `sync::tests::redeemed_value_counts_as_liquid_balance`.
+
+**R13d — A confirm dialog counts every output the action carries.** A name
+action can carry several: revealing a name bid on more than once emits one
+REVEAL per bid, and redeeming reclaims one per losing reveal. Reporting
+`outputs[0]` offered a live wallet a redeem of three reveals worth 28 HNS with
+12 on the dialog — the one figure a user checks before signing, wrong on every
+multi-bid action. The total sums every output except change, which the plan
+already identifies by index.
+*Enforced:* `commands/names.rs` (`send_total_doos` in the draft summary).
+*Pinned:* `build_redeem_draft_tests::build_redeem_draft_totals_every_output_it_reclaims`.
 
 **R14 — Our own unmined bid appears in the bids panel, counted apart.** A bid
 we broadcast but the chain has not indexed is appended to the list as
@@ -306,12 +389,6 @@ capability fields `nameIsRegistered` and `transferPending`.
 
 ## 5. Known gaps
 
-- **A multi-reveal draft reports only its primary output in the send total.**
-  `sendTotalDoos` on a reveal covering several bids shows the first output's
-  value rather than the sum, so the confirm dialog understates the amount
-  moved (the fee and the transaction itself are correct). Accepted for now:
-  it is a display figure on a self-spend, and every output returns to the
-  wallet.
 - **`DataTable` still carries an `onRowClick` prop with no caller.** Kept
   because the guard in R18 is the thing worth keeping, and the next table that
   wants a row click should get the guarded version.
@@ -360,6 +437,8 @@ capability fields `nameIsRegistered` and `transferPending`.
   `src/components/name-actions/__tests__/name-bids-panel.test.tsx`.
 
 **Docs**
+- `docs/USER_MANUAL.md` — "Several bids on one name" (§8) and the amount line
+  of the batch confirmation (§10).
 - `docs/CODING_STANDARDS.md` — the no-native-`title` rule and the
   `lint:native-title` gate.
 - `CHANGELOG.md` — `[Unreleased] / Fixed`, the entries from "Update,

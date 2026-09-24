@@ -393,7 +393,7 @@ export interface Settings {
    * for updates every ~4 hours and fires an OS notification if one is found,
    * deduped against `last_notified_update_version`.
    */
-  update_notify_enabled?: string;
+  update_notify_enabled: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -664,25 +664,24 @@ export interface NameActionCapabilities {
   /**
    * How long this network's auction phases run, in blocks. Static per network,
    * but needed before an auction exists — to say what opening one commits to.
-   * Optional so existing fixtures stay valid; `null` when the backend could not
-   * determine the network.
+   * `null` when the backend could not determine the network.
    */
-  auctionBiddingBlocks?: number | null;
-  auctionRevealBlocks?: number | null;
+  auctionBiddingBlocks: number | null;
+  auctionRevealBlocks: number | null;
   /**
    * The action this wallet has broadcast for the name that is still waiting
    * for a block (`"open"`, `"reveal"`, …). Until it is mined the chain reports
    * the name's previous state, so nothing phase-derived can describe it.
    */
-  pendingBroadcastAction?: string | null;
+  pendingBroadcastAction: string | null;
   /**
    * Bids placed in an EARLIER auction of the same name whose lockup is
    * stranded — the auction closed without a reveal, so it can be neither
    * revealed nor redeemed. Scoping the bids panel by auction hid these, which
    * leaves money missing with nothing on screen to explain it.
    */
-  strandedBidCount?: number;
-  strandedLockupDoos?: number;
+  strandedBidCount: number;
+  strandedLockupDoos: number;
   /**
    * Losing reveals a REDEEM would reclaim on this name, and what they are
    * worth. "Redeem" is a covenant name, not an explanation — the button says

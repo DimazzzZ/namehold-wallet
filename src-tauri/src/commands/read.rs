@@ -21,11 +21,11 @@
 //! dead code. Any future test claiming to cover that branch is actually hitting
 //! the active-profile fallback.
 
+use crate::commands::active_profile::profile_network_from_conn;
 use crate::db::queries;
 use crate::error::AppError;
 use crate::providers::hnsfans::HnsFansClient;
 use crate::AppState;
-use rusqlite::OptionalExtension;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -72,147 +72,6 @@ pub(crate) fn resolve_profile(
         }
     }
     active_profile(state)
-}
-
-/// Check if the local hsd node is connected AND fully synced, making local
-/// cached data the preferred read source. Returns `true` when the node RPC
-/// answers and the chain is caught up (height ≥ headers, or progress ≥ 0.9999).
-///
-/// In SPV mode, always returns `false` — SPV nodes don't have `--index-address`
-/// and can't serve UTXO queries, so all reads must go through the explorer.
-pub(crate) async fn is_node_ready_for_local_reads(state: &State<'_, AppState>) -> bool {
-    // SPV mode: node is never authoritative for reads.
-    let (node_mode, expected_network) = {
-        let db = match state.db.lock() {
-            Ok(db) => db,
-            Err(_) => return false,
-        };
-        let settings = match crate::db::queries::get_settings(&db) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        let mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
-        // Resolve the active profile's network so we can reject a node on a
-        // different chain (e.g. regtest node vs mainnet wallet).
-        // A DB failure here degrades to "no network to compare" — the read
-        // gate is a routing decision, not a security boundary, and the SPV /
-        // sync gates below still apply. The connection probe (commands/node.rs)
-        // propagates the same error instead.
-        let net = queries::get_active_profile_network(&db).ok().flatten();
-        (mode, net)
-    };
-    if node_mode.is_spv() {
-        return false;
-    }
-    node_tip_height_if_synced_for_network(state, expected_network.as_deref())
-        .await
-        .is_some()
-}
-
-/// Like [`node_tip_height_if_synced`] but with an explicitly supplied
-/// `expected_network`, for the one caller that has already resolved it
-/// ([`is_node_ready_for_local_reads`]). Rejects the node when its reported
-/// `chain` disagrees (e.g. a regtest node answering for a mainnet wallet).
-/// `None` means "no network to compare" — see
-/// [`node_tip_height_if_synced_with_client`] for why that is permissive.
-pub(crate) async fn node_tip_height_if_synced_for_network(
-    state: &State<'_, AppState>,
-    expected_network: Option<&str>,
-) -> Option<i64> {
-    let settings = {
-        let db = state.db.lock().ok()?;
-        crate::db::queries::get_settings(&db).ok()?
-    };
-    node_tip_height_if_synced_from_settings_with_network(&settings, expected_network).await
-}
-
-/// The live node tip height, but ONLY when the node is connected, fully synced,
-/// AND reporting the same chain as the active profile. `None` when the node is
-/// unreachable, catching up, or on another network.
-///
-/// The expected network is resolved here rather than taken as an argument:
-/// every `State`-based caller wants the active profile's chain, and a helper
-/// that could be called without one is exactly how the cross-chain reads this
-/// guard exists to prevent got in. Callers outside a `State` context use
-/// [`node_tip_height_if_synced_from_settings_with_network`], which makes the
-/// expected network an explicit argument they cannot forget.
-pub(crate) async fn node_tip_height_if_synced(state: &State<'_, AppState>) -> Option<i64> {
-    let expected_network = {
-        let db = state.db.lock().ok()?;
-        queries::get_active_profile_network(&db).ok().flatten()
-    };
-    node_tip_height_if_synced_for_network(state, expected_network.as_deref()).await
-}
-
-/// Same as [`node_tip_height_if_synced_from_settings`], but additionally
-/// rejects (returns `None`) when the node's reported `chain` disagrees with
-/// `expected_network`. Set `expected_network` to the active profile's stored
-/// network string — the schema allows only `"mainnet"`, `"testnet"` and
-/// `"regtest"`; `"main"` and `"simnet"` are accepted defensively by the
-/// comparison. Leave it `None` to skip the network check.
-///
-/// This is the guard that prevents a regtest node from being treated as
-/// authoritative for a mainnet wallet (or any other cross-network mismatch).
-/// The comparison normalizes both sides through
-/// [`crate::noncustodial::network::network_name_matches`] so
-/// `"mainnet"` (profile) and `"main"` (hsd) count as equal.
-pub(crate) async fn node_tip_height_if_synced_from_settings_with_network(
-    settings: &std::collections::HashMap<String, String>,
-    expected_network: Option<&str>,
-) -> Option<i64> {
-    let client = crate::noncustodial::rpc::NodeRpcClient::from_settings(settings);
-    node_tip_height_if_synced_with_client(&client, expected_network).await
-}
-
-/// Per-profile readiness probe: the live node tip height, but ONLY when the node
-/// is connected, fully synced, AND reporting the same chain as the profile.
-/// Returns None when the node is unreachable, catching up, on another network,
-/// or the profile doesn't exist.
-///
-/// Per-profile node override routing (ADR-001): if the profile has a per-profile
-/// override, it takes precedence; otherwise falls back to global settings; otherwise
-/// uses the built-in default. This is the readiness probe for background daemons
-/// (chain scanner, watched-name daemon) that operate on behalf of a specific profile.
-pub(crate) async fn node_tip_height_if_synced_from_profile_with_network(
-    db_path: &str,
-    profile_id: &str,
-    expected_network: Option<&str>,
-) -> Option<i64> {
-    let conn = match crate::db::connection::open(std::path::Path::new(db_path)) {
-        Ok(c) => c,
-        Err(_) => return None,
-    };
-    let client = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, profile_id)
-        .unwrap_or_else(|_| {
-            // Fallback to global settings if profile config is missing or misconfigured.
-            let settings = queries::get_settings(&conn).unwrap_or_default();
-            crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings)
-        });
-    node_tip_height_if_synced_with_client(&client, expected_network).await
-}
-
-/// The client-injected core of [`node_tip_height_if_synced_from_settings_with_network`].
-/// All the sync-progress + network-match logic lives here so it can be unit
-/// tested against a `MockNodeRpc` without a live node. The settings-based
-/// wrappers construct the real `NodeRpcClient` and delegate here.
-pub(crate) async fn node_tip_height_if_synced_with_client(
-    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
-    expected_network: Option<&str>,
-) -> Option<i64> {
-    let info = client.get_blockchain_info().await.ok()?;
-    // Reject the node only on a POSITIVE mismatch. `network_check` returns
-    // `None` when either side is unknown (no profile, or a node that doesn't
-    // report `chain` — older builds); we conservatively allow that, and the
-    // SPV gate and other checks still apply.
-    if crate::noncustodial::network::network_check(expected_network, info.chain.as_deref())
-        == Some(false)
-    {
-        return None;
-    }
-    // Connected — now check if synced. No sync metadata at all (e.g. regtest
-    // with a single miner) counts as synced.
-    info.is_synced(/* assume_when_unknown */ true)
-        .then_some(info.blocks)
 }
 
 /// Client-injected RPC phase of owned-name discovery. Resolves each
@@ -327,35 +186,6 @@ pub(crate) async fn resolve_name_ownership_with_client(
     })
 }
 
-/// Settings-based readiness gate: `true` when the local node is connected, fully
-/// synced, AND reporting `expected_network`. Mirrors
-/// [`is_node_ready_for_local_reads`] for callers that only have settings/a DB
-/// connection (the background sync thread, the chain scanner, the watched-name
-/// daemon). Pass the active profile's stored network string; `None` skips the
-/// comparison and should only be used where no profile exists.
-pub async fn node_ready_from_settings(
-    settings: &std::collections::HashMap<String, String>,
-    expected_network: Option<&str>,
-) -> bool {
-    node_tip_height_if_synced_from_settings_with_network(settings, expected_network)
-        .await
-        .is_some()
-}
-
-/// Per-profile readiness gate: true when the node is connected, fully synced,
-/// AND reporting the profile's network. Mirrors node_ready_from_settings for
-/// callers that have a profile ID and a DB path (background daemons).
-/// Returns false when the profile doesn't exist or the node is unreachable.
-pub async fn node_ready_from_profile(
-    db_path: &str,
-    profile_id: &str,
-    expected_network: Option<&str>,
-) -> bool {
-    node_tip_height_if_synced_from_profile_with_network(db_path, profile_id, expected_network)
-        .await
-        .is_some()
-}
-
 /// HNSFans explorer client from settings + the active profile's network.
 /// Thin wrapper kept for call-site brevity — the actual construction and the
 /// network gate live in [`crate::providers::explorer_client_from_settings`]
@@ -374,12 +204,7 @@ fn explorer_client(
 /// unavailable for the active profile's network (G2). Concrete and actionable:
 /// it names the missing setting rather than degrading to empty/mainnet data.
 fn explorer_unavailable_error() -> AppError {
-    AppError::Other(
-        "No explorer is available for this network. The node is not synced \
-         and no 'explorer_api_url' is configured — set one in Settings, or \
-         wait for the local node to finish syncing."
-            .to_string(),
-    )
+    AppError::Other(crate::providers::EXPLORER_UNAVAILABLE.to_string())
 }
 
 /// Node-only owned-name discovery for [`discover_owned_names`]. Resolves the
@@ -526,16 +351,16 @@ pub async fn read_balance(
     };
 
     // Prefer local cache when the node is connected and synced.
-    if is_node_ready_for_local_reads(&state).await {
+    if crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        return queries::read_cached_balance(&conn, &id, profile_network(&conn, &id)?);
+        return queries::read_cached_balance(&conn, &id, profile_network_from_conn(&conn, &id)?);
     }
 
     // Explorer fallback.
     let (client_opt, mut addrs) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        let network = profile_network(&conn, &id)?;
+        let network = profile_network_from_conn(&conn, &id)?;
         (
             explorer_client(&settings, network),
             queries::get_profile_addresses(&conn, &id)?,
@@ -548,7 +373,11 @@ pub async fn read_balance(
         Some(c) => c,
         None => {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-            return queries::read_cached_balance(&conn, &id, profile_network(&conn, &id)?);
+            return queries::read_cached_balance(
+                &conn,
+                &id,
+                profile_network_from_conn(&conn, &id)?,
+            );
         }
     };
     // Auto-provision derived addresses if none exist yet, so the explorer
@@ -604,20 +433,8 @@ pub async fn read_balance(
         }
     }
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    let network = profile_network(&conn, &id)?;
+    let network = profile_network_from_conn(&conn, &id)?;
     queries::read_cached_balance(&conn, &id, network)
-}
-
-/// The `Network` of one profile, for the cached read model. Errors rather than
-/// defaulting: a balance computed with the wrong coinbase maturity would report
-/// funds as spendable that coin selection refuses.
-fn profile_network(
-    conn: &rusqlite::Connection,
-    profile_id: &str,
-) -> Result<crate::noncustodial::network::Network, AppError> {
-    let profile = queries::get_wallet_profile(conn, profile_id)?
-        .ok_or_else(|| AppError::NotFound(format!("wallet profile {profile_id}")))?;
-    crate::noncustodial::derivation::network_from_profile(&profile.network)
 }
 
 /// Names this wallet actually OWNS on-chain — the union of node-free discovered
@@ -647,7 +464,7 @@ pub async fn read_names(
     };
     // Check node readiness BEFORE acquiring the DB lock so we don't hold
     // MutexGuard across the async RPC probe (MutexGuard is !Send).
-    let local_ready = is_node_ready_for_local_reads(&state).await;
+    let local_ready = crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await;
 
     let out = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -744,14 +561,14 @@ pub async fn discover_owned_names(
     // us the nameHash, resolved to a name via `getnamebyhash` (or the paired
     // OPEN/BID/FINALIZE covenant's rawName). This is the "post-sync workaround
     // retired" path described in the Feature 3 plan.
-    if is_node_ready_for_local_reads(&state).await {
+    if crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await {
         return discover_owned_names_via_node(&state, &id).await;
     }
 
     let (client_opt, addrs) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        let network = profile_network(&conn, &id)?;
+        let network = profile_network_from_conn(&conn, &id)?;
         (
             explorer_client(&settings, network),
             queries::get_profile_addresses(&conn, &id)?,
@@ -882,8 +699,14 @@ pub async fn read_name_info(
     let (explorer_opt, node_opt) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
-        let explorer_opt = explorer_client(&settings, network);
+        // A network that cannot be read is unknown, not mainnet. `Network`
+        // defaults to `Main`, so the defaulting reader turned "we could not
+        // tell" into a live request to the mainnet explorer for a wallet that
+        // may be on another chain — the cross-network read G2 exists to close,
+        // and the opposite of what the no-explorer path below already does.
+        let explorer_opt =
+            crate::commands::active_profile::active_profile_network_opt_from_conn(&conn)
+                .and_then(|network| explorer_client(&settings, network));
         let node_opt = match queries::get_active_profile_id(&conn) {
             Ok(id) if !id.is_empty() => Some(crate::noncustodial::rpc::NodeRpcClient::for_profile(
                 &conn, &id,
@@ -900,7 +723,7 @@ pub async fn read_name_info(
     // `getnameinfo` returns `{ info: { name, state, stats:{…phase…} } }`
     // (or null `info` for a name that has never been touched on-chain).
     if let Some(node) = node_opt.as_ref() {
-        if is_node_ready_for_local_reads(&state).await {
+        if crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await {
             if let Some(shaped) = read_name_info_node_with_client(node, &name).await {
                 return Ok(serde_json::to_value(&shaped)?);
             }
@@ -1182,17 +1005,26 @@ pub async fn read_name_bids(
     // indexed past the name's auction height, serve bids from the local
     // `name_bid_outpoints` table — no HNSFans call. Fall through to the
     // explorer when the scanner hasn't caught up yet.
-    if is_node_ready_for_local_reads(&state).await {
+    if crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await {
         let name_hash_hex = hex::encode(crate::noncustodial::names::hash_name(&name)?);
         let (indexed_bids, commitments, scanner_height, name_height) = {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             // Both the index and the cursor are network-keyed (028): a name
             // hashes identically on every chain, and a cursor from another
-            // chain says nothing about this one's coverage.
-            let network =
-                crate::commands::active_profile::active_profile_network_from_conn(&conn).as_str();
+            // chain says nothing about this one's coverage. Which makes the
+            // defaulting reader the wrong one here too — an unknown network
+            // resolving to mainnet would read mainnet's cursor to decide
+            // whether this chain's index may be trusted. Unknown falls through
+            // to the explorer path below instead, as an uncovered scanner
+            // already does.
+            let network = profile_network_from_conn(&conn, &id).ok();
             let comms = queries::list_bid_commitments(&conn, &id)?;
-            let cursor_h = crate::commands::chain_scan::scan_cursor_height(&conn, network);
+            // With no network there is no cursor to read: leaving the coverage
+            // at 0 makes `scanner_covers` false, which is the path an
+            // un-caught-up scanner already takes.
+            let cursor_h = network
+                .map(|n| crate::commands::chain_scan::scan_cursor_height(&conn, n.as_str()))
+                .unwrap_or(0);
             // The OPEN height of the name's CURRENT auction. `upsert_name_state`
             // clears it when the node reports no auction, so `None` means the
             // name has none open right now — not merely that we haven't looked.
@@ -1209,12 +1041,15 @@ pub async fn read_name_bids(
             // still indexed, and serving them is what made a name sitting at
             // "Waiting for Bidding" list bids from its previous auction.
             let indexed = match nh {
-                Some(start) => crate::commands::chain_scan::read_indexed_bids(
-                    &conn,
-                    network,
-                    start,
-                    &name_hash_hex,
-                )?,
+                Some(start) => match network {
+                    Some(n) => crate::commands::chain_scan::read_indexed_bids(
+                        &conn,
+                        n.as_str(),
+                        start,
+                        &name_hash_hex,
+                    )?,
+                    None => Vec::new(),
+                },
                 None => Vec::new(),
             };
             // Scope the commitments to this auction too (030). Otherwise the
@@ -1223,11 +1058,7 @@ pub async fn read_name_bids(
             // modal reports those separately.
             let comms: Vec<queries::BidCommitmentRow> = comms
                 .into_iter()
-                .filter(|c| match (nh, c.name_start_height) {
-                    (Some(start), Some(placed)) => placed == start,
-                    (Some(_), None) => true,
-                    (None, _) => true,
-                })
+                .filter(|c| c.belongs_to_auction(nh))
                 .collect();
             (indexed, comms, cursor_h, nh)
         };
@@ -1247,11 +1078,13 @@ pub async fn read_name_bids(
     let (client_opt, commitments) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
-        (
-            explorer_client(&settings, network),
-            queries::list_bid_commitments(&conn, &id)?,
-        )
+        // The network belongs to the profile this command was handed, which
+        // need not be the active one — and a profile whose network cannot be
+        // read leaves no explorer rather than defaulting to mainnet's.
+        let explorer_opt = profile_network_from_conn(&conn, &id)
+            .ok()
+            .and_then(|network| explorer_client(&settings, network));
+        (explorer_opt, queries::list_bid_commitments(&conn, &id)?)
     };
     // G2: no explorer for this network and the node hasn't indexed the name
     // yet — return empty bids (same shape as when the name has no bids) rather
@@ -1301,8 +1134,10 @@ pub async fn get_resource(
     let (explorer_opt, node_opt) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let s = queries::get_settings(&conn)?;
-        let network = crate::commands::active_profile::active_profile_network_from_conn(&conn);
-        let explorer_opt = explorer_client(&s, network);
+        // Unknown is not mainnet — see the note on the same resolution above.
+        let explorer_opt =
+            crate::commands::active_profile::active_profile_network_opt_from_conn(&conn)
+                .and_then(|network| explorer_client(&s, network));
         let node_opt = match queries::get_active_profile_id(&conn) {
             Ok(id) if !id.is_empty() => Some(crate::noncustodial::rpc::NodeRpcClient::for_profile(
                 &conn, &id,
@@ -1313,7 +1148,8 @@ pub async fn get_resource(
     };
     // Records come from the node only; without a profile there's no node client
     // and thus no records — treat that like "node not ready".
-    let node_ready = node_opt.is_some() && is_node_ready_for_local_reads(&state).await;
+    let node_ready = node_opt.is_some()
+        && crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await;
 
     // Name info: try node first, then explorer.
     let info: serde_json::Value = if let (true, Some(node)) = (node_ready, node_opt.as_ref()) {
@@ -1389,7 +1225,7 @@ pub async fn read_name_records(
         Some(id) => id,
         None => return Ok(empty_resource()),
     };
-    if is_node_ready_for_local_reads(&state).await {
+    if crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await {
         // Build the node client from the resolved profile's *effective* config
         // (per-profile override -> global -> default; ADR-001) under a short
         // lock, then drop the guard BEFORE the async RPC call — the same
@@ -1459,7 +1295,7 @@ pub async fn read_block_info(
 ) -> Result<serde_json::Value, AppError> {
     // Node-only: without a synced local node there's nothing to read. Soft-
     // degrade to null so the modal can show a "requires synced node" hint.
-    if height < 0 || !is_node_ready_for_local_reads(&state).await {
+    if height < 0 || !crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await {
         return Ok(serde_json::Value::Null);
     }
 
@@ -1539,7 +1375,9 @@ pub async fn read_tx_info(
     txid: String,
 ) -> Result<serde_json::Value, AppError> {
     let txid = txid.trim().to_string();
-    if txid.is_empty() || !is_node_ready_for_local_reads(&state).await {
+    if txid.is_empty()
+        || !crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await
+    {
         return Ok(serde_json::Value::Null);
     }
 
@@ -1859,91 +1697,6 @@ fn empty_renewals() -> RenewalsResponse {
     }
 }
 
-/// Best persisted estimate of the current chain height when no synced node is
-/// available, extrapolated to "now" by elapsed wall time (~10-minute blocks).
-/// Extrapolation matters for safety: a stale snapshot UNDERestimates the
-/// height and therefore INFLATES days-until-expiry — the dangerous direction.
-///
-/// Candidates (max wins):
-/// * per-name explorer/node stats snapshots persisted in
-///   `tracked_name_states.raw_json` — `renewalPeriodEnd - blocksUntilExpire`
-///   is the chain height the stats were computed at, aged by `updated_at`;
-/// * `wallet_profiles.last_synced_height`, aged by `last_synced_at`.
-pub(crate) fn estimate_persisted_height(
-    conn: &rusqlite::Connection,
-    profile_id: &str,
-) -> Result<Option<i64>, AppError> {
-    // Ageing a stored height by wall clock assumes blocks arrive on a schedule.
-    // They do on main and testnet; on regtest and simnet they are mined on
-    // demand, so the same arithmetic invents six blocks an idle hour never
-    // produced and every renewal countdown drifts. There, report the stored
-    // height as-is: stale but true.
-    let ages_by_wall_clock = queries::get_wallet_profile(conn, profile_id)?
-        .and_then(|p| crate::noncustodial::network::Network::from_str_opt(&p.network))
-        .unwrap_or_default()
-        .has_wall_clock_block_timing();
-    let age = |elapsed: i64| {
-        if ages_by_wall_clock {
-            elapsed.max(0)
-        } else {
-            0
-        }
-    };
-
-    let mut best: Option<i64> = None;
-    let mut consider = |h: Option<i64>| {
-        if let Some(h) = h {
-            best = Some(best.map_or(h, |b| b.max(h)));
-        }
-    };
-
-    // Per-name stats snapshots. raw_json is either the explorer HsdName shape
-    // (stats at the root) or the node getnameinfo result ({"info": {...}}).
-    let mut stmt = conn.prepare(
-        "SELECT raw_json,
-                CAST((strftime('%s','now') - strftime('%s', updated_at)) / 600 AS INTEGER)
-         FROM tracked_name_states
-         WHERE wallet_profile_id = ?1 AND raw_json IS NOT NULL",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![profile_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-    })?;
-    for row in rows {
-        let (raw, elapsed_blocks) = row?;
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            continue;
-        };
-        let info = match v.get("info") {
-            Some(i) if !i.is_null() => i,
-            _ => &v,
-        };
-        let Some(stats) = info.get("stats").filter(|s| !s.is_null()) else {
-            continue;
-        };
-        let end = stats.get("renewalPeriodEnd").and_then(|x| x.as_i64());
-        let until = stats.get("blocksUntilExpire").and_then(|x| x.as_i64());
-        if let (Some(end), Some(until)) = (end, until) {
-            consider(Some(end - until + age(elapsed_blocks)));
-        }
-    }
-
-    // Last node-synced height (stale, but still a floor), aged the same way.
-    let profile_snapshot: Option<(Option<i64>, i64)> = conn
-        .query_row(
-            "SELECT last_synced_height,
-                    CAST((strftime('%s','now') - strftime('%s', COALESCE(last_synced_at, datetime('now')))) / 600 AS INTEGER)
-             FROM wallet_profiles WHERE id = ?1",
-            rusqlite::params![profile_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    if let Some((Some(h), elapsed_blocks)) = profile_snapshot {
-        consider(Some(h + age(elapsed_blocks)));
-    }
-
-    Ok(best)
-}
-
 /// Pure DB + math core of `read_renewals` (testable without Tauri state).
 ///
 /// `live_node_height` is the tip of a connected, fully synced node when one is
@@ -1977,7 +1730,8 @@ pub(crate) fn compute_renewals(
 
     let (current_height, height_source) = match live_node_height {
         Some(h) => (Some(h), "node"),
-        None => match estimate_persisted_height(conn, profile_id)? {
+        None => match crate::commands::node_readiness::estimate_persisted_height(conn, profile_id)?
+        {
             Some(h) => (Some(h), "explorer"),
             None => (None, "unknown"),
         },
@@ -2120,7 +1874,7 @@ pub async fn read_renewals(
         None => return Ok(empty_renewals()),
     };
     // Probe the node BEFORE taking the DB lock (the guard is !Send).
-    let live_height = node_tip_height_if_synced(&state).await;
+    let live_height = crate::commands::node_readiness::node_tip_height_if_synced(&state).await;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     compute_renewals(&conn, &id, live_height)
 }
@@ -2171,14 +1925,14 @@ pub async fn repair_owned_names(state: State<'_, AppState>) -> Result<serde_json
     // `owner:{hash,index}` IS the current owner outpoint — no explorer history
     // crawl needed. We iterate the same candidate set (inventory TLDs + tracked
     // names) but resolve state and ownership directly against the node.
-    if is_node_ready_for_local_reads(&state).await {
+    if crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await {
         return repair_owned_names_via_node(&state, &id).await;
     }
 
     let (client_opt, inventory_tlds, tracked, all_addresses) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        let network = profile_network(&conn, &id)?;
+        let network = profile_network_from_conn(&conn, &id)?;
         (
             explorer_client(&settings, network),
             queries::get_inventory_tlds(&conn)?,
@@ -2195,9 +1949,7 @@ pub async fn repair_owned_names(state: State<'_, AppState>) -> Result<serde_json
             return Ok(serde_json::json!({
                 "repaired": 0,
                 "discovered": 0,
-                "errors": [
-                    "explorer unavailable for this network — configure explorer_api_url or wait for the local node to sync"
-                ],
+                "errors": [crate::providers::EXPLORER_UNAVAILABLE],
             }))
         }
     };

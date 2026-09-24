@@ -1,7 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useActiveProfile } from "../queries/wallet";
-import { useReadNames, useNamesActionCapabilities, useAuctionPositions } from "../queries/read";
+import {
+  useReadNames,
+  useNamesActionCapabilities,
+  useAuctionPositions,
+  nameCapabilitiesQueryKey,
+} from "../queries/read";
 import {
   auctionPhase,
   taskSummaryFromCapabilities,
@@ -172,11 +177,11 @@ export function AuctionsView() {
     // result the table already fetched, so the modal opens already showing the
     // same task-state badge as the row the user clicked — no fetch-window flash
     // where it would fall back to the raw on-chain phase and visibly contradict
-    // the table. Keyed identically to `useNameActionCapabilities` in read.ts:
-    // ["read","nameCapabilities", profileId, name].
+    // the table. The key comes from the query that owns it, so the two cannot
+    // drift apart.
     const rowCaps = capsByName.get(name);
     if (rowCaps) {
-      qc.setQueryData(["read", "nameCapabilities", activeProfileId, name], rowCaps);
+      qc.setQueryData(nameCapabilitiesQueryKey(activeProfileId, name), rowCaps);
     }
     setManageName(name);
   };

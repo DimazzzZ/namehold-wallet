@@ -396,7 +396,7 @@ pub async fn scan_deadline_notifications<R: tauri::Runtime>(
 
     // Probe the node BEFORE taking the DB lock (guard is !Send across await,
     // same discipline as `read_renewals`).
-    let live_height = crate::commands::read::node_tip_height_if_synced(&state).await;
+    let live_height = crate::commands::node_readiness::node_tip_height_if_synced(&state).await;
 
     let (previously_notified, reveal, renewal) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;

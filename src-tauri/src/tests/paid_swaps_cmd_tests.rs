@@ -4,6 +4,7 @@
 //! `find_payment_output` and `verify_paid_transfer_with_client` are tested
 //! elsewhere (inline in the source file and in `node_rpc_injected_tests.rs`).
 
+use crate::tests::command_helpers::set_profile_override;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
@@ -612,14 +613,6 @@ fn add_active_profile(conn: &rusqlite::Connection, id: &str, network: &str) {
 }
 
 /// Helper: set a per-profile node config override.
-fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
-    conn.execute(
-        "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
-         ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
-        rusqlite::params![profile_id, key, value],
-    )
-    .unwrap();
-}
 
 #[tokio::test]
 async fn claim_uses_active_profile_override_over_global() {

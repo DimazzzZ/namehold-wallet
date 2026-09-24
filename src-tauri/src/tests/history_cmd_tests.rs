@@ -14,6 +14,7 @@
 //!   which reads `node_rpc_url` from DB settings and hits the REST route
 //!   `GET /tx/address/:addr`.
 
+use crate::tests::command_helpers::set_profile_override;
 use rusqlite::params;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
@@ -50,14 +51,6 @@ fn app_with(conn: rusqlite::Connection) -> tauri::App<tauri::test::MockRuntime> 
 // ===========================================================================
 
 /// Helper: set a per-profile node config override.
-fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
-    conn.execute(
-        "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
-         ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
-        rusqlite::params![profile_id, key, value],
-    )
-    .unwrap();
-}
 
 #[tokio::test]
 async fn history_uses_active_profile_override() {

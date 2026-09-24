@@ -15,9 +15,9 @@
 
 use serde_json::json;
 
+use crate::commands::node_readiness::node_tip_height_if_synced_with_client;
 use crate::commands::read::{
-    node_tip_height_if_synced_with_client, read_block_info_with_client,
-    read_name_records_with_client, read_tx_info_with_client,
+    read_block_info_with_client, read_name_records_with_client, read_tx_info_with_client,
 };
 use crate::error::AppError;
 use crate::noncustodial::node_rpc::NodeRpc;

@@ -1,3 +1,4 @@
+import { explorerCoversNetwork } from "../lib/openExternal";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useActionHistory } from "../queries/read";
@@ -52,6 +53,13 @@ export const FALLBACK_META = { label: "Other", variant: "default" as const };
 // Actions whose covenant output re-homes the name's locked value onto the
 // wallet's own new coin. For these, the Amount cell shows the locked value as
 // an informational "⤷ N" (not a spend) with a tooltip; net flow stays 0.
+//
+// Deliberately a subset of the action labels the backend emits — "open",
+// "revoke" and "claim" move no locked value — so which actions belong here is
+// this screen's decision, not the backend's. What the backend does own is the
+// spelling: a renamed label would silently stop matching and quietly change
+// what the Amount cell shows. A Rust test reads this list and fails if any
+// entry is not a label `classify_tx` can produce.
 const NAME_COVENANT_ACTIONS = new Set([
   "bid",
   "reveal",
@@ -88,7 +96,7 @@ export function ActivityView() {
   const { data: rows = [], isLoading, isError, error } = useActionHistory();
   const { data: drafts = [] } = useTxDrafts();
   const { data: profile } = useActiveProfile();
-  const isMainnet = profile?.network === "mainnet";
+  const isMainnet = explorerCoversNetwork(profile?.network);
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -316,15 +324,35 @@ export function ActivityView() {
 /**
  * Map a MergedRow status to a badge variant and display label.
  */
-function statusBadge(status: string): {
+function statusBadge(
+  status: string,
+  /**
+   * For an `onchain` row, whether a block has included it. The other statuses
+   * carry that in the status itself, so it is ignored there.
+   */
+  onchain: { confirmed: boolean; height: number | null },
+): {
   variant: "default" | "success" | "warning" | "error" | "info";
   label: string;
   /** What the status means and what it is waiting on. */
   hint: string;
 } {
   if (status === "onchain") {
-    // Handled by the caller (confirmed/pending badge).
-    return { variant: "default", label: "Onchain", hint: "Seen on-chain." };
+    // "Onchain" alone is not a state a user can act on: a row the node has
+    // seen is either in a block or waiting for one. This used to return a
+    // placeholder the caller was expected to know to discard, which is a
+    // function answering a question it has the information to answer.
+    return onchain.confirmed
+      ? {
+          variant: "success",
+          label: "Confirmed",
+          hint: `Mined into a block${onchain.height != null ? ` (#${onchain.height})` : ""}.`,
+        }
+      : {
+          variant: "warning",
+          label: "Pending",
+          hint: "Seen by the node but not in a block yet.",
+        };
   }
   if (status === "confirmed") {
     return { variant: "success", label: "Confirmed", hint: "Mined into a block. Done." };
@@ -463,20 +491,11 @@ export function ActivityRow({
   const showNameValue =
     NAME_COVENANT_ACTIONS.has(row.action) && row.valueDoos === 0 && row.nameValueDoos != null;
 
-  const badge = statusBadge(row.status);
-  // For onchain-only rows, use the confirmed/pending badge; for drafts,
-  // use the status badge.
-  const badgeVariant =
-    row.status === "onchain" ? (row.confirmed ? "success" : "warning") : badge.variant;
-  const badgeLabel =
-    row.status === "onchain" ? (row.confirmed ? "Confirmed" : "Pending") : badge.label;
-  // The height is already its own column; the badge's hint explains the state.
-  const badgeHint =
-    row.status === "onchain"
-      ? row.confirmed
-        ? `Mined into a block${row.height != null ? ` (#${row.height})` : ""}.`
-        : "Seen by the node but not in a block yet."
-      : badge.hint;
+  const badge = statusBadge(row.status, {
+    confirmed: row.confirmed,
+    height: row.height ?? null,
+  });
+  const { variant: badgeVariant, label: badgeLabel, hint: badgeHint } = badge;
 
   const linkClass = "text-blue-500 hover:text-blue-700 hover:underline cursor-pointer";
 

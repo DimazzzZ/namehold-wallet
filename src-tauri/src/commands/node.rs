@@ -143,7 +143,15 @@ fn format_version(v: (u32, u32, u32)) -> String {
     format!("{}.{}.{}", v.0, v.1, v.2)
 }
 
-/// The configured hsd data directory, or hsd's own default (`~/.hsd`) when unset.
+/// The configured hsd data directory, or hsd's own default (`~/.hsd`) when
+/// unset, for the active profile's network.
+///
+/// The network is read through the reader that degrades to mainnet, which is
+/// fine for *reporting* a path and not for acting on one. A caller that
+/// spawns a node, moves chain data, or otherwise commits to a directory
+/// resolves the network itself and calls
+/// [`resolve_data_dir_for_network`], so the answer it refused to guess is the
+/// answer it uses.
 fn resolve_data_dir(state: &AppState) -> Result<String, AppError> {
     let network = active_profile_network(state);
     resolve_data_dir_for_network(state, network)
@@ -238,19 +246,22 @@ async fn probe_node(state: &AppState) -> Option<NodeProbe> {
     // Per-profile node override routing (ADR-001): probe the active profile's
     // effective node config (per-profile override -> global settings ->
     // built-in default) so the tray/status reflects the active profile's node.
-    // Fall back to global settings when there is no active profile or its
-    // config is missing/misconfigured.
+    // With no active profile at all there is no override to honour, so global
+    // is the whole answer; a profile whose own config will not resolve is a
+    // configuration error, and this probe reports "cannot tell" rather than
+    // quietly describing a node the profile does not use.
     let client = {
         let db = state.db.lock().ok()?;
         match db::queries::get_active_profile_id(&db) {
-            Ok(profile_id) => NodeRpcClient::for_profile(&db, &profile_id).unwrap_or_else(|_| {
-                let settings = db::queries::get_settings(&db).unwrap_or_default();
-                NodeRpcClient::from_settings(&settings)
-            }),
-            Err(_) => {
+            // No active profile — the id is stored as an empty string, not an
+            // error — so there is nothing that could override, and global is
+            // the whole answer.
+            Ok(id) if id.is_empty() => {
                 let settings = db::queries::get_settings(&db).ok()?;
                 NodeRpcClient::from_settings(&settings)
             }
+            Ok(profile_id) => NodeRpcClient::for_profile(&db, &profile_id).ok()?,
+            Err(_) => return None,
         }
     };
     client
@@ -342,6 +353,11 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         "height": probe.as_ref().map(|p| p.height),
         "verification_progress": probe.as_ref().and_then(|p| p.verification_progress),
         "headers": probe.as_ref().and_then(|p| p.headers),
+        // The shared `chain_synced` verdict (and, in SPV mode, the
+        // connected-means-synced convention). Reported so the UI reads the one
+        // rule the read/write gates use rather than re-deriving it from
+        // height/headers/progress and drifting from what reads actually do.
+        "synced": node_synced,
         "last_error": last_error,
         // True when the failure is a chain/index-flag mismatch hsd can't fix in
         // place — the UI offers a one-click re-sync for this case.
@@ -351,6 +367,42 @@ pub async fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value
         // Node operating mode: "full" or "spv".
         "node_mode": node_mode.as_str(),
     }))
+}
+
+/// Whether one hsd log line signals that the node failed to start, as opposed
+/// to the noise a healthy node makes while it syncs.
+///
+/// Pure so it can be tested against real log shapes without a filesystem. Its
+/// only caller runs when the node's RPC is *not* answering, which sets the
+/// trade-off: a false positive relabels "still starting" as "failed to start"
+/// on a node that is unreachable either way, while a false negative leaves a
+/// genuinely broken node reporting nothing at all. The matchers are therefore
+/// deliberately broad, and `Cannot ` stays broad for that reason even though it
+/// would match a benign "Cannot find …" outside a tagged module line.
+///
+/// `bind` on its own is gone: the address-in-use failure it was there for
+/// arrives as `bind EADDRINUSE`, which `EADDRINUSE` already catches, while the
+/// bare substring also matched "binding", "rebinding" and any data-dir path
+/// with those letters in it.
+pub(crate) fn is_fatal_startup_line(line: &str) -> bool {
+    // Peer/network socket errors are routine during sync — never fatal.
+    if line.contains("(net)") || line.contains("(peer)") {
+        return false;
+    }
+    // hsd's own error-level log lines, plus the well-known fatal shapes:
+    //   - "[error]" level entries
+    //   - "Cannot retroactively enable … indexing" (index mismatch)
+    //   - address-in-use failures (another node already on the port)
+    //   - an uncaught error/exception surfacing on startup
+    line.contains("[error]")
+        || line.contains("Cannot ")
+        || line.contains("EADDRINUSE")
+        || line.contains("already in use")
+        || line.contains("address in use")
+        || line.contains("Uncaught")
+        || line.contains("uncaught exception")
+        || line.contains("cannot open")
+        || line.contains("Cannot open")
 }
 
 /// If `<data_dir>/namehold-hsd.log` records a startup failure, return
@@ -370,28 +422,6 @@ pub(crate) fn node_start_error(data_dir: &str) -> Option<(String, bool)> {
     // Treating any "error" substring as a startup failure cries wolf over a
     // healthy node that is mid-rescan (its RPC simply hasn't come up yet).
     // Only lines that signal a real, fatal startup problem count.
-    let is_fatal_startup_line = |line: &str| -> bool {
-        // Peer/network socket errors are routine during sync — never fatal.
-        let networky = line.contains("(net)") || line.contains("(peer)");
-        if networky {
-            return false;
-        }
-        // hsd's own error-level log lines, plus the well-known fatal shapes:
-        //   - "[error]" level entries
-        //   - "Cannot retroactively enable … indexing" (index mismatch)
-        //   - address-in-use / bind failures (another node already on the port)
-        //   - an uncaught error/exception surfacing on startup
-        line.contains("[error]")
-            || line.contains("Cannot ")
-            || line.contains("EADDRINUSE")
-            || line.contains("bind")
-            || line.contains("already in use")
-            || line.contains("address in use")
-            || line.contains("Uncaught")
-            || line.contains("uncaught exception")
-            || line.contains("cannot open")
-            || line.contains("Cannot open")
-    };
     if !body.lines().any(is_fatal_startup_line) {
         return None;
     }
@@ -461,39 +491,55 @@ pub async fn start_hsd(state: State<'_, AppState>) -> Result<serde_json::Value, 
         }));
     }
 
-    let data_dir = resolve_data_dir(&state)?;
-    // Network isolation migration. `resolve_data_dir` now hands back a
+    // Derived from the network resolved above, not re-read: `resolve_data_dir`
+    // asks again through a reader that degrades to mainnet, and this is the
+    // directory the chain gets written into. Refusing to guess and then
+    // guessing three lines later would be the same bug with extra steps.
+    let data_dir = resolve_data_dir_for_network(&state, network)?;
+    // Network isolation migration. `resolve_data_dir_for_network` hands back a
     // network-scoped root; make sure the on-disk layout matches before we spawn.
     // Idempotent and non-destructive: it only creates the scoped root and,
     // where a legacy layout left this network's data elsewhere, relocates it —
     // but only when the scoped root does not already hold a chain ("do nothing
     // if we already have"). Mainnet is never touched.
     migrate_network_prefix(&state, network, &data_dir)?;
-    // Use the same effective api-key the RPC client uses (explicit setting, else
-    // the data dir's hsd.conf), so the node we start and the node we talk to agree.
+    // Use the same effective api-key the RPC client uses, resolved through the
+    // active profile (per-profile override -> global -> hsd.conf) so the node
+    // we start and the node we talk to agree. Reading global settings here
+    // handed a profile with its own key a node started with somebody else's.
+    // `node_mode` stays global: it is not part of the ADR-001 tuple.
+    //
+    // The same resolution decides whether realign may touch the URL, so both
+    // are taken under one lock.
     let (api_key, node_mode) = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let profile_id = db::queries::get_active_profile_id(&db)?;
+        let effective =
+            crate::noncustodial::node_config::effective_node_config_for_profile(&db, &profile_id)?;
         let settings = db::queries::get_settings(&db)?;
-        let api_key = crate::noncustodial::rpc::resolve_node_api_key(&settings);
         let node_mode = crate::noncustodial::rpc::resolve_node_mode(&settings);
-        (api_key, node_mode)
-    };
 
-    // hsd will listen on this network's RPC port, but `node_rpc_url` keeps
-    // whatever was seeded — the mainnet 12037. Left alone, the wallet starts a
-    // regtest node and then talks to a port nothing is listening on. Realign a
-    // stale loopback default now; a custom port or a remote host is left as the
-    // user set it (see `realign_loopback_rpc_url`).
-    {
-        let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        let current = db::queries::get_settings(&db)?
-            .get("node_rpc_url")
-            .cloned()
-            .unwrap_or_default();
-        if let Some(fixed) = crate::noncustodial::rpc::realign_loopback_rpc_url(&current, network) {
-            db::queries::set_setting(&db, "node_rpc_url", &fixed)?;
+        // hsd will listen on this network's RPC port, but a globally seeded
+        // `node_rpc_url` keeps whatever it was given — the mainnet 12037. Left
+        // alone, the wallet starts a regtest node and then talks to a port
+        // nothing is listening on. Realign a stale loopback default now; a
+        // custom port or a remote host is left as the user set it (see
+        // `realign_loopback_rpc_url`).
+        //
+        // ADR-001 (Interaction with N11): a profile that supplies its own URL
+        // has made an explicit choice, and rewriting it — even a "stale
+        // default" — is the silent abandonment ADR-002 refuses. Realign
+        // therefore applies only to a URL that came from the global fallback,
+        // and it writes back to the global setting it came from.
+        if !effective.url_from_override {
+            if let Some(fixed) =
+                crate::noncustodial::rpc::realign_loopback_rpc_url(&effective.node_rpc_url, network)
+            {
+                db::queries::set_setting(&db, "node_rpc_url", &fixed)?;
+            }
         }
-    }
+        (effective.node_rpc_api_key, node_mode)
+    };
 
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| AppError::Other(format!("cannot create data dir {data_dir}: {e}")))?;
@@ -694,19 +740,20 @@ pub async fn stop_hsd(state: State<'_, AppState>) -> Result<(), AppError> {
     // answering to stop. Best-effort: if nothing's reachable, that's fine.
     // Per-profile node override routing (ADR-001): stop the node the active
     // profile is actually pointed at (per-profile override -> global settings
-    // -> built-in default). Fall back to global settings when there is no
-    // active profile or its config is missing/misconfigured.
+    // -> built-in default). With no active profile there is no override to
+    // honour; a profile whose own config will not resolve is returned as the
+    // configuration error it is, because "stop the node" aimed at the wrong
+    // endpoint can stop somebody else's.
     let client = {
         let db = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        match db::queries::get_active_profile_id(&db) {
-            Ok(profile_id) => NodeRpcClient::for_profile(&db, &profile_id).unwrap_or_else(|_| {
-                let settings = db::queries::get_settings(&db).unwrap_or_default();
-                NodeRpcClient::from_settings(&settings)
-            }),
-            Err(_) => {
+        match db::queries::get_active_profile_id(&db)? {
+            // No active profile — the id is stored as an empty string, not an
+            // error — so there is nothing that could override.
+            id if id.is_empty() => {
                 let settings = db::queries::get_settings(&db)?;
                 NodeRpcClient::from_settings(&settings)
             }
+            profile_id => NodeRpcClient::for_profile(&db, &profile_id)?,
         }
     };
     let _ = client.stop().await;
@@ -927,8 +974,20 @@ pub async fn resync_hsd_chain(state: State<'_, AppState>) -> Result<serde_json::
         }
     }
 
-    let data_dir = resolve_data_dir(&state)?;
-    let network = active_profile_network(&state);
+    // Resolved once and refused when unknown. This command moves chain data
+    // out of the way, so a guess of mainnet would back up — and then re-sync
+    // over — a directory belonging to a network the user is not on. Reading the
+    // network and the data dir separately also let the two disagree, with the
+    // backup aimed at whichever answer came first.
+    let network =
+        crate::commands::active_profile::active_profile_network_opt(&state).ok_or_else(|| {
+            AppError::InvalidInput(
+                "no active wallet profile, so there is no chain to re-sync — create or select a \
+                 wallet first"
+                    .to_string(),
+            )
+        })?;
+    let data_dir = resolve_data_dir_for_network(&state, network)?;
 
     // 2. Move existing chain artifacts into a timestamped backup dir.
     let ts = std::time::SystemTime::now()
@@ -980,9 +1039,10 @@ pub struct NodeConnectionCheck {
     pub height: Option<i64>,
     /// Peers' best header height, when the node exposes it.
     pub headers: Option<i64>,
-    /// True when the node is at the chain tip per `chain_synced` (progress
-    /// ≥ 0.9999, else `blocks >= headers`; unknown → false for a first-contact
-    /// probe). The UI uses it to say "connected, but still syncing".
+    /// True when the node is at the chain tip per `chain_synced`: applied
+    /// blocks have caught up to the best header, with `verificationprogress`
+    /// only corroborating (unknown → false for a first-contact probe). The UI
+    /// uses it to say "connected, but still syncing".
     pub synced: bool,
     /// Network reported by the node: "main" / "testnet" / "regtest" / "simnet".
     pub network: Option<String>,

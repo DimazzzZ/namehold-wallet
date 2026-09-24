@@ -1404,12 +1404,12 @@ async fn batch_capabilities_respects_wallet_profile_isolation() {
                 |r| r.get(0),
             )
             .unwrap();
-        // Wallet A owns "nameforA"; wallet B owns "nameforB" — each row's
+        // Wallet A owns "namefora"; wallet B owns "nameforb" — each row's
         // owner_address only matches its own wallet's derived address.
         conn.execute(
             "INSERT INTO tracked_name_states
                 (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, owner_address, height)
-             VALUES (?1, 'nameforA', 'aabb', 'CLOSED', ?2, 0, ?3, 100)",
+             VALUES (?1, 'namefora', 'aabb', 'CLOSED', ?2, 0, ?3, 100)",
             rusqlite::params![
                 &a,
                 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -1420,7 +1420,7 @@ async fn batch_capabilities_respects_wallet_profile_isolation() {
         conn.execute(
             "INSERT INTO tracked_name_states
                 (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, owner_address, height)
-             VALUES (?1, 'nameforB', 'ccdd', 'CLOSED', ?2, 0, ?3, 100)",
+             VALUES (?1, 'nameforb', 'ccdd', 'CLOSED', ?2, 0, ?3, 100)",
             rusqlite::params![
                 &b,
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -1432,7 +1432,7 @@ async fn batch_capabilities_respects_wallet_profile_isolation() {
     };
     let app = mock_app_with(state);
 
-    let names = vec!["nameforA".to_string(), "nameforB".to_string()];
+    let names = vec!["namefora".to_string(), "nameforb".to_string()];
 
     let as_a = names::get_names_action_capabilities(app.state(), names.clone(), Some(profile_a))
         .await
@@ -1444,7 +1444,7 @@ async fn batch_capabilities_respects_wallet_profile_isolation() {
         .collect();
     assert_eq!(
         owned_by_a,
-        vec!["nameforA"],
+        vec!["namefora"],
         "profile A must only see its own name as owned"
     );
 
@@ -1458,7 +1458,7 @@ async fn batch_capabilities_respects_wallet_profile_isolation() {
         .collect();
     assert_eq!(
         owned_by_b,
-        vec!["nameforB"],
+        vec!["nameforb"],
         "profile B must only see its own name as owned"
     );
 }

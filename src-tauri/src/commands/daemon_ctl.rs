@@ -224,7 +224,6 @@ pub(crate) const RESOURCE_REL_DIRS: &[&str] = &[
 ];
 
 /// Return the platform-adjusted daemon binary name (appends `.exe` on Windows).
-#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn daemon_bin_name() -> String {
     if cfg!(target_os = "windows") {
         format!("{DAEMON_BIN_NAME}.exe")

@@ -8,9 +8,22 @@ on top of [ADR-001 Per-profile node configuration](../adr/0001-per-profile-node-
 the ADR defines *what is stored and how it resolves*, this spec defines *what
 the user sees and can do*.
 
-The prototype at `prototypes/per-profile-node-banner/index.html` answered these
-questions and is no longer needed — the verdicts below are the durable output
-and will be implemented step by step in the real app.
+A throwaway prototype answered these questions and was deleted with them; the
+verdicts below are its durable output, implemented step by step in the real app.
+
+Progress against the plan at the bottom of this file:
+
+| Step | State |
+|------|-------|
+| 1. Schema + resolver | Done. `profile_settings` (migration 027), `effective_node_config_for_profile`. |
+| 2. Migrate call sites | Done. Every node client resolves per profile; realign runs only on fallback resolution; an unresolvable profile config is an error, never a fallback to global. |
+| 3. Preflight command | Not started. No `profile_preflight` exists. |
+| 4. Banner UI | Not started. |
+| 5. Preflight cache | Not started. |
+| 6. Override modal | Not started — so nothing writes `profile_settings` outside tests, and the override is not yet reachable by a user. |
+| 7. Write-path fresh preflight | Not started. |
+| 8. Per-slot read/write overrides | Not started. The table has no slot column, and the resolver returns one tuple. |
+| 9. E2E matrix test | Not started. |
 
 ## Vocabulary (from CONTEXT.md)
 
@@ -135,7 +148,7 @@ decisions surfaced by the prototype).
 
 - **V-S2 — global write is refused when `allow_remote_broadcast != "true"`.**
   A remote-node write source is disabled unless the user explicitly opts in,
-  consistent with the R7/R8 rules in the remote-node spec.
+  consistent with R11 of the remote-node spec.
 
 ## Non-goals
 

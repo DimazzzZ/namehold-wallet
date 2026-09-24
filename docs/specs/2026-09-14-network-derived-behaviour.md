@@ -40,8 +40,8 @@ fixups, and cannot be silently pointed at the wrong chain.
 ### Chain identity
 
 **N1 — One gate, no opt-out.** Every "is this node authoritative?" decision
-compares the node chain to the profile network. `read.rs` exposes no helper that
-skips the comparison: the `State`-based `node_tip_height_if_synced` resolves the
+compares the node chain to the profile network. `commands/node_readiness.rs`
+exposes no helper that skips the comparison: the `State`-based `node_tip_height_if_synced` resolves the
 active profile itself, and the settings-based
 `node_tip_height_if_synced_from_settings_with_network` and
 `node_ready_from_settings` take the expected network as a required argument.
@@ -61,7 +61,9 @@ before any write and returns an error on a positive mismatch. Nothing reaches
 `sync_cursors`, `wallet_profiles.last_synced_height` or `tracked_name_states`.
 This requirement exists because `sync_cursors` is the tip
 `noncustodial/send.rs::load_spendable_coins` reads to decide coinbase maturity: a
-foreign height there silently corrupts N6.
+foreign height there silently corrupts N6. Pinned by
+`tests/tx_lifecycle_tests.rs::sync_wallet_state_refuses_a_node_on_another_chain`,
+which also asserts the coin route is never asked and `sync_cursors` stays empty.
 
 **N4 — Broadcasting to a foreign chain is refused.**
 `commands/tx.rs::broadcast_network_guard_with_client` probes the node and returns
@@ -157,16 +159,17 @@ permanently in "expiring soon". `derive_auction_task_state` and
 
 **N13 — A stored height is only aged by wall clock where blocks follow one.**
 `Network::has_wall_clock_block_timing` is true for main and testnet only.
-`commands/read.rs::estimate_persisted_height` ages its candidates by
+`commands/node_readiness.rs::estimate_persisted_height` ages its candidates by
 `elapsed_seconds / 600` on those networks and by zero elsewhere. Regtest and
 simnet mine on demand, so the old arithmetic invented six blocks for every idle
 hour and every renewal countdown drifted. A stale height is reported as stale.
 Pinned by `test_has_wall_clock_block_timing_all_variants`.
 
-**N14 — Mainnet-only explorer links appear only on mainnet.** `NameInfoModal`
-and `NameActionsModal` gate their "View on explorer" link on
+**N14 — Mainnet-only explorer links appear only on mainnet.**
+`NameActionsModal` gates its "View on explorer" link on
 `profile.network === "mainnet"`, as `TxInfoModal`, `BlockInfoModal`,
-`ReceiveAddressList` and `WalletView` already did. Shakeshift indexes no other
+`ReceiveAddressList` and `WalletView` already did. (`NameInfoModal` carried the
+same gate and was folded into `NameActionsModal` in #57.) Shakeshift indexes no other
 chain, so the link 404s elsewhere.
 
 **N15 — Starting a node refuses rather than guessing mainnet.**
@@ -177,6 +180,50 @@ mainnet chain sync in a data dir prepared for another network. The defaulting
 form stays for callers that only *label* a network (status payloads, the
 mainnet-only Namebase paths). Pinned by
 `the_optional_form_reports_no_profile_as_none`.
+
+**N16 — Each network gets its own data-dir root.** hsd isolates non-mainnet
+chains *inside* a prefix (`<prefix>/regtest`) while mainnet writes
+`blocks/chain/tree` at the prefix root, so one shared prefix let a mainnet
+chain at the root sit beside a regtest subdir — the overlap that allowed a
+mainnet chain to drive a regtest wallet. Mainnet keeps the base unchanged, so
+existing mainnet data is never moved; every other network gets `<base>/<network>`
+as its own root. This applies to a user-configured `hsd_prefix` too, not only
+the default. The wallet passes hsd the un-scoped base as `--prefix` and lets
+`--network` create that subdir, so hsd's chain root and the wallet's data dir
+are the same directory rather than nesting twice.
+*Enforced:* `commands/node.rs::network_scoped_data_dir`,
+`commands/node.rs::resolve_data_dir_for_network`.
+*Pinned:* `node_status_tests` (the `network_scoped_data_dir` cases).
+Documented in `docs/NODE_SETUP.md` ("Node (hsd) datadirs and default RPC ports").
+
+**N17 — An existing chain is relocated once, and never mainnet's.** A wallet
+upgrading from the shared-prefix layout has this network's chain in the legacy
+place. Starting a node moves it into the scoped root. The move is the only
+place the wallet relocates a user's chain files, so it is narrow: it refuses
+outright on mainnet, does nothing when the scoped root already holds a chain
+("do nothing if we already have"), and otherwise either adopts the legacy
+subdirectory or creates an empty scoped root. It is idempotent, so a repeated
+start is a no-op.
+*Enforced:* `commands/node.rs::plan_network_migration` (the pure decision) and
+`migrate_network_prefix` (the move).
+*Pinned:* `node_status_tests::plan_network_migration_never_touches_mainnet` and
+its neighbours.
+
+**N18 — A node that failed to start says why.** When the RPC does not answer,
+the wallet reads the hsd log and, if it records a fatal startup line, shows the
+last eight lines with a reason. An index mismatch — hsd cannot enable an index
+on an existing chain — gets specific guidance and offers the one-click re-sync;
+anything else reports as a failed start. Routine peer and socket errors during
+sync are explicitly not fatal, because hsd logs the word "Error" throughout a
+healthy sync. The matching is deliberately broad rather than precise: this runs
+only when the node is already unreachable, so over-reporting relabels "still
+starting" on a node that is down either way, while under-reporting leaves a
+broken node silent.
+*Enforced:* `commands/node.rs::is_fatal_startup_line`, `node_start_error`.
+*Pinned:* `node_status_tests::routine_sync_noise_is_not_a_startup_failure`,
+`the_known_fatal_shapes_are_recognised`,
+`a_data_dir_path_that_merely_contains_bind_is_not_a_failure`,
+`a_broad_matcher_is_documented_rather_than_quietly_wrong`.
 
 ## 4. Explicitly not enforced
 
@@ -190,11 +237,12 @@ mainnet-only Namebase paths). Pinned by
 - **The network of an existing profile cannot be changed.** Not a guard, an
   absence: no command and no `UPDATE` writes the column. Changing network means
   creating another profile.
-- **`NodeRpcClient::from_settings` still falls back to the mainnet port.** Its
-  42 construction sites make threading a network through it a disproportionate
-  change, and the fallback only applies when `node_rpc_url` is absent — which
-  migration `009` makes impossible in practice. The setting itself is what N11
-  keeps correct.
+- **`NodeRpcClient::from_settings` still falls back to the mainnet port.** The
+  fallback only applies when `node_rpc_url` is absent — which migration `009`
+  makes impossible in practice — and the setting itself is what N11 keeps
+  correct. Its remaining construction sites (13 at the time of writing, five
+  of them inside `rpc.rs`) are the no-active-profile paths; every profile
+  path resolves through `NodeRpcClient::for_profile` (ADR-001).
 - **The explorer read fallback is network-gated.** ~~Previously a gap.~~
   `providers::explorer_client_from_settings` now takes a `Network` and
   returns `Option<HnsFansClient>`. Resolution order: explicit
@@ -202,7 +250,11 @@ mainnet-only Namebase paths). Pinned by
   (mainnet only) > `None`. On testnet/regtest/simnet with no explicit URL the
   factory returns `None`, and every read/sync call site threads that through
   as either a candid "explorer unavailable" error or a degraded empty result
-  — never a silent mainnet query.
+  — never a silent mainnet query. One explicit URL does not count as a
+  choice: the mainnet explorer an early migration seeded into every database.
+  Migration `032` removes exactly that value, and the factory refuses it off
+  mainnet in case a database reaches it before the migration has run
+  (`provider_hnsfans_tests`, the seeded-URL cases).
 - **Notification lead defaults are not scaled per network.**
   `reveal_lead_blocks` (144) and `DEFAULT_BIDDING_SOON_LEAD_BLOCKS` (144) exceed
   the entire reveal and bidding windows on test chains, so those notices are on
@@ -242,7 +294,7 @@ mainnet-only Namebase paths). Pinned by
 
 ## 6. Pointers
 
-- Gates: `src-tauri/src/commands/read.rs`, `commands/tx.rs`,
+- Gates: `src-tauri/src/commands/node_readiness.rs`, `commands/tx.rs`,
   `commands/sync.rs`, `commands/chain_scan.rs`, `daemon/watched_names.rs`.
 - Network parameters: `src-tauri/src/noncustodial/network.rs`.
 - Maturity filter: `src-tauri/src/noncustodial/send.rs`.

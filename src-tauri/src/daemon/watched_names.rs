@@ -477,7 +477,9 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
         let watched = list_watched_names(&conn)?;
         let prev_states = load_prev_snapshots(&conn)?;
         let poll_meta = load_poll_meta(&conn)?;
-        let expected_network = queries::get_active_profile_network(&conn).ok().flatten();
+        // The neighbours above already propagate; a network this pass cannot
+        // read must not make the node authoritative without the chain check.
+        let expected_network = queries::get_active_profile_network(&conn)?;
         let active_profile_id = queries::get_active_profile_id(&conn)
             .ok()
             .filter(|s| !s.is_empty());
@@ -519,15 +521,18 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
     // `node_ready_from_profile` resolves the effective config identically.
     // Only the no-active-profile fallback uses global settings.
     let node_ready = if let Some(profile_id) = active_profile_id.as_deref() {
-        crate::commands::read::node_ready_from_profile(
+        crate::commands::node_readiness::node_ready_from_profile(
             db_path,
             profile_id,
             expected_network.as_deref(),
         )
         .await
     } else {
-        crate::commands::read::node_ready_from_settings(&settings, expected_network.as_deref())
-            .await
+        crate::commands::node_readiness::node_ready_from_settings(
+            &settings,
+            expected_network.as_deref(),
+        )
+        .await
     };
 
     // 3. Adaptive skip + fetch. Bounded concurrency (4) to avoid hammering hsd.
@@ -582,7 +587,6 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
 /// every 60s, so simple sequential polling is preferable to pulling in a
 /// streaming-concurrency dependency. Names that error out or return
 /// null/unparsable data are silently dropped; they'll be retried next cycle.
-#[cfg_attr(coverage_nightly, coverage(off))]
 async fn fetch_all(
     node: &dyn crate::noncustodial::node_rpc::NodeRpc,
     names: &[String],
@@ -1860,14 +1864,7 @@ mod tests {
 
     // --- Per-profile node config resolution for the watched-names daemon -----
 
-    fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
-        conn.execute(
-            "INSERT INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)
-             ON CONFLICT(profile_id, key) DO UPDATE SET value = excluded.value",
-            rusqlite::params![profile_id, key, value],
-        )
-        .unwrap();
-    }
+    use crate::tests::command_helpers::set_profile_override;
 
     #[test]
     fn resolve_watched_client_uses_active_profile_override() {

@@ -1220,9 +1220,9 @@ mod tests {
     #[tokio::test]
     async fn get_name_info_optional_returns_error_on_http_failure() {
         // A 4xx status (other than 404) surfaces the "HNSFans name lookup failed"
-        // AppError::Other branch. Covers hnsfans.rs L282-286: 5xx is handled by
-        // get_with_fallback (returns before ever reaching this branch); 4xx
-        // codes flow through as an Ok(resp) here.
+        // AppError::Other branch in `get_name_info_optional`. 5xx never reaches
+        // it: `get_with_fallback` returns before this status check; 4xx codes
+        // flow through as an Ok(resp) here.
         let mut server = mockito::Server::new_async().await;
         let _m = server
             .mock("GET", "/api/names/testname")
@@ -1247,7 +1247,7 @@ mod tests {
 
     // --- Coverage: reachable branches flagged uncovered in Phase 4 ----------
 
-    /// Item 9 (hnsfans.rs:183): `get_balance` skips empty/whitespace addresses
+    /// `get_balance` skips empty/whitespace addresses
     /// via `continue`, so passing only empty addresses results in `attempted=0`
     /// and returns `Ok` with zero balance (not an error).
     #[tokio::test]
@@ -1261,7 +1261,7 @@ mod tests {
         assert_eq!(balance.unconfirmed, 0);
     }
 
-    /// Item 10 (hnsfans.rs:605): `extract_amount` with a float value calls
+    /// `extract_amount` with a float value calls
     /// `as_f64()` and rounds. This is already covered by the existing
     /// `extract_amount_rounds_floats_and_defaults_to_zero` test, but we verify
     /// it here explicitly.
@@ -1271,7 +1271,7 @@ mod tests {
         assert_eq!(extract_amount(&body, &["confirmed"]), 13);
     }
 
-    /// Item 11 (hnsfans.rs:697): `normalize_name` handles `transfer` field
+    /// `normalize_name` handles `transfer` field
     /// that is neither a Number nor Null (e.g., a string or boolean).
     #[test]
     fn normalize_name_handles_transfer_non_number_non_null() {

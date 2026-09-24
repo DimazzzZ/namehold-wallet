@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { NameActionCapabilities } from "../types";
+import { makeCapabilities } from "../test/fixtures/capabilities";
 import {
   auctionPhase,
   nextTransition,
@@ -157,26 +157,20 @@ describe("taskSummaryFromCapabilities — redeeming on a name you own", () => {
   // the name: the losing reveals to reclaim are your own. Labelling that
   // "Lost — Redeem Now" on a name the wallet just registered is false, and it
   // is the ordinary outcome of the multi-bid flow, not a corner.
-  const base = {
+  const base = makeCapabilities({
     phase: "CLOSED",
     taskState: "lostNeedsRedeem",
     hasBidCommitment: false,
-  } as unknown as NameActionCapabilities;
+  });
 
   it("does not call it a loss when the wallet owns the name", () => {
-    const s = taskSummaryFromCapabilities({
-      ...base,
-      ownsName: true,
-    } as NameActionCapabilities);
+    const s = taskSummaryFromCapabilities({ ...base, ownsName: true });
     expect(s?.label).not.toMatch(/lost/i);
     expect(s?.label).toMatch(/reclaim/i);
   });
 
   it("still calls a genuine loss a loss", () => {
-    const s = taskSummaryFromCapabilities({
-      ...base,
-      ownsName: false,
-    } as NameActionCapabilities);
+    const s = taskSummaryFromCapabilities({ ...base, ownsName: false });
     expect(s?.label).toMatch(/lost/i);
   });
 });

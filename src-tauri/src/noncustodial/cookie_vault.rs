@@ -324,10 +324,15 @@ pub fn decrypt_cookie(blob_hex: &str) -> Result<Vec<u8>, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
-    /// Serializes all tests that mutate the process-global `TEST_DEK` slot so
-    /// they don't race each other under cargo's parallel test runner.
-    static DEK_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Tests that mutate the process-global `TEST_DEK` / test-backend slots
+    // carry `#[serial(cookie_vault)]`. A module-local mutex used to do this
+    // job, which excluded these tests from each other but not from
+    // `tests::namebase_cmd_tests`, whose every test already serializes on the
+    // `cookie_vault` key and calls `set_test_dek` through the same slots. Two
+    // locks around one piece of global state is no lock at all; one key covers
+    // both files.
 
     // A fixed DEK for pure-crypto tests. These tests exercise the crypto
     // envelope directly (bypassing the OS keyring), so they never touch the
@@ -492,6 +497,7 @@ mod tests {
     /// the risk; the real guarantee is the `#[cfg(any(test, debug_assertions))]`
     /// on the item itself, verified to compile-out by the release profile.
     #[test]
+    #[serial(cookie_vault)]
     fn test_dek_slot_present_only_under_debug_or_test() {
         // Under `cargo test`, cfg(test) is set, so `set_test_dek` is compiled
         // in and callable — exercised here to keep the bypass path covered.
@@ -499,7 +505,6 @@ mod tests {
         // `#[cfg(any(test, debug_assertions))]` attribute on the item, not by
         // this test: a `--release` build has `debug_assertions` off, so the
         // function and its backing slot are not compiled at all.
-        let _held = DEK_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         set_test_dek(Some(vec![0u8; DEK_LEN]));
         set_test_dek(None);
     }
@@ -554,12 +559,12 @@ mod tests {
     /// branch in `get_or_create_dek` (line 154) and the DEK-zeroize wrappers
     /// without touching the OS keyring.
     ///
-    /// Serialized (not `#[serial]`, which isn't a dep here) via a module mutex
-    /// so it doesn't race other tests that toggle the shared TEST_DEK slot.
+    /// Serialized on the `cookie_vault` key so it does not race the other
+    /// tests — here or in `namebase_cmd_tests` — that toggle the shared
+    /// TEST_DEK slot.
     #[test]
+    #[serial(cookie_vault)]
     fn public_cookie_roundtrip_with_test_dek() {
-        let _held = DEK_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
-
         set_test_dek(Some(test_dek()));
         let plaintext = b"session=xyz; secure; httponly";
         let blob_hex = encrypt_cookie(plaintext).expect("encrypt_cookie");
@@ -572,9 +577,8 @@ mod tests {
     /// `encrypt_cookie` propagates the empty-plaintext rejection through the
     /// public API (with a test DEK installed).
     #[test]
+    #[serial(cookie_vault)]
     fn public_encrypt_cookie_rejects_empty() {
-        let _held = DEK_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
-
         set_test_dek(Some(test_dek()));
         let err = encrypt_cookie(b"").unwrap_err();
         assert!(matches!(err, AppError::InvalidInput(_)), "got {err:?}");
@@ -585,9 +589,8 @@ mod tests {
     /// (the `return Ok(dek)` when a fixed DEK is installed) without going
     /// through the public encrypt/decrypt wrappers.
     #[test]
+    #[serial(cookie_vault)]
     fn get_or_create_dek_returns_installed_test_dek() {
-        let _held = DEK_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
-
         let fixed = test_dek();
         set_test_dek(Some(fixed.clone()));
         let got = get_or_create_dek().expect("test DEK should be returned");
@@ -712,15 +715,11 @@ mod tests {
         );
     }
 
-    /// Serializes tests that mutate the process-global test-backend slot.
-    static BACKEND_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
+    #[serial(cookie_vault)]
     fn get_or_create_dek_uses_installed_test_backend_existing_entry() {
         // Must NOT race with test-DEK-slot tests either: get_or_create_dek
-        // consults TEST_DEK first.
-        let _dek_held = DEK_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
-        let _held = BACKEND_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        // consults TEST_DEK first — the shared serial key covers both slots.
 
         set_test_dek(None);
         let fixed = vec![9u8; DEK_LEN];
@@ -734,10 +733,8 @@ mod tests {
     }
 
     #[test]
+    #[serial(cookie_vault)]
     fn get_or_create_dek_uses_installed_test_backend_new_entry() {
-        let _dek_held = DEK_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
-        let _held = BACKEND_TEST_GUARD.lock().unwrap_or_else(|p| p.into_inner());
-
         set_test_dek(None);
         set_test_keyring_backend(Some(Box::new(FakeKeyring::empty())));
 

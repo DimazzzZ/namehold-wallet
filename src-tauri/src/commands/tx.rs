@@ -215,20 +215,25 @@ pub(crate) async fn resolve_fee_rate(state: &State<'_, AppState>, fee_rate: Opti
             }
             // 2) Ask the node for an estimate — same behavior as before.
             // Per-profile node override routing (ADR-001): if an active profile
-            // exists, use its effective node config; otherwise fall back to global.
-            let client = if let Some(id) = profile_id {
-                match state.db.lock() {
-                    Ok(conn) => NodeRpcClient::for_profile(&conn, &id)
-                        .unwrap_or_else(|_| NodeRpcClient::from_settings(&s)),
-                    Err(_) => NodeRpcClient::from_settings(&s),
-                }
-            } else {
-                NodeRpcClient::from_settings(&s)
+            // exists, use its effective node config; with no profile at all
+            // there is no override to honour, so global is the whole answer.
+            // A profile whose config will not resolve falls through to the
+            // built-in rate rather than to global's node: a fee estimate from
+            // another chain's node is worse than no estimate.
+            let client = match profile_id.filter(|id| !id.is_empty()) {
+                Some(id) => match state.db.lock() {
+                    Ok(conn) => NodeRpcClient::for_profile(&conn, &id).ok(),
+                    Err(_) => None,
+                },
+                None => Some(NodeRpcClient::from_settings(&s)),
             };
-            client
-                .estimate_smart_fee(6)
-                .await
-                .unwrap_or(send::DEFAULT_FEE_RATE_PER_BYTE)
+            match client {
+                Some(c) => c
+                    .estimate_smart_fee(6)
+                    .await
+                    .unwrap_or(send::DEFAULT_FEE_RATE_PER_BYTE),
+                None => send::DEFAULT_FEE_RATE_PER_BYTE,
+            }
         }
         None => send::DEFAULT_FEE_RATE_PER_BYTE,
     }
@@ -246,7 +251,7 @@ pub async fn sync_wallet_state(
 ) -> Result<serde_json::Value, AppError> {
     // 1. Snapshot addresses + settings under the lock, then release it before
     //    any network I/O.
-    let (profile_id, profile_network, addresses, settings, client) = {
+    let (profile_id, profile_network, addresses, client) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let profile = match wallet_profile_id {
             Some(id) => db::queries::get_wallet_profile(&conn, &id)?
@@ -285,13 +290,12 @@ pub async fn sync_wallet_state(
                 }
             }
         }
-        let settings = db::queries::get_settings(&conn)?;
         // Per-profile node override routing (ADR-001): the sync must use the
         // profile's effective node config (override -> global -> default), not
         // the raw global settings. Build the client while the lock is held so
         // the effective-config resolver can read `profile_settings`.
         let client = NodeRpcClient::for_profile(&conn, &profile.id)?;
-        (profile.id, profile.network, addresses, settings, client)
+        (profile.id, profile.network, addresses, client)
     };
 
     // Probe the node first. If it's unreachable, that's expected in explorer /
@@ -308,11 +312,11 @@ pub async fn sync_wallet_state(
                 info.chain.as_deref(),
             ) == Some(false)
             {
-                let reported = info.chain.as_deref().unwrap_or("unknown");
-                return Err(AppError::InvalidInput(format!(
-                    "node is on network '{reported}' but this wallet is '{profile_network}' — \
-                     refusing to sync; point the wallet at a {profile_network} node"
-                )));
+                return Err(cross_network_refusal(
+                    info.chain.as_deref(),
+                    &profile_network,
+                    &format!("refusing to sync; point the wallet at a {profile_network} node"),
+                ));
             }
             info.blocks
         }
@@ -326,13 +330,13 @@ pub async fn sync_wallet_state(
         }
     };
 
-    // 2. Fetch coins per address (network I/O, no lock held).
-    let node_url = settings
-        .get("node_rpc_url")
-        .map(|s| s.as_str())
-        .unwrap_or("the configured node");
+    // 2. Fetch coins per address (network I/O, no lock held). The URL named in
+    // any failure is the one this client resolved through the profile, not the
+    // global setting: they differ whenever the profile overrides it, and the
+    // global one would send the user to fix a node that was never asked.
+    let node_url = client.node_url().to_string();
     let (all_coins, txs) =
-        fetch_wallet_coins_and_txs_with_client(&client, &addresses, node_url).await?;
+        fetch_wallet_coins_and_txs_with_client(&client, &addresses, &node_url).await?;
     // Balances below are split on coinbase maturity, which is per-network.
     let sync_network = derivation::network_from_profile(&profile_network)?;
 
@@ -1268,7 +1272,6 @@ async fn sign_via_ledger(
 /// Convert pre-resolved `(output_index, name)` pairs into the
 /// [`OutputName`](crate::providers::ledger::parse_mode::OutputName) entries
 /// that the parse-mode builder expects.
-#[cfg_attr(coverage_nightly, coverage(off))]
 fn output_names_from_pairs(
     pairs: &[(usize, String)],
 ) -> Vec<crate::providers::ledger::parse_mode::OutputName> {
@@ -1329,8 +1332,8 @@ pub async fn sign_name_message(
         // during REVEAL that is our own REVEAL coin — hsd reports the highest
         // revealer as the owner long before anyone has won. Signing it would
         // produce a well-formed claim of ownership that every verifier
-        // resolves as false. Same rule as the ownership capabilities.
-        if coin.covenant_type < crate::noncustodial::sync::COV_REGISTER as i64 {
+        // resolves as false.
+        if !crate::noncustodial::covenants::is_registered_owner_covenant(Some(coin.covenant_type)) {
             return Err(AppError::InvalidInput(format!(
                 "the name '{name}' is not registered yet — there is no ownership to prove"
             )));
@@ -1427,7 +1430,6 @@ pub(crate) async fn classify_broadcast_outcome_with_client(
 /// silently skipped — the tx cache is best-effort, not authoritative.
 ///
 /// Testable against a mock without an AppState.
-#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) async fn fetch_wallet_coins_and_txs_with_client(
     client: &dyn crate::noncustodial::node_rpc::NodeRpc,
     addresses: &[String],
@@ -1531,13 +1533,26 @@ pub(crate) async fn broadcast_network_guard_with_client(
     if crate::noncustodial::network::network_check(Some(expected), info.chain.as_deref())
         == Some(false)
     {
-        let reported = info.chain.as_deref().unwrap_or("unknown");
-        return Err(AppError::InvalidInput(format!(
-            "node is on network '{reported}' but this wallet is '{expected}' — refusing to \
-             broadcast; the transaction was not sent and the draft is unchanged"
-        )));
+        return Err(cross_network_refusal(
+            info.chain.as_deref(),
+            expected,
+            "refusing to broadcast; the transaction was not sent and the draft is unchanged",
+        ));
     }
     Ok(())
+}
+
+/// The refusal a cross-network node earns, with what the caller was about to do.
+///
+/// Two guards raise it — the sync path and the broadcast path — and each used
+/// to spell it out, so the sentence the user reads depended on which one fired
+/// first. `consequence` is the only part that legitimately differs: what did
+/// not happen, and what state was left alone.
+fn cross_network_refusal(reported: Option<&str>, expected: &str, consequence: &str) -> AppError {
+    let reported = reported.unwrap_or("unknown");
+    AppError::InvalidInput(format!(
+        "node is on network '{reported}' but this wallet is '{expected}' — {consequence}"
+    ))
 }
 
 /// Broadcast a signed draft via node RPC.
@@ -2009,9 +2024,11 @@ pub async fn get_write_capability(
             .ok()
             .and_then(|p| db::queries::get_profile_addresses(&conn, &p.id).ok())
             .and_then(|addrs| addrs.into_iter().next());
-        let expected_network = db::queries::get_active_profile_network(&conn)
-            .ok()
-            .flatten();
+        // Returned, not swallowed. `Ok(None)` already means "no profile to
+        // compare against" and leaves the chain check permissive by design; a
+        // DB failure reaching the same `None` would report a wallet as ready to
+        // send through a node whose chain was never compared.
+        let expected_network = db::queries::get_active_profile_network(&conn)?;
         (
             source,
             allow_remote,
@@ -2090,8 +2107,8 @@ pub(crate) async fn apply_node_write_probe_with_client(
                 info.chain.as_deref(),
             ) == Some(false);
             // "Synced" = applied blocks caught up to the best known header; see
-            // `chain_synced` for why verificationprogress wins. No metadata at
-            // all counts as synced (regtest).
+            // `chain_synced` for why the tip decides and verificationprogress
+            // only corroborates. No metadata at all counts as synced (regtest).
             let synced = info.is_synced(/* assume_when_unknown */ true);
             if chain_mismatch {
                 let reported = info.chain.as_deref().unwrap_or("unknown");
@@ -2618,5 +2635,24 @@ mod pure_helper_tests {
     #[test]
     fn local_txid_from_summary_none_when_json_is_invalid() {
         assert_eq!(local_txid_from_summary("not { valid json"), None);
+    }
+
+    #[test]
+    fn output_names_from_pairs_keeps_each_index_with_its_name() {
+        // The Ledger parse-mode builder is told which output carries which
+        // name; pairing them by position is the whole job, and getting it
+        // wrong labels a covenant on the device with another output's name.
+        let out =
+            output_names_from_pairs(&[(0, "example".to_string()), (2, "another".to_string())]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].output_index, 0);
+        assert_eq!(out[0].name, "example");
+        assert_eq!(out[1].output_index, 2);
+        assert_eq!(out[1].name, "another");
+    }
+
+    #[test]
+    fn output_names_from_pairs_maps_an_empty_slice_to_an_empty_vec() {
+        assert!(output_names_from_pairs(&[]).is_empty());
     }
 }

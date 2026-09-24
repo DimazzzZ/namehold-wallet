@@ -26,6 +26,7 @@ use crate::commands::daemon_ctl::{
 use crate::db;
 use crate::tests::command_helpers::create_test_state;
 use crate::AppState;
+use serial_test::serial;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -101,6 +102,7 @@ async fn is_background_sync_enabled_false_when_setting_is_gibberish() {
 // on unix is a permission check, not a signal delivery). Safe in all envs.
 
 #[tokio::test]
+#[serial(hsd_home)]
 async fn is_daemon_alive_returns_bool_without_panic() {
     let alive = is_daemon_alive().await.unwrap();
     // We can't assert a specific value: it depends on whether the developer
@@ -109,6 +111,7 @@ async fn is_daemon_alive_returns_bool_without_panic() {
 }
 
 #[test]
+#[serial(hsd_home)]
 fn check_daemon_alive_returns_bool_without_panic() {
     let alive = check_daemon_alive();
     let _: bool = alive;
@@ -117,6 +120,7 @@ fn check_daemon_alive_returns_bool_without_panic() {
 // --- ensure_daemon_if_enabled --------------------------------------------
 
 #[test]
+#[serial(hsd_home)]
 fn ensure_daemon_if_enabled_skips_when_disabled() {
     // enabled=false → early return, never calls spawn_daemon. Purely
     // observable-by-not-panicking; and it never touches the PID file.
@@ -126,6 +130,7 @@ fn ensure_daemon_if_enabled_skips_when_disabled() {
 }
 
 #[test]
+#[serial(hsd_home)]
 fn ensure_daemon_if_enabled_defaults_to_enabled_when_setting_absent() {
     // No setting present → BACKGROUND_SYNC_DEFAULT="1" fallback → enabled.
     // Will attempt spawn_daemon; find_daemon_binary fails in test env; the
@@ -135,6 +140,7 @@ fn ensure_daemon_if_enabled_defaults_to_enabled_when_setting_absent() {
 }
 
 #[test]
+#[serial(hsd_home)]
 fn ensure_daemon_if_enabled_attempts_spawn_when_enabled() {
     // enabled=true and daemon-not-alive → spawn_daemon → find_daemon_binary
     // → Err → logged and swallowed. If the developer HAS a daemon running,
@@ -152,6 +158,7 @@ fn ensure_daemon_if_enabled_attempts_spawn_when_enabled() {
 // PATH. We accept either outcome.
 
 #[test]
+#[serial(hsd_home)]
 fn spawn_daemon_either_short_circuits_or_errors_cleanly() {
     match spawn_daemon() {
         Ok(()) => {

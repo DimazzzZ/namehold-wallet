@@ -48,12 +48,15 @@ pub async fn sync_spv_step(db_path: &str, profile_id: &str) -> bool {
         Err(_) => return false, // lcov-excl-line
     };
     // G2: resolve the profile's network (before dropping the connection) to
-    // gate the explorer availability below.
-    let network = queries::get_wallet_profile(&conn, profile_id)
-        .ok()
-        .flatten()
-        .and_then(|p| crate::noncustodial::derivation::network_from_profile(&p.network).ok())
-        .unwrap_or_default();
+    // gate the explorer availability below. A network that cannot be read is
+    // unknown, not mainnet — an SPV step that guessed would show the user a
+    // mainnet balance for a wallet that is not on mainnet.
+    let Some(network) =
+        crate::commands::active_profile::profile_network_opt_from_conn(&conn, profile_id)
+    else {
+        eprintln!("sync_spv_step: profile {profile_id} has no readable network");
+        return false;
+    };
     // Verify the SPV node is reachable. Resolve the profile's effective node
     // config (per-profile override -> global -> default) rather than reading
     // global settings directly for the node endpoint. The explorer factory

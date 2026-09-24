@@ -863,3 +863,75 @@ async fn test_explorer_provider_trait_delegates_get_address_txids() {
     // exercises the delegation.
     let _ = result;
 }
+
+// --- The seeded mainnet explorer must not leak onto another network (032) ---
+
+/// The value migration 009 used to seed into `explorer_api_url`. Installations
+/// that ran that version still carry it, and an explicit setting outranks the
+/// network default, so it has to be refused rather than trusted.
+const SEEDED_MAINNET_EXPLORER: &str = "https://e.hnsfans.com";
+
+#[test]
+fn seeded_mainnet_explorer_is_refused_off_mainnet() {
+    let mut settings = std::collections::HashMap::new();
+    settings.insert(
+        "explorer_api_url".to_string(),
+        SEEDED_MAINNET_EXPLORER.to_string(),
+    );
+
+    for network in [
+        crate::noncustodial::network::Network::Testnet,
+        crate::noncustodial::network::Network::Regtest,
+        crate::noncustodial::network::Network::Simnet,
+    ] {
+        assert!(
+            crate::providers::explorer_client_from_settings(&settings, network).is_none(),
+            "{network:?} must not fall back to the mainnet explorer"
+        );
+    }
+}
+
+#[test]
+fn seeded_mainnet_explorer_is_refused_off_mainnet_with_a_trailing_slash() {
+    // The same URL with hsd's habitual trailing slash is the same explorer.
+    let mut settings = std::collections::HashMap::new();
+    settings.insert(
+        "explorer_api_url".to_string(),
+        format!("{SEEDED_MAINNET_EXPLORER}/"),
+    );
+    assert!(crate::providers::explorer_client_from_settings(
+        &settings,
+        crate::noncustodial::network::Network::Regtest,
+    )
+    .is_none());
+}
+
+#[test]
+fn the_mainnet_explorer_is_still_used_on_mainnet() {
+    let mut settings = std::collections::HashMap::new();
+    settings.insert(
+        "explorer_api_url".to_string(),
+        SEEDED_MAINNET_EXPLORER.to_string(),
+    );
+    assert!(crate::providers::explorer_client_from_settings(
+        &settings,
+        crate::noncustodial::network::Network::Main,
+    )
+    .is_some());
+}
+
+#[test]
+fn a_users_own_explorer_url_is_honoured_off_mainnet() {
+    // Only the known mainnet explorer is refused. The wallet cannot tell which
+    // chain a private explorer serves, so it takes the user at their word.
+    let mut settings = std::collections::HashMap::new();
+    settings.insert(
+        "explorer_api_url".to_string(),
+        "https://explorer.example.test".to_string(),
+    );
+    assert!(crate::providers::explorer_client_from_settings(
+        &settings,
+        crate::noncustodial::network::Network::Regtest,
+    )
+    .is_some());
+}

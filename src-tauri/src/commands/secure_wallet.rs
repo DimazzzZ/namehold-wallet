@@ -103,7 +103,6 @@ pub(crate) fn account_xpub_from_seed(
 
 /// Derive + persist the initial receive/change address windows for a profile.
 /// Returns the first receive address (the profile's default receive address).
-#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn provision_addresses(
     conn: &rusqlite::Connection,
     profile_id: &str,

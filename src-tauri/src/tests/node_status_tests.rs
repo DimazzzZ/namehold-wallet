@@ -2,6 +2,7 @@
 //! whether we spawned a child. With no node reachable, `connected` is false and
 //! `process_alive` is false — and it never falsely reports a connection.
 
+use crate::tests::command_helpers::set_profile_override;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
@@ -62,7 +63,7 @@ async fn node_status_reports_disconnected_when_no_node() {
 
 // --- is_node_ready_for_local_reads -------------------------------------------
 
-use crate::commands::read::is_node_ready_for_local_reads;
+use crate::commands::node_readiness::is_node_ready_for_local_reads;
 
 #[tokio::test]
 async fn local_reads_not_ready_when_not_connected() {
@@ -76,7 +77,7 @@ async fn local_reads_not_ready_when_not_connected() {
 // --- node_ready_from_settings (the settings-based gate used by the background
 //     sync thread, which has no State<AppState>) --------------------------------
 
-use crate::commands::read::node_ready_from_settings;
+use crate::commands::node_readiness::node_ready_from_settings;
 
 /// Build a settings map pointing the node RPC at a mockito server URL.
 fn settings_for_url(url: &str) -> std::collections::HashMap<String, String> {
@@ -501,7 +502,7 @@ async fn probe_and_update_sets_flag_true_when_node_answers() {
 
 // --- node_tip_height_if_synced_from_settings_with_network ---------------------
 
-use crate::commands::read::node_tip_height_if_synced_from_settings_with_network;
+use crate::commands::node_readiness::node_tip_height_if_synced_from_settings_with_network;
 
 #[tokio::test]
 async fn synced_with_matching_network_returns_height() {
@@ -619,7 +620,7 @@ async fn synced_with_no_chain_in_response_skips_check() {
 // Per-profile node config resolution for readiness probe (ADR-001)
 // ===========================================================================
 
-use crate::commands::read::node_tip_height_if_synced_from_profile_with_network;
+use crate::commands::node_readiness::node_tip_height_if_synced_from_profile_with_network;
 
 /// Helper: create a temp file-backed DB (in-memory won't work because the
 /// async probe re-opens the connection from a path — see the Send bound
@@ -638,15 +639,6 @@ fn temp_db_conn() -> (String, rusqlite::Connection) {
     let path_str = path.to_str().unwrap();
     let conn = crate::commands::sync::open_conn(path_str).unwrap();
     (path_str.to_string(), conn)
-}
-
-/// Helper: set a per-profile node config override.
-fn set_profile_override(conn: &rusqlite::Connection, profile_id: &str, key: &str, value: &str) {
-    conn.execute(
-        "INSERT OR REPLACE INTO profile_settings (profile_id, key, value) VALUES (?1, ?2, ?3)",
-        rusqlite::params![profile_id, key, value],
-    )
-    .unwrap();
 }
 
 /// Helper: create a test profile with minimal required fields.
@@ -783,7 +775,7 @@ async fn probe_respects_network_mismatch_with_profile_override() {
 // Per-profile readiness gate (boolean wrapper)
 // ===========================================================================
 
-use crate::commands::read::node_ready_from_profile;
+use crate::commands::node_readiness::node_ready_from_profile;
 
 #[tokio::test]
 async fn node_ready_from_profile_returns_true_when_synced_and_network_matches() {
@@ -1256,6 +1248,7 @@ async fn node_status_reflects_seeded_profile_network_testnet() {
 // ===========================================================================
 
 #[tokio::test]
+#[serial_test::serial(hsd_home)]
 async fn node_status_data_dir_defaults_to_home_dot_hsd_when_prefix_unset() {
     let conn = blank_conn();
     db::queries::set_setting(&conn, "node_rpc_url", "http://127.0.0.1:1").unwrap();
@@ -1426,6 +1419,40 @@ use crate::commands::node::{
     dir_has_chain_root, migrate_network_prefix, network_scoped_data_dir, plan_network_migration,
     PrefixMigration,
 };
+
+#[tokio::test]
+async fn probe_refuses_a_profile_whose_node_config_will_not_resolve() {
+    // ADR-001: "a per-profile override that fails is not a fallback — it is a
+    // user-facing error". The probe used to swallow the failure and describe
+    // whatever node global happens to name, which on another chain is a
+    // confident answer about somebody else's node.
+    let mut server_global = mockito::Server::new_async().await;
+    let m = server_global
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(
+            r#"{"result":{"blocks":99,"headers":99,"verificationprogress":1.0},"error":null,"id":1}"#,
+        )
+        .expect(0)
+        .create_async()
+        .await;
+
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    db::migrations::run(&conn).unwrap();
+    db::queries::set_setting(&conn, "node_rpc_url", &server_global.url()).unwrap();
+    // An active id pointing at a profile that does not exist: resolution
+    // returns NotFound, which is exactly the "will not resolve" case.
+    db::queries::set_setting(&conn, "active_wallet_profile_id", "ghost").unwrap();
+
+    let app = app_with(conn);
+    let state = app.state::<AppState>();
+    assert!(
+        !crate::commands::node::probe_and_update(&state).await,
+        "an unresolvable profile config must read as no node, not as global's"
+    );
+    m.assert_async().await;
+}
 
 /// A unique scratch dir under the OS temp dir, cleaned on drop.
 struct Scratch(std::path::PathBuf);
@@ -1627,4 +1654,66 @@ fn migrate_adopts_legacy_nested_subdir_into_scoped_root() {
         !nested.join("chain").join("LEGACY").exists(),
         "moved, not copied"
     );
+}
+
+// --- Which hsd log lines mean the node failed to start ---
+
+use crate::commands::node::is_fatal_startup_line;
+
+#[test]
+fn routine_sync_noise_is_not_a_startup_failure() {
+    // The line that made this predicate necessary: hsd logs peer failures with
+    // the word "Error" throughout a healthy sync.
+    for benign in [
+        "[debug] (net) Error: Socket Error: ECONNREFUSED (1.2.3.4:12038)",
+        "[warning] (peer) Error: Peer timed out.",
+        "[info] (chain) Block 000000 (1) added to chain.",
+        "[debug] (mempool) Added transaction to mempool.",
+    ] {
+        assert!(
+            !is_fatal_startup_line(benign),
+            "should not read as a startup failure: {benign}"
+        );
+    }
+}
+
+#[test]
+fn the_known_fatal_shapes_are_recognised() {
+    for fatal in [
+        "[error] (node) Cannot retroactively enable address indexing.",
+        "Error: bind EADDRINUSE 0.0.0.0:12037",
+        "Error: listen EADDRINUSE: address already in use :::12037",
+        "Uncaught Error: Could not open database.",
+        "[error] (chain) cannot open chain database",
+    ] {
+        assert!(
+            is_fatal_startup_line(fatal),
+            "should read as a startup failure: {fatal}"
+        );
+    }
+}
+
+#[test]
+fn a_data_dir_path_that_merely_contains_bind_is_not_a_failure() {
+    // `bind` used to be matched on its own, so a prefix like this — or any
+    // "binding"/"rebinding" progress line — reported a healthy node as broken.
+    // The address-in-use case it existed for arrives as `bind EADDRINUSE`,
+    // which is still caught above.
+    assert!(!is_fatal_startup_line(
+        "[info] (node) Opening /Volumes/bind-drive/hsd-data"
+    ));
+    assert!(!is_fatal_startup_line(
+        "[debug] (chain) Rebinding handlers."
+    ));
+}
+
+#[test]
+fn a_broad_matcher_is_documented_rather_than_quietly_wrong() {
+    // `Cannot ` is deliberately broad: this predicate only runs when the RPC is
+    // already unreachable, so over-reporting relabels "still starting" on a node
+    // that is down either way, while under-reporting leaves a broken node
+    // silent. This pins that it is a choice, not an oversight.
+    assert!(is_fatal_startup_line(
+        "[info] (chain) Cannot find checkpoint."
+    ));
 }

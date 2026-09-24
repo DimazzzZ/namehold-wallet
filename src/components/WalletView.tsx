@@ -64,13 +64,15 @@ import {
 } from "../lib/utils";
 import { mergeActivity } from "../lib/activity";
 import { mapError } from "../lib/errors";
-import { explorerAddressUrl } from "../lib/openExternal";
+import { explorerAddressUrl, explorerCoversNetwork } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
 import { ReceiveAddressList } from "./ReceiveAddressList";
 import type { NameActionCapabilities, TxDraftSummary } from "../types";
 import { subscribeAction } from "../lib/actionBus";
 import { Tooltip } from "./ui/Tooltip";
+
+type BatchAction = "renew" | "reveal" | "redeem" | "finalize" | "transfer";
 
 export function WalletView() {
   const qc = useQueryClient();
@@ -170,9 +172,10 @@ export function WalletView() {
   // Batch confirmation modal state.
   const [batchModal, setBatchModal] = useState<{
     open: boolean;
-    action: "renew" | "reveal" | "redeem" | "finalize" | "transfer";
+    action: BatchAction;
     names: string[];
     feeDoos: number;
+    amountDoos: number;
     draftId: string;
     recipient?: string;
   } | null>(null);
@@ -327,112 +330,66 @@ export function WalletView() {
     return { canReveal, canRedeem, canFinalize, canTransfer };
   }, [selectedNames, nameCaps]);
 
-  // Batch renew: build a single tx with multiple renewal covenants, sign, broadcast.
   // Compute the fee-rate arg once for all batch handlers (null = use setting default).
   const batchFeeRateArg = parseFeeRateArg(batchFeeRate) ?? undefined;
 
-  const handleBatchRenew = async () => {
+  // Every batch action is the same three steps — build one draft for the
+  // selection, then hand its fee and amount to the confirm modal — and every
+  // failure is reported the same way.
+  const runBatch = async (
+    action: BatchAction,
+    build: () => Promise<TxDraftSummary>,
+    extra: { recipient?: string } = {},
+  ) => {
     const names = Array.from(selectedNames);
     if (names.length === 0) return;
     try {
-      showToast(`Building batch renew draft…`, "info");
-      const draft = await batchRenewMutation.mutateAsync({ names, feeRate: batchFeeRateArg });
-      const feeDoos = draft.summary?.feeDoos ?? 0;
+      showToast(`Building batch ${action} draft…`, "info");
+      const draft = await build();
       setBatchModal({
         open: true,
-        action: "renew",
+        action,
         names,
-        feeDoos,
+        feeDoos: draft.summary?.feeDoos ?? 0,
+        amountDoos: draft.summary?.sendTotalDoos ?? 0,
         draftId: draft.id,
+        ...extra,
       });
     } catch (e) {
-      showToast(`Batch renew failed: ${e}`, "error");
+      showToast(`Batch ${action} failed: ${mapError(e)}`, "error");
     }
   };
+  const batchNames = () => Array.from(selectedNames);
 
-  // Batch reveal: build a single tx with multiple REVEAL covenants.
-  const handleBatchReveal = async () => {
-    const names = Array.from(selectedNames);
-    if (names.length === 0) return;
-    try {
-      showToast(`Building batch reveal draft…`, "info");
-      const draft = await batchRevealMutation.mutateAsync({ names, feeRate: batchFeeRateArg });
-      const feeDoos = draft.summary?.feeDoos ?? 0;
-      setBatchModal({
-        open: true,
-        action: "reveal",
-        names,
-        feeDoos,
-        draftId: draft.id,
-      });
-    } catch (e) {
-      showToast(`Batch reveal failed: ${e}`, "error");
-    }
-  };
-
-  // Batch redeem: build a single tx to sweep losing-bid coins.
-  const handleBatchRedeem = async () => {
-    const names = Array.from(selectedNames);
-    if (names.length === 0) return;
-    try {
-      showToast(`Building batch redeem draft…`, "info");
-      const draft = await batchRedeemMutation.mutateAsync({ names, feeRate: batchFeeRateArg });
-      const feeDoos = draft.summary?.feeDoos ?? 0;
-      setBatchModal({
-        open: true,
-        action: "redeem",
-        names,
-        feeDoos,
-        draftId: draft.id,
-      });
-    } catch (e) {
-      showToast(`Batch redeem failed: ${e}`, "error");
-    }
-  };
-
-  // Batch finalize: build a single tx with multiple FINALIZE covenants.
-  const handleBatchFinalize = async () => {
-    const names = Array.from(selectedNames);
-    if (names.length === 0) return;
-    try {
-      showToast(`Building batch finalize draft…`, "info");
-      const draft = await batchFinalizeMutation.mutateAsync({ names, feeRate: batchFeeRateArg });
-      const feeDoos = draft.summary?.feeDoos ?? 0;
-      setBatchModal({
-        open: true,
-        action: "finalize",
-        names,
-        feeDoos,
-        draftId: draft.id,
-      });
-    } catch (e) {
-      showToast(`Batch finalize failed: ${e}`, "error");
-    }
-  };
-
-  const handleBatchTransfer = async () => {
-    const names = Array.from(selectedNames);
+  const handleBatchRenew = () =>
+    runBatch("renew", () =>
+      batchRenewMutation.mutateAsync({ names: batchNames(), feeRate: batchFeeRateArg }),
+    );
+  const handleBatchReveal = () =>
+    runBatch("reveal", () =>
+      batchRevealMutation.mutateAsync({ names: batchNames(), feeRate: batchFeeRateArg }),
+    );
+  const handleBatchRedeem = () =>
+    runBatch("redeem", () =>
+      batchRedeemMutation.mutateAsync({ names: batchNames(), feeRate: batchFeeRateArg }),
+    );
+  const handleBatchFinalize = () =>
+    runBatch("finalize", () =>
+      batchFinalizeMutation.mutateAsync({ names: batchNames(), feeRate: batchFeeRateArg }),
+    );
+  const handleBatchTransfer = () => {
     const recipient = batchRecipient.trim();
-    if (names.length === 0 || !recipient) return;
-    try {
-      showToast(`Building batch transfer draft…`, "info");
-      const draft = await batchTransferMutation.mutateAsync({
-        names,
-        recipient,
-        feeRate: batchFeeRateArg,
-      });
-      const feeDoos = draft.summary?.feeDoos ?? 0;
-      setBatchModal({
-        open: true,
-        action: "transfer",
-        names,
-        feeDoos,
-        draftId: draft.id,
-        recipient,
-      });
-    } catch (e) {
-      showToast(`Batch transfer failed: ${mapError(e)}`, "error");
-    }
+    if (!recipient) return;
+    return runBatch(
+      "transfer",
+      () =>
+        batchTransferMutation.mutateAsync({
+          names: batchNames(),
+          recipient,
+          feeRate: batchFeeRateArg,
+        }),
+      { recipient },
+    );
   };
 
   // Confirm a pending batch draft: unlock (if needed) → sign → broadcast.
@@ -835,7 +792,7 @@ export function WalletView() {
                 copyLabel="Copy Address"
                 toastLabel="Address"
                 externalUrl={
-                  profile.network === "mainnet" ? explorerAddressUrl(address) : undefined
+                  explorerCoversNetwork(profile.network) ? explorerAddressUrl(address) : undefined
                 }
                 externalTestId="receive-address-explorer-link"
               />
@@ -1524,6 +1481,7 @@ export function WalletView() {
           action={batchModal.action}
           names={batchModal.names}
           estimatedFeeDoos={batchModal.feeDoos}
+          amountDoos={batchModal.amountDoos}
           recipient={batchModal.recipient}
           onConfirm={handleBatchConfirm}
           onCancel={handleBatchCancel}
@@ -1543,7 +1501,7 @@ export function WalletView() {
           height={infoBlock}
           open={infoBlock != null}
           onClose={() => setInfoBlock(null)}
-          isMainnet={profile.network === "mainnet"}
+          isMainnet={explorerCoversNetwork(profile.network)}
         />
       )}
 
@@ -1552,7 +1510,7 @@ export function WalletView() {
           txid={infoTx}
           open={infoTx != null}
           onClose={() => setInfoTx(null)}
-          isMainnet={profile.network === "mainnet"}
+          isMainnet={explorerCoversNetwork(profile.network)}
         />
       )}
 

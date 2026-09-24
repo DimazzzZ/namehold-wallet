@@ -2,19 +2,34 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NameDetails } from "../name-actions/NameDetails";
-import { useNameRecords } from "../../queries/read";
-import { useNodeLive } from "../../queries/node";
-import type { HsdName } from "../../types";
+import { makeNodeStatus } from "../../test/fixtures/nodeStatus";
+import type { HsdName, NameResource } from "../../types";
 
 // NameDetails is the read-only body extracted from the former NameInfoModal
 // when the two name modals were unified into NameActionsModal. These tests
 // preserve the read-only rendering coverage (heights, transfer, owner UTXO,
 // closed-auction values, DNS records) that used to live on NameInfoModal.
-vi.mock("../../queries/read");
-vi.mock("../../queries/node");
 
-const mockUseNameRecords = vi.mocked(useNameRecords);
-const mockUseNodeLive = vi.mocked(useNodeLive);
+const invokeMock = vi.fn();
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+/** Route the two commands the component reads: DNS records and node status. */
+function route(o: { records?: NameResource | null; nodeLive?: boolean } = {}) {
+  invokeMock.mockImplementation((cmd: string) => {
+    switch (cmd) {
+      case "read_name_records":
+        return Promise.resolve(o.records ?? { records: [] });
+      case "node_status":
+        return Promise.resolve(
+          makeNodeStatus({ read_source: (o.nodeLive ?? true) ? "local" : "explorer" }),
+        );
+      default:
+        return Promise.reject(new Error(`unexpected command ${cmd}`));
+    }
+  });
+}
 
 function wrapper() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -37,17 +52,12 @@ function baseInfo(overrides: Partial<HsdName> = {}): HsdName {
     stats: null,
     transfer: 0,
     ...overrides,
-  } as HsdName;
+  };
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
-  mockUseNameRecords.mockReturnValue({
-    data: { records: [] },
-    isLoading: false,
-    isError: false,
-  } as any);
-  mockUseNodeLive.mockReturnValue(true);
+  invokeMock.mockReset();
+  route();
 });
 
 describe("NameDetails", () => {
@@ -103,33 +113,31 @@ describe("NameDetails", () => {
     expect(screen.getByText(/Transfer in progress/)).toBeInTheDocument();
   });
 
-  it("renders DNS records with TTL when node is live", () => {
-    mockUseNameRecords.mockReturnValue({
-      data: {
+  it("renders DNS records with TTL when node is live", async () => {
+    route({
+      records: {
         records: [
           { type: "NS", ns: "ns1.example." },
           { type: "TXT", txt: ["v=spf1 -all"] },
         ],
         ttl: 3600,
       },
-      isLoading: false,
-      isError: false,
-    } as any);
+    });
     render(<NameDetails name="example" profileId="p1" info={baseInfo()} />, {
       wrapper: wrapper(),
     });
+    expect(await screen.findByText(/TTL:/)).toBeInTheDocument();
     expect(screen.getByText("DNS Records")).toBeInTheDocument();
-    expect(screen.getByText(/TTL:/)).toBeInTheDocument();
     expect(screen.getByText("3600s")).toBeInTheDocument();
     expect(screen.getByTestId("name-info-dns-table")).toBeInTheDocument();
   });
 
-  it("shows 'Requires a synced node' when node is not live", () => {
-    mockUseNodeLive.mockReturnValue(false);
+  it("shows 'Requires a synced node' when node is not live", async () => {
+    route({ nodeLive: false });
     render(<NameDetails name="example" profileId="p1" info={baseInfo()} />, {
       wrapper: wrapper(),
     });
-    expect(screen.getByTestId("name-info-dns-no-node")).toBeInTheDocument();
+    expect(await screen.findByTestId("name-info-dns-no-node")).toBeInTheDocument();
     expect(screen.getByText(/Requires a synced local node/)).toBeInTheDocument();
   });
 

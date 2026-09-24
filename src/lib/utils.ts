@@ -62,8 +62,13 @@ export function hnsAddressPrefix(network: string): string {
 
 /**
  * The loopback node RPC URL hsd listens on for a given network (its
- * `networks.js` `rpcPort`). Mirrors `Network::default_rpc_url` in
- * `src-tauri/src/noncustodial/network.rs`; keep the two in step.
+ * `networks.js` `rpcPort`).
+ *
+ * The backend has the same table. Duplicating it is deliberate: the only use
+ * here is a placeholder in Settings, and a round-trip for grey hint text would
+ * cost more than the bug it prevents. A Rust test reads this function and
+ * fails if the two disagree, so the agreement is checked rather than
+ * remembered — see `contract_shape_tests`.
  */
 export function defaultNodeRpcUrl(network: string): string {
   switch (network) {

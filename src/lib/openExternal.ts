@@ -1,4 +1,5 @@
 import { isBrowser } from "./runtime";
+import type { WalletNetwork } from "../types";
 
 /**
  * The Handshake block explorer used for all human-facing links.
@@ -44,6 +45,14 @@ export function resolveReleaseNotesHref(href: string, ref = "HEAD"): string {
  * working; new code should use {@link explorerTxUrl}.
  */
 export const EXPLORER_TX_BASE = `${SHAKESHIFT_BASE}/transaction`;
+
+/**
+ * Whether the explorer has pages for this chain at all. Shakeshift indexes
+ * mainnet only, so a name / tx / address link for any other network would
+ * 404 — every screen that offers such a link asks this one question.
+ */
+export const explorerCoversNetwork = (network: WalletNetwork | null | undefined): boolean =>
+  network === "mainnet";
 
 /** Build the explorer URL for a transaction id. */
 export function explorerTxUrl(txid: string): string {

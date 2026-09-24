@@ -12,10 +12,9 @@
 
 use rusqlite::Connection;
 
+use crate::db::queries::get_profile_settings;
 use crate::error::AppError;
-use crate::noncustodial::node_config::{
-    effective_node_config_for_profile, get_profile_settings, DEFAULT_NODE_RPC_URL,
-};
+use crate::noncustodial::node_config::{default_node_rpc_url, effective_node_config_for_profile};
 use crate::noncustodial::rpc::ChainSource;
 
 /// A migrated in-memory DB with the migrations the resolver depends on, plus
@@ -95,7 +94,7 @@ fn missing_profile_is_not_found() {
 fn falls_back_to_builtin_default_when_nothing_set() {
     let conn = db_with_profile();
     let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
-    assert_eq!(cfg.node_rpc_url, DEFAULT_NODE_RPC_URL);
+    assert_eq!(cfg.node_rpc_url, default_node_rpc_url());
     assert_eq!(cfg.node_rpc_api_key, "");
     assert_eq!(cfg.chain_source, ChainSource::LocalNode);
     assert!(!cfg.from_override, "pure default must not be an override");
@@ -221,7 +220,7 @@ fn for_profile_falls_through_to_global_then_default() {
     // No override, no global url -> built-in default; global key present.
     set_global(&conn, "node_rpc_api_key", "global-key");
     let client = NodeRpcClient::for_profile(&conn, "p1").unwrap();
-    assert_eq!(client.node_url(), DEFAULT_NODE_RPC_URL);
+    assert_eq!(client.node_url(), default_node_rpc_url());
     assert_eq!(client.api_key(), "global-key");
 }
 
@@ -244,4 +243,60 @@ fn from_effective_config_carries_resolved_fields() {
     let client = NodeRpcClient::from_effective_config(&cfg);
     assert_eq!(client.node_url(), "https://node.example:12037");
     assert_eq!(client.api_key(), "k");
+}
+
+// --- Which flag realign is allowed to consult (ADR-001, N11) ---
+
+#[test]
+fn an_override_equal_to_global_is_still_the_users_choice() {
+    // The flag used to mean "differs from global", so pinning a profile to the
+    // value global happens to hold today read as no override at all — and
+    // realign would then rewrite a URL the user had deliberately set. Global
+    // can also change under them afterwards.
+    let conn = db_with_profile();
+    set_global(&conn, "node_rpc_url", "http://127.0.0.1:12037");
+    set_override(&conn, "p1", "node_rpc_url", "http://127.0.0.1:12037");
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert!(cfg.from_override, "choosing a value is choosing it");
+    assert!(cfg.url_from_override, "realign must leave this URL alone");
+}
+
+#[test]
+fn overriding_the_chain_source_alone_leaves_the_url_realignable() {
+    // Realign rewrites the URL and nothing else. A profile that only chose its
+    // chain source has expressed no opinion about the port, so a stale global
+    // loopback must still be fixable.
+    let conn = db_with_profile();
+    set_global(&conn, "node_rpc_url", "http://127.0.0.1:12037");
+    set_override(&conn, "p1", "chain_source", "remote_node");
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert!(cfg.from_override, "the profile did choose something");
+    assert!(
+        !cfg.url_from_override,
+        "the URL still came from the global fallback"
+    );
+}
+
+#[test]
+fn a_per_profile_setting_outside_the_node_tuple_is_not_a_node_override() {
+    // `profile_settings` is a general per-profile store. A key that says
+    // nothing about which node this profile talks to must not make the node
+    // config read as overridden — and so must not disable realign.
+    let conn = db_with_profile();
+    set_override(&conn, "p1", "some_unrelated_preference", "yes");
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert!(!cfg.from_override);
+    assert!(!cfg.url_from_override);
+}
+
+#[test]
+fn an_empty_url_override_does_not_protect_the_url_from_realign() {
+    // An empty override is "no meaningful choice" for resolution, so it must
+    // be "no meaningful choice" for realign too, or the two disagree about
+    // whose URL is in play.
+    let conn = db_with_profile();
+    set_global(&conn, "node_rpc_url", "http://127.0.0.1:12037");
+    set_override(&conn, "p1", "node_rpc_url", "");
+    let cfg = effective_node_config_for_profile(&conn, "p1").unwrap();
+    assert!(!cfg.url_from_override);
 }

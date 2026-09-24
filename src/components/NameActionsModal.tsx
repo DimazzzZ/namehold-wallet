@@ -36,7 +36,7 @@ import { formatHns, formatHnsShort } from "../lib/utils";
 import { Tooltip } from "./ui/Tooltip";
 import { displayName } from "../lib/idn";
 import { WatchlistToggle } from "./WatchlistToggle";
-import { explorerNameUrl, openExternal } from "../lib/openExternal";
+import { explorerCoversNetwork, explorerNameUrl, openExternal } from "../lib/openExternal";
 import {
   auctionPhase,
   nextTransition,
@@ -59,11 +59,12 @@ import type { NameActionCapability } from "../types";
  * The modal is task-driven: it uses backend capability data to show the most
  * relevant action, with clear disabled reasons when actions aren't available.
  *
- * Task 13 (F6): this file is the thin orchestrator — it owns all state, the
- * mutation runner, and the modal layout; the widgets live in
- * `./name-actions/` (`GuidedAction`, `BidForm`, `DnsRecordsEditor`,
- * `OwnershipActions`) and receive state + callbacks as props.
+ * This file is the thin orchestrator — it owns all state, the mutation
+ * runner, and the modal layout; the widgets live in `./name-actions/` and
+ * receive state + callbacks as props.
  */
+const RECORDS_NOT_FRESH_REASON = "Waiting for a fresh read of the current on-chain records";
+
 export function NameActionsModal({
   name,
   open,
@@ -105,8 +106,6 @@ export function NameActionsModal({
     finalize: useNameAction("build_finalize_draft"),
     cancel: useNameAction("build_cancel_draft"),
     revoke: useNameAction("build_revoke_draft"),
-    finalizeWithPayment: useNameAction("build_finalize_with_payment_draft"),
-    sellWithPayment: useNameAction("create_paid_swap_offer"),
   };
 
   // Bid inputs in HNS (human-readable), converted to doos on submit.
@@ -350,19 +349,18 @@ export function NameActionsModal({
     // leading an auction does not — the owner coin is still a REVEAL.
     caps?.nameIsRegistered === true;
 
-  // A wallet that has bid and is waiting for the window has nothing left to
-  // submit. This no longer reaches the advanced toggle — `sections.anyLive`
-  // decides that — and survives only to keep the "unlock to sign" notice off a
-  // modal with nothing to sign.
-  const alreadyBidWaiting = caps?.taskState === "waitingForBidding";
+  // The auction exists but its bidding window has not opened: the name is in
+  // OPENING, or an OPEN this wallet broadcast is still waiting for a block.
+  // (It once also meant "this wallet has already bid", back when a second bid
+  // was refused; several bids are allowed now, so BIDDING never reports this.)
+  const biddingNotOpenYet = caps?.taskState === "waitingForBidding";
 
   // Whether the modal actually offers something to sign/broadcast right now.
-  // `hasRelevantActions` includes a phase-based fallback that is true during
-  // BIDDING even after THIS wallet has already bid — in that state every
-  // action is caps-disabled and there is nothing left to submit, so the
-  // "unlock to sign" notice would be pointless. Gate signable UI on this
-  // instead of the looser `hasRelevantActions`.
-  const hasSignableActions = hasRelevantActions && !alreadyBidWaiting;
+  // `hasRelevantActions` includes a phase-based fallback that is true before
+  // the bidding window opens, when every action is caps-disabled and there is
+  // nothing to submit — the "unlock to sign" notice would be pointless there.
+  // Gate signable UI on this instead of the looser `hasRelevantActions`.
+  const hasSignableActions = hasRelevantActions && !biddingNotOpenYet;
 
   // One rule for the toggle: open it only when something behind it can be
   // acted on. Every "is this phase meaningful?" special case this used to
@@ -397,7 +395,18 @@ export function NameActionsModal({
     return actionReason(cap);
   };
 
-  const run = async (label: string, builder: () => Promise<{ id: string }>) => {
+  // What happens once the transaction is out: by default the modal reports
+  // it and closes. Reveal stays open instead, to show the pending card.
+  const closeAfterBroadcast = (label: string) => (txid: string) => {
+    showToast(`${label} broadcast — ${txid.slice(0, 12)}…`, "success");
+    onClose();
+  };
+
+  const run = async (
+    label: string,
+    builder: () => Promise<{ id: string }>,
+    afterBroadcast: (txid: string) => void = closeAfterBroadcast(label),
+  ) => {
     if (!profile) return;
     setBusy(label);
     let draft: { id: string };
@@ -415,10 +424,9 @@ export function NameActionsModal({
       const result = await exec.run(draft.id, profile.id, unlocked);
       // Broadcast succeeded — the draft is now owned by the chain, not us.
       pendingDraftRef.current = null;
-      showToast(`${label} broadcast — ${result.txid.slice(0, 12)}…`, "success");
       qc.invalidateQueries({ queryKey: ["wallet"] });
       qc.invalidateQueries({ queryKey: ["read"] });
-      onClose();
+      afterBroadcast(result.txid);
     } catch (e) {
       // exec.run() tags its rejection with which leg of unlock→sign→broadcast
       // threw (see useExecuteDraft) — thread that through to the toast.
@@ -437,44 +445,18 @@ export function NameActionsModal({
     }
   };
 
-  // Reveal confirm-and-broadcast: builds the reveal draft, runs the
-  // unlock→sign→broadcast pipeline, then stays in the modal (shows the
-  // pending card) rather than closing. On success, sets the optimistic txid
-  // so the card renders immediately (before the next caps poll).
-  const handleRevealConfirm = async () => {
-    if (!profile) return;
-    setBusy("REVEAL");
-    let draft: { id: string };
-    try {
-      draft = await build.reveal.mutateAsync({ name });
-    } catch (e) {
-      showToast(mapError(e, "build"), "error");
-      setBusy(null);
-      return;
-    }
-    pendingDraftRef.current = draft.id;
-    try {
-      const result = await exec.run(draft.id, profile.id, unlocked);
-      // Success: stay in the modal, show the pending card.
-      pendingDraftRef.current = null;
-      setOptimisticRevealTxid(result.txid);
-      setRevealConfirming(false);
-      qc.invalidateQueries({ queryKey: ["wallet"] });
-      qc.invalidateQueries({ queryKey: ["read"] });
-    } catch (e) {
-      showToast(mapError(unwrapStaged(e), stageOf(e)), "error");
-      // On failure, stay in the confirm panel so the user can retry.
-      // A pre-broadcast cancel/failure orphans the reveal draft — discard it so
-      // a retry isn't blocked. Keep it only if broadcast may be in flight.
-      if (stageOf(e) !== "broadcast") {
-        await discardPendingDraft();
-      } else {
-        pendingDraftRef.current = null;
-      }
-    } finally {
-      setBusy(null);
-    }
-  };
+  // Reveal stays in the modal after broadcast (shows the pending card) and
+  // sets the optimistic txid so the card renders before the next caps poll.
+  // On failure it stays in the confirm panel so the user can retry.
+  const handleRevealConfirm = () =>
+    run(
+      "REVEAL",
+      () => build.reveal.mutateAsync({ name }),
+      (txid) => {
+        setOptimisticRevealTxid(txid);
+        setRevealConfirming(false);
+      },
+    );
 
   // Recover a lost bid_commitments row from the on-chain BID coin + a
   // user-remembered bid amount (see `recover_bid_commitment`). Needs only the
@@ -613,10 +595,9 @@ export function NameActionsModal({
       }
     >
       <div className="space-y-4 text-sm">
-        {/* Explorer link (mainnet only — Shakeshift indexes no other chain, so
-            the link would 404) + watchlist toggle */}
+        {/* Explorer link + watchlist toggle */}
         <div className="flex items-center justify-between gap-2">
-          {profile?.network === "mainnet" ? (
+          {explorerCoversNetwork(profile?.network) ? (
             <button
               type="button"
               className="text-xs text-blue-500 hover:text-blue-700 hover:underline cursor-pointer inline-flex items-center gap-1"
@@ -718,7 +699,6 @@ export function NameActionsModal({
           </div>
         )}
 
-        {/* Write-capability gate — only show when there are relevant actions */}
         {/* Write-capability gate — only when there is actually something to
             sign. If the modal has nothing to submit (e.g. this wallet already
             bid and is just waiting), the "unlock to sign" notice is noise. */}
@@ -789,7 +769,7 @@ export function NameActionsModal({
                 onRowChange={setRow}
                 onAddRow={addRow}
                 onRemoveRow={removeRow}
-                isMainnet={profile?.network === "mainnet"}
+                isMainnet={explorerCoversNetwork(profile?.network)}
               />
               {badge.phase === "BIDDING" && caps?.canBid?.allowed ? (
                 <div className="mt-3">
@@ -818,7 +798,7 @@ export function NameActionsModal({
           name={name}
           profileId={profile?.id ?? null}
           phase={badge.phase}
-          suppressEmptyHint={alreadyBidWaiting}
+          suppressEmptyHint={biddingNotOpenYet}
         />
 
         {/* A bid this wallet placed in an EARLIER auction of this name whose
@@ -1031,9 +1011,7 @@ export function NameActionsModal({
                   {caps?.taskState !== "wonNeedsRegister" && (
                     <ActionHint
                       reason={
-                        !recordsFresh
-                          ? "Waiting for a fresh read of the current on-chain records"
-                          : actionReason(caps?.canRegister)
+                        !recordsFresh ? RECORDS_NOT_FRESH_REASON : actionReason(caps?.canRegister)
                       }
                     >
                       <Button
@@ -1048,9 +1026,7 @@ export function NameActionsModal({
                   )}
                   <ActionHint
                     reason={
-                      !recordsFresh
-                        ? "Waiting for a fresh read of the current on-chain records"
-                        : actionReason(caps?.canUpdate)
+                      !recordsFresh ? RECORDS_NOT_FRESH_REASON : actionReason(caps?.canUpdate)
                     }
                   >
                     <Button

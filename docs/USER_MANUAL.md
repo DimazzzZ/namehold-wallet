@@ -185,9 +185,9 @@ You can write when **all** of these hold:
 1. **Signer unlockable** — a wallet is loaded and either unlocked or has a
    passphrase you can enter.
 2. **Node reachable** — local hsd RPC responds.
-3. **Node synced** — hsd's `verification_progress` is ≥ 99.99% (or blocks meet
-   headers on a network without a progress value, e.g. regtest with a single
-   miner).
+3. **Node synced** — the blocks hsd has applied have caught up to the best
+   header it knows about; `verification_progress` only corroborates that (see
+   "When the wallet calls a node synced" in [NODE_SETUP.md](NODE_SETUP.md)).
 4. **Address-indexed** — hsd was started with `--index-address` (required to
    discover your unspent coins).
 
@@ -252,6 +252,20 @@ and broadcasts. The transaction ID and new phase appear on the next refresh.
   your bid is a decoy and is refunded after reveal.
 
 Both are entered in HNS.
+
+### Several bids on one name
+
+You can bid on the same name as many times as you like while it is in
+Bidding, each bid with its own value and lockup. Every bid goes to a fresh
+address and gets its own commitment, so each is revealed and reclaimed on its
+own. The Name Actions modal's header reads "Latest bid … · lockup … · N of
+yours", and the bids panel lists every bid on the name with yours tinted.
+**Reveal** and **Redeem** act on all of your bids on that name at once, and
+the confirm dialog sums every output they carry.
+
+A bid you did not reveal in time keeps its lockup on-chain. If you bid on a
+name again in a later auction, the guided panel names that stranded lockup and
+its amount, so the money is not mistaken for part of the new bid.
 
 ### Active Auctions
 
@@ -347,7 +361,6 @@ In the Name Actions modal for an owned name, click **Show all actions**:
 | **Finalize** | Complete a transfer after the lockup period (mainnet: ~2 days). |
 | **Cancel** | Revert a pending transfer before it's finalized. |
 | **Revoke** | Permanently burn the name (irreversible). |
-| **Buy with payment** | Finalize a transfer AND pay the seller in a single transaction (atomic swap). |
 
 All of these need the signer unlocked and a synced node.
 
@@ -362,39 +375,38 @@ header checkbox to select all). A batch action bar appears at the bottom:
 - **Redeem Selected** — bulk sweep losing-bid coins from selected names.
 - **Finalize Selected** — bulk finalize outgoing TRANSFERs whose lockup has
   expired.
+- **Transfer Selected** — transfer all selected names to one recipient
+  address, entered in the action bar.
 
-Each batch action opens a **confirmation modal** showing the count, estimated
-fee, and a collapsible list of the selected names. Cancel closes without
+Each batch action opens a **confirmation modal** showing the count, the amount
+the transaction moves (every output except change — a batch reveal or redeem
+carries one per bid), the estimated fee, and a collapsible list of the
+selected names. Cancel closes without
 broadcasting; Confirm signs + broadcasts the draft in one step.
 
-Batch operations use hsd's `createbatch` RPC, which handles consensus limits
-automatically (chunking to stay under block-size limits).
-
-**Note:** The description above is inaccurate and kept only until the next
-manual pass rewrites this section. In reality, batch operations are built
-client-side as a single transaction (there is no `createbatch` RPC in hsd).
-The client enforces a conservative `MAX_BATCH_SIZE=100` names per batch,
-well below hsd's per-transaction covenant limits (300 OPENS, 600 UPDATES,
-600 RENEWALS). Per-block limits are identical to per-tx limits, so a
-100-item batch will never be rejected on covenant-count grounds. Chunking
-is not implemented — each batch is one atomic transaction with one txid.
+A batch is built in the wallet as one transaction with one txid, so it either
+all lands or none of it does. There is no chunking and no `createbatch` RPC in
+hsd. The wallet caps a batch at 100 names, well under hsd's per-transaction
+covenant limits (300 OPENs, 600 UPDATEs, 600 RENEWs), and per-block limits are
+the same as per-transaction ones — so a full batch is never refused for
+carrying too many covenants.
 
 ### Paid name swaps
 
-To sell a name for HNS (**Sell with payment** flow):
-1. Open the name in **Manage** → **Sell with payment** section.
-2. Enter the buyer's address, your price (HNS), and confirm. This transfers
-   the name to the buyer with a lockup period recorded as a saved offer.
-3. Wait for the buyer to broadcast their finalize-with-payment tx.
-4. Once the buyer's tx confirms, the app verifies it (checks the payment
-   output matches your offer) and marks the offer paid — HNS lands in your
-   wallet atomically.
+Not available. The wallet once offered "Sell with payment" and "Buy with
+payment"; both were withdrawn on 2026-09-21 because the shape they implemented
+could not do what the names promised. A transfer's coin stays at the seller's
+address, so only the seller can finalize — which left "Buy with payment"
+pressable only by the party with nobody to pay — and nothing about the
+transaction was atomic, so "one transaction" meant one wallet funding both
+halves of its own trade.
 
-To buy a name:
-1. Wait for the seller to transfer the name to your address (name shows TRANSFER state).
-2. Click **Buy with payment** → enter seller's address + amount.
-3. Review the draft → sign → broadcast.
-4. The name is finalized and the seller is paid in the same transaction.
+Selling a name for HNS therefore means transferring it and being paid
+separately, with the trust that implies. If you recorded an offer before the
+buttons were withdrawn, its claim panel still appears and still works.
+
+`docs/specs/2026-09-21-paid-name-swaps.md` has the consensus rules behind this
+and what a working implementation would need.
 
 ---
 
@@ -470,7 +482,7 @@ All node settings live under **Settings → Connections**.
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| **Chain source** | **Local full node** | How the wallet reads and sends: **Local full node** (hsd on this device, full indexes), **SPV** (lightweight, explorer-dependent, read-only), **Remote node** (user-provided hsd RPC), or **Explorer only** (read-only). |
+| **Chain source** | **Local full node** | Which node the wallet sends through: **Local full node** (hsd on this device, full indexes), **SPV — lightweight, read-only** (headers only, explorer for data), **Remote node** (someone else's hsd RPC), or **Read-only (never send)**. Reads are not routed by this selector: they come from the node whenever it is synced and on your wallet's network, and from the explorer otherwise. |
 | **Node RPC URL** | `http://127.0.0.1:12037` | When chain source is Local full node or Remote node. Mainnet 12037, testnet 13037, regtest 14037. |
 | **Node RPC API key** | (empty) | For remote nodes: match the remote hsd's `--api-key`. Ignored for local nodes. |
 | **Allow sending via remote node** | **off** | When chain source is Remote node, enable this to broadcast signed transactions to the remote node. Off by default for safety. |
@@ -502,7 +514,8 @@ data fresh without the app being open.
 
 ### SPV mode (lightweight)
 
-The **Node mode** dropdown (Settings → Connections) lets you choose between:
+The **Chain source** selector (Settings → Connections) offers SPV beside the
+full node:
 
 - **Full node** (default): hsd runs with `--index-address --index-tx`. Requires
   ~15GB disk space and initial sync time. Supports sending and full local data.
@@ -518,12 +531,12 @@ When SPV mode is active:
 
 **To enable SPV mode:**
 1. Go to **Settings → Connections**
-2. Change **Node mode** from "Full node" to "SPV"
+2. Change **Chain source** from "Local full node" to "SPV — lightweight, read-only"
 3. **Save settings** — hsd restarts with `--spv` flag
 4. Data reads now come from the explorer; sending is blocked
 
 **To switch back to full node:**
-1. Change **Node mode** back to "Full node"
+1. Change **Chain source** back to "Local full node"
 2. **Save settings** — hsd restarts with `--index-address --index-tx`
 3. Full sync begins (may take time if the chain has advanced significantly)
 

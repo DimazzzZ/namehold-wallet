@@ -458,20 +458,32 @@ pub async fn run_sync_steps(
     let node_authoritative = if node_mode.is_spv() {
         false
     } else {
-        // The network belongs to the profile being synced, not to whichever
-        // profile happens to be active: a node on another chain must never be
-        // authoritative for this one.
-        let snapshot = open_conn(db_path).ok().and_then(|c| {
-            let settings = queries::get_settings(&c).ok()?;
-            let network = queries::get_wallet_profile(&c, profile_id)
-                .ok()
-                .flatten()
-                .map(|p| p.network);
-            Some((settings, network))
-        });
-        match snapshot {
-            Some((s, network)) => {
-                crate::commands::read::node_ready_from_settings(&s, network.as_deref()).await
+        // Both the network and the node belong to the profile being synced,
+        // not to whichever profile happens to be active. The network, because
+        // a node on another chain must never be authoritative for this one.
+        // The node, because this profile may point at its own (ADR-001) — and
+        // the steps this gate governs already build their client per profile,
+        // so asking the global node whether it is caught up decided what to do
+        // with a node nobody was going to talk to.
+        //
+        // A network this step cannot read makes the node not authoritative,
+        // rather than authoritative without the comparison. Passing `None`
+        // here tells the readiness gate there is nothing to compare, which is
+        // right during onboarding and wrong for a profile that has a network
+        // and simply could not be read: it would let a node on another chain
+        // seed this profile's cache. The explorer path this falls back to is
+        // the conservative one and already exists.
+        match open_conn(db_path)
+            .ok()
+            .and_then(|c| queries::get_wallet_profile(&c, profile_id).ok().flatten())
+        {
+            Some(p) => {
+                crate::commands::node_readiness::node_ready_from_profile(
+                    db_path,
+                    profile_id,
+                    Some(&p.network),
+                )
+                .await
             }
             None => false,
         }
@@ -822,12 +834,14 @@ pub async fn repair_step_windowed(
             Err(_) => return,
         };
         // G2: resolve the profile's network to gate the explorer availability.
-        let network = queries::get_wallet_profile(&conn, profile_id)
-            .ok()
-            .flatten()
-            .and_then(|p| crate::noncustodial::derivation::network_from_profile(&p.network).ok())
-            .unwrap_or_default();
-        let explorer_opt = crate::providers::explorer_client_from_settings(&settings, network);
+        // A network that cannot be read is unknown, not mainnet — guessing
+        // would point this step at another chain's explorer and write its
+        // answers into this profile's cache.
+        let explorer_opt =
+            crate::commands::active_profile::profile_network_opt_from_conn(&conn, profile_id)
+                .and_then(|network| {
+                    crate::providers::explorer_client_from_settings(&settings, network)
+                });
         let addrs = queries::get_profile_addresses(&conn, profile_id).unwrap_or_default();
         // Total backlog counted once: the stable "/ N" denominator for progress.
         let total =
@@ -841,10 +855,8 @@ pub async fn repair_step_windowed(
         Some(e) => e,
         None => {
             let mut s = status.lock().await;
-            s.errors.push(
-                "explorer unavailable for this network — configure explorer_api_url or wait for the local node to sync"
-                    .to_string(),
-            );
+            s.errors
+                .push(crate::providers::EXPLORER_UNAVAILABLE.to_string());
             return;
         }
     };
@@ -1100,12 +1112,14 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
             Err(_) => return,
         };
         // G2: resolve the profile's network to gate the explorer availability.
-        let network = queries::get_wallet_profile(&conn, profile_id)
-            .ok()
-            .flatten()
-            .and_then(|p| crate::noncustodial::derivation::network_from_profile(&p.network).ok())
-            .unwrap_or_default();
-        let explorer_opt = crate::providers::explorer_client_from_settings(&settings, network);
+        // A network that cannot be read is unknown, not mainnet — guessing
+        // would point this step at another chain's explorer and write its
+        // answers into this profile's cache.
+        let explorer_opt =
+            crate::commands::active_profile::profile_network_opt_from_conn(&conn, profile_id)
+                .and_then(|network| {
+                    crate::providers::explorer_client_from_settings(&settings, network)
+                });
         let addrs = queries::get_profile_addresses(&conn, profile_id).unwrap_or_default();
         (explorer_opt, addrs)
     };
@@ -1116,10 +1130,8 @@ pub async fn discover_step(status: &Arc<Mutex<SyncStatus>>, db_path: &str, profi
         Some(e) => e,
         None => {
             let mut s = status.lock().await;
-            s.errors.push(
-                "explorer unavailable for this network — configure explorer_api_url or wait for the local node to sync"
-                    .to_string(),
-            );
+            s.errors
+                .push(crate::providers::EXPLORER_UNAVAILABLE.to_string());
             return;
         }
     };

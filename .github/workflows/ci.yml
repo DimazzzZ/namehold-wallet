@@ -43,6 +43,9 @@ jobs:
       - name: Lint secure window imports
         run: pnpm lint:secure-imports
 
+      - name: Lint native title attributes
+        run: pnpm lint:native-title
+
       - name: Format check
         run: pnpm lint:format
 

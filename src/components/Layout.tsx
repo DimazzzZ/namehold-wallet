@@ -81,7 +81,11 @@ export function Layout() {
                 </button>
               </Tooltip>
               <Tooltip content="About">
-                <Link to="/about" className="text-gray-400 hover:text-gray-600 transition-colors">
+                <Link
+                  to="/about"
+                  aria-label="About"
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
                   ℹ️
                 </Link>
               </Tooltip>

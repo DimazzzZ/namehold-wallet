@@ -19,6 +19,13 @@ export interface NodeStatus {
   verification_progress: number | null;
   /** Peers' best header height (the sync target), when reported. */
   headers: number | null;
+  /**
+   * Whether the node has reached the chain tip, as the backend's own
+   * `chain_synced` rule decides it — the same verdict the read and write gates
+   * act on. Read this rather than comparing height/headers/progress here, or
+   * the label and what reads actually do can disagree.
+   */
+  synced: boolean;
   /** Why the last start failed (with log tail), when the RPC isn't answering. */
   last_error: string | null;
   /** The failure is a chain/index mismatch hsd can't fix in place → offer re-sync. */

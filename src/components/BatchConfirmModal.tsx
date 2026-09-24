@@ -10,6 +10,12 @@ export interface BatchConfirmModalProps {
   names: string[];
   estimatedFeeDoos: number;
   /**
+   * What the transaction moves, summed over every output except change (B9).
+   * A batch reveal or redeem carries one output per bid, so this is the
+   * number that tells the user how much is actually in play.
+   */
+  amountDoos: number;
+  /**
    * For `action === "transfer"`, the single shared recipient the whole batch
    * will be transferred to. Rendered as a "To: …" line in the summary panel
    * so the user confirms the destination before signing. Ignored for other
@@ -23,7 +29,8 @@ export interface BatchConfirmModalProps {
 
 /**
  * Batch confirmation modal: shows the user what they're about to do (action +
- * name count + estimated fee) and asks for confirmation before proceeding.
+ * name count + amount + estimated fee) and asks for confirmation before
+ * proceeding.
  * Names list is collapsible (collapsed by default for large batches).
  */
 export function BatchConfirmModal({
@@ -31,6 +38,7 @@ export function BatchConfirmModal({
   action,
   names,
   estimatedFeeDoos,
+  amountDoos,
   recipient,
   onConfirm,
   onCancel,
@@ -65,6 +73,11 @@ export function BatchConfirmModal({
               You&apos;re about to <strong>{actionLabel}</strong> <strong>{names.length}</strong>{" "}
               name
               {names.length !== 1 ? "s" : ""}.
+            </span>
+          </div>
+          <div data-testid="batch-amount">
+            <span className="text-gray-700">
+              Amount: <strong>{formatHns(amountDoos)}</strong> HNS
             </span>
           </div>
           <div>

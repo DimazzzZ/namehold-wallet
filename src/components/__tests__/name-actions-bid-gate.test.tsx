@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { makeCapabilities } from "../../test/fixtures/capabilities";
 import "@testing-library/jest-dom";
 import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -39,42 +40,24 @@ const profile = {
 function route(phase: "OPENING" | "BIDDING", canBidAllowed: boolean) {
   return (cmd: string) => {
     if (cmd === "get_name_action_capabilities") {
-      return Promise.resolve({
-        name: "examplename",
-        phase,
-        taskState: "none",
-        ownsName: false,
-        nameIsRegistered: false,
-        transferPending: false,
-        redeemableRevealCount: 0,
-        redeemableValueDoos: 0,
-        hasBidCommitment: canBidAllowed ? false : phase === "BIDDING",
-        hasBidCoin: false,
-        hasRevealCoin: false,
-        hasOwnerCoin: false,
-        revealTxid: null,
-        bidValueDoos: null,
-        canOpen: { allowed: false, reason: null },
-        canBid: {
-          allowed: canBidAllowed,
-          reason: canBidAllowed ? null : phase === "OPENING" ? "Auction is opening" : "Already bid",
-        },
-        canReveal: { allowed: false, reason: null },
-        canRedeem: { allowed: false, reason: null },
-        canRegister: { allowed: false, reason: null },
-        canUpdate: { allowed: false, reason: null },
-        canTransfer: { allowed: false, reason: null },
-        canFinalize: { allowed: false, reason: null },
-        canCancelTransfer: { allowed: false, reason: null },
-        canRenew: { allowed: false, reason: null },
-        canRevoke: { allowed: false, reason: null },
-        nextActionKey: null,
-        nextActionLabel: null,
-        nextActionReason: null,
-        countdownLabel: null,
-        countdownBlocks: null,
-        countdownHours: null,
-      });
+      return Promise.resolve(
+        makeCapabilities({
+          name: "examplename",
+          phase,
+          // What the backend actually derives for these phases.
+          taskState: phase === "OPENING" ? "waitingForBidding" : "readyToBid",
+          hasBidCommitment: canBidAllowed ? false : phase === "BIDDING",
+          myBidCount: canBidAllowed || phase === "OPENING" ? 0 : 1,
+          canBid: {
+            allowed: canBidAllowed,
+            reason: canBidAllowed
+              ? null
+              : phase === "OPENING"
+                ? "Auction is opening"
+                : "Already bid",
+          },
+        }),
+      );
     }
     switch (cmd) {
       case "list_wallet_profiles":
@@ -130,7 +113,12 @@ function wrapper() {
 
 beforeEach(() => invokeMock.mockReset());
 
-describe("NameActionsModal — BidGate hides inputs off the bidding phase", () => {
+// `BidGate` is gone: it existed to decide whether the advanced section should
+// draw the Bid/Lockup inputs, and `resolveSections` now decides whether that
+// section exists at all. These tests keep the behaviour it was written for —
+// no phase outside BIDDING may invite a bid — pinned on the modal itself,
+// which is where a regression would actually show.
+describe("NameActionsModal — no phase outside BIDDING invites a bid", () => {
   it("offers no advanced section at all during OPENING, so no bid can be invited", async () => {
     invokeMock.mockImplementation(route("OPENING", false));
     render(<NameActionsModal name="examplename" open onClose={() => {}} />, {
@@ -145,7 +133,6 @@ describe("NameActionsModal — BidGate hides inputs off the bidding phase", () =
     expect(screen.queryByTestId("all-actions-toggle")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Bid (HNS)")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Lockup (HNS)")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("bid-gate-placeholder")).not.toBeInTheDocument();
   });
 
   it("shows the Bid/Lockup inputs during BIDDING when canBid is allowed", async () => {
@@ -158,7 +145,6 @@ describe("NameActionsModal — BidGate hides inputs off the bidding phase", () =
     await waitFor(() => {
       expect(screen.getAllByLabelText("Bid (HNS)").length).toBeGreaterThan(0);
     });
-    expect(screen.queryByTestId("bid-gate-placeholder")).not.toBeInTheDocument();
   });
 
   it("hides the Show-all-actions toggle in BIDDING when every advanced action is disabled", async () => {

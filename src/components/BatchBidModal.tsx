@@ -50,6 +50,7 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
   const [pendingDraft, setPendingDraft] = useState<{
     id: string;
     feeDoos: number;
+    amountDoos: number;
     names: string[];
   } | null>(null);
 
@@ -96,6 +97,7 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
       setPendingDraft({
         id: draft.id,
         feeDoos: draft.summary?.feeDoos ?? 0,
+        amountDoos: draft.summary?.sendTotalDoos ?? 0,
         names: biddableNames,
       });
       setStep("confirm");
@@ -150,6 +152,7 @@ export function BatchBidModal({ open, onClose, activeProfileId }: BatchBidModalP
         action="bid"
         names={pendingDraft.names}
         estimatedFeeDoos={pendingDraft.feeDoos}
+        amountDoos={pendingDraft.amountDoos}
         onConfirm={handleBatchConfirm}
         onCancel={handleBack}
       />

@@ -13,21 +13,22 @@
 //! (`db/queries.rs:1820-1875`). The critical simplification vs. block scanning
 //! is that `/tx/address` returns fully-decoded inputs with a resolved
 //! `coin { value, address, covenant }` (see hsd api-docs), so spend attribution
-//!
-//! COVERAGE: 97.63% line / 97.51% region — realistic ceiling. Remaining ~9
-//! missed lines are all llvm-cov region-boundary artifacts, not real gaps:
-//! closing braces inside `classify_tx`'s covenant loop, the `load_wallet_addresses`
-//! `query_map` row-closure, `#[tauri::command]` async-wrapper attribute lines,
-//! and one sort-comparator arm the stdlib sort never invokes in a<->b order for
-//! the tested inputs. The surrounding logic is all exercised. Test harness in
-//! `src/tests/history_cmd_tests.rs` uses `MockNodeRpc` for unit tests and
-//! mockito regex-match on `GET /tx/address/:addr` for integration tests.
 //! needs no extra `getrawtransaction` roundtrips.
 //!
 //! Covenant constants come from `noncustodial::sync` (verified against hsd
 //! `lib/covenants/rules.js`). We rely on the numeric `covenant.type`, NOT the
 //! symbolic `action` string, because the `POST /tx/address` bulk route omits
 //! the string (and we may add bulk later); the numeric type is always present.
+//!
+//! Coverage: what this module does not reach is llvm-cov region boundaries
+//! rather than untested logic — closing braces inside `classify_tx`'s covenant
+//! loop, the `load_wallet_addresses` `query_map` row closure,
+//! `#[tauri::command]` async-wrapper attribute lines, and a sort-comparator arm
+//! the stdlib sort never invokes in a<->b order for the tested inputs. The test
+//! harness in `src/tests/history_cmd_tests.rs` drives `MockNodeRpc` for unit
+//! tests and a mockito regex match on `GET /tx/address/:addr` for integration
+//! tests. (A percentage used to be quoted here; it went stale the first time
+//! anyone touched the file, so the shape of the gap is written down instead.)
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -35,7 +36,6 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::commands::read::resolve_profile;
-use crate::db::queries;
 use crate::error::AppError;
 use crate::noncustodial::sync::{
     COV_BID, COV_CLAIM, COV_FINALIZE, COV_NONE, COV_OPEN, COV_REDEEM, COV_REGISTER, COV_RENEW,
@@ -326,17 +326,13 @@ pub async fn read_action_history(
     };
 
     // Snapshot addresses + build the node client under a short DB lock; drop before .await.
-    // Per-profile node override routing (ADR-001): if an active profile exists,
-    // use its effective node config; otherwise fall back to global settings.
+    // Per-profile node override routing (ADR-001): this profile's effective
+    // node config, and an error when it will not resolve. Falling back to
+    // global would list another node's view of this wallet's history.
     let (addresses, node) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let addrs = load_wallet_addresses(&conn, &profile_id)?;
-        let client = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &profile_id)
-            .unwrap_or_else(|_| {
-                // Fallback to global settings if profile config is missing or misconfigured.
-                let settings = queries::get_settings(&conn).unwrap_or_default();
-                crate::noncustodial::rpc::NodeRpcClient::from_settings(&settings)
-            });
+        let client = crate::noncustodial::rpc::NodeRpcClient::for_profile(&conn, &profile_id)?;
         (addrs, client)
     };
     if addresses.is_empty() {

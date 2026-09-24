@@ -10,6 +10,7 @@ use rusqlite::params;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
+use crate::commands::node_readiness::is_node_ready_for_local_reads;
 use crate::commands::read::{
     discover_owned_names, empty_name_bids_response, merge_name_bids, read_auction_position_names,
     read_balance, read_name_bids, read_name_info, read_name_records, read_names, read_transactions,
@@ -23,9 +24,8 @@ use crate::AppState;
 // block so it's easy to see the read-tests baseline vs. the new coverage
 // harness in a single file.
 use crate::commands::read::{
-    get_resource, is_node_ready_for_local_reads, list_receive_addresses, merge_indexed_bids,
-    read_block_info, read_renewals, read_tx_info, repair_owned_names, resolve_profile,
-    reveal_next_receive_address,
+    get_resource, list_receive_addresses, merge_indexed_bids, read_block_info, read_renewals,
+    read_tx_info, repair_owned_names, resolve_profile, reveal_next_receive_address,
 };
 
 // ---------------------------------------------------------------------------
@@ -2072,7 +2072,7 @@ async fn repair_owned_names_via_node_records_error_on_rpc_failure() {
 fn estimate_persisted_height_returns_none_when_no_signal() {
     let conn = empty_db();
     add_profile(&conn, "H1", "regtest");
-    let h = crate::commands::read::estimate_persisted_height(&conn, "H1").unwrap();
+    let h = crate::commands::node_readiness::estimate_persisted_height(&conn, "H1").unwrap();
     assert!(h.is_none());
 }
 
@@ -2088,7 +2088,7 @@ fn estimate_persisted_height_reads_from_profile_last_synced_height() {
         [],
     )
     .unwrap();
-    let h = crate::commands::read::estimate_persisted_height(&conn, "H2")
+    let h = crate::commands::node_readiness::estimate_persisted_height(&conn, "H2")
         .unwrap()
         .unwrap();
     // Value may be aged slightly (>=12345); the important thing is it was read.
@@ -2123,7 +2123,7 @@ fn estimate_persisted_height_prefers_max_across_sources() {
         [],
     )
     .unwrap();
-    let h = crate::commands::read::estimate_persisted_height(&conn, "H3")
+    let h = crate::commands::node_readiness::estimate_persisted_height(&conn, "H3")
         .unwrap()
         .unwrap();
     // Max of (25000 - 5000) and 15000 is 20000 (plus small aging drift).
@@ -2654,7 +2654,7 @@ fn estimate_persisted_height_reads_node_shaped_raw_json_info_field() {
         rusqlite::params![raw],
     )
     .unwrap();
-    let h = crate::commands::read::estimate_persisted_height(&conn, "EN1")
+    let h = crate::commands::node_readiness::estimate_persisted_height(&conn, "EN1")
         .unwrap()
         .unwrap();
     // 50000 - 10000 == 40000, plus small aging drift (rows aged in blocks).
@@ -2703,7 +2703,7 @@ fn estimate_persisted_height_skips_malformed_and_stats_less_rows() {
     )
     .unwrap();
     // With no valid signals AND no last_synced_height set, the result is None.
-    let h = crate::commands::read::estimate_persisted_height(&conn, "EN2").unwrap();
+    let h = crate::commands::node_readiness::estimate_persisted_height(&conn, "EN2").unwrap();
     assert!(h.is_none(), "all rows should be skipped; got {h:?}");
 }
 
@@ -2738,7 +2738,7 @@ fn estimate_persisted_height_picks_max_across_multiple_rows() {
         )
         .unwrap();
     }
-    let h = crate::commands::read::estimate_persisted_height(&conn, "EN3")
+    let h = crate::commands::node_readiness::estimate_persisted_height(&conn, "EN3")
         .unwrap()
         .unwrap();
     // Max implied height is 40000 (row 2). Aging drift only adds — never subtracts.
@@ -2761,7 +2761,7 @@ fn estimate_persisted_height_ignores_null_last_synced_height() {
         [],
     )
     .unwrap();
-    let h = crate::commands::read::estimate_persisted_height(&conn, "EN4").unwrap();
+    let h = crate::commands::node_readiness::estimate_persisted_height(&conn, "EN4").unwrap();
     assert!(h.is_none());
 }
 
@@ -3194,4 +3194,43 @@ async fn read_block_info_uses_per_profile_node_override() {
     assert_eq!(val["minerReward"], 2_000_000_000i64);
     o_hash.assert_async().await;
     o_block.assert_async().await;
+}
+
+// --- An unknown network selects no explorer, rather than mainnet's ---
+
+/// `Network` derives `Default = Main`, so a network the wallet cannot read used
+/// to resolve to mainnet and send a live request to the mainnet explorer for a
+/// wallet that may be on another chain. These pin the refusal on the three
+/// reads that pick an explorer.
+#[tokio::test]
+async fn read_name_bids_serves_nothing_when_its_profiles_network_is_unreadable() {
+    let conn = empty_db();
+    // An explicit explorer URL is configured, so the only thing standing
+    // between the command and a cross-network read is the network check.
+    db::queries::set_setting(&conn, "explorer_api_url", "http://127.0.0.1:1").unwrap();
+    // No profile row at all: the id the command is handed does not resolve.
+    let app = app_with(conn);
+    let val = read_name_bids(app.state(), "foo".into(), Some("ghost".into()))
+        .await
+        .expect("an unreadable network is an empty answer, not an error");
+    assert_eq!(
+        val["bids"].as_array().map(|b| b.len()).unwrap_or(0),
+        0,
+        "no explorer means no bids, not mainnet's bids"
+    );
+}
+
+#[tokio::test]
+async fn read_name_info_refuses_when_the_active_profiles_network_is_unreadable() {
+    let conn = empty_db();
+    db::queries::set_setting(&conn, "explorer_api_url", "http://127.0.0.1:1").unwrap();
+    // No active profile: nothing says which chain this wallet is on.
+    let app = app_with(conn);
+    let err = read_name_info(app.state(), "foo".into())
+        .await
+        .expect_err("with no explorer available this surfaces, it does not guess");
+    assert!(
+        format!("{err}").contains("No explorer is available"),
+        "should say the explorer is unavailable, got: {err}"
+    );
 }

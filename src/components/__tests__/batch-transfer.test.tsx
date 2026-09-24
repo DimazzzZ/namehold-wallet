@@ -273,6 +273,8 @@ describe("WalletView — batch transfer", () => {
     await waitFor(() => expect(screen.getByText(/Confirm batch transfer/i)).toBeInTheDocument());
     const recipientRow = screen.getByTestId("batch-transfer-recipient");
     expect(recipientRow).toHaveTextContent(RECIPIENT);
+    // B9: the amount is every output except change — 10 HNS in this draft.
+    expect(screen.getByTestId("batch-amount")).toHaveTextContent("10.000000");
 
     fireEvent.click(screen.getByRole("button", { name: /^Confirm$/i }));
 

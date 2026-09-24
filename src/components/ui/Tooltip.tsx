@@ -30,8 +30,9 @@ export const TOOLTIP_OPEN_DELAY_MS = 300;
 interface TooltipProps {
   /**
    * Tooltip body. Kept short — one or two lines. When empty (`null`,
-   * `undefined` or `""`) the children render bare, with no wrapper and no
-   * hover handling, so callers can pass a conditional reason directly.
+   * `undefined` or `""`) no tooltip is shown and no hover handling applies,
+   * so callers can pass a conditional reason directly. The trigger wrapper is
+   * still rendered — see the note on `hasContent` for why it must be.
    */
   content: ReactNode;
   /** The trigger. Rendered inline; gets the hover/focus reference props. */
