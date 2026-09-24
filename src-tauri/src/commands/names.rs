@@ -860,9 +860,8 @@ async fn evaluate_name_action_capabilities(
     let (client, network) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let client = NodeRpcClient::for_profile(&conn, profile_id)?;
-        let network = queries::get_wallet_profile(&conn, profile_id)?
-            .and_then(|p| Network::from_str_opt(&p.network))
-            .unwrap_or_default();
+        let network =
+            crate::commands::active_profile::profile_network_from_conn(&conn, profile_id)?;
         (client, network)
     };
 
@@ -1113,8 +1112,19 @@ pub(crate) fn build_name_action_capabilities(
         action_ctx.owner_covenant_type,
     );
     let can_spend_as_owner = owns_name && name_is_registered;
-    let not_registered_reason = "the name is not registered yet";
     let transfer_pending = action_ctx.transfer_has_items.unwrap_or(false);
+    // Why an ownership action is refused before its own condition is looked
+    // at. Every owner action opens with the same two questions, in this order;
+    // the sentence each answers with is written here once.
+    let owner_gate = || -> Option<String> {
+        if !owns_name {
+            Some("wallet does not control this name".into())
+        } else if !name_is_registered {
+            Some("the name is not registered yet".into())
+        } else {
+            None
+        }
+    };
 
     // Update is the one ownership action a pending transfer takes away. hsd
     // lets a TRANSFER coin go to UPDATE, RENEW, FINALIZE or REVOKE
@@ -1125,15 +1135,10 @@ pub(crate) fn build_name_action_capabilities(
     // own name.
     let can_update = NameActionCapability {
         allowed: can_spend_as_owner && !transfer_pending,
-        reason: if !owns_name {
-            Some("wallet does not control this name".into())
-        } else if !name_is_registered {
-            Some(not_registered_reason.into())
-        } else if transfer_pending {
-            Some("a transfer is pending — updating records would cancel it".into())
-        } else {
-            None
-        },
+        reason: owner_gate().or_else(|| {
+            transfer_pending
+                .then(|| "a transfer is pending — updating records would cancel it".into())
+        }),
     };
 
     // A TRANSFER coin may go to UPDATE, RENEW, FINALIZE or REVOKE — never to
@@ -1141,15 +1146,10 @@ pub(crate) fn build_name_action_capabilities(
     // the user at a transaction the node refuses.
     let can_transfer = NameActionCapability {
         allowed: can_spend_as_owner && !transfer_pending,
-        reason: if !owns_name {
-            Some("wallet does not control this name".into())
-        } else if !name_is_registered {
-            Some(not_registered_reason.into())
-        } else if transfer_pending {
-            Some("a transfer is already pending — finalize or cancel it first".into())
-        } else {
-            None
-        },
+        reason: owner_gate().or_else(|| {
+            transfer_pending
+                .then(|| "a transfer is already pending — finalize or cancel it first".into())
+        }),
     };
 
     // hsd refuses a FINALIZE until `transfer + transfer_lockup` blocks have
@@ -1167,12 +1167,10 @@ pub(crate) fn build_name_action_capabilities(
     let finalize_matured = blocks_until_finalize.map(|b| b == 0).unwrap_or(true);
 
     let can_finalize = NameActionCapability {
-        allowed: can_spend_as_owner
-            && action_ctx.transfer_has_items.unwrap_or(false)
-            && finalize_matured,
+        allowed: can_spend_as_owner && transfer_pending && finalize_matured,
         reason: if !owns_name {
             Some("wallet does not control this name".into())
-        } else if !action_ctx.transfer_has_items.unwrap_or(false) {
+        } else if !transfer_pending {
             Some("name is not in TRANSFER state".into())
         } else {
             blocks_until_finalize.filter(|b| *b > 0).map(|blocks| {
@@ -1189,15 +1187,8 @@ pub(crate) fn build_name_action_capabilities(
     // name and built an UPDATE that changes nothing and costs a fee.
     let can_cancel_transfer = NameActionCapability {
         allowed: can_spend_as_owner && transfer_pending,
-        reason: if !owns_name {
-            Some("wallet does not control this name".into())
-        } else if !name_is_registered {
-            Some(not_registered_reason.into())
-        } else if !transfer_pending {
-            Some("name is not in TRANSFER state".into())
-        } else {
-            None
-        },
+        reason: owner_gate()
+            .or_else(|| (!transfer_pending).then(|| "name is not in TRANSFER state".into())),
     };
 
     // Renew is Update's twin here: hsd's RENEW handler runs `ns.setTransfer(0)`
@@ -1206,26 +1197,14 @@ pub(crate) fn build_name_action_capabilities(
     // renewal is one click away; the reverse order loses the transfer silently.
     let can_renew = NameActionCapability {
         allowed: can_spend_as_owner && !transfer_pending,
-        reason: if !owns_name {
-            Some("wallet does not control this name".into())
-        } else if !name_is_registered {
-            Some(not_registered_reason.into())
-        } else if transfer_pending {
-            Some("a transfer is pending — renewing would cancel it".into())
-        } else {
-            None
-        },
+        reason: owner_gate().or_else(|| {
+            transfer_pending.then(|| "a transfer is pending — renewing would cancel it".into())
+        }),
     };
 
     let can_revoke = NameActionCapability {
         allowed: can_spend_as_owner,
-        reason: if !owns_name {
-            Some("wallet does not control this name".into())
-        } else if !name_is_registered {
-            Some(not_registered_reason.into())
-        } else {
-            None
-        },
+        reason: owner_gate(),
     };
 
     // 4b. Spend lock: when we can't build a spend (no node-synced owner coin),
@@ -2333,9 +2312,7 @@ pub async fn build_redeem_draft(
         // The winning reveal IS the name's owner coin until REGISTER spends it,
         // and consensus rejects redeeming it (`bad-redeem-owner`) — which would
         // take the whole transaction down with it.
-        let owner = queries::get_name_coin(&conn, &ctx.profile_id, &name)
-            .ok()
-            .flatten();
+        let owner = queries::get_name_coin(&conn, &ctx.profile_id, &name)?;
         all.into_iter()
             .filter(|c| {
                 owner

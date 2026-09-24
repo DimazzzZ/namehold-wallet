@@ -3,8 +3,10 @@
 
 use crate::commands::active_profile::{
     active_profile_network_from_conn, active_profile_network_opt_from_conn,
+    profile_network_from_conn,
 };
 use crate::db::queries::{insert_wallet_profile, set_active_profile};
+use crate::error::AppError;
 use crate::noncustodial::network::Network;
 use rusqlite::Connection;
 
@@ -132,4 +134,25 @@ fn an_unparseable_network_string_reads_as_unknown_not_mainnet() {
         None,
         "unknown must not resolve to mainnet for a step that acts on the answer"
     );
+}
+
+#[test]
+fn the_named_profile_form_reads_that_profile_network() {
+    let conn = db();
+    seed_profile(&conn, "p1", "regtest");
+    seed_profile(&conn, "p2", "testnet");
+    set_active_profile(&conn, "p1").unwrap();
+    assert_eq!(
+        profile_network_from_conn(&conn, "p2").unwrap(),
+        Network::Testnet
+    );
+}
+
+#[test]
+fn the_named_profile_form_errors_rather_than_guessing_mainnet() {
+    let conn = db();
+    assert!(matches!(
+        profile_network_from_conn(&conn, "missing"),
+        Err(AppError::NotFound(_))
+    ));
 }

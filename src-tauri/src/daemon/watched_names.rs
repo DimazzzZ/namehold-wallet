@@ -477,7 +477,9 @@ async fn try_run_watched_scan(db_path: &str) -> Result<(), AppError> {
         let watched = list_watched_names(&conn)?;
         let prev_states = load_prev_snapshots(&conn)?;
         let poll_meta = load_poll_meta(&conn)?;
-        let expected_network = queries::get_active_profile_network(&conn).ok().flatten();
+        // The neighbours above already propagate; a network this pass cannot
+        // read must not make the node authoritative without the chain check.
+        let expected_network = queries::get_active_profile_network(&conn)?;
         let active_profile_id = queries::get_active_profile_id(&conn)
             .ok()
             .filter(|s| !s.is_empty());

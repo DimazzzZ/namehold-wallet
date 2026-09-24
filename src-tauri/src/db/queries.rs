@@ -1612,21 +1612,9 @@ pub fn pending_broadcast_action_for_name(
     profile_id: &str,
     name: &str,
 ) -> Result<Option<String>, AppError> {
-    let sql = format!(
-        "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
-         WHERE wallet_profile_id = ?1
-           AND status IN ('broadcast_pending','broadcasted')
-         ORDER BY created_at DESC"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![profile_id], row_to_draft)?;
-    for r in rows {
-        let row = r?;
-        if draft_summary_covers_name(&row.summary_json, name) {
-            return Ok(Some(row.action));
-        }
-    }
-    Ok(None)
+    Ok(pending_broadcast_actions_for_name(conn, profile_id, name)?
+        .into_iter()
+        .next())
 }
 
 /// True when a draft's `summary_json` names `name` — either as its single
@@ -4198,7 +4186,7 @@ mod noncustodial_query_tests {
 
     // --- Coverage: reachable branches flagged uncovered in Phase 4 ----------
 
-    /// Item 1 (queries.rs:1185-1189): a coin already reserved by a *different*
+    /// `insert_tx_draft_reserving_coins`: a coin already reserved by a *different*
     /// live draft cannot be stolen — the conditional UPDATE claims 0 rows, so
     /// the whole transaction rolls back with `InvalidInput` and draft B never
     /// persists.

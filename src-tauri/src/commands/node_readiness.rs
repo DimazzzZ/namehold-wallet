@@ -87,9 +87,12 @@ pub(crate) async fn node_tip_height_if_synced_for_network(
 /// [`node_tip_height_if_synced_from_settings_with_network`], which makes the
 /// expected network an explicit argument they cannot forget.
 pub(crate) async fn node_tip_height_if_synced(state: &State<'_, AppState>) -> Option<i64> {
+    // A network this cannot read is a node it cannot vouch for: a DB failure
+    // answers "not synced", not "nothing to compare". Only a genuinely absent
+    // active profile (onboarding) skips the chain comparison.
     let expected_network = {
         let db = state.db.lock().ok()?;
-        queries::get_active_profile_network(&db).ok().flatten()
+        queries::get_active_profile_network(&db).ok()?
     };
     node_tip_height_if_synced_for_network(state, expected_network.as_deref()).await
 }
@@ -212,10 +215,9 @@ pub(crate) fn estimate_persisted_height(
     // demand, so the same arithmetic invents six blocks an idle hour never
     // produced and every renewal countdown drifts. There, report the stored
     // height as-is: stale but true.
-    let ages_by_wall_clock = queries::get_wallet_profile(conn, profile_id)?
-        .and_then(|p| crate::noncustodial::network::Network::from_str_opt(&p.network))
-        .unwrap_or_default()
-        .has_wall_clock_block_timing();
+    let ages_by_wall_clock =
+        crate::commands::active_profile::profile_network_from_conn(conn, profile_id)?
+            .has_wall_clock_block_timing();
     let age = |elapsed: i64| {
         if ages_by_wall_clock {
             elapsed.max(0)

@@ -26,6 +26,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use serial_test::serial;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
@@ -215,6 +216,7 @@ async fn spawn_then_up_server(height: i64) -> (mockito::ServerGuard, mockito::Mo
 // start_hsd: spawn succeeds, RPC comes up → connected, child alive.
 // ===========================================================================
 #[tokio::test]
+#[serial(hsd_home)]
 async fn start_hsd_spawns_binary_and_reports_connected_when_rpc_answers() {
     // Fail the adoption probe so we actually spawn, then answer the loop probe.
     let (server, _fail, _up) = spawn_then_up_server(42).await;
@@ -259,6 +261,7 @@ async fn start_hsd_spawns_binary_and_reports_connected_when_rpc_answers() {
 // `<base>/regtest` here would double-nest to `<base>/regtest/regtest`.
 // ===========================================================================
 #[tokio::test]
+#[serial(hsd_home)]
 async fn start_hsd_passes_regtest_flag_and_scoped_prefix_for_regtest_profile() {
     let (server, _fail, _up) = spawn_then_up_server(1).await;
     let h = Harness::new(FakeMode::StayAlive, "8.5.0");
@@ -355,6 +358,7 @@ async fn start_hsd_passes_regtest_flag_and_scoped_prefix_for_regtest_profile() {
 // branches; success (connected) confirms the spawn still works.
 // ===========================================================================
 #[tokio::test]
+#[serial(hsd_home)]
 async fn start_hsd_spawns_in_spv_mode_on_testnet() {
     let (server, _fail, _up) = spawn_then_up_server(7).await;
     let h = Harness::new(FakeMode::StayAlive, "8.5.0");
@@ -391,6 +395,7 @@ async fn start_hsd_spawns_in_spv_mode_on_testnet() {
 // version gate — it warns and proceeds to spawn rather than blocking.
 // ===========================================================================
 #[tokio::test]
+#[serial(hsd_home)]
 async fn start_hsd_proceeds_when_version_unparseable() {
     let (server, _fail, _up) = spawn_then_up_server(3).await;
     // A version string with no numeric semver prefix → parse_hsd_version None.
@@ -412,6 +417,7 @@ async fn start_hsd_proceeds_when_version_unparseable() {
 // "already running on this data directory" branch, log tail surfaced.
 // ===========================================================================
 #[tokio::test]
+#[serial(hsd_home)]
 async fn start_hsd_surfaces_data_dir_lock_when_child_dies_with_lock() {
     let h = Harness::new(FakeMode::DieLock, "8.5.0");
     // No RPC ever answers → the wait-loop notices the child exited.
@@ -440,6 +446,7 @@ async fn start_hsd_surfaces_data_dir_lock_when_child_dies_with_lock() {
 // "hsd exited on startup" branch with the log tail.
 // ===========================================================================
 #[tokio::test]
+#[serial(hsd_home)]
 async fn start_hsd_surfaces_generic_exit_when_child_dies() {
     let h = Harness::new(FakeMode::DieError, "8.5.0");
     let app = app_with(conn_for(&h, NO_RPC));
@@ -464,6 +471,7 @@ async fn start_hsd_surfaces_generic_exit_when_child_dies() {
 // start_hsd: a too-old hsd version is refused BEFORE any spawn.
 // ===========================================================================
 #[tokio::test]
+#[serial(hsd_home)]
 async fn start_hsd_refuses_too_old_version_before_spawn() {
     // Version 7.x < the 8.0.0 minimum. `die-lock` mode would fail loudly if we
     // ever reached spawn — but we must not.
@@ -487,6 +495,7 @@ async fn start_hsd_refuses_too_old_version_before_spawn() {
 // stop_hsd: kills the child we spawned and clears the handle + alive flag.
 // ===========================================================================
 #[tokio::test]
+#[serial(hsd_home)]
 async fn stop_hsd_kills_spawned_child_and_clears_handle() {
     let (server, _fail, _up) = spawn_then_up_server(9).await;
     let h = Harness::new(FakeMode::StayAlive, "8.5.0");
@@ -527,6 +536,7 @@ async fn stop_hsd_kills_spawned_child_and_clears_handle() {
 // and assert they end up under a `_noindex-backup-*` dir.
 // ===========================================================================
 #[tokio::test]
+#[serial(hsd_home)]
 async fn resync_hsd_chain_backs_up_chain_data_and_respawns() {
     let (server, _fail, _up) = spawn_then_up_server(1).await;
     let h = Harness::new(FakeMode::StayAlive, "8.5.0");
@@ -589,6 +599,7 @@ async fn resync_hsd_chain_backs_up_chain_data_and_respawns() {
 /// reason `start_hsd` does: guessing mainnet would back up — and then re-sync
 /// over — a directory belonging to a network the user is not on.
 #[tokio::test]
+#[serial(hsd_home)]
 async fn resync_hsd_chain_refuses_without_an_active_profile() {
     let (server, _fail, _up) = spawn_then_up_server(1).await;
     let h = Harness::new(FakeMode::StayAlive, "8.5.0");

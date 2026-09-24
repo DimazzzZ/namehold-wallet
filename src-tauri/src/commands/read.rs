@@ -21,6 +21,7 @@
 //! dead code. Any future test claiming to cover that branch is actually hitting
 //! the active-profile fallback.
 
+use crate::commands::active_profile::profile_network_from_conn;
 use crate::db::queries;
 use crate::error::AppError;
 use crate::providers::hnsfans::HnsFansClient;
@@ -352,14 +353,14 @@ pub async fn read_balance(
     // Prefer local cache when the node is connected and synced.
     if crate::commands::node_readiness::is_node_ready_for_local_reads(&state).await {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-        return queries::read_cached_balance(&conn, &id, profile_network(&conn, &id)?);
+        return queries::read_cached_balance(&conn, &id, profile_network_from_conn(&conn, &id)?);
     }
 
     // Explorer fallback.
     let (client_opt, mut addrs) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        let network = profile_network(&conn, &id)?;
+        let network = profile_network_from_conn(&conn, &id)?;
         (
             explorer_client(&settings, network),
             queries::get_profile_addresses(&conn, &id)?,
@@ -372,7 +373,11 @@ pub async fn read_balance(
         Some(c) => c,
         None => {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-            return queries::read_cached_balance(&conn, &id, profile_network(&conn, &id)?);
+            return queries::read_cached_balance(
+                &conn,
+                &id,
+                profile_network_from_conn(&conn, &id)?,
+            );
         }
     };
     // Auto-provision derived addresses if none exist yet, so the explorer
@@ -428,20 +433,8 @@ pub async fn read_balance(
         }
     }
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    let network = profile_network(&conn, &id)?;
+    let network = profile_network_from_conn(&conn, &id)?;
     queries::read_cached_balance(&conn, &id, network)
-}
-
-/// The `Network` of one profile, for the cached read model. Errors rather than
-/// defaulting: a balance computed with the wrong coinbase maturity would report
-/// funds as spendable that coin selection refuses.
-fn profile_network(
-    conn: &rusqlite::Connection,
-    profile_id: &str,
-) -> Result<crate::noncustodial::network::Network, AppError> {
-    let profile = queries::get_wallet_profile(conn, profile_id)?
-        .ok_or_else(|| AppError::NotFound(format!("wallet profile {profile_id}")))?;
-    crate::noncustodial::derivation::network_from_profile(&profile.network)
 }
 
 /// Names this wallet actually OWNS on-chain — the union of node-free discovered
@@ -575,7 +568,7 @@ pub async fn discover_owned_names(
     let (client_opt, addrs) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        let network = profile_network(&conn, &id)?;
+        let network = profile_network_from_conn(&conn, &id)?;
         (
             explorer_client(&settings, network),
             queries::get_profile_addresses(&conn, &id)?,
@@ -1024,7 +1017,7 @@ pub async fn read_name_bids(
             // whether this chain's index may be trusted. Unknown falls through
             // to the explorer path below instead, as an uncovered scanner
             // already does.
-            let network = profile_network(&conn, &id).ok();
+            let network = profile_network_from_conn(&conn, &id).ok();
             let comms = queries::list_bid_commitments(&conn, &id)?;
             // With no network there is no cursor to read: leaving the coverage
             // at 0 makes `scanner_covers` false, which is the path an
@@ -1088,7 +1081,7 @@ pub async fn read_name_bids(
         // The network belongs to the profile this command was handed, which
         // need not be the active one — and a profile whose network cannot be
         // read leaves no explorer rather than defaulting to mainnet's.
-        let explorer_opt = profile_network(&conn, &id)
+        let explorer_opt = profile_network_from_conn(&conn, &id)
             .ok()
             .and_then(|network| explorer_client(&settings, network));
         (explorer_opt, queries::list_bid_commitments(&conn, &id)?)
@@ -1939,7 +1932,7 @@ pub async fn repair_owned_names(state: State<'_, AppState>) -> Result<serde_json
     let (client_opt, inventory_tlds, tracked, all_addresses) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let settings = queries::get_settings(&conn)?;
-        let network = profile_network(&conn, &id)?;
+        let network = profile_network_from_conn(&conn, &id)?;
         (
             explorer_client(&settings, network),
             queries::get_inventory_tlds(&conn)?,
