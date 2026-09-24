@@ -185,9 +185,9 @@ You can write when **all** of these hold:
 1. **Signer unlockable** — a wallet is loaded and either unlocked or has a
    passphrase you can enter.
 2. **Node reachable** — local hsd RPC responds.
-3. **Node synced** — hsd's `verification_progress` is ≥ 99.99% (or blocks meet
-   headers on a network without a progress value, e.g. regtest with a single
-   miner).
+3. **Node synced** — the blocks hsd has applied have caught up to the best
+   header it knows about; `verification_progress` only corroborates that (see
+   "When the wallet calls a node synced" in [NODE_SETUP.md](NODE_SETUP.md)).
 4. **Address-indexed** — hsd was started with `--index-address` (required to
    discover your unspent coins).
 
@@ -252,6 +252,20 @@ and broadcasts. The transaction ID and new phase appear on the next refresh.
   your bid is a decoy and is refunded after reveal.
 
 Both are entered in HNS.
+
+### Several bids on one name
+
+You can bid on the same name as many times as you like while it is in
+Bidding, each bid with its own value and lockup. Every bid goes to a fresh
+address and gets its own commitment, so each is revealed and reclaimed on its
+own. The Name Actions modal's header reads "Latest bid … · lockup … · N of
+yours", and the bids panel lists every bid on the name with yours tinted.
+**Reveal** and **Redeem** act on all of your bids on that name at once, and
+the confirm dialog sums every output they carry.
+
+A bid you did not reveal in time keeps its lockup on-chain. If you bid on a
+name again in a later auction, the guided panel names that stranded lockup and
+its amount, so the money is not mistaken for part of the new bid.
 
 ### Active Auctions
 
@@ -361,9 +375,13 @@ header checkbox to select all). A batch action bar appears at the bottom:
 - **Redeem Selected** — bulk sweep losing-bid coins from selected names.
 - **Finalize Selected** — bulk finalize outgoing TRANSFERs whose lockup has
   expired.
+- **Transfer Selected** — transfer all selected names to one recipient
+  address, entered in the action bar.
 
-Each batch action opens a **confirmation modal** showing the count, estimated
-fee, and a collapsible list of the selected names. Cancel closes without
+Each batch action opens a **confirmation modal** showing the count, the amount
+the transaction moves (every output except change — a batch reveal or redeem
+carries one per bid), the estimated fee, and a collapsible list of the
+selected names. Cancel closes without
 broadcasting; Confirm signs + broadcasts the draft in one step.
 
 A batch is built in the wallet as one transaction with one txid, so it either
@@ -464,7 +482,7 @@ All node settings live under **Settings → Connections**.
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| **Chain source** | **Local full node** | How the wallet reads and sends: **Local full node** (hsd on this device, full indexes), **SPV** (lightweight, explorer-dependent, read-only), **Remote node** (user-provided hsd RPC), or **Explorer only** (read-only). |
+| **Chain source** | **Local full node** | Which node the wallet sends through: **Local full node** (hsd on this device, full indexes), **SPV — lightweight, read-only** (headers only, explorer for data), **Remote node** (someone else's hsd RPC), or **Read-only (never send)**. Reads are not routed by this selector: they come from the node whenever it is synced and on your wallet's network, and from the explorer otherwise. |
 | **Node RPC URL** | `http://127.0.0.1:12037` | When chain source is Local full node or Remote node. Mainnet 12037, testnet 13037, regtest 14037. |
 | **Node RPC API key** | (empty) | For remote nodes: match the remote hsd's `--api-key`. Ignored for local nodes. |
 | **Allow sending via remote node** | **off** | When chain source is Remote node, enable this to broadcast signed transactions to the remote node. Off by default for safety. |
@@ -496,7 +514,8 @@ data fresh without the app being open.
 
 ### SPV mode (lightweight)
 
-The **Node mode** dropdown (Settings → Connections) lets you choose between:
+The **Chain source** selector (Settings → Connections) offers SPV beside the
+full node:
 
 - **Full node** (default): hsd runs with `--index-address --index-tx`. Requires
   ~15GB disk space and initial sync time. Supports sending and full local data.
@@ -512,12 +531,12 @@ When SPV mode is active:
 
 **To enable SPV mode:**
 1. Go to **Settings → Connections**
-2. Change **Node mode** from "Full node" to "SPV"
+2. Change **Chain source** from "Local full node" to "SPV — lightweight, read-only"
 3. **Save settings** — hsd restarts with `--spv` flag
 4. Data reads now come from the explorer; sending is blocked
 
 **To switch back to full node:**
-1. Change **Node mode** back to "Full node"
+1. Change **Chain source** back to "Local full node"
 2. **Save settings** — hsd restarts with `--index-address --index-tx`
 3. Full sync begins (may take time if the chain has advanced significantly)
 

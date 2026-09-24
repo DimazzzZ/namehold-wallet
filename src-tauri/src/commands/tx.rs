@@ -2107,8 +2107,8 @@ pub(crate) async fn apply_node_write_probe_with_client(
                 info.chain.as_deref(),
             ) == Some(false);
             // "Synced" = applied blocks caught up to the best known header; see
-            // `chain_synced` for why verificationprogress wins. No metadata at
-            // all counts as synced (regtest).
+            // `chain_synced` for why the tip decides and verificationprogress
+            // only corroborates. No metadata at all counts as synced (regtest).
             let synced = info.is_synced(/* assume_when_unknown */ true);
             if chain_mismatch {
                 let reported = info.chain.as_deref().unwrap_or("unknown");

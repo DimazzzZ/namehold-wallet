@@ -1,6 +1,6 @@
 # Remote-node connection & broadcast guard
 
-**Status:** implemented on `feat/spv-broadcast-guard-and-remote-node-onboarding`.
+**Status:** implemented (#52); the node gate moved to `commands/node_readiness.rs` in the #51–#62 review follow-ups.
 **CHANGELOG:** `## [Unreleased]` → "Remote-node onboarding" (Added), "SPV mode
 can no longer broadcast" and "`allow_remote_broadcast` is now enforced" (Fixed).
 
@@ -30,8 +30,8 @@ with the wallet's once a wallet exists and warns on a mismatch.
 - **Network mismatch**: the node's `chain` and the active wallet profile's
   `network` name different Handshake networks after `main` ↔ `mainnet`
   normalization.
-- **Read gate**: `commands::read::node_tip_height_if_synced_with_client` —
-  decides whether the local/remote node is authoritative for reads.
+- **Read gate**: `commands::node_readiness::node_tip_height_if_synced_with_client`
+  — decides whether the local/remote node is authoritative for reads.
 - **Broadcast boundary**: `commands::tx::broadcast_tx_draft` and
   `ChainSource::can_broadcast()` in `noncustodial::rpc`.
 
@@ -177,9 +177,15 @@ frontend fixture that builds a `NodeConnectionCheck` includes `networkMatches`.
   capability only. Exception: with `node_mode = spv` the node is never
   authoritative for reads (`is_node_ready_for_local_reads` returns false), so
   SPV reads always come from the explorer.
-- **The read gate does not fail closed on a DB error.** A failure to load the
-  profile network degrades to "no network to compare" (routing decision, not
-  a security boundary). The probe (R7) does fail loudly.
+- **The read gate does not fail closed on a DB error.** In
+  `is_node_ready_for_local_reads` a failure to load the profile network
+  degrades to "no network to compare" (routing decision, not a security
+  boundary). Everything that *writes* on the strength of the answer does fail
+  closed: the background sync (`commands/sync.rs`), the chain scanner
+  (`commands/chain_scan.rs`), the watched-name daemon
+  (`daemon/watched_names.rs`) and `node_tip_height_if_synced` all treat a
+  network they cannot read as a node they cannot vouch for. The probe (R7)
+  fails loudly.
 
 ## 5. Known gaps
 
@@ -197,7 +203,7 @@ frontend fixture that builds a `NodeConnectionCheck` includes `networkMatches`.
 ## 6. Pointers
 
 - Backend: `src-tauri/src/commands/node.rs` (probe, `NodeConnectionCheck`),
-  `src-tauri/src/commands/read.rs` (read gate),
+  `src-tauri/src/commands/node_readiness.rs` (read gate),
   `src-tauri/src/commands/tx.rs` (`broadcast_tx_draft`),
   `src-tauri/src/noncustodial/rpc.rs` (`ChainSource`, `can_broadcast`,
   `remote_broadcast_allowed`), `src-tauri/src/noncustodial/network.rs`

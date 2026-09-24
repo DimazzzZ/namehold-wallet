@@ -26,7 +26,8 @@ use crate::AppState;
 
 /// Check if the local hsd node is connected AND fully synced, making local
 /// cached data the preferred read source. Returns `true` when the node RPC
-/// answers and the chain is caught up (height ≥ headers, or progress ≥ 0.9999).
+/// answers and the chain is caught up per `rpc::chain_synced` (the tip
+/// decides, `verificationprogress` corroborates).
 ///
 /// In SPV mode, always returns `false` — SPV nodes don't have `--index-address`
 /// and can't serve UTXO queries, so all reads must go through the explorer.

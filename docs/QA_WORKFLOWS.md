@@ -221,9 +221,10 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 ### I. Batch operations
 - [ ] Multi-select checkboxes appear on the Owned Names table
 - [ ] Selecting 2+ names shows the batch action bar
-- [ ] "Renew Selected" opens BatchConfirmModal with count + estimated fee + name list
+- [ ] "Renew Selected" opens BatchConfirmModal with count + amount + estimated fee + name list
 - [ ] Confirming broadcasts a single batch transaction
 - [ ] "Reveal Selected" / "Redeem Selected" / "Finalize Selected" work similarly
+- [ ] "Transfer Selected" takes one recipient in the action bar and repeats it in the modal
 - [ ] Deselecting all hides the batch action bar
 
 ### J. Paid name swaps (withdrawn)

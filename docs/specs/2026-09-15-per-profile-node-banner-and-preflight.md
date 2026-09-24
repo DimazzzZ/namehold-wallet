@@ -148,7 +148,7 @@ decisions surfaced by the prototype).
 
 - **V-S2 — global write is refused when `allow_remote_broadcast != "true"`.**
   A remote-node write source is disabled unless the user explicitly opts in,
-  consistent with the R7/R8 rules in the remote-node spec.
+  consistent with R11 of the remote-node spec.
 
 ## Non-goals
 

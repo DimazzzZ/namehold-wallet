@@ -4,7 +4,9 @@
 //! touching the HNSFans explorer.
 //!
 //! Design:
-//! - Runs only while the node is synced (`node_ready_from_settings`).
+//! - Runs only while the active profile's node is synced and on the profile's
+//!   network (`node_readiness::node_ready_from_profile`; the global settings
+//!   gate only when no profile is active).
 //! - Scoped to the active profile's network: both the cursor and the index are
 //!   keyed by it, because a name hashes to the same value on every chain and a
 //!   mainnet cursor height is meaningless against a regtest tip (see 028).

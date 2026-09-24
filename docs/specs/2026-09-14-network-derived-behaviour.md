@@ -40,8 +40,8 @@ fixups, and cannot be silently pointed at the wrong chain.
 ### Chain identity
 
 **N1 — One gate, no opt-out.** Every "is this node authoritative?" decision
-compares the node chain to the profile network. `read.rs` exposes no helper that
-skips the comparison: the `State`-based `node_tip_height_if_synced` resolves the
+compares the node chain to the profile network. `commands/node_readiness.rs`
+exposes no helper that skips the comparison: the `State`-based `node_tip_height_if_synced` resolves the
 active profile itself, and the settings-based
 `node_tip_height_if_synced_from_settings_with_network` and
 `node_ready_from_settings` take the expected network as a required argument.
@@ -61,7 +61,9 @@ before any write and returns an error on a positive mismatch. Nothing reaches
 `sync_cursors`, `wallet_profiles.last_synced_height` or `tracked_name_states`.
 This requirement exists because `sync_cursors` is the tip
 `noncustodial/send.rs::load_spendable_coins` reads to decide coinbase maturity: a
-foreign height there silently corrupts N6.
+foreign height there silently corrupts N6. Pinned by
+`tests/tx_lifecycle_tests.rs::sync_wallet_state_refuses_a_node_on_another_chain`,
+which also asserts the coin route is never asked and `sync_cursors` stays empty.
 
 **N4 — Broadcasting to a foreign chain is refused.**
 `commands/tx.rs::broadcast_network_guard_with_client` probes the node and returns
@@ -157,7 +159,7 @@ permanently in "expiring soon". `derive_auction_task_state` and
 
 **N13 — A stored height is only aged by wall clock where blocks follow one.**
 `Network::has_wall_clock_block_timing` is true for main and testnet only.
-`commands/read.rs::estimate_persisted_height` ages its candidates by
+`commands/node_readiness.rs::estimate_persisted_height` ages its candidates by
 `elapsed_seconds / 600` on those networks and by zero elsewhere. Regtest and
 simnet mine on demand, so the old arithmetic invented six blocks for every idle
 hour and every renewal countdown drifted. A stale height is reported as stale.
@@ -235,11 +237,12 @@ broken node silent.
 - **The network of an existing profile cannot be changed.** Not a guard, an
   absence: no command and no `UPDATE` writes the column. Changing network means
   creating another profile.
-- **`NodeRpcClient::from_settings` still falls back to the mainnet port.** Its
-  42 construction sites make threading a network through it a disproportionate
-  change, and the fallback only applies when `node_rpc_url` is absent — which
-  migration `009` makes impossible in practice. The setting itself is what N11
-  keeps correct.
+- **`NodeRpcClient::from_settings` still falls back to the mainnet port.** The
+  fallback only applies when `node_rpc_url` is absent — which migration `009`
+  makes impossible in practice — and the setting itself is what N11 keeps
+  correct. Its remaining construction sites (13 at the time of writing, five
+  of them inside `rpc.rs`) are the no-active-profile paths; every profile
+  path resolves through `NodeRpcClient::for_profile` (ADR-001).
 - **The explorer read fallback is network-gated.** ~~Previously a gap.~~
   `providers::explorer_client_from_settings` now takes a `Network` and
   returns `Option<HnsFansClient>`. Resolution order: explicit
@@ -247,7 +250,11 @@ broken node silent.
   (mainnet only) > `None`. On testnet/regtest/simnet with no explicit URL the
   factory returns `None`, and every read/sync call site threads that through
   as either a candid "explorer unavailable" error or a degraded empty result
-  — never a silent mainnet query.
+  — never a silent mainnet query. One explicit URL does not count as a
+  choice: the mainnet explorer an early migration seeded into every database.
+  Migration `032` removes exactly that value, and the factory refuses it off
+  mainnet in case a database reaches it before the migration has run
+  (`provider_hnsfans_tests`, the seeded-URL cases).
 - **Notification lead defaults are not scaled per network.**
   `reveal_lead_blocks` (144) and `DEFAULT_BIDDING_SOON_LEAD_BLOCKS` (144) exceed
   the entire reveal and bidding windows on test chains, so those notices are on
@@ -287,7 +294,7 @@ broken node silent.
 
 ## 6. Pointers
 
-- Gates: `src-tauri/src/commands/read.rs`, `commands/tx.rs`,
+- Gates: `src-tauri/src/commands/node_readiness.rs`, `commands/tx.rs`,
   `commands/sync.rs`, `commands/chain_scan.rs`, `daemon/watched_names.rs`.
 - Network parameters: `src-tauri/src/noncustodial/network.rs`.
 - Maturity filter: `src-tauri/src/noncustodial/send.rs`.

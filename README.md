@@ -66,7 +66,8 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 
 ### Node-free reads
 - Reads are **node-free by default** via the HNSFans explorer — no node required
-  just to view your wallet. When your local hsd is synced, the app automatically
+  just to view your wallet. Only mainnet has a built-in explorer; testnet and
+  regtest read node-free only with an explorer URL you configure. When your local hsd is synced, the app automatically
   switches to **node-authoritative** reads (owned names, balances, bid history)
   for faster, more reliable data. A local node is needed **only to send or
   perform name actions**.
@@ -125,8 +126,8 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 
 ## How it works
 
-- **Reads are node-free.** Balances and names come from the explorer and are cached
-  locally per wallet. Links to transactions, names, and addresses open on Shakeshift.
+- **Reads are node-free** on mainnet. Balances and names come from the explorer
+  and are cached locally per wallet; other networks need an explorer URL of yours. Links to transactions, names, and addresses open on Shakeshift.
 - **Sending needs a node.** Broadcasting and coin/owner discovery use a local
   **hsd** node over RPC. The app can start/stop hsd for you (Settings → Connections).
 - **Secrets stay in a secure window.** Your mnemonic/passphrase is only ever typed

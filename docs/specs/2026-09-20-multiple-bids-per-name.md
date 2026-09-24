@@ -109,8 +109,9 @@ each bid lands on its own rotated address.
 `set_bid_reveal_txid` is keyed by `blind_hex`. Stamping by name marked every
 commitment revealed, which silenced the reveal-deadline warning for exactly
 the bids still at risk. The batch path stamps too.
-*Enforced:* `db/queries.rs::set_bid_reveal_txid`, `commands/names.rs`,
-`noncustodial/actions.rs` (`build_batch_plan`).
+*Enforced:* `db/queries.rs::set_bid_reveal_txid`, called from both reveal
+builders in `commands/names.rs` (`build_reveal_draft_inner` and the batch
+reveal command) — the plan in `noncustodial/actions.rs` carries no txid.
 *Pinned:* `names_cmd_tests::build_reveal_draft_persists_reveal_txid_on_its_commitment`,
 `deadlines_cmd_tests::revealed_bid_is_excluded_even_if_the_window_would_be_imminent`.
 
@@ -209,7 +210,9 @@ with either height unknown the action stays offered, because refusing one the
 node would accept is its own kind of wrong.
 *Enforced:* `commands/names.rs::build_name_action_capabilities`,
 `commands/names.rs::evaluate_name_action_capabilities` (live tip).
-*Pinned:* `names::tests::finalize_waits_out_the_transfer_lockup`.
+*Pinned:* `names::tests::finalize_waits_out_the_transfer_lockup`,
+`names::tests::finalize_is_not_blocked_when_the_lockup_is_unknown`,
+`names::tests::a_live_tip_replaces_the_persisted_estimate`.
 
 **R11d — A batched owner spend is still an owner spend.** The draft a batch
 builder persists records itself as `batch-<action>`, so an owner-spend check
@@ -224,7 +227,8 @@ nothing about ownership.
 *unconfirmed* OPEN coin counts as a pending OPEN. The OPEN output is a
 zero-value marker nothing ever spends, so treating "we hold one" as "one is
 pending" made every name this wallet had ever opened permanently un-openable.
-*Enforced:* `commands/names.rs::has_pending_open_coin` →
+*Enforced:* `commands/names.rs::find_name_action_context` (its
+`has_pending_open_coin` value) →
 `db/queries.rs::has_unconfirmed_covenant_utxo_by_name_hash`.
 *Pinned:* `names_action_context_tests` (pending-open cases),
 `build_open_draft_tests`, `live_node_it::live_double_open_and_double_bid_guarded`.
@@ -253,7 +257,11 @@ string therefore never fired, and every name being transferred fell through to
 "no urgent action" — on a name whose one remaining action is to finalize it.
 The task reads the transfer the node actually reports, and ranks behind the
 renewal alarm but ahead of everything quiet: losing the name outranks
-completing a transfer of it, and nothing else does.
+completing a transfer of it, and nothing else does. That includes R8: a name
+mid-transfer that still holds losing reveals reports the transfer, not the
+redeem, because the transfer is the task the user started and the name is on
+its way out of the wallet, while the reveals are reclaimable at any time —
+from the bids panel, the manual auction actions, or Redeem Selected.
 *Enforced:* `commands/names.rs::derive_auction_task_state`.
 *Pinned:* `auction_capabilities_tests::a_recorded_transfer_yields_transfer_pending_finalize`.
 
@@ -429,6 +437,8 @@ capability fields `nameIsRegistered` and `transferPending`.
   `src/components/name-actions/__tests__/name-bids-panel.test.tsx`.
 
 **Docs**
+- `docs/USER_MANUAL.md` — "Several bids on one name" (§8) and the amount line
+  of the batch confirmation (§10).
 - `docs/CODING_STANDARDS.md` — the no-native-`title` rule and the
   `lint:native-title` gate.
 - `CHANGELOG.md` — `[Unreleased] / Fixed`, the entries from "Update,
