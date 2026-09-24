@@ -65,6 +65,11 @@ function capsFor(name: string, ownsName: boolean): NameActionCapabilities {
     countdownLabel: null,
     countdownBlocks: null,
     countdownHours: null,
+    auctionBiddingBlocks: null,
+    auctionRevealBlocks: null,
+    pendingBroadcastAction: null,
+    strandedBidCount: 0,
+    strandedLockupDoos: 0,
   };
 }
 

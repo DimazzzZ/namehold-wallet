@@ -42,6 +42,11 @@ function caps(over: Partial<NameActionCapabilities> = {}): NameActionCapabilitie
     countdownLabel: null,
     countdownBlocks: null,
     countdownHours: null,
+    auctionBiddingBlocks: null,
+    auctionRevealBlocks: null,
+    pendingBroadcastAction: null,
+    strandedBidCount: 0,
+    strandedLockupDoos: 0,
     ...over,
   };
 }
