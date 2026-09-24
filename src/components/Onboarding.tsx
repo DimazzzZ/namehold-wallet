@@ -7,6 +7,7 @@ import { useNodeConnectionCheck } from "../hooks/useNodeConnectionCheck";
 import { fromConnectionMode } from "../lib/connectionMode";
 import { boolToSetting } from "../lib/settingsBool";
 import { AllowRemoteBroadcastToggle } from "./ui/AllowRemoteBroadcastToggle";
+import { NetworkSelect } from "./ui/NetworkSelect";
 import { RemoteNodeFields } from "./ui/RemoteNodeFields";
 import type { WalletNetwork } from "../types";
 
@@ -115,19 +116,17 @@ function ConnectionChoice({
             "connected" result can't survive onto a different chain. */}
         <div className="flex flex-col gap-1 mb-6">
           <label className="text-sm font-medium text-gray-700">Network</label>
-          <select
-            className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 max-w-xs"
+          <NetworkSelect
             value={network}
-            onChange={(e) => {
+            onChange={(n) => {
+              // Changing the network invalidates any prior probe, so a
+              // "connected" result cannot survive onto a different chain.
               probe.reset();
-              onNetworkChange(e.target.value as WalletNetwork);
+              onNetworkChange(n);
             }}
-            data-testid="onboarding-network-select"
-          >
-            <option value="mainnet">Mainnet</option>
-            <option value="testnet">Testnet</option>
-            <option value="regtest">Regtest (local testing only)</option>
-          </select>
+            testId="onboarding-network-select"
+            className="max-w-xs"
+          />
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
