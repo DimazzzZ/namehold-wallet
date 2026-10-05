@@ -99,7 +99,7 @@ The sidebar has four top-level sections:
 |---------|---------|
 | **Wallet** | Balance, receive, send, recent transactions, owned names. Default page. |
 | **Auctions** | Look up a name, place bids, reveal, register, see active auctions. |
-| **Move from Namebase** | Guided migration off the custodial Namebase service. |
+| **Move from Namebase** | Retired: the legacy Namebase shut down on 1 October 2026. Explains the shutdown and imports history you exported earlier. |
 | **Settings** | Connections, node control, backups, notifications, advanced options. |
 
 The header shows two badges:
@@ -129,9 +129,7 @@ network badge (`hs1…` mainnet, `ts1…` testnet, `rs1…` regtest). A **Show Q
 **Hide QR** toggle renders a QR code (off by default).
 
 Below that, a collapsible disclosure — **Show account public key (xpub)** —
-reveals the account xpub. This is only useful if you're moving names off
-Namebase (Namebase uses it to compute your Handshake addresses). Otherwise
-leave it closed.
+reveals the account xpub. It is only useful when another service needs to compute your Handshake addresses; otherwise leave it closed.
 
 ### Owned Names
 
@@ -583,18 +581,14 @@ close the app.
 
 ## 12. Move from Namebase
 
-**Move from Namebase** is a guided helper for migrating off the custodial
-Namebase service. It is **not** the wallet's core function — a wallet works
-standalone.
+The legacy custodial Namebase platform (sunset.namebase.io) closed on 1 October 2026. Every request to it now returns "Namebase has shut down", so this screen can no longer connect with a session cookie, list your custodial domains, transfer names out or withdraw HNS.
 
-1. Paste your Namebase session cookie to connect.
-2. Review your custodial domains, spotting **expiring soon** entries.
-3. **Transfer** names out to your own wallet address (Namebase-initiated).
-4. **Withdraw HNS** to your address.
-5. **Compare** your imported inventory against what Namebase still holds.
+What the screen does now:
 
-On-chain finalization of the transfers uses the same node-backed write path
-as the rest of the wallet (Signer unlock → sign → broadcast).
+1. Explains the shutdown and links to Namebase's sunset guide. According to Namebase, names and HNS still held there can only be recovered through their manual recovery process, which involves extra verification, longer processing and fees. Contact Namebase for it; the wallet cannot do it for you.
+2. Imports an account-history CSV you exported from Namebase before the shutdown (**Upload CSV**), so your past activity stays visible. "Fetch from Namebase" is disabled because there is nothing left to fetch.
+
+If you connected before the shutdown, any remaining call reports the shutdown rather than an expired session; **Logout** clears the stored cookie.
 
 ---
 

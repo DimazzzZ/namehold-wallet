@@ -156,11 +156,32 @@ describe("NamebaseDashboard — Expiring soon panel", () => {
   it("does not query renewals when disconnected (panel hidden)", async () => {
     invokeMock.mockImplementation(route({ connected: false }));
     render(<NamebaseDashboard />, { wrapper: wrapper() });
-    await screen.findByText(/Connect to Namebase/i);
+    await screen.findByTestId("namebase-shut-down");
     expect(screen.queryByTestId("namebase-expiring")).toBeNull();
     await waitFor(() => {
       expect(invokeMock.mock.calls.map((c) => c[0])).not.toContain("fetch_namebase_renewals");
     });
+  });
+});
+
+describe("NamebaseDashboard — legacy platform shut down", () => {
+  it("explains the shutdown instead of asking for a cookie", async () => {
+    invokeMock.mockImplementation(route({ connected: false }));
+    render(<NamebaseDashboard />, { wrapper: wrapper() });
+    const notice = await screen.findByTestId("namebase-shut-down");
+    expect(notice).toHaveTextContent(/shut down/i);
+    expect(notice).toHaveTextContent(/1 October 2026/);
+    expect(notice).toHaveTextContent(/manual recovery/i);
+    expect(screen.queryByLabelText(/Session Cookie/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Connect$/ })).toBeNull();
+    expect(invokeMock.mock.calls.map((c) => c[0])).not.toContain("connect_namebase");
+  });
+
+  it("keeps the CSV history import available", async () => {
+    invokeMock.mockImplementation(route({ connected: false }));
+    render(<NamebaseDashboard />, { wrapper: wrapper() });
+    await screen.findByTestId("namebase-shut-down");
+    expect(await screen.findByRole("button", { name: /Upload CSV/i })).toBeEnabled();
   });
 });
 

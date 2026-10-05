@@ -145,6 +145,53 @@ async fn status_cookie_present_session_expired_returns_not_connected_with_error(
     );
 }
 
+/// A stored cookie against the closed legacy platform must not read as an
+/// expired session — re-pasting a cookie cannot fix a 410.
+#[tokio::test]
+#[serial(cookie_vault)]
+async fn status_cookie_present_platform_shut_down_says_so() {
+    let mut server = Server::new_async().await;
+    let _m = server
+        .mock("GET", "/api/account")
+        .with_status(410)
+        .with_body(r#"{"error":"Namebase has shut down."}"#)
+        .create_async()
+        .await;
+
+    let app = app_with(seeded_conn(&server.url()));
+    let v = get_namebase_status(app.state::<AppState>())
+        .await
+        .expect("status should succeed");
+    assert_eq!(v["connected"], serde_json::json!(false));
+    assert_eq!(v["shut_down"], serde_json::json!(true));
+    let err = v["error"].as_str().unwrap();
+    assert!(!err.contains("expired"), "got: {v:?}");
+    assert!(err.contains("shut down"), "got: {v:?}");
+}
+
+/// Connecting to the closed platform reports the shutdown, not "rejected the
+/// session … copy the full cookie".
+#[tokio::test]
+#[serial(cookie_vault)]
+async fn connect_namebase_platform_shut_down_is_not_a_cookie_problem() {
+    let mut server = Server::new_async().await;
+    let _m = server
+        .mock("GET", "/api/account")
+        .with_status(410)
+        .with_body(r#"{"error":"Namebase has shut down."}"#)
+        .create_async()
+        .await;
+
+    let conn = conn_without_cookie();
+    db::queries::set_setting(&conn, "namebase_base_url", &server.url()).unwrap();
+    let app = app_with(conn);
+
+    let err = connect_namebase(app.state::<AppState>(), "nb-sunset=abc".into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::NamebaseShutDown), "got: {err:?}");
+}
+
 #[tokio::test]
 #[serial(cookie_vault)]
 async fn status_cookie_present_session_valid_returns_connected_and_account() {

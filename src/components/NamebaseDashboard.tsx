@@ -20,6 +20,46 @@ import { mapError } from "../lib/errors";
 import { formatDate, formatCount, formatHnsAmount, truncate } from "../lib/utils";
 import { displayName, nameMatches } from "../lib/idn";
 import { usePagination } from "../hooks/usePagination";
+import { openExternal } from "../lib/openExternal";
+
+/** Namebase's own guide to the legacy platform's closure. */
+const NAMEBASE_SUNSET_GUIDE_URL = "https://www.namebase.io/blog?post=namebase-sunset-guide";
+
+/**
+ * The legacy custodial Namebase (sunset.namebase.io) closed on 2026-10-01 and
+ * answers every API call with 410, so there is no session left to connect.
+ * Shown in place of the old cookie form: re-pasting a cookie cannot help.
+ */
+function NamebaseShutDownNotice() {
+  return (
+    <div
+      data-testid="namebase-shut-down"
+      className="bg-amber-50 rounded p-6 border border-amber-200 max-w-xl space-y-2"
+    >
+      <h3 className="text-sm font-semibold">Legacy Namebase has shut down</h3>
+      <p className="text-sm text-gray-700">
+        The custodial Namebase platform (sunset.namebase.io) closed on 1 October 2026, so the wallet
+        can no longer connect to it, list your domains there, or transfer and withdraw on your
+        behalf.
+      </p>
+      <p className="text-sm text-gray-700">
+        Names and HNS still held there can only be recovered through Namebase&apos;s manual recovery
+        process, which involves extra verification and fees. Contact Namebase for it; this wallet
+        cannot do it for you.
+      </p>
+      <p className="text-sm text-gray-700">
+        History you exported earlier can still be imported below as a CSV.
+      </p>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => void openExternal(NAMEBASE_SUNSET_GUIDE_URL)}
+      >
+        Read Namebase&apos;s sunset guide
+      </Button>
+    </div>
+  );
+}
 
 /** Whole days from now until an ISO date (negative = already past). */
 function daysUntil(iso: string): number | null {
@@ -65,7 +105,6 @@ export function NamebaseDashboard() {
     }
     return m;
   }, [domainTransfers]);
-  const [cookie, setCookie] = useState("");
   const [importing, setImporting] = useState(false);
   const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
   const [transferTarget, setTransferTarget] = useState<NamebaseDomain | null>(null);
@@ -78,7 +117,7 @@ export function NamebaseDashboard() {
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const withdrawHns = useWithdrawHns();
 
-  const { data: nbStatus, isLoading: statusLoading } = useQuery({
+  const { data: nbStatus } = useQuery({
     queryKey: ["namebase", "status"],
     queryFn: () =>
       invoke<{
@@ -121,17 +160,6 @@ export function NamebaseDashboard() {
     for (const d of domains) m.set(d.name, d.auto_renew_active);
     return m;
   }, [domains]);
-
-  const handleConnect = async () => {
-    if (!cookie.trim()) return;
-    try {
-      await invoke("connect_namebase", { cookie: cookie.trim() });
-      showToast("Connected to Namebase", "success");
-      qc.invalidateQueries({ queryKey: ["namebase"] });
-    } catch (e) {
-      showToast(mapError(e), "error");
-    }
-  };
 
   const handleDisconnect = async () => {
     try {
@@ -216,31 +244,7 @@ export function NamebaseDashboard() {
       </div>
 
       {!isConnected ? (
-        <div className="bg-white rounded p-6 border border-gray-200 max-w-md">
-          <h3 className="text-sm font-semibold mb-3">Connect to Namebase</h3>
-          <p className="text-xs text-gray-500 mb-3">
-            Paste your <code>nb-sunset</code> cookie from the Namebase Sunset site. Open{" "}
-            <strong>sunset.namebase.io</strong> → F12 → Network → find any request → copy the{" "}
-            <code>Cookie</code> header value (or just the <code>nb-sunset=...</code> part).
-          </p>
-          <Input
-            label="Session Cookie"
-            type="password"
-            value={cookie}
-            onChange={(e) => setCookie(e.target.value)}
-            placeholder="Paste Namebase session cookie"
-          />
-          <div className="mt-3">
-            <Button
-              variant="primary"
-              onClick={handleConnect}
-              disabled={!cookie.trim() || statusLoading}
-            >
-              {statusLoading ? "Connecting..." : "Connect"}
-            </Button>
-          </div>
-          {nbStatus?.error && <div className="mt-2 text-sm text-red-600">{nbStatus.error}</div>}
-        </div>
+        <NamebaseShutDownNotice />
       ) : (
         <>
           {/* Account Balance (custodial — held by Namebase, not the on-chain wallet) */}

@@ -40,6 +40,68 @@ fn test_with_base_url_empty_cookie() {
 }
 
 // ---------------------------------------------------------------------------
+// Legacy Namebase shutdown (sunset.namebase.io answers 410 since 2026-10-01)
+// ---------------------------------------------------------------------------
+
+const SHUT_DOWN_BODY: &str = r#"{"error":"Namebase has shut down."}"#;
+
+#[tokio::test]
+async fn test_410_on_get_is_shut_down_not_session_expired() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("GET", "/api/account")
+        .with_status(410)
+        .with_body(SHUT_DOWN_BODY)
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    assert!(matches!(
+        client.check_session().await,
+        Err(AppError::NamebaseShutDown)
+    ));
+    assert!(matches!(
+        client.get_account().await,
+        Err(AppError::NamebaseShutDown)
+    ));
+}
+
+#[tokio::test]
+async fn test_410_on_history_export_is_shut_down() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("GET", "/api/account/history/export")
+        .with_status(410)
+        .with_body(SHUT_DOWN_BODY)
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    assert!(matches!(
+        client.get_account_history().await,
+        Err(AppError::NamebaseShutDown)
+    ));
+}
+
+#[tokio::test]
+async fn test_410_on_post_is_shut_down() {
+    let mut server = mockito::Server::new_async().await;
+    let _m = server
+        .mock("POST", mockito::Matcher::Any)
+        .with_status(410)
+        .with_body(SHUT_DOWN_BODY)
+        .create_async()
+        .await;
+
+    let client = NamebaseClient::with_base_url("c", &server.url()).unwrap();
+    let err = client
+        .withdraw_hns("hs1q79vn7nsmua98v4gme98w0a07rgrvvxy9d93qw8", "1")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::NamebaseShutDown), "got: {err:?}");
+}
+
+// ---------------------------------------------------------------------------
 // check_session
 // ---------------------------------------------------------------------------
 

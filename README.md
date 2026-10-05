@@ -4,9 +4,7 @@
 
 Namehold is a local desktop wallet for **Handshake (HNS)**: hold HNS, manage the
 names you own, run the full name-auction lifecycle, and edit on-chain DNS — all
-non-custodially, with your keys encrypted on your own machine. It also includes a
-guided **Move from Namebase** helper for migrating names and funds off the
-custodial service.
+non-custodially, with your keys encrypted on your own machine. It used to include a **Move from Namebase** helper; the legacy custodial Namebase closed on 1 October 2026, so that screen now explains the shutdown and keeps only the import of history you exported earlier.
 
 Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 
@@ -74,10 +72,8 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 - When you click a transaction, name, or address link, it opens on **Shakeshift**
   (https://shakeshift.com) for viewing on-chain details.
 
-### Move from Namebase (one feature, not the core)
-- Connect with your Namebase session cookie to **list custodial domains**, see
-  which are **expiring soon**, **transfer names out** to your wallet, **withdraw
-  HNS**, and **compare** your inventory against what Namebase still holds.
+### Move from Namebase (retired)
+- The legacy custodial Namebase (sunset.namebase.io) shut down on 1 October 2026 and no longer answers, so the wallet can no longer connect to it, list, transfer or withdraw. The screen says so, points to Namebase's sunset guide for the manual recovery of anything left there, and still imports an account-history CSV you exported earlier.
 
 ### Auto-update (since v0.2.0)
 - Namehold checks for updates automatically ~30 seconds after launch. When a
@@ -156,10 +152,7 @@ For a detailed threat model, attack surfaces, and mitigations, see [SECURITY.md]
   your wallet addresses and tracked names. Run your own hsd node (Settings) to keep
   all lookups fully local. No cloud, no telemetry.
 - **Auto-lock** — the unlocked signer times out after a configurable idle period.
-- **Namebase migration** — optional in-app helper for transferring domains from
-  Namebase. The session cookie is encrypted at rest and never exposed to the web
-  layer. See [SECURITY.md](./SECURITY.md) for the full threat model and a
-  lower-risk alternative.
+- **Namebase migration (retired)** — the legacy Namebase it talked to shut down on 1 October 2026. A session cookie stored before then stays encrypted at rest and is never exposed to the web layer; disconnecting clears it. See [SECURITY.md](./SECURITY.md) for the threat model.
 
 ## Prerequisites
 
@@ -208,20 +201,7 @@ See [`docs/NODE_SETUP.md`](docs/NODE_SETUP.md) and
 
 ## Move from Namebase
 
-A guided migration helper (not the wallet's core function). In **Move from
-Namebase**, paste your Namebase session cookie to connect, then:
-
-<p align="center">
-  <img src="docs/assets/namebase-migration.png" alt="Namebase migration" width="700" />
-</p>
-
-- review your custodial domains and which are **expiring soon**,
-- **transfer** names out to your own wallet address,
-- **withdraw HNS** to an address,
-- **compare** your imported inventory against Namebase's current list.
-
-On-chain finalization of transfers uses the same node-backed write path as the
-rest of the wallet.
+The legacy custodial Namebase (sunset.namebase.io) closed on 1 October 2026 and answers every request with "Namebase has shut down", so this helper can no longer connect, list your custodial domains, transfer names out or withdraw HNS. Namebase's own guide says anything still held there now goes through a manual recovery process with extra verification and fees; the **Move from Namebase** screen links to it. What still works is importing an account-history CSV you exported from Namebase before the shutdown.
 
 ## Build for production
 

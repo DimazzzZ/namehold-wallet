@@ -124,7 +124,7 @@ export function NamebaseHistoryImport() {
             content={
               isConnected
                 ? "Fetch fresh history from Namebase"
-                : "Connect to Namebase to enable live fetch"
+                : "Namebase has shut down, so there is nothing to fetch — upload a CSV you exported earlier"
             }
           >
             <Button
