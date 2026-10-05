@@ -59,7 +59,9 @@ function assertVsize(mtx) {
   const want = mtx.getVirtualSize();
   const got = estSize(mtx.inputs.length, mtx.outputs.length);
   if (got !== want)
-    throw new Error(`estSize(${mtx.inputs.length}, ${mtx.outputs.length}) = ${got}, hsd vsize = ${want}`);
+    throw new Error(
+      `estSize(${mtx.inputs.length}, ${mtx.outputs.length}) = ${got}, hsd vsize = ${want}`,
+    );
 }
 
 // Handshake does NOT byte-reverse hashes (unlike Bitcoin). The txid string the
