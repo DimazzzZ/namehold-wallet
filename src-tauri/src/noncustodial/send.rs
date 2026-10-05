@@ -56,14 +56,17 @@ pub const DUST_THRESHOLD: u64 = 1000;
 /// while still recovering promptly from a crashed/abandoned build.
 pub const RESERVATION_TTL_SECS: i64 = 3600;
 
-/// Serialized size (bytes) of one P2WPKH input *including* its witness.
-///
-/// Non-witness part: outpoint(36) + sequence(4) = 40 bytes.
-/// Witness part: varint(2) + varbytes(sig 65 -> 1+65) + varbytes(pubkey 33 ->
-/// 1+33) = 1 + 66 + 34 = 101 bytes.
-/// Total per input = 141 bytes. Handshake has no witness discount, so every
-/// byte counts at the same rate.
-pub const INPUT_VBYTES: u64 = 141;
+/// Non-witness size (bytes) of one P2WPKH input: outpoint(36) + sequence(4).
+pub const INPUT_BASE_BYTES: u64 = 40;
+
+/// Witness size (bytes) of one P2WPKH input: varint(2) + varbytes(sig 65 ->
+/// 1+65) + varbytes(pubkey 33 -> 1+33) = 1 + 66 + 34 = 101. Signatures are
+/// always 65 bytes (compact R||S + type), so this is exact.
+pub const INPUT_WITNESS_BYTES: u64 = 101;
+
+/// hsd `consensus.WITNESS_SCALE_FACTOR`: witness bytes weigh 1, every other
+/// byte weighs this much.
+const WITNESS_SCALE_FACTOR: u64 = 4;
 
 /// Serialized size (bytes) of one P2WPKH output.
 ///
@@ -90,10 +93,22 @@ pub struct SpendableCoin {
     pub child_index: u32,
 }
 
-/// Estimated transaction size in bytes for `n_inputs` P2WPKH inputs and
-/// `n_outputs` P2WPKH outputs.
+/// Virtual size of a tx with `base` non-witness bytes and `n_inputs` P2WPKH
+/// witnesses — hsd `getVirtualSize`: `ceil((base * 4 + witness) / 4)`. Fee
+/// rates (`estimatesmartfee`, `MIN_RELAY`) are per virtual byte, so this is
+/// the size a fee is charged on; the raw byte count would overpay.
+fn vsize(base: u64, n_inputs: u64) -> u64 {
+    let weight = base * WITNESS_SCALE_FACTOR + n_inputs * INPUT_WITNESS_BYTES;
+    weight.div_ceil(WITNESS_SCALE_FACTOR)
+}
+
+/// Estimated transaction vsize for `n_inputs` P2WPKH inputs and `n_outputs`
+/// P2WPKH outputs.
 pub fn estimate_size(n_inputs: u64, n_outputs: u64) -> u64 {
-    TX_OVERHEAD_VBYTES + n_inputs * INPUT_VBYTES + n_outputs * OUTPUT_VBYTES
+    vsize(
+        TX_OVERHEAD_VBYTES + n_inputs * INPUT_BASE_BYTES + n_outputs * OUTPUT_VBYTES,
+        n_inputs,
+    )
 }
 
 /// Fee in dollarydoos for a tx of the given input/output counts at `rate`
@@ -102,7 +117,7 @@ pub fn estimate_fee(n_inputs: u64, n_outputs: u64, rate_per_byte: u64) -> u64 {
     estimate_size(n_inputs, n_outputs).saturating_mul(rate_per_byte.max(MIN_FEE_RATE_PER_BYTE))
 }
 
-/// Estimated transaction size in bytes for `n_inputs` P2WPKH inputs, ONE
+/// Estimated transaction vsize for `n_inputs` P2WPKH inputs, ONE
 /// "primary" output of `primary_vbytes` bytes, and `n_plain_outputs` flat
 /// P2WPKH outputs (typically a 0/1 change output).
 ///
@@ -110,11 +125,17 @@ pub fn estimate_fee(n_inputs: u64, n_outputs: u64, rate_per_byte: u64) -> u64 {
 /// [`crate::noncustodial::tx::Output::encoded_len`]), not the flat
 /// [`OUTPUT_VBYTES`] approximation — covenant items (REGISTER/UPDATE
 /// resource records, FINALIZE, …) can make a covenant output far larger than
-/// a plain P2WPKH output (I4). Handshake outputs carry no witness data, so
-/// every covenant byte counts fully toward vsize; there is no discount to
-/// apply here.
+/// a plain P2WPKH output (I4). Outputs carry no witness data, so every
+/// covenant byte counts at full weight; only the input witnesses are
+/// discounted.
 pub fn estimate_size_with_primary(n_inputs: u64, primary_vbytes: u64, n_plain_outputs: u64) -> u64 {
-    TX_OVERHEAD_VBYTES + n_inputs * INPUT_VBYTES + primary_vbytes + n_plain_outputs * OUTPUT_VBYTES
+    vsize(
+        TX_OVERHEAD_VBYTES
+            + n_inputs * INPUT_BASE_BYTES
+            + primary_vbytes
+            + n_plain_outputs * OUTPUT_VBYTES,
+        n_inputs,
+    )
 }
 
 /// Fee in dollarydoos for [`estimate_size_with_primary`] at `rate`
@@ -677,6 +698,18 @@ mod tests {
         }
     }
 
+    /// `estimate_size` is the vsize hsd charges fees on, not the raw byte
+    /// count: witness bytes weigh a quarter. Golden values are hsd v8.0.0
+    /// `tx.getVirtualSize()` of fully signed P2WPKH txs of each shape (raw
+    /// sizes 183 / 215 / 356 / 779).
+    #[test]
+    fn estimate_size_matches_hsd_vsize() {
+        assert_eq!(estimate_size(1, 1), 108);
+        assert_eq!(estimate_size(1, 2), 140);
+        assert_eq!(estimate_size(2, 2), 205);
+        assert_eq!(estimate_size(5, 2), 401);
+    }
+
     #[test]
     fn estimate_size_and_fee_are_monotonic() {
         assert!(estimate_size(2, 2) > estimate_size(1, 1));
@@ -741,8 +774,8 @@ mod tests {
     #[test]
     fn select_coins_no_change_when_remainder_below_change_output_cost() {
         let amount = 100_000u64;
-        let fee_no_change = estimate_fee(1, 1, 1); // 183
-        let fee_with_change = estimate_fee(1, 2, 1); // 215
+        let fee_no_change = estimate_fee(1, 1, 1); // 108
+        let fee_with_change = estimate_fee(1, 2, 1); // 140
                                                      // Pick input_total strictly inside [amount+fee_no_change, amount+fee_with_change).
         let input_total = amount + fee_no_change + 5;
         assert!(input_total < amount + fee_with_change);

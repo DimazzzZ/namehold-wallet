@@ -389,10 +389,11 @@ impl Transaction {
                 ZERO_HASH
             };
 
-        // Per-input fields: zeroed under NOINPUT (empty Input has
-        // hash=ZERO_HASH, index=0, sequence=0).
+        // Per-input fields under NOINPUT come from hsd's `new Input()`:
+        // `Outpoint` defaults to hash=ZERO_HASH, index=0xffffffff, and
+        // `Input` to sequence=0xffffffff — not zero.
         let (prev_hash, prev_index, sequence): ([u8; 32], u32, u32) = if use_empty_input {
-            (ZERO_HASH, 0, 0)
+            (ZERO_HASH, u32::MAX, u32::MAX)
         } else {
             (input.prevout.hash, input.prevout.index, input.sequence)
         };
@@ -497,6 +498,17 @@ impl Transaction {
             input.write_witness(&mut w);
         }
         w.into_bytes()
+    }
+
+    /// Virtual size — the size fee rates are charged on. hsd `getVirtualSize`:
+    /// weight = base * 3 + total (witness bytes count once, every other byte
+    /// four times), vsize = ceil(weight / 4).
+    pub fn vsize(&self) -> u64 {
+        let mut w = Writer::new();
+        self.write_base(&mut w);
+        let base = w.into_bytes().len() as u64;
+        let total = self.serialize().len() as u64;
+        (base * 3 + total).div_ceil(4)
     }
 
     /// Serialize and hex-encode the transaction for broadcast over the node
@@ -688,6 +700,20 @@ mod tests {
         tx.outputs.push(out(500_000, 0xaa, Covenant::default()));
         tx.outputs.push(out(499_000, 0xbb, Covenant::default()));
         tx
+    }
+
+    /// `vsize` matches hsd `getVirtualSize` for a signed 2-in/2-out P2WPKH
+    /// tx: raw 356 bytes, vsize 205 (hsd v8.0.0).
+    #[test]
+    fn vsize_discounts_witness_like_hsd() {
+        let (sk, h160) = test_key();
+        let mut tx = two_in_two_out();
+        tx.sign_p2wpkh_input(0, &sk, &h160, 1_000_000, sighash::ALL)
+            .unwrap();
+        tx.sign_p2wpkh_input(1, &sk, &h160, 50_000, sighash::ALL)
+            .unwrap();
+        assert_eq!(tx.serialize().len(), 356);
+        assert_eq!(tx.vsize(), 205);
     }
 
     #[test]
@@ -961,14 +987,25 @@ mod tests {
         assert_ne!(sh_all, sh_none);
     }
 
-    /// `signature_hash` with `NOINPUT` zeroes the per-input fields.
+    /// `signature_hash` with `NOINPUT` commits to hsd's default `Input` —
+    /// index and sequence 0xffffffff, not zero. Golden digests computed by
+    /// hsd v8.0.0 `tx.signatureHash(0, code, 1000, type)` on this fixture.
     #[test]
-    fn signature_hash_noinput_zeroes_per_input_fields() {
+    fn signature_hash_noinput_matches_hsd() {
         let tx = two_in_two_out();
         let code = p2wpkh_script_code(&[0x11; 20]);
-        let sh_all = tx.signature_hash(0, &code, 1000, sighash::ALL).unwrap();
-        let sh_noinput = tx.signature_hash(0, &code, 1000, sighash::NOINPUT).unwrap();
-        assert_ne!(sh_all, sh_noinput);
+        let noinput = tx.signature_hash(0, &code, 1000, sighash::NOINPUT).unwrap();
+        let noinput_all = tx
+            .signature_hash(0, &code, 1000, sighash::NOINPUT | sighash::ALL)
+            .unwrap();
+        assert_eq!(
+            hex::encode(noinput),
+            "3f5d6012baf09c3aebde19618e89a3fade5d1773fc92985efe11f8df62907b57"
+        );
+        assert_eq!(
+            hex::encode(noinput_all),
+            "74b5637ac3c78820a104d0475a16ad56c616a8223cc02188d6479ea8692f4f7e"
+        );
     }
 
     /// Reader's `read_varint` handles multi-byte varints (0xfd, 0xfe, 0xff).

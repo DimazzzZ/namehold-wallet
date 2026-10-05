@@ -537,6 +537,12 @@ pub fn sign_plan(
     session: &mut SignerSession,
     plan: &DraftPlan,
 ) -> Result<(String, String), AppError> {
+    let tx = sign_plan_tx(session, plan)?;
+    Ok((tx.to_hex(), tx.txid()))
+}
+
+/// [`sign_plan`], returning the signed [`Transaction`] itself.
+fn sign_plan_tx(session: &mut SignerSession, plan: &DraftPlan) -> Result<Transaction, AppError> {
     let network = Network::from_str_opt(&plan.network)
         .ok_or_else(|| AppError::InvalidInput(format!("bad network '{}'", plan.network)))?;
     let mut tx = rebuild_unsigned(plan, network)?;
@@ -548,7 +554,7 @@ pub fn sign_plan(
         let hash160 = address::pubkey_to_hash160(&pubkey);
         tx.sign_p2wpkh_input(i, &child.secret, &hash160, inp.value, inp.sighash_type)?;
     }
-    Ok((tx.to_hex(), tx.txid()))
+    Ok(tx)
 }
 
 #[cfg(test)]
@@ -787,7 +793,7 @@ mod tests {
     /// P2WPKH inputs/change plus a measured covenant output, so this holds
     /// with equality, not just `>=`.
     #[test]
-    fn register_plan_fee_at_rate_one_covers_actual_signed_tx_size() {
+    fn register_plan_fee_at_rate_one_covers_actual_signed_tx_vsize() {
         let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
         let master = ExtendedPrivKey::from_seed(&seed).unwrap();
         let mut session = SignerSession::unlock("p1".into(), Network::Main, master, 60_000);
@@ -813,18 +819,17 @@ mod tests {
         )
         .unwrap();
 
-        let (signed_hex, _txid) = sign_plan(&mut session, &res.plan).unwrap();
-        let actual_len = hex::decode(&signed_hex).unwrap().len() as u64;
+        let actual_len = sign_plan_tx(&mut session, &res.plan).unwrap().vsize();
 
         assert!(
             res.fee >= actual_len * crate::noncustodial::send::MIN_FEE_RATE_PER_BYTE,
-            "fee {} must cover the actual size {} at the min-relay rate",
+            "fee {} must cover the actual vsize {} at the min-relay rate",
             res.fee,
             actual_len
         );
         assert_eq!(
             res.fee, actual_len,
-            "fee should exactly equal the actual signed size at rate=1"
+            "fee should exactly equal the actual signed vsize at rate=1"
         );
     }
 
