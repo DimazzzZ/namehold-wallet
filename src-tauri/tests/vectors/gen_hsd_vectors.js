@@ -42,10 +42,26 @@ function addr(branch, index) {
 }
 
 // Fee formula MUST mirror src-tauri/src/noncustodial/send.rs exactly:
-//   size = 10 (overhead) + nIn*141 + nOut*32 ; fee = size * max(rate,1)
+//   base  = 10 (overhead) + nIn*40 + nOut*32 ; witness = nIn*101
+//   vsize = ceil((base*4 + witness) / 4)     ; fee = vsize * max(rate,1)
+// `assertVsize` checks this estimate against hsd's own getVirtualSize() of
+// every signed P2WPKH vector, so the formula cannot drift from hsd silently.
+function estSize(nIn, nOut) {
+  const base = 10 + nIn * 40 + nOut * 32;
+  return Math.ceil((base * 4 + nIn * 101) / 4);
+}
+
 function estFee(nIn, nOut, rate) {
-  const size = 10 + nIn * 141 + nOut * 32;
-  return size * Math.max(rate, 1);
+  return estSize(nIn, nOut) * Math.max(rate, 1);
+}
+
+function assertVsize(mtx) {
+  const want = mtx.getVirtualSize();
+  const got = estSize(mtx.inputs.length, mtx.outputs.length);
+  if (got !== want)
+    throw new Error(
+      `estSize(${mtx.inputs.length}, ${mtx.outputs.length}) = ${got}, hsd vsize = ${want}`,
+    );
 }
 
 // Handshake does NOT byte-reverse hashes (unlike Bitcoin). The txid string the
@@ -89,6 +105,7 @@ function plainSend({ inputs, recipient, change, locktime = 0 }) {
   if (signed !== inputs.length) {
     throw new Error(`expected to sign ${inputs.length} inputs, signed ${signed}`);
   }
+  assertVsize(mtx);
 
   // Per-input sighash (SIGHASH_ALL) using the P2WPKH script code.
   const sighashes = inputs.map((i, idx) => {
