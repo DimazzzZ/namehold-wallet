@@ -37,6 +37,16 @@ pub enum AppError {
     /// can raise this instead of an ugly JSON-parse error.
     #[error("Namebase session expired — reconnect with a fresh cookie")]
     NamebaseSessionExpired,
+    /// The legacy Namebase platform answered 410 Gone: it closed for good on
+    /// 2026-10-01 and every endpoint of sunset.namebase.io now returns
+    /// `{"error":"Namebase has shut down."}`. Kept distinct from
+    /// `NamebaseSessionExpired` and `Other` so nobody is told to paste a fresh
+    /// cookie — no cookie can fix this.
+    #[error(
+        "Namebase has shut down: the legacy platform (sunset.namebase.io) closed on 1 October 2026. \
+         Names and HNS still held there can only be recovered through Namebase's manual recovery process."
+    )]
+    NamebaseShutDown,
     /// The Namebase API returned 429 Too Many Requests. `retry_after_secs` is
     /// parsed from the `Retry-After` response header when present, otherwise a
     /// sensible default. Kept distinct from `Other` so the frontend can render

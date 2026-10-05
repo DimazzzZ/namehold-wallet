@@ -154,11 +154,12 @@ pub async fn connect_namebase(
 ) -> Result<serde_json::Value, AppError> {
     let client = namebase_client_with_cookie(&state, &cookie)?;
 
-    let account = client.get_account().await.map_err(|e| {
-        AppError::Other(format!(
+    let account = client.get_account().await.map_err(|e| match e {
+        AppError::NamebaseShutDown => e,
+        e => AppError::Other(format!(
             "Namebase rejected the session ({}). Make sure you copied the full cookie header from sunset.namebase.io",
             e
-        ))
+        )),
     })?;
 
     // Store whatever the client's jar ends up holding (not the raw paste) —
@@ -205,6 +206,12 @@ pub async fn get_namebase_status(
             let account = client.get_account().await.ok();
             serde_json::json!({"connected": true, "has_cookie": true, "account": account})
         }
+        Err(e @ AppError::NamebaseShutDown) => serde_json::json!({
+            "connected": false,
+            "has_cookie": true,
+            "shut_down": true,
+            "error": e.to_string(),
+        }),
         _ => {
             serde_json::json!({"connected": false, "has_cookie": true, "error": "Session expired"})
         }

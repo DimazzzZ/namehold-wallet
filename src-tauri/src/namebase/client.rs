@@ -271,6 +271,16 @@ impl NamebaseClient {
         }
     }
 
+    /// The legacy platform closed on 2026-10-01 and answers every endpoint
+    /// with 410 Gone. Caught here, once, so no caller can mistake it for an
+    /// expired session or a generic status error.
+    fn refuse_if_shut_down(resp: reqwest::Response) -> Result<reqwest::Response, AppError> {
+        if resp.status() == reqwest::StatusCode::GONE {
+            return Err(AppError::NamebaseShutDown);
+        }
+        Ok(resp)
+    }
+
     async fn send_get(&self, path: &str) -> Result<reqwest::Response, AppError> {
         let url = format!("{}{}", self.base_url, path);
         let cookie = self.current_cookie();
@@ -289,7 +299,7 @@ impl NamebaseClient {
             .send()
             .await?;
         self.capture_set_cookie(resp.headers());
-        Ok(resp)
+        Self::refuse_if_shut_down(resp)
     }
 
     async fn send_post(
@@ -317,7 +327,7 @@ impl NamebaseClient {
             .send()
             .await?;
         self.capture_set_cookie(resp.headers());
-        Ok(resp)
+        Self::refuse_if_shut_down(resp)
     }
 
     /// Read the body of a successful-status response and report whether it
