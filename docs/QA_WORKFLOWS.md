@@ -193,8 +193,8 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 
 ### F. Transfers & Namebase migration
 - [ ] Transfers view: incoming/outgoing transfers
-- [ ] Namebase connection flow
-- [ ] Domain import from Namebase
+- [ ] Move from Namebase shows the "Legacy Namebase has shut down" notice (no cookie form) with a working link to Namebase's sunset guide
+- [ ] Account-history CSV upload still imports and lists rows
 - [ ] Renewals view
 
 ### G. System tray

@@ -32,6 +32,8 @@ available and users have had reasonable time to upgrade.
 
 ## The Namebase migration feature
 
+> **Retired.** The legacy Namebase platform (sunset.namebase.io) shut down on 1 October 2026 and answers every request with 410, so the wallet no longer asks for a cookie. A cookie stored before then is still protected as described below until you log out, which clears it. The analysis is kept for that case.
+
 ### Why the cookie is required
 
 Namebase Sunset (the custodial domain registry) offers no API-token or OAuth
