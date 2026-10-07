@@ -177,6 +177,8 @@ takeover.
 transactions, and never broadcasts. Even if the daemon is compromised, it cannot
 steal funds or sign malicious transactions. It can only read and write sync data.
 
+The "never broadcasts" half is a runtime rule, not a property of the build: the daemon runs the same `run_sync_steps` as the app, and the Shakedex purchase refresh in it holds the one path that can send (a purchase's single rebroadcast, already signed by the app). That path is closed for the daemon by `Rebroadcast::Never`: `daemon_sync_makes_no_send_call_where_the_apps_sync_does` runs the daemon's own `sync_profile` against a mock hsd holding a purchase due for its rebroadcast and checks that no `sendrawtransaction` reaches it, while the app's sync of the same wallet sends one; `daemon_never_rebroadcasts_and_leaves_it_to_the_app` checks the refresh itself under `Rebroadcast::Never`. Signing stays impossible in the daemon: it has no key material.
+
 ---
 
 ## SPV mode
@@ -223,6 +225,32 @@ SPV (Simplified Payment Verification) mode runs hsd with `--spv` instead of
 
 ---
 
+## Buying names through Shakedex
+
+### What the Market does
+
+The Market lists names for sale through Shakedex, read from the LearnHNS Market (`https://market.learnhns.com`) or from a listing file the user imports. Buying one signs a transaction that spends the seller's lock coin with the seller's presigned signature and pays the seller from the wallet's own coins.
+
+### Attack surfaces and mitigations
+
+#### 1. A malicious or compromised market
+
+**Mitigation:** Nothing the market says is trusted. Every listing is checked against the profile's own node before Buy is offered and again when the purchase is built: the lock coin must exist, hold this name and match the listing's lock address, and every price step's signature must verify. Just before broadcast the price is checked again, and the purchase is refused, and its draft discarded, if a cheaper step has become valid since it was reviewed or the node cannot say (no median time, no answer): the user reviews and signs it again. The one automatic rebroadcast of a purchase that went missing checks it the same way: at a dropped price the purchase is not sent again, and is given up with nothing paid. SPV and Explorer profiles cannot buy, because they have no node to check against.
+
+#### 2. Network redirect or an oversized reply
+
+**Mitigation:** The client talks only to the LearnHNS host over HTTPS and follows no redirects. Replies are capped (8 MiB for market pages, 256 KiB for a listing file). The base URL override (`learnhns_base_url`) is read only in debug builds, accepts only the LearnHNS host or loopback, and the renderer cannot write it (`RENDERER_WRITE_DENYLIST`).
+
+#### 3. Signing an input the wallet does not own
+
+**Mitigation:** The seller's lock coin is a foreign input carrying its own witness; the wallet signs only its own inputs. A Ledger signs every input as the wallet's own P2WPKH, so a plan with a foreign input, a custom sequence or a lock time is refused twice: when the draft is signed (`commands::tx`) and in the Ledger signer itself (`providers::ledger::signing`).
+
+#### 4. The daemon and purchases
+
+**Guarantee:** The background daemon refreshes each purchase's state from the chain but never rebroadcasts one. A purchase that went missing is rebroadcast at most once, and only by the app's own sync, through the same broadcast gates as every other send.
+
+---
+
 ## Mitigations reference table
 
 | Concern | Mitigation | Location | Tests |
@@ -235,6 +263,10 @@ SPV (Simplified Payment Verification) mode runs hsd with `--spv` instead of
 | Signing without confirmation | Rust-owned secure window | `tx.rs:505-506` | `tx_lifecycle_tests` |
 | RPC api-key sent cleartext | `guard_transport` rejects remote HTTP | `rpc.rs:139-168` | `rpc.rs::tests` |
 | Audit log leaks secrets | Redacted to `***` on write; re-redacted on read | `settings.rs:40-41, 68-69` | `settings_cmd_tests` |
+| Market redirect or host swap | HTTPS LearnHNS host only, no redirects, override debug-only | `market/learnhns.rs` | `learnhns_tests` |
+| Tampered listing or price | Verified on the profile's node; price re-checked before broadcast | `noncustodial/shakedex/verify.rs` | `shakedex_verify_tests`, `shakedex_cmd_tests` |
+| Ledger signs a foreign input | Refused at draft signing and in the signer | `commands/tx.rs`, `providers/ledger/signing.rs` | `ledger_plan_guard_tests` |
+| Daemon rebroadcasts a purchase | `SyncCaller::Daemon` never rebroadcasts | `commands/sync.rs`, `shakedex_jobs.rs` | `shakedex_purchase_state_tests::{daemon_sync_makes_no_send_call_where_the_apps_sync_does, daemon_never_rebroadcasts_and_leaves_it_to_the_app}` |
 
 ---
 
@@ -292,5 +324,6 @@ dependencies of this crate.
 - [hsd API docs](https://hsd-dev.org/api-docs/) -- Handshake node RPC reference
 | Daemon crashes mid-sync | Heartbeat every 10s; stale-lock takeover after 30s; app respawns daemon on next startup | `db/sync_lock.rs`, `commands/daemon_ctl.rs` | `sync_lock` tests |
 | Concurrent writes by app + daemon | Cross-process `sync_locks` table; app acquires with priority, daemon preempts stale locks | `db/sync_lock.rs`, `commands/sync.rs` | `sync_lock`, `sync_race` tests |
-| Daemon signs / broadcasts (would-be) | Daemon has no access to key material or signing paths — it only reads hsd and writes sync data | `bin/namehold-syncd.rs`, `daemon/mod.rs` | (compile-time — no signing API in daemon build) |
+| Daemon signs (would-be) | Daemon has no access to key material — it only reads hsd and writes sync data | `bin/namehold-syncd.rs`, `daemon/mod.rs` | (no key material in the daemon process) |
+| Daemon broadcasts (would-be) | The one send path in `run_sync_steps` (a purchase's rebroadcast) is closed for the daemon at runtime by `Rebroadcast::Never` | `commands/sync.rs`, `shakedex_jobs.rs` | `shakedex_purchase_state_tests::{daemon_sync_makes_no_send_call_where_the_apps_sync_does, daemon_never_rebroadcasts_and_leaves_it_to_the_app}` |
 | hsd left running after app exit | Intentional when "Sync in background" ON; hsd bound to loopback + api-key required | `lib.rs` (setup/exit hooks) | `settings-background-sync` tests |
