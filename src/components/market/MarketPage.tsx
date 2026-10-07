@@ -4,7 +4,6 @@ import { Alert } from "../ui/Alert";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Disclosure } from "../ui/Disclosure";
-import { Tooltip } from "../ui/Tooltip";
 import { ImportListing } from "./ImportListing";
 import {
   MARKET_MAINNET_ONLY,
@@ -17,6 +16,7 @@ import {
 import { useMarketPage } from "../../queries/shakedex";
 import { useActiveProfile } from "../../queries/wallet";
 import { displayName } from "../../lib/idn";
+import { mapError } from "../../lib/errors";
 import { formatHns } from "../../lib/utils";
 import type { ImportSource, MarketRow } from "../../types";
 
@@ -43,6 +43,8 @@ function PriceCell({ row }: { row: MarketRow }) {
         >
           <ul className="space-y-0.5" data-testid="price-steps">
             {row.steps.map((s, i) => {
+              // Only buyable rows reach here, and `market_row` gives each of
+              // their steps a wait; a missing one would read as "now".
               const wait = s.validInSecs ?? 0;
               return (
                 <li key={i}>
@@ -73,14 +75,9 @@ const ORIGIN_BADGE: Record<Exclude<Origin, "market">, string> = {
 
 interface ListingsTableProps {
   rows: { row: MarketRow; origin: Origin }[];
-  /**
-   * False when the market page itself could not be verified (SPV, Explorer).
-   * Imported rows carry their own verdict and pass true.
-   */
-  verified: boolean;
 }
 
-function ListingsTable({ rows, verified }: ListingsTableProps) {
+function ListingsTable({ rows }: ListingsTableProps) {
   return (
     <table className="w-full text-sm">
       <thead>
@@ -96,7 +93,6 @@ function ListingsTable({ rows, verified }: ListingsTableProps) {
       </thead>
       <tbody>
         {rows.map(({ row, origin }, i) => {
-          const buyable = row.verdict.verdict === "buyable";
           const listedUntil = row.expiresAt != null ? listedUntilText(row.expiresAt) : null;
           return (
             <tr
@@ -115,7 +111,10 @@ function ListingsTable({ rows, verified }: ListingsTableProps) {
                 <div className="flex flex-wrap gap-1">
                   {origin !== "market" && <Badge>{ORIGIN_BADGE[origin]}</Badge>}
                   {row.verdict.verdict === "buyable" && row.verdict.warnExpiry && (
-                    <Badge variant="warning" title="The name expires soon after this purchase.">
+                    <Badge
+                      variant="warning"
+                      title="The name expires within about a month of the earliest finalize."
+                    >
                       Expires soon
                     </Badge>
                   )}
@@ -126,13 +125,9 @@ function ListingsTable({ rows, verified }: ListingsTableProps) {
                 </div>
               </td>
               <td className="py-1 text-right">
-                {row.verdict.verdict === "hidden" && row.verdict.kind === "unverified" ? (
+                {row.verdict.verdict === "hidden" && row.verdict.kind === "unverified" && (
                   <span className="text-xs text-gray-500">{NOT_VERIFIED}</span>
-                ) : !buyable ? null : !verified ? (
-                  <Tooltip content={NOT_VERIFIED}>
-                    <span className="text-xs text-gray-500">{NOT_VERIFIED}</span>
-                  </Tooltip>
-                ) : null}
+                )}
               </td>
             </tr>
           );
@@ -142,9 +137,21 @@ function ListingsTable({ rows, verified }: ListingsTableProps) {
   );
 }
 
+/**
+ * What an empty market page says. A listing the node could not check is not
+ * known to be unbuyable, so the page does not claim there are none.
+ */
+function emptyPageText(pageCount: number, couldNotCheck: number): string {
+  const where = pageCount > 1 ? "on this page" : "right now";
+  if (couldNotCheck > 0) {
+    return `No listing ${where} could be shown as buyable; ${couldNotCheck} could not be checked against your node.`;
+  }
+  return `No buyable listings ${where}.`;
+}
+
 export default function MarketPage() {
   const [pageNumber, setPageNumber] = useState(1);
-  const market = useMarketPage(true, pageNumber);
+  const market = useMarketPage(pageNumber);
   const { data: profile } = useActiveProfile();
   const [imported, setImported] = useState<ImportedRow[]>([]);
 
@@ -162,7 +169,11 @@ export default function MarketPage() {
       />
       <div className="space-y-6">
         {market.isLoading && <p className="text-sm text-gray-500">Loading listings…</p>}
-        {market.isError && <Alert tone="error" title="Could not load the market" />}
+        {market.isError && (
+          <Alert tone="error" title="Could not load the market">
+            {mapError(market.error)}
+          </Alert>
+        )}
         {page && !page.networkHasMarket && (
           <Alert tone="info">
             There is no LearnHNS Market for this network. You can still check a listing file or
@@ -171,16 +182,11 @@ export default function MarketPage() {
         )}
         {page && page.networkHasMarket && page.rows.length === 0 && (
           <p className="text-sm text-gray-500">
-            {page.pageCount > 1
-              ? "No buyable listings on this page."
-              : "No buyable listings right now."}
+            {emptyPageText(page.pageCount, page.hidden.couldNotCheck)}
           </p>
         )}
         {page && page.networkHasMarket && page.rows.length > 0 && (
-          <ListingsTable
-            rows={page.rows.map((row) => ({ row, origin: "market" as const }))}
-            verified={page.verified}
-          />
+          <ListingsTable rows={page.rows.map((row) => ({ row, origin: "market" as const }))} />
         )}
         {page && page.networkHasMarket && page.pageCount > 1 && (
           <div className="flex items-center gap-3 text-sm">
@@ -224,7 +230,7 @@ export default function MarketPage() {
             <h3 className="text-sm font-semibold text-gray-700 mb-1">Imported listings</h3>
             {/* Each import was verified on its own; the market page's state
                 (loading, down, SPV) says nothing about it. */}
-            <ListingsTable rows={imported} verified />
+            <ListingsTable rows={imported} />
           </div>
         )}
         <div>

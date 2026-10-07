@@ -12,6 +12,7 @@ use crate::commands::draft_ctx;
 use crate::db::queries;
 use crate::error::AppError;
 use crate::market::learnhns::{name_from_listing_link, LearnHnsClient};
+use crate::models::settings::SettingsMap;
 use crate::noncustodial::derivation;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::{ChainSource, NodeRpcClient};
@@ -121,7 +122,7 @@ pub enum ImportSource {
 
 /// Read the `learnhns_base_url` test seam, but ONLY in debug builds / tests.
 /// Release builds always talk to the real LearnHNS Market host.
-fn learnhns_base_url_override(_settings: &std::collections::HashMap<String, String>) -> String {
+fn learnhns_base_url_override(_settings: &SettingsMap) -> String {
     #[cfg(any(debug_assertions, test))]
     {
         // Unset is empty, which the caller reads as "use the real host".
@@ -136,9 +137,7 @@ fn learnhns_base_url_override(_settings: &std::collections::HashMap<String, Stri
     }
 }
 
-fn learnhns_client(
-    settings: &std::collections::HashMap<String, String>,
-) -> Result<LearnHnsClient, AppError> {
+fn learnhns_client(settings: &SettingsMap) -> Result<LearnHnsClient, AppError> {
     let base = learnhns_base_url_override(settings);
     if base.trim().is_empty() {
         Ok(LearnHnsClient::new())
@@ -151,7 +150,7 @@ fn learnhns_client(
 struct BrowseCtx {
     network: Network,
     node: NodeRpcClient,
-    settings: std::collections::HashMap<String, String>,
+    settings: SettingsMap,
 }
 
 impl BrowseCtx {

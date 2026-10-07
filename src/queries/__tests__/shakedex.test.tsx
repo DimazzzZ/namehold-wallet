@@ -42,15 +42,9 @@ describe("shakedex queries", () => {
   it("useMarketPage asks shakedex_list_market for its page", async () => {
     invokeMock.mockResolvedValue(page);
     const { wrapper } = setup();
-    const { result } = renderHook(() => useMarketPage(true, 3), { wrapper });
+    const { result } = renderHook(() => useMarketPage(3), { wrapper });
     await waitFor(() => expect(result.current.data).toEqual(page));
     expect(invokeMock).toHaveBeenCalledWith("shakedex_list_market", { page: 3 });
-  });
-
-  it("useMarketPage does not call the backend while disabled", () => {
-    const { wrapper } = setup();
-    renderHook(() => useMarketPage(false, 1), { wrapper });
-    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it("useImportListing sends the source", async () => {

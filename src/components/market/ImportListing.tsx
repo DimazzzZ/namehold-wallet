@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { open } from "../../lib/dialog";
+import { mapError } from "../../lib/errors";
 import { useImportListing } from "../../queries/shakedex";
 import type { ImportSource, MarketRow } from "../../types";
 
@@ -84,7 +85,7 @@ export function ImportListing({ onImported, linkRefusal = null }: ImportListingP
       {linkRefusal && <p className="text-xs text-gray-500">{linkRefusal}</p>}
       {importListing.isError && (
         <p role="alert" className="text-sm text-red-600">
-          {String(importListing.error)}
+          {mapError(importListing.error)}
         </p>
       )}
     </div>

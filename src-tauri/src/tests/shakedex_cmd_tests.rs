@@ -574,6 +574,33 @@ async fn import_link_fetches_listing_file() {
     assert_eq!(row.current_price, Some(435_000_000));
 }
 
+/// There is no LearnHNS Market off mainnet (R15): a link import is refused
+/// with the sentence the UI shows, before anything is fetched.
+#[tokio::test]
+async fn import_link_off_mainnet_is_refused_before_fetching() {
+    let node = mockito::Server::new_async().await;
+    let mut market = mockito::Server::new_async().await;
+    let fetch = market
+        .mock("GET", "/listing/dexreviews/proof.json")
+        .with_body(LISTING_FILE)
+        .expect(0)
+        .create_async()
+        .await;
+    let conn = seeded("regtest", "mnemonic_hot", &node.url());
+    set(&conn, "learnhns_base_url", &market.url());
+    let app = app_with(conn);
+    let err = shakedex_import_listing(
+        app.state(),
+        ImportSource::Link {
+            url: "https://market.learnhns.com/listing/dexreviews".into(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(err_text(err).contains(crate::commands::shakedex::MARKET_MAINNET_ONLY));
+    fetch.assert_async().await;
+}
+
 /// The link names the listing the user asked for: a file for another name
 /// is refused, not shown under the link's name or in its place.
 #[tokio::test]

@@ -163,6 +163,55 @@ describe("MarketPage", () => {
     expect(screen.getByTestId("market-next")).toBeEnabled();
   });
 
+  it("does not call a page empty of buyable listings when some could not be checked", async () => {
+    mockMarket(
+      page({
+        rows: [],
+        hidden: { ...noHidden, couldNotCheck: 3 },
+        hiddenRows: [],
+      }),
+    );
+    renderPage();
+    expect(
+      await screen.findByText(
+        "No listing right now could be shown as buyable; 3 could not be checked against your node.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No buyable listings right now.")).toBeNull();
+  });
+
+  it("names every kind of hidden listing in the counter", async () => {
+    mockMarket(
+      page({
+        hidden: {
+          soldOrCancelled: 1,
+          failedVerification: 2,
+          expiresBeforeFinalize: 3,
+          notYetValid: 4,
+          couldNotCheck: 5,
+        },
+      }),
+    );
+    renderPage();
+    expect(
+      await screen.findByText(
+        "Hidden 15: 1 already sold or cancelled, 2 failed verification, 3 expire before they can be finalized, 4 not valid yet, 5 could not be checked",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("says why the market could not be loaded", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "list_wallet_profiles") return Promise.resolve([profile()]);
+      if (cmd === "shakedex_list_market")
+        return Promise.reject("LearnHNS Market request failed: HTTP 502");
+      return Promise.resolve(null);
+    });
+    renderPage();
+    expect(await screen.findByText("Could not load the market")).toBeInTheDocument();
+    expect(screen.getByText("LearnHNS Market request failed: HTTP 502")).toBeInTheDocument();
+  });
+
   it("shows no pager for a single page", async () => {
     mockMarket(page());
     renderPage();
@@ -212,7 +261,19 @@ describe("MarketPage", () => {
   });
 
   it("in SPV mode shows rows as not verified and without Buy", async () => {
-    mockMarket(page({ verified: false }));
+    // The backend's SPV page: every row unverified, without a price
+    // (`list_market_unverified_in_spv`).
+    mockMarket(
+      page({
+        verified: false,
+        rows: [
+          row({
+            verdict: { verdict: "hidden", kind: "unverified" },
+            currentPrice: null,
+          }),
+        ],
+      }),
+    );
     renderPage();
     expect(await screen.findByText(".dexreviews")).toBeInTheDocument();
     expect(
@@ -345,7 +406,7 @@ describe("MarketPage", () => {
     expect(screen.getByText("From file")).toBeInTheDocument();
   });
 
-  it("gives an SPV import the backend's could-not-check verdict and no Buy", async () => {
+  it("gives an SPV import the backend's unverified verdict and no Buy", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "shakedex_list_market")
         return Promise.resolve(page({ verified: false, rows: [] }));
@@ -423,6 +484,25 @@ describe("MarketPage", () => {
       screen.getByText("Could not be checked: node did not report the name's height"),
     ).toBeInTheDocument();
     expect(screen.queryByText("Not verified — needs a full or remote node")).toBeNull();
+    expect(screen.queryByTestId("market-buy")).not.toBeInTheDocument();
+  });
+
+  it("shows why an import whose name expires before finalize cannot be bought, without Buy", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "shakedex_list_market") return Promise.resolve(page({ rows: [] }));
+      if (cmd === "shakedex_import_listing")
+        return Promise.resolve(
+          row({ name: "imported", verdict: { verdict: "hidden", kind: "expiresBeforeFinalize" } }),
+        );
+      return Promise.resolve(null);
+    });
+    renderPage();
+    fireEvent.change(await screen.findByTestId("listing-paste"), { target: { value: "{}" } });
+    fireEvent.click(screen.getByTestId("import-listing-text"));
+    expect(await screen.findByText(".imported")).toBeInTheDocument();
+    expect(
+      screen.getByText("The name expires before a purchase could be finalized."),
+    ).toBeInTheDocument();
     expect(screen.queryByTestId("market-buy")).not.toBeInTheDocument();
   });
 
