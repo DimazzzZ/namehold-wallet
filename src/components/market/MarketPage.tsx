@@ -4,17 +4,22 @@ import { Alert } from "../ui/Alert";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Disclosure } from "../ui/Disclosure";
+import { Tooltip } from "../ui/Tooltip";
 import { ImportListing } from "./ImportListing";
+import { PurchaseConfirm } from "./PurchaseConfirm";
 import {
   MARKET_MAINNET_ONLY,
   NOT_VERIFIED,
   approxWait,
+  canBuyShakedex,
   hiddenReasonText,
   hiddenSummary,
   listedUntilText,
+  purchaseRefusal,
 } from "./marketText";
 import { useMarketPage } from "../../queries/shakedex";
-import { useActiveProfile } from "../../queries/wallet";
+import { useActiveProfile, useWriteCapability } from "../../queries/wallet";
+import { useSettingsStore } from "../../stores/settings";
 import { displayName } from "../../lib/idn";
 import { mapError } from "../../lib/errors";
 import { formatHns } from "../../lib/utils";
@@ -75,9 +80,14 @@ const ORIGIN_BADGE: Record<Exclude<Origin, "market">, string> = {
 
 interface ListingsTableProps {
   rows: { row: MarketRow; origin: Origin }[];
+  /** False for a profile that cannot buy (R16): Buy shows, disabled. */
+  canBuy: boolean;
+  /** Why Buy is disabled, the backend's sentence; shown on the button too. */
+  refusal: string | null;
+  onBuy: (row: MarketRow, fromMarket: boolean) => void;
 }
 
-function ListingsTable({ rows }: ListingsTableProps) {
+function ListingsTable({ rows, canBuy, refusal, onBuy }: ListingsTableProps) {
   return (
     <table className="w-full text-sm">
       <thead>
@@ -125,8 +135,24 @@ function ListingsTable({ rows }: ListingsTableProps) {
                 </div>
               </td>
               <td className="py-1 text-right">
-                {row.verdict.verdict === "hidden" && row.verdict.kind === "unverified" && (
+                {row.verdict.verdict === "hidden" && row.verdict.kind === "unverified" ? (
                   <span className="text-xs text-gray-500">{NOT_VERIFIED}</span>
+                ) : row.verdict.verdict !== "buyable" ? null : (
+                  // Only a row verified on the node is buyable: in SPV and
+                  // Explorer modes every row comes back unverified. A LearnHNS
+                  // link is the market's own listing file: its published fee
+                  // applies just as for a row of the market page.
+                  <Tooltip content={canBuy ? null : refusal}>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      data-testid="market-buy"
+                      disabled={!canBuy}
+                      onClick={() => onBuy(row, origin !== "file")}
+                    >
+                      Buy
+                    </Button>
+                  </Tooltip>
                 )}
               </td>
             </tr>
@@ -149,12 +175,24 @@ function emptyPageText(pageCount: number, couldNotCheck: number): string {
   return `No buyable listings ${where}.`;
 }
 
+/** The listing the user chose to buy; `PurchaseConfirm` is rendered from it. */
+export interface PendingPurchase {
+  row: MarketRow;
+  fromMarket: boolean;
+}
+
 export default function MarketPage() {
   const [pageNumber, setPageNumber] = useState(1);
   const market = useMarketPage(pageNumber);
   const { data: profile } = useActiveProfile();
+  const { data: writeCap } = useWriteCapability();
+  const experimental = useSettingsStore((s) => s.settings?.shakedex_experimental);
+  const canBuy = canBuyShakedex(profile?.kind, writeCap, profile?.network, experimental);
+  const refusal = purchaseRefusal(profile?.kind, writeCap, profile?.network, experimental);
   const [imported, setImported] = useState<ImportedRow[]>([]);
+  const [purchase, setPurchase] = useState<PendingPurchase | null>(null);
 
+  const onBuy = (row: MarketRow, fromMarket: boolean) => setPurchase({ row, fromMarket });
   const onImported = (row: MarketRow, source: ImportSource["kind"]) =>
     setImported((prev) => [...prev, { row, origin: source === "link" ? "link" : "file" }]);
 
@@ -165,9 +203,10 @@ export default function MarketPage() {
     <div>
       <PageHeader
         title="Market"
-        subtitle="Names listed through Shakedex. Every listing is checked against your node."
+        subtitle="Names listed through Shakedex. Every listing is checked against your node before you can buy it."
       />
       <div className="space-y-6">
+        {profile != null && refusal && <Alert tone="info">{refusal}</Alert>}
         {market.isLoading && <p className="text-sm text-gray-500">Loading listings…</p>}
         {market.isError && (
           <Alert tone="error" title="Could not load the market">
@@ -176,8 +215,8 @@ export default function MarketPage() {
         )}
         {page && !page.networkHasMarket && (
           <Alert tone="info">
-            There is no LearnHNS Market for this network. You can still check a listing file or
-            pasted text below.
+            There is no LearnHNS Market for this network. You can still buy a name from a listing
+            file or pasted text below.
           </Alert>
         )}
         {page && page.networkHasMarket && page.rows.length === 0 && (
@@ -186,7 +225,12 @@ export default function MarketPage() {
           </p>
         )}
         {page && page.networkHasMarket && page.rows.length > 0 && (
-          <ListingsTable rows={page.rows.map((row) => ({ row, origin: "market" as const }))} />
+          <ListingsTable
+            rows={page.rows.map((row) => ({ row, origin: "market" as const }))}
+            canBuy={canBuy}
+            refusal={refusal}
+            onBuy={onBuy}
+          />
         )}
         {page && page.networkHasMarket && page.pageCount > 1 && (
           <div className="flex items-center gap-3 text-sm">
@@ -230,7 +274,7 @@ export default function MarketPage() {
             <h3 className="text-sm font-semibold text-gray-700 mb-1">Imported listings</h3>
             {/* Each import was verified on its own; the market page's state
                 (loading, down, SPV) says nothing about it. */}
-            <ListingsTable rows={imported} />
+            <ListingsTable rows={imported} canBuy={canBuy} refusal={refusal} onBuy={onBuy} />
           </div>
         )}
         <div>
@@ -242,6 +286,14 @@ export default function MarketPage() {
             }
           />
         </div>
+        {purchase && (
+          <PurchaseConfirm
+            open
+            row={purchase.row}
+            fromMarket={purchase.fromMarket}
+            onClose={() => setPurchase(null)}
+          />
+        )}
       </div>
     </div>
   );

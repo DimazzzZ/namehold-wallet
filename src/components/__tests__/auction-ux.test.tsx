@@ -192,6 +192,68 @@ describe("WalletView — auction UX", () => {
     expect(screen.getByText("Not confirmed")).toBeInTheDocument();
   });
 
+  it("a dropped or failed draft's hint says why", async () => {
+    const why = "the transaction was never mined";
+    invokeMock.mockImplementation(
+      routeWallet({
+        drafts: [
+          draft({ id: "c", txid: "ccc0000000000003", status: "dropped", errorMessage: why }),
+        ],
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+    const badge = await screen.findByText("Not confirmed");
+    fireEvent.mouseEnter(badge.parentElement!);
+    expect(await screen.findByText(why)).toBeInTheDocument();
+  });
+
+  it("a purchase lost while paying nothing reads Lost, and says nothing was paid", async () => {
+    // The shape `list_tx_drafts` sends for it: the draft dropped with the
+    // reason, and the purchase's own lost reason beside it.
+    const lost =
+      "someone else bought the name first, or the seller cancelled the listing — nothing was paid";
+    invokeMock.mockImplementation(
+      routeWallet({
+        drafts: [
+          draft({
+            id: "c",
+            txid: "ccc0000000000003",
+            status: "dropped",
+            errorMessage: lost,
+            purchaseLostReason: lost,
+          }),
+        ],
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+    const badge = await screen.findByText("Lost");
+    expect(within(badge.closest("tr")!).queryByText("Not confirmed")).not.toBeInTheDocument();
+    fireEvent.mouseEnter(badge.parentElement!);
+    expect(await screen.findByText(lost)).toBeInTheDocument();
+  });
+
+  it("a purchase lost after it paid reads Lost, with the reason, not Confirmed", async () => {
+    const lost =
+      "the name expired before it was finalized — the purchase was paid, but the name is lost";
+    invokeMock.mockImplementation(
+      routeWallet({
+        drafts: [
+          draft({
+            id: "d",
+            txid: "ddd0000000000004",
+            status: "confirmed",
+            purchaseLostReason: lost,
+          }),
+        ],
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+    const badge = await screen.findByText("Lost");
+    expect(within(badge.closest("tr")!).queryByText("Confirmed")).not.toBeInTheDocument();
+    fireEvent.mouseEnter(badge.parentElement!);
+    expect(await screen.findByText(lost)).toBeInTheDocument();
+  });
+
   it("shows the Locked in Auctions balance only when a lockup exists", async () => {
     invokeMock.mockImplementation(routeWallet({ lockupDoos: 2_000_000 }));
     render(<WalletView />, { wrapper: wrapper() });

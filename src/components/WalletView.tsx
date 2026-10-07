@@ -15,7 +15,10 @@ import {
   useSignTxDraft,
   useBroadcastTxDraft,
   useNameAction,
+  useExecuteDraft,
+  useDeleteTxDraft,
 } from "../queries/wallet";
+import { useBuildPurchaseFinalize } from "../queries/shakedex";
 import {
   useReadNames,
   useReadBalance,
@@ -30,6 +33,7 @@ import {
   auctionPhase,
   formatCountdown,
   pendingBroadcastBadge,
+  shakedexStatusLabel,
   taskSummaryFromCapabilities,
 } from "../lib/auction";
 import { displayName } from "../lib/idn";
@@ -63,7 +67,7 @@ import {
   truncateMiddle,
 } from "../lib/utils";
 import { mergeActivity } from "../lib/activity";
-import { mapError } from "../lib/errors";
+import { mapError, stageOf, unwrapStaged } from "../lib/errors";
 import { explorerAddressUrl, explorerCoversNetwork } from "../lib/openExternal";
 import { useUiStore } from "../stores/ui";
 import { QRCodeSVG } from "qrcode.react";
@@ -71,6 +75,7 @@ import { ReceiveAddressList } from "./ReceiveAddressList";
 import type { NameActionCapabilities, TxDraftSummary } from "../types";
 import { subscribeAction } from "../lib/actionBus";
 import { Tooltip } from "./ui/Tooltip";
+import { canUseShakedex, shakedexRefusal } from "./market/marketText";
 
 type BatchAction = "renew" | "reveal" | "redeem" | "finalize" | "transfer";
 
@@ -116,7 +121,7 @@ export function WalletView() {
   // wallet never placed a bid. Watch-only profiles never show these alerts
   // (no actions to take), so skip the fetch entirely for them.
   const { data: nameCaps = [], isError: nameCapsError } = useNamesActionCapabilities(
-    profile?.watchOnly ? [] : names.map((n) => n.name),
+    profile?.watchOnly ? [] : names.filter((n) => !n.shakedex).map((n) => n.name),
     profile?.id ?? null,
   );
 
@@ -127,6 +132,12 @@ export function WalletView() {
     () => new Map<string, NameActionCapabilities>(nameCaps.map((c) => [c.name, c])),
     [nameCaps],
   );
+
+  const buildFinalize = useBuildPurchaseFinalize();
+  const executeDraft = useExecuteDraft();
+  const deleteDraft = useDeleteTxDraft();
+  // Purchase id of the Finalize in flight, to disable that row's button.
+  const [finalizingId, setFinalizingId] = useState<string | null>(null);
 
   const startSync = useStartFullSync();
   const startHsd = useStartHsd();
@@ -191,6 +202,8 @@ export function WalletView() {
   const unlocked = isLedger ? true : (signer?.unlocked ?? false);
   const canWrite = writeCap?.canWrite ?? false;
   const isWatchOnly = profile?.watchOnly ?? false;
+  const canFinalizePurchase = canUseShakedex(profile?.kind, writeCap);
+  const purchaseRefusal = shakedexRefusal(profile?.kind, writeCap);
   const address = profile?.receiveAddress ?? null;
   // Spending uses node-synced coins (tracked_utxos), NOT the explorer balance.
   // If the explorer shows funds but nothing is synced yet, the user must connect
@@ -270,7 +283,12 @@ export function WalletView() {
         setSelectedNameIndex((i) => Math.max(i - 1, 0));
         break;
       case "wallet:list:open":
-        if (selectedNameIndex >= 0 && filteredNames[selectedNameIndex]) {
+        // A purchase is not ours yet: there is nothing to manage.
+        if (
+          selectedNameIndex >= 0 &&
+          filteredNames[selectedNameIndex] &&
+          !filteredNames[selectedNameIndex]!.shakedex
+        ) {
           setManageName(filteredNames[selectedNameIndex]!.name);
         }
         break;
@@ -292,6 +310,8 @@ export function WalletView() {
   };
 
   // Batch selection helpers.
+  // Purchase rows are not ours yet: no batch action applies to them.
+  const selectableNames = filteredNames.filter((n) => !n.shakedex);
   const toggleName = (name: string) =>
     setSelectedNames((prev) => {
       const next = new Set(prev);
@@ -300,6 +320,43 @@ export function WalletView() {
       return next;
     });
   const clearSelection = () => setSelectedNames(new Set());
+
+  // Finalize a purchased name: build the draft, then unlock → secure confirm →
+  // sign → broadcast. The draft's warnings carry the hint that the name still
+  // has the seller's DNS records (R14).
+  const finalizePurchase = async (purchaseId: string) => {
+    if (!profile) return;
+    setFinalizingId(purchaseId);
+    try {
+      let draft: TxDraftSummary;
+      try {
+        draft = await buildFinalize.mutateAsync({ purchaseId, feeRate: null });
+      } catch (e) {
+        showToast(mapError(e, "build"), "error");
+        return;
+      }
+      try {
+        const result = await executeDraft.run(draft.id, profile.id, unlocked);
+        qc.invalidateQueries({ queryKey: ["wallet"] });
+        qc.invalidateQueries({ queryKey: ["read"] });
+        showToast(`Finalize broadcast — ${result.txid.slice(0, 12)}…`, "success");
+        for (const w of draft.summary?.warnings ?? []) showToast(w, "info");
+      } catch (e) {
+        showToast(mapError(unwrapStaged(e), stageOf(e)), "error");
+        // A cancelled confirm or an unlock/sign failure leaves an orphan draft
+        // holding coins; a broadcast-stage failure may have a tx in flight.
+        if (stageOf(e) === "sign") {
+          try {
+            await deleteDraft.mutateAsync(draft.id);
+          } catch {
+            // Best-effort; the Activity view can still discard it.
+          }
+        }
+      }
+    } finally {
+      setFinalizingId(null);
+    }
+  };
 
   // Per-selection eligibility for batch actions. `nameCaps` is pinned to the
   // active profile via useNamesActionCapabilities and updates when phases move.
@@ -1152,16 +1209,17 @@ export function WalletView() {
                         <input
                           type="checkbox"
                           checked={
-                            selectedNames.size > 0 && selectedNames.size === filteredNames.length
+                            selectedNames.size > 0 && selectedNames.size === selectableNames.length
                           }
                           ref={(el) => {
                             if (el)
                               el.indeterminate =
-                                selectedNames.size > 0 && selectedNames.size < filteredNames.length;
+                                selectedNames.size > 0 &&
+                                selectedNames.size < selectableNames.length;
                           }}
                           onChange={(e) => {
                             if (e.target.checked)
-                              setSelectedNames(new Set(filteredNames.map((n) => n.name)));
+                              setSelectedNames(new Set(selectableNames.map((n) => n.name)));
                             else setSelectedNames(new Set());
                           }}
                           aria-label="Select all names"
@@ -1200,24 +1258,32 @@ export function WalletView() {
                         }`}
                       >
                         <td className="py-1 pr-4">
-                          <input
-                            type="checkbox"
-                            checked={selectedNames.has(n.name)}
-                            onChange={() => toggleName(n.name)}
-                            aria-label={`Select ${displayName(n.name)}`}
-                          />
+                          {!n.shakedex && (
+                            <input
+                              type="checkbox"
+                              checked={selectedNames.has(n.name)}
+                              onChange={() => toggleName(n.name)}
+                              aria-label={`Select ${displayName(n.name)}`}
+                            />
+                          )}
                         </td>
                         <td className="py-1 pr-4 text-xs font-mono">
-                          <Tooltip content="View name info">
-                            <button
-                              type="button"
-                              className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
-                              onClick={() => setManageName(n.name)}
-                              data-testid="owned-name-info-link"
-                            >
+                          {n.shakedex ? (
+                            <span data-testid="owned-name-purchase-label">
                               .{displayName(n.name)}
-                            </button>
-                          </Tooltip>
+                            </span>
+                          ) : (
+                            <Tooltip content="View name info">
+                              <button
+                                type="button"
+                                className="text-blue-500 hover:text-blue-700 hover:underline cursor-pointer"
+                                onClick={() => setManageName(n.name)}
+                                data-testid="owned-name-info-link"
+                              >
+                                .{displayName(n.name)}
+                              </button>
+                            </Tooltip>
+                          )}
                         </td>
                         <td className="py-1 pr-4">
                           {/* What the name needs, not which auction phase it
@@ -1230,6 +1296,12 @@ export function WalletView() {
                               the window before capabilities load, and for a
                               watch-only profile that never fetches them. */}
                           {(() => {
+                            // A purchase in flight comes first: it is not
+                            // ours yet, so there are no capabilities for it.
+                            if (n.shakedex) {
+                              const s = shakedexStatusLabel(n.shakedex);
+                              return <Badge variant={s.variant}>{s.label}</Badge>;
+                            }
                             const task = taskSummaryFromCapabilities(capsByName.get(n.name));
                             // A transaction of ours for this name is in flight:
                             // the task is a verdict the chain has not reached
@@ -1288,11 +1360,32 @@ export function WalletView() {
                           )}
                         </td>
                         <td className="py-1 text-right">
-                          {!isWatchOnly && (
-                            <Button size="sm" variant="ghost" onClick={() => setManageName(n.name)}>
-                              Manage
-                            </Button>
-                          )}
+                          {!isWatchOnly &&
+                            (n.shakedex ? (
+                              n.shakedex.state === "awaitingFinalize" &&
+                              n.shakedex.blocksRemaining === 0 && (
+                                <Tooltip content={purchaseRefusal}>
+                                  <Button
+                                    size="sm"
+                                    variant="primary"
+                                    data-testid="owned-name-finalize"
+                                    disabled={finalizingId !== null || !canFinalizePurchase}
+                                    onClick={() => finalizePurchase(n.shakedex!.purchaseId)}
+                                  >
+                                    Finalize
+                                  </Button>
+                                </Tooltip>
+                              )
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                data-testid="owned-name-manage"
+                                onClick={() => setManageName(n.name)}
+                              >
+                                Manage
+                              </Button>
+                            ))}
                         </td>
                       </tr>
                     ))}

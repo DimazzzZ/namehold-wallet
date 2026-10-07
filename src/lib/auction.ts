@@ -6,7 +6,7 @@
 // optional/nullable — the explorer path may omit the auction stats entirely, so
 // every function degrades to "unknown" rather than throwing.
 
-import type { HsdNameStats, AuctionTaskState, NameActionCapabilities } from "../types";
+import type { HsdName, HsdNameStats, AuctionTaskState, NameActionCapabilities } from "../types";
 import { formatHns } from "./utils";
 
 export type AuctionPhase =
@@ -515,4 +515,21 @@ export function redeemExplainer(caps: NameActionCapabilities | null | undefined)
 export function pendingBroadcastBadge(action: string | null | undefined): string | null {
   if (!action) return null;
   return `${actionTitle(action)} · waiting for a block`;
+}
+
+/**
+ * The Owned Names badge for a name bought through Shakedex that has not yet
+ * reached us: "Unconfirmed purchase", then the transfer lockup countdown, then
+ * "Ready to finalize" once it is over.
+ */
+export function shakedexStatusLabel(s: NonNullable<HsdName["shakedex"]>): {
+  label: string;
+  variant: "default" | "info" | "success";
+} {
+  if (s.state === "unconfirmed") return { label: "Unconfirmed purchase", variant: "default" };
+  if (s.blocksRemaining === null) return { label: "Awaiting finalize", variant: "info" };
+  if (s.blocksRemaining > 0) {
+    return { label: `Awaiting finalize · ${s.blocksRemaining} blocks`, variant: "info" };
+  }
+  return { label: "Ready to finalize", variant: "success" };
 }

@@ -101,6 +101,7 @@ export function Settings() {
         close_to_tray: settings.close_to_tray,
         launch_at_login: settings.launch_at_login,
         fee_rate_doos_per_kvb: settings.fee_rate_doos_per_kvb,
+        shakedex_experimental: settings.shakedex_experimental,
       });
     }
   }, [settings]);
@@ -569,6 +570,23 @@ export function Settings() {
           <DebugNotificationsPanel />
         </div>
       )}
+
+      <div className="bg-white rounded p-4 border border-gray-200 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-700">Shakedex</h3>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settingToBool(form.shakedex_experimental)}
+            onChange={(e) => updateField("shakedex_experimental", boolToSetting(e.target.checked))}
+            data-testid="shakedex-experimental-checkbox"
+          />
+          Allow buying names on mainnet through Shakedex (experimental)
+        </label>
+        <p className="text-xs text-gray-500">
+          Testnet and regtest purchases are always allowed. Finalizing a name you already bought
+          works whatever this says.
+        </p>
+      </div>
 
       {/* Updates: shows the running version and drives the check-for-updates
           flow (shared state with the global update banner). */}

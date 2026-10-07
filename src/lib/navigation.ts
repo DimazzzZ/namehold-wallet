@@ -44,7 +44,7 @@ export const PRIMARY_ROUTES: PrimaryRoute[] = [
     key: "market",
     to: "/market",
     label: "Market",
-    description: "Browse names listed through Shakedex",
+    description: "Buy names listed through Shakedex",
   },
 ];
 

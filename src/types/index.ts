@@ -121,6 +121,18 @@ export interface HsdName {
   registered?: boolean | null;
   /** True when the name's registration has expired. */
   expired?: boolean | null;
+  /**
+   * Present only on a purchased name still on its way (an unconfirmed
+   * purchase, or one awaiting finalize). `blocksRemaining` is the blocks left
+   * in the transfer lockup, null until known.
+   */
+  shakedex?: ShakedexNameState;
+}
+
+export interface ShakedexNameState {
+  state: "unconfirmed" | "awaitingFinalize";
+  blocksRemaining: number | null;
+  purchaseId: string;
 }
 
 export interface HsdNameStats {
@@ -388,6 +400,12 @@ export interface Settings {
    */
   fee_rate_doos_per_kvb: string;
   /**
+   * "true" | "false" — allow Shakedex purchases on mainnet (experimental).
+   * Default "false". Testnet and regtest purchases never need it, and
+   * finalizing an already-bought name ignores it.
+   */
+  shakedex_experimental: string;
+  /**
    * "true" | "false" — OS notifications when a new app version is available
    * (I2). Opt-in; default off. When enabled, the Rust background loop checks
    * for updates every ~4 hours and fires an OS notification if one is found,
@@ -466,6 +484,11 @@ export interface TxDraftSummary {
   /** Block height the tx was mined at, once `status` is "confirmed". */
   confirmationHeight: number | null;
   createdAt: string;
+  /**
+   * Why the Shakedex purchase this draft sent was lost, whatever `status`
+   * says: a purchase lost after it paid stays "confirmed". Null otherwise.
+   */
+  purchaseLostReason?: string | null;
 }
 
 export interface BroadcastResult {
@@ -854,3 +877,24 @@ export interface MarketPage {
 
 export type ImportSource =
   { kind: "file"; path: string } | { kind: "text"; json: string } | { kind: "link"; url: string };
+
+export interface MarketFeeLine {
+  valueDoos: number;
+  /** "1.99%", as the secure window shows it; null when the fee is no meaningful share of the price. */
+  percentText: string | null;
+  published: boolean;
+  /** A fee output would actually be added (valid address, not dust). */
+  payable: boolean;
+  warning: string | null;
+}
+
+export interface PurchasePreview {
+  name: string;
+  priceDoos: number;
+  marketFee: MarketFeeLine | null;
+  networkFeeDoos: number;
+  totalDoos: number;
+  /** "after a finalize, 288 blocks (about 2 days) after the purchase is mined", for the profile's network. */
+  finalizeWait: string;
+  warnExpiry: boolean;
+}

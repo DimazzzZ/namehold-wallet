@@ -491,11 +491,16 @@ export function ActivityRow({
   const showNameValue =
     NAME_COVENANT_ACTIONS.has(row.action) && row.valueDoos === 0 && row.nameValueDoos != null;
 
-  const badge = statusBadge(row.status, {
-    confirmed: row.confirmed,
-    height: row.height ?? null,
-  });
-  const { variant: badgeVariant, label: badgeLabel, hint: badgeHint } = badge;
+  // A lost purchase says so whatever its draft's status: one lost after it
+  // paid still reads "confirmed".
+  const badge = row.lostReason
+    ? { variant: "error" as const, label: "Lost", hint: row.lostReason }
+    : statusBadge(row.status, {
+        confirmed: row.confirmed,
+        height: row.height ?? null,
+      });
+  const { variant: badgeVariant, label: badgeLabel } = badge;
+  const badgeHint = row.statusNote ?? badge.hint;
 
   const linkClass = "text-blue-500 hover:text-blue-700 hover:underline cursor-pointer";
 

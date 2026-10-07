@@ -50,6 +50,14 @@ export interface MergedRow {
   feeDoos: number | null;
   /** Draft lifecycle status, or "onchain" for node-only rows with no draft. */
   status: DraftStatus | "onchain";
+  /**
+   * Why a draft ended `dropped` or `failed` (its stored error message), e.g.
+   * a lost purchase's "someone else bought the name first, or the seller
+   * cancelled the listing — nothing was paid" (R13); null otherwise.
+   */
+  statusNote: string | null;
+  /** Why the purchase this row sent was lost, paid or not (R13); null otherwise. */
+  lostReason: string | null;
   confirmed: boolean;
   height: number | null;
   /** Unix-seconds sort key (ActionRow.time when present, else createdAt parsed). */
@@ -124,6 +132,8 @@ export function mergeActivity(rows: ActionRow[], drafts: TxDraftSummary[]): Merg
       direction: row.direction,
       feeDoos: draft?.summary?.feeDoos ?? null,
       status: draft?.status ?? "onchain",
+      statusNote: draft ? statusNote(draft) : null,
+      lostReason: draft?.purchaseLostReason ?? null,
       confirmed: row.confirmed,
       height: row.height ?? null,
       sortTs: row.time ?? 0,
@@ -178,11 +188,17 @@ function draftToMergedRow(d: TxDraftSummary): MergedRow {
     direction,
     feeDoos: summary?.feeDoos ?? null,
     status: d.status,
+    statusNote: statusNote(d),
+    lostReason: d.purchaseLostReason ?? null,
     confirmed: d.status === "confirmed",
     height: d.confirmationHeight ?? null,
     sortTs: parseCreatedAt(d.createdAt),
     counterparty: summary?.recipientAddress ?? null,
   };
+}
+
+function statusNote(d: TxDraftSummary): string | null {
+  return d.status === "dropped" || d.status === "failed" ? (d.errorMessage ?? null) : null;
 }
 
 /** Rank draft statuses so that when two drafts share a txid we keep the most advanced. */
