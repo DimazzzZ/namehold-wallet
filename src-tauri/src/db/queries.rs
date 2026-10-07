@@ -1110,6 +1110,7 @@ impl TxDraftRow {
             txid: self.txid.clone(),
             confirmation_height: self.confirmation_height,
             created_at: self.created_at.clone(),
+            purchase_lost_reason: None,
         }
     }
 }
@@ -1556,6 +1557,76 @@ pub fn list_recent_owned_shakedex_purchases(
     Ok(rows)
 }
 
+/// The `shakedex` object on an Owned Names row (`ShakedexNameState` in the UI).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurchaseNameState {
+    pub state: PurchaseState,
+    pub blocks_remaining: Option<i64>,
+    pub purchase_id: String,
+}
+
+/// A profile's purchased names still on their way (`unconfirmed` or
+/// `awaiting_finalize`), shaped like [`read_cached_names`] rows so Owned Names
+/// can list them, plus a [`PurchaseNameState`] under `shakedex`. A purchase
+/// already sent (its draft [`may_have_reached_chain`]) is listed as `unconfirmed` before the purchase job has
+/// looked at it: that job runs only against an authoritative node, and the
+/// name appears from the moment it is sent (R14).
+pub fn read_shakedex_purchase_names(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT p.id, p.name, p.state, p.blocks_remaining, p.destination_address
+         FROM shakedex_purchases p
+         WHERE p.wallet_profile_id = ?1
+           AND (p.state IN (?2, ?3)
+                OR (p.state = ?4 AND EXISTS (
+                    SELECT 1 FROM wallet_tx_drafts d
+                    WHERE d.id = p.purchase_draft_id
+                      -- may_have_reached_chain
+                      AND d.status IN ('broadcasted', 'confirmed', 'broadcast_pending'))))
+         ORDER BY p.name, p.created_at, p.id",
+    )?;
+    let rows = stmt.query_map(
+        params![
+            profile_id,
+            PurchaseState::Unconfirmed,
+            PurchaseState::AwaitingFinalize,
+            PurchaseState::PendingSend
+        ],
+        |row| {
+            let id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let state = match row.get::<_, PurchaseState>(2)? {
+                // Sent, not yet seen by the purchase job.
+                PurchaseState::PendingSend => PurchaseState::Unconfirmed,
+                s => s,
+            };
+            let blocks_remaining: Option<i64> = row.get(3)?;
+            let destination: String = row.get(4)?;
+            let shakedex = PurchaseNameState {
+                state,
+                blocks_remaining,
+                purchase_id: id,
+            };
+            Ok(serde_json::json!({
+                "name": name,
+                "state": serde_json::Value::Null,
+                "height": serde_json::Value::Null,
+                "renewal": serde_json::Value::Null,
+                "owner": serde_json::Value::Null,
+                "owner_address": destination,
+                "registered": true,
+                "expired": None::<bool>,
+                "stats": serde_json::Value::Null,
+                "shakedex": shakedex,
+            }))
+        },
+    )?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// Fetch one purchase, or `None`.
 pub fn get_shakedex_purchase(
     conn: &rusqlite::Connection,
@@ -1919,9 +1990,20 @@ pub fn list_tx_drafts(
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![profile_id], row_to_draft)?;
+    let mut lost = conn.prepare(
+        "SELECT purchase_draft_id, lost_reason FROM shakedex_purchases
+         WHERE wallet_profile_id = ?1 AND state = ?2",
+    )?;
+    let lost: std::collections::HashMap<String, Option<String>> = lost
+        .query_map(params![profile_id, PurchaseState::Lost], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
+        .collect::<Result<_, _>>()?;
     let mut out = Vec::new();
     for r in rows {
-        out.push(r?.to_summary());
+        let mut d = r?.to_summary();
+        d.purchase_lost_reason = lost.get(&d.id).cloned().flatten();
+        out.push(d);
     }
     Ok(out)
 }

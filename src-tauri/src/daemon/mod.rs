@@ -97,7 +97,7 @@ async fn sync_all_profiles(db_path: &str) -> Result<(), AppError> {
             hb_stop.clone(),
         );
 
-        // Run the 3-step sync. If any step fails internally, it's logged;
+        // Run the sync steps. If any step fails internally, it's logged;
         // the daemon just moves on. `sync_profile` itself never errors.
         sync_profile(db_path, &profile_id).await;
         eprintln!("namehold-syncd: synced profile {}", profile_id);
@@ -119,7 +119,7 @@ async fn sync_all_profiles(db_path: &str) -> Result<(), AppError> {
 /// Uses a locally-owned `SyncStatus` (never surfaced anywhere) purely as
 /// the argument type expected by the shared step functions. The daemon
 /// intentionally does not report progress to any UI.
-async fn sync_profile(db_path: &str, profile_id: &str) {
+pub(crate) async fn sync_profile(db_path: &str, profile_id: &str) {
     // Local status — never shared, never observed. Just satisfies the API of
     // the shared step functions, which use it internally for progress labels
     // and cancel_requested checks. The daemon never sets cancel_requested,
@@ -130,13 +130,10 @@ async fn sync_profile(db_path: &str, profile_id: &str) {
         s.running = true;
     }
 
-    // Run the shared 3-step orchestration (the single source of truth, also
-    // used by the app's `start_full_sync`). `report_progress = false` because
-    // the daemon has no UI to poll the progress labels.
-    sync_cmd::run_sync_steps(
-        &status, db_path, profile_id, /* report_progress = */ false,
-    )
-    .await;
+    // Run the shared sync steps (the single source of truth, also
+    // used by the app's `start_full_sync`). The daemon caller: it has no UI
+    // to poll the progress labels, and it never broadcasts.
+    sync_cmd::run_sync_steps(&status, db_path, profile_id, sync_cmd::SyncCaller::Daemon).await;
 
     // Stamp the explorer sync timestamp on a clean run (same policy as
     // start_full_sync).

@@ -20,6 +20,7 @@ mod namebase;
 pub mod noncustodial;
 mod providers;
 mod security;
+pub mod shakedex_jobs;
 #[cfg(test)]
 mod tests;
 mod wallet_delete;

@@ -723,7 +723,13 @@ mod coverage_tests {
         let _guard = TempDbGuard(path.clone());
 
         let status: Arc<Mutex<SyncStatus>> = Arc::new(Mutex::new(SyncStatus::default()));
-        run_sync_steps(&status, path.to_str().unwrap(), PROFILE_A, true).await;
+        run_sync_steps(
+            &status,
+            path.to_str().unwrap(),
+            PROFILE_A,
+            crate::commands::sync::SyncCaller::App,
+        )
+        .await;
 
         let s = status.lock().await;
         // With report_progress=true and unroutable node+explorer, the step
@@ -742,7 +748,13 @@ mod coverage_tests {
         let _guard = TempDbGuard(path.clone());
 
         let status: Arc<Mutex<SyncStatus>> = Arc::new(Mutex::new(SyncStatus::default()));
-        run_sync_steps(&status, path.to_str().unwrap(), PROFILE_A, false).await;
+        run_sync_steps(
+            &status,
+            path.to_str().unwrap(),
+            PROFILE_A,
+            crate::commands::sync::SyncCaller::Daemon,
+        )
+        .await;
 
         let s = status.lock().await;
         // Step should remain at default "idle" — no progress updates.
@@ -759,7 +771,13 @@ mod coverage_tests {
         }
 
         let status: Arc<Mutex<SyncStatus>> = Arc::new(Mutex::new(SyncStatus::default()));
-        run_sync_steps(&status, path.to_str().unwrap(), PROFILE_A, true).await;
+        run_sync_steps(
+            &status,
+            path.to_str().unwrap(),
+            PROFILE_A,
+            crate::commands::sync::SyncCaller::App,
+        )
+        .await;
 
         let s = status.lock().await;
         // SPV mode sets progress_label mentioning "SPV" during step 1.
@@ -1090,7 +1108,13 @@ mod coverage_tests {
         set_node(&path, &server.url());
 
         let status: Arc<Mutex<SyncStatus>> = Arc::new(Mutex::new(SyncStatus::default()));
-        run_sync_steps(&status, path.to_str().unwrap(), PROFILE_A, true).await;
+        run_sync_steps(
+            &status,
+            path.to_str().unwrap(),
+            PROFILE_A,
+            crate::commands::sync::SyncCaller::App,
+        )
+        .await;
 
         let s = status.lock().await;
         assert_eq!(
