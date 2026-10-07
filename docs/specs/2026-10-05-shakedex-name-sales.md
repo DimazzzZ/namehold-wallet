@@ -14,7 +14,7 @@ Protocol facts behind this spec, pinned to hsd v8.0.0, shakedex `2c4fa04eab68a52
 
 ## 3. Requirements
 
-Requirements name the code that enforces them and the test that pins them. Those of the selling and clean-up stages name code that does not exist yet (the cancel, the lock keys, selling and publishing). "UI only" marks a requirement whose behaviour lives in the frontend and is pinned by a component test.
+Requirements name the code that enforces them and the test that pins them. Those of the selling and clean-up stages name code that does not exist yet (the cancel, the lock keys, selling and publishing).
 
 ### 3.1 Protocol
 
