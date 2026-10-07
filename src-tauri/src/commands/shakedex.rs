@@ -20,11 +20,13 @@ use crate::models::settings::SettingsMap;
 use crate::noncustodial::derivation;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::{self, ChainSource, NodeRpcClient};
-use crate::noncustodial::send::DUST_THRESHOLD;
+use crate::noncustodial::send::{self, DUST_THRESHOLD};
 use crate::noncustodial::shakedex::listing_file::{ListingFile, MAX_LISTING_FILE_BYTES};
 use crate::noncustodial::shakedex::purchase::{
-    self, MarketFee, PurchaseInput, PurchaseSummary, PURCHASE_ACTION,
+    self, FinalizeInput, MarketFee, PurchaseFinalizeSummary, PurchaseInput, PurchaseSummary,
+    PURCHASE_ACTION, PURCHASE_FINALIZE_ACTION,
 };
+use crate::noncustodial::shakedex::script::lock_address;
 use crate::noncustodial::shakedex::template;
 use crate::noncustodial::shakedex::verify::{self, Buyable, Hidden, Verdict};
 use crate::noncustodial::tx::output_address_from_string;
@@ -37,6 +39,8 @@ use crate::AppState;
 const MARKET_PER_PAGE: u32 = 100;
 const UNPUBLISHED_FEE_WARNING: &str = "not signed by the seller and not the market's published \
      fee — anyone could have added it";
+const DNS_RECORDS_HINT: &str =
+    "The name still carries the seller's DNS records: update them once it is yours.";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -783,6 +787,160 @@ pub async fn shakedex_build_purchase_draft(
             updated_at: String::new(),
         },
     )?;
+    tx.commit()?;
+    queries::get_tx_draft(&conn, &draft_id)?
+        .map(|d| d.to_summary())
+        .ok_or_else(|| AppError::Other("draft vanished after insert".into()))
+}
+
+/// Build the draft (action `shakedex_purchase_finalize`) that finalizes a
+/// purchased name out of the lock to the purchase's reserved destination, and
+/// record it on the purchase. Not gated by `shakedex_experimental`: finishing
+/// a purchase already made always works (R15).
+///
+/// Everything is re-checked on the node right now rather than taken from the
+/// purchase row: the TRANSFER at `purchase_txid:0` is still unspent, sits at
+/// the lock address and commits to our destination (R13), and the transfer
+/// lockup is over at the live tip.
+#[tauri::command]
+pub async fn shakedex_build_purchase_finalize_draft(
+    state: State<'_, AppState>,
+    purchase_id: String,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    let mut ctx = software_writer_ctx(&state)?;
+    let (p, replaces) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let p = queries::get_shakedex_purchase(&conn, &purchase_id)?
+            .filter(|p| p.wallet_profile_id == ctx.profile_id)
+            .ok_or_else(|| AppError::NotFound(format!("purchase {purchase_id}")))?;
+        if p.state != PurchaseState::AwaitingFinalize {
+            return Err(AppError::InvalidInput(
+                "this purchase is not awaiting finalize".into(),
+            ));
+        }
+        // One finalize per purchase: an earlier one already sent stands; an
+        // unsent one is replaced, and the coins it reserved fund the new one.
+        // A failed or dropped one is left as history; its coins are free.
+        let old_status = match p.finalize_draft_id.as_deref() {
+            Some(old) => queries::get_tx_draft(&conn, old)?.map(|d| d.status),
+            None => None,
+        };
+        let replaces = match old_status.as_deref() {
+            Some(s) if queries::may_have_reached_chain(s) => {
+                return Err(AppError::InvalidInput(
+                    "a finalize of this purchase is already sent".into(),
+                ));
+            }
+            Some("draft" | "signed") => p.finalize_draft_id.clone(),
+            _ => None,
+        };
+        if let Some(old) = replaces.as_deref() {
+            ctx.funding =
+                send::load_spendable_coins(&conn, &ctx.profile_id, Some(old), ctx.network)?;
+        }
+        (p, replaces)
+    };
+    let listing = ListingFile::parse(&p.listing_json, ctx.network)?;
+
+    let transfer = ctx
+        .node
+        .get_coin(&p.purchase_txid, 0)
+        .await?
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "the purchase's transfer is no longer unspent: the name may already be finalized"
+                    .into(),
+            )
+        })?;
+    if !purchase::transfer_commits_to(&transfer, ctx.network, &p.destination_address)? {
+        return Err(AppError::InvalidInput(
+            "the purchase's transfer does not commit to your address: it cannot be finalized"
+                .into(),
+        ));
+    }
+    if transfer.address.as_deref() != Some(lock_address(ctx.network, &listing.public_key)?.as_str())
+    {
+        return Err(AppError::InvalidInput(
+            "the purchase's transfer is not at the listing's lock address".into(),
+        ));
+    }
+    let transfer_height = transfer
+        .mined_height()?
+        .ok_or_else(|| AppError::InvalidInput("the purchase is not mined yet".into()))?;
+    let transfer_value = u64::try_from(transfer.value)
+        .map_err(|_| AppError::Rpc(format!("bad transfer value {}", transfer.value)))?;
+    let tip = ctx.node.get_blockchain_info().await?.blocks;
+    let remaining = ctx
+        .network
+        .name_params()
+        .blocks_until_finalize(transfer_height, tip);
+    if remaining > 0 {
+        return Err(AppError::InvalidInput(format!(
+            "the purchase can be finalized in {remaining} block{}",
+            if remaining == 1 { "" } else { "s" }
+        )));
+    }
+    let ns = draft_ctx::fetch_name_state_strict(&ctx.node, &p.name).await?;
+    let renewal_block = draft_ctx::renewal_block(&ctx.node, ctx.network).await?;
+    let mut transfer_txid = [0u8; 32];
+    hex::decode_to_slice(&p.purchase_txid, &mut transfer_txid)
+        .map_err(|e| AppError::Other(format!("purchase txid is not hex: {e}")))?;
+    let res = purchase::build_purchase_finalize_plan(&FinalizeInput {
+        network: ctx.network,
+        account: ctx.account,
+        transfer_outpoint: (transfer_txid, 0),
+        transfer_value,
+        lock_pubkey: listing.public_key,
+        name: &p.name,
+        name_height: ns.height,
+        weak: ns.weak,
+        claimed: ns.claimed,
+        renewals: ns.renewals,
+        renewal_block,
+        dest_address: &p.destination_address,
+        funding: &ctx.funding,
+        change_address: &ctx.change_address,
+        rate: draft_ctx::fee_rate(&ctx, fee_rate),
+        #[cfg(test)]
+        fixed_fee: None,
+    })?;
+
+    let summary = PurchaseFinalizeSummary {
+        action: PURCHASE_FINALIZE_ACTION.into(),
+        name: p.name.clone(),
+        purchase_id: p.id.clone(),
+        send_total_doos: 0,
+        fee_doos: res.fee,
+        total_doos: res.fee,
+        change_doos: res.change,
+        input_total_doos: res.input_total - transfer_value,
+        num_inputs: res.plan.inputs.len(),
+        recipient_address: p.destination_address.clone(),
+        destination_address: p.destination_address.clone(),
+        txid: res.txid.clone(),
+        warnings: vec![DNS_RECORDS_HINT.into()],
+    };
+
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let draft_id = random_id();
+    // The replaced draft, the new draft and its link on the purchase commit
+    // together. Deleting the old draft refuses one that was sent meanwhile.
+    let tx = conn.unchecked_transaction()?;
+    if let Some(old) = replaces.as_deref() {
+        queries::delete_tx_draft_in_tx(&tx, old)?;
+    }
+    queries::insert_tx_draft_reserving_coins_in_tx(
+        &tx,
+        &draft_id,
+        &ctx.profile_id,
+        PURCHASE_FINALIZE_ACTION,
+        &res.unsigned_tx_hex,
+        &serde_json::to_string(&res.plan)?,
+        &serde_json::to_string(&summary)?,
+        &res.plan.own_inputs(),
+    )?;
+    queries::set_shakedex_purchase_finalize_draft(&tx, &p.id, &draft_id)?;
     tx.commit()?;
     queries::get_tx_draft(&conn, &draft_id)?
         .map(|d| d.to_summary())

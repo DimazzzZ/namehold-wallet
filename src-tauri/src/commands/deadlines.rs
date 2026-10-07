@@ -9,6 +9,10 @@
 //!     Task 3's live `compute_renewals` days-until-expire, never recomputed
 //!     here.
 //!
+//! A third kind is not a deadline but a reminder: a name bought through
+//! Shakedex whose transfer lockup is over and that can be finalized now
+//! ([`scan_purchase_deadlines`], R14).
+//!
 //! The scanner core ([`scan_deadlines`]) is a PURE function: deadlines +
 //! config + previously-notified state → notifications to emit + new state.
 //! All IO (DB reads, settings, the actual OS notification call) lives in the
@@ -65,6 +69,17 @@ pub struct RenewalDeadline {
     /// — the key then falls back to the pre-fix unscoped form, an honest
     /// "can't tell episodes apart" rather than a guess.
     pub expires_at_height: Option<i64>,
+}
+
+/// A Shakedex purchase whose transfer lockup is over: the name can be
+/// finalized now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PurchaseFinalizeDeadline {
+    pub wallet_profile_id: String,
+    pub name: String,
+    /// Part of the dedup key, so buying the same name again later is a new
+    /// episode.
+    pub purchase_txid: String,
 }
 
 /// User-configurable scan behavior, loaded from the generic `settings` KV
@@ -176,53 +191,78 @@ pub fn scan_deadlines(
     config: &DeadlineNotifyConfig,
     previously_notified: &BTreeSet<String>,
 ) -> ScanResult {
+    let reveals = reveal
+        .iter()
+        .filter(|d| d.blocks_remaining <= config.reveal_lead_blocks)
+        .map(|d| PendingNotification {
+            key: reveal_key(d),
+            title: "Reveal window closing".into(),
+            body: format!(
+                "{} — reveal in {} blocks or the bid lockup is forfeit",
+                d.name, d.blocks_remaining
+            ),
+        });
+    let renewals = renewal
+        .iter()
+        .filter(|d| d.days_remaining <= config.renewal_lead_days)
+        .map(|d| PendingNotification {
+            key: renewal_key(d),
+            title: "Renewal due soon".into(),
+            body: format!("{} — expires in {:.1} days", d.name, d.days_remaining),
+        });
+    dedup_imminent(reveals.chain(renewals), config, previously_notified)
+}
+
+/// The scan both scanners share: every `imminent` episode stays active, and
+/// only those not notified before are notified now. Disabled, it notifies
+/// nothing and echoes `previously_notified` back unchanged (see
+/// [`scan_deadlines`]).
+fn dedup_imminent(
+    imminent: impl Iterator<Item = PendingNotification>,
+    config: &DeadlineNotifyConfig,
+    previously_notified: &BTreeSet<String>,
+) -> ScanResult {
     if !config.enabled {
         return ScanResult {
             notifications: Vec::new(),
             active_episodes: previously_notified.clone(),
         };
     }
-
     let mut active = BTreeSet::new();
     let mut notifications = Vec::new();
-
-    for d in reveal {
-        if d.blocks_remaining > config.reveal_lead_blocks {
-            continue; // not imminent yet
+    for n in imminent {
+        active.insert(n.key.clone());
+        if !previously_notified.contains(&n.key) {
+            notifications.push(n);
         }
-        let key = reveal_key(d);
-        if !previously_notified.contains(&key) {
-            notifications.push(PendingNotification {
-                key: key.clone(),
-                title: "Reveal window closing".into(),
-                body: format!(
-                    "{} — reveal in {} blocks or the bid lockup is forfeit",
-                    d.name, d.blocks_remaining
-                ),
-            });
-        }
-        active.insert(key);
     }
-
-    for d in renewal {
-        if d.days_remaining > config.renewal_lead_days {
-            continue;
-        }
-        let key = renewal_key(d);
-        if !previously_notified.contains(&key) {
-            notifications.push(PendingNotification {
-                key: key.clone(),
-                title: "Renewal due soon".into(),
-                body: format!("{} — expires in {:.1} days", d.name, d.days_remaining),
-            });
-        }
-        active.insert(key);
-    }
-
     ScanResult {
         notifications,
         active_episodes: active,
     }
+}
+
+fn purchase_finalize_key(d: &PurchaseFinalizeDeadline) -> String {
+    format!(
+        "purchase_finalize:{}:{}:{}",
+        d.wallet_profile_id, d.name, d.purchase_txid
+    )
+}
+
+/// Pure scanner for purchases ready to finalize: one notification per
+/// purchase, deduplicated and gated by `config.enabled` exactly like
+/// [`scan_deadlines`]. Every purchase in `ready` is imminent by definition.
+pub fn scan_purchase_deadlines(
+    ready: &[PurchaseFinalizeDeadline],
+    config: &DeadlineNotifyConfig,
+    previously_notified: &BTreeSet<String>,
+) -> ScanResult {
+    let ready = ready.iter().map(|d| PendingNotification {
+        key: purchase_finalize_key(d),
+        title: "Ready to finalize".into(),
+        body: format!("{} is paid for — finalize it to make it yours", d.name),
+    });
+    dedup_imminent(ready, config, previously_notified)
 }
 
 // ---------------------------------------------------------------------------
@@ -398,14 +438,29 @@ pub async fn scan_deadline_notifications<R: tauri::Runtime>(
     // same discipline as `read_renewals`).
     let live_height = crate::commands::node_readiness::node_tip_height_if_synced(&state).await;
 
-    let (previously_notified, reveal, renewal) = {
+    let (previously_notified, reveal, renewal, ready) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let previously_notified = load_state(&queries::get_settings(&conn)?);
         let (reveal, renewal) = collect_deadlines(&conn, live_height)?;
-        (previously_notified, reveal, renewal)
+        let ready: Vec<PurchaseFinalizeDeadline> =
+            queries::list_purchases_ready_to_finalize(&conn)?
+                .into_iter()
+                .map(
+                    |(wallet_profile_id, name, purchase_txid)| PurchaseFinalizeDeadline {
+                        wallet_profile_id,
+                        name,
+                        purchase_txid,
+                    },
+                )
+                .collect();
+        (previously_notified, reveal, renewal, ready)
     };
 
-    let result = scan_deadlines(&reveal, &renewal, &config, &previously_notified);
+    // The two scans own disjoint key spaces, so their results merge by union.
+    let mut result = scan_deadlines(&reveal, &renewal, &config, &previously_notified);
+    let purchases = scan_purchase_deadlines(&ready, &config, &previously_notified);
+    result.notifications.extend(purchases.notifications);
+    result.active_episodes.extend(purchases.active_episodes);
 
     #[cfg_attr(test, allow(unused_mut))]
     let mut delivery_error = None;
@@ -828,6 +883,70 @@ mod tests {
             &Default::default(),
         );
         assert_eq!(result.notifications.len(), 2);
+    }
+
+    // --- purchase finalize (R14) -------------------------------------------
+
+    fn ready(profile: &str, name: &str, txid: &str) -> PurchaseFinalizeDeadline {
+        PurchaseFinalizeDeadline {
+            wallet_profile_id: profile.into(),
+            name: name.into(),
+            purchase_txid: txid.into(),
+        }
+    }
+
+    #[test]
+    fn purchase_finalize_notifies_once() {
+        let ready = [ready("p1", "bought", "aa")];
+        let first = scan_purchase_deadlines(&ready, &cfg(true), &Default::default());
+        assert_eq!(first.notifications.len(), 1);
+        let n = &first.notifications[0];
+        assert_eq!(n.key, "purchase_finalize:p1:bought:aa");
+        assert_eq!(n.title, "Ready to finalize");
+        assert_eq!(n.body, "bought is paid for — finalize it to make it yours");
+        assert!(first.active_episodes.contains(&n.key));
+
+        let second = scan_purchase_deadlines(&ready, &cfg(true), &first.active_episodes);
+        assert!(
+            second.notifications.is_empty(),
+            "the same purchase must not notify twice"
+        );
+        assert_eq!(second.active_episodes, first.active_episodes);
+    }
+
+    #[test]
+    fn purchase_finalize_respects_the_disabled_setting() {
+        let mut prior = BTreeSet::new();
+        prior.insert("reveal:p1:namea:100".to_string());
+        let result = scan_purchase_deadlines(&[ready("p1", "bought", "aa")], &cfg(false), &prior);
+        assert!(result.notifications.is_empty());
+        assert_eq!(result.active_episodes, prior);
+    }
+
+    #[test]
+    fn purchase_finalize_episode_ends_when_finalized() {
+        let first = scan_purchase_deadlines(
+            &[ready("p1", "bought", "aa")],
+            &cfg(true),
+            &Default::default(),
+        );
+        let after = scan_purchase_deadlines(&[], &cfg(true), &first.active_episodes);
+        assert!(after.notifications.is_empty());
+        assert!(after.active_episodes.is_empty());
+    }
+
+    #[test]
+    fn purchase_finalize_keys_are_per_purchase() {
+        // The same name bought again later (another purchase transaction) is a
+        // new episode.
+        let mut prior = BTreeSet::new();
+        prior.insert("purchase_finalize:p1:bought:aa".to_string());
+        let result = scan_purchase_deadlines(&[ready("p1", "bought", "bb")], &cfg(true), &prior);
+        assert_eq!(result.notifications.len(), 1);
+        assert_eq!(
+            result.notifications[0].key,
+            "purchase_finalize:p1:bought:bb"
+        );
     }
 
     #[test]

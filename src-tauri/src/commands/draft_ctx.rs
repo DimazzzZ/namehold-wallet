@@ -138,8 +138,56 @@ pub(crate) async fn fetch_name_state(
     Ok(name_state_from_info(info))
 }
 
+/// [`fetch_name_state`] for a covenant whose fields come from the reply
+/// (FINALIZE of a purchase): a reply without the name's height, renewals,
+/// claimed count or weak flag is refused, where `fetch_name_state` would
+/// default it and build a covenant the node rejects only after the user has
+/// confirmed and signed it.
+pub(crate) async fn fetch_name_state_strict(
+    client: &dyn NodeRpc,
+    name: &str,
+) -> Result<NameState, AppError> {
+    let v = client.get_name_info(name).await?;
+    // hsd always sends `info` (`null` for a name with no state): a reply
+    // without the key is not its answer.
+    let info = match v.get("info") {
+        None => {
+            return Err(AppError::Rpc(format!(
+                "node did not report the name's info for '{name}'"
+            )))
+        }
+        Some(serde_json::Value::Null) => {
+            return Err(AppError::InvalidInput(format!(
+                "name '{name}' has no on-chain state"
+            )))
+        }
+        Some(i) => i,
+    };
+    let missing =
+        |k: &str| AppError::Rpc(format!("node did not report the name's {k} for '{name}'"));
+    let get_u32 = |k: &str| {
+        info.get(k)
+            .and_then(|x| x.as_u64())
+            .and_then(|x| u32::try_from(x).ok())
+            .ok_or_else(|| missing(k))
+    };
+    Ok(NameState {
+        height: get_u32("height")?,
+        renewals: get_u32("renewals")?,
+        claimed: get_u32("claimed")?,
+        weak: info
+            .get("weak")
+            .and_then(|x| x.as_bool())
+            .ok_or_else(|| missing("weak"))?,
+        // Not part of the FINALIZE covenant: read as leniently as
+        // `fetch_name_state` does.
+        ..name_state_from_info(info)
+    })
+}
+
 /// Lenient on purpose: the draft builders that use [`fetch_name_state`]
-/// default a field the node leaves out, as they always have.
+/// default a field the node leaves out, as they always have. A covenant whose
+/// fields must come from the node uses [`fetch_name_state_strict`].
 fn name_state_from_info(info: &serde_json::Value) -> NameState {
     let geti = |k: &str| info.get(k).and_then(|x| x.as_i64());
     NameState {

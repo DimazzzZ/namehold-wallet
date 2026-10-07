@@ -33,7 +33,9 @@ use crate::error::AppError;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::{cross_network_refusal, ChainSource, NodeRpcClient};
 use crate::noncustodial::send;
-use crate::noncustodial::shakedex::purchase::{PurchaseSummary, PURCHASE_ACTION};
+use crate::noncustodial::shakedex::purchase::{
+    PurchaseFinalizeSummary, PurchaseSummary, PURCHASE_ACTION, PURCHASE_FINALIZE_ACTION,
+};
 use crate::noncustodial::types::{doos_to_hns_string, BroadcastResult, TxDraftSummary, TxSummary};
 use crate::noncustodial::{derivation, sync};
 use crate::AppState;
@@ -131,6 +133,11 @@ pub(crate) fn confirm_details_for_draft(
             &draft.summary_json,
         )?));
     }
+    if draft.action == PURCHASE_FINALIZE_ACTION {
+        return Ok(confirm_details_for_purchase_finalize(&read_summary(
+            &draft.summary_json,
+        )?));
+    }
     // The fee and amounts the user checks before signing: a summary that
     // cannot be read is refused, never shown as zeros (fail closed).
     let summary: TxSummary = read_summary(&draft.summary_json)?;
@@ -213,6 +220,21 @@ fn push_warning_rows(rows: &mut Vec<serde_json::Value>, warnings: &[String]) {
     for w in warnings {
         rows.push(serde_json::json!({ "label": "Warning", "value": w }));
     }
+}
+
+/// Confirmation rows for finalizing a purchased name out of the lock (R14).
+/// The TRANSFER coin's value is the name's own and comes back in the FINALIZE
+/// output, so only the network fee is money spent.
+fn confirm_details_for_purchase_finalize(s: &PurchaseFinalizeSummary) -> serde_json::Value {
+    let mut rows = vec![
+        serde_json::json!({ "label": "Finalize purchased name", "value": s.name }),
+        serde_json::json!({
+            "label": "Network fee",
+            "value": doos_to_hns_string(s.fee_doos),
+        }),
+    ];
+    push_warning_rows(&mut rows, &s.warnings);
+    serde_json::json!({ "rows": rows })
 }
 
 /// Resolve the fee rate (doos/byte): explicit override, else ask the node's

@@ -1627,6 +1627,24 @@ pub fn read_shakedex_purchase_names(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// Every purchase, across all profiles, whose transfer lockup is over: the
+/// name can be finalized now. `(profile id, name, purchase txid)`.
+pub fn list_purchases_ready_to_finalize(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<(String, String, String)>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT wallet_profile_id, name, purchase_txid FROM shakedex_purchases
+         WHERE state = ?1 AND blocks_remaining = 0
+         ORDER BY wallet_profile_id, name, purchase_txid",
+    )?;
+    let rows = stmt
+        .query_map(params![PurchaseState::AwaitingFinalize], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// Fetch one purchase, or `None`.
 pub fn get_shakedex_purchase(
     conn: &rusqlite::Connection,
