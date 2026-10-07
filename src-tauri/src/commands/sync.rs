@@ -237,7 +237,7 @@ impl Drop for RunningGuard {
 /// Start a full sync in a background thread. The frontend polls
 /// [`get_sync_status`] to see progress even across page navigation.
 ///
-/// The 3-step orchestration itself lives in [`run_sync_steps`], shared with
+/// The sync steps themselves live in [`run_sync_steps`], shared with
 /// the background daemon so the two never drift apart on sync policy. While a
 /// sync runs, a heartbeat thread ([`spawn_lock_heartbeat`]) refreshes the sync
 /// lock every 10s so the daemon can't take the lock over mid-run.
@@ -359,8 +359,8 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
             let hb_handle =
                 spawn_lock_heartbeat(db_path.clone(), profile_id.clone(), hb_stop.clone());
 
-            // Run the shared 3-step orchestration (also used by the daemon).
-            run_sync_steps(&status, &db_path, &profile_id, true).await;
+            // Run the shared sync steps (also used by the daemon).
+            run_sync_steps(&status, &db_path, &profile_id, SyncCaller::App).await;
 
             // Stop the heartbeat thread now that syncing is done.
             hb_stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -398,7 +398,27 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
     Ok(serde_json::json!({"started": true}))
 }
 
-/// Shared 3-step sync orchestration, used by both the app and the daemon.
+/// Who runs [`run_sync_steps`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncCaller {
+    /// The app: reports progress to the UI and may rebroadcast.
+    App,
+    /// `namehold-syncd`: no UI, and it never broadcasts (SECURITY.md).
+    Daemon,
+}
+
+impl SyncCaller {
+    /// Whether this caller's sync may rebroadcast a missing purchase: the
+    /// daemon never may (SECURITY.md, "Daemon is read-only").
+    pub fn rebroadcast(self) -> crate::shakedex_jobs::Rebroadcast {
+        match self {
+            SyncCaller::App => crate::shakedex_jobs::Rebroadcast::Allowed,
+            SyncCaller::Daemon => crate::shakedex_jobs::Rebroadcast::Never,
+        }
+    }
+}
+
+/// The shared sync steps, used by both the app and the daemon.
 ///
 /// This is the single source of truth for sync policy. Both [`start_full_sync`]
 /// (manual Sync button) and [`crate::daemon::sync_profile`] call this, so they
@@ -409,16 +429,20 @@ pub async fn start_full_sync(state: State<'_, AppState>) -> Result<serde_json::V
 /// 2. Repair owned names — explorer path only (skipped when the node is
 ///    authoritative, since Step 1 already refreshed coins from the node).
 /// 3. Discover new names — node path when authoritative, explorer path otherwise.
+/// 4. Shakedex purchases — only when the node is authoritative; never sends
+///    from the daemon.
 ///
-/// `report_progress` controls whether `SyncStatus` progress labels are written:
-/// the app passes `true` (UI polls them); the daemon passes `false` (no UI,
-/// uses a throwaway status only to satisfy the step function signatures).
+/// `caller` says who runs it. The app writes `SyncStatus` progress labels (the
+/// UI polls them) and may rebroadcast a missing purchase; the daemon has no
+/// UI, uses a throwaway status only to satisfy the step function signatures,
+/// and never broadcasts.
 pub async fn run_sync_steps(
     status: &Arc<Mutex<SyncStatus>>,
     db_path: &str,
     profile_id: &str,
-    report_progress: bool,
+    caller: SyncCaller,
 ) {
+    let report_progress = caller == SyncCaller::App;
     // Determine node mode from settings.
     let node_mode = open_conn(db_path)
         .ok()
@@ -518,6 +542,15 @@ pub async fn run_sync_steps(
         node_discover_step(db_path, profile_id).await;
     } else {
         discover_step(status, db_path, profile_id).await;
+    }
+
+    // Step 4: Shakedex purchases — derive each open purchase's state from the
+    // chain (R13). Only against an authoritative node: one that is behind, on
+    // another network or SPV would report a mined purchase as unknown and get
+    // it rebroadcast or declared lost. Best-effort, like the steps above.
+    if node_authoritative {
+        crate::shakedex_jobs::refresh_purchases_step(db_path, profile_id, caller.rebroadcast())
+            .await;
     }
 }
 
@@ -1741,8 +1774,8 @@ mod db_hardening_tests {
     async fn run_sync_steps_treats_unopenable_db_as_non_authoritative() {
         let bad = unopenable_db_path();
         let status = Arc::new(Mutex::new(SyncStatus::default()));
-        // report_progress = true so the progress-label writes are exercised too.
-        run_sync_steps(&status, &bad, "p1", true).await;
+        // The app caller, so the progress-label writes are exercised too.
+        run_sync_steps(&status, &bad, "p1", SyncCaller::App).await;
     }
 
     /// Pre-set `cancel_requested = true` before entering the repair loop; the

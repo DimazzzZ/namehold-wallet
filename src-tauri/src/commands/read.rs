@@ -453,6 +453,9 @@ pub async fn read_balance(
 /// primary source (authoritative); otherwise discovered (explorer-crawled,
 /// but previously persisted) names are primary. Either way both sources come
 /// from the DB.
+///
+/// Names bought through Shakedex are listed too while the purchase is
+/// unconfirmed or awaiting finalize, each with a `shakedex` object (R14).
 #[tauri::command]
 pub async fn read_names(
     state: State<'_, AppState>,
@@ -493,7 +496,10 @@ fn collect_read_names_data(
     } else {
         (discovered, cached)
     };
-    for v in primary.into_iter().chain(secondary) {
+    // Purchased names still on their way come last, so a name that has
+    // already arrived through sync is listed as owned, not as a purchase.
+    let purchases = queries::read_shakedex_purchase_names(conn, id)?;
+    for v in primary.into_iter().chain(secondary).chain(purchases) {
         if let Some(n) = v.get("name").and_then(|x| x.as_str()) {
             if seen.insert(n.to_string()) {
                 out.push(v);
@@ -1797,6 +1803,10 @@ pub(crate) fn compute_renewals(
     // Owned names — same union as `read_names` (node-synced cache + explorer
     // discoveries), so the Renewals screen covers exactly what the wallet owns.
     for v in collect_read_names_data(conn, profile_id, live_node_height.is_some())? {
+        // A Shakedex purchase still on its way is not ours to renew yet.
+        if v.get("shakedex").is_some() {
+            continue;
+        }
         let Some(name) = v.get("name").and_then(|x| x.as_str()) else {
             continue;
         };

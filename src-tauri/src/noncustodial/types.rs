@@ -102,6 +102,10 @@ pub struct TxDraftSummary {
     /// Block height the tx was mined at, once `status` is `confirmed`.
     pub confirmation_height: Option<i64>,
     pub created_at: String,
+    /// Why the Shakedex purchase this draft sent was lost, whatever the
+    /// draft's own status: a purchase lost after it paid keeps `confirmed`.
+    /// Filled by `list_tx_drafts`; `None` everywhere else.
+    pub purchase_lost_reason: Option<String>,
 }
 
 /// Result of broadcasting a signed draft.

@@ -404,3 +404,55 @@ fn an_unknown_purchase_state_is_refused_when_read() {
         queries::PurchaseState::AwaitingFinalize
     );
 }
+
+/// A purchase lost after it paid keeps a `confirmed` draft, so Activity
+/// learns of the loss from the draft list, not from the draft's status.
+#[test]
+fn draft_list_carries_the_reason_a_purchase_was_lost() {
+    let conn = seeded_conn();
+    for id in ["p1", "p2"] {
+        queries::insert_tx_draft(
+            &conn,
+            &format!("draft-{id}"),
+            PROFILE,
+            "shakedex_purchase",
+            "",
+            "{}",
+            "{}",
+        )
+        .unwrap();
+    }
+    queries::insert_shakedex_purchase(&conn, &purchase("p1", "awaiting_finalize", "hs1qa"))
+        .unwrap();
+    let mut lost = purchase("p2", "awaiting_finalize", "hs1qb");
+    lost.lock_txid = "77".repeat(32);
+    queries::insert_shakedex_purchase(&conn, &lost).unwrap();
+    queries::update_shakedex_purchase_state(
+        &conn,
+        "p2",
+        &queries::PurchaseProgress {
+            state: queries::PurchaseState::Lost,
+            purchase_height: Some(120),
+            blocks_remaining: None,
+            missing_since_height: None,
+            rebroadcast_count: 0,
+            lost_reason: Some("the name expired before it was finalized".into()),
+        },
+    )
+    .unwrap();
+
+    let drafts = queries::list_tx_drafts(&conn, PROFILE).unwrap();
+    let reason = |id: &str| {
+        drafts
+            .iter()
+            .find(|d| d.id == id)
+            .unwrap()
+            .purchase_lost_reason
+            .clone()
+    };
+    assert_eq!(reason("draft-p1"), None, "an open purchase is not lost");
+    assert_eq!(
+        reason("draft-p2").as_deref(),
+        Some("the name expired before it was finalized")
+    );
+}

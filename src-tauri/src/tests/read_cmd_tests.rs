@@ -3234,3 +3234,176 @@ async fn read_name_info_refuses_when_the_active_profiles_network_is_unreadable()
         "should say the explorer is unavailable, got: {err}"
     );
 }
+
+// --- Shakedex purchases in Owned Names (R14) ---
+
+fn add_purchase(
+    conn: &rusqlite::Connection,
+    profile: &str,
+    id: &str,
+    name: &str,
+    state: &str,
+    blocks_remaining: Option<i64>,
+) {
+    db::queries::insert_shakedex_purchase(
+        conn,
+        &db::queries::ShakedexPurchase {
+            id: id.into(),
+            wallet_profile_id: profile.into(),
+            name: name.into(),
+            listing_json: "{}".into(),
+            lock_txid: format!("{id}-lock"),
+            lock_vout: 0,
+            price_doos: 5_000_000,
+            purchase_draft_id: format!("{id}-draft"),
+            purchase_txid: format!("{id}-tx"),
+            destination_address: "rs1qdest".into(),
+            state: state.parse().unwrap(),
+            purchase_height: Some(120),
+            blocks_remaining,
+            missing_since_height: None,
+            rebroadcast_count: 0,
+            lost_reason: None,
+            finalize_draft_id: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    )
+    .unwrap();
+}
+
+fn names_by_key(val: &serde_json::Value) -> std::collections::HashMap<String, serde_json::Value> {
+    val.as_array()
+        .expect("array")
+        .iter()
+        .map(|n| (n["name"].as_str().unwrap().to_string(), n.clone()))
+        .collect()
+}
+
+#[tokio::test]
+async fn purchased_name_listed_while_awaiting_finalize() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_owned_name(&conn, "W1", "alpha", "txA");
+    add_purchase(&conn, "W1", "p1", "bought", "awaiting_finalize", Some(4));
+    add_purchase(&conn, "W1", "p2", "pending", "unconfirmed", None);
+
+    let app = app_with(conn);
+    let by_name = names_by_key(&read_names(app.state(), None).await.unwrap());
+    assert_eq!(by_name.len(), 3, "got: {by_name:?}");
+    assert!(by_name["alpha"]["shakedex"].is_null());
+
+    let bought = &by_name["bought"];
+    assert_eq!(bought["shakedex"]["state"], "awaitingFinalize");
+    assert_eq!(bought["shakedex"]["blocksRemaining"], 4);
+    assert_eq!(bought["shakedex"]["purchaseId"], "p1");
+    assert_eq!(bought["owner_address"], "rs1qdest");
+    assert!(bought["state"].is_null());
+    assert!(bought["owner"].is_null());
+
+    let pending = &by_name["pending"];
+    assert_eq!(pending["shakedex"]["state"], "unconfirmed");
+    assert!(pending["shakedex"]["blocksRemaining"].is_null());
+    assert_eq!(pending["shakedex"]["purchaseId"], "p2");
+}
+
+#[tokio::test]
+async fn owned_or_lost_purchase_not_listed_twice() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    // The purchased name arrived through sync: listed once, as an owned name.
+    add_owned_name(&conn, "W1", "arrived", "txA");
+    add_purchase(&conn, "W1", "p1", "arrived", "owned", Some(0));
+    add_purchase(&conn, "W1", "p2", "gone", "lost", None);
+    add_purchase(&conn, "W1", "p3", "unsent", "pending_send", None);
+
+    let app = app_with(conn);
+    let val = read_names(app.state(), None).await.unwrap();
+    let arr = val.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "got: {arr:?}");
+    assert_eq!(arr[0]["name"], "arrived");
+    assert!(arr[0]["shakedex"].is_null());
+}
+
+/// A purchase is listed from the moment it is sent (R14: "the name appears
+/// as 'Unconfirmed purchase'"), not only once a sync has found it on the
+/// node: the purchase job runs only against an authoritative node, so until
+/// then a sent purchase is still `pending_send`. One whose draft was never
+/// sent, or that hsd refused, is not listed.
+#[tokio::test]
+async fn sent_purchase_is_listed_before_any_sync() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    for (id, name, status) in [
+        ("p1", "sent", "broadcasted"),
+        ("p2", "maybesent", "broadcast_pending"),
+        ("p5", "mined", "confirmed"),
+        ("p3", "unsent", "signed"),
+        ("p4", "refused", "failed"),
+    ] {
+        let draft = format!("{id}-draft");
+        db::queries::insert_tx_draft_reserving_coins(
+            &conn,
+            &draft,
+            "W1",
+            "shakedex_purchase",
+            "00",
+            "{}",
+            "{}",
+            &[],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE wallet_tx_drafts SET status = ?2 WHERE id = ?1",
+            rusqlite::params![draft, status],
+        )
+        .unwrap();
+        add_purchase(&conn, "W1", id, name, "pending_send", None);
+    }
+
+    let app = app_with(conn);
+    let by_name = names_by_key(&read_names(app.state(), None).await.unwrap());
+    let mut listed: Vec<_> = by_name.keys().cloned().collect();
+    listed.sort();
+    assert_eq!(listed, ["maybesent", "mined", "sent"]);
+    for name in ["sent", "maybesent", "mined"] {
+        assert_eq!(by_name[name]["shakedex"]["state"], "unconfirmed", "{name}");
+        assert!(
+            by_name[name]["shakedex"]["blocksRemaining"].is_null(),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn synced_name_wins_over_its_open_purchase() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    // Sync saw the name at our address before the job marked the purchase owned.
+    add_owned_name(&conn, "W1", "arrived", "txA");
+    add_purchase(&conn, "W1", "p1", "arrived", "awaiting_finalize", Some(0));
+
+    let app = app_with(conn);
+    let val = read_names(app.state(), None).await.unwrap();
+    let arr = val.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "got: {arr:?}");
+    assert!(arr[0]["shakedex"].is_null());
+    assert_eq!(arr[0]["owner"]["hash"], "txA");
+}
+
+#[tokio::test]
+async fn other_profiles_purchases_are_not_listed() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    add_profile(&conn, "W2", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    add_purchase(&conn, "W2", "p1", "theirs", "awaiting_finalize", Some(0));
+
+    let app = app_with(conn);
+    let val = read_names(app.state(), None).await.unwrap();
+    assert_eq!(val, serde_json::json!([]));
+}

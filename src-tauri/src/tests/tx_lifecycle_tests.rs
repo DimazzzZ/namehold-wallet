@@ -573,6 +573,57 @@ async fn refresh_gives_no_verdict_on_a_tx_reply_missing_its_fields() {
     }
 }
 
+/// A Shakedex purchase the node does not know is not given up by the draft
+/// lifecycle: the purchase job traces it on chain, rebroadcasts it once and
+/// only then calls it lost (R13), releasing its coins itself. Dropping it
+/// here after ten minutes would free coins a rebroadcast still needs and
+/// tell the user "the coins were not moved" about a purchase that may be
+/// mined (a node without a transaction index does not find mined ones).
+#[tokio::test]
+async fn refresh_leaves_an_unseen_purchase_to_the_purchase_job() {
+    use crate::noncustodial::shakedex::purchase::PURCHASE_ACTION;
+    let mut server = mockito::Server::new_async().await;
+    let (_info, _tx) = mock_node(&mut server, 500, HSD_TX_NOT_FOUND).await;
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    db::queries::insert_tx_draft(&conn, "buy", PROFILE, PURCHASE_ACTION, "00", "{}", "{}").unwrap();
+    db::queries::update_tx_draft_status(&conn, "buy", "broadcasted", None, Some(DRAFT_TXID))
+        .unwrap();
+    let summary = format!(r#"{{"txid":"{PENDING_TXID}"}}"#);
+    db::queries::insert_tx_draft(
+        &conn,
+        "buy2",
+        PROFILE,
+        PURCHASE_ACTION,
+        "00",
+        "{}",
+        &summary,
+    )
+    .unwrap();
+    db::queries::update_tx_draft_status(
+        &conn,
+        "buy2",
+        "broadcast_pending",
+        Some("ambiguous"),
+        None,
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE tracked_utxos SET reserved_by_draft_id = 'buy' WHERE txid = ?1",
+        params![COIN_TXID],
+    )
+    .unwrap();
+    backdate(&conn, "buy");
+    backdate(&conn, "buy2");
+    let app = app_with(conn);
+
+    let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
+    assert_eq!(res["dropped"], 0);
+    assert_eq!(res["failed"], 0);
+    assert_eq!(draft_row(&app, "buy").status, "broadcasted");
+    assert_eq!(draft_row(&app, "buy2").status, "broadcast_pending");
+    assert!(!reserved_txids_for(&app, "buy").is_empty());
+}
+
 #[tokio::test]
 async fn refresh_drops_an_unseen_send_on_hsds_own_not_found() {
     let mut server = mockito::Server::new_async().await;

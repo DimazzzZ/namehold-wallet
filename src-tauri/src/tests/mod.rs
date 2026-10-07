@@ -75,6 +75,7 @@ mod settings_tests;
 mod shakedex_cmd_tests;
 mod shakedex_layering_tests;
 mod shakedex_listing_file_tests;
+mod shakedex_purchase_state_tests;
 mod shakedex_purchase_store_tests;
 mod shakedex_vector_tests;
 mod shakedex_verify_tests;

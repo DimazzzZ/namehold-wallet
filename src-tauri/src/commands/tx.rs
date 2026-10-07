@@ -1894,9 +1894,12 @@ pub async fn refresh_tx_confirmations(
                     Err(_) => {}
                 },
                 // hsd's own "never seen this tx" — see the grace-window
-                // handling below.
+                // handling below. A purchase is given up only by the
+                // purchase job, after its one rebroadcast (R13).
                 Err(e) if crate::noncustodial::rpc::is_tx_not_found(&e) => {
-                    maybe_failed_pending.push(d.id.clone())
+                    if d.action != PURCHASE_ACTION {
+                        maybe_failed_pending.push(d.id.clone());
+                    }
                 }
                 // Transport error or a reply that is not hsd's (a proxy's
                 // page): no definitive answer, leave as-is.
@@ -1928,9 +1931,10 @@ pub async fn refresh_tx_confirmations(
                     // The node no longer knows this tx at all: a reorg
                     // un-mined it.
                     reverted.push(d.id.clone());
-                } else {
+                } else if d.action != PURCHASE_ACTION {
                     // `broadcasted`, never found → candidate for `dropped`
-                    // (grace window applied below).
+                    // (grace window applied below). A purchase is the
+                    // purchase job's to give up (see above).
                     maybe_dropped.push(d.id.clone());
                 }
             }

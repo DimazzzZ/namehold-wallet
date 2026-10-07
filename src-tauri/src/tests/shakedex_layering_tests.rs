@@ -5,11 +5,12 @@
 
 /// `(file, source)` for every Shakedex module outside `noncustodial`, and the
 /// shared draft context they build on.
-const SOURCES: [(&str, &str); 2] = [
+const SOURCES: [(&str, &str); 3] = [
     (
         "commands/shakedex.rs",
         include_str!("../commands/shakedex.rs"),
     ),
+    ("shakedex_jobs.rs", include_str!("../shakedex_jobs.rs")),
     (
         "commands/draft_ctx.rs",
         include_str!("../commands/draft_ctx.rs"),

@@ -366,6 +366,48 @@ fn rows_sorted_by_days_ascending_nulls_last() {
     assert_eq!(order, vec!["bbb-near", "aaa-far", "ccc-nodata"]);
 }
 
+#[test]
+fn purchases_on_their_way_are_not_renewals() {
+    // A Shakedex purchase is listed under Owned Names before the name is
+    // ours; it has nothing to renew yet.
+    let conn = mem_db();
+    seed_tracked(&conn, "ownedname", Some(1_000), None);
+    db::queries::insert_shakedex_purchase(
+        &conn,
+        &db::queries::ShakedexPurchase {
+            id: "buy1".into(),
+            wallet_profile_id: PROFILE.into(),
+            name: "boughtname".into(),
+            listing_json: "{}".into(),
+            lock_txid: "44".repeat(32),
+            lock_vout: 0,
+            price_doos: 1_000_000,
+            purchase_draft_id: "d1".into(),
+            purchase_txid: "33".repeat(32),
+            destination_address: "hs1qdest".into(),
+            state: crate::db::queries::PurchaseState::AwaitingFinalize,
+            purchase_height: Some(900),
+            blocks_remaining: Some(10),
+            missing_since_height: None,
+            rebroadcast_count: 0,
+            lost_reason: None,
+            finalize_draft_id: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    )
+    .unwrap();
+    for live in [Some(2_000), None] {
+        let resp = compute_renewals(&conn, PROFILE, live).unwrap();
+        assert!(resp.names.iter().any(|r| r.name == "ownedname"));
+        assert!(
+            !resp.names.iter().any(|r| r.name == "boughtname"),
+            "{:?}",
+            resp.names
+        );
+    }
+}
+
 /// hsd does not expire a claimed name before the network's claim period is
 /// over (`namestate.js` `isExpired` via `isClaimable`; mainnet `claimPeriod` =
 /// 4 * 365 * 144 = 210 240). A name claimed and renewed at 10 is not expiring
