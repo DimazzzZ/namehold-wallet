@@ -640,6 +640,9 @@ pub(crate) async fn sign_tx_draft_inner(
                 AppError::NotFound(format!("wallet profile {}", draft.wallet_profile_id))
             })?;
         let profile_kind = profile.kind.clone();
+        // Guard against unsupported plans before anything reads the plan for
+        // the Ledger (`resolve_covenant_names` below parses it too).
+        refuse_unsupported_ledger_plan(&profile_kind, &draft.action, &draft.signing_inputs_json)?;
         let account_xpub = profile.account_xpub.clone();
         let coins = if draft.action == "send_hns" {
             // Prefer the exact coin set this draft reserved at build time (I3):
@@ -686,9 +689,6 @@ pub(crate) async fn sign_tx_draft_inner(
             covenant_names,
         )
     };
-
-    // Guard against unsupported plans before dispatching to Ledger.
-    refuse_unsupported_ledger_plan(&profile_kind, &draft.action, &draft.signing_inputs_json)?;
 
     // 2. Sign, dispatching by profile kind (ledger vs hot) and action.
     let (signed_hex, summary_json) = if profile_kind == "ledger_hardware" {

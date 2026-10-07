@@ -563,12 +563,7 @@ impl NodeRpcClient {
         if !status.is_success() {
             // hsd surfaces failures as `{"error":{"message":…}}` (or `{"message":…}`),
             // e.g. when the address index isn't enabled.
-            let msg = body
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .or_else(|| body.get("message").and_then(|m| m.as_str()))
-                .unwrap_or("address coin lookup failed");
+            let msg = rest_error_message(&body, "address coin lookup failed");
             return Err(AppError::Rpc(format!("{msg} (status {status})")));
         }
         serde_json::from_value(body)
@@ -596,13 +591,7 @@ impl NodeRpcClient {
             ))
         })?;
         if !status.is_success() {
-            let msg = body
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .or_else(|| body.get("message").and_then(|m| m.as_str()))
-                // Only the wording of an error already returned; decides nothing.
-                .unwrap_or("coin lookup failed");
+            let msg = rest_error_message(&body, "coin lookup failed");
             return Err(AppError::Rpc(format!("{msg} (status {status})")));
         }
         // hsd sends a missing coin as an empty 404 (above), never a 200 null:
@@ -663,12 +652,7 @@ impl NodeRpcClient {
             ))
         })?;
         if !status.is_success() {
-            let msg = body
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .or_else(|| body.get("message").and_then(|m| m.as_str()))
-                .unwrap_or("tx-by-address lookup failed");
+            let msg = rest_error_message(&body, "tx-by-address lookup failed");
             // hsd surfaces the index-disabled case with a message like
             // "Address indexing not enabled." — normalize it so the UI can
             // detect it uniformly across hsd versions.
@@ -741,12 +725,7 @@ impl NodeRpcClient {
             ))
         })?;
         if !status.is_success() {
-            let msg = body
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .or_else(|| body.get("message").and_then(|m| m.as_str()))
-                .unwrap_or("tx-by-hash lookup failed");
+            let msg = rest_error_message(&body, "tx-by-hash lookup failed");
             // Normalize the index-disabled error so callers can detect it
             // uniformly (matches the address-index pattern above).
             let lc = msg.to_ascii_lowercase();
@@ -952,7 +931,8 @@ pub struct BlockchainInfo {
     #[serde(default)]
     pub bestblockhash: Option<String>,
     /// Median time past of the tip — what a time-locked transaction is
-    /// judged against for the next block.
+    /// judged against for the next block. `None` when the node's reply has
+    /// no such field: unknown, never a time to judge a lock time by.
     #[serde(default)]
     pub mediantime: Option<u64>,
 }
@@ -1075,6 +1055,17 @@ impl NodeCoin {
             ))),
         }
     }
+}
+
+/// The message of a failed REST reply: hsd sends `{"error":{"message":…}}`
+/// (or `{"message":…}`); `fallback` when it has neither. Only the wording of
+/// an error already returned; it decides nothing.
+fn rest_error_message<'a>(body: &'a serde_json::Value, fallback: &'a str) -> &'a str {
+    body.get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .or_else(|| body.get("message").and_then(|m| m.as_str()))
+        .unwrap_or(fallback)
 }
 
 /// Whether a 404 is hsd's own "not found": hsd answers a missing coin or

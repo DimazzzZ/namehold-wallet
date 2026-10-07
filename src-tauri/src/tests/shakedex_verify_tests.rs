@@ -421,6 +421,22 @@ fn expiring_name_blocked_and_warned_mainnet() {
     assert!(ok && !warn);
 }
 
+/// The warning lasts 30 days past the margin and ends exactly there.
+#[test]
+fn expiry_warning_ends_thirty_days_past_the_margin() {
+    let p = Network::Main.name_params();
+    let tip = 100_000;
+    let last_warned = tip + 1 + 288 + 144 + 30 * 144;
+    assert_eq!(
+        verify::finalize_deadline_ok(last_warned, tip, &p),
+        (true, true)
+    );
+    assert_eq!(
+        verify::finalize_deadline_ok(last_warned + 1, tip, &p),
+        (true, false)
+    );
+}
+
 #[test]
 fn expiring_name_regtest_margin_is_relative() {
     let p = Network::Regtest.name_params();
@@ -560,6 +576,25 @@ async fn zero_value_lock_coin_is_buyable() {
     let r = regtest_listing_with(0, &[(5_000_000, REGTEST_MTP - 100_000)]);
     match regtest_verdict(&r, r.coin.clone()).await {
         Verdict::Buyable(b) => assert_eq!(b.lock_value, 0),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// R12: the next step is the earliest step not valid yet that is cheaper
+/// than the current one; a dearer future step is never "next".
+#[tokio::test]
+async fn next_step_is_the_earliest_cheaper_step_not_valid_yet() {
+    let r = regtest_listing_with(
+        0,
+        &[
+            (9_000_000, REGTEST_MTP - 100_000),
+            (5_000_000, REGTEST_MTP + 2_000),
+            (3_000_000, REGTEST_MTP + 5_000),
+            (10_000_000, REGTEST_MTP + 1_000),
+        ],
+    );
+    match regtest_verdict(&r, r.coin.clone()).await {
+        Verdict::Buyable(b) => assert_eq!((b.current_step, b.next_step), (0, Some(1))),
         other => panic!("{other:?}"),
     }
 }

@@ -158,11 +158,10 @@ fn addr_string(network: Network, a: &OutputAddress) -> Result<String, AppError> 
             a.version
         )));
     }
+    // Only the market fee reaches here, and `fee_output_address` admits only
+    // a 20-byte program.
     if let Ok(hash) = <[u8; 20]>::try_from(a.hash.as_slice()) {
         return address::encode_p2wpkh(network, &hash);
-    }
-    if let Ok(program) = <[u8; 32]>::try_from(a.hash.as_slice()) {
-        return address::encode_p2wsh(network, &program);
     }
     Err(AppError::InvalidInput(format!(
         "unsupported address program length {}",

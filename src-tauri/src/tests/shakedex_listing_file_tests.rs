@@ -127,6 +127,33 @@ fn other_network_prefix_refused() {
     assert!(ListingFile::parse(DEX, Network::Regtest).is_err());
 }
 
+/// The seller is paid only at a version-0, 20-byte address, as R2 asks: a
+/// 32-byte program (P2WSH) or another witness version is refused at import.
+#[test]
+fn payment_addr_must_be_version_zero_and_twenty_bytes() {
+    use crate::noncustodial::address;
+    use bech32::{segwit, Fe32, Hrp};
+
+    let hrp = Hrp::parse(Network::Main.address_hrp()).unwrap();
+    let wsh = address::encode_p2wsh(Network::Main, &[9u8; 32]).unwrap();
+    let v1 = segwit::encode(hrp, Fe32::P, &[7u8; 20]).unwrap();
+    for bad in [wsh.as_str(), v1.as_str()] {
+        let mut j = v(DEX);
+        j["paymentAddr"] = bad.into();
+        let err = ListingFile::parse(&j.to_string(), Network::Main).unwrap_err();
+        assert!(
+            err.to_string().contains("version-0, 20-byte"),
+            "{bad}: {err}"
+        );
+    }
+
+    let mut j = v(DEX);
+    j["paymentAddr"] = address::encode_p2wpkh(Network::Main, &[7u8; 20])
+        .unwrap()
+        .into();
+    assert!(ListingFile::parse(&j.to_string(), Network::Main).is_ok());
+}
+
 #[test]
 fn oversized_and_empty_refused() {
     let padded = |total: usize| {

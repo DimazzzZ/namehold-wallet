@@ -21,8 +21,9 @@ use crate::noncustodial::rpc::{BlockchainInfo, ChainSource, NodeCoin};
 
 /// Boxed factory closure. Constructed once at mock-build time, called once
 /// per invocation. `Send + Sync` so the mock can be shared across tasks.
-type ResponseFn2<A, B, T> = Box<dyn Fn(A, B) -> Result<T, AppError> + Send + Sync>;
 type ResponseFn<T> = Box<dyn Fn() -> Result<T, AppError> + Send + Sync>;
+/// [`ResponseFn`] for a method whose reply depends on its two arguments.
+type ResponseFn2<A, B, T> = Box<dyn Fn(A, B) -> Result<T, AppError> + Send + Sync>;
 
 /// One recorded invocation of a [`MockNodeRpc`] method, capturing the method
 /// name and its salient argument(s). Lets a test assert not just that the code
