@@ -80,7 +80,7 @@ The state of a name transferred to the seller's own lock address so that it can 
 _Avoid_: Escrow (nobody else holds it)
 
 **Lock key**:
-The key that controls a name's lock: it alone can cancel the listing or sign its price steps. Each name has its own, derived from the recovery phrase and the name, so listing the same name again reuses it. The wallet never sends coins to it and uses it for nothing else.
+The key that controls a name's lock: it alone can cancel the listing or sign its price steps. Each name has its own, derived from the recovery phrase and the name, so listing the same name again reuses it. The wallet never uses it as a receiving address and uses it for nothing else.
 _Avoid_: Listing key, swap key
 
 **Purchase**:
