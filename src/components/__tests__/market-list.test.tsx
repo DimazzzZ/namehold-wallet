@@ -12,6 +12,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
 import MarketPage from "../market/MarketPage";
+import { useSettingsStore, DEFAULT_SETTINGS } from "../../stores/settings";
 
 const noHidden = {
   soldOrCancelled: 0,
@@ -125,7 +126,7 @@ describe("MarketPage", () => {
     expect(
       screen.getByText("Hidden 32: 28 already sold or cancelled, 4 failed verification"),
     ).toBeInTheDocument();
-    expect(screen.queryByTestId("market-buy")).not.toBeInTheDocument();
+    expect(screen.getByTestId("market-buy")).toBeEnabled();
   });
 
   it("pages through a market longer than one page", async () => {
@@ -282,6 +283,65 @@ describe("MarketPage", () => {
     expect(screen.queryByTestId("market-buy")).not.toBeInTheDocument();
   });
 
+  it.each(["ledger_hardware", "watch_only_xpub", "xpriv_hot"])(
+    "a %s profile sees Buy disabled with the recovery-phrase reason",
+    async (kind) => {
+      mockMarket(page(), kind);
+      renderPage();
+      expect(await screen.findByText(".dexreviews")).toBeInTheDocument();
+      expect(
+        await screen.findByText("Shakedex works with a recovery-phrase wallet for now"),
+      ).toBeInTheDocument();
+      const buy = screen.getByTestId("market-buy");
+      expect(buy).toBeDisabled();
+      // The disabled button says why itself, as Finalize does.
+      fireEvent.mouseEnter(buy.parentElement!);
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(
+        "Shakedex works with a recovery-phrase wallet for now",
+      );
+    },
+  );
+
+  it("on mainnet Buy stays disabled with the backend's reason until Shakedex is enabled", async () => {
+    useSettingsStore.setState({
+      settings: { ...DEFAULT_SETTINGS, shakedex_experimental: "false" },
+      loaded: true,
+    });
+    mockMarket(page(), "mnemonic_hot", true, "mainnet");
+    const { unmount } = renderPage();
+    expect(
+      await screen.findByText(
+        "Shakedex purchases on mainnet are experimental: enable them in Settings",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("market-buy")).toBeDisabled();
+    unmount();
+
+    useSettingsStore.setState({
+      settings: { ...DEFAULT_SETTINGS, shakedex_experimental: "true" },
+      loaded: true,
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("market-buy")).toBeEnabled());
+    useSettingsStore.setState({ settings: null, loaded: false });
+  });
+
+  it("a node that cannot send leaves Buy disabled with the backend's reason", async () => {
+    mockMarket(page(), "mnemonic_hot", false);
+    renderPage();
+    expect(
+      await screen.findByText("Shakedex needs a local node, or a remote node with sending allowed"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("market-buy")).toBeDisabled();
+  });
+
+  it("a software profile sees no software-wallet notice", async () => {
+    mockMarket(page());
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("market-buy")).toBeEnabled());
+    expect(screen.queryByText(/recovery-phrase wallet for now/)).toBeNull();
+  });
+
   it("shows the seller's listing expiry as information only", async () => {
     // 1815232480 = 2027-07-10 15:14:40 UTC, the live LearnHNS fixture's expiresAt.
     mockMarket(page({ rows: [row({ expiresAt: 1815232480 })] }));
@@ -289,6 +349,7 @@ describe("MarketPage", () => {
     expect(
       await screen.findByText("Listed until July 10, 2027 · stays buyable until sold or cancelled"),
     ).toBeInTheDocument();
+    expect(screen.getByTestId("market-buy")).toBeEnabled();
   });
 
   it("a listing whose expiresAt no date can hold still renders", async () => {
@@ -431,7 +492,7 @@ describe("MarketPage", () => {
     ["still loading", () => new Promise(() => {})],
     ["unavailable", () => Promise.reject("LearnHNS Market request failed: HTTP 502")],
   ])(
-    "a buyable import is listed as checked while the market is %s",
+    "a buyable import can be bought while the market is %s",
     async (_label, market: () => Promise<unknown>) => {
       invokeMock.mockImplementation((cmd: string) => {
         if (cmd === "list_wallet_profiles") return Promise.resolve([profile()]);
@@ -444,11 +505,12 @@ describe("MarketPage", () => {
       fireEvent.change(await screen.findByTestId("listing-paste"), { target: { value: "{}" } });
       fireEvent.click(screen.getByTestId("import-listing-text"));
       expect(await screen.findByText(".imported")).toBeInTheDocument();
+      expect(screen.getByTestId("market-buy")).toBeEnabled();
       expect(screen.queryByText("Not verified — needs a full or remote node")).toBeNull();
     },
   );
 
-  it("badges a LearnHNS link import", async () => {
+  it("badges a LearnHNS link import and buys it as from the market", async () => {
     mockMarket(page({ rows: [] }));
     renderPage();
     fireEvent.change(await screen.findByLabelText("Or a market link"), {
@@ -458,6 +520,35 @@ describe("MarketPage", () => {
     expect(await screen.findByText(".imported")).toBeInTheDocument();
     expect(screen.getByText("From LearnHNS link")).toBeInTheDocument();
     expect(screen.queryByText("From file")).toBeNull();
+    fireEvent.click(screen.getByTestId("market-buy"));
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.some(
+          (c) =>
+            c[0] === "shakedex_preview_purchase" &&
+            (c[1] as { fromMarket: boolean }).fromMarket === true,
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("buys a pasted import as not from the market", async () => {
+    mockMarket(page({ rows: [] }));
+    renderPage();
+    fireEvent.change(await screen.findByTestId("listing-paste"), { target: { value: "{}" } });
+    fireEvent.click(screen.getByTestId("import-listing-text"));
+    expect(await screen.findByText(".imported")).toBeInTheDocument();
+    expect(screen.getByText("From file")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("market-buy"));
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.some(
+          (c) =>
+            c[0] === "shakedex_preview_purchase" &&
+            (c[1] as { fromMarket: boolean }).fromMarket === false,
+        ),
+      ).toBe(true),
+    );
   });
 
   it("shows why a full node could not check an import, not that a node is needed", async () => {

@@ -21,6 +21,7 @@ non-custodially, with your keys encrypted on your own machine.
 8. [Auctions](#8-auctions)
 9. [DNS records editor](#9-dns-records-editor)
 10. [Managing names you own](#10-managing-names-you-own)
+    - [Buying names on the Market](#buying-names-on-the-market)
 11. [Node control](#11-node-control)
 12. [Move from Namebase](#12-move-from-namebase)
 13. [System Tray](#13-system-tray)
@@ -93,14 +94,17 @@ details.
 
 ## 3. Sidebar and header
 
-The sidebar has four top-level sections:
+The sidebar has seven top-level sections:
 
 | Section | Purpose |
 |---------|---------|
 | **Wallet** | Balance, receive, send, recent transactions, owned names. Default page. |
+| **Activity** | Transaction history and pending activity. |
 | **Auctions** | Look up a name, place bids, reveal, register, see active auctions. |
+| **Watchlist** | Names you track without owning them. |
 | **Move from Namebase** | Retired: the legacy Namebase shut down on 1 October 2026. Explains the shutdown and imports history you exported earlier. |
 | **Settings** | Connections, node control, backups, notifications, advanced options. |
+| **Market** | Browse LearnHNS Market listings, import a listing file, and buy a listed name. Hotkey `7`. |
 
 The header shows two badges:
 
@@ -389,6 +393,24 @@ covenant limits (300 OPENs, 600 UPDATEs, 600 RENEWs), and per-block limits are
 the same as per-transaction ones — so a full batch is never refused for
 carrying too many covenants.
 
+### Buying names on the Market
+
+The Market is the seventh sidebar section (hotkey `7`, after Settings). It lists the names that sellers have put up for sale through Shakedex, taken from the LearnHNS Market, and lets you buy one with the wallet you already have.
+
+A listing is either a Buy Now at one price or a Reverse auction whose price steps fall over time. Each row shows the current step, which is the price the wallet buys at, and for a Reverse auction when the next price step becomes valid. Those times are approximate, because they are measured against your node's median time: a step becomes valid once its lock time, rounded down to a multiple of 512 seconds, is below that median time, so it can be listed as "now" up to about eight and a half minutes before its own lock time.
+
+Every LearnHNS Market listing is verified against your own node before the Buy button is offered. Listings that cannot be bought are not shown as rows; a "Hidden N" counter below the table expands to the names and the reason for each, such as already sold or cancelled, failed verification, expires before it can be finalized, not valid yet, or could not be checked. The market is shown a hundred listings at a time: Previous and Next move between pages, and the hidden counter counts the page shown. A row whose seller set a listing expiry shows "Listed until <date>"; that date is for information only, because the seller's signed price stays valid on chain until the name is sold or the listing cancelled.
+
+The LearnHNS Market lists mainnet names only. On testnet and regtest the Market page says there is no market for that network, and only importing a listing file or pasted JSON works; a market.learnhns.com link is refused there.
+
+You can also buy a listing that is not on the market. Use the import box to load a listing file, paste the listing JSON, or paste a market.learnhns.com/listing/<name> link. The listing is verified the same way and then appears under "Imported listings" with a "From file" badge, or "From LearnHNS link" for a link. An imported listing is judged only by its own verification, so it can be bought even while the market page is still loading or LearnHNS is unreachable. A market.learnhns.com link is the market's own listing, so its market fee is handled exactly as for a row of the market; a file or pasted JSON never counts as the market's published fee.
+
+Buying needs a local node, or a remote node with "Allow sending via remote node" turned on in Settings. SPV and Explorer modes can browse the Market but cannot buy, because the wallet cannot verify a listing without a node. On mainnet, buying also needs "Allow buying names on mainnet through Shakedex (experimental)" ticked in Settings; until it is, every Buy button is disabled with "Shakedex purchases on mainnet are experimental: enable them in Settings". Testnet and regtest are always allowed, and Finalize is never gated. Buying works with a wallet created or restored from a recovery phrase only: with a Ledger, a watch-only wallet or one imported from an extended private key, the Market shows "Shakedex works with a recovery-phrase wallet for now" and every Buy button is disabled.
+
+Choose Buy on a row to open the purchase confirmation. It shows the price, the market fee with its share of the price, the network fee and the total. The address the market fee is paid to is shown in the secure confirmation window, not in this dialog. A listing whose fee address is unusable on this network still verifies; its fee line says it names no valid fee address, and no market fee is paid. The market fee is ticked for you only when it is the fee LearnHNS itself publishes; for any other fee it starts unticked with a warning, and you decide whether to pay it. Confirming opens the secure window, where you unlock the signer as for any other spend. Just before the purchase is sent, the wallet checks the price step against your node's median time again. If a cheaper step has become valid meanwhile, nothing is sent: the dialog says the price changed, the prepared transaction is discarded, and the dialog shows the new figures for you to confirm again. The same happens if your node does not report a median time at that moment. Cancelling the secure window also discards the prepared purchase, and the listing can be bought again straight away.
+
+A purchase appears in Owned Names with its own status: "Unconfirmed purchase" until the transaction confirms, then "Awaiting finalize · N blocks" while the transfer delay runs (288 blocks, about two days, on mainnet and testnet; 10 on regtest; the purchase dialog states it for your network), then "Ready to finalize" with a Finalize button, and "Finalize · waiting for a block" once the finalize is sent. The name becomes yours only after you finalize it, and Finalize is never gated by the mainnet setting. When it is done, update the DNS records, because the name keeps the seller's. Finalize before the name expires: the purchase dialog warns when the name expires soon after the finalize becomes possible. A purchase whose name expires unfinalized is lost: the price was paid, but the name is not yours. The row leaves Owned Names, and Activity marks the purchase "Lost" and shows the reason under it; so does any purchase that ends without the name, paid or not.
+
 ### Paid name swaps
 
 Not available. The wallet once offered "Sell with payment" and "Buy with
@@ -399,7 +421,7 @@ pressable only by the party with nobody to pay — and nothing about the
 transaction was atomic, so "one transaction" meant one wallet funding both
 halves of its own trade.
 
-Selling a name for HNS therefore means transferring it and being paid
+Buying a name that someone has listed through Shakedex is a different mechanism and is available; see "Buying names on the Market" above. Selling through Shakedex is not available yet, so selling a name for HNS still means transferring it and being paid
 separately, with the trust that implies. If you recorded an offer before the
 buttons were withdrawn, its claim panel still appears and still works.
 
@@ -716,10 +738,7 @@ A freshly imported wallet won't show any HNS until:
 
 ### Send fails with "Not sent"
 
-The dialog stays open with the exact error. Common causes: not enough HNS to
-cover amount + fee, the node lost peers mid-broadcast, or the network
-temporarily rejected the tx. Fix the issue and click Sign & Broadcast again —
-the draft is still there.
+The dialog stays open with the exact error. Common causes: not enough HNS to cover amount + fee, or the node could not be reached mid-broadcast. A transaction the node does not accept still reads as sent (hsd answers with its txid either way) and is marked dropped once it is not seen. Fix the issue and click Sign & Broadcast again — the draft is still there.
 
 ### CSV import shows errors
 

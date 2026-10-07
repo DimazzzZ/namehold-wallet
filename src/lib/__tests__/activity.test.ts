@@ -40,6 +40,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: "aabbccdd",
         confirmationHeight: 100,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 12:00:00",
       },
     ];
@@ -57,6 +58,8 @@ describe("mergeActivity", () => {
       direction: "send",
       feeDoos: 5_000,
       status: "confirmed",
+      statusNote: null,
+      lostReason: null,
       confirmed: true,
       height: 100,
       sortTs: 1000,
@@ -107,6 +110,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: null,
         confirmationHeight: null,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 13:00:00",
       },
     ];
@@ -116,6 +120,30 @@ describe("mergeActivity", () => {
     expect(merged[0]!.status).toBe("signed");
     expect(merged[0]!.height).toBeNull();
     expect(merged[0]!.txid).toBeNull();
+  });
+
+  it("statusNote carries a dropped or failed draft's message, and nothing else's", () => {
+    const base: TxDraftSummary = {
+      id: "d",
+      walletProfileId: "profile1",
+      action: "shakedex_purchase",
+      status: "dropped",
+      summary: null as never,
+      errorMessage:
+        "someone else bought the name first, or the seller cancelled the listing — nothing was paid",
+      txid: null,
+      confirmationHeight: null,
+      purchaseLostReason: null,
+      createdAt: "2026-07-24 14:00:00",
+    };
+    const note = (over: Partial<TxDraftSummary>) =>
+      mergeActivity([], [{ ...base, ...over }])[0]!.statusNote;
+    expect(note({})).toBe(
+      "someone else bought the name first, or the seller cancelled the listing — nothing was paid",
+    );
+    expect(note({ status: "failed", errorMessage: "refused" })).toBe("refused");
+    expect(note({ status: "broadcasted" })).toBeNull();
+    expect(note({ errorMessage: null })).toBeNull();
   });
 
   it("dropped draft: txid set but no matching ActionRow → renders as its own row", () => {
@@ -139,6 +167,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: "dropped-tx",
         confirmationHeight: null,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 14:00:00",
       },
     ];
@@ -170,6 +199,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: "update-tx",
         confirmationHeight: 150,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 15:00:00",
       },
     ];
@@ -239,6 +269,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: "update-tx",
         confirmationHeight: 150,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 15:00:00",
       },
     ];
@@ -306,6 +337,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: null,
         confirmationHeight: null,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 12:30:00", // middle timestamp
       },
     ];
@@ -337,6 +369,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: "send-tx",
         confirmationHeight: null,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 12:00:00",
       },
     ];

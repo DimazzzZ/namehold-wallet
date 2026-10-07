@@ -43,6 +43,10 @@ export const ACTION_META: Record<
   finalize: { label: "Finalize", variant: "success" },
   revoke: { label: "Revoke", variant: "error" },
   claim: { label: "Claim", variant: "success" },
+  // Shakedex: draft actions only, until the chain row of the same tx replaces
+  // them (PURCHASE_ACTION / PURCHASE_FINALIZE_ACTION in shakedex/purchase.rs).
+  shakedex_purchase: { label: "Buy", variant: "warning" },
+  shakedex_purchase_finalize: { label: "Finalize purchase", variant: "success" },
   other: { label: "Other", variant: "default" },
 };
 
@@ -491,11 +495,16 @@ export function ActivityRow({
   const showNameValue =
     NAME_COVENANT_ACTIONS.has(row.action) && row.valueDoos === 0 && row.nameValueDoos != null;
 
-  const badge = statusBadge(row.status, {
-    confirmed: row.confirmed,
-    height: row.height ?? null,
-  });
-  const { variant: badgeVariant, label: badgeLabel, hint: badgeHint } = badge;
+  // A lost purchase says so whatever its draft's status: one lost after it
+  // paid still reads "confirmed".
+  const badge = row.lostReason
+    ? { variant: "error" as const, label: "Lost", hint: row.lostReason }
+    : statusBadge(row.status, {
+        confirmed: row.confirmed,
+        height: row.height ?? null,
+      });
+  const { variant: badgeVariant, label: badgeLabel } = badge;
+  const badgeHint = row.statusNote ?? badge.hint;
 
   const linkClass = "text-blue-500 hover:text-blue-700 hover:underline cursor-pointer";
 
@@ -580,6 +589,13 @@ export function ActivityRow({
         <Badge variant={badgeVariant} title={badgeHint}>
           {badgeLabel}
         </Badge>
+        {/* Losing a purchase is the one outcome the user must read without
+            hovering: whether anything was paid is in the reason. */}
+        {row.lostReason && (
+          <div className="text-xs text-red-700 mt-0.5" data-testid="activity-lost-reason">
+            {row.lostReason}
+          </div>
+        )}
       </td>
       <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
         {row.height == null ? (

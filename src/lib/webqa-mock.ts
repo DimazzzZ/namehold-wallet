@@ -1090,6 +1090,9 @@ const handlers: Record<string, Handler> = {
   }),
   shakedex_import_listing: () =>
     demoListing("imported", "buyNow", 100_000_000, null, null, 100_000_000),
+  shakedex_preview_purchase: () => null,
+  shakedex_build_purchase_draft: () => null,
+  shakedex_build_purchase_finalize_draft: () => null,
 
   // ── Watchlist ─────────────────────────────────────────────────────────
   add_to_watchlist: () => null,

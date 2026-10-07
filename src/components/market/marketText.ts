@@ -1,5 +1,12 @@
+import { settingToBool } from "../../lib/settingsBool";
 import { formatDate } from "../../lib/utils";
-import type { HiddenCounts, ShakedexHidden } from "../../types";
+import type {
+  HiddenCounts,
+  ShakedexHidden,
+  WalletNetwork,
+  WalletProfileKind,
+  WriteCapability,
+} from "../../types";
 
 /** Why Buy and Finalize are disabled for any profile but a recovery-phrase one (R16). */
 export const RECOVERY_PHRASE_ONLY = "Shakedex works with a recovery-phrase wallet for now";
@@ -8,12 +15,69 @@ export const RECOVERY_PHRASE_ONLY = "Shakedex works with a recovery-phrase walle
 export const NEEDS_SENDING_NODE =
   "Shakedex needs a local node, or a remote node with sending allowed";
 
+/**
+ * Whether a profile can buy or finalize through Shakedex: a seed-backed
+ * recovery-phrase wallet on a node that can send, as the backend enforces
+ * (`software_writer_ctx`). Unknown (still loading) is not.
+ */
+export function canUseShakedex(
+  kind: WalletProfileKind | undefined,
+  writeCap: WriteCapability | null | undefined,
+): boolean {
+  return kind === "mnemonic_hot" && writeCap?.broadcasterAvailable === true;
+}
+
+/**
+ * The backend's own sentence for why Shakedex is refused here, once the
+ * profile or the write capability is known to refuse it; `null` otherwise.
+ */
+export function shakedexRefusal(
+  kind: WalletProfileKind | undefined,
+  writeCap: WriteCapability | null | undefined,
+): string | null {
+  if (kind !== undefined && kind !== "mnemonic_hot") return RECOVERY_PHRASE_ONLY;
+  if (writeCap != null && !writeCap.broadcasterAvailable) return NEEDS_SENDING_NODE;
+  return null;
+}
+
 /** Why a market link cannot be imported off mainnet (R5). */
 export const MARKET_MAINNET_ONLY = "LearnHNS Market lists mainnet names only";
 
 /** Why Buy is disabled on mainnet until Settings allows it (R15). Finalize is not gated. */
 export const MAINNET_EXPERIMENTAL =
   "Shakedex purchases on mainnet are experimental: enable them in Settings";
+
+/**
+ * The backend's sentence for why a new purchase is refused here, in the order
+ * its gates run (`commands/shakedex.rs::prepare`): profile, node, then the
+ * mainnet flag, which only `"true"` enables, as in the backend. `null` when
+ * nothing known refuses it.
+ */
+export function purchaseRefusal(
+  kind: WalletProfileKind | undefined,
+  writeCap: WriteCapability | null | undefined,
+  network: WalletNetwork | undefined,
+  experimental: string | undefined,
+): string | null {
+  const refusal = shakedexRefusal(kind, writeCap);
+  if (refusal) return refusal;
+  if (network === "mainnet" && !settingToBool(experimental)) return MAINNET_EXPERIMENTAL;
+  return null;
+}
+
+/** Whether a new purchase can be made: `canUseShakedex` plus the mainnet flag. */
+export function canBuyShakedex(
+  kind: WalletProfileKind | undefined,
+  writeCap: WriteCapability | null | undefined,
+  network: WalletNetwork | undefined,
+  experimental: string | undefined,
+): boolean {
+  return (
+    canUseShakedex(kind, writeCap) &&
+    network !== undefined &&
+    purchaseRefusal(kind, writeCap, network, experimental) === null
+  );
+}
 
 /** "~6 h" — the wait is measured against the node's median time, so it is only approximate. */
 export function approxWait(secs: number): string {

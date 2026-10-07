@@ -156,6 +156,7 @@ describe("WalletView — auction UX", () => {
     errorMessage: null,
     txid: "abcdef0123456789",
     confirmationHeight: null,
+    purchaseLostReason: null,
     createdAt: "2026-01-01",
     ...over,
   });
@@ -190,6 +191,72 @@ describe("WalletView — auction UX", () => {
     expect(within(confirmedRow).getByText("Confirmed")).toBeInTheDocument();
     expect(screen.getByText("Pending")).toBeInTheDocument();
     expect(screen.getByText("Not confirmed")).toBeInTheDocument();
+  });
+
+  it("a dropped or failed draft's hint says why", async () => {
+    const why = "the transaction was never mined";
+    invokeMock.mockImplementation(
+      routeWallet({
+        drafts: [
+          draft({ id: "c", txid: "ccc0000000000003", status: "dropped", errorMessage: why }),
+        ],
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+    const badge = await screen.findByText("Not confirmed");
+    fireEvent.mouseEnter(badge.parentElement!);
+    expect(await screen.findByText(why)).toBeInTheDocument();
+  });
+
+  it("a purchase lost while paying nothing reads Lost, and says nothing was paid", async () => {
+    // The shape `list_tx_drafts` sends for it: the draft dropped with the
+    // reason, and the purchase's own lost reason beside it.
+    const lost =
+      "someone else bought the name first, or the seller cancelled the listing — nothing was paid";
+    invokeMock.mockImplementation(
+      routeWallet({
+        drafts: [
+          draft({
+            id: "c",
+            action: "shakedex_purchase",
+            txid: "ccc0000000000003",
+            status: "dropped",
+            errorMessage: lost,
+            purchaseLostReason: lost,
+          }),
+        ],
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+    const badge = await screen.findByText("Lost");
+    const tr = badge.closest("tr")!;
+    expect(within(tr).queryByText("Not confirmed")).not.toBeInTheDocument();
+    expect(within(tr).getByText("Buy")).toBeInTheDocument();
+    // Read without hovering: whether anything was paid is in the reason.
+    expect(within(tr).getByTestId("activity-lost-reason")).toHaveTextContent(lost);
+  });
+
+  it("a purchase lost after it paid reads Lost, with the reason, not Confirmed", async () => {
+    const lost =
+      "the name expired before it was finalized — the purchase was paid, but the name is lost";
+    invokeMock.mockImplementation(
+      routeWallet({
+        drafts: [
+          draft({
+            id: "d",
+            action: "shakedex_purchase",
+            txid: "ddd0000000000004",
+            status: "confirmed",
+            purchaseLostReason: lost,
+          }),
+        ],
+      }),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+    const badge = await screen.findByText("Lost");
+    const tr = badge.closest("tr")!;
+    expect(within(tr).queryByText("Confirmed")).not.toBeInTheDocument();
+    expect(within(tr).getByTestId("activity-lost-reason")).toHaveTextContent(lost);
   });
 
   it("shows the Locked in Auctions balance only when a lockup exists", async () => {

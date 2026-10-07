@@ -39,5 +39,6 @@ export const DEFAULT_SETTINGS: Settings = {
   tray_hint_shown: "0",
   launch_at_login: "0",
   fee_rate_doos_per_kvb: "",
+  shakedex_experimental: "false",
   update_notify_enabled: "false",
 };
