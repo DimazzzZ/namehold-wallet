@@ -21,6 +21,13 @@ use crate::noncustodial::tx::{
     output_address_from_string, sighash, Covenant, Input, Outpoint, Output, Transaction,
 };
 
+/// hsd's default input sequence: final, no relative or absolute lock.
+pub const FINAL_SEQUENCE: u32 = 0xffff_ffff;
+
+fn final_sequence() -> u32 {
+    FINAL_SEQUENCE
+}
+
 /// One input of a draft plan: prevout + the derivation path needed to re-sign.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanInput {
@@ -30,6 +37,15 @@ pub struct PlanInput {
     pub branch: u32,
     pub child_index: u32,
     pub sighash_type: u32,
+    /// Input sequence. Plans stored before this field existed default to
+    /// final, which is what every builder used.
+    #[serde(default = "final_sequence")]
+    pub sequence: u32,
+    /// A foreign input, a coin someone else controls such as a Shakedex
+    /// seller's lock, carries its finished witness here, hex per stack item.
+    /// We never sign it; `branch`/`child_index` are ignored for it.
+    #[serde(default)]
+    pub foreign_witness_hex: Option<Vec<String>>,
 }
 
 /// One output of a draft plan (value + address + covenant items as hex).
@@ -54,6 +70,28 @@ pub struct DraftPlan {
     /// prompting the user for change verification.
     #[serde(default)]
     pub change_output_index: Option<usize>,
+}
+
+impl DraftPlan {
+    /// True when the plan carries anything the Ledger signer cannot
+    /// represent: a foreign input, a non-final sequence, or a lock time.
+    pub fn has_foreign_or_custom_inputs(&self) -> bool {
+        self.locktime != 0
+            || self
+                .inputs
+                .iter()
+                .any(|i| i.foreign_witness_hex.is_some() || i.sequence != FINAL_SEQUENCE)
+    }
+
+    /// The outpoints of the wallet's own inputs — every input but the foreign
+    /// ones (a seller's lock coin) — which are the coins a draft reserves.
+    pub fn own_inputs(&self) -> Vec<(String, u32)> {
+        self.inputs
+            .iter()
+            .filter(|i| i.foreign_witness_hex.is_none())
+            .map(|i| (i.txid.clone(), i.vout))
+            .collect()
+    }
 }
 
 /// The name UTXO a covenant action spends (when applicable).
@@ -192,6 +230,8 @@ pub fn build_plan(
             branch: n.branch,
             child_index: n.child_index,
             sighash_type: n.sighash_type,
+            sequence: FINAL_SEQUENCE,
+            foreign_witness_hex: None,
         });
     }
     for c in &funding[..taken] {
@@ -202,6 +242,8 @@ pub fn build_plan(
             branch: c.branch,
             child_index: c.child_index,
             sighash_type: sighash::ALL,
+            sequence: FINAL_SEQUENCE,
+            foreign_witness_hex: None,
         });
     }
 
@@ -315,6 +357,8 @@ pub fn build_batch_plan(
             branch: n.branch,
             child_index: n.child_index,
             sighash_type: n.sighash_type,
+            sequence: FINAL_SEQUENCE,
+            foreign_witness_hex: None,
         });
     }
     for c in &funding[..taken] {
@@ -325,6 +369,8 @@ pub fn build_batch_plan(
             branch: c.branch,
             child_index: c.child_index,
             sighash_type: sighash::ALL,
+            sequence: FINAL_SEQUENCE,
+            foreign_witness_hex: None,
         });
     }
 
@@ -437,6 +483,8 @@ pub fn build_finalize_with_payment_plan(
         branch: name_input.branch,
         child_index: name_input.child_index,
         sighash_type: name_input.sighash_type,
+        sequence: FINAL_SEQUENCE,
+        foreign_witness_hex: None,
     }];
     for c in &funding[..taken] {
         plan_inputs.push(PlanInput {
@@ -446,6 +494,8 @@ pub fn build_finalize_with_payment_plan(
             branch: c.branch,
             child_index: c.child_index,
             sighash_type: sighash::ALL,
+            sequence: FINAL_SEQUENCE,
+            foreign_witness_hex: None,
         });
     }
 
@@ -506,10 +556,21 @@ pub fn rebuild_unsigned(plan: &DraftPlan, network: Network) -> Result<Transactio
     tx.version = plan.version;
     tx.locktime = plan.locktime;
     for inp in &plan.inputs {
-        tx.inputs.push(Input::new(Outpoint {
+        let mut input = Input::new(Outpoint {
             hash: outpoint_hash(&inp.txid)?,
             index: inp.vout,
-        }));
+        });
+        input.sequence = inp.sequence;
+        if let Some(items) = &inp.foreign_witness_hex {
+            input.witness = items
+                .iter()
+                .map(|h| {
+                    hex::decode(h)
+                        .map_err(|e| AppError::InvalidInput(format!("bad witness hex: {e}")))
+                })
+                .collect::<Result<_, _>>()?;
+        }
+        tx.inputs.push(input);
     }
     for out in &plan.outputs {
         let items = out
@@ -548,6 +609,9 @@ fn sign_plan_tx(session: &mut SignerSession, plan: &DraftPlan) -> Result<Transac
     let mut tx = rebuild_unsigned(plan, network)?;
     let master = session.master()?;
     for (i, inp) in plan.inputs.iter().enumerate() {
+        if inp.foreign_witness_hex.is_some() {
+            continue;
+        }
         let path = bip44_path(network, plan.account, inp.branch, inp.child_index);
         let child = master.derive_path(&path)?;
         let pubkey = child.compressed_pubkey();
@@ -1227,5 +1291,84 @@ mod tests {
         // Finalize + payment outputs, no change.
         assert_eq!(res.plan.outputs.len(), 2);
         assert_eq!(res.change, 0);
+    }
+
+    #[test]
+    fn old_plan_json_without_new_fields_still_parses() {
+        let json = r#"{"version":0,"locktime":0,"account":0,"network":"main",
+            "inputs":[{"txid":"0101010101010101010101010101010101010101010101010101010101010101",
+                       "vout":0,"value":5000,"branch":0,"child_index":3,"sighash_type":1}],
+            "outputs":[]}"#;
+        let plan: DraftPlan = serde_json::from_str(json).unwrap();
+        assert_eq!(plan.inputs[0].sequence, FINAL_SEQUENCE);
+        assert!(plan.inputs[0].foreign_witness_hex.is_none());
+        assert!(!plan.has_foreign_or_custom_inputs());
+    }
+
+    fn plan_with_foreign_input(witness: Vec<String>) -> DraftPlan {
+        let mut plan = build_plan(
+            Network::Main,
+            0,
+            None,
+            PrimaryOutput {
+                value: 100_000,
+                address: ADDR.into(),
+                covenant: Covenant::default(),
+            },
+            &[coin(1, 1_000_000, 0)],
+            ADDR,
+            1,
+        )
+        .unwrap()
+        .plan;
+        plan.inputs.insert(
+            0,
+            PlanInput {
+                txid: hex::encode([9u8; 32]),
+                vout: 1,
+                value: 0,
+                branch: 0,
+                child_index: 0,
+                sighash_type: 0x84,
+                sequence: 0xffff_fffe,
+                foreign_witness_hex: Some(witness),
+            },
+        );
+        plan
+    }
+
+    #[test]
+    fn own_inputs_leave_out_the_foreign_ones() {
+        let plan = plan_with_foreign_input(vec!["aa".into()]);
+        // Input 0 is the seller's coin; only input 1 is ours to reserve.
+        let own = plan.own_inputs();
+        assert_eq!(
+            own,
+            vec![(plan.inputs[1].txid.clone(), plan.inputs[1].vout)]
+        );
+    }
+
+    #[test]
+    fn rebuild_applies_sequence_locktime_and_foreign_witness() {
+        let mut plan = plan_with_foreign_input(vec!["aa".into(), "bbcc".into()]);
+        plan.locktime = 0x8000_1234;
+        assert!(plan.has_foreign_or_custom_inputs());
+        let tx = rebuild_unsigned(&plan, Network::Main).unwrap();
+        assert_eq!(tx.locktime, 0x8000_1234);
+        assert_eq!(tx.inputs[0].sequence, 0xffff_fffe);
+        assert_eq!(tx.inputs[0].witness, vec![vec![0xaa], vec![0xbb, 0xcc]]);
+        assert_eq!(tx.inputs[1].sequence, FINAL_SEQUENCE);
+        assert!(tx.inputs[1].witness.is_empty());
+    }
+
+    #[test]
+    fn sign_plan_leaves_foreign_inputs_untouched() {
+        let seed = hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+        let master = ExtendedPrivKey::from_seed(&seed).unwrap();
+        let mut session = SignerSession::unlock("p1".into(), Network::Main, master, 60_000);
+        let plan = plan_with_foreign_input(vec!["aa".into()]);
+        let tx = sign_plan_tx(&mut session, &plan).unwrap();
+        assert_eq!(tx.inputs[0].witness, vec![vec![0xaa]]);
+        assert_eq!(tx.inputs[1].witness.len(), 2, "own input signed as P2WPKH");
     }
 }

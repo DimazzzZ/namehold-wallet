@@ -1690,6 +1690,18 @@ pub fn read_cached_balance(
     }))
 }
 
+/// Whether a name was claimed (a reserved name's CLAIM), from a cached
+/// `getnameinfo` reply (`{"info": {"claimed": n, ..}}`, `upsert_name_state`).
+/// `None` when the cache does not say: an explorer row, or no `info`.
+pub fn claimed_from_name_info(raw_json: &str) -> Option<bool> {
+    serde_json::from_str::<serde_json::Value>(raw_json)
+        .ok()?
+        .get("info")?
+        .get("claimed")?
+        .as_u64()
+        .map(|c| c > 0)
+}
+
 /// Wallet-owned names from `tracked_name_states`, shaped like the frontend
 /// `HsdName`. "Owned" = the name's owner outpoint matches an unspent tracked
 /// UTXO for this profile.
@@ -1709,7 +1721,7 @@ pub fn read_cached_names(
                    AND u.txid = n.owner_txid
                    AND u.vout = n.owner_vout
                    AND u.spent_by_txid IS NULL) AS covenant_type,
-                n.owner_address
+                n.owner_address, n.raw_json
          FROM tracked_name_states n
          WHERE n.wallet_profile_id = ?1
            AND EXISTS (
@@ -1730,6 +1742,7 @@ pub fn read_cached_names(
         let owner_vout: Option<i64> = row.get(5)?;
         let covenant_type: Option<i64> = row.get(6)?;
         let owner_address: Option<String> = row.get(7)?;
+        let raw_json: Option<String> = row.get(8)?;
         let owner = owner_txid
             .map(|hash| serde_json::json!({ "hash": hash, "index": owner_vout.unwrap_or(0) }));
 
@@ -1746,6 +1759,7 @@ pub fn read_cached_names(
             "registered": Some(registered),
             "expired": None::<bool>,
             "stats": serde_json::Value::Null,
+            "claimed": raw_json.as_deref().and_then(claimed_from_name_info),
         }))
     })?;
     let mut out = Vec::new();
@@ -1950,8 +1964,9 @@ pub struct TrackedNameRow {
     /// Chain renewal height (`getnameinfo().info.renewal` / explorer
     /// `renewal`), when sync has recorded one. Used by the
     /// `get_name_action_capabilities` node-unreachable fallback to derive
-    /// `days_until_expire` the same way `read_renewals` does (renewal height +
-    /// network renewal window vs. a persisted height estimate) instead of
+    /// `days_until_expire` the same way `read_renewals` does
+    /// (`NameParams::expiry_end` of the renewal height vs. a persisted height
+    /// estimate) instead of
     /// leaving the expiry alarm silent for lack of live node stats.
     pub renewal_height: Option<i64>,
     /// The block the name's TRANSFER was recorded in

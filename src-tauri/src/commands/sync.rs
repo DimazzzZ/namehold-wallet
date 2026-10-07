@@ -578,10 +578,11 @@ pub async fn cancel_full_sync(state: State<'_, AppState>) -> Result<(), AppError
 /// connection: WAL mode, `busy_timeout` (so a connection that finds the DB
 /// momentarily locked by a concurrent writer waits and retries instead of
 /// failing immediately with "database is locked"), and `foreign_keys = ON`.
+///
+/// Legacy name kept for its existing callers; new code calls
+/// [`crate::db::connection::open_migrated`] directly.
 pub fn open_conn(db_path: &str) -> Result<rusqlite::Connection, AppError> {
-    let conn = crate::db::connection::open(std::path::Path::new(db_path))?;
-    crate::db::migrations::run(&conn)?;
-    Ok(conn)
+    crate::db::connection::open_migrated(db_path)
 }
 
 /// Apply one node-sync batch (every coin upsert + spent-reconciliation +

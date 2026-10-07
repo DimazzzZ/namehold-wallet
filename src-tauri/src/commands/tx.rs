@@ -26,13 +26,14 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime, State};
 
+use crate::commands::draft_ctx::active_profile;
 use crate::commands::secure_prompt::{prompt_secure, SecurePromptRequest};
 use crate::db;
 use crate::error::AppError;
 use crate::noncustodial::network::Network;
-use crate::noncustodial::rpc::{ChainSource, NodeRpcClient};
+use crate::noncustodial::rpc::{cross_network_refusal, ChainSource, NodeRpcClient};
 use crate::noncustodial::send;
-use crate::noncustodial::types::{BroadcastResult, TxDraftSummary, TxSummary};
+use crate::noncustodial::types::{doos_to_hns_string, BroadcastResult, TxDraftSummary, TxSummary};
 use crate::noncustodial::{derivation, sync};
 use crate::AppState;
 
@@ -57,20 +58,6 @@ fn random_id() -> String {
     hex::encode(bytes)
 }
 
-/// Resolve the active wallet profile or error if none is selected.
-fn active_profile(
-    conn: &rusqlite::Connection,
-) -> Result<crate::noncustodial::types::WalletProfileSummary, AppError> {
-    let id = db::queries::get_active_profile_id(conn)?;
-    if id.is_empty() {
-        return Err(AppError::InvalidInput(
-            "no active wallet profile".to_string(),
-        ));
-    }
-    db::queries::get_wallet_profile(conn, &id)?
-        .ok_or_else(|| AppError::NotFound(format!("wallet profile {id}")))
-}
-
 /// Derive the change address (branch 1, index 0) for a profile from its xpub.
 fn change_address(network: Network, account_xpub: &str) -> Result<String, AppError> {
     let xpub = crate::noncustodial::hd::ExtendedPubKey::from_xpub(network, account_xpub)?;
@@ -85,13 +72,6 @@ fn session_ttl_ms(settings: &std::collections::HashMap<String, String>) -> u128 
         .filter(|n| *n > 0)
         .unwrap_or(900);
     (secs as u128) * 1000
-}
-
-/// Format doos as an HNS decimal string (6 dp) for human display.
-fn doos_to_hns_string(doos: i64) -> String {
-    let whole = doos / 1_000_000;
-    let frac = (doos % 1_000_000).abs();
-    format!("{whole}.{frac:06} HNS")
 }
 
 /// Compute the TxSummary for a send_hns draft after signing.
@@ -140,19 +120,14 @@ fn compute_send_summary(
 /// Build the read-only detail rows shown in the secure confirmation window for
 /// a draft. Rows are `{ "label": ..., "value": ... }`; the window renders them
 /// verbatim so the user confirms the real on-chain intent, not whatever the
-/// (possibly compromised) main webview claims.
-fn confirm_details_for_draft(draft: &db::queries::TxDraftRow) -> serde_json::Value {
-    let summary: TxSummary = serde_json::from_str(&draft.summary_json).unwrap_or(TxSummary {
-        action: draft.action.clone(),
-        send_total_doos: 0,
-        fee_doos: 0,
-        change_doos: 0,
-        input_total_doos: 0,
-        num_inputs: 0,
-        recipient_address: None,
-        txid: None,
-        warnings: Vec::new(),
-    });
+/// (possibly compromised) main webview claims. A draft whose summary cannot
+/// be read is refused: the window must not show a fee or a price as zero.
+pub(crate) fn confirm_details_for_draft(
+    draft: &db::queries::TxDraftRow,
+) -> Result<serde_json::Value, AppError> {
+    // The fee and amounts the user checks before signing: a summary that
+    // cannot be read is refused, never shown as zeros (fail closed).
+    let summary: TxSummary = read_summary(&draft.summary_json)?;
     let mut rows: Vec<serde_json::Value> = Vec::new();
     let action_label = match draft.action.as_str() {
         "send_hns" => "Send HNS".to_string(),
@@ -175,10 +150,21 @@ fn confirm_details_for_draft(draft: &db::queries::TxDraftRow) -> serde_json::Val
     if let Some(txid) = &summary.txid {
         rows.push(serde_json::json!({ "label": "Txid", "value": txid }));
     }
-    for w in &summary.warnings {
+    push_warning_rows(&mut rows, &summary.warnings);
+    Ok(serde_json::json!({ "rows": rows }))
+}
+
+/// A draft's typed summary, or a "corrupted draft" refusal.
+fn read_summary<T: serde::de::DeserializeOwned>(summary_json: &str) -> Result<T, AppError> {
+    serde_json::from_str(summary_json)
+        .map_err(|e| AppError::Other(format!("corrupted draft: unreadable summary: {e}")))
+}
+
+/// One "Warning" row per warning.
+fn push_warning_rows(rows: &mut Vec<serde_json::Value>, warnings: &[String]) {
+    for w in warnings {
         rows.push(serde_json::json!({ "label": "Warning", "value": w }));
     }
-    serde_json::json!({ "rows": rows })
 }
 
 /// Resolve the fee rate (doos/byte): explicit override, else ask the node's
@@ -615,7 +601,7 @@ pub(crate) async fn sign_tx_draft_confirmed<R: Runtime>(
         db::queries::get_tx_draft(&conn, draft_id)?
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?
     };
-    let details = confirm_details_for_draft(&draft);
+    let details = confirm_details_for_draft(&draft)?;
     let confirm = prompt_secure(
         app,
         SecurePromptRequest {
@@ -1019,6 +1005,8 @@ mod ledger_signing_guards_tests {
                 branch: 0,
                 child_index: 0,
                 sighash_type: 1,
+                sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
+                foreign_witness_hex: None,
             }],
             outputs: vec![
                 crate::noncustodial::actions::PlanOutput {
@@ -1061,6 +1049,8 @@ mod ledger_signing_guards_tests {
                 branch: 0,
                 child_index: 0,
                 sighash_type: 1,
+                sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
+                foreign_witness_hex: None,
             }],
             outputs: vec![
                 crate::noncustodial::actions::PlanOutput {
@@ -1110,6 +1100,8 @@ mod ledger_signing_guards_tests {
                 branch: 0,
                 child_index: 0,
                 sighash_type: 1,
+                sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
+                foreign_witness_hex: None,
             }],
             outputs: vec![crate::noncustodial::actions::PlanOutput {
                 value: 99_500_000,
@@ -1141,6 +1133,8 @@ mod ledger_signing_guards_tests {
                 branch: 0,
                 child_index: 0,
                 sighash_type: 1,
+                sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
+                foreign_witness_hex: None,
             }],
             outputs: vec![crate::noncustodial::actions::PlanOutput {
                 value: 100_000_000, // output > input (impossible)
@@ -1391,9 +1385,10 @@ pub async fn sign_name_message(
 pub(crate) enum BroadcastOutcome {
     /// Node accepted the tx and returned a txid.
     Success(String),
-    /// Node answered with a JSON-RPC error (double-spend, malformed, etc.) —
-    /// the tx was definitively rejected and coins are unspent. The wrapped
-    /// `AppError` is always the original `AppError::Rpc(_)` from the client.
+    /// hsd refused the tx with its own JSON-RPC error (for
+    /// `sendrawtransaction`, only a body it cannot decode) — the tx was
+    /// definitively rejected and coins are unspent. The wrapped
+    /// `AppError` is always the original `AppError::NodeRefused` from the client.
     RpcError(AppError),
     /// HTTP/transport failure (timeout, connection dropped, DNS, etc.) —
     /// the outcome is ambiguous; the tx may be in the node's mempool. The
@@ -1405,15 +1400,20 @@ pub(crate) enum BroadcastOutcome {
 
 /// Client-injected broadcast outcome classification for [`broadcast_tx_draft`].
 /// Calls `send_raw_transaction` and classifies the result into three
-/// categories: success (txid), RPC error (definitive rejection), or transport
-/// error (ambiguous). Testable against a mock.
+/// categories: success (txid), RPC error (hsd's own refusal, see
+/// [`crate::noncustodial::rpc::is_node_rejection`]), or transport error
+/// (ambiguous: no reply, or a reply that is not hsd's). Testable against a
+/// mock.
 pub(crate) async fn classify_broadcast_outcome_with_client(
     client: &dyn crate::noncustodial::node_rpc::NodeRpc,
     signed_hex: &str,
 ) -> BroadcastOutcome {
     match client.send_raw_transaction(signed_hex).await {
         Ok(txid) => BroadcastOutcome::Success(txid),
-        Err(e @ AppError::Rpc(_)) => BroadcastOutcome::RpcError(e),
+        // Only hsd's own refusal proves the transaction will not be accepted;
+        // a reply that is not hsd's (a proxy's error page) is as ambiguous
+        // as a dropped connection.
+        Err(e) if crate::noncustodial::rpc::is_node_rejection(&e) => BroadcastOutcome::RpcError(e),
         Err(e) => BroadcastOutcome::TransportError(e),
     }
 }
@@ -1508,53 +1508,6 @@ fn explain_shortfall(
     ))
 }
 
-/// Refuse to broadcast through a node that reports a different chain than the
-/// wallet profile. Split out of [`broadcast_tx_draft`] so it can be tested
-/// against a mock without an `AppState`.
-///
-/// Mirrors the read gate's conservatism: only a POSITIVE mismatch refuses. A
-/// node that does not report `chain` (older hsd builds), or a draft whose
-/// profile has vanished, leaves the decision to hsd as before — `None` from
-/// `network_check` means "unknown", not "wrong".
-pub(crate) async fn broadcast_network_guard_with_client(
-    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
-    expected_network: Option<&str>,
-) -> Result<(), AppError> {
-    // Nothing to compare against: skip the probe entirely rather than spend an
-    // RPC round-trip on a check that cannot fail.
-    let Some(expected) = expected_network else {
-        return Ok(());
-    };
-    // A probe failure is not a mismatch. Let the broadcast proceed and be
-    // classified by the existing transport/RPC error handling.
-    let Ok(info) = client.get_blockchain_info().await else {
-        return Ok(());
-    };
-    if crate::noncustodial::network::network_check(Some(expected), info.chain.as_deref())
-        == Some(false)
-    {
-        return Err(cross_network_refusal(
-            info.chain.as_deref(),
-            expected,
-            "refusing to broadcast; the transaction was not sent and the draft is unchanged",
-        ));
-    }
-    Ok(())
-}
-
-/// The refusal a cross-network node earns, with what the caller was about to do.
-///
-/// Two guards raise it — the sync path and the broadcast path — and each used
-/// to spell it out, so the sentence the user reads depended on which one fired
-/// first. `consequence` is the only part that legitimately differs: what did
-/// not happen, and what state was left alone.
-fn cross_network_refusal(reported: Option<&str>, expected: &str, consequence: &str) -> AppError {
-    let reported = reported.unwrap_or("unknown");
-    AppError::InvalidInput(format!(
-        "node is on network '{reported}' but this wallet is '{expected}' — {consequence}"
-    ))
-}
-
 /// Broadcast a signed draft via node RPC.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -1580,38 +1533,12 @@ pub async fn broadcast_tx_draft(
         (signed, network, settings, client)
     };
 
-    // A full local node or a configured remote node can broadcast — configuring
-    // a Node RPC URL is the opt-in. Read-only sources (Explorer and SPV) are
-    // rejected up-front so the draft status is not left in an ambiguous
-    // `broadcast_pending` state; the same read-only check inside
-    // `send_raw_transaction` (via `can_broadcast()`) is the second line of
-    // defense, and the UI-facing `WriteCapability` gate is the first.
-    if !client.source().can_broadcast() {
-        return Err(AppError::InvalidInput(
-            "chain source is read-only; broadcasting is disabled".to_string(),
-        ));
-    }
-    // A remote node additionally needs the explicit "Allow sending via remote
-    // node" opt-in. The UI gate shows the same rule; enforcing it here too
-    // closes a code path that would otherwise skip that gate and broadcast
-    // through someone else's node.
-    if client.source() == ChainSource::RemoteNode
-        && !crate::noncustodial::rpc::remote_broadcast_allowed(&settings)
-    {
-        return Err(AppError::InvalidInput(
-            "sending via remote node is disabled; enable \"Allow sending via remote node\" in Settings → Connections"
-                .to_string(),
-        ));
-    }
-    // And the node must be on the wallet's own chain. Previously this was left
-    // to hsd, on the reasoning that a cross-chain tx spends coins the node has
-    // never seen and is rejected anyway. That reasoning fails open: the
-    // rejection arrives as a transport-shaped error often enough to strand the
-    // draft in `broadcast_pending`, and it leaks the signed transaction to a
-    // node the user never meant to talk to. Refuse up-front instead, leaving
-    // the draft untouched, exactly as the read gate refuses such a node.
-    broadcast_network_guard_with_client(&client, expected_network.as_deref()).await?;
-
+    // Refused up-front (read-only source, remote node without the opt-in,
+    // node on another chain) so the draft is not left in an ambiguous
+    // `broadcast_pending` state and the signed transaction never reaches a
+    // node the user did not mean to send through.
+    crate::noncustodial::rpc::broadcast_gates(&client, &settings, expected_network.as_deref())
+        .await?;
     let outcome = classify_broadcast_outcome_with_client(&client, &signed_hex).await;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     match outcome {
@@ -1629,11 +1556,12 @@ pub async fn broadcast_tx_draft(
                 status: "broadcasted".to_string(),
             })
         }
-        BroadcastOutcome::RpcError(msg) => {
-            let msg = msg.to_string();
+        BroadcastOutcome::RpcError(e) => {
+            // hsd's refusal itself, so its words are said once.
+            let msg = e.to_string();
             db::queries::update_tx_draft_status(&conn, &draft_id, "failed", Some(&msg), None)?;
             db::queries::release_reserved_utxos_for_draft(&conn, &draft_id)?;
-            Err(AppError::Rpc(msg))
+            Err(e)
         }
         BroadcastOutcome::TransportError(e) => {
             let msg = e.to_string();
@@ -1646,6 +1574,28 @@ pub async fn broadcast_tx_draft(
             )?;
             Err(e)
         }
+    }
+}
+
+/// The block a `getrawtransaction` reply puts the transaction in, `None` in
+/// the mempool. hsd always sends `confirmations` and `blockhash` and no height
+/// (hsd 8.0.0 `lib/node/rpc.js` `txToJSON`: 0 and `null` in the mempool, at
+/// least 1 and the block's hash once mined), so the height is `tip -
+/// confirmations + 1`. A reply without `confirmations`, or whose two fields
+/// disagree on whether it is mined, is not hsd's answer and decides nothing.
+fn raw_tx_mined_height(tx: &serde_json::Value, tip: i64) -> Result<Option<i64>, AppError> {
+    let confs = tx.get("confirmations").and_then(|v| v.as_i64());
+    let block = tx.get("blockhash");
+    let mined = block
+        .and_then(|b| b.as_str())
+        .is_some_and(|h| !h.is_empty());
+    let in_mempool = block.is_some_and(|b| b.is_null());
+    match confs {
+        Some(0) if in_mempool => Ok(None),
+        Some(c) if c >= 1 && mined => Ok(Some((tip - c + 1).max(0))),
+        _ => Err(AppError::Rpc(format!(
+            "node's transaction reply is not hsd's (confirmations {confs:?}, blockhash {block:?})"
+        ))),
     }
 }
 
@@ -1714,8 +1664,9 @@ fn local_txid_from_summary(summary_json: &str) -> Option<String> {
 ///     the LOCALLY-computed txid ([`local_txid_from_summary`]); known
 ///     (mempool or mined) promotes it to `broadcasted`/`confirmed` exactly
 ///     like a normal broadcast, closing the indefinite reservation hold and
-///     the "mined-then-retried" mislabel; definitively unknown (an
-///     `AppError::Rpc` "not found", not a transport error) past the grace
+///     the "mined-then-retried" mislabel; definitively unknown (hsd's own
+///     "Transaction not found.", see
+///     [`crate::noncustodial::rpc::is_tx_not_found`]) past the grace
 ///     window since the draft's last update is treated like a failed
 ///     broadcast: `failed`, reservation released.
 ///
@@ -1790,27 +1741,20 @@ pub async fn refresh_tx_confirmations(
                 None => continue, // can't identify the tx; nothing to poll
             };
             match client.get_raw_transaction(&txid).await {
-                Ok(tx) => {
-                    let confs = tx
-                        .get("confirmations")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0);
-                    if confs >= 1 {
-                        let height = tx
-                            .get("height")
-                            .and_then(|v| v.as_i64())
-                            .filter(|h| *h >= 0)
-                            .unwrap_or_else(|| (tip - confs + 1).max(0));
-                        confirmed_updates.push((d.id.clone(), height, Some(txid)));
-                    } else {
-                        // Known to the node (mempool), just not mined yet.
-                        promoted_broadcasted.push((d.id.clone(), txid));
-                    }
+                Ok(tx) => match raw_tx_mined_height(&tx, tip) {
+                    Ok(Some(height)) => confirmed_updates.push((d.id.clone(), height, Some(txid))),
+                    // Known to the node (mempool), just not mined yet.
+                    Ok(None) => promoted_broadcasted.push((d.id.clone(), txid)),
+                    // Not hsd's answer: no verdict.
+                    Err(_) => {}
+                },
+                // hsd's own "never seen this tx" — see the grace-window
+                // handling below.
+                Err(e) if crate::noncustodial::rpc::is_tx_not_found(&e) => {
+                    maybe_failed_pending.push(d.id.clone())
                 }
-                // Definitive "the node has never seen this tx" — see the
-                // grace-window handling below.
-                Err(AppError::Rpc(_)) => maybe_failed_pending.push(d.id.clone()),
-                // Transport error: no definitive answer, leave as-is.
+                // Transport error or a reply that is not hsd's (a proxy's
+                // page): no definitive answer, leave as-is.
                 Err(_) => {}
             }
             continue;
@@ -1823,27 +1767,18 @@ pub async fn refresh_tx_confirmations(
             None => continue,
         };
         match client.get_raw_transaction(txid).await {
-            Ok(tx) => {
-                let confs = tx
-                    .get("confirmations")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                if confs >= 1 {
-                    let height = tx
-                        .get("height")
-                        .and_then(|v| v.as_i64())
-                        .filter(|h| *h >= 0)
-                        .unwrap_or_else(|| (tip - confs + 1).max(0));
-                    confirmed_updates.push((d.id.clone(), height, None));
-                } else if d.status == "confirmed" {
-                    // Was confirmed, now back in the mempool with 0 confs — no
-                    // longer confirmed at its recorded height (reorg).
-                    reverted.push(d.id.clone());
-                }
-                // confs == 0 && status == "broadcasted" → still in the
-                // mempool as expected; leave it `broadcasted`.
-            }
-            Err(AppError::Rpc(_)) => {
+            Ok(tx) => match raw_tx_mined_height(&tx, tip) {
+                Ok(Some(height)) => confirmed_updates.push((d.id.clone(), height, None)),
+                // Was confirmed, now back in the mempool — no longer confirmed
+                // at its recorded height (reorg).
+                Ok(None) if d.status == "confirmed" => reverted.push(d.id.clone()),
+                // Still in the mempool as expected; leave it `broadcasted`.
+                Ok(None) => {}
+                // Not hsd's answer: no verdict.
+                Err(_) => {}
+            },
+            // Only hsd's own "not found" says the node does not know the tx.
+            Err(e) if crate::noncustodial::rpc::is_tx_not_found(&e) => {
                 if d.status == "confirmed" {
                     // The node no longer knows this tx at all: a reorg
                     // un-mined it.
@@ -1854,7 +1789,8 @@ pub async fn refresh_tx_confirmations(
                     maybe_dropped.push(d.id.clone());
                 }
             }
-            // Transient transport error mid-loop: skip; the next tick retries.
+            // Transport error or a reply that is not hsd's: skip; the next
+            // tick retries.
             Err(_) => {}
         }
     }
@@ -2244,23 +2180,13 @@ mod confirm_tests {
     }
 
     #[test]
-    fn doos_to_hns_string_formats_whole_and_fractional_amounts() {
-        assert_eq!(doos_to_hns_string(0), "0.000000 HNS");
-        assert_eq!(doos_to_hns_string(1_000_000), "1.000000 HNS");
-        assert_eq!(doos_to_hns_string(1_500_000), "1.500000 HNS");
-        assert_eq!(doos_to_hns_string(2_000_123), "2.000123 HNS");
-        // Negative shouldn't occur, but must not panic and keeps a sane form.
-        assert_eq!(doos_to_hns_string(-1_500_000), "-1.500000 HNS");
-    }
-
-    #[test]
     fn confirm_details_for_send_hns_shows_to_amount_fee_txid() {
         let mut s = base_summary("send_hns");
         s.send_total_doos = 2_500_000;
         s.fee_doos = 10_000;
         s.recipient_address = Some("hs1qexampleaddr".to_string());
         s.txid = Some("abc123".to_string());
-        let details = confirm_details_for_draft(&draft("send_hns", &summary_json(&s)));
+        let details = confirm_details_for_draft(&draft("send_hns", &summary_json(&s))).unwrap();
 
         assert_eq!(value_for(&details, "Action"), Some("Send HNS"));
         assert_eq!(value_for(&details, "To"), Some("hs1qexampleaddr"));
@@ -2273,7 +2199,7 @@ mod confirm_tests {
     fn confirm_details_for_covenant_action_labels_action_and_omits_recipient() {
         let mut s = base_summary("register");
         s.fee_doos = 5_000;
-        let details = confirm_details_for_draft(&draft("register", &summary_json(&s)));
+        let details = confirm_details_for_draft(&draft("register", &summary_json(&s))).unwrap();
 
         assert_eq!(value_for(&details, "Action"), Some("Name action: register"));
         // Covenant actions don't show a "To" or "Amount" row.
@@ -2282,20 +2208,23 @@ mod confirm_tests {
         assert_eq!(value_for(&details, "Fee"), Some("0.005000 HNS"));
     }
 
+    /// The secure window is where the user checks the fee before signing:
+    /// a summary it cannot read is refused, never shown as a zero fee.
     #[test]
-    fn confirm_details_survives_malformed_summary_json() {
-        // Forces the `unwrap_or` fallback: still yields an Action + Fee row
-        // (fee 0) built from the draft's own `action`, no panic.
-        let details = confirm_details_for_draft(&draft("send_hns", "this is not json"));
-        assert_eq!(value_for(&details, "Action"), Some("Send HNS"));
-        assert_eq!(value_for(&details, "Fee"), Some("0.000000 HNS"));
+    fn confirm_details_refuses_a_malformed_summary() {
+        for summary in ["this is not json", r#"{"action":"send_hns"}"#] {
+            assert!(
+                confirm_details_for_draft(&draft("send_hns", summary)).is_err(),
+                "{summary}"
+            );
+        }
     }
 
     #[test]
     fn confirm_details_includes_warnings_as_rows() {
         let mut s = base_summary("send_hns");
         s.warnings = vec!["dust output".to_string(), "high fee".to_string()];
-        let details = confirm_details_for_draft(&draft("send_hns", &summary_json(&s)));
+        let details = confirm_details_for_draft(&draft("send_hns", &summary_json(&s))).unwrap();
         let warnings: Vec<&str> = details["rows"]
             .as_array()
             .unwrap()
@@ -2311,8 +2240,8 @@ mod confirm_tests {
 mod pure_helper_tests {
     //! Unit tests for the pure (non-async, non-Tauri-command, no-State)
     //! helpers in this module: `random_id`, `change_address`,
-    //! `session_ttl_ms`, `doos_to_hns_string`, `compute_send_summary`,
-    //! `confirm_details_for_draft` fallback branches, and
+    //! `session_ttl_ms`, `compute_send_summary`,
+    //! `confirm_details_for_draft` branches, and
     //! `local_txid_from_summary`.
     use super::*;
     use crate::noncustodial::actions::{DraftPlan, PlanInput, PlanOutput};
@@ -2340,6 +2269,8 @@ mod pure_helper_tests {
             branch: 0,
             child_index: 0,
             sighash_type: 1,
+            sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
+            foreign_witness_hex: None,
         }
     }
 
@@ -2466,25 +2397,6 @@ mod pure_helper_tests {
         assert_eq!(session_ttl_ms(&settings), 900_000u128);
     }
 
-    // ---------- doos_to_hns_string ----------------------------------------
-
-    #[test]
-    fn doos_to_hns_string_covers_edge_values() {
-        // 1 doo = 0.000001 HNS (6 dp).
-        assert_eq!(doos_to_hns_string(1), "0.000001 HNS");
-        // Exactly 1 HNS.
-        assert_eq!(doos_to_hns_string(1_000_000), "1.000000 HNS");
-        // Large value — no thousands separators, no rounding.
-        assert_eq!(doos_to_hns_string(1_234_567_890), "1234.567890 HNS");
-        // Negative — fractional part uses abs() so it prints "-1.500000",
-        // never "-1.-500000".
-        assert_eq!(doos_to_hns_string(-1), "0.000001 HNS");
-        // NOTE: whole = -1/1_000_000 = 0, frac = |-1 % 1_000_000| = 1, so
-        // this really is the expected output — the sign is lost for
-        // sub-HNS negatives. Guard the whole-HNS negative case separately.
-        assert_eq!(doos_to_hns_string(-2_000_123), "-2.000123 HNS");
-    }
-
     // ---------- compute_send_summary --------------------------------------
 
     #[test]
@@ -2601,7 +2513,7 @@ mod pure_helper_tests {
             warnings: Vec::new(),
         };
         let json = serde_json::to_string(&s).unwrap();
-        let details = confirm_details_for_draft(&draft_with("send_hns", &json));
+        let details = confirm_details_for_draft(&draft_with("send_hns", &json)).unwrap();
         let rows = details["rows"].as_array().unwrap();
         let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
         assert!(labels.contains(&"Action"));

@@ -11,173 +11,26 @@
 //! must be validated against a regtest node before mainnet use; the default
 //! network is regtest and writes are gated by the unlocked signer + broadcaster.
 
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::db::{self, queries};
 use crate::error::AppError;
 use crate::noncustodial::actions::{self, NameInputSpec, PrimaryOutput};
-use crate::noncustodial::hd::ExtendedPubKey;
 use crate::noncustodial::network::Network;
-use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::NodeRpcClient;
-use crate::noncustodial::send::{self, SpendableCoin};
 use crate::noncustodial::sync::{self, COV_REGISTER, COV_REVEAL};
 use crate::noncustodial::tx::sighash;
 use crate::noncustodial::types::TxDraftSummary;
 use crate::noncustodial::{address, bids, covenants, names, resource};
 use crate::AppState;
 
+// Re-exported: the `*_inner` builders take these, and their tests name them
+// through this module.
+pub(crate) use super::draft_ctx::{
+    fee_rate, fetch_name_state, load_ctx, random_id, renewal_block, Ctx, NameState,
+};
 use super::names_pure;
-
-pub(crate) fn random_id() -> String {
-    let mut b = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut b);
-    hex::encode(b)
-}
-
-/// Resolved, secret-free build context for a covenant action.
-#[derive(Debug)]
-pub(crate) struct Ctx {
-    pub(crate) profile_id: String,
-    pub(crate) network: Network,
-    pub(crate) account: u32,
-    pub(crate) account_xpub: ExtendedPubKey,
-    pub(crate) change_address: String,
-    pub(crate) funding: Vec<SpendableCoin>,
-    pub(crate) settings: std::collections::HashMap<String, String>,
-    /// Node RPC client built from the *effective* per-profile config
-    /// (per-profile override -> global settings -> default). Resolved once at
-    /// `load_ctx` time under the DB lock so every RPC call this command issues
-    /// (`getnameinfo`, `getblockchaininfo`, `getblockhash`, ...) targets the
-    /// same node the active profile is pinned to — never a stale global URL.
-    /// `NodeRpcClient` is `Clone`, so callers `ctx.node.clone()` freely.
-    pub(crate) node: NodeRpcClient,
-}
-
-pub(crate) fn load_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
-    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
-    let id = queries::get_active_profile_id(&conn)?;
-    if id.is_empty() {
-        return Err(AppError::InvalidInput("no active wallet profile".into()));
-    }
-    let profile = queries::get_wallet_profile(&conn, &id)?
-        .ok_or_else(|| AppError::NotFound(format!("wallet profile {id}")))?;
-    if profile.watch_only {
-        return Err(AppError::InvalidInput(
-            "active profile is watch-only".into(),
-        ));
-    }
-    let network = crate::noncustodial::derivation::network_from_profile(&profile.network)?;
-    let account_xpub = ExtendedPubKey::from_xpub(network, &profile.account_xpub)?;
-    let change = crate::noncustodial::derivation::derive_one(
-        network,
-        &account_xpub,
-        crate::noncustodial::derivation::BRANCH_CHANGE,
-        0,
-    )?;
-    let funding = send::load_spendable_coins(&conn, &id, None, network)?;
-    let settings = queries::get_settings(&conn)?;
-    // Build the node client from the effective per-profile config under the
-    // same lock so a per-profile override always wins over the global URL for
-    // every subsequent RPC call this Ctx serves.
-    let node = NodeRpcClient::for_profile(&conn, &id)?;
-    Ok(Ctx {
-        profile_id: id,
-        network,
-        account: profile.account_index as u32,
-        account_xpub,
-        change_address: change.address,
-        funding,
-        settings,
-        node,
-    })
-}
-
-pub(crate) fn fee_rate(ctx: &Ctx, fee_rate: Option<u64>) -> u64 {
-    fee_rate
-        .or_else(|| {
-            ctx.settings
-                .get("fee_rate_doos_per_kvb")
-                .and_then(|s| s.parse::<u64>().ok())
-                .map(|kvb| (kvb / 1000).max(send::MIN_FEE_RATE_PER_BYTE))
-        })
-        .unwrap_or(send::DEFAULT_FEE_RATE_PER_BYTE)
-}
-
-/// Minimal view of `getnameinfo` we need to build covenants.
-#[derive(Debug, Clone)]
-pub(crate) struct NameState {
-    pub(crate) height: u32,
-    pub(crate) value: u64,
-    pub(crate) renewals: u32,
-    pub(crate) claimed: u32,
-    pub(crate) weak: bool,
-    /// On-chain auction phase (e.g. "BIDDING", "OPENING", "REVEAL", "CLOSED").
-    /// Populated from `getnameinfo.info.state`. Empty string when the node
-    /// returns null / no state field. Uppercased for case-insensitive matching
-    /// against consensus phase strings.
-    pub(crate) phase: String,
-}
-
-pub(crate) async fn fetch_name_state(
-    client: &dyn NodeRpc,
-    name: &str,
-) -> Result<NameState, AppError> {
-    let v = client.get_name_info(name).await?;
-    let info = v.get("info");
-    let info = match info {
-        Some(i) if !i.is_null() => i,
-        _ => {
-            return Err(AppError::InvalidInput(format!(
-                "name '{name}' has no on-chain state"
-            )))
-        }
-    };
-    let geti = |k: &str| info.get(k).and_then(|x| x.as_i64());
-    Ok(NameState {
-        height: geti("height").unwrap_or(0) as u32,
-        value: geti("value").unwrap_or(0) as u64,
-        renewals: geti("renewals").unwrap_or(0) as u32,
-        claimed: geti("claimed").unwrap_or(0) as u32,
-        weak: info.get("weak").and_then(|x| x.as_bool()).unwrap_or(false),
-        phase: info
-            .get("state")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_uppercase(),
-    })
-}
-
-/// `getRenewalBlock`: 32-byte block hash at `height - 2*renewalMaturity`.
-///
-/// Unlike Bitcoin, HSD does NOT reverse block hashes for RPC display — the hex
-/// returned by `getblockhash` is already in the raw internal byte order that
-/// HSD's `chaindb.getEntryByHash` (and, transitively, the `bad-register-renewal`
-/// consensus check in `chain.verifyRenewal`) uses to look the entry up. So we
-/// decode the hex as-is; reversing it would produce an unknown hash and the
-/// REGISTER / RENEW / FINALIZE covenants would be rejected as invalid on
-/// broadcast. Verified against regtest: block `N+1`'s `previousblockhash`
-/// equals block `N`'s `getblockhash` output byte-for-byte (see hsd
-/// `lib/primitives/headers.js`), whereas Bitcoin-style RPC would reverse it.
-pub(crate) async fn renewal_block(
-    client: &dyn NodeRpc,
-    network: Network,
-) -> Result<[u8; 32], AppError> {
-    let tip = client.get_blockchain_info().await?.blocks;
-    let maturity = network.name_params().renewal_maturity as i64;
-    let height = (tip - 2 * maturity).max(0);
-    let hash_hex = client.get_block_hash(height).await?;
-    let bytes =
-        hex::decode(&hash_hex).map_err(|e| AppError::Rpc(format!("bad block hash: {e}")))?;
-    if bytes.len() != 32 {
-        return Err(AppError::Rpc("block hash not 32 bytes".into()));
-    }
-    let mut h = [0u8; 32];
-    h.copy_from_slice(&bytes);
-    Ok(h)
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -927,7 +780,7 @@ async fn evaluate_name_action_capabilities(
         None => {
             // Node unreachable or not synced: fall back to local Sync evidence
             // rather than blindly declaring "nothing allowed".
-            let (tracked, action_ctx, profile_addrs, renewal_window, current_height) = {
+            let (tracked, action_ctx, profile_addrs, name_params, current_height) = {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
                 let tracked = queries::get_tracked_name_state(&conn, profile_id, &name)?;
                 // No live node — the cached `getnameinfo` payload is the best
@@ -941,14 +794,19 @@ async fn evaluate_name_action_capabilities(
                 let action_ctx =
                     find_name_action_context(&conn, profile_id, &name, cached_auction_start)?;
                 let addrs = queries::get_profile_addresses(&conn, profile_id)?;
-                // Same expiry math as `read_renewals::compute_renewals`: network
-                // renewal window + the best persisted height estimate (no live
-                // node here by definition of this branch). Reused, not
-                // duplicated — both read the same helpers.
-                let renewal_window = network.name_params().renewal_window as i64;
+                // Same expiry math as `read_renewals::compute_renewals`:
+                // `NameParams::expiry_end` + the best persisted height estimate
+                // (no live node here by definition of this branch). Reused,
+                // not duplicated — both read the same helpers.
                 let current_height =
                     crate::commands::node_readiness::estimate_persisted_height(&conn, profile_id)?;
-                (tracked, action_ctx, addrs, renewal_window, current_height)
+                (
+                    tracked,
+                    action_ctx,
+                    addrs,
+                    network.name_params(),
+                    current_height,
+                )
             };
             let tracked = match tracked {
                 Some(t) => t,
@@ -972,9 +830,16 @@ async fn evaluate_name_action_capabilities(
             // Days-until-expire from tracked chain evidence, so the modal's
             // `expiringSoon` matches the WalletView banner / Renewals screen
             // instead of staying silent for lack of live node stats.
+            // A cache that does not say whether the name was claimed gets the
+            // renewal window alone, the earlier end, as on the Renewals screen.
+            let claimed = tracked
+                .raw_json
+                .as_deref()
+                .and_then(queries::claimed_from_name_info)
+                .unwrap_or(false);
             let days_until_expire = tracked.renewal_height.and_then(|renewal| {
                 current_height.map(|h| {
-                    let expires_at = renewal + renewal_window;
+                    let expires_at = name_params.expiry_end(renewal, claimed);
                     (expires_at - h) as f64 / crate::noncustodial::network::BLOCKS_PER_DAY
                 })
             });
@@ -1152,18 +1017,12 @@ pub(crate) fn build_name_action_capabilities(
         }),
     };
 
-    // hsd refuses a FINALIZE until `transfer + transfer_lockup` blocks have
-    // passed (`bad-finalize-maturity`). A transaction built now lands in the
-    // next block, so the lockup is over once `tip + 1` reaches that height.
     // With either height unknown we say nothing: refusing an action the node
     // would accept is its own kind of wrong.
     let blocks_until_finalize = action_ctx
         .transfer_height
         .zip(action_ctx.current_height)
-        .map(|(transfer, tip)| {
-            let ready_at = transfer + network.name_params().transfer_lockup as i64;
-            (ready_at - (tip + 1)).max(0)
-        });
+        .map(|(transfer, tip)| network.name_params().blocks_until_finalize(transfer, tip));
     let finalize_matured = blocks_until_finalize.map(|b| b == 0).unwrap_or(true);
 
     let can_finalize = NameActionCapability {

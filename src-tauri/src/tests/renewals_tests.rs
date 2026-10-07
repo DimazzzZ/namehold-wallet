@@ -365,3 +365,31 @@ fn rows_sorted_by_days_ascending_nulls_last() {
     let order: Vec<&str> = resp.names.iter().map(|r| r.name.as_str()).collect();
     assert_eq!(order, vec!["bbb-near", "aaa-far", "ccc-nodata"]);
 }
+
+/// hsd does not expire a claimed name before the network's claim period is
+/// over (`namestate.js` `isExpired` via `isClaimable`; mainnet `claimPeriod` =
+/// 4 * 365 * 144 = 210 240). A name claimed and renewed at 10 is not expiring
+/// at 200 000, though `renewal + window` is long past; its expiry is the claim
+/// period's end. Past that end it is expired like any other name. The claim
+/// comes from the node's `getnameinfo` cached in `raw_json`.
+#[test]
+fn claimed_name_expires_no_earlier_than_the_claim_period() {
+    const CLAIM_PERIOD: i64 = 210_240;
+    let raw = r#"{"info":{"name":"claimedname","state":"CLOSED","claimed":1}}"#;
+    for (height, blocks_left) in [(200_000, CLAIM_PERIOD - 200_000), (CLAIM_PERIOD + 10, -10)] {
+        let conn = mem_db();
+        seed_tracked(&conn, "claimedname", Some(10), Some(raw));
+        let resp = compute_renewals(&conn, PROFILE, Some(height)).unwrap();
+        let row = resp.names.iter().find(|r| r.name == "claimedname").unwrap();
+        assert_eq!(row.expires_at_height, Some(CLAIM_PERIOD), "at {height}");
+        assert_eq!(row.blocks_until_expire, Some(blocks_left), "at {height}");
+        assert_eq!(row.expiring_soon, blocks_left < 0, "at {height}");
+    }
+    // Not claimed: the renewal window alone.
+    let conn = mem_db();
+    let raw = r#"{"info":{"name":"plainname","state":"CLOSED","claimed":0}}"#;
+    seed_tracked(&conn, "plainname", Some(10), Some(raw));
+    let resp = compute_renewals(&conn, PROFILE, Some(200_000)).unwrap();
+    let row = resp.names.iter().find(|r| r.name == "plainname").unwrap();
+    assert_eq!(row.expires_at_height, Some(10 + WINDOW));
+}

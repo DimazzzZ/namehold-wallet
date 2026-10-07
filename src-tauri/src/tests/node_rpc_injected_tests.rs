@@ -746,12 +746,13 @@ async fn broadcast_classify_success_returns_txid() {
 
 #[tokio::test]
 async fn broadcast_classify_rpc_error_marks_failed() {
-    // JSON-RPC error → node definitively rejected → RpcError.
-    let mock = MockNodeRpc::new().with_send_raw_transaction_rpc_err("bad-txns-inputs-missing");
+    // hsd's own JSON-RPC error → RpcError. In hsd 8.0.0 `sendrawtransaction`
+    // errors only for input it cannot parse (`rpc.js`, TYPE_ERROR -3).
+    let mock = MockNodeRpc::new().with_send_raw_transaction_refused("Invalid hex string.", -3);
     let out = crate::commands::tx::classify_broadcast_outcome_with_client(&mock, "deadbeef").await;
     match out {
         crate::commands::tx::BroadcastOutcome::RpcError(e) => {
-            assert!(e.to_string().contains("bad-txns-inputs-missing"));
+            assert!(e.to_string().contains("Invalid hex string."));
         }
         other => panic!("expected RpcError, got {other:?}"),
     }
@@ -765,6 +766,28 @@ async fn broadcast_classify_transport_error_marks_pending() {
     match out {
         crate::commands::tx::BroadcastOutcome::TransportError(_) => {}
         other => panic!("expected TransportError, got {other:?}"),
+    }
+}
+
+/// An RPC error that hsd did not send (a proxy's 502 page, a body that is
+/// not a JSON-RPC envelope, an envelope without a result) proves nothing
+/// about the transaction: the node may hold it. The draft must stay
+/// `broadcast_pending`, never `failed` (`rpc::is_node_rejection`).
+#[tokio::test]
+async fn broadcast_classify_reply_not_from_hsd_marks_pending() {
+    for msg in [
+        "node returned non-JSON body (status 502 Bad Gateway): expected value",
+        "malformed RPC envelope: missing field `id`; body={}",
+        "RPC 'sendrawtransaction' returned no result",
+        "node reply is not hsd's JSON-RPC answer (status 401 Unauthorized): Unauthorized.",
+    ] {
+        let mock = MockNodeRpc::new().with_send_raw_transaction_rpc_err(msg);
+        let out =
+            crate::commands::tx::classify_broadcast_outcome_with_client(&mock, "deadbeef").await;
+        match out {
+            crate::commands::tx::BroadcastOutcome::TransportError(_) => {}
+            other => panic!("{msg}: expected TransportError, got {other:?}"),
+        }
     }
 }
 
@@ -880,7 +903,7 @@ async fn write_probe_keeps_write_on_matching_or_unknown_chain() {
 async fn broadcast_guard_refuses_a_node_on_another_chain() {
     let mock =
         MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), Some("regtest")));
-    let err = crate::commands::tx::broadcast_network_guard_with_client(&mock, Some("mainnet"))
+    let err = crate::noncustodial::rpc::broadcast_network_guard_with_client(&mock, Some("mainnet"))
         .await
         .expect_err("cross-chain broadcast must be refused");
     let msg = err.to_string();
@@ -896,7 +919,7 @@ async fn broadcast_guard_allows_matching_unknown_and_unreachable() {
     let matching =
         MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), Some("main")));
     assert!(
-        crate::commands::tx::broadcast_network_guard_with_client(&matching, Some("mainnet"))
+        crate::noncustodial::rpc::broadcast_network_guard_with_client(&matching, Some("mainnet"))
             .await
             .is_ok(),
         "hsd reports 'main' for a 'mainnet' profile"
@@ -904,7 +927,7 @@ async fn broadcast_guard_allows_matching_unknown_and_unreachable() {
 
     let silent = MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), None));
     assert!(
-        crate::commands::tx::broadcast_network_guard_with_client(&silent, Some("mainnet"))
+        crate::noncustodial::rpc::broadcast_network_guard_with_client(&silent, Some("mainnet"))
             .await
             .is_ok()
     );
@@ -912,7 +935,7 @@ async fn broadcast_guard_allows_matching_unknown_and_unreachable() {
     let regtest =
         MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), Some("regtest")));
     assert!(
-        crate::commands::tx::broadcast_network_guard_with_client(&regtest, None)
+        crate::noncustodial::rpc::broadcast_network_guard_with_client(&regtest, None)
             .await
             .is_ok(),
         "no profile network to compare against"
@@ -920,9 +943,12 @@ async fn broadcast_guard_allows_matching_unknown_and_unreachable() {
 
     let unreachable = MockNodeRpc::new().with_blockchain_info_err("no route");
     assert!(
-        crate::commands::tx::broadcast_network_guard_with_client(&unreachable, Some("mainnet"))
-            .await
-            .is_ok(),
+        crate::noncustodial::rpc::broadcast_network_guard_with_client(
+            &unreachable,
+            Some("mainnet")
+        )
+        .await
+        .is_ok(),
         "a probe failure is not a mismatch"
     );
 }
@@ -1478,4 +1504,69 @@ fn chain_synced_rule_table() {
     // Nothing reported at all (regtest with a single miner): the caller decides.
     assert!(chain_synced(1000, None, None, true));
     assert!(!chain_synced(1000, None, None, false));
+}
+
+// ------- broadcast_gates ---------------------------------------------------
+
+fn opt_in(on: bool) -> std::collections::HashMap<String, String> {
+    [("allow_remote_broadcast".to_string(), on.to_string())]
+        .into_iter()
+        .collect()
+}
+
+fn node(source: crate::noncustodial::rpc::ChainSource, chain: &str) -> MockNodeRpc {
+    let mut m =
+        MockNodeRpc::new().with_blockchain_info(info(500, Some(1.0), Some(500), Some(chain)));
+    m.source = source;
+    m
+}
+
+/// Every send passes the same three gates.
+#[tokio::test]
+async fn broadcast_gates_refuse_read_only_unapproved_remote_and_foreign_chain() {
+    use crate::noncustodial::rpc::{broadcast_gates, ChainSource};
+    for source in [ChainSource::Explorer, ChainSource::SpvNode] {
+        let err = broadcast_gates(&node(source, "main"), &opt_in(true), Some("mainnet"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("read-only"), "{err}");
+    }
+    let err = broadcast_gates(
+        &node(ChainSource::RemoteNode, "main"),
+        &opt_in(false),
+        Some("mainnet"),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("Allow sending via remote node"),
+        "{err}"
+    );
+    let err = broadcast_gates(
+        &node(ChainSource::LocalNode, "regtest"),
+        &opt_in(false),
+        Some("mainnet"),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("regtest"), "{err}");
+}
+
+#[tokio::test]
+async fn broadcast_gates_pass_a_local_node_and_an_approved_remote_on_our_chain() {
+    use crate::noncustodial::rpc::{broadcast_gates, ChainSource};
+    broadcast_gates(
+        &node(ChainSource::LocalNode, "main"),
+        &opt_in(false),
+        Some("mainnet"),
+    )
+    .await
+    .unwrap();
+    broadcast_gates(
+        &node(ChainSource::RemoteNode, "main"),
+        &opt_in(true),
+        Some("mainnet"),
+    )
+    .await
+    .unwrap();
 }

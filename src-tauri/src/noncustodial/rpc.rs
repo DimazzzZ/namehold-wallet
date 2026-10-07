@@ -246,6 +246,32 @@ pub fn resolve_node_api_key(settings: &HashMap<String, String>) -> String {
     read_hsd_conf_api_key(prefix).unwrap_or_default()
 }
 
+/// Words [`NodeRpcClient`]'s JSON-RPC call puts in the messages of the
+/// failures that are not an answer from hsd: a body that is not JSON (e.g. a proxy's 502
+/// page), a body that is not a JSON-RPC envelope, an error object hsd did not
+/// send (another status, or no code), and an envelope without a result.
+const NON_JSON_BODY: &str = "node returned non-JSON body";
+const MALFORMED_ENVELOPE: &str = "malformed RPC envelope";
+const NO_RESULT: &str = "returned no result";
+const NOT_JSON_RPC_ANSWER: &str = "node reply is not hsd's JSON-RPC answer";
+
+/// Whether `e` is hsd's own JSON-RPC error result — the node read the request
+/// and refused it — rather than a transport failure or a response that never
+/// came from hsd. Only a rejection proves a broadcast will not be accepted;
+/// anything else may succeed on a retry.
+pub fn is_node_rejection(e: &AppError) -> bool {
+    matches!(e, AppError::NodeRefused { .. })
+}
+
+/// Whether `e` is hsd's own answer that it has never seen a transaction:
+/// `getrawtransaction`'s `RPCError(errs.MISC_ERROR, 'Transaction not found.')`
+/// (hsd 8.0.0 `lib/node/rpc.js`, `MISC_ERROR` = -1). Any other error hsd sends
+/// — a parameter it refused, a method it lacks — is still its answer
+/// ([`is_node_rejection`]) but says nothing about the transaction.
+pub fn is_tx_not_found(e: &AppError) -> bool {
+    matches!(e, AppError::NodeRefused { message, code: -1 } if message == "Transaction not found.")
+}
+
 /// Whether the user has opted in to broadcasting through a remote node.
 /// Mirrors the `allow_remote_broadcast` setting ("true" / "false", default
 /// off). Only meaningful when the chain source is [`ChainSource::RemoteNode`];
@@ -434,23 +460,34 @@ impl NodeRpcClient {
         let status = resp.status();
         // hsd returns the JSON-RPC envelope even for some 4xx (e.g. method
         // errors), so parse the body before treating status as fatal.
-        let body: serde_json::Value = resp.json().await.map_err(|e| {
-            AppError::Rpc(format!(
-                "node returned non-JSON body (status {status}): {e}"
-            ))
-        })?;
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Rpc(format!("{NON_JSON_BODY} (status {status}): {e}")))?;
 
         let envelope: RpcEnvelope<T> = serde_json::from_value(body.clone())
-            .map_err(|e| AppError::Rpc(format!("malformed RPC envelope: {e}; body={body}")))?;
+            .map_err(|e| AppError::Rpc(format!("{MALFORMED_ENVELOPE}: {e}; body={body}")))?;
 
         if let Some(err) = envelope.error {
-            let code = err.code.map(|c| format!(" (code {c})")).unwrap_or_default();
-            return Err(AppError::Rpc(format!("{}{code}", err.message)));
+            // bweb sends every JSON-RPC answer with HTTP 200 and a numeric
+            // `code`; an error object at another status (hsd's 401 for a
+            // wrong API key, a proxy's JSON) or without a code is not hsd's
+            // answer to the call.
+            return Err(match err.code {
+                Some(code) if status == reqwest::StatusCode::OK => AppError::NodeRefused {
+                    message: err.message,
+                    code,
+                },
+                _ => AppError::Rpc(format!(
+                    "{NOT_JSON_RPC_ANSWER} (status {status}): {}",
+                    err.message
+                )),
+            });
         }
 
         envelope
             .result
-            .ok_or_else(|| AppError::Rpc(format!("RPC '{method}' returned no result")))
+            .ok_or_else(|| AppError::Rpc(format!("RPC '{method}' {NO_RESULT}")))
     }
 
     // --- Chain reads -------------------------------------------------------
@@ -493,7 +530,7 @@ impl NodeRpcClient {
             // "Method not found" and similar surface as Rpc errors: treat them
             // as "hash not resolvable" so the caller can fall through, rather
             // than aborting the whole discovery pass.
-            Err(AppError::Rpc(_)) => Ok(None),
+            Err(AppError::Rpc(_) | AppError::NodeRefused { .. }) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -826,7 +863,7 @@ impl NodeRpcClient {
 fn void_rpc(res: Result<serde_json::Value, AppError>) -> Result<(), AppError> {
     match res {
         Ok(_) => Ok(()),
-        Err(AppError::Rpc(msg)) if msg.contains("returned no result") => Ok(()),
+        Err(AppError::Rpc(msg)) if msg.contains(NO_RESULT) => Ok(()),
         Err(e) => Err(e),
     }
 }
@@ -974,6 +1011,87 @@ pub struct NodeCovenant {
     /// Raw covenant items as hex strings.
     #[serde(default)]
     pub items: Vec<String>,
+}
+
+/// The gates every send passes before a signed transaction leaves the
+/// wallet:
+///
+/// - the chain source can broadcast at all (Explorer and SPV are read-only);
+/// - a remote node also needs the user's "Allow sending via remote node"
+///   opt-in, so no code path broadcasts through someone else's node without
+///   it;
+/// - the node is on the wallet's own chain
+///   ([`broadcast_network_guard_with_client`]).
+pub async fn broadcast_gates(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    settings: &HashMap<String, String>,
+    expected_network: Option<&str>,
+) -> Result<(), AppError> {
+    if !client.source().can_broadcast() {
+        return Err(AppError::InvalidInput(
+            "chain source is read-only; broadcasting is disabled".to_string(),
+        ));
+    }
+    if client.source() == ChainSource::RemoteNode && !remote_broadcast_allowed(settings) {
+        return Err(AppError::InvalidInput(
+            "sending via remote node is disabled; enable \"Allow sending via remote node\" in Settings → Connections"
+                .to_string(),
+        ));
+    }
+    broadcast_network_guard_with_client(client, expected_network).await
+}
+
+/// Refuse to broadcast through a node that reports a different chain than the
+/// wallet profile. The chain step of [`broadcast_gates`], kept separate so it
+/// can be tested against a mock without an `AppState`.
+///
+/// Mirrors the read gate's conservatism: only a POSITIVE mismatch refuses. A
+/// node that does not report `chain` (older hsd builds), or a draft whose
+/// profile has vanished, leaves the decision to hsd as before — `None` from
+/// `network_check` means "unknown", not "wrong".
+pub async fn broadcast_network_guard_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    expected_network: Option<&str>,
+) -> Result<(), AppError> {
+    // Nothing to compare against: skip the probe entirely rather than spend an
+    // RPC round-trip on a check that cannot fail.
+    let Some(expected) = expected_network else {
+        return Ok(());
+    };
+    // A probe failure is not a mismatch. Let the broadcast proceed and be
+    // classified by the existing transport/RPC error handling.
+    let Ok(info) = client.get_blockchain_info().await else {
+        return Ok(());
+    };
+    if crate::noncustodial::network::network_check(Some(expected), info.chain.as_deref())
+        == Some(false)
+    {
+        return Err(cross_network_refusal(
+            info.chain.as_deref(),
+            expected,
+            "refusing to broadcast; the transaction was not sent and the draft is unchanged",
+        ));
+    }
+    Ok(())
+}
+
+/// The refusal a cross-network node earns, with what the caller was about to do.
+///
+/// Two guards raise it — the sync path and the broadcast path — and each used
+/// to spell it out, so the sentence the user reads depended on which one fired
+/// first. `consequence` is the only part that legitimately differs: what did
+/// not happen, and what state was left alone.
+pub fn cross_network_refusal(
+    reported: Option<&str>,
+    expected: &str,
+    consequence: &str,
+) -> AppError {
+    // Wording only: the refusal stands whether or not the node named its
+    // network.
+    let reported = reported.unwrap_or("unknown");
+    AppError::InvalidInput(format!(
+        "node is on network '{reported}' but this wallet is '{expected}' — {consequence}"
+    ))
 }
 
 #[cfg(test)]
@@ -1670,11 +1788,10 @@ mod tests {
         let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
         let err = client.get_info().await.unwrap_err();
         match err {
-            AppError::Rpc(msg) => {
-                assert!(msg.contains("boom"));
-                assert!(msg.contains("-32601"));
+            AppError::NodeRefused { message, code } => {
+                assert_eq!((message.as_str(), code), ("boom", -32601));
             }
-            other => panic!("expected Rpc, got {other:?}"),
+            other => panic!("expected NodeRefused, got {other:?}"),
         }
     }
 
@@ -1952,6 +2069,85 @@ mod tests {
             .await;
         let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
         assert!(client.stop().await.is_ok());
+    }
+
+    /// Only hsd's own JSON-RPC answer is a refusal: bweb sends every one with
+    /// HTTP 200 and a numeric `code`. hsd's 401 for a wrong API key, an error
+    /// object without a code, or JSON from a proxy at another status say
+    /// nothing about the transaction — reading them as a refusal would mark
+    /// failed a transaction the node may hold.
+    #[tokio::test]
+    async fn only_hsds_own_json_rpc_error_is_a_rejection() {
+        let cases = [
+            (
+                200,
+                r#"{"result":null,"error":{"message":"Invalid hex string.","code":-3},"id":1}"#,
+                true,
+            ),
+            (
+                401,
+                r#"{"error":{"type":"Error","message":"Unauthorized."}}"#,
+                false,
+            ),
+            (
+                200,
+                r#"{"result":null,"error":{"message":"refused"},"id":1}"#,
+                false,
+            ),
+            (
+                502,
+                r#"{"result":null,"error":{"message":"bad gateway","code":-1},"id":1}"#,
+                false,
+            ),
+        ];
+        for (status, body, rejected) in cases {
+            let mut server = mockito::Server::new_async().await;
+            let _m = server
+                .mock("POST", "/")
+                .with_status(status)
+                .with_body(body)
+                .create_async()
+                .await;
+            let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+            let err = client.send_raw_transaction("aabbcc").await.unwrap_err();
+            assert_eq!(is_node_rejection(&err), rejected, "{status} {body}: {err}");
+        }
+    }
+
+    /// hsd's refusal is a type of its own, made only by `call` from hsd's
+    /// envelope: an `AppError::Rpc` built anywhere else is never taken for
+    /// one, whatever its words — even words that look like hsd's.
+    #[test]
+    fn only_hsds_envelope_makes_a_node_refusal() {
+        for msg in [
+            "Transaction not found. (code -1)",
+            "TX rejected: bad-txns-inputs-missingorspent (code -25)",
+            "anything else",
+        ] {
+            let e = AppError::Rpc(msg.into());
+            assert!(!is_node_rejection(&e), "{msg}");
+            assert!(!is_tx_not_found(&e), "{msg}");
+        }
+        let refused = AppError::NodeRefused {
+            message: "Transaction not found.".into(),
+            code: -1,
+        };
+        assert!(is_node_rejection(&refused));
+        assert!(is_tx_not_found(&refused));
+        assert_eq!(
+            refused.to_string(),
+            "Node RPC error: Transaction not found. (code -1)",
+            "the UI reads the same words as before"
+        );
+        let other = AppError::NodeRefused {
+            message: "Transaction not found.".into(),
+            code: -5,
+        };
+        assert!(is_node_rejection(&other));
+        assert!(
+            !is_tx_not_found(&other),
+            "hsd sends it with MISC_ERROR (-1)"
+        );
     }
 
     #[tokio::test]
