@@ -1583,8 +1583,8 @@ fn explain_shortfall(
     ))
 }
 
-/// Refuses a purchase whose record is gone, or a cheaper step of whose
-/// listing became valid since it was reviewed. Nothing is sent either way.
+/// Refuses a purchase whose record is gone, or whose paid step is no longer
+/// its listing's current one since it was reviewed. Nothing is sent either way.
 async fn recheck_purchase(
     client: &NodeRpcClient,
     network: Option<&str>,
@@ -1668,7 +1668,7 @@ pub async fn broadcast_tx_draft(
     crate::noncustodial::rpc::broadcast_gates(&client, &settings, expected_network.as_deref())
         .await?;
     // A Shakedex purchase pays the step that was current when it was
-    // reviewed. Refused before sending (a cheaper step became valid, or the
+    // reviewed. Refused before sending (the current step changed, or the
     // price could not be re-checked), the purchase must be reviewed again:
     // its draft and record are discarded here, so no screen has to tell the
     // refusal apart from a failed send. A retry of an attempt the node may

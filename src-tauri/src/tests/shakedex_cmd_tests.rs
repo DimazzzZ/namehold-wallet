@@ -1537,6 +1537,28 @@ async fn broadcast_refused_when_a_cheaper_step_became_valid() {
     assert_unsent_purchase_discarded(&app, &draft_id);
 }
 
+/// R10: "if it changed ... the draft is discarded". The median time went back
+/// below the paid step's lock time (a reorg, a node behind): hsd would refuse
+/// the purchase as non-final, so it is not sent at all.
+#[tokio::test]
+async fn broadcast_refused_when_the_paid_step_is_no_longer_valid() {
+    let mut node = mockito::Server::new_async().await;
+    let (app, draft_id, info) = signed_reverse_auction_purchase(&mut node).await;
+    info.remove_async().await;
+    let _earlier = mock_regtest_info(&mut node, Some(REGTEST_MTP - 200_000)).await;
+    let send = mock_send(&mut node, 0).await;
+
+    let err = crate::commands::tx::broadcast_tx_draft(app.state(), draft_id.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        err_text(err).contains("the price changed — review the purchase again"),
+        "refused before sending"
+    );
+    send.assert_async().await;
+    assert_unsent_purchase_discarded(&app, &draft_id);
+}
+
 #[tokio::test]
 async fn retry_of_a_maybe_sent_purchase_keeps_it_and_says_why() {
     // The first attempt hit a transport error, so the node may hold the

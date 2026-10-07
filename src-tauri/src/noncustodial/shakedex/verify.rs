@@ -284,19 +284,21 @@ pub async fn verify_listing_at(
     })
 }
 
-/// Refusal when a cheaper step became valid between review and broadcast.
+/// Refusal when the current step changed between review and broadcast.
 pub const PRICE_CHANGED: &str = "the price changed — review the purchase again";
 
-/// Just before a purchase is broadcast: refuse if a step cheaper than the one
-/// it pays (`paid`) has become valid on the node since it was reviewed. Fails
-/// closed — without the node's median time nothing is sent.
+/// Just before a purchase is broadcast: refuse unless the step it pays
+/// (`paid`) is still the current one on the node. A cheaper step that became
+/// valid, or a median time that went back below the paid step's lock time
+/// (a reorg, a node behind), both refuse. Fails closed — without the node's
+/// median time nothing is sent.
 pub async fn recheck_price(
     client: &dyn NodeRpc,
     network: Network,
     listing_json: &str,
     paid: u64,
 ) -> Result<(), AppError> {
-    if cheaper_step_valid(client, network, listing_json, paid).await? {
+    if current_price(client, network, listing_json).await? != Some(paid) {
         return Err(AppError::InvalidInput(PRICE_CHANGED.into()));
     }
     Ok(())
@@ -311,6 +313,19 @@ pub async fn cheaper_step_valid(
     listing_json: &str,
     paid: u64,
 ) -> Result<bool, AppError> {
+    Ok(matches!(
+        current_price(client, network, listing_json).await?,
+        Some(price) if price < paid
+    ))
+}
+
+/// The price of the listing's current step at the node's median time now;
+/// `None` when no step is valid yet.
+async fn current_price(
+    client: &dyn NodeRpc,
+    network: Network,
+    listing_json: &str,
+) -> Result<Option<u64>, AppError> {
     let listing = ListingFile::parse(listing_json, network)?;
     let mtp = client
         .get_blockchain_info()
@@ -324,8 +339,5 @@ pub async fn cheaper_step_valid(
             )
         })?;
     let encoded = listing.encoded_steps()?;
-    Ok(matches!(
-        template::current_step_index(&encoded, mtp),
-        Some(i) if encoded[i].0 < paid
-    ))
+    Ok(template::current_step_index(&encoded, mtp).map(|i| encoded[i].0))
 }
