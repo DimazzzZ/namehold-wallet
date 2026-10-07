@@ -246,8 +246,8 @@ pub fn resolve_node_api_key(settings: &HashMap<String, String>) -> String {
     read_hsd_conf_api_key(prefix).unwrap_or_default()
 }
 
-/// Message prefixes [`NodeRpcClient`]'s JSON-RPC call gives the failures that
-/// are not an answer from hsd: a body that is not JSON (e.g. a proxy's 502
+/// Words [`NodeRpcClient`]'s JSON-RPC call puts in the messages of the
+/// failures that are not an answer from hsd: a body that is not JSON (e.g. a proxy's 502
 /// page), a body that is not a JSON-RPC envelope, an error object hsd did not
 /// send (another status, or no code), and an envelope without a result.
 const NON_JSON_BODY: &str = "node returned non-JSON body";
@@ -863,7 +863,7 @@ impl NodeRpcClient {
 fn void_rpc(res: Result<serde_json::Value, AppError>) -> Result<(), AppError> {
     match res {
         Ok(_) => Ok(()),
-        Err(AppError::Rpc(msg)) if msg.contains("returned no result") => Ok(()),
+        Err(AppError::Rpc(msg)) if msg.contains(NO_RESULT) => Ok(()),
         Err(e) => Err(e),
     }
 }
@@ -1042,8 +1042,8 @@ pub async fn broadcast_gates(
 }
 
 /// Refuse to broadcast through a node that reports a different chain than the
-/// wallet profile. Split out of `commands::tx::broadcast_tx_draft` so it can be tested
-/// against a mock without an `AppState`.
+/// wallet profile. The chain step of [`broadcast_gates`], kept separate so it
+/// can be tested against a mock without an `AppState`.
 ///
 /// Mirrors the read gate's conservatism: only a POSITIVE mismatch refuses. A
 /// node that does not report `chain` (older hsd builds), or a draft whose

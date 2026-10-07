@@ -1964,8 +1964,9 @@ pub struct TrackedNameRow {
     /// Chain renewal height (`getnameinfo().info.renewal` / explorer
     /// `renewal`), when sync has recorded one. Used by the
     /// `get_name_action_capabilities` node-unreachable fallback to derive
-    /// `days_until_expire` the same way `read_renewals` does (renewal height +
-    /// network renewal window vs. a persisted height estimate) instead of
+    /// `days_until_expire` the same way `read_renewals` does
+    /// (`NameParams::expiry_end` of the renewal height vs. a persisted height
+    /// estimate) instead of
     /// leaving the expiry alarm silent for lack of live node stats.
     pub renewal_height: Option<i64>,
     /// The block the name's TRANSFER was recorded in

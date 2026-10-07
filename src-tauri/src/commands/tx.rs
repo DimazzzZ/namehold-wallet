@@ -1385,8 +1385,9 @@ pub async fn sign_name_message(
 pub(crate) enum BroadcastOutcome {
     /// Node accepted the tx and returned a txid.
     Success(String),
-    /// Node answered with a JSON-RPC error (double-spend, malformed, etc.) —
-    /// the tx was definitively rejected and coins are unspent. The wrapped
+    /// hsd refused the tx with its own JSON-RPC error (for
+    /// `sendrawtransaction`, only a body it cannot decode) — the tx was
+    /// definitively rejected and coins are unspent. The wrapped
     /// `AppError` is always the original `AppError::NodeRefused` from the client.
     RpcError(AppError),
     /// HTTP/transport failure (timeout, connection dropped, DNS, etc.) —
@@ -1663,8 +1664,9 @@ fn local_txid_from_summary(summary_json: &str) -> Option<String> {
 ///     the LOCALLY-computed txid ([`local_txid_from_summary`]); known
 ///     (mempool or mined) promotes it to `broadcasted`/`confirmed` exactly
 ///     like a normal broadcast, closing the indefinite reservation hold and
-///     the "mined-then-retried" mislabel; definitively unknown (an
-///     `AppError::Rpc` "not found", not a transport error) past the grace
+///     the "mined-then-retried" mislabel; definitively unknown (hsd's own
+///     "Transaction not found.", see
+///     [`crate::noncustodial::rpc::is_tx_not_found`]) past the grace
 ///     window since the draft's last update is treated like a failed
 ///     broadcast: `failed`, reservation released.
 ///
@@ -2178,16 +2180,6 @@ mod confirm_tests {
     }
 
     #[test]
-    fn doos_to_hns_string_formats_whole_and_fractional_amounts() {
-        assert_eq!(doos_to_hns_string(0), "0.000000 HNS");
-        assert_eq!(doos_to_hns_string(1_000_000), "1.000000 HNS");
-        assert_eq!(doos_to_hns_string(1_500_000), "1.500000 HNS");
-        assert_eq!(doos_to_hns_string(2_000_123), "2.000123 HNS");
-        // Negative shouldn't occur, but must not panic and keeps a sane form.
-        assert_eq!(doos_to_hns_string(-1_500_000), "-1.500000 HNS");
-    }
-
-    #[test]
     fn confirm_details_for_send_hns_shows_to_amount_fee_txid() {
         let mut s = base_summary("send_hns");
         s.send_total_doos = 2_500_000;
@@ -2248,7 +2240,7 @@ mod confirm_tests {
 mod pure_helper_tests {
     //! Unit tests for the pure (non-async, non-Tauri-command, no-State)
     //! helpers in this module: `random_id`, `change_address`,
-    //! `session_ttl_ms`, `doos_to_hns_string`, `compute_send_summary`,
+    //! `session_ttl_ms`, `compute_send_summary`,
     //! `confirm_details_for_draft` branches, and
     //! `local_txid_from_summary`.
     use super::*;
@@ -2403,26 +2395,6 @@ mod pure_helper_tests {
             "0".to_string(),
         );
         assert_eq!(session_ttl_ms(&settings), 900_000u128);
-    }
-
-    // ---------- doos_to_hns_string ----------------------------------------
-
-    #[test]
-    fn doos_to_hns_string_covers_edge_values() {
-        // 1 doo = 0.000001 HNS (6 dp).
-        assert_eq!(doos_to_hns_string(1), "0.000001 HNS");
-        // Exactly 1 HNS.
-        assert_eq!(doos_to_hns_string(1_000_000), "1.000000 HNS");
-        // Large value — no thousands separators, no rounding.
-        assert_eq!(doos_to_hns_string(1_234_567_890), "1234.567890 HNS");
-        // Negative: the sign is kept below one HNS too, and the fraction
-        // never carries a second one.
-        assert_eq!(doos_to_hns_string(-1), "-0.000001 HNS");
-        assert_eq!(doos_to_hns_string(-999_999), "-0.999999 HNS");
-        assert_eq!(doos_to_hns_string(-2_000_123), "-2.000123 HNS");
-        // Every u64 and i64, exactly.
-        assert_eq!(doos_to_hns_string(u64::MAX), "18446744073709.551615 HNS");
-        assert_eq!(doos_to_hns_string(i64::MIN), "-9223372036854.775808 HNS");
     }
 
     // ---------- compute_send_summary --------------------------------------

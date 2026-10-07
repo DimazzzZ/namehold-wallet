@@ -55,6 +55,7 @@ mod node_lifecycle_tests;
 mod node_rpc_injected_tests;
 mod node_status_tests;
 mod node_tests;
+mod noncustodial_types_tests;
 mod paid_swaps_cmd_tests;
 mod provider_hnsfans_tests;
 mod query_extra_tests;

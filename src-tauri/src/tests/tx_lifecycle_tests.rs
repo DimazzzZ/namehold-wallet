@@ -250,10 +250,12 @@ async fn full_lifecycle_build_sign_broadcast_succeeds() {
 #[tokio::test]
 async fn broadcast_failure_marks_draft_failed_and_errors() {
     let mut server = mockito::Server::new_async().await;
-    // hsd-style RPC error envelope (e.g. "missing inputs" / "bad-txns").
+    // hsd 8.0.0's only refusal of `sendrawtransaction` (`lib/node/rpc.js`
+    // `sendRawTransaction`: TYPE_ERROR for a body it cannot decode); a mempool
+    // refusal is only logged, never returned.
     let _m = server
         .mock("POST", "/")
-        .with_body(r#"{"result":null,"error":{"message":"TX rejected: bad-txns-inputs-missingorspent","code":-26},"id":1}"#)
+        .with_body(r#"{"result":null,"error":{"message":"Invalid hex string.","code":-3},"id":1}"#)
         .create_async()
         .await;
 
@@ -272,7 +274,7 @@ async fn broadcast_failure_marks_draft_failed_and_errors() {
         .expect_err("broadcast must surface the node rejection");
     // hsd's own refusal, in its words, said once: the UI shows this string.
     assert!(matches!(err, AppError::NodeRefused { .. }), "got {err:?}");
-    let said = "Node RPC error: TX rejected: bad-txns-inputs-missingorspent (code -26)";
+    let said = "Node RPC error: Invalid hex string. (code -3)";
     assert_eq!(err.to_string(), said);
 
     // Critically: the draft is marked failed, never "broadcasted".
@@ -1543,7 +1545,7 @@ async fn broadcast_rejection_frees_the_coin_for_a_new_draft() {
     let mut server = mockito::Server::new_async().await;
     let _m = server
         .mock("POST", "/")
-        .with_body(r#"{"result":null,"error":{"message":"TX rejected: bad-txns-inputs-missingorspent","code":-26},"id":1}"#)
+        .with_body(r#"{"result":null,"error":{"message":"Invalid hex string.","code":-3},"id":1}"#)
         .create_async()
         .await;
 
