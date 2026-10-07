@@ -197,8 +197,9 @@ pub fn release_stale_reservations(conn: &Connection, profile_id: &str) -> Result
                AND reserved_by_draft_id IN (
                    SELECT id FROM wallet_tx_drafts
                    WHERE created_at < datetime('now', '-{RESERVATION_TTL_SECS} seconds')
-                     AND status NOT IN ('broadcasted', 'confirmed', 'broadcast_pending')
-               )"
+                     AND status NOT IN {reached}
+               )",
+            reached = crate::db::queries::reached_chain_sql()
         ),
         params![profile_id],
     )?;

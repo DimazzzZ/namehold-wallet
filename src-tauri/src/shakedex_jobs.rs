@@ -199,13 +199,9 @@ fn name_info(reply: &serde_json::Value) -> Result<Option<&serde_json::Value>, Ap
 /// always sends `height`, -1 for a mempool transaction (`TXMeta.getJSON`):
 /// a reply without it, or with anything else, is not hsd's answer.
 fn tx_height(tx: &serde_json::Value) -> Result<Option<i64>, AppError> {
-    match tx.get("height").and_then(|h| h.as_i64()) {
-        Some(-1) => Ok(None),
-        Some(h) if h >= 0 => Ok(Some(h)),
-        _ => Err(AppError::Rpc(
-            "node did not report the purchase's height".into(),
-        )),
-    }
+    rpc::mined_height(tx.get("height").and_then(|h| h.as_i64()), || {
+        "the purchase's height".into()
+    })
 }
 
 /// If a transaction from hsd's `GET /tx/address` spends the TRANSFER at

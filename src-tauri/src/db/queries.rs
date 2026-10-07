@@ -1255,7 +1255,20 @@ pub fn release_reserved_utxos_for_draft(
 /// `broadcast_pending` is a transport-ambiguous attempt the node may hold.
 /// Such a draft is never deleted (see [`delete_tx_draft`]).
 pub fn may_have_reached_chain(status: &str) -> bool {
-    matches!(status, "broadcasted" | "confirmed" | "broadcast_pending")
+    REACHED_CHAIN_STATUSES.contains(&status)
+}
+
+/// The draft statuses [`may_have_reached_chain`] accepts.
+pub const REACHED_CHAIN_STATUSES: [&str; 3] = ["broadcasted", "confirmed", "broadcast_pending"];
+
+/// [`REACHED_CHAIN_STATUSES`] as an SQL list, for `status IN {..}` in the
+/// queries that ask the same question of the database.
+pub fn reached_chain_sql() -> String {
+    let quoted: Vec<String> = REACHED_CHAIN_STATUSES
+        .iter()
+        .map(|s| format!("'{s}'"))
+        .collect();
+    format!("({})", quoted.join(", "))
 }
 
 /// Delete a draft and release any coins it had reserved, atomically. Refuses
@@ -1577,7 +1590,7 @@ pub fn read_shakedex_purchase_names(
     conn: &rusqlite::Connection,
     profile_id: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT p.id, p.name, p.state, p.blocks_remaining, p.destination_address
          FROM shakedex_purchases p
          WHERE p.wallet_profile_id = ?1
@@ -1585,10 +1598,10 @@ pub fn read_shakedex_purchase_names(
                 OR (p.state = ?4 AND EXISTS (
                     SELECT 1 FROM wallet_tx_drafts d
                     WHERE d.id = p.purchase_draft_id
-                      -- may_have_reached_chain
-                      AND d.status IN ('broadcasted', 'confirmed', 'broadcast_pending'))))
+                      AND d.status IN {})))
          ORDER BY p.name, p.created_at, p.id",
-    )?;
+        reached_chain_sql()
+    ))?;
     let rows = stmt.query_map(
         params![
             profile_id,
@@ -1636,16 +1649,16 @@ pub fn read_shakedex_purchase_names(
 pub fn list_purchases_ready_to_finalize(
     conn: &rusqlite::Connection,
 ) -> Result<Vec<(String, String, String)>, AppError> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT p.wallet_profile_id, p.name, p.purchase_txid FROM shakedex_purchases p
          WHERE p.state = ?1 AND p.blocks_remaining = 0
            AND NOT EXISTS (
                SELECT 1 FROM wallet_tx_drafts d
                WHERE d.id = p.finalize_draft_id
-                 -- may_have_reached_chain
-                 AND d.status IN ('broadcasted', 'confirmed', 'broadcast_pending'))
+                 AND d.status IN {})
          ORDER BY p.wallet_profile_id, p.name, p.purchase_txid",
-    )?;
+        reached_chain_sql()
+    ))?;
     let rows = stmt
         .query_map(params![PurchaseState::AwaitingFinalize], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))

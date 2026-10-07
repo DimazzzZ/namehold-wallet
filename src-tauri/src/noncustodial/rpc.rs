@@ -1046,14 +1046,23 @@ impl NodeCoin {
     /// without it, or with any other negative number, is not hsd's answer and
     /// must not decide where a coin is.
     pub fn mined_height(&self) -> Result<Option<i64>, AppError> {
-        match self.height {
-            Some(-1) => Ok(None),
-            Some(h) if h >= 0 => Ok(Some(h)),
-            _ => Err(AppError::Rpc(format!(
-                "node did not report the height of coin {}:{}",
-                self.txid, self.vout
-            ))),
-        }
+        mined_height(self.height, || {
+            format!("the height of coin {}:{}", self.txid, self.vout)
+        })
+    }
+}
+
+/// A height as hsd sends it for a coin or a transaction: the block it was
+/// mined in, or -1 in the mempool (`None`). Anything else, or no height at
+/// all, is not hsd's answer: an error naming `what` was not reported.
+pub fn mined_height(
+    height: Option<i64>,
+    what: impl FnOnce() -> String,
+) -> Result<Option<i64>, AppError> {
+    match height {
+        Some(-1) => Ok(None),
+        Some(h) if h >= 0 => Ok(Some(h)),
+        _ => Err(AppError::Rpc(format!("node did not report {}", what()))),
     }
 }
 
