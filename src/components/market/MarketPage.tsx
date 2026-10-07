@@ -158,15 +158,15 @@ export default function MarketPage() {
     <div>
       <PageHeader
         title="Market"
-        subtitle="Names listed through Shakedex. Every listing is checked against your node before you can buy it."
+        subtitle="Names listed through Shakedex. Every listing is checked against your node."
       />
       <div className="space-y-6">
         {market.isLoading && <p className="text-sm text-gray-500">Loading listings…</p>}
         {market.isError && <Alert tone="error" title="Could not load the market" />}
         {page && !page.networkHasMarket && (
           <Alert tone="info">
-            There is no LearnHNS Market for this network. You can still buy a name from a listing
-            file or pasted text below.
+            There is no LearnHNS Market for this network. You can still check a listing file or
+            pasted text below.
           </Alert>
         )}
         {page && page.networkHasMarket && page.rows.length === 0 && (
