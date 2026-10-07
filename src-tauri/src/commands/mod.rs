@@ -24,6 +24,7 @@ pub mod read_pure;
 pub mod secure_prompt;
 pub mod secure_wallet;
 pub mod settings;
+pub mod shakedex;
 pub mod sync;
 pub mod sync_spv;
 pub mod tray;

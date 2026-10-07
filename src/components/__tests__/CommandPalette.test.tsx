@@ -37,7 +37,7 @@ describe("buildCommands", () => {
   it("includes navigation commands for all PRIMARY_ROUTES", () => {
     const commands = buildCommands(() => {}, "/", true);
     const navCommands = commands.filter((c) => c.category === "Navigation");
-    expect(navCommands.length).toBe(6);
+    expect(navCommands.length).toBe(7);
   });
 
   it("includes action commands available on the current route", () => {

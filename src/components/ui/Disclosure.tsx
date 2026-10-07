@@ -6,6 +6,8 @@ interface DisclosureProps {
   children: ReactNode;
   defaultOpen?: boolean;
   className?: string;
+  /** `data-testid` of the toggle button. */
+  testId?: string;
 }
 
 /**
@@ -16,13 +18,20 @@ interface DisclosureProps {
  * and screen readers can find it, and expanding is instant) while still hiding
  * it visually. `aria-expanded` reflects the open state.
  */
-export function Disclosure({ summary, children, defaultOpen = false, className }: DisclosureProps) {
+export function Disclosure({
+  summary,
+  children,
+  defaultOpen = false,
+  className,
+  testId,
+}: DisclosureProps) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div className={className}>
       <button
         type="button"
         aria-expanded={open}
+        data-testid={testId}
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900"
       >

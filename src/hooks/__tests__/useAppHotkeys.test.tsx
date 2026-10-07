@@ -3,7 +3,7 @@
  *
  * Two axes:
  * 1. Binding-table shape / drift detection — asserts the hook's hard-coded
- *    1..6 registrations match the HOTKEY_BINDINGS nav entries in order.
+ *    1..7 registrations match the HOTKEY_BINDINGS nav entries in order.
  *    A future edit that changes one but not the other will fail here.
  * 2. Behavior via real keydown events — dispatches native KeyboardEvent on
  *    document (react-hotkeys-hook attaches its listener to document by
@@ -115,13 +115,13 @@ describe("HOTKEY_BINDINGS table", () => {
     }
   });
 
-  it("nav bindings use exactly keys '1' through '6' (drift guard)", () => {
+  it("nav bindings use exactly keys '1' through '7' (drift guard)", () => {
     const navBindings = HOTKEY_BINDINGS.filter((b) => b.category === "nav");
-    const expectedKeys = ["1", "2", "3", "4", "5", "6"];
+    const expectedKeys = ["1", "2", "3", "4", "5", "6", "7"];
     expect(navBindings.map((b) => b.keys)).toEqual(expectedKeys);
-    // Also confirms the hook's hard-coded useHotkeys("1"..."6") calls in
+    // Also confirms the hook's hard-coded useHotkeys("1"..."7") calls in
     // useAppHotkeys.ts remain consistent with PRIMARY_ROUTES.length.
-    expect(PRIMARY_ROUTES.length).toBe(6);
+    expect(PRIMARY_ROUTES.length).toBe(7);
   });
 });
 
@@ -132,10 +132,10 @@ describe("useAppHotkeys — behavior via real keydown events", () => {
     expect(screen.getByTestId("route").textContent).toBe(PRIMARY_ROUTES[0]?.to);
   });
 
-  it("pressing 6 navigates to the sixth primary route", () => {
+  it("pressing 7 navigates to the seventh primary route", () => {
     renderHarness("/");
-    dispatchKey("6", "Digit6");
-    expect(screen.getByTestId("route").textContent).toBe(PRIMARY_ROUTES[5]?.to);
+    dispatchKey("7", "Digit7");
+    expect(screen.getByTestId("route").textContent).toBe(PRIMARY_ROUTES[6]?.to);
   });
 
   it("pressing Shift+? opens the cheatsheet", () => {

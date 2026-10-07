@@ -17,8 +17,12 @@ pub const SENSITIVE_SETTING_KEYS: &[&str] = &[
 /// These are either security-critical host overrides (whose mutation could
 /// redirect authenticated requests) or secrets that should only be written by
 /// dedicated backend flows (e.g. `connect_namebase`).
-pub const RENDERER_WRITE_DENYLIST: &[&str] =
-    &["namebase_base_url", "namebase_cookie", "namebase_cookie_v1"];
+pub const RENDERER_WRITE_DENYLIST: &[&str] = &[
+    "namebase_base_url",
+    "namebase_cookie",
+    "namebase_cookie_v1",
+    "learnhns_base_url",
+];
 
 /// Returns `true` if `key` is a sensitive setting that must be redacted.
 pub fn is_sensitive_key(key: &str) -> bool {
@@ -47,6 +51,7 @@ mod tests {
     #[test]
     fn write_denylist_blocks_host_override() {
         assert!(is_renderer_write_denied("namebase_base_url"));
+        assert!(is_renderer_write_denied("learnhns_base_url"));
         assert!(is_renderer_write_denied("namebase_cookie"));
         assert!(is_renderer_write_denied("namebase_cookie_v1"));
         assert!(!is_renderer_write_denied("node_rpc_url"));

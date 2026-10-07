@@ -14,6 +14,7 @@ pub mod daemon;
 pub mod db;
 pub mod error;
 mod hsd;
+pub mod market;
 mod models;
 mod namebase;
 pub mod noncustodial;
@@ -693,6 +694,8 @@ pub fn run() {
             commands::names::build_batch_finalize_draft,
             commands::names::build_batch_transfer_draft,
             commands::names::build_finalize_with_payment_draft,
+            commands::shakedex::shakedex_list_market,
+            commands::shakedex::shakedex_import_listing,
             commands::names::get_name_action_capabilities,
             commands::names::get_names_action_capabilities,
             commands::bids::recover_bid_commitment,
