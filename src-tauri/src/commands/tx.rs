@@ -687,6 +687,9 @@ pub(crate) async fn sign_tx_draft_inner(
         )
     };
 
+    // Guard against unsupported plans before dispatching to Ledger.
+    refuse_unsupported_ledger_plan(&profile_kind, &draft.action, &draft.signing_inputs_json)?;
+
     // 2. Sign, dispatching by profile kind (ledger vs hot) and action.
     let (signed_hex, summary_json) = if profile_kind == "ledger_hardware" {
         sign_via_ledger(&draft, &account_xpub, &coins, &covenant_names).await?
@@ -1150,6 +1153,30 @@ mod ledger_signing_guards_tests {
             "expected a 'corrupted draft' error, got {err:?}"
         );
     }
+}
+
+/// The Ledger signer streams every input as the wallet's own P2WPKH with a
+/// final sequence (`providers/ledger/signing.rs`). A plan with a foreign
+/// input, a custom sequence or a lock time would be signed wrongly, so it is
+/// refused before the device is touched, and so is a plan that cannot be
+/// read. A `send_hns` draft stores build parameters, not a plan: the signer
+/// builds that plan from the wallet's own coins, so it has nothing to refuse.
+pub(crate) fn refuse_unsupported_ledger_plan(
+    profile_kind: &str,
+    action: &str,
+    plan_json: &str,
+) -> Result<(), AppError> {
+    if profile_kind != "ledger_hardware" || action == "send_hns" {
+        return Ok(());
+    }
+    let plan = serde_json::from_str::<crate::noncustodial::actions::DraftPlan>(plan_json)
+        .map_err(|e| AppError::Other(format!("corrupted draft: unreadable signing plan: {e}")))?;
+    if plan.has_foreign_or_custom_inputs() {
+        return Err(AppError::InvalidInput(
+            crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY.into(),
+        ));
+    }
+    Ok(())
 }
 
 /// The Ledger-hardware signing path. No in-memory signer session; instead

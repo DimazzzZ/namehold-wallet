@@ -1005,6 +1005,7 @@ mod rpc_injected_tests {
             verification_progress: Some(1.0),
             chain: Some("regtest".into()),
             bestblockhash: None,
+            mediantime: None,
         }
     }
 

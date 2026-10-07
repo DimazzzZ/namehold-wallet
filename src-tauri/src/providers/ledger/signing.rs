@@ -43,6 +43,17 @@ pub fn sign_transaction<T: HidIo>(
     change: Option<&ChangeInfo>,
     names: &[OutputName],
 ) -> Result<(String, String), AppError> {
+    // Every input below is streamed as the wallet's own P2WPKH with a final
+    // sequence and no lock time. A plan that is anything else (a Shakedex
+    // purchase's foreign lock coin, its 0xfffffffe sequence or lock time)
+    // would be signed wrongly, so it never reaches the device (R16). The
+    // draft path refuses it first (`commands::tx`); this is the signer's own
+    // guard.
+    if plan.has_foreign_or_custom_inputs() {
+        return Err(AppError::InvalidInput(
+            crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY.into(),
+        ));
+    }
     let net_flag = network_flag(network);
 
     // --- Phase 1: Parse mode (stream the full tx to the device) ---
@@ -835,6 +846,37 @@ mod tests {
         let mut signer = LedgerSigner::with_transport(Transport::new(hid));
         let account_xpub = test_account_xpub();
         sign_transaction(&mut signer, &plan, &account_xpub, Network::Main, None, &[]).unwrap_err()
+    }
+
+    /// R16, the signer's own guard: a plan with a foreign input, a custom
+    /// sequence or a lock time is refused before the device is touched. The
+    /// device here rejects its very first exchange, so reaching it would
+    /// surface as `UserRejected`, not as the refusal.
+    #[test]
+    fn foreign_or_custom_plan_is_refused_before_the_device() {
+        let mut foreign = one_input_plan();
+        foreign.inputs[0].foreign_witness_hex = Some(vec!["00".into()]);
+        let mut sequence = one_input_plan();
+        sequence.inputs[0].sequence = 0xffff_fffe;
+        let mut locktime = one_input_plan();
+        locktime.locktime = 0x8000_0001;
+        for plan in [foreign, sequence, locktime] {
+            let mut signer =
+                LedgerSigner::with_transport(Transport::new(FailAtHid::new(0, 0x6985)));
+            let err = sign_transaction(
+                &mut signer,
+                &plan,
+                &test_account_xpub(),
+                Network::Main,
+                None,
+                &[],
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&err, AppError::InvalidInput(m) if m == crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY),
+                "{err:?}"
+            );
+        }
     }
 
     #[test]

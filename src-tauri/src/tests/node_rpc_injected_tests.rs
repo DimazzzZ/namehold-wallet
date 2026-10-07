@@ -274,6 +274,7 @@ fn info(
         verification_progress: progress,
         chain: chain.map(String::from),
         bestblockhash: None,
+        mediantime: None,
     }
 }
 
@@ -772,7 +773,9 @@ async fn broadcast_classify_transport_error_marks_pending() {
 /// An RPC error that hsd did not send (a proxy's 502 page, a body that is
 /// not a JSON-RPC envelope, an envelope without a result) proves nothing
 /// about the transaction: the node may hold it. The draft must stay
-/// `broadcast_pending`, never `failed` (`rpc::is_node_rejection`).
+/// `broadcast_pending`, never `failed` — a failed Shakedex purchase is
+/// given up as lost. Same rule as the purchase rebroadcast
+/// (`rpc::is_node_rejection`).
 #[tokio::test]
 async fn broadcast_classify_reply_not_from_hsd_marks_pending() {
     for msg in [
@@ -962,6 +965,7 @@ async fn write_probe_unsynced_downgrades_with_progress_pct() {
         headers: Some(200),
         verification_progress: Some(0.5),
         bestblockhash: None,
+        mediantime: None,
     });
     let mut cap = writable_cap();
     crate::commands::tx::apply_node_write_probe_with_client(
@@ -984,6 +988,7 @@ async fn write_probe_synced_but_no_address_index_downgrades() {
             headers: Some(100),
             verification_progress: Some(1.0),
             bestblockhash: None,
+            mediantime: None,
         })
         .with_coins_by_address_err("Address indexing is not enabled");
     let mut cap = writable_cap();
@@ -1008,6 +1013,7 @@ async fn write_probe_synced_and_indexed_keeps_write_capable() {
             headers: Some(100),
             verification_progress: Some(1.0),
             bestblockhash: None,
+            mediantime: None,
         })
         .with_coins_by_address(vec![]);
     let mut cap = writable_cap();
@@ -1033,6 +1039,7 @@ async fn write_probe_unsynced_no_verification_progress_uses_headers_ratio() {
         headers: Some(600_000),
         verification_progress: None,
         bestblockhash: None,
+        mediantime: None,
     });
     let mut cap = writable_cap();
     crate::commands::tx::apply_node_write_probe_with_client(
@@ -1059,6 +1066,7 @@ async fn write_probe_synced_no_verification_progress_via_headers() {
             headers: Some(600_000),
             verification_progress: None,
             bestblockhash: None,
+            mediantime: None,
         })
         .with_coins_by_address(vec![]);
     let mut cap = writable_cap();
@@ -1521,7 +1529,8 @@ fn node(source: crate::noncustodial::rpc::ChainSource, chain: &str) -> MockNodeR
     m
 }
 
-/// Every send passes the same three gates.
+/// Every send — the user's broadcast and the sync job's one rebroadcast of a
+/// purchase — passes the same three gates.
 #[tokio::test]
 async fn broadcast_gates_refuse_read_only_unapproved_remote_and_foreign_chain() {
     use crate::noncustodial::rpc::{broadcast_gates, ChainSource};

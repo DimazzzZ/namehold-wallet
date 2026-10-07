@@ -47,7 +47,7 @@ fn hex32(s: &str) -> [u8; 32] {
     a
 }
 
-fn master_from_known_mnemonic() -> ExtendedPrivKey {
+pub(crate) fn master_from_known_mnemonic() -> ExtendedPrivKey {
     // The mnemonic is fixed in the vectors; assert it matches our copy.
     let mnemonic = "april coyote civil finger crane uncle situate moon choice wrong \
                     goose client purse deer funny hobby shrug give anxiety truly rack \

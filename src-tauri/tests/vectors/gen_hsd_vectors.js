@@ -9,12 +9,15 @@
 // signatures, so for identical inputs (same coins, output order, locktime,
 // sighash type) the FULL signed-tx hex is identical — not merely valid.
 
+const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const hsd = require("hsd");
 const { Mnemonic, HDPrivateKey } = require("hsd").hd;
 const { KeyRing, MTX, Coin, Output, Address, Script, Covenant, Network } = hsd;
 const rules = require("hsd/lib/covenants/rules");
+const sha3 = require("bcrypto/lib/sha3");
+const Witness = require("hsd/lib/script/witness");
 
 const NETWORK = Network.get("main");
 const COIN_TYPE = NETWORK.keyPrefix.coinType; // 5353
@@ -209,6 +212,185 @@ const START = 100;
 const TXID_A = Buffer.from(Array.from({ length: 32 }, (_, i) => i + 1)).toString("hex");
 const TXID_B = Buffer.from(Array.from({ length: 32 }, (_, i) => 0x40 + i)).toString("hex");
 const TXID_C = Buffer.from(Array.from({ length: 32 }, (_, i) => 0x80 + i)).toString("hex");
+
+// --- Shakedex (hsd-generated) --------------------------------------------
+//
+// Reference vectors for buying a name sold through a Shakedex lock: the lock
+// script and address, one price step (sighash 0x84 = SINGLEREVERSE|ANYONECANPAY),
+// the buyer's purchase transaction, and the buyer's FINALIZE out of the lock.
+// The purchase and the finalize are verified by hsd's own script interpreter.
+
+function lockScript(pub) {
+  // type == TRANSFER ? <pub> checksig : type == FINALIZE
+  return Buffer.concat([
+    Buffer.from("d0598763", "hex"),
+    Buffer.from([0x21]),
+    pub,
+    Buffer.from("ac67d05a8768", "hex"),
+  ]);
+}
+
+const shakedex = (() => {
+  const name = "dexreviews";
+  const nameHash = rules.hashName(name);
+  const idx = nameHash.readUInt32BE(0) & 0x7fffffff;
+  const lockKey = master.derivePath(`m/44'/${COIN_TYPE}'/0'/2'/${idx}'`);
+  const pub = lockKey.publicKey;
+  const script = lockScript(pub);
+  const lockAddress = Address.fromScripthash(sha3.digest(script));
+  const lockCoinHash = Buffer.alloc(32, 0x44);
+  const lockValue = 1_000_000;
+  const height = 120;
+  const price = 250_000_000;
+  const lockTimeSecs = 1_783_696_480;
+  const encodedLocktime = ((lockTimeSecs >>> 9) | 0x80000000) >>> 0;
+  const paymentAddr = addr(0, 5);
+  const SIGHASH = 0x84;
+
+  // hsd's own encoding of the seconds-based lock time must agree.
+  const probe = new MTX();
+  probe.addCoin(mkCoin(TXID_A, 0, 1, ring(0, 0)));
+  probe.setLocktime(lockTimeSecs, true);
+  assert.strictEqual(probe.locktime, encodedLocktime, "locktime encoding");
+  assert.strictEqual(probe.inputs[0].sequence, 0xfffffffe, "locktime sequence");
+
+  const lockCoin = new Coin({
+    version: 0,
+    height,
+    value: lockValue,
+    address: lockAddress,
+    hash: lockCoinHash,
+    index: 0,
+    covenant: cov(T.FINALIZE, (c) => {
+      c.pushHash(nameHash);
+      c.pushU32(height);
+      c.push(Buffer.from(name));
+      c.pushU8(0);
+      c.pushU32(0);
+      c.pushU32(0);
+      c.pushHash(Buffer.alloc(32, 0x55));
+    }),
+  });
+
+  // Price-step template: input 0 = lock coin (sequence fffffffe), outputs
+  // [placeholder at the lock address, payment]. SINGLEREVERSE commits only to
+  // the payment output.
+  const tpl = new MTX();
+  tpl.version = 0;
+  tpl.locktime = encodedLocktime;
+  tpl.addCoin(lockCoin);
+  tpl.inputs[0].sequence = 0xfffffffe;
+  tpl.addOutput(lockAddress, lockValue);
+  tpl.addOutput(Address.fromString(paymentAddr, "main"), price);
+  const stepHash = tpl.signatureHash(0, Script.decode(script), lockValue, SIGHASH);
+  const signature = tpl.signature(0, Script.decode(script), lockValue, lockKey.privateKey, SIGHASH);
+
+  // Purchase: input 0 = lock coin with witness [sig, script], input 1 = buyer
+  // funding; outputs [TRANSFER at lock address, change, payment].
+  const dest = ring(0, 6);
+  const funding = { displayTxid: TXID_A, vout: 0, value: 400_000_000, branch: 0, index: 0 };
+  const fee = 20_000;
+  const p = new MTX();
+  p.version = 0;
+  p.locktime = encodedLocktime;
+  p.addCoin(lockCoin);
+  p.inputs[0].sequence = 0xfffffffe;
+  p.inputs[0].witness = Witness.fromItems([signature, script]);
+  const fr = ring(funding.branch, funding.index);
+  p.addCoin(mkCoin(funding.displayTxid, funding.vout, funding.value, fr));
+  p.addOutput({
+    address: lockAddress,
+    value: lockValue,
+    covenant: cov(T.TRANSFER, (c) => {
+      c.pushHash(nameHash);
+      c.pushU32(height);
+      c.pushU8(0);
+      c.push(dest.getKeyHash());
+    }),
+  });
+  p.addOutput(Address.fromString(addr(1, 0), "main"), funding.value - price - fee);
+  p.addOutput(Address.fromString(paymentAddr, "main"), price);
+  assert.strictEqual(p.sign([fr]), 1, "purchase: only the funding input is signed by the buyer");
+  assert(p.verify(), "purchase verifies in hsd");
+
+  // Buyer FINALIZE out of the lock once the lockup has passed.
+  const transferCoin = Coin.fromTX(p.toTX(), 0, height + 1);
+  const f = new MTX();
+  f.version = 0;
+  f.addCoin(transferCoin);
+  f.inputs[0].witness = Witness.fromItems([script]);
+  const funding2 = { displayTxid: TXID_B, vout: 0, value: 1_000_000, branch: 0, index: 1 };
+  const fr2 = ring(funding2.branch, funding2.index);
+  f.addCoin(mkCoin(funding2.displayTxid, funding2.vout, funding2.value, fr2));
+  const renewalBlock = Buffer.alloc(32, 0x66);
+  f.addOutput({
+    address: dest.getAddress(),
+    value: lockValue,
+    covenant: cov(T.FINALIZE, (c) => {
+      c.pushHash(nameHash);
+      c.pushU32(height);
+      c.push(Buffer.from(name));
+      c.pushU8(0);
+      c.pushU32(0);
+      c.pushU32(0);
+      c.pushHash(renewalBlock);
+    }),
+  });
+  const fee2 = 10_000;
+  f.addOutput(Address.fromString(addr(1, 0), "main"), funding2.value - fee2);
+  assert.strictEqual(f.sign([fr2]), 1, "finalize: only the funding input is signed");
+  assert(f.verify(), "finalize verifies in hsd");
+
+  const lockPath = ["main", "regtest"].map((net) => {
+    const coin = Network.get(net).keyPrefix.coinType;
+    const path = `m/44'/${coin}'/0'/2'/${idx}'`;
+    const k = master.derivePath(path);
+    return {
+      network: net,
+      name,
+      path,
+      lockAddress: Address.fromScripthash(sha3.digest(lockScript(k.publicKey))).toString(net),
+    };
+  });
+
+  return {
+    name,
+    nameHash: nameHash.toString("hex"),
+    height,
+    lockPub: pub.toString("hex"),
+    lockScript: script.toString("hex"),
+    lockAddress: lockAddress.toString("main"),
+    lockCoin: { hash: lockCoinHash.toString("hex"), index: 0, value: lockValue },
+    step: {
+      price,
+      lockTimeSecs,
+      encodedLocktime,
+      paymentAddr,
+      sighash: stepHash.toString("hex"),
+      signature: signature.toString("hex"),
+    },
+    purchase: {
+      fundingInput: funding,
+      destAddress: dest.getAddress().toString("main"),
+      changeAddress: addr(1, 0),
+      fee,
+      signedHex: p.toRaw().toString("hex"),
+      txid: p.txid(),
+    },
+    finalize: {
+      transferCoin: { hash: p.hash().toString("hex"), index: 0, value: lockValue },
+      fundingInput: funding2,
+      renewalBlock: renewalBlock.toString("hex"),
+      flags: 0,
+      claimed: 0,
+      renewals: 0,
+      fee: fee2,
+      signedHex: f.toRaw().toString("hex"),
+      txid: f.txid(),
+    },
+    lockPath,
+  };
+})();
 
 // --- assemble vectors ----------------------------------------------------
 
@@ -463,6 +645,8 @@ const vectors = {
     nonce: BLIND_NONCE.toString("hex"),
     blind: BLIND.toString("hex"),
   },
+
+  shakedex,
 };
 
 const outPath = path.join(__dirname, "vectors.json");

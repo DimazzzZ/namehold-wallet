@@ -575,6 +575,48 @@ impl NodeRpcClient {
             .map_err(|e| AppError::Rpc(format!("malformed coins response: {e}")))
     }
 
+    /// `GET /coin/:hash/:index`: the coin with its covenant and value in
+    /// dollarydoos, or `None` when it is spent or unknown. (`gettxout` reports
+    /// neither the covenant nor a spent coin usefully.)
+    pub async fn get_coin(&self, txid: &str, index: u32) -> Result<Option<NodeCoin>, AppError> {
+        let url = format!("{}/coin/{}/{}", self.node_url, txid, index);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth("x", Some(&self.api_key))
+            .send()
+            .await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return hsd_not_found(resp, "coin").await.map(|()| None);
+        }
+        let body: serde_json::Value = resp.json().await.map_err(|e| {
+            AppError::Rpc(format!(
+                "node returned non-JSON for coin (status {status}): {e}"
+            ))
+        })?;
+        if !status.is_success() {
+            let msg = body
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .or_else(|| body.get("message").and_then(|m| m.as_str()))
+                // Only the wording of an error already returned; decides nothing.
+                .unwrap_or("coin lookup failed");
+            return Err(AppError::Rpc(format!("{msg} (status {status})")));
+        }
+        // hsd sends a missing coin as an empty 404 (above), never a 200 null:
+        // a null here is not hsd's answer, and must not read as "spent".
+        if body.is_null() {
+            return Err(AppError::Rpc(format!(
+                "coin lookup got a null that is not hsd's (status {status})"
+            )));
+        }
+        serde_json::from_value(body)
+            .map(Some)
+            .map_err(|e| AppError::Rpc(format!("malformed coin response: {e}")))
+    }
+
     /// `gettxout` — a single UTXO by `(txid, vout)`. Returns `None` if the
     /// output is unspent-unknown/spent (hsd yields null `result`).
     pub async fn get_tx_out(
@@ -673,8 +715,8 @@ impl NodeRpcClient {
     /// even for confirmed txs whose inputs are already spent (the RPC path
     /// silently omits them because those UTXOs left the current coin set).
     ///
-    /// Returns `Ok(Value::Null)` for an unknown tx (HTTP 404 or a JSON `null`
-    /// body some hsd versions emit on miss). Requires the node's
+    /// Returns `Ok(Value::Null)` for an unknown tx (hsd's empty HTTP 404), an
+    /// error for a 200 that carries no transaction object. Requires the node's
     /// transaction index (`--index-tx`); an index-disabled error is
     /// normalized into an `AppError::Rpc` whose message contains the
     /// phrase `"tx index not enabled"` so callers can detect it uniformly
@@ -688,8 +730,10 @@ impl NodeRpcClient {
             .send()
             .await?;
         let status = resp.status();
-        if status.as_u16() == 404 {
-            return Ok(serde_json::Value::Null);
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return hsd_not_found(resp, "tx-by-hash")
+                .await
+                .map(|()| serde_json::Value::Null);
         }
         let body: serde_json::Value = resp.json().await.map_err(|e| {
             AppError::Rpc(format!(
@@ -716,18 +760,23 @@ impl NodeRpcClient {
             }
             return Err(AppError::Rpc(format!("{msg} (status {status})")));
         }
-        // Accept the bare tx object, a `{ result: {...} }` wrapper, or a
-        // JSON `null` body (some hsd versions on miss — caller guards
-        // via `.is_null()`).
-        match body {
-            serde_json::Value::Object(mut obj) => {
-                if let Some(inner) = obj.remove("result") {
-                    Ok(inner)
-                } else {
-                    Ok(serde_json::Value::Object(obj))
-                }
-            }
-            other => Ok(other),
+        // Accept the bare tx object or a `{ result: {...} }` wrapper. hsd
+        // sends an unknown tx as an empty 404 (above), never a 200 null:
+        // anything but an object here is not hsd's answer, and must not
+        // read as "unknown".
+        let tx = match body {
+            serde_json::Value::Object(mut obj) => match obj.remove("result") {
+                Some(inner) => inner,
+                None => serde_json::Value::Object(obj),
+            },
+            other => other,
+        };
+        if tx.is_object() {
+            Ok(tx)
+        } else {
+            Err(AppError::Rpc(format!(
+                "tx-by-hash lookup got a reply that is not hsd's (status {status}): {tx}"
+            )))
         }
     }
 
@@ -843,6 +892,17 @@ impl NodeRpcClient {
         )
     }
 
+    /// `setmocktime` — set the node's clock to `time` (seconds). hsd keeps it
+    /// as an offset that goes on ticking; `0` sets the clock itself to 0 and
+    /// stalls mining, so only ever move it forward. Regtest only.
+    #[cfg(test)]
+    pub async fn set_mock_time(&self, time: u64) -> Result<(), AppError> {
+        void_rpc(
+            self.call::<serde_json::Value>("setmocktime", serde_json::json!([time]))
+                .await,
+        )
+    }
+
     /// `reconsiderblock` — clear the invalid mark set by [`invalidate_block`],
     /// letting the node reconnect the previously-rejected branch. Regtest only.
     #[cfg(test)]
@@ -869,7 +929,7 @@ fn void_rpc(res: Result<serde_json::Value, AppError>) -> Result<(), AppError> {
 }
 
 /// Minimal typed view of `getblockchaininfo` (extra fields ignored).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockchainInfo {
     /// Current best chain height.
@@ -891,6 +951,10 @@ pub struct BlockchainInfo {
     /// Best block hash.
     #[serde(default)]
     pub bestblockhash: Option<String>,
+    /// Median time past of the tip — what a time-locked transaction is
+    /// judged against for the next block.
+    #[serde(default)]
+    pub mediantime: Option<u64>,
 }
 
 impl BlockchainInfo {
@@ -980,7 +1044,8 @@ pub struct NodeCoin {
     /// Address the coin pays to.
     #[serde(default)]
     pub address: Option<String>,
-    /// Block height the coin was confirmed at (`-1`/absent = mempool).
+    /// Block height the coin was confirmed at, `-1` in the mempool; hsd always
+    /// sends it (see [`NodeCoin::mined_height`]).
     #[serde(default)]
     pub height: Option<i64>,
     /// Confirmations (0 = mempool).
@@ -993,6 +1058,39 @@ pub struct NodeCoin {
     /// this as `{ "type": <u8>, "action": "<NAME>", "items": ["<hex>", ...] }`.
     #[serde(default)]
     pub covenant: Option<NodeCovenant>,
+}
+
+impl NodeCoin {
+    /// The block the coin was mined in, `None` in the mempool. hsd always
+    /// sends `height`, -1 for a mempool coin (`Coin.getJSON`): a reply
+    /// without it, or with any other negative number, is not hsd's answer and
+    /// must not decide where a coin is.
+    pub fn mined_height(&self) -> Result<Option<i64>, AppError> {
+        match self.height {
+            Some(-1) => Ok(None),
+            Some(h) if h >= 0 => Ok(Some(h)),
+            _ => Err(AppError::Rpc(format!(
+                "node did not report the height of coin {}:{}",
+                self.txid, self.vout
+            ))),
+        }
+    }
+}
+
+/// Whether a 404 is hsd's own "not found": hsd answers a missing coin or
+/// transaction with `res.json(404)`, which sends no body. A 404 with a body —
+/// a proxy's error page, or bweb's reply to a route it does not have — says
+/// nothing about the coin or transaction, so it is an error, never "spent"
+/// or "unknown".
+async fn hsd_not_found(resp: reqwest::Response, what: &str) -> Result<(), AppError> {
+    let body = resp.bytes().await?;
+    if body.iter().all(u8::is_ascii_whitespace) {
+        Ok(())
+    } else {
+        Err(AppError::Rpc(format!(
+            "{what} lookup got a 404 that is not hsd's (it has a body)"
+        )))
+    }
 }
 
 /// Minimal typed view of an output covenant from a node coin.
@@ -1014,7 +1112,7 @@ pub struct NodeCovenant {
 }
 
 /// The gates every send passes before a signed transaction leaves the
-/// wallet:
+/// wallet — the user's broadcast and the sync job's rebroadcast alike:
 ///
 /// - the chain source can broadcast at all (Explorer and SPV are read-only);
 /// - a remote node also needs the user's "Allow sending via remote node"
@@ -1159,6 +1257,7 @@ mod tests {
             verification_progress: None,
             chain: Some("main".to_string()),
             bestblockhash: None,
+            ..Default::default()
         };
         assert!(!behind.is_synced(true));
         // A far-behind node claiming 100% progress is still not synced.
@@ -2074,8 +2173,8 @@ mod tests {
     /// Only hsd's own JSON-RPC answer is a refusal: bweb sends every one with
     /// HTTP 200 and a numeric `code`. hsd's 401 for a wrong API key, an error
     /// object without a code, or JSON from a proxy at another status say
-    /// nothing about the transaction — reading them as a refusal would mark
-    /// failed a transaction the node may hold.
+    /// nothing about the transaction — reading them as a refusal would give
+    /// a sent purchase up as lost.
     #[tokio::test]
     async fn only_hsds_own_json_rpc_error_is_a_rejection() {
         let cases = [
@@ -2233,6 +2332,115 @@ mod tests {
         }
     }
 
+    // --- get_coin (REST `/coin/:hash/:index`) and mediantime ---
+
+    #[tokio::test]
+    async fn get_coin_returns_coin_with_covenant() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/coin/aa11/0")
+            .with_status(200)
+            .with_body(
+                r#"{
+        "version":0,"height":120,"value":1000000,"address":"hs1qexample","coinbase":false,
+        "hash":"aa11","index":0,"covenant":{"type":10,"action":"FINALIZE","items":["00"]}}"#,
+            )
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "k", ChainSource::LocalNode);
+        let coin = client.get_coin("aa11", 0).await.unwrap().unwrap();
+        assert_eq!(coin.value, 1_000_000);
+        assert_eq!(coin.covenant.unwrap().kind, 10);
+    }
+
+    #[tokio::test]
+    async fn get_coin_404_is_none() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/coin/bb22/1")
+            .with_status(404)
+            // hsd answers a missing coin with `res.json(404)`: no body.
+            .with_body("")
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "k", ChainSource::LocalNode);
+        assert!(client.get_coin("bb22", 1).await.unwrap().is_none());
+    }
+
+    /// A 404 with a body is not hsd's "no such coin" (hsd sends none): a
+    /// proxy's error page or an unknown route says nothing about the coin,
+    /// and reading it as "spent" would mark listings sold and purchases lost.
+    #[tokio::test]
+    async fn get_coin_404_with_a_body_is_an_error_not_spent() {
+        for body in [
+            r#"{"error":{"message":"Not found."}}"#,
+            "<html>404 Not Found</html>",
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            let _m = server
+                .mock("GET", "/coin/bb22/1")
+                .with_status(404)
+                .with_body(body)
+                .create_async()
+                .await;
+            let client = NodeRpcClient::new(&server.url(), "k", ChainSource::LocalNode);
+            assert!(client.get_coin("bb22", 1).await.is_err(), "{body}");
+        }
+    }
+
+    /// The same for a transaction: only hsd's empty 404 means "unknown".
+    #[tokio::test]
+    async fn tx_by_hash_404_with_a_body_is_an_error_not_unknown() {
+        for body in [
+            r#"{"error":{"message":"Not found."}}"#,
+            "<html>404 Not Found</html>",
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            let _m = server
+                .mock("GET", "/tx/unknown")
+                .with_status(404)
+                .with_body(body)
+                .create_async()
+                .await;
+            let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+            assert!(client.get_tx_by_hash("unknown").await.is_err(), "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn get_coin_errors_on_non_success_and_non_json() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/coin/cc33/0")
+            .with_status(500)
+            .with_body(r#"{"error":{"message":"boom"}}"#)
+            .create_async()
+            .await;
+        let _n = server
+            .mock("GET", "/coin/dd44/0")
+            .with_body("<<garbage>>")
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "k", ChainSource::LocalNode);
+        match client.get_coin("cc33", 0).await.unwrap_err() {
+            AppError::Rpc(msg) => assert!(msg.contains("boom")),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+        match client.get_coin("dd44", 0).await.unwrap_err() {
+            AppError::Rpc(msg) => assert!(msg.contains("non-JSON")),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn blockchain_info_without_mediantime_is_none() {
+        let info: BlockchainInfo = serde_json::from_str(r#"{"blocks":10}"#).unwrap();
+        assert_eq!(info.mediantime, None);
+        let info: BlockchainInfo =
+            serde_json::from_str(r#"{"blocks":10,"mediantime":1700000000}"#).unwrap();
+        assert_eq!(info.mediantime, Some(1_700_000_000));
+    }
+
     // --- get_txs_by_address extra branches: result-wrapper acceptance ---
 
     #[tokio::test]
@@ -2312,18 +2520,36 @@ mod tests {
         assert_eq!(v["hash"], "wr");
     }
 
+    /// hsd answers `GET /tx/:hash` with the transaction object (200) or an
+    /// empty 404 (`lib/node/http.js`), never a 200 null: anything but an
+    /// object at 200 is not hsd's answer, and must not read as "unknown",
+    /// which the purchase job counts toward losing a purchase.
     #[tokio::test]
-    async fn tx_by_hash_returns_bare_scalar() {
-        // Non-object bodies pass through untouched.
+    async fn tx_by_hash_200_without_a_tx_object_is_an_error_not_unknown() {
+        for body in ["null", r#"{"result":null}"#, "42", "[]"] {
+            let mut server = mockito::Server::new_async().await;
+            let _m = server
+                .mock("GET", "/tx/odd")
+                .with_body(body)
+                .create_async()
+                .await;
+            let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
+            assert!(client.get_tx_by_hash("odd").await.is_err(), "{body}");
+        }
+    }
+
+    /// The same for a coin: hsd sends the coin or an empty 404, never a 200
+    /// null, and "spent" would mark listings sold and purchases lost.
+    #[tokio::test]
+    async fn get_coin_200_null_is_an_error_not_spent() {
         let mut server = mockito::Server::new_async().await;
         let _m = server
-            .mock("GET", "/tx/scalar")
-            .with_body("42")
+            .mock("GET", "/coin/bb22/1")
+            .with_body("null")
             .create_async()
             .await;
-        let client = NodeRpcClient::new(&server.url(), "", ChainSource::LocalNode);
-        let v = client.get_tx_by_hash("scalar").await.unwrap();
-        assert_eq!(v, serde_json::json!(42));
+        let client = NodeRpcClient::new(&server.url(), "k", ChainSource::LocalNode);
+        assert!(client.get_coin("bb22", 1).await.is_err());
     }
 
     #[tokio::test]
