@@ -176,6 +176,7 @@ fn test_name_params_mainnet() {
     assert_eq!(p.bidding_period, 720);
     assert_eq!(p.reveal_period, 1440);
     assert_eq!(p.renewal_window, 105_120);
+    assert_eq!(p.claim_period, 210_240); // hsd networks.js claimPeriod
     assert_eq!(p.transfer_lockup, 288);
     assert_eq!(p.revocation_delay, 2016);
     assert_eq!(p.renewal_maturity, 4320);
@@ -188,6 +189,7 @@ fn test_name_params_testnet() {
     assert_eq!(p.bidding_period, 144);
     assert_eq!(p.reveal_period, 288);
     assert_eq!(p.renewal_window, 4320);
+    assert_eq!(p.claim_period, 12_960); // hsd networks.js claimPeriod
     assert_eq!(p.transfer_lockup, 288);
     assert_eq!(p.revocation_delay, 576);
     assert_eq!(p.renewal_maturity, 144);
@@ -200,6 +202,7 @@ fn test_name_params_regtest() {
     assert_eq!(p.bidding_period, 5);
     assert_eq!(p.reveal_period, 10);
     assert_eq!(p.renewal_window, 5000);
+    assert_eq!(p.claim_period, 250_000); // hsd networks.js claimPeriod
     assert_eq!(p.transfer_lockup, 10);
     assert_eq!(p.revocation_delay, 50);
     assert_eq!(p.renewal_maturity, 50);
@@ -212,9 +215,24 @@ fn test_name_params_simnet() {
     assert_eq!(p.bidding_period, 25);
     assert_eq!(p.reveal_period, 50);
     assert_eq!(p.renewal_window, 2500);
+    assert_eq!(p.claim_period, 75_000); // hsd networks.js claimPeriod
     assert_eq!(p.transfer_lockup, 5);
     assert_eq!(p.revocation_delay, 25);
     assert_eq!(p.renewal_maturity, 25);
+}
+
+// ── blocks_until_finalize ────────────────────────────────────────────
+
+#[test]
+fn finalize_is_accepted_from_the_block_where_the_lockup_ends() {
+    // Regtest lockup is 10: a TRANSFER mined at 100 may be finalized in
+    // block 110, i.e. built while the tip is 109 (hsd checks the mempool at
+    // `tip + 1`).
+    let p = Network::Regtest.name_params();
+    assert_eq!(p.blocks_until_finalize(100, 100), 9);
+    assert_eq!(p.blocks_until_finalize(100, 108), 1);
+    assert_eq!(p.blocks_until_finalize(100, 109), 0);
+    assert_eq!(p.blocks_until_finalize(100, 500), 0);
 }
 
 // ── roundtrip as_str / from_str_opt ──────────────────────────────────
@@ -302,4 +320,11 @@ fn network_check_compares_only_when_both_sides_are_known() {
     assert_eq!(network_check(None, Some("main")), None);
     assert_eq!(network_check(Some("main"), None), None);
     assert_eq!(network_check(None, None), None);
+}
+
+#[test]
+fn block_target_is_ten_minutes_on_every_network() {
+    // hsd networks.js: `pow.targetSpacing = 10 * 60` on all four networks.
+    assert_eq!(crate::noncustodial::network::TARGET_SPACING_SECS, 600);
+    assert_eq!(BLOCKS_PER_DAY, 144.0);
 }

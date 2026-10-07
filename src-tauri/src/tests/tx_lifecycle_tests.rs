@@ -270,11 +270,15 @@ async fn broadcast_failure_marks_draft_failed_and_errors() {
     let err = broadcast_tx_draft(app.state(), draft.id.clone())
         .await
         .expect_err("broadcast must surface the node rejection");
-    assert!(matches!(err, AppError::Rpc(_)), "got {err:?}");
+    // hsd's own refusal, in its words, said once: the UI shows this string.
+    assert!(matches!(err, AppError::NodeRefused { .. }), "got {err:?}");
+    let said = "Node RPC error: TX rejected: bad-txns-inputs-missingorspent (code -26)";
+    assert_eq!(err.to_string(), said);
 
     // Critically: the draft is marked failed, never "broadcasted".
     let stored = draft_row(&app, &draft.id);
     assert_eq!(stored.status, "failed");
+    assert_eq!(stored.error_message.as_deref(), Some(said));
     assert!(
         stored.signed_tx_hex.is_some(),
         "signed hex retained for inspection"
@@ -378,7 +382,7 @@ async fn refresh_marks_a_mined_draft_confirmed() {
     let (_info, _tx) = mock_node(
         &mut server,
         437,
-        r#"{"result":{"confirmations":3,"height":435},"error":null,"id":1}"#,
+        r#"{"result":{"confirmations":3,"blockhash":"abababababababababababababababababababababababababababababababab"},"error":null,"id":1}"#,
     )
     .await;
 
@@ -399,12 +403,7 @@ async fn refresh_marks_a_mined_draft_confirmed() {
 async fn refresh_marks_a_long_unfound_draft_dropped() {
     let mut server = mockito::Server::new_async().await;
     // Node reachable, but the tx is not found (evicted / never confirmed).
-    let (_info, _tx) = mock_node(
-        &mut server,
-        500,
-        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
-    )
-    .await;
+    let (_info, _tx) = mock_node(&mut server, 500, HSD_TX_NOT_FOUND).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_broadcasted_draft(&conn, "drf2");
@@ -433,17 +432,167 @@ async fn refresh_marks_a_long_unfound_draft_dropped() {
     );
 }
 
+/// hsd 8.0.0's reply to `getrawtransaction` for a transaction it has never
+/// seen (`lib/node/rpc.js`: `RPCError(errs.MISC_ERROR, 'Transaction not
+/// found.')`, sent by bweb with HTTP 200).
+const HSD_TX_NOT_FOUND: &str =
+    r#"{"result":null,"error":{"message":"Transaction not found.","code":-1},"id":1}"#;
+
+fn backdate(conn: &rusqlite::Connection, id: &str) {
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET updated_at = datetime('now','-700 seconds') WHERE id = ?1",
+        params![id],
+    )
+    .unwrap();
+}
+
+/// A proxy's error page or an error object hsd never sends (its 401 has no
+/// `code`) is not the node saying "never seen": no draft is dropped, failed
+/// or reverted on it, however long the grace window has run.
+#[tokio::test]
+async fn refresh_gives_no_verdict_on_a_reply_that_is_not_hsds() {
+    for (status, body) in [
+        (502, "<html><body>502 Bad Gateway</body></html>"),
+        (
+            401,
+            r#"{"result":null,"error":{"message":"Unauthorized."},"id":null}"#,
+        ),
+    ] {
+        let mut server = mockito::Server::new_async().await;
+        let _info = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+            .with_body(r#"{"result":{"blocks":495,"headers":495},"error":null,"id":1}"#)
+            .create_async()
+            .await;
+        let _tx = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("getrawtransaction".into()))
+            .with_status(status)
+            .with_body(body)
+            .create_async()
+            .await;
+        let conn = seeded_conn(&server.url(), 2_000_000);
+        seed_broadcasted_draft(&conn, "sent");
+        seed_broadcast_pending_draft(&conn, "pending");
+        seed_confirmed_draft(&conn, "mined", 490);
+        for id in ["sent", "pending", "mined"] {
+            backdate(&conn, id);
+        }
+        let app = app_with(conn);
+
+        let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
+        assert_eq!(res["dropped"], 0, "{status}");
+        assert_eq!(res["failed"], 0, "{status}");
+        assert_eq!(res["reverted"], 0, "{status}");
+        assert_eq!(draft_row(&app, "sent").status, "broadcasted", "{status}");
+        assert_eq!(
+            draft_row(&app, "pending").status,
+            "broadcast_pending",
+            "{status}"
+        );
+        assert_eq!(draft_row(&app, "mined").status, "confirmed", "{status}");
+    }
+}
+
+/// Only hsd's own "Transaction not found." says the node never saw a
+/// transaction (R13: "only hsd's own 'not found' drops, fails or reverts a
+/// draft"). Another error hsd sends — a parameter it refused, a method its
+/// build does not have — says nothing about the transaction: no verdict.
+#[tokio::test]
+async fn refresh_gives_no_verdict_on_another_hsd_error() {
+    for body in [
+        r#"{"result":null,"error":{"message":"Invalid TXID.","code":-3},"id":1}"#,
+        r#"{"result":null,"error":{"message":"Method not found.","code":-32601},"id":1}"#,
+    ] {
+        let mut server = mockito::Server::new_async().await;
+        let (_info, _tx) = mock_node(&mut server, 500, body).await;
+        let conn = seeded_conn(&server.url(), 2_000_000);
+        seed_broadcasted_draft(&conn, "sent");
+        seed_broadcast_pending_draft(&conn, "pending");
+        seed_confirmed_draft(&conn, "mined", 490);
+        for id in ["sent", "pending", "mined"] {
+            backdate(&conn, id);
+        }
+        let app = app_with(conn);
+
+        let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
+        assert_eq!(
+            (&res["dropped"], &res["failed"], &res["reverted"]),
+            (
+                &serde_json::json!(0),
+                &serde_json::json!(0),
+                &serde_json::json!(0)
+            ),
+            "{body}"
+        );
+        assert_eq!(draft_row(&app, "sent").status, "broadcasted", "{body}");
+        assert_eq!(draft_row(&app, "pending").status, "broadcast_pending");
+        assert_eq!(draft_row(&app, "mined").status, "confirmed", "{body}");
+    }
+}
+
+/// hsd's `getrawtransaction` always sends `confirmations` and `blockhash`
+/// (0 and `null` in the mempool; `txToJSON` in hsd 8.0.0 `lib/node/rpc.js`,
+/// which sends no height). A reply that leaves `confirmations` out, or whose
+/// two fields disagree on whether the transaction is mined, is not hsd's
+/// answer: no draft is confirmed, promoted or reverted on it.
+#[tokio::test]
+async fn refresh_gives_no_verdict_on_a_tx_reply_missing_its_fields() {
+    for result in [
+        r#"{"blockhash":null}"#,
+        r#"{"confirmations":6}"#,
+        r#"{"confirmations":6,"blockhash":null}"#,
+        r#"{"confirmations":0,"blockhash":"abab"}"#,
+        r#"{"confirmations":-1,"blockhash":null}"#,
+        r#"{"confirmations":"6","blockhash":"abab"}"#,
+    ] {
+        let body = format!(r#"{{"result":{result},"error":null,"id":1}}"#);
+        let mut server = mockito::Server::new_async().await;
+        let (_info, _tx) = mock_node(&mut server, 495, &body).await;
+        let conn = seeded_conn(&server.url(), 2_000_000);
+        seed_broadcasted_draft(&conn, "sent");
+        seed_broadcast_pending_draft(&conn, "pending");
+        seed_confirmed_draft(&conn, "mined", 480);
+        let app = app_with(conn);
+
+        let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
+        assert_eq!(res["confirmed"], serde_json::json!(0), "{result}");
+        assert_eq!(res["reverted"], serde_json::json!(0), "{result}");
+        assert_eq!(draft_row(&app, "sent").status, "broadcasted", "{result}");
+        assert_eq!(
+            draft_row(&app, "pending").status,
+            "broadcast_pending",
+            "{result}"
+        );
+        let mined = draft_row(&app, "mined");
+        assert_eq!(mined.status, "confirmed", "{result}");
+        assert_eq!(mined.confirmation_height, Some(480), "{result}");
+    }
+}
+
+#[tokio::test]
+async fn refresh_drops_an_unseen_send_on_hsds_own_not_found() {
+    let mut server = mockito::Server::new_async().await;
+    let (_info, _tx) = mock_node(&mut server, 500, HSD_TX_NOT_FOUND).await;
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    seed_broadcasted_draft(&conn, "sent");
+    seed_broadcast_pending_draft(&conn, "pending");
+    backdate(&conn, "sent");
+    backdate(&conn, "pending");
+    let app = app_with(conn);
+
+    refresh_tx_confirmations(app.state(), None).await.unwrap();
+    assert_eq!(draft_row(&app, "sent").status, "dropped");
+    assert_eq!(draft_row(&app, "pending").status, "failed");
+}
+
 #[tokio::test]
 async fn refresh_keeps_a_fresh_unfound_draft_pending() {
     // A just-broadcast tx the node hasn't indexed yet must NOT be killed early —
     // it stays `broadcasted` until the grace window elapses.
     let mut server = mockito::Server::new_async().await;
-    let (_info, _tx) = mock_node(
-        &mut server,
-        500,
-        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
-    )
-    .await;
+    let (_info, _tx) = mock_node(&mut server, 500, HSD_TX_NOT_FOUND).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_broadcasted_draft(&conn, "drf3"); // created_at = now (age ~0s)
@@ -484,12 +633,7 @@ async fn refresh_reverts_a_reorged_confirmed_draft_to_broadcasted() {
     // it. It must revert to `broadcasted` (re-entering mempool tracking) with
     // its height cleared, NOT stay silently `confirmed`.
     let mut server = mockito::Server::new_async().await;
-    let (_info, _tx) = mock_node(
-        &mut server,
-        495,
-        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
-    )
-    .await;
+    let (_info, _tx) = mock_node(&mut server, 495, HSD_TX_NOT_FOUND).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_confirmed_draft(&conn, "drf5", 490);
@@ -534,12 +678,7 @@ async fn refresh_reverted_draft_gets_a_fresh_dropped_grace_window() {
     // Node never finds the tx across both polls below — first read is
     // interpreted as "reorg un-mined the confirmed draft", second read (now
     // that it's back to `broadcasted`) is the dropped-grace decision point.
-    let (_info, _tx) = mock_node(
-        &mut server,
-        495,
-        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
-    )
-    .await;
+    let (_info, _tx) = mock_node(&mut server, 495, HSD_TX_NOT_FOUND).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_confirmed_draft(&conn, "drf12", 490);
@@ -639,7 +778,7 @@ async fn refresh_promotes_broadcast_pending_to_broadcasted_when_node_knows_it() 
     let (_info, _tx) = mock_node(
         &mut server,
         500,
-        r#"{"result":{"confirmations":0},"error":null,"id":1}"#,
+        r#"{"result":{"confirmations":0,"blockhash":null},"error":null,"id":1}"#,
     )
     .await;
 
@@ -663,7 +802,7 @@ async fn refresh_promotes_broadcast_pending_straight_to_confirmed_when_already_m
     let (_info, _tx) = mock_node(
         &mut server,
         500,
-        r#"{"result":{"confirmations":2,"height":499},"error":null,"id":1}"#,
+        r#"{"result":{"confirmations":2,"blockhash":"abababababababababababababababababababababababababababababababab"},"error":null,"id":1}"#,
     )
     .await;
 
@@ -686,12 +825,7 @@ async fn refresh_fails_broadcast_pending_after_grace_and_releases_reservation() 
     // creation) has elapsed — treat like a failed broadcast: `failed` status,
     // reservation released, so the coin isn't held hostage forever.
     let mut server = mockito::Server::new_async().await;
-    let (_info, _tx) = mock_node(
-        &mut server,
-        500,
-        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
-    )
-    .await;
+    let (_info, _tx) = mock_node(&mut server, 500, HSD_TX_NOT_FOUND).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_broadcast_pending_draft(&conn, "drf9");
@@ -726,12 +860,7 @@ async fn refresh_leaves_a_fresh_broadcast_pending_draft_untouched_within_grace()
     // Same "not found" answer, but the draft was updated moments ago — still
     // within the grace window, so it must NOT be judged failed yet.
     let mut server = mockito::Server::new_async().await;
-    let (_info, _tx) = mock_node(
-        &mut server,
-        500,
-        r#"{"result":null,"error":{"message":"TX not found.","code":-5},"id":1}"#,
-    )
-    .await;
+    let (_info, _tx) = mock_node(&mut server, 500, HSD_TX_NOT_FOUND).await;
 
     let conn = seeded_conn(&server.url(), 2_000_000);
     seed_broadcast_pending_draft(&conn, "drf10"); // updated_at = now

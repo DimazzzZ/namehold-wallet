@@ -224,8 +224,21 @@ impl MockNodeRpc {
         self
     }
 
+    /// A node failure that is not hsd's answer (`AppError::Rpc`): a proxy's
+    /// page, a malformed envelope, an envelope without a result.
     pub fn with_send_raw_transaction_rpc_err(mut self, msg: &'static str) -> Self {
         self.send_raw_transaction = Box::new(move || Err(AppError::Rpc(msg.to_string())));
+        self
+    }
+
+    /// hsd's own JSON-RPC error to the broadcast, as `call` returns it.
+    pub fn with_send_raw_transaction_refused(mut self, message: &'static str, code: i64) -> Self {
+        self.send_raw_transaction = Box::new(move || {
+            Err(AppError::NodeRefused {
+                message: message.to_string(),
+                code,
+            })
+        });
         self
     }
 

@@ -19,6 +19,13 @@ pub enum AppError {
     Crypto(String),
     #[error("Node RPC error: {0}")]
     Rpc(String),
+    /// hsd's own JSON-RPC error: the node read the call and refused it (bweb's
+    /// HTTP 200 envelope with a numeric `code`). Made only by
+    /// `NodeRpcClient::call`; every other node failure — a proxy's page, a
+    /// malformed envelope, an error object hsd did not send — is `Rpc`. Its
+    /// words are those `Rpc` carried before, so the UI reads the same text.
+    #[error("Node RPC error: {message} (code {code})")]
+    NodeRefused { message: String, code: i64 },
     #[error("Wallet locked")]
     WalletLocked,
     #[error("Not found: {0}")]

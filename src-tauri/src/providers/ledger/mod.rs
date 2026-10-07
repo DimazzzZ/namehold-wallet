@@ -460,6 +460,8 @@ mod tests {
                 branch: 0,
                 child_index: 0,
                 sighash_type: 1,
+                sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
+                foreign_witness_hex: None,
             }],
             outputs: vec![crate::noncustodial::actions::PlanOutput {
                 value: 99_000_000,

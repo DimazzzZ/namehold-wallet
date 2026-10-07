@@ -13,6 +13,14 @@ pub fn open(path: &Path) -> Result<Connection, rusqlite::Error> {
     Ok(conn)
 }
 
+/// [`open`] plus migrations: the connection a background job (sync step,
+/// daemon, scan) opens for itself, hardened like the app's main one.
+pub fn open_migrated(db_path: &str) -> Result<Connection, crate::error::AppError> {
+    let conn = open(Path::new(db_path))?;
+    crate::db::migrations::run(&conn)?;
+    Ok(conn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

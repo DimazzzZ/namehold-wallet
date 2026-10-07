@@ -181,10 +181,14 @@ pub fn network_check(expected: Option<&str>, reported: Option<&str>) -> Option<b
     }
 }
 
-/// Nominal blocks per day at Handshake's ~10-minute block target (hsd
-/// `networks.js` `pow.targetSpacing` = 600s). Used to convert block distances
-/// into human days; exact only in expectation.
-pub const BLOCKS_PER_DAY: f64 = 144.0;
+/// Handshake's block target on every network (hsd `networks.js`
+/// `pow.targetSpacing` = 600s). Exact only in expectation, and only where
+/// blocks are mined on a schedule (see `has_wall_clock_block_timing`).
+pub const TARGET_SPACING_SECS: u64 = 600;
+
+/// Nominal blocks per day at [`TARGET_SPACING_SECS`]. Used to convert block
+/// distances into human days; exact only in expectation.
+pub const BLOCKS_PER_DAY: f64 = (24 * 60 * 60 / TARGET_SPACING_SECS) as f64;
 
 /// Fraction of a name's renewal window at which "expiring soon" starts. Chosen
 /// so mainnet keeps its established 30-day warning: mainnet's window is 105,120
@@ -208,6 +212,32 @@ pub struct NameParams {
     pub revocation_delay: u32,
     /// hsd `renewalMaturity`. `getRenewalBlock` uses `height - 2*renewal_maturity`.
     pub renewal_maturity: u32,
+    /// hsd `claimPeriod`: height before which claimed names do not expire.
+    pub claim_period: u32,
+}
+
+impl NameParams {
+    /// Blocks until a FINALIZE of a TRANSFER mined at `transfer_height` is
+    /// accepted, 0 once it is. hsd refuses one while `height < transfer +
+    /// transfer_lockup` (`bad-finalize-maturity`), and a transaction built now
+    /// is judged at the next block's height, `tip + 1`.
+    pub fn blocks_until_finalize(self, transfer_height: i64, tip: i64) -> i64 {
+        (transfer_height + i64::from(self.transfer_lockup) - (tip + 1)).max(0)
+    }
+
+    /// The height at which a name last renewed at `renewal` expires: the end
+    /// of its renewal window, or for a `claimed` (reserved) name not before
+    /// the claim period is over. hsd `NameState.isExpired`: "Claimed names can
+    /// only expire once the claim period is over" (`isClaimable`; no network
+    /// sets `noReserved`), then "if we haven't been renewed in two years".
+    pub fn expiry_end(self, renewal: i64, claimed: bool) -> i64 {
+        let end = renewal + i64::from(self.renewal_window);
+        if claimed {
+            end.max(i64::from(self.claim_period))
+        } else {
+            end
+        }
+    }
 }
 
 impl Network {
@@ -222,6 +252,7 @@ impl Network {
                 transfer_lockup: 288,
                 revocation_delay: 2016,
                 renewal_maturity: 4320,
+                claim_period: 210_240,
             },
             Network::Testnet => NameParams {
                 tree_interval: 36,
@@ -231,6 +262,7 @@ impl Network {
                 transfer_lockup: 288,
                 revocation_delay: 576,
                 renewal_maturity: 144,
+                claim_period: 12_960,
             },
             Network::Regtest => NameParams {
                 tree_interval: 5,
@@ -240,6 +272,7 @@ impl Network {
                 transfer_lockup: 10,
                 revocation_delay: 50,
                 renewal_maturity: 50,
+                claim_period: 250_000,
             },
             Network::Simnet => NameParams {
                 tree_interval: 2,
@@ -249,6 +282,7 @@ impl Network {
                 transfer_lockup: 5,
                 revocation_delay: 25,
                 renewal_maturity: 25,
+                claim_period: 75_000,
             },
         }
     }

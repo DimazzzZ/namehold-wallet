@@ -1287,6 +1287,53 @@ async fn capabilities_node_down_near_expiry_yields_expiring_soon() {
     );
 }
 
+/// The same name one day past its renewal window, but claimed (a reserved
+/// name): hsd does not expire it before the claim period is over (regtest
+/// `claimPeriod` = 250 000), so at height 90 000 the modal raises no expiry
+/// alarm. The claim comes from the cached `getnameinfo` in `raw_json`, as on
+/// the Renewals screen.
+#[tokio::test]
+async fn capabilities_node_down_claimed_name_is_not_expiring_before_the_claim_period() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_unreachable_node(&conn);
+        let owner_addr: String = conn
+            .query_row(
+                "SELECT address FROM derived_addresses WHERE wallet_profile_id = ?1 LIMIT 1",
+                rusqlite::params![&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        db::queries::update_profile_sync(&conn, &id, 90_000).unwrap();
+        let renewal_height: i64 = 90_000 - 5_000 + 144;
+        conn.execute(
+            "INSERT INTO tracked_name_states
+                (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout,
+                 owner_address, height, renewal_height, raw_json)
+             VALUES (?1, 'claimedname', 'aabb', 'CLOSED', ?2, 0, ?3, 100, ?4, ?5)",
+            rusqlite::params![
+                &id,
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                &owner_addr,
+                renewal_height,
+                r#"{"info":{"name":"claimedname","state":"CLOSED","claimed":1}}"#,
+            ],
+        )
+        .unwrap();
+        id
+    };
+    let app = mock_app_with(state);
+    let caps =
+        names::get_name_action_capabilities(app.state(), "claimedname".into(), Some(profile_id))
+            .await
+            .expect("capabilities should resolve via local evidence");
+
+    assert!(caps.owns_name);
+    assert_ne!(caps.task_state, names::AuctionTaskState::ExpiringSoon);
+}
+
 #[tokio::test]
 async fn capabilities_node_down_no_tracked_row_falls_back_conservative() {
     let state = create_full_test_state();

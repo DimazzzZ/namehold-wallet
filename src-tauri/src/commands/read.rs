@@ -1650,8 +1650,9 @@ pub struct RenewalRow {
     pub state: Option<String>,
     /// Chain renewal height (`tracked_name_states.renewal_height`), when known.
     pub renewal_height: Option<i64>,
-    /// `renewal_height + renewal_window` for chain rows; the CSV column for
-    /// csv-import rows.
+    /// `NameParams::expiry_end` of the renewal height for chain rows (the
+    /// renewal window's end, or the claim period's for a claimed name); the
+    /// CSV column for csv-import rows.
     pub expires_at_height: Option<i64>,
     pub blocks_until_expire: Option<i64>,
     pub days_until_expire: Option<f64>,
@@ -1726,7 +1727,6 @@ pub(crate) fn compute_renewals(
     // Scaled to this network's renewal window, so the warning means the same
     // share of the lease everywhere instead of covering the whole of a short one.
     let threshold = network.expiring_soon_threshold_days();
-    let renewal_window = network.name_params().renewal_window as i64;
 
     let (current_height, height_source) = match live_node_height {
         Some(h) => (Some(h), "node"),
@@ -1809,9 +1809,13 @@ pub(crate) fn compute_renewals(
 
         match renewal_height {
             Some(renewal) => {
-                // Chain data: expiry = renewal height + network renewal window.
+                // Chain data: hsd's expiry rule (`NameParams::expiry_end`). A
+                // row whose cache does not say whether the name was claimed
+                // gets the renewal window alone: the earlier of the two
+                // possible ends, so a renewal is never shown as later than it is.
                 csv.remove(&key);
-                let expires_at = renewal + renewal_window;
+                let claimed = v.get("claimed").and_then(|c| c.as_bool()).unwrap_or(false);
+                let expires_at = network.name_params().expiry_end(renewal, claimed);
                 let blocks = current_height.map(|h| expires_at - h);
                 let days = blocks.map(|b| b as f64 / BLOCKS_PER_DAY);
                 names.push(RenewalRow {

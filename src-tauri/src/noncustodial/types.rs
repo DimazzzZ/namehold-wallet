@@ -61,6 +61,15 @@ impl SignerSessionSummary {
     }
 }
 
+/// Format doos as an HNS decimal string (6 dp) for human display, exactly:
+/// any `i64` or `u64` amount, no floating point.
+pub fn doos_to_hns_string(doos: impl Into<i128>) -> String {
+    let doos: i128 = doos.into();
+    let sign = if doos < 0 { "-" } else { "" };
+    let abs = doos.unsigned_abs();
+    format!("{sign}{}.{:06} HNS", abs / 1_000_000, abs % 1_000_000)
+}
+
 /// Human-readable, confirm-before-broadcast summary of a transaction draft.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
