@@ -8,6 +8,7 @@ import { WalletView } from "./components/WalletView";
 import { AuctionsView } from "./components/AuctionsView";
 import { ActivityView } from "./components/ActivityView";
 import { Watchlist } from "./components/Watchlist";
+import MarketPage from "./components/market/MarketPage";
 import { Settings } from "./components/Settings";
 import { Onboarding } from "./components/Onboarding";
 import { useSettingsStore } from "./stores/settings";
@@ -53,6 +54,7 @@ function AppRoutes() {
         <Route path="/activity" element={<ActivityView />} />
         <Route path="/auctions" element={<AuctionsView />} />
         <Route path="/watchlist" element={<Watchlist />} />
+        <Route path="/market" element={<MarketPage />} />
         <Route path="/migration" element={<MigrationWorkspace />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/about" element={<AboutPage />} />

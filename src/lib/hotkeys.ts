@@ -12,7 +12,7 @@ export type HotkeyCategory = "nav" | "modal" | "action" | "palette" | "list";
  * Route strings must match the `to` values in PRIMARY_ROUTES.
  */
 export type RouteScope =
-  "/" | "/activity" | "/auctions" | "/watchlist" | "/migration" | "/settings" | "*";
+  "/" | "/activity" | "/auctions" | "/watchlist" | "/market" | "/migration" | "/settings" | "*";
 
 export interface HotkeyBinding {
   keys: string; // react-hotkeys-hook format, e.g. "1", "shift+?"
@@ -39,6 +39,7 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
   { keys: "4", label: "4", description: "Go to Watchlist", category: "nav", scope: "*" },
   { keys: "5", label: "5", description: "Go to Move from Namebase", category: "nav", scope: "*" },
   { keys: "6", label: "6", description: "Go to Settings", category: "nav", scope: "*" },
+  { keys: "7", label: "7", description: "Go to Market", category: "nav", scope: "*" },
 
   // --- Dialogs (global) ---
   {

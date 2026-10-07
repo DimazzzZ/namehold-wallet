@@ -345,6 +345,38 @@ function auctionPositionNames(): string[] {
   a.revealStatus = "none";
 })();
 
+function demoListing(
+  name: string,
+  kind: "buyNow" | "reverseAuction",
+  currentPrice: number,
+  nextPrice: number | null,
+  nextValidInSecs: number | null,
+  floorPrice: number,
+) {
+  return {
+    listingJson: "{}",
+    name,
+    verdict: {
+      verdict: "buyable",
+      currentStep: 0,
+      nextStep: nextPrice === null ? null : 1,
+      lockValue: currentPrice,
+      nameHeight: 100,
+      expiryEnd: 100_000,
+      warnExpiry: false,
+      mtp: 0,
+      tip: 0,
+    },
+    kind,
+    currentPrice,
+    nextPrice,
+    nextValidInSecs,
+    floorPrice,
+    steps: [],
+    expiresAt: null,
+  };
+}
+
 const handlers: Record<string, Handler> = {
   // ── Settings ──────────────────────────────────────────────────────────
   // Built from the typed defaults rather than hand-listed: this map used to
@@ -1033,6 +1065,31 @@ const handlers: Record<string, Handler> = {
     confirmationHeight: null,
     createdAt: new Date().toISOString(),
   }),
+
+  // ── Shakedex market ───────────────────────────────────────────────────
+  shakedex_list_market: () => ({
+    rows: [
+      demoListing("dexreviews", "buyNow", 250_000_000, null, null, 250_000_000),
+      demoListing("coffeeshop", "reverseAuction", 900_000_000, 800_000_000, 21_600, 600_000_000),
+    ],
+    hidden: {
+      soldOrCancelled: 28,
+      failedVerification: 4,
+      expiresBeforeFinalize: 0,
+      notYetValid: 0,
+      couldNotCheck: 0,
+    },
+    verified: true,
+    networkHasMarket: true,
+    hiddenRows: [
+      { name: "oldname", reason: { kind: "soldOrCancelled" } },
+      { name: "badname", reason: { kind: "failedVerification", reason: "signature mismatch" } },
+    ],
+    page: 1,
+    pageCount: 1,
+  }),
+  shakedex_import_listing: () =>
+    demoListing("imported", "buyNow", 100_000_000, null, null, 100_000_000),
 
   // ── Watchlist ─────────────────────────────────────────────────────────
   add_to_watchlist: () => null,

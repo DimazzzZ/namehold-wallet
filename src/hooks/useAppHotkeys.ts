@@ -45,7 +45,7 @@ const ACTION_KEY_MAP: Array<{ keys: string; entries: ScopedAction[] }> = (() => 
 /**
  * Registers global keyboard shortcuts for the app. Mount once in Layout.
  *
- * - 1..6: navigate to the nth primary route.
+ * - 1..7: navigate to the nth primary route.
  * - ?: open the keyboard-shortcuts cheatsheet.
  * - Esc: close the cheatsheet (Dialog handles its own Esc independently).
  * - ⌘K / Ctrl+K: open the command palette.
@@ -76,6 +76,7 @@ export function useAppHotkeys({ setCheatsheetOpen, setPaletteOpen }: UseAppHotke
   useHotkeys("4", () => goto(3), { preventDefault: true });
   useHotkeys("5", () => goto(4), { preventDefault: true });
   useHotkeys("6", () => goto(5), { preventDefault: true });
+  useHotkeys("7", () => goto(6), { preventDefault: true });
 
   // Cheatsheet: Shift+? key. The definition MUST include `shift+` because the
   // browser emits `shiftKey: true` when the user types "?" (Shift+/ on US

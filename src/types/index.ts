@@ -533,7 +533,7 @@ export interface WalletReadModel {
 // ---------------------------------------------------------------------------
 
 export type AppRouteKey =
-  "migration" | "wallet" | "auctions" | "activity" | "settings" | "watchlist";
+  "migration" | "wallet" | "auctions" | "activity" | "settings" | "watchlist" | "market";
 
 export type MigrationSectionKey = "namebase" | "sync";
 
@@ -775,3 +775,82 @@ export interface BruteForcedBidCommitment extends RecoveredBidCommitment {
   /** "round" (Tier-1) or "sweep" (Tier-2 full scan). */
   tier: string;
 }
+
+// --- Shakedex (mirrors `commands/shakedex.rs` and `noncustodial/shakedex/verify.rs`) ---
+
+/** Why a listing is not buyable (`Hidden`, tagged by `kind`). */
+export type ShakedexHidden =
+  | { kind: "soldOrCancelled" }
+  | { kind: "failedVerification"; reason: string }
+  | { kind: "expiresBeforeFinalize" }
+  | { kind: "notYetValid"; firstValidInSecs: number }
+  | { kind: "couldNotCheck"; reason: string }
+  | { kind: "unverified" };
+
+/** A buyable listing's verification result (`Buyable`). */
+export interface ShakedexBuyable {
+  currentStep: number;
+  nextStep: number | null;
+  lockValue: number;
+  nameHeight: number;
+  expiryEnd: number;
+  warnExpiry: boolean;
+  mtp: number;
+  tip: number;
+}
+
+/** `Verdict`, tagged by `verdict`; the payload is flattened into the object. */
+export type ShakedexVerdict =
+  ({ verdict: "buyable" } & ShakedexBuyable) | ({ verdict: "hidden" } & ShakedexHidden);
+
+export interface PriceStepView {
+  price: number;
+  lockTime: number;
+  /** Seconds of the node's MTP until the step is valid (0: now), by the backend's R3 rule; null when the row is not buyable. */
+  validInSecs: number | null;
+}
+
+export interface MarketRow {
+  listingJson: string;
+  name: string;
+  verdict: ShakedexVerdict;
+  kind: "buyNow" | "reverseAuction";
+  currentPrice: number | null;
+  nextPrice: number | null;
+  nextValidInSecs: number | null;
+  floorPrice: number;
+  steps: PriceStepView[];
+  expiresAt: number | null;
+}
+
+export interface HiddenCounts {
+  soldOrCancelled: number;
+  failedVerification: number;
+  expiresBeforeFinalize: number;
+  notYetValid: number;
+  couldNotCheck: number;
+}
+
+export interface HiddenRow {
+  /** The listing's name; null when the row carries none. */
+  name: string | null;
+  reason: ShakedexHidden;
+}
+
+export interface MarketPage {
+  rows: MarketRow[];
+  hidden: HiddenCounts;
+  /** False in SPV and Explorer modes, where listings cannot be checked. */
+  verified: boolean;
+  /** LearnHNS Market exists on mainnet only. */
+  networkHasMarket: boolean;
+  /** Every hidden listing with its reason, behind the counter. */
+  hiddenRows: HiddenRow[];
+  /** This page's number, from 1. `rows` and `hidden` count this page only. */
+  page: number;
+  /** How many pages the market has, at least 1. */
+  pageCount: number;
+}
+
+export type ImportSource =
+  { kind: "file"; path: string } | { kind: "text"; json: string } | { kind: "link"; url: string };

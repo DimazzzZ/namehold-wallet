@@ -68,6 +68,11 @@ jobs:
       #     which kills the WebView and makes tauri-driver's session handshake
       #     fail with "connection closed" / UND_ERR_SOCKET. dbus-x11 provides a
       #     session bus so the a11y/dbus lookups don't wedge either.
+      #   - libgl1-mesa-dri: Mesa's software drivers. WebKitGTK opens a default
+      #     EGL display at start; without a driver behind it (some runner images
+      #     ship none) the app aborts with "Could not create default EGL
+      #     display: EGL_BAD_PARAMETER" and every WebDriver session dies with
+      #     "invalid session id".
       - name: Install Tauri system dependencies
         uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
         with:
@@ -85,6 +90,7 @@ jobs:
             xvfb
             gsettings-desktop-schemas
             dbus-x11
+            libgl1-mesa-dri
           version: "3"
 
       # awalsh128/cache-apt-pkgs-action restores packages by extracting cached
@@ -102,6 +108,11 @@ jobs:
           gsettings list-schemas | grep -q '^org.gnome.system.proxy$' \
             && echo "org.gnome.system.proxy present" \
             || (echo "::error::org.gnome.system.proxy still missing after compile" && exit 1)
+
+      # The same missing trigger leaves the libraries restored from the cache
+      # (Mesa's among them) out of the loader cache. Rebuild it.
+      - name: Refresh the shared library cache
+        run: sudo ldconfig
 
       - uses: dtolnay/rust-toolchain@stable
 
