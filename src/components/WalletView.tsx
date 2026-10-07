@@ -138,6 +138,24 @@ export function WalletView() {
   const deleteDraft = useDeleteTxDraft();
   // Purchase id of the Finalize in flight, to disable that row's button.
   const [finalizingId, setFinalizingId] = useState<string | null>(null);
+  // Purchases whose finalize may already be on the chain. Owned Names keeps
+  // them ready to finalize until the purchase job sees it mined, and the
+  // backend refuses a second finalize meanwhile.
+  const finalizeSent = useMemo(
+    () =>
+      new Set(
+        drafts
+          .filter(
+            (d) =>
+              d.action === "shakedex_purchase_finalize" &&
+              (d.status === "broadcasted" ||
+                d.status === "confirmed" ||
+                d.status === "broadcast_pending"),
+          )
+          .map((d) => d.summary?.purchaseId),
+      ),
+    [drafts],
+  );
 
   const startSync = useStartFullSync();
   const startHsd = useStartHsd();
@@ -203,7 +221,7 @@ export function WalletView() {
   const canWrite = writeCap?.canWrite ?? false;
   const isWatchOnly = profile?.watchOnly ?? false;
   const canFinalizePurchase = canUseShakedex(profile?.kind, writeCap);
-  const purchaseRefusal = shakedexRefusal(profile?.kind, writeCap);
+  const finalizeRefusal = shakedexRefusal(profile?.kind, writeCap);
   const address = profile?.receiveAddress ?? null;
   // Spending uses node-synced coins (tracked_utxos), NOT the explorer balance.
   // If the explorer shows funds but nothing is synced yet, the user must connect
@@ -1299,7 +1317,10 @@ export function WalletView() {
                             // A purchase in flight comes first: it is not
                             // ours yet, so there are no capabilities for it.
                             if (n.shakedex) {
-                              const s = shakedexStatusLabel(n.shakedex);
+                              const s = shakedexStatusLabel(
+                                n.shakedex,
+                                finalizeSent.has(n.shakedex.purchaseId),
+                              );
                               return <Badge variant={s.variant}>{s.label}</Badge>;
                             }
                             const task = taskSummaryFromCapabilities(capsByName.get(n.name));
@@ -1363,8 +1384,9 @@ export function WalletView() {
                           {!isWatchOnly &&
                             (n.shakedex ? (
                               n.shakedex.state === "awaitingFinalize" &&
-                              n.shakedex.blocksRemaining === 0 && (
-                                <Tooltip content={purchaseRefusal}>
+                              n.shakedex.blocksRemaining === 0 &&
+                              !finalizeSent.has(n.shakedex.purchaseId) && (
+                                <Tooltip content={finalizeRefusal}>
                                   <Button
                                     size="sm"
                                     variant="primary"

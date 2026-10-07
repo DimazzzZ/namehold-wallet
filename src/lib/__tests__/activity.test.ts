@@ -40,6 +40,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: "aabbccdd",
         confirmationHeight: 100,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 12:00:00",
       },
     ];
@@ -109,6 +110,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: null,
         confirmationHeight: null,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 13:00:00",
       },
     ];
@@ -131,6 +133,7 @@ describe("mergeActivity", () => {
         "someone else bought the name first, or the seller cancelled the listing — nothing was paid",
       txid: null,
       confirmationHeight: null,
+      purchaseLostReason: null,
       createdAt: "2026-07-24 14:00:00",
     };
     const note = (over: Partial<TxDraftSummary>) =>
@@ -164,6 +167,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: "dropped-tx",
         confirmationHeight: null,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 14:00:00",
       },
     ];
@@ -195,6 +199,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: "update-tx",
         confirmationHeight: 150,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 15:00:00",
       },
     ];
@@ -264,6 +269,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: "update-tx",
         confirmationHeight: 150,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 15:00:00",
       },
     ];
@@ -331,6 +337,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: null,
         confirmationHeight: null,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 12:30:00", // middle timestamp
       },
     ];
@@ -362,6 +369,7 @@ describe("mergeActivity", () => {
         errorMessage: null,
         txid: "send-tx",
         confirmationHeight: null,
+        purchaseLostReason: null,
         createdAt: "2026-07-24 12:00:00",
       },
     ];

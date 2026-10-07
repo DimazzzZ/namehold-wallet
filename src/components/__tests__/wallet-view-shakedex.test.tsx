@@ -26,13 +26,60 @@ import { useUiStore } from "../../stores/ui";
 import { makeProfile, makeSession } from "../../test/fixtures/wallet";
 import type { ShakedexNameState, WalletProfileSummary } from "../../types";
 
-const DNS_HINT = "This name still carries the seller's DNS records. Update them.";
+// `DNS_RECORDS_HINT` in commands/shakedex.rs.
+const DNS_HINT = "The name still carries the seller's DNS records: update them once it is yours.";
 
+// The row `read_shakedex_purchase_names` sends: no chain state of its own yet.
 function purchaseRow(shakedex: ShakedexNameState) {
-  return { name: "dexreviews", state: "CLOSED", height: 100, renewal: 200, stats: null, shakedex };
+  return {
+    name: "dexreviews",
+    state: null,
+    height: null,
+    renewal: null,
+    owner: null,
+    owner_address: "rs1qdest",
+    registered: true,
+    expired: null,
+    stats: null,
+    shakedex,
+  };
 }
 
-function route(names: unknown[], profile: WalletProfileSummary = makeProfile(), canSend = true) {
+function finalizeDraft(id: string, status: string, purchaseId: string) {
+  return {
+    id,
+    walletProfileId: "profile1",
+    action: "shakedex_purchase_finalize",
+    status,
+    summary: {
+      action: "shakedex_purchase_finalize",
+      name: "dexreviews",
+      purchaseId,
+      sendTotalDoos: 0,
+      feeDoos: 1000,
+      totalDoos: 1000,
+      changeDoos: 0,
+      inputTotalDoos: 1000,
+      numInputs: 1,
+      recipientAddress: "rs1qdest",
+      destinationAddress: "rs1qdest",
+      txid: null,
+      warnings: [DNS_HINT],
+    },
+    errorMessage: null,
+    txid: null,
+    confirmationHeight: null,
+    createdAt: "2026-01-01",
+    purchaseLostReason: null,
+  };
+}
+
+function route(
+  names: unknown[],
+  profile: WalletProfileSummary = makeProfile(),
+  canSend = true,
+  drafts: unknown[] = [],
+) {
   const session = makeSession({ unlocked: true, unlockedUntilEpochMs: Date.now() + 60000 });
   return (cmd: string) => {
     switch (cmd) {
@@ -66,29 +113,13 @@ function route(names: unknown[], profile: WalletProfileSummary = makeProfile(), 
       case "read_names":
         return Promise.resolve(names);
       case "list_tx_drafts":
+        return Promise.resolve(drafts);
       case "read_action_history":
         return Promise.resolve([]);
       case "shakedex_build_purchase_finalize_draft":
         return Promise.resolve({
-          id: "fd1",
+          ...finalizeDraft("fd1", "draft", "p1"),
           walletProfileId: profile.id,
-          action: "purchase_finalize",
-          status: "draft",
-          summary: {
-            action: "purchase_finalize",
-            sendTotalDoos: 0,
-            feeDoos: 1000,
-            changeDoos: 0,
-            inputTotalDoos: 1000,
-            numInputs: 1,
-            recipientAddress: null,
-            txid: null,
-            warnings: [DNS_HINT],
-          },
-          errorMessage: null,
-          txid: null,
-          confirmationHeight: null,
-          createdAt: "2026-01-01",
         });
       case "sign_tx_draft":
         return Promise.resolve({});
@@ -259,4 +290,73 @@ describe("WalletView purchases", () => {
     act(() => dispatchAction("wallet:list:open"));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
+
+  it("one block before the lockup ends there is no Finalize yet", async () => {
+    invokeMock.mockImplementation(
+      route([purchaseRow({ state: "awaitingFinalize", blocksRemaining: 1, purchaseId: "p1" })]),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+    expect(await screen.findByText("Awaiting finalize · 1 block")).toBeInTheDocument();
+    expect(screen.queryByTestId("owned-name-finalize")).toBeNull();
+  });
+
+  it("while a Finalize runs, a second click builds nothing", async () => {
+    let finish: (v: unknown) => void = () => {};
+    const base = route([
+      purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" }),
+    ]);
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "shakedex_build_purchase_finalize_draft"
+        ? new Promise((resolve) => (finish = resolve))
+        : base(cmd),
+    );
+    render(<WalletView />, { wrapper: wrapper() });
+    const button = await screen.findByTestId("owned-name-finalize");
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toBeDisabled());
+    fireEvent.click(button);
+    const builds = () =>
+      invokeMock.mock.calls.filter((c) => c[0] === "shakedex_build_purchase_finalize_draft");
+    expect(builds()).toHaveLength(1);
+    finish(finalizeDraft("fd1", "draft", "p1"));
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some((c) => c[0] === "broadcast_tx_draft")).toBe(true),
+    );
+  });
+
+  it.each(["broadcast_pending", "broadcasted", "confirmed"])(
+    "a finalize already %s is waiting for a block, with no second Finalize",
+    async (status) => {
+      invokeMock.mockImplementation(
+        route(
+          [purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" })],
+          makeProfile(),
+          true,
+          [finalizeDraft("fd0", status, "p1")],
+        ),
+      );
+      render(<WalletView />, { wrapper: wrapper() });
+      expect(await screen.findByText("Finalize · waiting for a block")).toBeInTheDocument();
+      expect(screen.queryByText("Ready to finalize")).toBeNull();
+      expect(screen.queryByTestId("owned-name-finalize")).toBeNull();
+    },
+  );
+
+  it.each(["draft", "signed", "dropped", "failed"])(
+    "a finalize %s leaves the purchase ready to finalize",
+    async (status) => {
+      invokeMock.mockImplementation(
+        route(
+          [purchaseRow({ state: "awaitingFinalize", blocksRemaining: 0, purchaseId: "p1" })],
+          makeProfile(),
+          true,
+          [finalizeDraft("fd0", status, "p1"), finalizeDraft("fd9", "broadcasted", "other")],
+        ),
+      );
+      render(<WalletView />, { wrapper: wrapper() });
+      expect(await screen.findByText("Ready to finalize")).toBeInTheDocument();
+      expect(screen.getByTestId("owned-name-finalize")).toBeInTheDocument();
+    },
+  );
 });

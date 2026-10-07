@@ -972,6 +972,7 @@ describe("WalletView — Recent transactions shows the name (Task 2)", () => {
             errorMessage: null,
             txid: "abc123txid",
             confirmationHeight: null,
+            purchaseLostReason: null,
             createdAt: "2026-01-01",
           },
         ],
@@ -1019,6 +1020,7 @@ describe("WalletView — Recent transactions shows the name (Task 2)", () => {
             errorMessage: null,
             txid: "def456txid",
             confirmationHeight: 500,
+            purchaseLostReason: null,
             createdAt: "2026-01-01",
           },
         ],
@@ -1264,6 +1266,7 @@ describe("WalletView — canonical table design", () => {
         errorMessage: null,
         txid: "abc123txid",
         confirmationHeight: 500,
+        purchaseLostReason: null,
         createdAt: "2026-07-22",
       },
     ];
@@ -1346,6 +1349,7 @@ describe("WalletView — Recent transactions amount tone", () => {
         errorMessage: null,
         txid: "abc123txid",
         confirmationHeight: 500,
+        purchaseLostReason: null,
         createdAt: "2026-07-22",
       },
     ];

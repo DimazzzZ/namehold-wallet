@@ -117,8 +117,14 @@ export function PurchaseConfirm({ open, row, fromMarket, onClose }: PurchaseConf
     }
   };
 
+  // Closing mid-purchase would hide the outcome: the flow runs on and its
+  // error would land on an unmounted dialog.
+  const close = () => {
+    if (!busy) onClose();
+  };
+
   return (
-    <Dialog open={open} onClose={onClose} title={`Buy .${displayName(row.name)}`}>
+    <Dialog open={open} onClose={close} title={`Buy .${displayName(row.name)}`}>
       <div className="space-y-4">
         {preview.isError && (
           <Alert tone="error" title="Could not price this purchase">

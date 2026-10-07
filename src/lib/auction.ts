@@ -520,16 +520,22 @@ export function pendingBroadcastBadge(action: string | null | undefined): string
 /**
  * The Owned Names badge for a name bought through Shakedex that has not yet
  * reached us: "Unconfirmed purchase", then the transfer lockup countdown, then
- * "Ready to finalize" once it is over.
+ * "Ready to finalize" once it is over, and "Finalize · waiting for a block"
+ * once its finalize is sent (`finalizeSent`).
  */
-export function shakedexStatusLabel(s: NonNullable<HsdName["shakedex"]>): {
+export function shakedexStatusLabel(
+  s: NonNullable<HsdName["shakedex"]>,
+  finalizeSent = false,
+): {
   label: string;
   variant: "default" | "info" | "success";
 } {
   if (s.state === "unconfirmed") return { label: "Unconfirmed purchase", variant: "default" };
+  if (finalizeSent) return { label: pendingBroadcastBadge("finalize")!, variant: "info" };
   if (s.blocksRemaining === null) return { label: "Awaiting finalize", variant: "info" };
   if (s.blocksRemaining > 0) {
-    return { label: `Awaiting finalize · ${s.blocksRemaining} blocks`, variant: "info" };
+    const blocks = s.blocksRemaining === 1 ? "block" : "blocks";
+    return { label: `Awaiting finalize · ${s.blocksRemaining} ${blocks}`, variant: "info" };
   }
   return { label: "Ready to finalize", variant: "success" };
 }

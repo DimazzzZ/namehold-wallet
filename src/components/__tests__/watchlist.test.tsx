@@ -108,6 +108,34 @@ describe("Watchlist", () => {
     expect(await screen.findByText("Owned")).toBeInTheDocument();
   });
 
+  it("a name still being bought through Shakedex is not 'Owned'", async () => {
+    invokeMock.mockImplementation(
+      route({
+        // The row `read_shakedex_purchase_names` adds to `read_names`.
+        read_names: [
+          {
+            name: "example",
+            state: null,
+            height: null,
+            renewal: null,
+            owner: null,
+            owner_address: "hs1qdest",
+            registered: true,
+            expired: null,
+            stats: null,
+            shakedex: { state: "awaitingFinalize", blocksRemaining: 3, purchaseId: "p1" },
+          },
+        ],
+      }),
+    );
+    render(<Watchlist />, { wrapper: wrapper() });
+    await screen.findByText(/\.example/);
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.some((c) => c[0] === "read_names")).toBe(true),
+    );
+    expect(screen.queryByText("Owned")).toBeNull();
+  });
+
   it("add button adds a name", async () => {
     invokeMock.mockImplementation(route({ add_to_watchlist: null }));
     render(<Watchlist />, { wrapper: wrapper() });

@@ -47,6 +47,7 @@ const baseBroadcasted = {
   errorMessage: null,
   txid: "tx1",
   confirmationHeight: null,
+  purchaseLostReason: null,
   createdAt: "2025-01-01",
 };
 const baseConfirmed = { ...baseBroadcasted, status: "confirmed" as const, confirmationHeight: 100 };

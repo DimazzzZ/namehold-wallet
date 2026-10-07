@@ -43,6 +43,10 @@ export const ACTION_META: Record<
   finalize: { label: "Finalize", variant: "success" },
   revoke: { label: "Revoke", variant: "error" },
   claim: { label: "Claim", variant: "success" },
+  // Shakedex: draft actions only, until the chain row of the same tx replaces
+  // them (PURCHASE_ACTION / PURCHASE_FINALIZE_ACTION in shakedex/purchase.rs).
+  shakedex_purchase: { label: "Buy", variant: "warning" },
+  shakedex_purchase_finalize: { label: "Finalize purchase", variant: "success" },
   other: { label: "Other", variant: "default" },
 };
 
@@ -585,6 +589,13 @@ export function ActivityRow({
         <Badge variant={badgeVariant} title={badgeHint}>
           {badgeLabel}
         </Badge>
+        {/* Losing a purchase is the one outcome the user must read without
+            hovering: whether anything was paid is in the reason. */}
+        {row.lostReason && (
+          <div className="text-xs text-red-700 mt-0.5" data-testid="activity-lost-reason">
+            {row.lostReason}
+          </div>
+        )}
       </td>
       <td className="py-1 pr-4 text-xs text-gray-500 font-mono">
         {row.height == null ? (

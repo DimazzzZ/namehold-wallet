@@ -67,6 +67,7 @@ interface Opts {
   canSend?: boolean;
   preview?: Record<string, unknown>;
   build?: () => Promise<unknown>;
+  sign?: () => Promise<unknown>;
   broadcast?: () => Promise<unknown>;
   failPreviewAfterBuild?: boolean;
 }
@@ -98,7 +99,7 @@ function setup(o: Opts = {}) {
       case "shakedex_build_purchase_draft":
         return o.build ? o.build() : Promise.resolve({ id: "draft-1" });
       case "sign_tx_draft":
-        return Promise.resolve({ id: "draft-1" });
+        return o.sign ? o.sign() : Promise.resolve({ id: "draft-1" });
       case "broadcast_tx_draft":
         return o.broadcast ? o.broadcast() : Promise.resolve({ txid: "abc" });
       default:
@@ -388,5 +389,56 @@ describe("PurchaseConfirm", () => {
     fireEvent.click(screen.getByTestId("purchase-buy"));
     expect(await screen.findByText(/bad-txns/)).toBeInTheDocument();
     expect(calls("delete_tx_draft")).toHaveLength(0);
+  });
+
+  it("cancelling the secure window discards the prepared purchase", async () => {
+    setup({ sign: () => Promise.reject("cancelled by user") });
+    const onClose = renderIt();
+    const box = await screen.findByTestId("purchase-market-fee-pay");
+    await waitFor(() => expect(box).toBeChecked());
+    await waitFor(() => expect(screen.getByTestId("purchase-buy")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("purchase-buy"));
+    expect(await screen.findByText(/cancelled by user/)).toBeInTheDocument();
+    await waitFor(() => expect(calls("delete_tx_draft")).toHaveLength(1));
+    expect(calls("delete_tx_draft")[0]![1]).toEqual({ draftId: "draft-1" });
+    expect(calls("broadcast_tx_draft")).toHaveLength(0);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("while a purchase runs, a second click builds nothing and the dialog stays open", async () => {
+    let finish: (v: unknown) => void = () => {};
+    setup({ build: () => new Promise((resolve) => (finish = resolve)) });
+    const onClose = renderIt();
+    const box = await screen.findByTestId("purchase-market-fee-pay");
+    await waitFor(() => expect(box).toBeChecked());
+    await waitFor(() => expect(screen.getByTestId("purchase-buy")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("purchase-buy"));
+    await waitFor(() => expect(screen.getByTestId("purchase-buy")).toBeDisabled());
+    fireEvent.click(screen.getByTestId("purchase-buy"));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(calls("shakedex_build_purchase_draft")).toHaveLength(1);
+    expect(onClose).not.toHaveBeenCalled();
+    finish({ id: "draft-1" });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it("Buy waits for the preview the fee box asked for", async () => {
+    setup();
+    const base = invokeMock.getMockImplementation()!;
+    // The preview without the market fee never answers: the rows on screen
+    // are the old ones, kept while the new figures load.
+    invokeMock.mockImplementation((cmd: string, args?: { payMarketFee?: boolean }) =>
+      cmd === "shakedex_preview_purchase" && args?.payMarketFee === false
+        ? new Promise(() => {})
+        : base(cmd, args),
+    );
+    renderIt();
+    const box = await screen.findByTestId("purchase-market-fee-pay");
+    await waitFor(() => expect(box).toBeChecked());
+    await waitFor(() => expect(screen.getByTestId("purchase-buy")).toBeEnabled());
+    fireEvent.click(box);
+    await waitFor(() => expect(box).not.toBeChecked());
+    expect(screen.getByTestId("purchase-market-fee")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("purchase-buy")).toBeDisabled());
   });
 });

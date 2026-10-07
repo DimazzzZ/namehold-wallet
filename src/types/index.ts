@@ -470,6 +470,9 @@ export interface TxSummary {
    *  case is a composite display label like "alpha + 1 more" that the UI
    *  MUST NOT treat as a real name — see `MergedRow.nameList`. */
   nameList?: string[] | null;
+  /** The Shakedex purchase a purchase finalize draft finalizes; absent on
+   *  every other draft. */
+  purchaseId?: string;
 }
 
 export interface TxDraftSummary {
@@ -488,7 +491,7 @@ export interface TxDraftSummary {
    * Why the Shakedex purchase this draft sent was lost, whatever `status`
    * says: a purchase lost after it paid stays "confirmed". Null otherwise.
    */
-  purchaseLostReason?: string | null;
+  purchaseLostReason: string | null;
 }
 
 export interface BroadcastResult {

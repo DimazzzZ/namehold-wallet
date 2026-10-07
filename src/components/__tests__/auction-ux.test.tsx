@@ -156,6 +156,7 @@ describe("WalletView — auction UX", () => {
     errorMessage: null,
     txid: "abcdef0123456789",
     confirmationHeight: null,
+    purchaseLostReason: null,
     createdAt: "2026-01-01",
     ...over,
   });
@@ -217,6 +218,7 @@ describe("WalletView — auction UX", () => {
         drafts: [
           draft({
             id: "c",
+            action: "shakedex_purchase",
             txid: "ccc0000000000003",
             status: "dropped",
             errorMessage: lost,
@@ -227,9 +229,11 @@ describe("WalletView — auction UX", () => {
     );
     render(<WalletView />, { wrapper: wrapper() });
     const badge = await screen.findByText("Lost");
-    expect(within(badge.closest("tr")!).queryByText("Not confirmed")).not.toBeInTheDocument();
-    fireEvent.mouseEnter(badge.parentElement!);
-    expect(await screen.findByText(lost)).toBeInTheDocument();
+    const tr = badge.closest("tr")!;
+    expect(within(tr).queryByText("Not confirmed")).not.toBeInTheDocument();
+    expect(within(tr).getByText("Buy")).toBeInTheDocument();
+    // Read without hovering: whether anything was paid is in the reason.
+    expect(within(tr).getByTestId("activity-lost-reason")).toHaveTextContent(lost);
   });
 
   it("a purchase lost after it paid reads Lost, with the reason, not Confirmed", async () => {
@@ -240,6 +244,7 @@ describe("WalletView — auction UX", () => {
         drafts: [
           draft({
             id: "d",
+            action: "shakedex_purchase",
             txid: "ddd0000000000004",
             status: "confirmed",
             purchaseLostReason: lost,
@@ -249,9 +254,9 @@ describe("WalletView — auction UX", () => {
     );
     render(<WalletView />, { wrapper: wrapper() });
     const badge = await screen.findByText("Lost");
-    expect(within(badge.closest("tr")!).queryByText("Confirmed")).not.toBeInTheDocument();
-    fireEvent.mouseEnter(badge.parentElement!);
-    expect(await screen.findByText(lost)).toBeInTheDocument();
+    const tr = badge.closest("tr")!;
+    expect(within(tr).queryByText("Confirmed")).not.toBeInTheDocument();
+    expect(within(tr).getByTestId("activity-lost-reason")).toHaveTextContent(lost);
   });
 
   it("shows the Locked in Auctions balance only when a lockup exists", async () => {

@@ -88,7 +88,11 @@ export function Watchlist() {
   // Owned-by-active-profile set for the "Owned" badge. Same hook WalletView
   // uses; pinned to the active profile. Zero backend change.
   const { data: ownedList = [] } = useReadNames();
-  const ownedNames = useMemo(() => new Set(ownedList.map((n) => n.name)), [ownedList]);
+  // A Shakedex purchase still on its way is listed too, but is not ours yet.
+  const ownedNames = useMemo(
+    () => new Set(ownedList.filter((n) => !n.shakedex).map((n) => n.name)),
+    [ownedList],
+  );
 
   const addMutation = useMutation({
     mutationFn: (name: string) => invoke("add_to_watchlist", { name }),

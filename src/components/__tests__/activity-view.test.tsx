@@ -362,6 +362,7 @@ describe("ActivityView — canonical table design", () => {
               errorMessage: null,
               txid: null,
               confirmationHeight: null,
+              purchaseLostReason: null,
               createdAt: "2026-08-14 12:00:00",
             },
           ]);
@@ -429,6 +430,7 @@ describe("ActivityView — inline draft actions", () => {
         errorMessage: null,
         txid: null,
         confirmationHeight: null,
+        purchaseLostReason: null,
         createdAt: "2026-08-14 12:00:00",
         ...overrides,
       },
