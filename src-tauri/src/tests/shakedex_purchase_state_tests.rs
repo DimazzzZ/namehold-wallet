@@ -48,6 +48,21 @@ fn dropped_price_listing() -> String {
     l.to_string()
 }
 
+/// The lock time of [`LISTING_FILE`]'s one step, the step a purchase pays.
+const PAID_LOCK_TIME: u64 = 1_783_696_480;
+
+/// [`LISTING_FILE`] with a dearer step a day before the paid one: between
+/// the two lock times only the dearer step is valid.
+fn dearer_step_first_listing() -> String {
+    let mut l: Value = serde_json::from_str(LISTING_FILE).unwrap();
+    assert_eq!(l["data"][0]["lockTime"].as_u64(), Some(PAID_LOCK_TIME));
+    let mut step = l["data"][0].clone();
+    step["price"] = json!(PRICE * 2);
+    step["lockTime"] = json!(PAID_LOCK_TIME - 86_400);
+    l["data"].as_array_mut().unwrap().insert(0, step);
+    l.to_string()
+}
+
 fn seed() -> [u8; 64] {
     hd::seed_from_mnemonic(MNEMONIC, "").unwrap()
 }
@@ -593,6 +608,55 @@ async fn rebroadcast_waits_when_the_price_cannot_be_rechecked() {
     assert_eq!(p.lost_reason, None);
     assert_eq!(p.rebroadcast_count, 0);
     assert_eq!(reservation(&conn).as_deref(), Some(DRAFT_ID));
+}
+
+/// A median time gone back below the paid step's lock time (a reorg) leaves
+/// the paid step not valid — no step at all, or only a dearer, earlier one:
+/// hsd would take the purchase as non-final and still answer with its txid,
+/// so a resend would spend the one rebroadcast on nothing. Nothing is sent
+/// and nothing decided while the step may become valid again — until hsd's
+/// mempool expiry, as for a purchase nobody may resend.
+#[tokio::test]
+async fn rebroadcast_waits_while_the_paid_step_is_not_valid_yet() {
+    let cases = [
+        // No step valid at all.
+        (LISTING_FILE.to_string(), 1),
+        // Only a dearer step, a day earlier, is valid.
+        (dearer_step_first_listing(), PAID_LOCK_TIME - 1_000),
+    ];
+    for (listing, mtp) in cases {
+        for (height, lost) in [(1000 + 431, false), (1000 + 432, true)] {
+            let conn = seeded("broadcasted", "unconfirmed");
+            conn.execute(
+                "UPDATE shakedex_purchases SET listing_json = ?1, missing_since_height = 1000",
+                params![listing],
+            )
+            .unwrap();
+            let rpc = missing_at(height)
+                .with_blockchain_info(BlockchainInfo {
+                    blocks: height,
+                    mediantime: Some(mtp),
+                    ..Default::default()
+                })
+                .with_send_raw_transaction(PURCHASE_TXID.to_string());
+
+            run(&conn, &rpc).await;
+
+            assert_eq!(sends(&rpc), 0, "at {height}");
+            let p = row(&conn);
+            assert_eq!(p.rebroadcast_count, 0, "at {height}");
+            if lost {
+                assert_eq!(p.state, crate::db::queries::PurchaseState::Lost);
+                assert!(p.lost_reason.unwrap().contains("never confirmed"));
+                assert_eq!(reservation(&conn), None, "coins released");
+            } else {
+                assert_eq!(p.state, crate::db::queries::PurchaseState::Unconfirmed);
+                assert_eq!(p.lost_reason, None);
+                assert_eq!(p.missing_since_height, Some(1000));
+                assert_eq!(reservation(&conn).as_deref(), Some(DRAFT_ID));
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -1376,8 +1440,13 @@ fn missing_purchase_db(url: &str) -> std::path::PathBuf {
 
 /// A mock hsd at the tip that never saw the purchase while the seller's lock
 /// coin is unspent. `sends` is how many `sendrawtransaction` calls it expects;
-/// that mock comes first.
-async fn missing_purchase_node(server: &mut mockito::Server, sends: usize) -> Vec<mockito::Mock> {
+/// that mock comes first. `verificationprogress` below 1 is a node still
+/// catching up.
+async fn missing_purchase_node(
+    server: &mut mockito::Server,
+    sends: usize,
+    verificationprogress: f64,
+) -> Vec<mockito::Mock> {
     let rpc = |method: &str| mockito::Matcher::Regex(format!("\"method\":\\s*\"{method}\""));
     let lock_coin = coin_json(LOCK_TXID, 0, "hs1qlock", json!({"type": 10, "items": []}));
     let elsewhere_coin = coin_json(
@@ -1399,7 +1468,7 @@ async fn missing_purchase_node(server: &mut mockito::Server, sends: usize) -> Ve
             .match_body(rpc("getblockchaininfo"))
             .with_body(
                 json!({"result": {"chain": "main", "blocks": 1021, "headers": 1021,
-                    "verificationprogress": 1.0, "mediantime": LATE_MTP},
+                    "verificationprogress": verificationprogress, "mediantime": LATE_MTP},
                     "error": null, "id": 1})
                 .to_string(),
             )
@@ -1445,7 +1514,7 @@ async fn daemon_sync_makes_no_send_call_where_the_apps_sync_does() {
     for caller in [SyncCaller::Daemon, SyncCaller::App] {
         let mut server = mockito::Server::new_async().await;
         let sends = usize::from(caller == SyncCaller::App);
-        let mocks = missing_purchase_node(&mut server, sends).await;
+        let mocks = missing_purchase_node(&mut server, sends, 1.0).await;
         let path = missing_purchase_db(&server.url());
         let db_path = path.to_str().unwrap();
 
@@ -1463,6 +1532,31 @@ async fn daemon_sync_makes_no_send_call_where_the_apps_sync_does() {
         drop(conn);
         let _ = std::fs::remove_file(&path);
     }
+}
+
+/// The purchase step runs only against an authoritative node (R13): one
+/// still catching up would report a mined purchase as unknown, and the app's
+/// sync would rebroadcast it or declare it lost. The same wallet and node that
+/// get the rebroadcast above, with the node behind, get no send and no change.
+#[tokio::test]
+async fn app_sync_leaves_purchases_alone_on_a_node_still_catching_up() {
+    use crate::commands::sync::{run_sync_steps, SyncCaller, SyncStatus};
+
+    let mut server = mockito::Server::new_async().await;
+    let mocks = missing_purchase_node(&mut server, 0, 0.5).await;
+    let path = missing_purchase_db(&server.url());
+    let status = std::sync::Arc::new(tokio::sync::Mutex::new(SyncStatus::default()));
+
+    run_sync_steps(&status, path.to_str().unwrap(), PROFILE, SyncCaller::App).await;
+
+    mocks[0].assert_async().await;
+    let conn = Connection::open(&path).unwrap();
+    let p = row(&conn);
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Unconfirmed);
+    assert_eq!(p.rebroadcast_count, 0);
+    assert_eq!(p.missing_since_height, Some(1000));
+    drop(conn);
+    let _ = std::fs::remove_file(&path);
 }
 
 /// The daemon's sync never rebroadcasts (SECURITY.md); the app's may.

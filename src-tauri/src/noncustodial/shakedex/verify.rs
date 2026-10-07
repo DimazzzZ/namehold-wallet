@@ -304,24 +304,10 @@ pub async fn recheck_price(
     Ok(())
 }
 
-/// Whether a step of the listing cheaper than `paid` is valid at the node's
-/// median time now. An error when the node does not report its median time:
-/// that proves neither.
-pub async fn cheaper_step_valid(
-    client: &dyn NodeRpc,
-    network: Network,
-    listing_json: &str,
-    paid: u64,
-) -> Result<bool, AppError> {
-    Ok(matches!(
-        current_price(client, network, listing_json).await?,
-        Some(price) if price < paid
-    ))
-}
-
 /// The price of the listing's current step at the node's median time now;
-/// `None` when no step is valid yet.
-async fn current_price(
+/// `None` when no step is valid yet. An error when the node does not report
+/// its median time: that proves nothing.
+pub async fn current_price(
     client: &dyn NodeRpc,
     network: Network,
     listing_json: &str,

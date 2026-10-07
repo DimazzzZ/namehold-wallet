@@ -338,23 +338,35 @@ impl Job<'_> {
         let Some(signed) = draft.signed_tx_hex.as_deref() else {
             return self.lose_unless_traced(p, NEVER_CONFIRMED, None).await;
         };
-        if !self.may_broadcast().await? {
-            // Not allowed to send from here (the daemon, or a node without
-            // the opt-in): keep waiting; the app's next sync, the user or a
-            // changed opt-in can still send it — until no mempool holds it.
+        // Not sent from here: keep waiting for a sync that may send it —
+        // until no mempool holds it any more.
+        let wait = || async {
             if self.tip - missing_since >= MEMPOOL_EXPIRY_BLOCKS {
                 return self.lose_unless_traced(p, NEVER_CONFIRMED, None).await;
             }
-            return self.unconfirmed(p, Some(missing_since), 0);
+            self.unconfirmed(p, Some(missing_since), p.rebroadcast_count)
+        };
+        if !self.may_broadcast().await? {
+            // Not allowed to send from here (the daemon, or a node without
+            // the opt-in): the app's next sync, the user or a changed opt-in
+            // can still send it.
+            return wait().await;
         }
-        // A rebroadcast is a broadcast (R10): never resend a price a cheaper
-        // step has replaced. A price we cannot re-check is an error, and the
-        // next sync tries again.
+        // A rebroadcast is a broadcast (R10): only the paid step, and only
+        // while it is the current one. A cheaper step replaced it: lost. The
+        // paid step not valid at the median time (it went back in a reorg):
+        // hsd would take it as non-final and still answer with the txid,
+        // spending the one rebroadcast — wait instead. A price we cannot
+        // re-check is an error, and the next sync tries again.
         let paid = p.paid_doos()?;
-        if verify::cheaper_step_valid(self.client, self.network, &p.listing_json, paid).await? {
-            return self
-                .lose_unless_traced(p, NOT_RESENT_PRICE_DROPPED, None)
-                .await;
+        match verify::current_price(self.client, self.network, &p.listing_json).await? {
+            Some(price) if price == paid => {}
+            Some(price) if price < paid => {
+                return self
+                    .lose_unless_traced(p, NOT_RESENT_PRICE_DROPPED, None)
+                    .await;
+            }
+            _ => return wait().await,
         }
         match self.client.send_raw_transaction(signed).await {
             Ok(_) => self.unconfirmed(p, None, 1),
