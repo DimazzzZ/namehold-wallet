@@ -247,11 +247,12 @@ Paid name swaps were withdrawn on 2026-09-21 (`docs/specs/2026-09-21-paid-name-s
 - [ ] Unconfirmed purchase stays "Unconfirmed purchase" (not "Awaiting finalize") while its TRANSFER is only in the mempool, also on a node without a transaction index
 - [ ] A purchase on its way does not appear in Renewals
 - [ ] After confirmation it reads "Awaiting finalize · N blocks", then "Ready to finalize" with a Finalize button
-- [ ] Finalize works; the DNS records are then updated by the buyer
+- [ ] Finalize works; the row then reads "Finalize · waiting for a block" with no second Finalize until the name arrives; the DNS records are then updated by the buyer
+- [ ] A purchase someone else beats (or the seller cancels) reads "Lost" in Activity with "nothing was paid" shown under the badge, and its coins are spendable again
 - [ ] SPV and Explorer modes can browse but Buy is disabled with a reason
 - [ ] Remote node with "Allow sending via remote node" off: the purchase dialog shows "Could not price this purchase" with the backend's reason and Buy stays disabled
-- [ ] Ledger and watch-only wallets cannot buy; Finalize on a purchase row is not offered for them
-- [ ] Mainnet without "Shakedex (experimental)" in Settings: clicking Buy in the purchase dialog is refused with "Shakedex purchases on mainnet are experimental: enable them in Settings"; testnet and regtest need no flag; Finalize works regardless
+- [ ] Ledger, watch-only and extended-private-key wallets cannot buy: every Buy is disabled with "Shakedex works with a recovery-phrase wallet for now". On a purchase row, Finalize is disabled with the same reason for Ledger and extended-private-key wallets, and not shown at all for watch-only ones
+- [ ] Mainnet without "Allow buying names on mainnet through Shakedex (experimental)" in Settings: every Buy on the Market page is disabled with "Shakedex purchases on mainnet are experimental: enable them in Settings"; testnet and regtest need no flag; Finalize works regardless
 - [ ] Regtest: buy a listing created by the shakedex CLI end to end
 - [ ] Legacy: saved offers list still shows offers recorded before the withdrawal, and claim_paid_transfer verifies the broadcast tx before marking paid
 

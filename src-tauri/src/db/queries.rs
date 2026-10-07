@@ -1568,7 +1568,8 @@ pub struct PurchaseNameState {
 
 /// A profile's purchased names still on their way (`unconfirmed` or
 /// `awaiting_finalize`), shaped like [`read_cached_names`] rows so Owned Names
-/// can list them, plus a [`PurchaseNameState`] under `shakedex`. A purchase
+/// can list them (the chain fields null, since the name is not ours yet, and
+/// no `claimed`), plus a [`PurchaseNameState`] under `shakedex`. A purchase
 /// already sent (its draft [`may_have_reached_chain`]) is listed as `unconfirmed` before the purchase job has
 /// looked at it: that job runs only against an authoritative node, and the
 /// name appears from the moment it is sent (R14).

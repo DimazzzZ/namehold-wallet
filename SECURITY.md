@@ -54,7 +54,7 @@ Namehold.
   writes before any DB mutation
 - Per-transaction confirmation in a separate Rust-owned window: before signing
   any transaction, `sign_tx_draft` requires explicit user confirmation
-  (`commands/tx.rs:505-506`) showing action, recipient, amount, fee, txid, and
+  (`commands/tx.rs::sign_tx_draft_inner`, `prompt_secure`) showing action, recipient, amount, fee, txid, and
   warnings
 
 #### 2. Local disk read (malware, laptop theft, backup snapshot)
@@ -260,7 +260,7 @@ The Market lists names for sale through Shakedex, read from the LearnHNS Market 
 | Renderer writes base URL | `RENDERER_WRITE_DENYLIST` | `security.rs:20` | `settings_cmd_tests` |
 | Base URL redirect (production) | Release build ignores setting | `namebase.rs:24-27` | `namebase.rs::tests` |
 | Cookie on disk (offline attacker) | AES-256-GCM under OS-keyring DEK | `cookie_vault.rs` | `cookie_vault::tests` |
-| Signing without confirmation | Rust-owned secure window | `tx.rs:505-506` | `tx_lifecycle_tests` |
+| Signing without confirmation | Rust-owned secure window | `tx.rs::sign_tx_draft_inner` (`prompt_secure`) | `tx_lifecycle_tests` |
 | RPC api-key sent cleartext | `guard_transport` rejects remote HTTP | `rpc.rs:139-168` | `rpc.rs::tests` |
 | Audit log leaks secrets | Redacted to `***` on write; re-redacted on read | `settings.rs:40-41, 68-69` | `settings_cmd_tests` |
 | Market redirect or host swap | HTTPS LearnHNS host only, no redirects, override debug-only | `market/learnhns.rs` | `learnhns_tests` |

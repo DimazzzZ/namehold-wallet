@@ -361,17 +361,17 @@ struct Prepared {
     market_fee: Option<MarketFee>,
 }
 
-/// Why a Shakedex draft is refused on a node that cannot send (R6). The UI
-/// shows the same sentence on the disabled Buy and Finalize
-/// (`marketText.ts::NEEDS_SENDING_NODE`).
 /// Why a market link cannot be imported off mainnet. The UI disables link
 /// import with the same words (`marketText.ts`).
 pub const MARKET_MAINNET_ONLY: &str = "LearnHNS Market lists mainnet names only";
 
+/// Why a Shakedex draft is refused on a node that cannot send (R6). The UI
+/// shows the same sentence on the disabled Buy and Finalize
+/// (`marketText.ts::NEEDS_SENDING_NODE`).
 pub const NEEDS_SENDING_NODE: &str =
     "Shakedex needs a local node, or a remote node with sending allowed";
 
-/// The gates every Shakedex money draft passes (R16, R7): a seed-backed
+/// The gates every Shakedex money draft passes (R16, R6): a seed-backed
 /// software profile and a node that can send. The profile kind is checked
 /// before `load_ctx`, whose own watch-only refusal words it differently from
 /// the sentence the UI shows.
