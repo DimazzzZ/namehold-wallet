@@ -345,7 +345,7 @@ These drive REAL reorgs via a `#[cfg(test)]` `invalidateblock`/`reconsiderblock`
 
 ## Shakedex purchases against the CLI
 
-These are manual checks that Namehold buys from the real shakedex CLI and meets it as the other party (spec R30, Namehold-buys half, and the R7/R10/R13 chain paths). They are not part of CI: each test is skipped unless both `HNS_IT_NODE_URL` and `HNS_IT_SHAKEDEX=1` are set.
+These are manual checks that Namehold buys from the real shakedex CLI and meets it as the other party (spec R30, Namehold-buys half, and the R7/R10/R13 chain paths). They are not part of CI: each test is skipped while `HNS_IT_SHAKEDEX` is unset or empty.
 
 Start a throwaway regtest node with the hsd wallet enabled; the default `scripts/regtest.sh start` runs with `--no-wallet`, and the script prints the wallet API port and key (14039, `test`). The node uses the repo-local `.regtest/` data dir and never touches `~/.hsd`. The CLI talks to the node at the regtest default ports, so point the tests at that node.
 
@@ -355,14 +355,14 @@ HNS_IT_NODE_URL=http://127.0.0.1:14037 HNS_IT_NODE_API_KEY=test HNS_IT_SHAKEDEX=
   cargo test --manifest-path src-tauri/Cargo.toml --lib live_node_it::shakedex_ -- --test-threads=1 --nocapture
 ```
 
-The tests drive the CLI through `scripts/shakedex-cli-sell.sh`, with the node's hsd wallet as the seller and as the other buyer. Each run registers fresh names (open, two bids, reveal, register, mining between the phases), so a used chain works. The script clones `shadstoneofficial/shakedex` at the pinned commit `2c4fa04eab68a528e758598d11b5da5666113b11` into `SHAKEDEX_WORK` once and keeps the CLI's database there (the tests default it to `$TMPDIR/namehold-shakedex-cli`; run by hand, the script uses a fresh temp dir unless it is set); nothing is installed globally. `HNS_IT_SHAKEDEX` set to anything but `1`, or without `HNS_IT_NODE_URL`, or with a node URL other than port 14037, fails the tests instead of skipping them. It can be run by hand too:
+The tests drive the CLI through `scripts/shakedex-cli-sell.sh`, with the node's hsd wallet as the seller and as the other buyer. Each run registers fresh names (open, two bids, reveal, register, mining between the phases), so a used chain works, up to a point: regtest halves the block subsidy every 2500 blocks (`halvingInterval`), and the tests fund their wallets by mining, so a chain some tens of thousands of blocks tall leaves them too little to spend. `scripts/regtest.sh reset` starts over. The R9 test below mines about 5000 blocks and takes them back out with `invalidateblock` before it asserts anything, so it leaves the chain as tall as it found it. The script clones `shadstoneofficial/shakedex` at the pinned commit `2c4fa04eab68a528e758598d11b5da5666113b11` into `SHAKEDEX_WORK` once and keeps the CLI's database there (the tests default it to `$TMPDIR/namehold-shakedex-cli`; run by hand, the script uses a fresh temp dir unless it is set); nothing is installed globally. `HNS_IT_SHAKEDEX` set to anything but `1` or empty, or set to `1` without `HNS_IT_NODE_URL`, or with a node URL other than the regtest RPC port (14037), fails the tests instead of skipping them. It can be run by hand too:
 
 | Command | What the CLI does |
 |---|---|
 | `REGISTER=1 PRICE=5 OUT=listing.json scripts/shakedex-cli-sell.sh` | registers a name, locks it (`transfer-lock`, the lockup, `finalize-lock`) and lists it at a fixed price (`create-fixed`); prints the listing path |
 | `REGISTER=1 START_PRICE=10 END_PRICE=5 OUT=auction.json scripts/shakedex-cli-sell.sh auction` | the same, listed as a one-day reverse auction, one step every 15 minutes (`create-auction`, not published) |
-| `scripts/shakedex-cli-sell.sh cancel <name>` | takes the name back out of its lock (`transfer-lock-cancel`, the lockup, `finalize-lock-cancel`); needs the `SHAKEDEX_WORK` the listing was made in |
-| `scripts/shakedex-cli-sell.sh fill <listing.json>` | the hsd wallet buys the listing (`fill-auction`) |
+| `SHAKEDEX_WORK=<dir> scripts/shakedex-cli-sell.sh cancel <name>` | takes the name back out of its lock (`transfer-lock-cancel`, the lockup, `finalize-lock-cancel`) and checks on the node that it is back in the hsd wallet; refuses to run without the `SHAKEDEX_WORK` the listing was made in |
+| `scripts/shakedex-cli-sell.sh fill <listing.json>` | the hsd wallet buys the listing (`fill-auction`) and checks on the node that the name is being transferred |
 
 What the tests check:
 
@@ -372,6 +372,9 @@ What the tests check:
 - `shakedex_purchase_follows_reorgs_of_its_own_blocks` — the purchase's block is invalidated (hsd's `invalidateblock` empties the mempool too, so the purchase is gone from the node), the app's sync rebroadcasts it once after six blocks missing, and it is mined again; then the FINALIZE's block is invalidated and the purchase awaits finalize again until the same FINALIZE is mined.
 - `shakedex_reverse_auction_pays_the_current_step_and_refuses_a_stale_one` — a purchase signed at one step is refused at broadcast once the node's median time makes a cheaper step valid, and built again it pays that step.
 - `shakedex_cancelled_listing_is_not_offered` — after the seller cancels, the listing is "sold or cancelled" and cannot be bought.
+- `shakedex_listing_expiring_before_finalize_is_not_offered` — R9 at the boundary: the chain is mined until the name's expiry (hsd's own `renewalPeriodEnd`) is one block past the margin (tip + 1 + transfer lockup + one day, a day being the lockup on regtest), where the listing is buyable with the expiry warning; one block later it is "expires before it can be finalized" and building the purchase is refused. It mines about 5000 blocks, regtest's renewal window.
+
+"Not valid yet" has no live test: the CLI starts every listing at the node's median time, and a step is valid once its lock time rounded down to 512 seconds is below the median time, so its first step is valid at once (or a block later). That verdict is pinned by `shakedex_verify_tests::no_current_step_is_not_buyable_yet`, with the node's median time an hour before the first step.
 
 The tests move the node's clock forward with `setmocktime` to make price steps valid. hsd keeps that as an offset that goes on ticking, and the median time never goes back, so the clock is only ever moved forward; never run `setmocktime 0` against this node, which sets its clock to 0 and stalls mining (`scripts/regtest.sh reset` starts over).
 

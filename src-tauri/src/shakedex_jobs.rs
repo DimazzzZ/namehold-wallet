@@ -44,7 +44,7 @@ use crate::noncustodial::shakedex::verify;
 
 /// Blocks a sent purchase may be absent from the node's mempool and chain
 /// before it is rebroadcast (once) and then given up as lost.
-const MISSING_BLOCKS: i64 = 6;
+pub(crate) const MISSING_BLOCKS: i64 = 6;
 
 /// hsd's mempool expiry (`policy.MEMPOOL_EXPIRY_TIME`, 72 hours) in blocks
 /// at the target spacing (432). A purchase missing from the node this long is in no

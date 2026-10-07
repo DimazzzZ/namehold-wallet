@@ -28,8 +28,10 @@
 #   PRICE      fixed price in HNS (default 5)
 #   START_PRICE, END_PRICE   reverse auction prices in whole HNS (default 10, 5)
 #   SHAKEDEX_WORK            work dir to keep the checkout and the CLI's
-#              database in, reused across runs (default: a fresh temp dir).
-#              A lock can only be cancelled from the work dir it was made in.
+#              database in, reused across runs (default: a fresh temp dir,
+#              kept after `fixed`/`auction`, removed after `fill`). A lock can
+#              only be cancelled from the work dir it was made in, so `cancel`
+#              needs it set.
 #   OUT        where to write the listing file (default: ./shakedex-listing-$NAME.json)
 #   HSD_API_KEY, WALLET_ID   node/wallet API key (default test) and wallet id (default primary)
 #   TRANSFER_LOCKUP          regtest transfer lockup in blocks (default 10)
@@ -65,7 +67,10 @@ need hsw-rpc
 
 case "$MODE" in
   fixed | auction) ;;
-  cancel) NAME="${2:?usage: shakedex-cli-sell.sh cancel NAME}" ;;
+  cancel)
+    NAME="${2:?usage: shakedex-cli-sell.sh cancel NAME}"
+    [ -n "${SHAKEDEX_WORK:-}" ] || die "cancel needs SHAKEDEX_WORK, the work dir the lock was made in"
+    ;;
   fill) LISTING="${2:?usage: shakedex-cli-sell.sh fill LISTING}" ;;
   *) die "unknown command '$MODE' (fixed, auction, cancel NAME, fill LISTING)" ;;
 esac
@@ -81,16 +86,39 @@ fi
 rpc() { hsd-rpc --network="$NETWORK" --api-key="$API_KEY" "$@"; }
 wrpc() { hsw-rpc --network="$NETWORK" --api-key="$API_KEY" "$@"; }
 
-# Refuse anything that does not look like the throwaway regtest node.
-rpc getblockchaininfo | grep -q '"chain": "regtest"' || die "no regtest node answering (run: scripts/regtest.sh --with-wallet)"
+# One field of the JSON document on stdin, by dotted path ("info.owner.hash");
+# empty when it is missing or null. node is already required by the CLI.
+json() {
+  node -e '
+    let s = "";
+    process.stdin.on("data", (d) => (s += d)).on("end", () => {
+      let v = JSON.parse(s);
+      for (const k of process.argv[1].split(".")) v = v == null ? v : v[k];
+      process.stdout.write(v == null ? "" : String(v));
+    });' "$1"
+}
 
-MINE_ADDR="$(wrpc getnewaddress | tr -d '"[:space:]')"
+# Refuse anything that does not look like the throwaway regtest node. The
+# reply is read whole: a grep that stops early would break the pipe.
+CHAIN="$(rpc getblockchaininfo | json chain)" || die "no node answering (run: scripts/regtest.sh --with-wallet)"
+[ "$CHAIN" = regtest ] || die "the node answering is on '$CHAIN', not regtest"
+
+MINE_ADDR="$(wrpc getnewaddress | tr -d '"[:space:]')" ||
+  die "hsd wallet gave no address (start the node with: scripts/regtest.sh --with-wallet)"
 [ -n "$MINE_ADDR" ] || die "hsd wallet gave no address (start the node with: scripts/regtest.sh --with-wallet)"
 
 mine() { rpc generatetoaddress "$1" "$MINE_ADDR" >/dev/null; }
 
-name_state() {
-  rpc getnameinfo "$NAME" | sed -n 's/^ *"state": "\([A-Z]*\)".*/\1/p' | head -1
+name_field() { rpc getnameinfo "$NAME" | json "info.$1"; }
+name_state() { name_field state; }
+
+# The name's owner coin pays an address of the hsd wallet.
+owner_is_ours() {
+  local hash index addr
+  hash="$(name_field owner.hash)"
+  index="$(name_field owner.index)"
+  addr="$(rpc gettxout "$hash" "$index" | json address.string)"
+  [ -n "$addr" ] && [ "$(wrpc getaddressinfo "$addr" | json ismine)" = true ]
 }
 
 mine_until_state() {
@@ -105,7 +133,9 @@ mine_until_state() {
 # Regtest auction params are tiny: a handful of blocks per phase.
 register_name() {
   log "registering $NAME with the hsd wallet"
-  mine 110 # fund the wallet; coinbases mature after 2 blocks on regtest
+  # Fund the wallet (coinbases mature after 2 blocks on regtest), in steps:
+  # one call mining 110 blocks can outlast hsd-rpc's request timeout.
+  for _ in 1 2 3 4 5 6 7 8 9 10 11; do mine 10; done
   wrpc sendopen "$NAME" >/dev/null
   mine_until_state BIDDING
   # Two bids: the winner pays the SECOND price, so the lock coin is worth
@@ -128,6 +158,10 @@ fi
 
 WORK="${SHAKEDEX_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/shakedex-cli.XXXXXX")}"
 mkdir -p "$WORK"
+# A temp work dir is worth keeping only for the lock a listing was made from.
+if [ -z "${SHAKEDEX_WORK:-}" ] && [ "$MODE" = fill ]; then
+  trap 'rm -rf "$WORK"' EXIT
+fi
 # Reused only when a previous run finished the install: the checkout is at
 # the pin and the marker written after `npm install` is there.
 INSTALLED="$WORK/shakedex/.namehold-installed"
@@ -213,13 +247,21 @@ case "$MODE" in
     log "finalize-lock-cancel $NAME"
     answers y y | shakedex finalize-lock-cancel "$NAME" >&2
     mine 1
+    # The CLI exits 0 also when it did nothing: check the chain instead.
+    [ "$(name_field transfer)" = 0 ] && owner_is_ours ||
+      die "$NAME is not back in the hsd wallet after the cancel"
     log "$NAME is out of its lock"
     exit 0
     ;;
   fill)
     log "fill-auction $LISTING"
+    NAME="$(json name <"$LISTING")"
+    [ -n "$NAME" ] || die "no name in $LISTING"
     answers y y | shakedex fill-auction "$LISTING" >&2
     mine 1
+    # A mined fill leaves the name in a TRANSFER out of the lock.
+    [ "$(name_field transfer)" -gt 0 ] 2>/dev/null ||
+      die "$NAME is not being transferred after the fill"
     log "$LISTING filled by the hsd wallet"
     exit 0
     ;;

@@ -205,6 +205,20 @@ fn client(url: &str, key: &str) -> NodeRpcClient {
     NodeRpcClient::new(url, key, ChainSource::LocalNode)
 }
 
+/// Track `name` for the profile, as the full sync's discovery would, so the
+/// next sync reads its owner coin.
+fn track_name(app: &tauri::App<tauri::test::MockRuntime>, name: &str) {
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    c.execute(
+        "INSERT OR IGNORE INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state)
+         VALUES (?1, ?2, '', 'UNKNOWN')",
+        params![PROFILE, name],
+    )
+    .unwrap();
+}
+
 fn draft_status(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> db::queries::TxDraftRow {
     let state = app.state::<AppState>();
     let c = state.db.lock().unwrap();
@@ -382,17 +396,7 @@ async fn live_auction_open_bid_reveal_register() {
     // Owned-name discovery is normally explorer-based (unavailable on regtest),
     // so seed the name as tracked; the sync then resolves its owner coin from
     // the node's getnameinfo, exactly as discovery would on mainnet.
-    {
-        let state = app.state::<AppState>();
-        let c = state.db.lock().unwrap();
-        c.execute(
-            "INSERT OR IGNORE INTO tracked_name_states
-                (wallet_profile_id, name, name_hash_hex, state)
-             VALUES (?1, ?2, '', 'UNKNOWN')",
-            params![PROFILE, name],
-        )
-        .unwrap();
-    }
+    track_name(&app, &name);
     sync_wallet_state(app.state(), None).await.expect("sync");
     let records = vec![serde_json::json!({"type":"TXT","txt":["cua-agent-verified"]})];
     let reg = build_register_draft(app.state(), name.clone(), Some(records), Some(1))
@@ -525,14 +529,7 @@ async fn live_auction_register_transfer_finalize() {
     );
 
     // Track the name so sync picks up the owner coin.
-    {
-        let state = app.state::<AppState>();
-        let c = state.db.lock().unwrap();
-        c.execute(
-            "INSERT OR IGNORE INTO tracked_name_states (wallet_profile_id, name, name_hash_hex, state) VALUES (?1, ?2, '', 'UNKNOWN')",
-            params![PROFILE, name],
-        ).unwrap();
-    }
+    track_name(&app, &name);
     sync_wallet_state(app.state(), None).await.expect("sync");
 
     // REGISTER the won name.
@@ -610,15 +607,7 @@ async fn acquire_name(
     );
 
     // Track the name so sync picks up the owner coin.
-    {
-        let state = app.state::<AppState>();
-        let c = state.db.lock().unwrap();
-        c.execute(
-            "INSERT OR IGNORE INTO tracked_name_states (wallet_profile_id, name, name_hash_hex, state) VALUES (?1, ?2, '', 'UNKNOWN')",
-            params![PROFILE, name],
-        )
-        .unwrap();
-    }
+    track_name(app, name);
     sync_wallet_state(app.state(), None).await.expect("sync");
 
     // REGISTER the won name so the wallet owns it.
@@ -3297,17 +3286,7 @@ async fn live_name_utxo_reservation_blocks_second_action() {
     // Seed tracked_name_states so sync attributes the owner coin (mainnet uses
     // explorer-based discovery, unavailable on regtest — same pattern as the
     // existing auction/register lifecycle test).
-    {
-        let state = app.state::<AppState>();
-        let c = state.db.lock().unwrap();
-        c.execute(
-            "INSERT OR IGNORE INTO tracked_name_states
-                (wallet_profile_id, name, name_hash_hex, state)
-             VALUES (?1, ?2, '', 'UNKNOWN')",
-            params![PROFILE, name],
-        )
-        .unwrap();
-    }
+    track_name(&app, &name);
     sync_wallet_state(app.state(), None).await.expect("sync");
     let records = vec![serde_json::json!({"type":"TXT","txt":["reserved-check"]})];
     let reg = build_register_draft(app.state(), name.clone(), Some(records), Some(1))
@@ -3661,17 +3640,7 @@ async fn live_chain_scanner_indexes_own_bid() {
     // name discovery is explorer-based and unavailable on regtest, so seed the
     // row and let the sync resolve it from the node's `getnameinfo` — exactly
     // what discovery would do on mainnet.
-    {
-        let state = app.state::<AppState>();
-        let c = state.db.lock().unwrap();
-        c.execute(
-            "INSERT OR IGNORE INTO tracked_name_states
-                (wallet_profile_id, name, name_hash_hex, state)
-             VALUES (?1, ?2, '', 'UNKNOWN')",
-            params![PROFILE, name],
-        )
-        .unwrap();
-    }
+    track_name(&app, &name);
     sync_wallet_state(app.state(), None).await.expect("sync");
 
     // And the command that feeds the UI surfaces it as the wallet's own bid,
@@ -3810,17 +3779,7 @@ async fn live_own_bid_is_pending_before_the_block_and_indexed_after() {
     // `read_name_bids` only trusts the index once the scanner has passed the
     // name's auction height, and it reads that height from tracked state.
     sync_wallet_state(app.state(), None).await.expect("sync");
-    {
-        let state = app.state::<AppState>();
-        let c = state.db.lock().unwrap();
-        c.execute(
-            "INSERT OR IGNORE INTO tracked_name_states
-                (wallet_profile_id, name, name_hash_hex, state)
-             VALUES (?1, ?2, '', 'UNKNOWN')",
-            params![PROFILE, name],
-        )
-        .unwrap();
-    }
+    track_name(&app, &name);
     sync_wallet_state(app.state(), None).await.expect("sync");
     scan_to_tip(&cl, &db_path).await;
 
@@ -3905,17 +3864,7 @@ async fn live_reopened_name_scopes_its_bids_and_strands_the_old_lockup() {
 
     // The tracked row must not keep claiming the dead auction's OPEN height —
     // `read_name_bids` reads it to decide which auction's bids to serve.
-    {
-        let state = app.state::<AppState>();
-        let c = state.db.lock().unwrap();
-        c.execute(
-            "INSERT OR IGNORE INTO tracked_name_states
-                (wallet_profile_id, name, name_hash_hex, state)
-             VALUES (?1, ?2, '', 'UNKNOWN')",
-            params![PROFILE, name],
-        )
-        .unwrap();
-    }
+    track_name(&app, &name);
     sync_wallet_state(app.state(), None).await.expect("sync");
     let lapsed_height: Option<i64> = {
         let state = app.state::<AppState>();
@@ -4160,17 +4109,7 @@ async fn live_multi_bid_lifecycle_leaves_no_coin_stranded() {
     );
 
     assert!(mine_until(&cl, &name, "CLOSED", &addr, 40).await);
-    {
-        let state = app.state::<AppState>();
-        let c = state.db.lock().unwrap();
-        c.execute(
-            "INSERT OR IGNORE INTO tracked_name_states
-                (wallet_profile_id, name, name_hash_hex, state)
-             VALUES (?1, ?2, '', 'UNKNOWN')",
-            params![PROFILE, name],
-        )
-        .unwrap();
-    }
+    track_name(&app, &name);
     sync_wallet_state(app.state(), None).await.expect("sync");
 
     // The winning reveal becomes the name coin; register it.
@@ -4346,9 +4285,10 @@ fn shakedex_env(test: &str) -> Option<(String, String, ShakedexCli)> {
     }
     let (url, key) = it_env().expect("HNS_IT_SHAKEDEX=1 needs HNS_IT_NODE_URL");
     // The CLI and the script's hsd-rpc/hsw-rpc reach regtest's default ports.
+    let port = Network::Regtest.default_rpc_port();
     assert!(
-        url.trim_end_matches('/').ends_with(":14037"),
-        "the shakedex CLI talks to the regtest node at port 14037, not {url}"
+        url.trim_end_matches('/').ends_with(&format!(":{port}")),
+        "the shakedex CLI talks to the regtest node at port {port}, not {url}"
     );
     let cli = shakedex_cli(&key);
     Some((url, key, cli))
@@ -4360,6 +4300,20 @@ struct ShakedexCli {
     /// lock keys), kept across tests and runs.
     work: std::path::PathBuf,
     api_key: String,
+}
+
+/// The address of `name`'s owner coin, as the node reports it.
+async fn owner_coin_address(cl: &NodeRpcClient, name: &str) -> Option<String> {
+    let info = cl.get_name_info(name).await.expect("name info");
+    let owner = &info["info"]["owner"];
+    cl.get_coin(
+        owner["hash"].as_str().expect("owner hash"),
+        owner["index"].as_u64().expect("owner index") as u32,
+    )
+    .await
+    .expect("owner coin")
+    .expect("owner coin exists")
+    .address
 }
 
 /// What the mined transaction `txid` pays to `addr`, as the node reports it.
@@ -4683,7 +4637,7 @@ async fn shakedex_cli_listing_is_bought() {
     // The seller is paid the listing's price, on chain.
     assert_eq!(
         paid_to(&b.cl, &bc.txid, &listing.payment_addr).await,
-        5_000_000
+        listing.price(0)
     );
 
     // Finalize once the transfer lockup is over.
@@ -4704,18 +4658,8 @@ async fn shakedex_cli_listing_is_bought() {
     assert_eq!(b.purchase(&name).state, db::queries::PurchaseState::Owned);
 
     // The node agrees: the name's owner coin pays the purchase's destination.
-    let info = b.cl.get_name_info(&name).await.expect("name info");
-    let owner = &info["info"]["owner"];
-    let coin =
-        b.cl.get_coin(
-            owner["hash"].as_str().expect("owner hash"),
-            owner["index"].as_u64().expect("owner index") as u32,
-        )
-        .await
-        .expect("owner coin")
-        .expect("owner coin exists");
     assert_eq!(
-        coin.address.as_deref(),
+        owner_coin_address(&b.cl, &name).await.as_deref(),
         Some(p.destination_address.as_str())
     );
 
@@ -4784,15 +4728,7 @@ async fn shakedex_finalized_name_moved_on_before_a_sync_is_owned() {
 
     // The app learns it holds the name as the full sync's discovery would:
     // track it, and sync picks up the owner coin at our destination.
-    {
-        let state = b.app.state::<AppState>();
-        let c = state.db.lock().unwrap();
-        c.execute(
-            "INSERT OR IGNORE INTO tracked_name_states (wallet_profile_id, name, name_hash_hex, state) VALUES (?1, ?2, '', 'UNKNOWN')",
-            params![PROFILE, name],
-        )
-        .unwrap();
-    }
+    track_name(&b.app, &name);
     sync_wallet_state(b.app.state(), None).await.expect("sync");
 
     let (_sk, _pk, elsewhere) =
@@ -4820,17 +4756,10 @@ async fn shakedex_finalized_name_moved_on_before_a_sync_is_owned() {
     settle(&b.app, &b.cl, &b.addr, &out_fin.id).await;
 
     // The node agrees the name has left our destination.
-    let info = b.cl.get_name_info(&name).await.expect("name info");
-    let owner = &info["info"]["owner"];
-    let coin =
-        b.cl.get_coin(
-            owner["hash"].as_str().expect("owner hash"),
-            owner["index"].as_u64().expect("owner index") as u32,
-        )
-        .await
-        .expect("owner coin")
-        .expect("owner coin exists");
-    assert_eq!(coin.address.as_deref(), Some(elsewhere.as_str()));
+    assert_eq!(
+        owner_coin_address(&b.cl, &name).await.as_deref(),
+        Some(elsewhere.as_str())
+    );
 
     b.refresh().await;
     let p = b.purchase(&name);
@@ -4865,13 +4794,6 @@ async fn shakedex_cli_buyer_first_loses_ours_with_nothing_paid() {
         .await
         .expect("hsd answers with the txid");
     assert_eq!(bc.status, "broadcasted");
-    assert!(
-        b.cl.get_tx_by_hash(&bc.txid)
-            .await
-            .expect("tx lookup")
-            .is_null(),
-        "the node did not take the purchase"
-    );
 
     b.refresh().await;
     let p = b.purchase(&name);
@@ -4889,10 +4811,21 @@ async fn shakedex_cli_buyer_first_loses_ours_with_nothing_paid() {
         "the purchase's funding coins are free again"
     );
 
+    // A block later the node still has nothing of it: hsd never took it,
+    // whatever its answer to the broadcast said.
+    b.cl.generate_to_address(1, &b.addr).await.expect("mine");
+    assert!(
+        b.cl.get_tx_by_hash(&bc.txid)
+            .await
+            .expect("tx lookup")
+            .is_null(),
+        "the node did not take the purchase"
+    );
+
     let row = b.import(&listing).await;
     assert_eq!(row["verdict"]["verdict"], "hidden", "{row}");
     assert_eq!(row["verdict"]["kind"], "soldOrCancelled", "{row}");
-    assert!(b.build_purchase(&listing).await.is_err());
+    assert_refused(&b, &listing, "already sold or cancelled").await;
 }
 
 /// R13 "A reorg moves the state back", and the one rebroadcast. hsd's
@@ -4940,7 +4873,9 @@ async fn shakedex_purchase_follows_reorgs_of_its_own_blocks() {
     assert_eq!(p.rebroadcast_count, 0);
 
     // Six blocks missing: the app's sync sends it once more, and it is mined.
-    b.cl.generate_to_address(6, &b.addr).await.expect("mine");
+    b.cl.generate_to_address(crate::shakedex_jobs::MISSING_BLOCKS as u32, &b.addr)
+        .await
+        .expect("mine");
     b.refresh().await;
     let p = b.purchase(&name);
     assert_eq!(p.rebroadcast_count, 1, "rebroadcast once");
@@ -5075,5 +5010,90 @@ async fn shakedex_cancelled_listing_is_not_offered() {
     let row = b.import(&listing).await;
     assert_eq!(row["verdict"]["verdict"], "hidden", "{row}");
     assert_eq!(row["verdict"]["kind"], "soldOrCancelled", "{row}");
-    assert!(b.build_purchase(&listing).await.is_err());
+    assert_refused(&b, &listing, "already sold or cancelled").await;
+}
+
+/// Building the purchase of `listing` is refused, for the reason given.
+async fn assert_refused(b: &ShakedexBuyer, listing: &CliListing, reason: &str) {
+    let err = b
+        .build_purchase(listing)
+        .await
+        .expect_err("the purchase is refused");
+    assert!(err.to_string().contains(reason), "{err}");
+}
+
+/// R9 on the real chain: a name that would expire before its purchase could
+/// be finalized is not offered and cannot be bought, and one block earlier it
+/// is buyable with the warning. The expiry is hsd's own (`renewalPeriodEnd`),
+/// and the chain is mined up to it, so the boundary is the node's, not a mock's.
+#[tokio::test]
+async fn shakedex_listing_expiring_before_finalize_is_not_offered() {
+    let Some((url, key, cli)) =
+        shakedex_env("shakedex_listing_expiring_before_finalize_is_not_offered")
+    else {
+        return;
+    };
+    let listing = cli.sell_fixed(2);
+    let b = ShakedexBuyer::new(&url, &key).await;
+    advance_mtp_past(&b.cl, &b.addr, listing.lock_time(0)).await;
+
+    let info = b.cl.get_name_info(&listing.name).await.expect("name info");
+    assert_eq!(info["info"]["claimed"], 0, "{info}");
+    let end = info["info"]["stats"]["renewalPeriodEnd"]
+        .as_u64()
+        .expect("hsd's renewalPeriodEnd");
+    // R9: not buyable once the expiry falls at or before
+    // tip + 1 + transferLockup + 1 day, a day being the lockup on regtest.
+    let p = NET.name_params();
+    let lockup = u64::from(p.transfer_lockup);
+    let day = lockup.min(crate::noncustodial::network::BLOCKS_PER_DAY as u64);
+    let last_buyable_tip = end - 2 - lockup - day;
+
+    let mut tip =
+        u64::try_from(b.cl.get_blockchain_info().await.expect("info").blocks).expect("tip");
+    assert!(
+        tip < last_buyable_tip,
+        "tip {tip} already past {last_buyable_tip}"
+    );
+    let first_mined = tip + 1;
+    while tip < last_buyable_tip {
+        let n = (last_buyable_tip - tip).min(100) as u32;
+        b.cl.generate_to_address(n, &b.addr).await.expect("mine");
+        tip += u64::from(n);
+    }
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+    let last_buyable = b.import(&listing).await;
+    b.cl.generate_to_address(1, &b.addr).await.expect("mine");
+    let too_late = b.import(&listing).await;
+    let build = b.build_purchase(&listing).await;
+
+    // Take the mined blocks back out before asserting anything: regtest halves
+    // the block subsidy every 2500 blocks, and every later test funds its
+    // wallet by mining, so a chain left 5000 blocks taller starves them.
+    let hash =
+        b.cl.get_block_hash(first_mined as i64)
+            .await
+            .expect("blockhash");
+    b.cl.invalidate_block(&hash).await.expect("rewind");
+
+    assert_eq!(
+        last_buyable["verdict"]["verdict"], "buyable",
+        "{last_buyable}"
+    );
+    assert_eq!(last_buyable["verdict"]["expiryEnd"], end, "{last_buyable}");
+    assert_eq!(
+        last_buyable["verdict"]["warnExpiry"], true,
+        "{last_buyable}"
+    );
+    assert_eq!(too_late["verdict"]["verdict"], "hidden", "{too_late}");
+    assert_eq!(
+        too_late["verdict"]["kind"], "expiresBeforeFinalize",
+        "{too_late}"
+    );
+    let err = build.expect_err("the purchase is refused");
+    assert!(
+        err.to_string()
+            .contains("expires before the purchase could be finalized"),
+        "{err}"
+    );
 }
