@@ -11,3 +11,4 @@ pnpm-lock.yaml
 
 # Prose: reflowing Markdown is a separate call from formatting code
 *.md
+src-tauri/tests/vectors/shakedex/*.json

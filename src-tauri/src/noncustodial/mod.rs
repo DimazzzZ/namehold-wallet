@@ -21,6 +21,7 @@ pub mod resource;
 pub mod rpc;
 pub mod send;
 pub mod session;
+pub mod shakedex;
 pub mod sync;
 pub mod tx;
 pub mod types;

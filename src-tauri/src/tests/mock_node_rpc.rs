@@ -22,6 +22,8 @@ use crate::noncustodial::rpc::{BlockchainInfo, ChainSource, NodeCoin};
 /// Boxed factory closure. Constructed once at mock-build time, called once
 /// per invocation. `Send + Sync` so the mock can be shared across tasks.
 type ResponseFn<T> = Box<dyn Fn() -> Result<T, AppError> + Send + Sync>;
+/// [`ResponseFn`] for a method whose reply depends on its two arguments.
+type ResponseFn2<A, B, T> = Box<dyn Fn(A, B) -> Result<T, AppError> + Send + Sync>;
 
 /// One recorded invocation of a [`MockNodeRpc`] method, capturing the method
 /// name and its salient argument(s). Lets a test assert not just that the code
@@ -39,6 +41,7 @@ pub enum RpcCall {
     NameResource(String),
     CoinsByAddress(String),
     TxOut(String, u32),
+    GetCoin(String, u32),
     TxsByAddress(String),
     RawTransaction(String),
     TxByHash(String),
@@ -64,6 +67,7 @@ pub struct MockNodeRpc {
     name_resource: ResponseFn<serde_json::Value>,
     coins_by_address: ResponseFn<Vec<NodeCoin>>,
     tx_out: ResponseFn<Option<serde_json::Value>>,
+    get_coin: ResponseFn2<String, u32, Option<NodeCoin>>,
     txs_by_address: ResponseFn<Vec<serde_json::Value>>,
     raw_transaction: ResponseFn<serde_json::Value>,
     tx_by_hash: ResponseFn<serde_json::Value>,
@@ -95,6 +99,7 @@ impl MockNodeRpc {
             name_resource: err("not configured"),
             coins_by_address: err("not configured"),
             tx_out: err("not configured"),
+            get_coin: Box::new(|_, _| Err(AppError::Rpc("not configured".to_string()))),
             txs_by_address: err("not configured"),
             raw_transaction: err("not configured"),
             tx_by_hash: err("not configured"),
@@ -186,6 +191,14 @@ impl MockNodeRpc {
 
     pub fn with_coins_by_address_err(mut self, msg: &'static str) -> Self {
         self.coins_by_address = Box::new(move || Err(AppError::Rpc(msg.to_string())));
+        self
+    }
+
+    pub fn with_get_coin(
+        mut self,
+        f: impl Fn(&str, u32) -> Result<Option<NodeCoin>, AppError> + Send + Sync + 'static,
+    ) -> Self {
+        self.get_coin = Box::new(move |txid, index| f(&txid, index));
         self
     }
 
@@ -334,6 +347,11 @@ impl NodeRpc for MockNodeRpc {
     async fn get_coins_by_address(&self, address: &str) -> Result<Vec<NodeCoin>, AppError> {
         self.record(RpcCall::CoinsByAddress(address.to_string()));
         (self.coins_by_address)()
+    }
+
+    async fn get_coin(&self, txid: &str, index: u32) -> Result<Option<NodeCoin>, AppError> {
+        self.record(RpcCall::GetCoin(txid.to_string(), index));
+        (self.get_coin)(txid.to_string(), index)
     }
 
     async fn get_tx_out(

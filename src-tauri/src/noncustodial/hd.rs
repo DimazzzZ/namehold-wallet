@@ -766,9 +766,8 @@ fn bip44_path_has_correct_length() {
 fn bip44_path_coin_type_matches_network() {
     let main_path = bip44_path(Network::Main, 0, 0, 0);
     let reg_path = bip44_path(Network::Regtest, 0, 0, 0);
-    // Main coin type is 5353, regtest is 5353 as well (same as mainnet for Handshake)
-    assert!(main_path[1] > HARDENED_OFFSET); // coin type for main/reg/test are positive
-    assert!(reg_path[1] > HARDENED_OFFSET); // coin type for regtest is also hardened
+    assert_eq!(main_path[1], HARDENED_OFFSET + 5353);
+    assert_eq!(reg_path[1], HARDENED_OFFSET + 5355);
 }
 
 #[test]

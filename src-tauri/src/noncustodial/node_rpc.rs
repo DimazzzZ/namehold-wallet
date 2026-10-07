@@ -55,6 +55,8 @@ pub trait NodeRpc: Send + Sync {
 
     async fn get_coins_by_address(&self, address: &str) -> Result<Vec<NodeCoin>, AppError>;
 
+    async fn get_coin(&self, txid: &str, index: u32) -> Result<Option<NodeCoin>, AppError>;
+
     async fn get_tx_out(
         &self,
         txid: &str,
@@ -127,6 +129,10 @@ impl NodeRpc for NodeRpcClient {
 
     async fn get_coins_by_address(&self, address: &str) -> Result<Vec<NodeCoin>, AppError> {
         NodeRpcClient::get_coins_by_address(self, address).await
+    }
+
+    async fn get_coin(&self, txid: &str, index: u32) -> Result<Option<NodeCoin>, AppError> {
+        NodeRpcClient::get_coin(self, txid, index).await
     }
 
     async fn get_tx_out(

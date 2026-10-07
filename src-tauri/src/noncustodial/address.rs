@@ -31,12 +31,22 @@ pub fn pubkey_to_hash160(pubkey: &[u8]) -> [u8; 20] {
     hash
 }
 
-/// Encode a P2WPKH address (witness v0, 20-byte program) for the given network.
-pub fn encode_p2wpkh(network: Network, hash160: &[u8; 20]) -> Result<String, AppError> {
+/// Encode a witness-v0 `program` under the network's address prefix.
+fn encode_v0(network: Network, program: &[u8]) -> Result<String, AppError> {
     let hrp = Hrp::parse(network.address_hrp())
         .map_err(|e| AppError::Crypto(format!("invalid hrp: {e}")))?;
-    segwit::encode_v0(hrp, hash160)
+    segwit::encode_v0(hrp, program)
         .map_err(|e| AppError::Crypto(format!("bech32 encode failed: {e}")))
+}
+
+/// Encode a P2WPKH address (witness v0, 20-byte program) for the given network.
+pub fn encode_p2wpkh(network: Network, hash160: &[u8; 20]) -> Result<String, AppError> {
+    encode_v0(network, hash160)
+}
+
+/// Encode a version-0, 32-byte (P2WSH) program, e.g. a Shakedex lock address.
+pub fn encode_p2wsh(network: Network, program: &[u8; 32]) -> Result<String, AppError> {
+    encode_v0(network, program)
 }
 
 /// Derive a Handshake P2WPKH address directly from a compressed public key.
