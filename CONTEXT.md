@@ -65,9 +65,11 @@ _Avoid_: Dutch auction (same mechanism; "reverse auction" is what the Shakedex e
 
 **Price step**:
 One price the seller has signed for a listing, with the time from which it is valid. A buyer pays exactly that price.
+_Avoid_: Bid (in this wallet a bid is a buyer's sealed offer in a name auction — the opposite direction), presign
+
 **Current step**:
 The cheapest price step of a listing that is valid for the next block. It is what this wallet buys at and what it shows as the price.
-_Avoid_: Bid (in this wallet a bid is a buyer's sealed offer in a name auction — the opposite direction), presign
+_Avoid_: Current bid, best bid (see Price step)
 
 **Listing file**:
 The portable form of a listing that buyers, markets and other wallets exchange — the Shakedex proof format, version 2.
