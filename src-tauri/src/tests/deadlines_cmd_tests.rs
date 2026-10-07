@@ -464,6 +464,51 @@ async fn purchase_ready_to_finalize_notifies_once() {
     assert!(raw.contains("purchase_finalize:"));
 }
 
+/// While our FINALIZE is on its way the purchase stays `awaiting_finalize`
+/// until the job sees it mined; "finalize it" would then ask for a second one.
+/// An unsent, failed or dropped finalize still leaves the name to finalize.
+#[tokio::test]
+async fn purchase_ready_to_finalize_skips_a_finalize_already_sent() {
+    for (status, notifies) in [
+        ("draft", true),
+        ("signed", true),
+        ("failed", true),
+        ("dropped", true),
+        ("broadcast_pending", false),
+        ("broadcasted", false),
+        ("confirmed", false),
+    ] {
+        let state = create_full_test_state();
+        {
+            let conn = state.db.lock().unwrap();
+            let id = insert_valid_profile(&conn, "mainnet");
+            enable_notifications(&conn, "144", "30");
+            seed_purchase(&conn, &id, "p1", "bought", "awaiting_finalize", Some(0));
+            db::queries::insert_tx_draft(
+                &conn,
+                "fin",
+                &id,
+                "shakedex_purchase_finalize",
+                "00",
+                "[]",
+                "{}",
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = 'fin'",
+                [status],
+            )
+            .unwrap();
+            db::queries::set_shakedex_purchase_finalize_draft(&conn, "p1", "fin").unwrap();
+        }
+        let app = mock_app_with(state);
+        let outcome = scan_deadline_notifications(app.handle().clone(), app.state())
+            .await
+            .unwrap();
+        assert_eq!(outcome.notified.len(), usize::from(notifies), "{status}");
+    }
+}
+
 #[tokio::test]
 async fn purchase_ready_to_finalize_respects_disabled_setting() {
     let state = create_full_test_state();

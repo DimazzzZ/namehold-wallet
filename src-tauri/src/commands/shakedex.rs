@@ -859,8 +859,15 @@ pub async fn shakedex_build_purchase_finalize_draft(
                 .into(),
         ));
     }
-    if transfer.address.as_deref() != Some(lock_address(ctx.network, &listing.public_key)?.as_str())
-    {
+    // A reply without the address is not hsd's answer (`Coin.getJSON` always
+    // sends one), so it is not read as "somewhere else" either.
+    let transfer_address = transfer.address.as_deref().ok_or_else(|| {
+        AppError::Rpc(format!(
+            "node did not report the address of coin {}:0",
+            p.purchase_txid
+        ))
+    })?;
+    if transfer_address != lock_address(ctx.network, &listing.public_key)? {
         return Err(AppError::InvalidInput(
             "the purchase's transfer is not at the listing's lock address".into(),
         ));

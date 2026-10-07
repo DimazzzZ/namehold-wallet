@@ -241,6 +241,76 @@ async fn finalize_refuses_foreign_transfer() {
     assert!(purchase(&app).finalize_draft_id.is_none());
 }
 
+/// A node at a ready tip whose TRANSFER is `transfer`, with an
+/// `awaiting_finalize` purchase recorded: the build's error text.
+async fn finalize_error_with_transfer(transfer: Value) -> (String, i64) {
+    let mut node = mockito::Server::new_async().await;
+    let net = Network::Regtest;
+    let r = regtest_listing();
+    let _m = node_with(
+        &mut node,
+        ready_tip(net),
+        r.name_info.clone(),
+        Some(transfer),
+    )
+    .await;
+    let conn = seeded("regtest", "mnemonic_hot", &node.url());
+    insert_purchase(&conn, net, &r.json, "awaiting_finalize");
+    let app = app_with(conn);
+    let err = shakedex_build_purchase_finalize_draft(app.state(), PURCHASE_ID.into(), None)
+        .await
+        .unwrap_err();
+    (err_text(err), draft_count(&app))
+}
+
+/// A TRANSFER committing to us but sitting outside the listing's lock: not
+/// the coin our purchase created, so not ours to finalize.
+#[tokio::test]
+async fn finalize_refuses_a_transfer_outside_the_lock() {
+    let net = Network::Regtest;
+    let r = regtest_listing();
+    let mut transfer = transfer_coin(net, &r.json, &destination(net));
+    transfer["address"] = address::encode_p2wpkh(net, &[0x42; 20]).unwrap().into();
+    let (err, drafts) = finalize_error_with_transfer(transfer).await;
+    assert!(err.contains("not at the listing's lock address"), "{err}");
+    assert_eq!(drafts, 0);
+}
+
+/// hsd always sends a coin's address (`Coin.getJSON`); a reply without one is
+/// not hsd's answer and is not read as "somewhere else".
+#[tokio::test]
+async fn finalize_refused_when_the_node_omits_the_transfer_address() {
+    let net = Network::Regtest;
+    let r = regtest_listing();
+    let mut transfer = transfer_coin(net, &r.json, &destination(net));
+    transfer.as_object_mut().unwrap().remove("address");
+    let (err, drafts) = finalize_error_with_transfer(transfer).await;
+    assert!(err.contains("did not report the address"), "{err}");
+    assert_eq!(drafts, 0);
+}
+
+/// Another profile's purchase is not found from this one.
+#[tokio::test]
+async fn finalize_refuses_another_profiles_purchase() {
+    let mut node = mockito::Server::new_async().await;
+    let tip = ready_tip(Network::Regtest);
+    let (app, _m) = regtest_app(&mut node, tip, "awaiting_finalize", None).await;
+    with_db(&app, |c| {
+        c.execute_batch(&format!(
+            "CREATE TEMP TABLE other AS SELECT * FROM wallet_profiles WHERE id = '{PROFILE}';
+             UPDATE other SET id = 'other-profile';
+             INSERT INTO wallet_profiles SELECT * FROM other;
+             UPDATE shakedex_purchases SET wallet_profile_id = 'other-profile';"
+        ))
+        .unwrap();
+    });
+    let err = shakedex_build_purchase_finalize_draft(app.state(), PURCHASE_ID.into(), None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    assert_eq!(draft_count(&app), 0);
+}
+
 #[tokio::test]
 async fn finalize_refused_when_transfer_already_spent() {
     let mut node = mockito::Server::new_async().await;
@@ -443,6 +513,23 @@ async fn rebuilding_an_unsent_finalize_replaces_it() {
     assert_eq!(
         purchase(&app).finalize_draft_id.as_deref(),
         Some(second.id.as_str())
+    );
+    // Signed but not sent is still unsent: replaced too.
+    with_db(&app, |c| {
+        c.execute(
+            "UPDATE wallet_tx_drafts SET status = 'signed' WHERE id = ?1",
+            params![second.id],
+        )
+        .unwrap();
+    });
+    let third = shakedex_build_purchase_finalize_draft(app.state(), PURCHASE_ID.into(), None)
+        .await
+        .expect("a signed, unsent finalize is replaced");
+    assert_ne!(second.id, third.id);
+    assert_eq!(draft_count(&app), 1);
+    assert_eq!(
+        purchase(&app).finalize_draft_id.as_deref(),
+        Some(third.id.as_str())
     );
 }
 
