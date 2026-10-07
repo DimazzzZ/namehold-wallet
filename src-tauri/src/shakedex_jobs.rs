@@ -39,7 +39,7 @@ use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::{self, NodeRpcClient};
 use crate::noncustodial::send::RESERVATION_TTL_SECS;
-use crate::noncustodial::shakedex::purchase::transfer_commits_to;
+use crate::noncustodial::shakedex::purchase::{self, transfer_commits_to};
 use crate::noncustodial::shakedex::verify;
 
 /// Blocks a sent purchase may be absent from the node's mempool and chain
@@ -359,14 +359,23 @@ impl Job<'_> {
         // spending the one rebroadcast — wait instead. A price we cannot
         // re-check is an error, and the next sync tries again.
         let paid = p.paid_doos()?;
-        match verify::current_price(self.client, self.network, &p.listing_json).await? {
-            Some(price) if price == paid => {}
-            Some(price) if price < paid => {
+        let paid_lock_time = purchase::plan_lock_time(&draft.signing_inputs_json)?;
+        match verify::paid_step(
+            self.client,
+            self.network,
+            &p.listing_json,
+            paid,
+            paid_lock_time,
+        )
+        .await?
+        {
+            verify::PaidStep::Current => {}
+            verify::PaidStep::Cheaper => {
                 return self
                     .lose_unless_traced(p, NOT_RESENT_PRICE_DROPPED, None)
                     .await;
             }
-            _ => return wait().await,
+            verify::PaidStep::NotValid => return wait().await,
         }
         match self.client.send_raw_transaction(signed).await {
             Ok(_) => self.unconfirmed(p, None, 1),

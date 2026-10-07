@@ -44,8 +44,11 @@ fn lockup(net: Network) -> i64 {
 }
 
 /// The TRANSFER coin our purchase created at `PURCHASE_TXID:0`, sitting at the
-/// lock address and committing to `committed_to`.
-fn transfer_coin(net: Network, listing_json: &str, committed_to: &str) -> Value {
+/// lock address and committing to `committed_to`, at the name height of the
+/// `getnameinfo` result `name_info` (as hsd links them).
+fn transfer_coin(net: Network, listing_json: &str, committed_to: &str, name_info: &Value) -> Value {
+    let name_height = u32::try_from(name_info["info"]["height"].as_u64().expect("name height"))
+        .expect("u32 height");
     let l = ListingFile::parse(listing_json, net).unwrap();
     let (version, hash) = address::decode(net, committed_to).unwrap();
     json!({
@@ -61,7 +64,7 @@ fn transfer_coin(net: Network, listing_json: &str, committed_to: &str) -> Value 
             "action": "TRANSFER",
             "items": [
                 hex::encode(crate::noncustodial::names::hash_name(&l.name).unwrap()),
-                hex::encode(50u32.to_le_bytes()),
+                hex::encode(name_height.to_le_bytes()),
                 hex::encode([version]),
                 hex::encode(hash),
             ]
@@ -148,7 +151,7 @@ async fn regtest_app(
         node,
         tip,
         r.name_info.clone(),
-        Some(transfer_coin(net, &r.json, &to)),
+        Some(transfer_coin(net, &r.json, &to, &r.name_info)),
     )
     .await;
     let conn = seeded("regtest", "mnemonic_hot", &node.url());
@@ -269,7 +272,7 @@ async fn finalize_error_with_transfer(transfer: Value) -> (String, i64) {
 async fn finalize_refuses_a_transfer_outside_the_lock() {
     let net = Network::Regtest;
     let r = regtest_listing();
-    let mut transfer = transfer_coin(net, &r.json, &destination(net));
+    let mut transfer = transfer_coin(net, &r.json, &destination(net), &r.name_info);
     transfer["address"] = address::encode_p2wpkh(net, &[0x42; 20]).unwrap().into();
     let (err, drafts) = finalize_error_with_transfer(transfer).await;
     assert!(err.contains("not at the listing's lock address"), "{err}");
@@ -282,11 +285,63 @@ async fn finalize_refuses_a_transfer_outside_the_lock() {
 async fn finalize_refused_when_the_node_omits_the_transfer_address() {
     let net = Network::Regtest;
     let r = regtest_listing();
-    let mut transfer = transfer_coin(net, &r.json, &destination(net));
+    let mut transfer = transfer_coin(net, &r.json, &destination(net), &r.name_info);
     transfer.as_object_mut().unwrap().remove("address");
     let (err, drafts) = finalize_error_with_transfer(transfer).await;
     assert!(err.contains("did not report the address"), "{err}");
     assert_eq!(drafts, 0);
+}
+
+/// hsd links a FINALIZE to its TRANSFER only at the same name height. The
+/// name now registered at another height expired and was registered again
+/// since the purchase: refused before anything is signed.
+#[tokio::test]
+async fn finalize_refused_when_the_name_was_registered_again() {
+    let net = Network::Regtest;
+    let r = regtest_listing();
+    let mut earlier = r.name_info.clone();
+    let height = earlier["info"]["height"].as_u64().unwrap();
+    earlier["info"]["height"] = (height - 1).into();
+    let transfer = transfer_coin(net, &r.json, &destination(net), &earlier);
+    let (err, drafts) = finalize_error_with_transfer(transfer).await;
+    assert!(err.contains("registered again since the purchase"), "{err}");
+    assert_eq!(drafts, 0);
+}
+
+/// A transfer covenant without hsd's 4-byte height is not hsd's reply.
+#[tokio::test]
+async fn finalize_refused_when_the_transfer_height_is_unreadable() {
+    let net = Network::Regtest;
+    let r = regtest_listing();
+    let mut transfer = transfer_coin(net, &r.json, &destination(net), &r.name_info);
+    transfer["covenant"]["items"][1] = "3200".into();
+    let (err, drafts) = finalize_error_with_transfer(transfer).await;
+    assert!(err.contains("readable height in the transfer"), "{err}");
+    assert_eq!(drafts, 0);
+}
+
+/// Two builds of one purchase at once, each reading the purchase before the
+/// other links its draft: the second must not link its own over the first,
+/// which would orphan that draft and the coins it reserved.
+#[tokio::test]
+async fn concurrent_finalize_builds_leave_one_draft() {
+    let mut node = mockito::Server::new_async().await;
+    let tip = ready_tip(Network::Regtest);
+    let (app, _m) = regtest_app(&mut node, tip, "awaiting_finalize", None).await;
+    let (a, b) = tokio::join!(
+        shakedex_build_purchase_finalize_draft(app.state(), PURCHASE_ID.into(), None),
+        shakedex_build_purchase_finalize_draft(app.state(), PURCHASE_ID.into(), None),
+    );
+    let (built, refused) = match (a, b) {
+        (Ok(d), Err(e)) | (Err(e), Ok(d)) => (d, e),
+        (a, b) => panic!("one build must win: {a:?} / {b:?}"),
+    };
+    assert!(err_text(refused).contains("prepared meanwhile"));
+    assert_eq!(draft_count(&app), 1);
+    assert_eq!(
+        purchase(&app).finalize_draft_id.as_deref(),
+        Some(built.id.as_str())
+    );
 }
 
 /// Another profile's purchase is not found from this one.
@@ -336,7 +391,7 @@ async fn finalize_refused_for_ledger_profile() {
         &mut node,
         ready_tip(net),
         r.name_info.clone(),
-        Some(transfer_coin(net, &r.json, &destination(net))),
+        Some(transfer_coin(net, &r.json, &destination(net), &r.name_info)),
     )
     .await;
     let conn = seeded("regtest", "ledger_hardware", &node.url());
@@ -409,7 +464,12 @@ async fn finalize_ignores_experimental_flag() {
         &mut node,
         ready_tip(net),
         fixture_name(),
-        Some(transfer_coin(net, LISTING_FILE, &destination(net))),
+        Some(transfer_coin(
+            net,
+            LISTING_FILE,
+            &destination(net),
+            &fixture_name(),
+        )),
     )
     .await;
     // Mainnet, and `shakedex_experimental` never set: purchases are refused,
@@ -610,7 +670,7 @@ async fn finalize_refused_when_the_node_omits_a_covenant_field() {
             &mut node,
             ready_tip(net),
             name_info,
-            Some(transfer_coin(net, &r.json, &destination(net))),
+            Some(transfer_coin(net, &r.json, &destination(net), &r.name_info)),
         )
         .await;
         let conn = seeded("regtest", "mnemonic_hot", &node.url());
@@ -636,7 +696,7 @@ async fn finalize_tells_a_mempool_transfer_from_one_without_its_height() {
         let mut node = mockito::Server::new_async().await;
         let net = Network::Regtest;
         let r = regtest_listing();
-        let mut transfer = transfer_coin(net, &r.json, &destination(net));
+        let mut transfer = transfer_coin(net, &r.json, &destination(net), &r.name_info);
         match &height {
             Some(h) => transfer["height"] = h.clone(),
             None => {

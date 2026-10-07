@@ -12,7 +12,7 @@ use crate::noncustodial::address;
 use crate::noncustodial::covenants;
 use crate::noncustodial::names;
 use crate::noncustodial::network::Network;
-use crate::noncustodial::rpc::NodeCoin;
+use crate::noncustodial::rpc::{NodeCoin, NodeCovenant};
 use crate::noncustodial::send::{SpendableCoin, DUST_THRESHOLD};
 use crate::noncustodial::shakedex::listing_file::ListingFile;
 use crate::noncustodial::shakedex::script::{lock_address, lock_script};
@@ -222,6 +222,19 @@ fn checked_sum(values: impl IntoIterator<Item = u64>) -> Result<u64, AppError> {
         .into_iter()
         .try_fold(0u64, |acc, v| acc.checked_add(v))
         .ok_or_else(overflow)
+}
+
+/// The encoded lock time a purchase draft's plan carries: that of the price
+/// step it pays, which tells the step apart from others at the same price.
+pub fn plan_lock_time(plan_json: &str) -> Result<u32, AppError> {
+    serde_json::from_str::<crate::noncustodial::actions::DraftPlan>(plan_json)
+        .map(|plan| plan.locktime)
+        .map_err(|e| {
+            AppError::InvalidInput(format!(
+                "the purchase's plan is unreadable ({e}), so the price could not be re-checked; \
+                 the purchase was not sent"
+            ))
+        })
 }
 
 /// Choose funding in the order given (callers pass load_spendable_coins
@@ -444,6 +457,17 @@ pub fn transfer_commits_to(
     };
     Ok(cov_version.eq_ignore_ascii_case(&hex::encode([version]))
         && cov_hash.eq_ignore_ascii_case(&hex::encode(hash)))
+}
+
+/// The name height a covenant commits to (item 1), as hsd writes it: 4
+/// little-endian bytes in hex. `None` for anything else, which is not hsd's
+/// reply and proves nothing.
+pub fn covenant_name_height(cov: &NodeCovenant) -> Option<u32> {
+    cov.items
+        .get(1)
+        .and_then(|h| hex::decode(h).ok())
+        .and_then(|b| <[u8; 4]>::try_from(b).ok())
+        .map(u32::from_le_bytes)
 }
 
 /// The market fee as basis points of the price, for display. `None` when

@@ -193,14 +193,9 @@ pub async fn verify_listing_at(
             reason: "node did not report the name's height".into(),
         });
     };
-    // hsd writes the height as 4 little-endian bytes in hex: anything else
-    // is not its reply, and proves nothing about who holds the name.
-    let Some(cov_height) = cov
-        .items
-        .get(1)
-        .and_then(|h| hex::decode(h).ok())
-        .and_then(|b| <[u8; 4]>::try_from(b).ok())
-        .map(u32::from_le_bytes)
+    // Anything but hsd's 4-byte height is not its reply, and proves nothing
+    // about who holds the name.
+    let Some(cov_height) = crate::noncustodial::shakedex::purchase::covenant_name_height(cov)
     else {
         return hide(Hidden::CouldNotCheck {
             reason: "node did not report a readable height in the lock coin's covenant".into(),
@@ -287,32 +282,42 @@ pub async fn verify_listing_at(
 /// Refusal when the current step changed between review and broadcast.
 pub const PRICE_CHANGED: &str = "the price changed — review the purchase again";
 
-/// Just before a purchase is broadcast: refuse unless the step it pays
-/// (`paid`) is still the current one on the node. A cheaper step that became
-/// valid, or a median time that went back below the paid step's lock time
-/// (a reorg, a node behind), both refuse. Fails closed — without the node's
-/// median time nothing is sent.
-pub async fn recheck_price(
+/// Where the step a purchase pays stands at the node's median time now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaidStep {
+    /// Valid, and no cheaper step is: the purchase may be sent.
+    Current,
+    /// A cheaper step is valid: the purchase would overpay.
+    Cheaper,
+    /// The paid step is not valid (the median time went back below its lock
+    /// time, in a reorg or on a node behind), and no cheaper one is: hsd
+    /// would take the purchase only as non-final.
+    NotValid,
+}
+
+/// Where the step a purchase pays (`paid` doos, signed with the encoded lock
+/// time `paid_lock_time`) stands at the node's median time now. The step is
+/// told by its lock time, not by its price: a listing may hold several steps
+/// at one price (the shakedex CLI writes one for a reverse auction whose
+/// start and end prices are equal), and another of them being valid does not
+/// make ours final. An error when the node does not report its median time,
+/// or when the listing has no such step: neither proves anything.
+pub async fn paid_step(
     client: &dyn NodeRpc,
     network: Network,
     listing_json: &str,
     paid: u64,
-) -> Result<(), AppError> {
-    if current_price(client, network, listing_json).await? != Some(paid) {
-        return Err(AppError::InvalidInput(PRICE_CHANGED.into()));
-    }
-    Ok(())
-}
-
-/// The price of the listing's current step at the node's median time now;
-/// `None` when no step is valid yet. An error when the node does not report
-/// its median time: that proves nothing.
-pub async fn current_price(
-    client: &dyn NodeRpc,
-    network: Network,
-    listing_json: &str,
-) -> Result<Option<u64>, AppError> {
+    paid_lock_time: u32,
+) -> Result<PaidStep, AppError> {
     let listing = ListingFile::parse(listing_json, network)?;
+    let encoded = listing.encoded_steps()?;
+    if !encoded.contains(&(paid, paid_lock_time)) {
+        return Err(AppError::InvalidInput(
+            "the purchase pays no step of its listing, so the price could not be re-checked; \
+             the purchase was not sent"
+                .into(),
+        ));
+    }
     let mtp = client
         .get_blockchain_info()
         .await?
@@ -324,6 +329,32 @@ pub async fn current_price(
                     .into(),
             )
         })?;
-    let encoded = listing.encoded_steps()?;
-    Ok(template::current_step_index(&encoded, mtp).map(|i| encoded[i].0))
+    let cheaper = encoded
+        .iter()
+        .any(|(price, enc)| *price < paid && template::is_valid_at(*enc, mtp));
+    Ok(if cheaper {
+        PaidStep::Cheaper
+    } else if template::is_valid_at(paid_lock_time, mtp) {
+        PaidStep::Current
+    } else {
+        PaidStep::NotValid
+    })
+}
+
+/// Just before a purchase is broadcast: refuse unless the step it pays is
+/// still the current one on the node ([`PaidStep::Current`]). A cheaper step
+/// that became valid, or a median time that went back below the paid step's
+/// lock time (a reorg, a node behind), both refuse. Fails closed — without the
+/// node's median time nothing is sent.
+pub async fn recheck_price(
+    client: &dyn NodeRpc,
+    network: Network,
+    listing_json: &str,
+    paid: u64,
+    paid_lock_time: u32,
+) -> Result<(), AppError> {
+    match paid_step(client, network, listing_json, paid, paid_lock_time).await? {
+        PaidStep::Current => Ok(()),
+        PaidStep::Cheaper | PaidStep::NotValid => Err(AppError::InvalidInput(PRICE_CHANGED.into())),
+    }
 }
