@@ -109,6 +109,21 @@ jobs:
             && echo "org.gnome.system.proxy present" \
             || (echo "::error::org.gnome.system.proxy still missing after compile" && exit 1)
 
+      # The cache holds only what apt had to install on the runner that saved
+      # it. Runner images differ: on one that ships Mesa, its drivers are not
+      # installed, so they are not cached, and a runner on an image without
+      # Mesa restores a cache with no driver behind EGL ("Could not create
+      # default EGL display: EGL_BAD_PARAMETER"). Install them for real; on a
+      # runner that already has them this is a no-op.
+      - name: Make sure Mesa's drivers are installed
+        timeout-minutes: 5
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dri libglx-mesa0 libgbm1 mesa-libgallium libegl-mesa0
+          dpkg -s libgl1-mesa-dri libglx-mesa0 libgbm1 mesa-libgallium libegl-mesa0 \
+            | grep -c '^Status: install ok installed' | grep -qx 5 \
+            || (echo "::error::Mesa drivers still not installed" && exit 1)
+
       # The same missing trigger leaves the libraries restored from the cache
       # (Mesa's among them) out of the loader cache. Rebuild it.
       - name: Refresh the shared library cache
