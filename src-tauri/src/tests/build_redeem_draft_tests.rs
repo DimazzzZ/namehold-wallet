@@ -142,6 +142,7 @@ fn setup(reveal_value: u64, funding_value: i64) -> (rusqlite::Connection, Ctx, N
 
     let ctx = Ctx {
         profile_id: PROFILE.into(),
+        profile_kind: "mnemonic_hot".into(),
         network,
         account: 0,
         account_xpub: xpub,
@@ -250,6 +251,7 @@ fn build_redeem_draft_totals_every_output_it_reclaims() {
 
     let ctx = Ctx {
         profile_id: PROFILE.into(),
+        profile_kind: "mnemonic_hot".into(),
         network,
         account: 0,
         account_xpub: xpub,

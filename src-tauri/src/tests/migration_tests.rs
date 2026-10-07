@@ -70,7 +70,8 @@ fn test_schema_version_tracking() {
     // 031 (rescan_reveal_pairing: reveal values may sit on the wrong bid).
     // 032 (clear_seeded_mainnet_explorer: 009 seeded a mainnet URL that
     //      outranked the network default on every other network).
-    assert_eq!(count, 32);
+    // 033 (shakedex_purchases: buyer-side Shakedex purchase tracking).
+    assert_eq!(count, 33);
 }
 
 #[test]

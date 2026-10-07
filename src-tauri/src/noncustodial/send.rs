@@ -304,12 +304,22 @@ pub fn load_spendable_coins(
            AND u.spent_by_txid IS NULL
            AND u.covenant_type = 0
            AND u.spend_class = 'liquid_hns'
+           AND u.txid NOT IN (SELECT s.purchase_txid FROM shakedex_purchases s
+                               WHERE s.wallet_profile_id = ?1
+                                 AND s.state IN (?5, ?6))
            AND (u.reserved_by_draft_id IS NULL OR u.reserved_by_draft_id = ?2)
            AND (u.coinbase = 0 OR u.height + ?3 <= ?4)
          ORDER BY u.value_doos DESC, u.txid ASC, u.vout ASC",
     )?;
     let rows = stmt.query_map(
-        params![profile_id, own_draft_id, maturity, spend_height],
+        params![
+            profile_id,
+            own_draft_id,
+            maturity,
+            spend_height,
+            crate::db::queries::PurchaseState::PendingSend,
+            crate::db::queries::PurchaseState::Unconfirmed
+        ],
         |row| {
             Ok(SpendableCoin {
                 txid: row.get(0)?,

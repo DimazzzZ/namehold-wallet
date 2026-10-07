@@ -61,7 +61,7 @@ fn shakedex_modules_import_no_sibling_command_module() {
             assert!(found.is_empty(), "{file} reaches into {found:?}: {line}");
         }
     }
-    assert!(scanned > 400, "only {scanned} lines scanned");
+    assert!(scanned > 500, "only {scanned} lines scanned");
 }
 
 /// The check itself: every legacy layer and sibling is caught, in a `use` or

@@ -1,9 +1,8 @@
 //! The resolved, secret-free context every draft-building command starts
 //! from: the active profile, its network and account, spendable coins,
 //! settings and the profile's own node — plus the two node reads every name
-//! draft needs (`getnameinfo`, the renewal block). Kept apart from the name
-//! commands so other draft-building commands can share it without importing
-//! them.
+//! draft needs (`getnameinfo`, the renewal block). Shared by the name commands
+//! and the Shakedex commands, so neither imports the other.
 
 use rand::RngCore;
 use tauri::State;
@@ -27,6 +26,8 @@ pub(crate) fn random_id() -> String {
 #[derive(Debug)]
 pub(crate) struct Ctx {
     pub(crate) profile_id: String,
+    /// `wallet_profiles.kind`: `mnemonic_hot`, `ledger_hardware`, ...
+    pub(crate) profile_kind: String,
     pub(crate) network: Network,
     pub(crate) account: u32,
     pub(crate) account_xpub: ExtendedPubKey,
@@ -79,6 +80,7 @@ pub(crate) fn load_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     let node = NodeRpcClient::for_profile(&conn, &id)?;
     Ok(Ctx {
         profile_id: id,
+        profile_kind: profile.kind,
         network,
         account: profile.account_index as u32,
         account_xpub,

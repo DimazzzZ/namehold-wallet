@@ -165,6 +165,7 @@ fn setup(names_in: &[&str]) -> Fixture {
 
     let ctx = Ctx {
         profile_id: PROFILE.into(),
+        profile_kind: "mnemonic_hot".into(),
         network,
         account: 0,
         account_xpub: xpub,
