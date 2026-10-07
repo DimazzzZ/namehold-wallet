@@ -33,6 +33,7 @@ use crate::error::AppError;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::{cross_network_refusal, ChainSource, NodeRpcClient};
 use crate::noncustodial::send;
+use crate::noncustodial::shakedex::purchase::{PurchaseSummary, PURCHASE_ACTION};
 use crate::noncustodial::types::{doos_to_hns_string, BroadcastResult, TxDraftSummary, TxSummary};
 use crate::noncustodial::{derivation, sync};
 use crate::AppState;
@@ -125,6 +126,11 @@ fn compute_send_summary(
 pub(crate) fn confirm_details_for_draft(
     draft: &db::queries::TxDraftRow,
 ) -> Result<serde_json::Value, AppError> {
+    if draft.action == PURCHASE_ACTION {
+        return Ok(confirm_details_for_purchase(&read_summary(
+            &draft.summary_json,
+        )?));
+    }
     // The fee and amounts the user checks before signing: a summary that
     // cannot be read is refused, never shown as zeros (fail closed).
     let summary: TxSummary = read_summary(&draft.summary_json)?;
@@ -154,10 +160,52 @@ pub(crate) fn confirm_details_for_draft(
     Ok(serde_json::json!({ "rows": rows }))
 }
 
-/// A draft's typed summary, or a "corrupted draft" refusal.
+/// A Shakedex draft's typed summary, or a "corrupted draft" refusal.
 fn read_summary<T: serde::de::DeserializeOwned>(summary_json: &str) -> Result<T, AppError> {
     serde_json::from_str(summary_json)
         .map_err(|e| AppError::Other(format!("corrupted draft: unreadable summary: {e}")))
+}
+
+/// Confirmation rows for a Shakedex purchase (R10): what goes to the seller,
+/// to the market and to the network, and the total. The lock coin's value is
+/// the name's own and comes back in the TRANSFER output, so it is never shown
+/// as money spent.
+fn confirm_details_for_purchase(s: &PurchaseSummary) -> serde_json::Value {
+    let mut rows = vec![
+        serde_json::json!({ "label": "Action", "value": "Purchase" }),
+        serde_json::json!({ "label": "Name", "value": s.name }),
+        serde_json::json!({ "label": "Price (to seller)", "value": doos_to_hns_string(s.price_doos) }),
+    ];
+    if s.market_fee_doos > 0 {
+        let fee = doos_to_hns_string(s.market_fee_doos);
+        let value = match crate::noncustodial::shakedex::purchase::fee_percent_text(
+            s.market_fee_doos,
+            s.price_doos,
+        ) {
+            Some(percent) => format!("{fee} ({percent} of the price)"),
+            None => fee,
+        };
+        rows.push(serde_json::json!({ "label": "Market fee", "value": value }));
+        if let Some(addr) = &s.market_fee_address {
+            rows.push(serde_json::json!({ "label": "Market fee to", "value": addr }));
+        }
+    }
+    rows.push(serde_json::json!({
+        "label": "Network fee",
+        "value": doos_to_hns_string(s.fee_doos),
+    }));
+    rows.push(serde_json::json!({
+        "label": "Total",
+        "value": doos_to_hns_string(s.total_doos),
+    }));
+    rows.push(serde_json::json!({ "label": "Paid to", "value": s.payment_address }));
+    rows.push(serde_json::json!({
+        "label": "Name becomes yours",
+        "value": s.finalize_wait,
+    }));
+    rows.push(serde_json::json!({ "label": "Txid", "value": s.txid }));
+    push_warning_rows(&mut rows, &s.warnings);
+    serde_json::json!({ "rows": rows })
 }
 
 /// One "Warning" row per warning.
@@ -1535,6 +1583,33 @@ fn explain_shortfall(
     ))
 }
 
+/// Refuses a purchase whose record is gone, or a cheaper step of whose
+/// listing became valid since it was reviewed. Nothing is sent either way.
+async fn recheck_purchase(
+    client: &NodeRpcClient,
+    network: Option<&str>,
+    purchase: Option<&db::queries::ShakedexPurchase>,
+) -> Result<(), AppError> {
+    let p = purchase.ok_or_else(|| {
+        AppError::InvalidInput(
+            "this purchase is no longer recorded — review the purchase again".to_string(),
+        )
+    })?;
+    let network = network.ok_or_else(|| {
+        AppError::InvalidInput(
+            "the purchase's wallet profile is gone; the purchase was not sent".into(),
+        )
+    })?;
+    let network = crate::noncustodial::derivation::network_from_profile(network)?;
+    let paid = p.paid_doos().map_err(|e| {
+        AppError::InvalidInput(format!(
+            "{e}, so it could not be re-checked; the purchase was not sent"
+        ))
+    })?;
+    crate::noncustodial::shakedex::verify::recheck_price(client, network, &p.listing_json, paid)
+        .await
+}
+
 /// Broadcast a signed draft via node RPC.
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -1542,10 +1617,36 @@ pub async fn broadcast_tx_draft(
     state: State<'_, AppState>,
     draft_id: String,
 ) -> Result<BroadcastResult, AppError> {
-    let (signed_hex, expected_network, settings, client) = {
+    let (signed_hex, expected_network, settings, client, purchase, maybe_sent) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let draft = db::queries::get_tx_draft(&conn, &draft_id)?
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
+        // `Some(None)`: a purchase draft whose record is gone.
+        let purchase = if draft.action == PURCHASE_ACTION {
+            Some(db::queries::get_shakedex_purchase_by_draft(
+                &conn, &draft_id,
+            )?)
+        } else {
+            None
+        };
+        let maybe_sent = db::queries::may_have_reached_chain(&draft.status);
+        // An unsent purchase draft past its coin reservation is discarded
+        // with its purchase, as the sync would: its coins may fund another
+        // draft by now. Refused here, at the TTL, a send always starts well
+        // before the sync's own deletion (`shakedex_jobs::SEND_GRACE_SECS`).
+        if let Some(Some(p)) = &purchase {
+            if db::queries::delete_abandoned_shakedex_purchase(
+                &conn,
+                &p.id,
+                &draft_id,
+                crate::noncustodial::send::RESERVATION_TTL_SECS,
+            )? {
+                return Err(AppError::InvalidInput(
+                    "this purchase was prepared more than an hour ago — review the purchase again"
+                        .to_string(),
+                ));
+            }
+        }
         let network =
             db::queries::get_wallet_profile(&conn, &draft.wallet_profile_id)?.map(|p| p.network);
         let signed = draft
@@ -1557,7 +1658,7 @@ pub async fn broadcast_tx_draft(
         // `remote_broadcast_allowed` is a user-wide opt-in — it stays on the
         // global settings map by design.
         let client = NodeRpcClient::for_profile(&conn, &draft.wallet_profile_id)?;
-        (signed, network, settings, client)
+        (signed, network, settings, client, purchase, maybe_sent)
     };
 
     // Refused up-front (read-only source, remote node without the opt-in,
@@ -1566,6 +1667,23 @@ pub async fn broadcast_tx_draft(
     // node the user did not mean to send through.
     crate::noncustodial::rpc::broadcast_gates(&client, &settings, expected_network.as_deref())
         .await?;
+    // A Shakedex purchase pays the step that was current when it was
+    // reviewed. Refused before sending (a cheaper step became valid, or the
+    // price could not be re-checked), the purchase must be reviewed again:
+    // its draft and record are discarded here, so no screen has to tell the
+    // refusal apart from a failed send. A retry of an attempt the node may
+    // already hold (`broadcast_pending`) keeps its draft and record for the
+    // sync to resolve, and still reports the re-check's reason.
+    if let Some(p) = purchase {
+        if let Err(e) = recheck_purchase(&client, expected_network.as_deref(), p.as_ref()).await {
+            if !maybe_sent {
+                let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+                db::queries::delete_tx_draft(&conn, &draft_id)?;
+            }
+            return Err(e);
+        }
+    }
+
     let outcome = classify_broadcast_outcome_with_client(&client, &signed_hex).await;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     match outcome {

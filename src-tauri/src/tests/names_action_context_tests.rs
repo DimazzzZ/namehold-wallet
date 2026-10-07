@@ -1118,6 +1118,7 @@ mod rpc_injected_tests {
         .unwrap();
         Ctx {
             profile_id: "test".into(),
+            profile_kind: "mnemonic_hot".into(),
             network: Network::Main,
             account: 0,
             account_xpub: xpub,

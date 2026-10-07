@@ -1,8 +1,19 @@
 import { formatDate } from "../../lib/utils";
 import type { HiddenCounts, ShakedexHidden } from "../../types";
 
+/** Why Buy and Finalize are disabled for any profile but a recovery-phrase one (R16). */
+export const RECOVERY_PHRASE_ONLY = "Shakedex works with a recovery-phrase wallet for now";
+
+/** Why Buy and Finalize are disabled when the node cannot send (R6). */
+export const NEEDS_SENDING_NODE =
+  "Shakedex needs a local node, or a remote node with sending allowed";
+
 /** Why a market link cannot be imported off mainnet (R5). */
 export const MARKET_MAINNET_ONLY = "LearnHNS Market lists mainnet names only";
+
+/** Why Buy is disabled on mainnet until Settings allows it (R15). Finalize is not gated. */
+export const MAINNET_EXPERIMENTAL =
+  "Shakedex purchases on mainnet are experimental: enable them in Settings";
 
 /** "~6 h" — the wait is measured against the node's median time, so it is only approximate. */
 export function approxWait(secs: number): string {

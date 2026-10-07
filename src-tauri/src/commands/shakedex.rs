@@ -1,5 +1,7 @@
-//! Shakedex listings: browse LearnHNS Market and import a listing (file,
-//! pasted JSON or a LearnHNS link).
+//! Buying names from Shakedex listings: browse LearnHNS Market, import a
+//! listing (file, pasted JSON or a LearnHNS link), preview a purchase and
+//! build its draft. The draft then goes through the usual secure confirm,
+//! sign and broadcast commands in `commands::tx`.
 //!
 //! Every listing, whatever its source, is verified on the profile's own node
 //! (`verify::verify_listing`) before it can be bought; the market's word is
@@ -8,22 +10,33 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::commands::draft_ctx;
-use crate::db::queries;
+use crate::commands::draft_ctx::{self, random_id, Ctx};
+use crate::db::queries::{self, PurchaseState, ShakedexPurchase};
 use crate::error::AppError;
-use crate::market::learnhns::{name_from_listing_link, LearnHnsClient};
+use crate::market::learnhns::{
+    market_fee_is_published, name_from_listing_link, FeeInfo, LearnHnsClient,
+};
 use crate::models::settings::SettingsMap;
 use crate::noncustodial::derivation;
 use crate::noncustodial::network::Network;
-use crate::noncustodial::rpc::{ChainSource, NodeRpcClient};
+use crate::noncustodial::rpc::{self, ChainSource, NodeRpcClient};
+use crate::noncustodial::send::DUST_THRESHOLD;
 use crate::noncustodial::shakedex::listing_file::{ListingFile, MAX_LISTING_FILE_BYTES};
+use crate::noncustodial::shakedex::purchase::{
+    self, MarketFee, PurchaseInput, PurchaseSummary, PURCHASE_ACTION,
+};
 use crate::noncustodial::shakedex::template;
-use crate::noncustodial::shakedex::verify::{self, Hidden, Verdict};
+use crate::noncustodial::shakedex::verify::{self, Buyable, Hidden, Verdict};
+use crate::noncustodial::tx::output_address_from_string;
+use crate::noncustodial::types::TxDraftSummary;
+use crate::providers::signer::WriteCapability;
 use crate::AppState;
 
 /// Listings fetched per market page; each one is verified in turn, against
 /// one tip and MTP read for the whole page.
 const MARKET_PER_PAGE: u32 = 100;
+const UNPUBLISHED_FEE_WARNING: &str = "not signed by the seller and not the market's published \
+     fee — anyone could have added it";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,6 +129,33 @@ pub enum ImportSource {
     File { path: String },
     Text { json: String },
     Link { url: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketFeeLine {
+    pub value_doos: u64,
+    /// "1.99%", or `None` when the fee is no meaningful share of the price
+    /// (`purchase::fee_percent_text`).
+    pub percent_text: Option<String>,
+    pub published: bool,
+    /// True only when a fee output would actually be added: a valid fee
+    /// address and a fee at or above the dust limit.
+    pub payable: bool,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurchasePreview {
+    pub name: String,
+    pub price_doos: u64,
+    pub market_fee: Option<MarketFeeLine>,
+    pub network_fee_doos: u64,
+    pub total_doos: u64,
+    /// `purchase::finalize_wait_text` for the profile's network.
+    pub finalize_wait: String,
+    pub warn_expiry: bool,
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -229,9 +269,206 @@ fn market_row(listing_json: String, l: &ListingFile, verdict: Verdict) -> Market
     }
 }
 
+/// The user-facing reason a listing that did not verify cannot be bought.
+fn hidden_to_error(h: Hidden) -> AppError {
+    AppError::InvalidInput(match h {
+        Hidden::SoldOrCancelled => "this listing is already sold or cancelled".into(),
+        Hidden::FailedVerification { reason } => {
+            format!("this listing failed verification: {reason}")
+        }
+        Hidden::ExpiresBeforeFinalize => {
+            "the name expires before the purchase could be finalized".into()
+        }
+        Hidden::NotYetValid {
+            first_valid_in_secs,
+        } => format!(
+            "no price step of this listing is valid yet (the first in about {} minutes)",
+            first_valid_in_secs.div_ceil(60)
+        ),
+        Hidden::CouldNotCheck { reason } => {
+            format!("could not check this listing on your node: {reason}")
+        }
+        Hidden::Unverified => {
+            "this listing cannot be checked here: buying needs a full or remote node".into()
+        }
+    })
+}
+
+/// The market fee line a purchase shows, and the fee output it pays (if any).
+///
+/// `published` must come from a freshly fetched `fee_info` and only for a
+/// listing that came from LearnHNS (R11). A missing fee address, or a fee
+/// below dust, is never paid: the line says why.
+fn decide_market_fee(
+    l: &ListingFile,
+    step: usize,
+    network: Network,
+    pay_market_fee: bool,
+    published: bool,
+) -> (Option<MarketFeeLine>, Option<MarketFee>) {
+    let Some(s) = l.steps.get(step) else {
+        return (None, None);
+    };
+    if s.fee == 0 {
+        return (None, None);
+    }
+    let percent_text = purchase::fee_percent_text(s.fee, s.price);
+    let line = |published: bool, payable: bool, warning: Option<&str>| MarketFeeLine {
+        value_doos: s.fee,
+        percent_text: percent_text.clone(),
+        published,
+        payable,
+        warning: warning.map(str::to_owned),
+    };
+    let Some(address) = l.fee_output_address(network) else {
+        return (
+            Some(line(
+                false,
+                false,
+                Some("the listing names no valid fee address, so no market fee is paid"),
+            )),
+            None,
+        );
+    };
+    if s.fee < DUST_THRESHOLD {
+        return (
+            Some(line(
+                false,
+                false,
+                Some("the market fee is below the dust limit, so it is not paid"),
+            )),
+            None,
+        );
+    }
+    let warning = (!published).then_some(UNPUBLISHED_FEE_WARNING);
+    let pay = pay_market_fee.then_some(MarketFee {
+        address,
+        value: s.fee,
+    });
+    (Some(line(published, true, warning)), pay)
+}
+
+/// Everything a purchase preview and draft are built from, after every gate.
+struct Prepared {
+    ctx: Ctx,
+    listing: ListingFile,
+    buyable: Buyable,
+    fee_line: Option<MarketFeeLine>,
+    market_fee: Option<MarketFee>,
+}
+
+/// Why a Shakedex draft is refused on a node that cannot send (R6). The UI
+/// shows the same sentence on the disabled Buy and Finalize
+/// (`marketText.ts::NEEDS_SENDING_NODE`).
 /// Why a market link cannot be imported off mainnet. The UI disables link
 /// import with the same words (`marketText.ts`).
 pub const MARKET_MAINNET_ONLY: &str = "LearnHNS Market lists mainnet names only";
+
+pub const NEEDS_SENDING_NODE: &str =
+    "Shakedex needs a local node, or a remote node with sending allowed";
+
+/// The gates every Shakedex money draft passes (R16, R7): a seed-backed
+/// software profile and a node that can send. The profile kind is checked
+/// before `load_ctx`, whose own watch-only refusal words it differently from
+/// the sentence the UI shows.
+fn software_writer_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
+    let kind = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        draft_ctx::active_profile(&conn)?.kind
+    };
+    if kind != "mnemonic_hot" {
+        return Err(AppError::InvalidInput(
+            crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY.into(),
+        ));
+    }
+    let ctx = draft_ctx::load_ctx(state)?;
+    let cap = WriteCapability::evaluate(
+        true,
+        ctx.node.source(),
+        rpc::remote_broadcast_allowed(&ctx.settings),
+    );
+    if !cap.broadcaster_available {
+        return Err(AppError::InvalidInput(NEEDS_SENDING_NODE.into()));
+    }
+    Ok(ctx)
+}
+
+/// Run the purchase gates in order, verify the listing on the node and
+/// decide the market fee. `for_draft` also enforces the mainnet experimental
+/// flag, which gates only new purchase drafts (R15).
+async fn prepare(
+    state: &State<'_, AppState>,
+    listing_json: &str,
+    pay_market_fee: bool,
+    from_market: bool,
+    for_draft: bool,
+) -> Result<Prepared, AppError> {
+    let ctx = software_writer_ctx(state)?;
+    if for_draft
+        && ctx.network == Network::Main
+        && ctx
+            .settings
+            .get("shakedex_experimental")
+            .map(String::as_str)
+            != Some("true")
+    {
+        return Err(AppError::InvalidInput(
+            crate::noncustodial::shakedex::MAINNET_EXPERIMENTAL.into(),
+        ));
+    }
+    let listing = ListingFile::parse(listing_json, ctx.network)?;
+    let buyable = match verify::verify_listing(&ctx.node, ctx.network, &listing).await {
+        Verdict::Buyable(b) => b,
+        Verdict::Hidden(h) => return Err(hidden_to_error(h)),
+    };
+    let step = &listing.steps[buyable.current_step];
+    let published = if from_market && step.fee > 0 {
+        // Best-effort: a market that cannot say what it charges makes the fee
+        // unpublished, so it is shown with a warning and not paid by default.
+        let info: Option<FeeInfo> = learnhns_client(&ctx.settings)?.fee_info().await.ok();
+        info.is_some_and(|i| {
+            market_fee_is_published(step.fee, listing.fee_addr.as_deref(), step.price, &i)
+        })
+    } else {
+        false
+    };
+    let (fee_line, market_fee) = decide_market_fee(
+        &listing,
+        buyable.current_step,
+        ctx.network,
+        pay_market_fee,
+        published,
+    );
+    Ok(Prepared {
+        ctx,
+        listing,
+        buyable,
+        fee_line,
+        market_fee,
+    })
+}
+
+fn plan_purchase(
+    p: &Prepared,
+    dest_address: &str,
+    fee_rate: Option<u64>,
+) -> Result<crate::noncustodial::actions::PlanResult, AppError> {
+    purchase::build_purchase_plan(&PurchaseInput {
+        network: p.ctx.network,
+        account: p.ctx.account,
+        listing: &p.listing,
+        step: p.buyable.current_step,
+        lock_value: p.buyable.lock_value,
+        name_height: p.buyable.name_height,
+        dest: output_address_from_string(p.ctx.network, dest_address)?,
+        market_fee: p.market_fee.clone(),
+        funding: &p.ctx.funding,
+        change_address: &p.ctx.change_address,
+        rate: draft_ctx::fee_rate(&p.ctx, fee_rate),
+        #[cfg(test)]
+        fixed_fee: None,
+    })
+}
 
 /// Read a listing file chosen in the UI. The path comes from the renderer,
 /// so only a regular file is read, and never more than the cap plus one byte
@@ -253,6 +490,10 @@ fn read_listing_file(path: &str) -> Result<String, AppError> {
         )));
     }
     Ok(text)
+}
+
+fn expiry_warning() -> String {
+    "This name expires soon after the purchase: finalize it in time or it is lost.".into()
 }
 
 // --- commands ---------------------------------------------------------------
@@ -387,11 +628,184 @@ pub async fn shakedex_import_listing(
     Ok(market_row(text, &listing, verdict))
 }
 
+/// Price, market fee, network fee and total of buying `listing_json` at its
+/// current step, without writing anything.
+#[tauri::command]
+pub async fn shakedex_preview_purchase(
+    state: State<'_, AppState>,
+    listing_json: String,
+    pay_market_fee: bool,
+    from_market: bool,
+    fee_rate: Option<u64>,
+) -> Result<PurchasePreview, AppError> {
+    let p = prepare(&state, &listing_json, pay_market_fee, from_market, false).await?;
+    // The change address stands in for the name destination: the same size,
+    // and a preview must not allocate a receive address.
+    let res = plan_purchase(&p, &p.ctx.change_address, fee_rate)?;
+    let price = p.listing.steps[p.buyable.current_step].price;
+    let paid_fee = p.market_fee.as_ref().map_or(0, |f| f.value);
+    Ok(PurchasePreview {
+        name: p.listing.name.clone(),
+        price_doos: price,
+        market_fee: p.fee_line.clone(),
+        network_fee_doos: res.fee,
+        total_doos: price + paid_fee + res.fee,
+        finalize_wait: purchase::finalize_wait_text(p.ctx.network),
+        warn_expiry: p.buyable.warn_expiry,
+    })
+}
+
+/// Build the purchase draft (action `shakedex_purchase`) at the current step,
+/// re-verified on the node right now, and record the purchase.
+///
+/// `accepted_market_fee_doos` is the market fee the user reviewed and agreed
+/// to pay (`None`: pay none). If the fee the current step would pay differs
+/// (the step moved, the listing changed), the build is refused so the user
+/// reviews it again: consent is bound to the amount seen.
+#[tauri::command]
+pub async fn shakedex_build_purchase_draft(
+    state: State<'_, AppState>,
+    listing_json: String,
+    accepted_market_fee_doos: Option<u64>,
+    from_market: bool,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    let p = prepare(
+        &state,
+        &listing_json,
+        accepted_market_fee_doos.is_some(),
+        from_market,
+        true,
+    )
+    .await?;
+    if accepted_market_fee_doos.is_some()
+        && p.market_fee.as_ref().map(|f| f.value) != accepted_market_fee_doos
+    {
+        return Err(AppError::InvalidInput(
+            "the market fee changed since you reviewed it — review the purchase again".into(),
+        ));
+    }
+    let lock_txid = hex::encode(p.listing.lock_txid);
+    let lock_vout = i64::from(p.listing.lock_vout);
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    if queries::list_open_shakedex_purchases(&conn, &p.ctx.profile_id)?
+        .iter()
+        .any(|o| {
+            o.lock_txid == lock_txid
+                && o.lock_vout == lock_vout
+                && matches!(
+                    o.state,
+                    PurchaseState::PendingSend | PurchaseState::Unconfirmed
+                )
+        })
+    {
+        return Err(AppError::InvalidInput(
+            "a purchase of this listing is already in progress".into(),
+        ));
+    }
+    let dest = derivation::next_unused_receive_address(
+        &conn,
+        &p.ctx.profile_id,
+        p.ctx.account,
+        p.ctx.network,
+        &p.ctx.account_xpub,
+    )?;
+    let res = plan_purchase(&p, &dest.address, fee_rate)?;
+    let price = p.listing.steps[p.buyable.current_step].price;
+    let market_fee = p.market_fee.as_ref().map_or(0, |f| f.value);
+    let send_total = price + market_fee;
+    let mut warnings: Vec<String> = p
+        .buyable
+        .warn_expiry
+        .then(expiry_warning)
+        .into_iter()
+        .collect();
+    let fee_published = p.fee_line.as_ref().is_some_and(|l| l.published);
+    if p.market_fee.is_some() && !fee_published {
+        warnings.push(format!("Market fee: {UNPUBLISHED_FEE_WARNING}"));
+    }
+    let market_fee_address = p.market_fee.as_ref().and(p.listing.fee_addr.as_deref());
+    let summary = PurchaseSummary {
+        action: PURCHASE_ACTION.into(),
+        name: p.listing.name.clone(),
+        price_doos: price,
+        market_fee_doos: market_fee,
+        market_fee_address: market_fee_address.map(str::to_owned),
+        fee_doos: res.fee,
+        total_doos: send_total + res.fee,
+        send_total_doos: send_total,
+        change_doos: res.change,
+        input_total_doos: res.input_total - p.buyable.lock_value,
+        num_inputs: res.plan.inputs.len(),
+        recipient_address: p.listing.payment_addr.clone(),
+        payment_address: p.listing.payment_addr.clone(),
+        destination_address: dest.address.clone(),
+        finalize_wait: purchase::finalize_wait_text(p.ctx.network),
+        txid: res.txid.clone(),
+        warnings,
+    };
+    let draft_id = random_id();
+    // The draft and its purchase row commit together or not at all: a draft
+    // without its row would send money that sync could never attribute to a
+    // purchase.
+    let tx = conn.unchecked_transaction()?;
+    queries::insert_tx_draft_reserving_coins_in_tx(
+        &tx,
+        &draft_id,
+        &p.ctx.profile_id,
+        PURCHASE_ACTION,
+        &res.unsigned_tx_hex,
+        &serde_json::to_string(&res.plan)?,
+        &serde_json::to_string(&summary)?,
+        &res.plan.own_inputs(),
+    )?;
+    queries::insert_shakedex_purchase(
+        &tx,
+        &ShakedexPurchase {
+            id: random_id(),
+            wallet_profile_id: p.ctx.profile_id.clone(),
+            name: p.listing.name.clone(),
+            listing_json: listing_json.clone(),
+            lock_txid,
+            lock_vout,
+            price_doos: price as i64,
+            purchase_draft_id: draft_id.clone(),
+            purchase_txid: res.txid.clone(),
+            destination_address: dest.address.clone(),
+            state: PurchaseState::PendingSend,
+            purchase_height: None,
+            blocks_remaining: None,
+            missing_since_height: None,
+            rebroadcast_count: 0,
+            lost_reason: None,
+            finalize_draft_id: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    )?;
+    tx.commit()?;
+    queries::get_tx_draft(&conn, &draft_id)?
+        .map(|d| d.to_summary())
+        .ok_or_else(|| AppError::Other("draft vanished after insert".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::noncustodial::address;
 
     const LISTING_FILE: &str = include_str!("../../tests/vectors/shakedex/proof_dexreviews.json");
+
+    fn listing(fee: u64, fee_addr: Option<String>) -> ListingFile {
+        let mut j: serde_json::Value = serde_json::from_str(LISTING_FILE).unwrap();
+        j["data"][0]["fee"] = fee.into();
+        j["feeAddr"] = fee_addr.map_or(serde_json::Value::Null, Into::into);
+        ListingFile::parse(&j.to_string(), Network::Main).unwrap()
+    }
+
+    fn addr() -> String {
+        address::encode_p2wpkh(Network::Main, &[7; 20]).unwrap()
+    }
 
     /// The live listing with a second, cheaper step a day later.
     fn two_steps() -> ListingFile {
@@ -429,6 +843,67 @@ mod tests {
         assert!(row.steps.iter().all(|s| s.valid_in_secs.is_none()));
     }
 
+    /// The largest fee a listing file can carry (price plus fee up to the
+    /// money supply, R2) is past any percentage a u32 of basis points holds.
+    #[test]
+    fn fee_past_any_percentage_has_no_percent() {
+        let max_fee = purchase::MAX_MONEY - 435_000_000;
+        let (line, _) = decide_market_fee(
+            &listing(max_fee, Some(addr())),
+            0,
+            Network::Main,
+            true,
+            true,
+        );
+        let line = line.unwrap();
+        assert_eq!(line.value_doos, max_fee);
+        assert_eq!(line.percent_text, None);
+    }
+
+    #[test]
+    fn zero_fee_has_no_line() {
+        let (line, pay) =
+            decide_market_fee(&listing(0, Some(addr())), 0, Network::Main, true, true);
+        assert!(line.is_none() && pay.is_none());
+    }
+
+    #[test]
+    fn missing_fee_address_is_never_paid() {
+        let (line, pay) = decide_market_fee(&listing(5_000, None), 0, Network::Main, true, true);
+        let line = line.unwrap();
+        assert!(!line.published);
+        assert!(line.warning.unwrap().contains("no valid fee address"));
+        assert!(pay.is_none());
+    }
+
+    #[test]
+    fn dust_fee_is_never_paid() {
+        let (line, pay) = decide_market_fee(
+            &listing(DUST_THRESHOLD - 1, Some(addr())),
+            0,
+            Network::Main,
+            true,
+            true,
+        );
+        assert!(line.unwrap().warning.unwrap().contains("dust"));
+        assert!(pay.is_none());
+    }
+
+    #[test]
+    fn fee_follows_the_users_choice() {
+        let l = listing(4_350_000, Some(addr()));
+        let (line, pay) = decide_market_fee(&l, 0, Network::Main, false, true);
+        assert!(line.as_ref().unwrap().published);
+        assert_eq!(line.unwrap().percent_text.as_deref(), Some("1.00%"));
+        assert!(pay.is_none());
+        let (line, pay) = decide_market_fee(&l, 0, Network::Main, true, false);
+        assert_eq!(
+            line.unwrap().warning.as_deref(),
+            Some(UNPUBLISHED_FEE_WARNING)
+        );
+        assert_eq!(pay.unwrap().value, 4_350_000);
+    }
+
     #[test]
     fn listing_kind_has_the_ui_spelling() {
         // `MarketRow.kind` in src/types/index.ts.
@@ -437,5 +912,17 @@ mod tests {
             serde_json::to_value(ListingKind::ReverseAuction).unwrap(),
             "reverseAuction"
         );
+    }
+
+    #[test]
+    fn hidden_errors_carry_the_reason() {
+        let e = hidden_to_error(Hidden::CouldNotCheck {
+            reason: "node did not report median time".into(),
+        });
+        assert!(e.to_string().contains("median time"));
+        let e = hidden_to_error(Hidden::NotYetValid {
+            first_valid_in_secs: 61,
+        });
+        assert!(e.to_string().contains("2 minutes"));
     }
 }

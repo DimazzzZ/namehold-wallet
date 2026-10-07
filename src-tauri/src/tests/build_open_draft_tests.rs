@@ -97,6 +97,7 @@ fn seed_ctx_with_funding(conn: &rusqlite::Connection, settings: HashMap<String, 
 
     Ctx {
         profile_id: PROFILE.into(),
+        profile_kind: "mnemonic_hot".into(),
         network,
         account: 0,
         account_xpub: xpub,
@@ -275,6 +276,7 @@ fn build_open_draft_allows_different_name_after_first() {
     seed_tracked_coin(&conn, &"cc".repeat(32), 0, 10_000_000, &recv0.address);
     let ctx1 = Ctx {
         profile_id: PROFILE.into(),
+        profile_kind: "mnemonic_hot".into(),
         network,
         account: 0,
         account_xpub: xpub.clone(),
@@ -295,6 +297,7 @@ fn build_open_draft_allows_different_name_after_first() {
     };
     let ctx2 = Ctx {
         profile_id: PROFILE.into(),
+        profile_kind: "mnemonic_hot".into(),
         network,
         account: 0,
         account_xpub: xpub,
@@ -332,6 +335,7 @@ fn build_open_draft_fails_with_insufficient_funds() {
     seed_tracked_coin(&conn, &"aa".repeat(32), 0, 1, &recv0.address);
     let ctx = Ctx {
         profile_id: PROFILE.into(),
+        profile_kind: "mnemonic_hot".into(),
         network,
         account: 0,
         account_xpub: xpub,

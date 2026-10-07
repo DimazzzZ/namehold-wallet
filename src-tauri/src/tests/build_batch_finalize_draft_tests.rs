@@ -173,6 +173,7 @@ fn setup(name_list: &[&str]) -> (rusqlite::Connection, Ctx, PerName, [u8; 32]) {
 
     let ctx = Ctx {
         profile_id: PROFILE.into(),
+        profile_kind: "mnemonic_hot".into(),
         network,
         account: 0,
         account_xpub: xpub,

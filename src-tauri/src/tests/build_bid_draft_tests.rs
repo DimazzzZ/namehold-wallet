@@ -102,6 +102,7 @@ fn seed_ctx(conn: &rusqlite::Connection, funding_txid: &str, funding_value: i64)
     seed_tracked_coin(conn, funding_txid, 0, funding_value, &recv0.address);
     Ctx {
         profile_id: PROFILE.into(),
+        profile_kind: "mnemonic_hot".into(),
         network,
         account: 0,
         account_xpub: xpub,

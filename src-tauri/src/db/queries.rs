@@ -1167,10 +1167,38 @@ pub fn insert_tx_draft_reserving_coins(
     inputs: &[(String, u32)],
 ) -> Result<(), AppError> {
     let tx = conn.unchecked_transaction()?;
+    insert_tx_draft_reserving_coins_in_tx(
+        &tx,
+        id,
+        profile_id,
+        action,
+        unsigned_tx_hex,
+        signing_inputs_json,
+        summary_json,
+        inputs,
+    )?;
+    tx.commit()?;
+    Ok(())
+}
 
+/// The body of [`insert_tx_draft_reserving_coins`] without its own
+/// transaction, for a caller that must commit further writes atomically with
+/// the draft (e.g. the Shakedex purchase row). The caller opens the
+/// transaction, and an error leaves it to roll back on drop.
+#[allow(clippy::too_many_arguments)]
+pub fn insert_tx_draft_reserving_coins_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    profile_id: &str,
+    action: &str,
+    unsigned_tx_hex: &str,
+    signing_inputs_json: &str,
+    summary_json: &str,
+    inputs: &[(String, u32)],
+) -> Result<(), AppError> {
     // Self-heal stale reservations first so an abandoned earlier draft never
     // blocks a legitimate new one.
-    crate::noncustodial::send::release_stale_reservations(&tx, profile_id)?;
+    crate::noncustodial::send::release_stale_reservations(tx, profile_id)?;
 
     tx.execute(
         "INSERT INTO wallet_tx_drafts
@@ -1195,8 +1223,8 @@ pub fn insert_tx_draft_reserving_coins(
             params![id, profile_id, txid, *vout as i64],
         )?;
         if claimed == 0 {
-            // Dropping `tx` without commit() rolls back everything above,
-            // including the draft insert.
+            // The caller drops `tx` without commit(), which rolls back
+            // everything above, including the draft insert.
             return Err(AppError::InvalidInput(
                 "one or more coins for this transaction were just reserved by another \
                  pending draft (or already spent) — please try again"
@@ -1204,8 +1232,6 @@ pub fn insert_tx_draft_reserving_coins(
             ));
         }
     }
-
-    tx.commit()?;
     Ok(())
 }
 
@@ -1224,6 +1250,13 @@ pub fn release_reserved_utxos_for_draft(
     Ok(n)
 }
 
+/// Whether a draft in `status` has reached, or may have reached, a node:
+/// `broadcast_pending` is a transport-ambiguous attempt the node may hold.
+/// Such a draft is never deleted (see [`delete_tx_draft`]).
+pub fn may_have_reached_chain(status: &str) -> bool {
+    matches!(status, "broadcasted" | "confirmed" | "broadcast_pending")
+}
+
 /// Delete a draft and release any coins it had reserved, atomically. Refuses
 /// to delete a draft that has actually reached, or may have reached, the
 /// chain (`broadcasted` / `confirmed` / `broadcast_pending` — the last is a
@@ -1236,6 +1269,15 @@ pub fn release_reserved_utxos_for_draft(
 /// always be discarded.
 pub fn delete_tx_draft(conn: &rusqlite::Connection, id: &str) -> Result<(), AppError> {
     let tx = conn.unchecked_transaction()?;
+    delete_tx_draft_in_tx(&tx, id)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// The body of [`delete_tx_draft`] without its own transaction, for a caller
+/// that replaces the draft with another one atomically. An error leaves the
+/// caller's transaction to roll back on drop.
+pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<(), AppError> {
     let status: Option<String> = tx
         .query_row(
             "SELECT status FROM wallet_tx_drafts WHERE id = ?1",
@@ -1244,7 +1286,7 @@ pub fn delete_tx_draft(conn: &rusqlite::Connection, id: &str) -> Result<(), AppE
         )
         .optional()?;
     let status = status.ok_or_else(|| AppError::NotFound(format!("draft {id}")))?;
-    if status == "broadcasted" || status == "confirmed" || status == "broadcast_pending" {
+    if may_have_reached_chain(&status) {
         return Err(AppError::InvalidInput(
             "cannot delete a draft that has already been broadcast".to_string(),
         ));
@@ -1254,8 +1296,375 @@ pub fn delete_tx_draft(conn: &rusqlite::Connection, id: &str) -> Result<(), AppE
         params![id],
     )?;
     tx.execute("DELETE FROM wallet_tx_drafts WHERE id = ?1", params![id])?;
-    tx.commit()?;
+    // A Shakedex purchase that was never sent goes with its draft, so the
+    // listing can be bought again at once (cancelled prompt, failed sign).
+    // A purchase past `pending_send` is the chain's to decide.
+    tx.execute(
+        "DELETE FROM shakedex_purchases
+         WHERE purchase_draft_id = ?1 AND state = ?2",
+        params![id, PurchaseState::PendingSend],
+    )?;
+    tx.execute(
+        "UPDATE shakedex_purchases SET finalize_draft_id = NULL, updated_at = datetime('now')
+         WHERE finalize_draft_id = ?1",
+        params![id],
+    )?;
     Ok(())
+}
+
+/// Where a Shakedex purchase is (`shakedex_purchases.state`): `PendingSend`
+/// until its draft is sent, then `Unconfirmed`, `AwaitingFinalize` once it is
+/// mined, and `Owned` after the FINALIZE — or `Lost`. Stored by
+/// [`PurchaseState::as_str`]; sent to the UI in camelCase
+/// (`ShakedexNameState.state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PurchaseState {
+    PendingSend,
+    Unconfirmed,
+    AwaitingFinalize,
+    Owned,
+    Lost,
+}
+
+impl PurchaseState {
+    /// The stored spelling, as the table's CHECK constraint lists it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PendingSend => "pending_send",
+            Self::Unconfirmed => "unconfirmed",
+            Self::AwaitingFinalize => "awaiting_finalize",
+            Self::Owned => "owned",
+            Self::Lost => "lost",
+        }
+    }
+}
+
+impl std::str::FromStr for PurchaseState {
+    type Err = AppError;
+
+    fn from_str(s: &str) -> Result<Self, AppError> {
+        Ok(match s {
+            "pending_send" => Self::PendingSend,
+            "unconfirmed" => Self::Unconfirmed,
+            "awaiting_finalize" => Self::AwaitingFinalize,
+            "owned" => Self::Owned,
+            "lost" => Self::Lost,
+            other => return Err(AppError::Other(format!("unknown purchase state '{other}'"))),
+        })
+    }
+}
+
+impl rusqlite::ToSql for PurchaseState {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
+impl rusqlite::types::FromSql for PurchaseState {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        value
+            .as_str()?
+            .parse()
+            .map_err(|e: AppError| rusqlite::types::FromSqlError::Other(e.to_string().into()))
+    }
+}
+
+/// A purchase's state with the chain facts tracked alongside it; written
+/// together by [`update_shakedex_purchase_state`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurchaseProgress {
+    pub state: PurchaseState,
+    pub purchase_height: Option<i64>,
+    pub blocks_remaining: Option<i64>,
+    pub missing_since_height: Option<i64>,
+    pub rebroadcast_count: i64,
+    pub lost_reason: Option<String>,
+}
+
+/// One row of `shakedex_purchases`: a name bought from a Shakedex listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShakedexPurchase {
+    pub id: String,
+    pub wallet_profile_id: String,
+    pub name: String,
+    pub listing_json: String,
+    pub lock_txid: String,
+    pub lock_vout: i64,
+    pub price_doos: i64,
+    pub purchase_draft_id: String,
+    pub purchase_txid: String,
+    pub destination_address: String,
+    pub state: PurchaseState,
+    pub purchase_height: Option<i64>,
+    pub blocks_remaining: Option<i64>,
+    pub missing_since_height: Option<i64>,
+    pub rebroadcast_count: i64,
+    pub lost_reason: Option<String>,
+    pub finalize_draft_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl ShakedexPurchase {
+    /// The price this purchase pays the seller, which every broadcast and
+    /// rebroadcast re-checks against the listing (R10). SQLite keeps it as
+    /// an `i64`; a negative one was not written by this wallet.
+    pub fn paid_doos(&self) -> Result<u64, AppError> {
+        u64::try_from(self.price_doos).map_err(|_| {
+            AppError::Other(format!(
+                "the purchase's recorded price {} is unreadable",
+                self.price_doos
+            ))
+        })
+    }
+}
+
+const SHAKEDEX_PURCHASE_COLS: &str = "id, wallet_profile_id, name, listing_json, lock_txid, \
+    lock_vout, price_doos, purchase_draft_id, purchase_txid, destination_address, state, \
+    purchase_height, blocks_remaining, missing_since_height, rebroadcast_count, lost_reason, \
+    finalize_draft_id, created_at, updated_at";
+
+fn row_to_shakedex_purchase(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShakedexPurchase> {
+    Ok(ShakedexPurchase {
+        id: row.get("id")?,
+        wallet_profile_id: row.get("wallet_profile_id")?,
+        name: row.get("name")?,
+        listing_json: row.get("listing_json")?,
+        lock_txid: row.get("lock_txid")?,
+        lock_vout: row.get("lock_vout")?,
+        price_doos: row.get("price_doos")?,
+        purchase_draft_id: row.get("purchase_draft_id")?,
+        purchase_txid: row.get("purchase_txid")?,
+        destination_address: row.get("destination_address")?,
+        state: row.get("state")?,
+        purchase_height: row.get("purchase_height")?,
+        blocks_remaining: row.get("blocks_remaining")?,
+        missing_since_height: row.get("missing_since_height")?,
+        rebroadcast_count: row.get("rebroadcast_count")?,
+        lost_reason: row.get("lost_reason")?,
+        finalize_draft_id: row.get("finalize_draft_id")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
+}
+
+/// Insert a purchase. The unique partial index refuses a second open
+/// (`pending_send`/`unconfirmed`) purchase of the same lock outpoint.
+pub fn insert_shakedex_purchase(
+    conn: &rusqlite::Connection,
+    p: &ShakedexPurchase,
+) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO shakedex_purchases
+            (id, wallet_profile_id, name, listing_json, lock_txid, lock_vout, price_doos,
+             purchase_draft_id, purchase_txid, destination_address, state, purchase_height,
+             blocks_remaining, missing_since_height, rebroadcast_count, lost_reason,
+             finalize_draft_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+        params![
+            p.id,
+            p.wallet_profile_id,
+            p.name,
+            p.listing_json,
+            p.lock_txid,
+            p.lock_vout,
+            p.price_doos,
+            p.purchase_draft_id,
+            p.purchase_txid,
+            p.destination_address,
+            p.state,
+            p.purchase_height,
+            p.blocks_remaining,
+            p.missing_since_height,
+            p.rebroadcast_count,
+            p.lost_reason,
+            p.finalize_draft_id
+        ],
+    )?;
+    Ok(())
+}
+
+/// A profile's purchases that are not yet `owned` or `lost`, oldest first.
+pub fn list_open_shakedex_purchases(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<ShakedexPurchase>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_PURCHASE_COLS} FROM shakedex_purchases
+         WHERE wallet_profile_id = ?1 AND state NOT IN (?2, ?3)
+         ORDER BY created_at ASC, id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(
+            params![profile_id, PurchaseState::Owned, PurchaseState::Lost],
+            row_to_shakedex_purchase,
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// A profile's purchases marked `lost` within the last `days` days while
+/// they paid nothing: the purchase draft is `dropped` or `failed` (or was
+/// deleted, which only those statuses allow). Such a purchase can still be
+/// mined later (see `shakedex_jobs`).
+pub fn list_recent_unpaid_lost_shakedex_purchases(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    days: u32,
+) -> Result<Vec<ShakedexPurchase>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_PURCHASE_COLS} FROM shakedex_purchases
+         WHERE wallet_profile_id = ?1 AND state = ?2
+           AND updated_at > datetime('now', ?3)
+           AND NOT EXISTS (
+               SELECT 1 FROM wallet_tx_drafts d
+                WHERE d.id = purchase_draft_id AND d.status NOT IN ('dropped','failed'))
+         ORDER BY created_at ASC, id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(
+            params![profile_id, PurchaseState::Lost, format!("-{days} days")],
+            row_to_shakedex_purchase,
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Purchases of `profile_id` that became `owned` within the last `days`
+/// days: a reorg can still take their FINALIZE away (R13).
+pub fn list_recent_owned_shakedex_purchases(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    days: u32,
+) -> Result<Vec<ShakedexPurchase>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_PURCHASE_COLS} FROM shakedex_purchases
+         WHERE wallet_profile_id = ?1 AND state = ?2
+           AND updated_at > datetime('now', ?3)
+         ORDER BY created_at ASC, id ASC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(
+            params![profile_id, PurchaseState::Owned, format!("-{days} days")],
+            row_to_shakedex_purchase,
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Fetch one purchase, or `None`.
+pub fn get_shakedex_purchase(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<ShakedexPurchase>, AppError> {
+    let sql = format!("SELECT {SHAKEDEX_PURCHASE_COLS} FROM shakedex_purchases WHERE id = ?1");
+    let row = conn
+        .query_row(&sql, params![id], row_to_shakedex_purchase)
+        .optional()?;
+    Ok(row)
+}
+
+/// The purchase a purchase draft would send, or `None`.
+pub fn get_shakedex_purchase_by_draft(
+    conn: &rusqlite::Connection,
+    purchase_draft_id: &str,
+) -> Result<Option<ShakedexPurchase>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_PURCHASE_COLS} FROM shakedex_purchases WHERE purchase_draft_id = ?1"
+    );
+    let row = conn
+        .query_row(&sql, params![purchase_draft_id], row_to_shakedex_purchase)
+        .optional()?;
+    Ok(row)
+}
+
+/// Move a purchase to `progress.state`, replacing its tracking fields.
+pub fn update_shakedex_purchase_state(
+    conn: &rusqlite::Connection,
+    id: &str,
+    progress: &PurchaseProgress,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE shakedex_purchases
+            SET state = ?2, purchase_height = ?3, blocks_remaining = ?4,
+                missing_since_height = ?5, rebroadcast_count = ?6, lost_reason = ?7,
+                updated_at = datetime('now')
+         WHERE id = ?1",
+        params![
+            id,
+            progress.state,
+            progress.purchase_height,
+            progress.blocks_remaining,
+            progress.missing_since_height,
+            progress.rebroadcast_count,
+            progress.lost_reason
+        ],
+    )?;
+    Ok(())
+}
+
+/// Record the draft that finalizes the purchased name.
+pub fn set_shakedex_purchase_finalize_draft(
+    conn: &rusqlite::Connection,
+    id: &str,
+    draft_id: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE shakedex_purchases
+            SET finalize_draft_id = ?2, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![id, draft_id],
+    )?;
+    Ok(())
+}
+
+/// Delete a purchase row.
+pub fn delete_shakedex_purchase(conn: &rusqlite::Connection, id: &str) -> Result<(), AppError> {
+    conn.execute("DELETE FROM shakedex_purchases WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+/// Delete a purchase whose draft was abandoned before it was sent, together
+/// with that draft, releasing the draft's coin reservations — all in one
+/// transaction. Only when the draft is still `draft`/`signed` and older than
+/// `ttl_secs` (checked in the DELETE itself, so a draft that moved on since the
+/// caller read it is left alone): a signed draft left behind without its
+/// purchase row could still be broadcast and send money no purchase tracks.
+/// Returns whether anything was deleted.
+pub fn delete_abandoned_shakedex_purchase(
+    conn: &rusqlite::Connection,
+    purchase_id: &str,
+    draft_id: &str,
+    ttl_secs: i64,
+) -> Result<bool, AppError> {
+    let tx = conn.unchecked_transaction()?;
+    let n = tx.execute(
+        &format!(
+            "DELETE FROM shakedex_purchases
+             WHERE id = ?1 AND purchase_draft_id = ?2
+               AND EXISTS (SELECT 1 FROM wallet_tx_drafts
+                           WHERE id = ?2 AND status IN ('draft','signed')
+                             AND created_at < datetime('now', '-{ttl_secs} seconds'))"
+        ),
+        params![purchase_id, draft_id],
+    )?;
+    if n == 0 {
+        return Ok(false);
+    }
+    tx.execute(
+        "UPDATE tracked_utxos SET reserved_by_draft_id = NULL WHERE reserved_by_draft_id = ?1",
+        params![draft_id],
+    )?;
+    tx.execute(
+        "DELETE FROM wallet_tx_drafts WHERE id = ?1 AND status IN ('draft','signed')",
+        params![draft_id],
+    )?;
+    tx.commit()?;
+    Ok(true)
 }
 
 /// Fetch one draft, or `None`.

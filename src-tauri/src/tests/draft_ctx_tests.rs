@@ -1,5 +1,5 @@
-//! `draft_ctx::active_profile`: the active wallet profile every draft starts
-//! from.
+//! `draft_ctx::active_profile`: the active wallet profile every draft and
+//! browse context starts from.
 
 use rusqlite::Connection;
 

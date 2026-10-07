@@ -106,6 +106,7 @@ fn test_fee_rate_explicit_overrides_settings() {
 
     let ctx = Ctx {
         profile_id: "p".into(),
+        profile_kind: "mnemonic_hot".into(),
         network: Network::Regtest,
         account: 0,
         account_xpub: test_xpub(),
@@ -132,6 +133,7 @@ fn test_fee_rate_from_settings_falls_back() {
 
     let ctx = Ctx {
         profile_id: "p".into(),
+        profile_kind: "mnemonic_hot".into(),
         network: Network::Regtest,
         account: 0,
         account_xpub: test_xpub(),
@@ -162,6 +164,7 @@ fn test_fee_rate_from_settings_kvb() {
 
     let ctx = Ctx {
         profile_id: "p".into(),
+        profile_kind: "mnemonic_hot".into(),
         network: Network::Regtest,
         account: 0,
         account_xpub: test_xpub(),
@@ -192,6 +195,7 @@ fn test_fee_rate_from_settings_large_kvb() {
 
     let ctx = Ctx {
         profile_id: "p".into(),
+        profile_kind: "mnemonic_hot".into(),
         network: Network::Regtest,
         account: 0,
         account_xpub: test_xpub(),
@@ -220,6 +224,7 @@ fn test_fee_rate_invalid_kvb_string_falls_back() {
 
     let ctx = Ctx {
         profile_id: "p".into(),
+        profile_kind: "mnemonic_hot".into(),
         network: Network::Regtest,
         account: 0,
         account_xpub: test_xpub(),

@@ -178,6 +178,7 @@ fn setup() -> (rusqlite::Connection, Ctx, BidCommitmentRow, NameCoin) {
 
     let ctx = Ctx {
         profile_id: PROFILE.into(),
+        profile_kind: "mnemonic_hot".into(),
         network,
         account: 0,
         account_xpub: xpub,
@@ -339,6 +340,7 @@ fn build_reveal_draft_fails_with_insufficient_funds() {
 
     let ctx = Ctx {
         profile_id: PROFILE.into(),
+        profile_kind: "mnemonic_hot".into(),
         network,
         account: 0,
         account_xpub: xpub,

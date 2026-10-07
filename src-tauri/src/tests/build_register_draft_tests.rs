@@ -154,6 +154,7 @@ fn setup(owner_value: u64, funding_value: i64) -> (rusqlite::Connection, Ctx, Na
 
     let ctx = Ctx {
         profile_id: PROFILE.into(),
+        profile_kind: "mnemonic_hot".into(),
         network,
         account: 0,
         account_xpub: xpub,

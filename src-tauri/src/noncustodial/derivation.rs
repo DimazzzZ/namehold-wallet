@@ -46,7 +46,10 @@ pub(crate) const ADDRESS_USED_PREDICATE: &str = "(EXISTS (SELECT 1 FROM tracked_
                       AND u.address = d.address) \
           OR EXISTS (SELECT 1 FROM bid_commitments b \
                     WHERE b.wallet_profile_id = d.wallet_profile_id \
-                      AND b.address = d.address))";
+                      AND b.address = d.address) \
+          OR EXISTS (SELECT 1 FROM shakedex_purchases s \
+                    WHERE s.wallet_profile_id = d.wallet_profile_id \
+                      AND s.destination_address = d.address))";
 
 /// A single derived address with everything the sync engine and UI need.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,6 +317,8 @@ mod tests {
         conn.execute_batch(include_str!("../sql/008_noncustodial_name_state.sql"))
             .unwrap();
         conn.execute_batch(include_str!("../sql/016_last_explorer_sync_at.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../sql/033_shakedex.sql"))
             .unwrap();
         // Insert a profile to satisfy the FK on derived_addresses.
         conn.execute(
