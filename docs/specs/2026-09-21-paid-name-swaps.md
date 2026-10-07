@@ -1,8 +1,6 @@
 # Paid name swaps
 
-**Status: not implemented. The UI entry points were withdrawn on
-2026-09-21; the backend commands remain, and an offer already recorded can
-still be claimed.**
+**Status: superseded by [2026-10-05 Shakedex name sales](./2026-10-05-shakedex-name-sales.md).** The UI entry points were withdrawn on 2026-09-21; the backend commands remain until that spec's PR 3, and an offer already recorded can still be claimed. Kept for the analysis of why the withdrawn shape could not be atomic.
 
 ## 1. Summary
 
