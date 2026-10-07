@@ -553,6 +553,7 @@ pub(crate) fn find_name_action_context(
                     | "cancel_transfer"
                     | "renew"
                     | "revoke"
+                    | crate::noncustodial::shakedex::purchase::PURCHASE_FINALIZE_ACTION
             )
         });
 

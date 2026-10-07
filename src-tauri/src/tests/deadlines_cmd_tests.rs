@@ -388,3 +388,139 @@ async fn reveal_window_closed_within_one_reveal_period_ago_still_notifies() {
         "a window closed exactly one reveal-period ago still gets its final alarm"
     );
 }
+
+// --- Shakedex purchase ready to finalize (R14) ---
+
+fn seed_purchase(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    id: &str,
+    name: &str,
+    state: &str,
+    blocks_remaining: Option<i64>,
+) {
+    db::queries::insert_shakedex_purchase(
+        conn,
+        &db::queries::ShakedexPurchase {
+            id: id.into(),
+            wallet_profile_id: profile_id.into(),
+            name: name.into(),
+            listing_json: "{}".into(),
+            lock_txid: format!("{id}-lock"),
+            lock_vout: 0,
+            price_doos: 5_000_000,
+            purchase_draft_id: format!("{id}-draft"),
+            purchase_txid: format!("{id}-tx"),
+            destination_address: "hs1qdest".into(),
+            state: state.parse().unwrap(),
+            purchase_height: Some(900),
+            blocks_remaining,
+            missing_since_height: None,
+            rebroadcast_count: 0,
+            lost_reason: None,
+            finalize_draft_id: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn purchase_ready_to_finalize_notifies_once() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "mainnet");
+        enable_notifications(&conn, "144", "30");
+        seed_purchase(&conn, &id, "p1", "bought", "awaiting_finalize", Some(0));
+        // Not yet: still in the transfer lockup, or not mined.
+        seed_purchase(&conn, &id, "p2", "waiting", "awaiting_finalize", Some(3));
+        seed_purchase(&conn, &id, "p3", "pending", "unconfirmed", None);
+        id
+    };
+
+    let app = mock_app_with(state);
+    let first = scan_deadline_notifications(app.handle().clone(), app.state())
+        .await
+        .expect("first scan should succeed");
+    assert_eq!(first.notified.len(), 1, "got: {:?}", first.notified);
+    let n = &first.notified[0];
+    assert_eq!(
+        n.key,
+        format!("purchase_finalize:{profile_id}:bought:p1-tx")
+    );
+    assert_eq!(n.title, "Ready to finalize");
+    assert_eq!(n.body, "bought is paid for — finalize it to make it yours");
+
+    let second = scan_deadline_notifications(app.handle().clone(), app.state())
+        .await
+        .expect("second scan should succeed");
+    assert!(second.notified.is_empty(), "must not notify twice");
+
+    let state: tauri::State<crate::AppState> = app.state();
+    let conn = state.db.lock().unwrap();
+    let raw = db::queries::get_settings(&conn).unwrap()["deadline_notify_state"].clone();
+    assert!(raw.contains("purchase_finalize:"));
+}
+
+/// While our FINALIZE is on its way the purchase stays `awaiting_finalize`
+/// until the job sees it mined; "finalize it" would then ask for a second one.
+/// An unsent, failed or dropped finalize still leaves the name to finalize.
+#[tokio::test]
+async fn purchase_ready_to_finalize_skips_a_finalize_already_sent() {
+    for (status, notifies) in [
+        ("draft", true),
+        ("signed", true),
+        ("failed", true),
+        ("dropped", true),
+        ("broadcast_pending", false),
+        ("broadcasted", false),
+        ("confirmed", false),
+    ] {
+        let state = create_full_test_state();
+        {
+            let conn = state.db.lock().unwrap();
+            let id = insert_valid_profile(&conn, "mainnet");
+            enable_notifications(&conn, "144", "30");
+            seed_purchase(&conn, &id, "p1", "bought", "awaiting_finalize", Some(0));
+            db::queries::insert_tx_draft(
+                &conn,
+                "fin",
+                &id,
+                "shakedex_purchase_finalize",
+                "00",
+                "[]",
+                "{}",
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = 'fin'",
+                [status],
+            )
+            .unwrap();
+            db::queries::set_shakedex_purchase_finalize_draft(&conn, "p1", "fin").unwrap();
+        }
+        let app = mock_app_with(state);
+        let outcome = scan_deadline_notifications(app.handle().clone(), app.state())
+            .await
+            .unwrap();
+        assert_eq!(outcome.notified.len(), usize::from(notifies), "{status}");
+    }
+}
+
+#[tokio::test]
+async fn purchase_ready_to_finalize_respects_disabled_setting() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "mainnet");
+        seed_purchase(&conn, &id, "p1", "bought", "awaiting_finalize", Some(0));
+    }
+    let app = mock_app_with(state);
+    let outcome = scan_deadline_notifications(app.handle().clone(), app.state())
+        .await
+        .unwrap();
+    assert!(!outcome.enabled);
+    assert!(outcome.notified.is_empty());
+}

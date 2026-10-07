@@ -388,7 +388,8 @@ pub fn run() {
             }
 
             // Deadline scanner (I1): on start + every ~10 minutes, look for
-            // reveal windows / renewals closing soon and fire an OS
+            // reveal windows / renewals closing soon, and Shakedex purchases
+            // ready to finalize, and fire an OS
             // notification (gated + deduped inside `scan_deadline_notifications`
             // itself — this loop just decides WHEN to ask).
             //
@@ -699,6 +700,7 @@ pub fn run() {
             commands::shakedex::shakedex_import_listing,
             commands::shakedex::shakedex_preview_purchase,
             commands::shakedex::shakedex_build_purchase_draft,
+            commands::shakedex::shakedex_build_purchase_finalize_draft,
             commands::names::get_name_action_capabilities,
             commands::names::get_names_action_capabilities,
             commands::bids::recover_bid_commitment,

@@ -1627,6 +1627,32 @@ pub fn read_shakedex_purchase_names(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// Every purchase, across all profiles, whose transfer lockup is over and
+/// whose finalize is not sent yet: the name can be finalized now. A purchase
+/// whose finalize draft [`may_have_reached_chain`] stays `awaiting_finalize`
+/// until the job sees it mined, and is left out. `(profile id, name,
+/// purchase txid)`.
+pub fn list_purchases_ready_to_finalize(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<(String, String, String)>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT p.wallet_profile_id, p.name, p.purchase_txid FROM shakedex_purchases p
+         WHERE p.state = ?1 AND p.blocks_remaining = 0
+           AND NOT EXISTS (
+               SELECT 1 FROM wallet_tx_drafts d
+               WHERE d.id = p.finalize_draft_id
+                 -- may_have_reached_chain
+                 AND d.status IN ('broadcasted', 'confirmed', 'broadcast_pending'))
+         ORDER BY p.wallet_profile_id, p.name, p.purchase_txid",
+    )?;
+    let rows = stmt
+        .query_map(params![PurchaseState::AwaitingFinalize], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// Fetch one purchase, or `None`.
 pub fn get_shakedex_purchase(
     conn: &rusqlite::Connection,
