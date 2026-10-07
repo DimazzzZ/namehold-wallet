@@ -1,6 +1,6 @@
 # Honest broadcast result
 
-Status: specified, not implemented. Merges after `feat/shakedex-buy` (PR 1 of Shakedex name sales), which adds `noncustodial::rpc::is_node_rejection` and changes the functions this spec touches.
+Status: specified, not implemented. Merges after `feat/shakedex-buy` (PR 1 of Shakedex name sales), which adds `noncustodial::rpc::is_node_rejection` and changes the functions this spec touches. Its row in `docs/specs/README.md` is added with the implementation, after PR 1 has added its own there.
 
 ## 1. Summary
 
