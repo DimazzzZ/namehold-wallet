@@ -2095,6 +2095,46 @@ fn estimate_persisted_height_reads_from_profile_last_synced_height() {
     assert!(h >= 12345, "expected >=12345, got {h}");
 }
 
+/// On mainnet a stored height ages by one block per `TARGET_SPACING_SECS`
+/// of wall time: an hour-old snapshot is six blocks behind, on both sources.
+#[test]
+fn estimate_persisted_height_ages_a_mainnet_snapshot_by_block_spacing() {
+    let conn = empty_db();
+    add_profile(&conn, "H9", "mainnet");
+    conn.execute(
+        "UPDATE wallet_profiles
+            SET last_synced_height = 1000,
+                last_synced_at = datetime('now', '-3600 seconds')
+          WHERE id = 'H9'",
+        [],
+    )
+    .unwrap();
+    let h = crate::commands::node_readiness::estimate_persisted_height(&conn, "H9")
+        .unwrap()
+        .unwrap();
+    let hour = (3600 / crate::noncustodial::network::TARGET_SPACING_SECS) as i64;
+    assert_eq!(h, 1000 + hour);
+
+    conn.execute(
+        "UPDATE wallet_profiles SET last_synced_height = NULL WHERE id = 'H9'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, raw_json, updated_at)
+         VALUES ('H9', 'aged', '', 'CLOSED',
+                 '{\"stats\":{\"renewalPeriodEnd\":3000,\"blocksUntilExpire\":1000}}',
+                 datetime('now', '-3600 seconds'))",
+        [],
+    )
+    .unwrap();
+    let h = crate::commands::node_readiness::estimate_persisted_height(&conn, "H9")
+        .unwrap()
+        .unwrap();
+    assert_eq!(h, 2000 + hour);
+}
+
 #[test]
 fn estimate_persisted_height_prefers_max_across_sources() {
     // A tracked-name-states row carries stats implying height 20000, while

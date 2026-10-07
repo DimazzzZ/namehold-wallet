@@ -227,6 +227,8 @@ pub(crate) fn estimate_persisted_height(
         }
     };
 
+    // Seconds per block, to age a snapshot into blocks.
+    let spacing = crate::noncustodial::network::TARGET_SPACING_SECS as i64;
     let mut best: Option<i64> = None;
     let mut consider = |h: Option<i64>| {
         if let Some(h) = h {
@@ -238,11 +240,11 @@ pub(crate) fn estimate_persisted_height(
     // (stats at the root) or the node getnameinfo result ({"info": {...}}).
     let mut stmt = conn.prepare(
         "SELECT raw_json,
-                CAST((strftime('%s','now') - strftime('%s', updated_at)) / 600 AS INTEGER)
+                CAST((strftime('%s','now') - strftime('%s', updated_at)) / ?2 AS INTEGER)
          FROM tracked_name_states
          WHERE wallet_profile_id = ?1 AND raw_json IS NOT NULL",
     )?;
-    let rows = stmt.query_map(rusqlite::params![profile_id], |row| {
+    let rows = stmt.query_map(rusqlite::params![profile_id, spacing], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })?;
     for row in rows {
@@ -268,9 +270,9 @@ pub(crate) fn estimate_persisted_height(
     let profile_snapshot: Option<(Option<i64>, i64)> = conn
         .query_row(
             "SELECT last_synced_height,
-                    CAST((strftime('%s','now') - strftime('%s', COALESCE(last_synced_at, datetime('now')))) / 600 AS INTEGER)
+                    CAST((strftime('%s','now') - strftime('%s', COALESCE(last_synced_at, datetime('now')))) / ?2 AS INTEGER)
              FROM wallet_profiles WHERE id = ?1",
-            rusqlite::params![profile_id],
+            rusqlite::params![profile_id, spacing],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
