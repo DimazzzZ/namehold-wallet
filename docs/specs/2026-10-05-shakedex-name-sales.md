@@ -1,6 +1,6 @@
 # Shakedex name sales
 
-**Status:** accepted (2026-10-05); not implemented yet. Supersedes [2026-09-21 Paid name swaps](./2026-09-21-paid-name-swaps.md). Decisions: [ADR 0003](../adr/0003-own-shakedex-implementation.md) (own implementation), [ADR 0004](../adr/0004-shakedex-lock-keys-from-seed.md) (lock keys from the seed). Delivered in three stages — buying, selling, and the clean-up that removes the withdrawn paid-swap code — see Pointers.
+**Status:** accepted (2026-10-05); buying implemented; selling and the clean-up not yet. Supersedes [2026-09-21 Paid name swaps](./2026-09-21-paid-name-swaps.md). Decisions: [ADR 0003](../adr/0003-own-shakedex-implementation.md) (own implementation), [ADR 0004](../adr/0004-shakedex-lock-keys-from-seed.md) (lock keys from the seed). Delivered in three stages — buying, selling, and the clean-up that removes the withdrawn paid-swap code — see Pointers.
 
 ## 1. Summary
 
@@ -14,7 +14,7 @@ Protocol facts behind this spec, pinned to hsd v8.0.0, shakedex `2c4fa04eab68a52
 
 ## 3. Requirements
 
-Requirements name the code that enforces them and the test that pins them. Until each stage lands, the code and tests this spec names (§4 included) do not exist yet; buying arrives first, in a stack of smaller PRs.
+Requirements name the code that enforces them and the test that pins them. Those of the selling and clean-up stages name code that does not exist yet (the cancel, the lock keys, selling and publishing). "UI only" marks a requirement whose behaviour lives in the frontend and is pinned by a component test.
 
 ### 3.1 Protocol
 
