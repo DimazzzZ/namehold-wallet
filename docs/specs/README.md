@@ -24,3 +24,4 @@ Each spec has these sections, in this order:
 | [2026-09-15 Per-profile node banner & preflight](./2026-09-15-per-profile-node-banner-and-preflight.md) | Steps 1-2 of 9 implemented — see the spec's own status table |
 | [2026-09-20 Multiple bids per name](./2026-09-20-multiple-bids-per-name.md) | Implemented |
 | [2026-09-21 Paid name swaps](./2026-09-21-paid-name-swaps.md) | Not implemented — UI withdrawn, see spec |
+| [2026-10-07 Honest broadcast result](./2026-10-07-honest-broadcast-result.md) | Specified; implemented after Shakedex PR 1 merges |
