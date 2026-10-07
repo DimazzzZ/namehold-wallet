@@ -342,3 +342,37 @@ These drive REAL reorgs via a `#[cfg(test)]` `invalidateblock`/`reconsiderblock`
 | `live_signer_profile_mismatch_refused` | Signer unlocked for profile X → refuses to sign profile Y's draft |
 | `live_watch_only_send_refused` | Watch-only profile → `build_send_hns_draft` refuses |
 | `live_write_capability_downgrades` | Node reachable + local + signer unlocked → `can_write`; flip to Explorer → refused |
+
+## Shakedex purchases against the CLI
+
+These are manual checks that Namehold buys from the real shakedex CLI and meets it as the other party (spec R30, Namehold-buys half, and the R7/R10/R13 chain paths). They are not part of CI: each test is skipped unless both `HNS_IT_NODE_URL` and `HNS_IT_SHAKEDEX=1` are set.
+
+Start a throwaway regtest node with the hsd wallet enabled; the default `scripts/regtest.sh start` runs with `--no-wallet`, and the script prints the wallet API port and key (14039, `test`). The node uses the repo-local `.regtest/` data dir and never touches `~/.hsd`. The CLI talks to the node at the regtest default ports, so point the tests at that node.
+
+```bash
+scripts/regtest.sh --with-wallet
+HNS_IT_NODE_URL=http://127.0.0.1:14037 HNS_IT_NODE_API_KEY=test HNS_IT_SHAKEDEX=1 \
+  cargo test --manifest-path src-tauri/Cargo.toml --lib live_node_it::shakedex_ -- --test-threads=1 --nocapture
+```
+
+The tests drive the CLI through `scripts/shakedex-cli-sell.sh`, with the node's hsd wallet as the seller and as the other buyer. Each run registers fresh names (open, two bids, reveal, register, mining between the phases), so a used chain works. The script clones `shadstoneofficial/shakedex` at the pinned commit `2c4fa04eab68a528e758598d11b5da5666113b11` into `SHAKEDEX_WORK` once and keeps the CLI's database there (the tests default it to `$TMPDIR/namehold-shakedex-cli`; run by hand, the script uses a fresh temp dir unless it is set); nothing is installed globally. `HNS_IT_SHAKEDEX` set to anything but `1`, or without `HNS_IT_NODE_URL`, or with a node URL other than port 14037, fails the tests instead of skipping them. It can be run by hand too:
+
+| Command | What the CLI does |
+|---|---|
+| `REGISTER=1 PRICE=5 OUT=listing.json scripts/shakedex-cli-sell.sh` | registers a name, locks it (`transfer-lock`, the lockup, `finalize-lock`) and lists it at a fixed price (`create-fixed`); prints the listing path |
+| `REGISTER=1 START_PRICE=10 END_PRICE=5 OUT=auction.json scripts/shakedex-cli-sell.sh auction` | the same, listed as a one-day reverse auction, one step every 15 minutes (`create-auction`, not published) |
+| `scripts/shakedex-cli-sell.sh cancel <name>` | takes the name back out of its lock (`transfer-lock-cancel`, the lockup, `finalize-lock-cancel`); needs the `SHAKEDEX_WORK` the listing was made in |
+| `scripts/shakedex-cli-sell.sh fill <listing.json>` | the hsd wallet buys the listing (`fill-auction`) |
+
+What the tests check:
+
+- `shakedex_cli_listing_is_bought` — a fixed-price listing is bought: unconfirmed in the mempool, awaiting finalize once mined, owned after the lockup and the FINALIZE, with the node's owner coin paying the purchase's destination.
+- `shakedex_finalized_name_moved_on_before_a_sync_is_owned` — the purchase is finalized and the name then sent elsewhere (TRANSFER, lockup, FINALIZE) before the purchase job runs again; the job finds our FINALIZE as the TRANSFER's spender in the node's history of our destination and marks the purchase owned. The shakedex lock script lets the TRANSFER be spent only into a FINALIZE, so there is no other ending to test.
+- `shakedex_cli_buyer_first_loses_ours_with_nothing_paid` — the CLI buys the listing between our review and our broadcast. hsd 8.0.0's `sendrawtransaction` answers with the txid whatever its mempool does with the transaction (here it is kept as an orphan, its lock coin already spent), so the broadcast reads as sent; the purchase job then loses it as bought by someone else, with nothing paid, and frees its coins.
+- `shakedex_purchase_follows_reorgs_of_its_own_blocks` — the purchase's block is invalidated (hsd's `invalidateblock` empties the mempool too, so the purchase is gone from the node), the app's sync rebroadcasts it once after six blocks missing, and it is mined again; then the FINALIZE's block is invalidated and the purchase awaits finalize again until the same FINALIZE is mined.
+- `shakedex_reverse_auction_pays_the_current_step_and_refuses_a_stale_one` — a purchase signed at one step is refused at broadcast once the node's median time makes a cheaper step valid, and built again it pays that step.
+- `shakedex_cancelled_listing_is_not_offered` — after the seller cancels, the listing is "sold or cancelled" and cannot be bought.
+
+The tests move the node's clock forward with `setmocktime` to make price steps valid. hsd keeps that as an offset that goes on ticking, and the median time never goes back, so the clock is only ever moved forward; never run `setmocktime 0` against this node, which sets its clock to 0 and stalls mining (`scripts/regtest.sh reset` starts over).
+
+The winner of a name pays the second-highest bid, so the preamble places two bids to give the lock coin a non-zero value (0.5 HNS). A name won uncontested has a lock coin worth 0, which Namehold accepts as well. Stop the node with `scripts/regtest.sh stop`, or wipe the chain with `scripts/regtest.sh reset`.

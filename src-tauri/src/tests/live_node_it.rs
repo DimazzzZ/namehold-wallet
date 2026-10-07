@@ -746,14 +746,33 @@ async fn broadcast_only(app: &tauri::App<tauri::test::MockRuntime>, draft_id: &s
     assert_eq!(bc.status, "broadcasted");
 }
 
+/// hsd answers `sendrawtransaction` before its mempool has taken the
+/// transaction (`rpc.js`: `this.node.relay(tx)`, not awaited), so a block
+/// mined, or a lookup made, straight after a send can miss it. Wait until the
+/// node reports `txid`, for at most two seconds.
+async fn wait_until_node_has(cl: &NodeRpcClient, txid: &str) {
+    for _ in 0..40 {
+        if !cl.get_tx_by_hash(txid).await.expect("tx lookup").is_null() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the node never reported {txid}");
+}
+
 /// Mine one block and bring the wallet's view up to date with it — the other
-/// half of [`broadcast_only`]. Mirrors the tail of [`execute`].
+/// half of [`broadcast_only`]. Mirrors the tail of [`execute`]. The draft's
+/// transaction is waited for first, so the block holds it.
 async fn settle(
     app: &tauri::App<tauri::test::MockRuntime>,
     cl: &NodeRpcClient,
     addr: &str,
     draft_id: &str,
 ) {
+    let txid = draft_status(app, draft_id)
+        .txid
+        .expect("a settled draft was broadcast");
+    wait_until_node_has(cl, &txid).await;
     cl.generate_to_address(1, addr).await.expect("mine 1");
     refresh_tx_confirmations(app.state(), None)
         .await
@@ -4298,4 +4317,763 @@ async fn live_scanner_pairs_each_reveal_with_its_own_bid() {
             "bid {bid_txid} disclosed {want:?} but the index says {revealed:?}"
         );
     }
+}
+
+// =============================================================================
+// Shakedex against the real shakedex CLI (R30, and the R7/R10/R13 paths)
+// =============================================================================
+//
+// The other party is the shakedex CLI at its pinned commit, driven through
+// `scripts/shakedex-cli-sell.sh` with the node's hsd wallet: it sells, cancels
+// and buys first. Skipped unless `HNS_IT_SHAKEDEX=1` as well, since the script
+// clones the CLI and needs a wallet-enabled node at the regtest default port
+// (`scripts/regtest.sh --with-wallet`). The node's clock is only ever moved
+// forward (`advance_mtp_past`), so the tests can run in any order.
+
+/// The node and the shakedex CLI for a Shakedex live test, or `None` (the
+/// test skips, and says so) when `HNS_IT_SHAKEDEX` is unset. Anything but
+/// `1` there, or `1` without a node or with another node than the one the
+/// script's `hsd-rpc` reaches, is a mistake in the setup and fails the test
+/// rather than skipping it.
+fn shakedex_env(test: &str) -> Option<(String, String, ShakedexCli)> {
+    match std::env::var("HNS_IT_SHAKEDEX").ok().as_deref() {
+        None | Some("") => {
+            eprintln!("skip {test}: set HNS_IT_SHAKEDEX=1 and HNS_IT_NODE_URL");
+            return None;
+        }
+        Some("1") => {}
+        Some(other) => panic!("HNS_IT_SHAKEDEX must be 1, not {other:?}"),
+    }
+    let (url, key) = it_env().expect("HNS_IT_SHAKEDEX=1 needs HNS_IT_NODE_URL");
+    // The CLI and the script's hsd-rpc/hsw-rpc reach regtest's default ports.
+    assert!(
+        url.trim_end_matches('/').ends_with(":14037"),
+        "the shakedex CLI talks to the regtest node at port 14037, not {url}"
+    );
+    let cli = shakedex_cli(&key);
+    Some((url, key, cli))
+}
+
+/// The shakedex CLI, driven through `scripts/shakedex-cli-sell.sh`.
+struct ShakedexCli {
+    /// The script's `SHAKEDEX_WORK`: the CLI checkout and its database (the
+    /// lock keys), kept across tests and runs.
+    work: std::path::PathBuf,
+    api_key: String,
+}
+
+/// What the mined transaction `txid` pays to `addr`, as the node reports it.
+async fn paid_to(cl: &NodeRpcClient, txid: &str, addr: &str) -> u64 {
+    let tx = cl.get_tx_by_hash(txid).await.expect("tx lookup");
+    assert!(
+        tx["height"].as_i64().unwrap_or(-1) >= 0,
+        "{txid} is not mined"
+    );
+    tx["outputs"]
+        .as_array()
+        .expect("outputs")
+        .iter()
+        .filter(|o| o["address"].as_str() == Some(addr))
+        .map(|o| o["value"].as_u64().expect("output value"))
+        .sum()
+}
+
+fn shakedex_cli(api_key: &str) -> ShakedexCli {
+    let work = std::env::var_os("SHAKEDEX_WORK")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("namehold-shakedex-cli"));
+    ShakedexCli {
+        work,
+        api_key: api_key.to_string(),
+    }
+}
+
+impl ShakedexCli {
+    /// Run the script with `args` and extra `env`; its stdout. A failure
+    /// panics with the script's own log.
+    fn run(&self, args: &[&str], env: &[(&str, &str)]) -> String {
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scripts/shakedex-cli-sell.sh");
+        let out = std::process::Command::new("bash")
+            .arg(&script)
+            .args(args)
+            .env("SHAKEDEX_WORK", &self.work)
+            .env("HSD_API_KEY", &self.api_key)
+            .envs(env.iter().copied())
+            .output()
+            .expect("run shakedex-cli-sell.sh");
+        assert!(
+            out.status.success(),
+            "shakedex-cli-sell.sh {args:?} failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("utf-8 stdout")
+    }
+
+    /// Register a fresh name with the hsd wallet, lock it and list it with
+    /// `command` (`fixed` or `auction`).
+    fn list(&self, command: &str, env: &[(&str, &str)]) -> CliListing {
+        std::fs::create_dir_all(&self.work).expect("work dir");
+        let out = self.work.join(format!(
+            "listing-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let out_str = out.to_str().unwrap().to_string();
+        let mut all = vec![("REGISTER", "1"), ("OUT", out_str.as_str())];
+        all.extend_from_slice(env);
+        self.run(&[command], &all);
+        CliListing::new(std::fs::read_to_string(&out).expect("listing file"))
+    }
+
+    fn sell_fixed(&self, price_hns: u32) -> CliListing {
+        self.list("fixed", &[("PRICE", &price_hns.to_string())])
+    }
+
+    fn sell_auction(&self, start_hns: u32, end_hns: u32) -> CliListing {
+        self.list(
+            "auction",
+            &[
+                ("START_PRICE", &start_hns.to_string()),
+                ("END_PRICE", &end_hns.to_string()),
+            ],
+        )
+    }
+
+    /// The seller takes the name back out of its lock (mined).
+    fn cancel(&self, name: &str) {
+        self.run(&["cancel", name], &[]);
+    }
+
+    /// The hsd wallet buys `listing` (mined).
+    fn fill(&self, listing: &CliListing) {
+        let path = self.work.join("fill.json");
+        std::fs::write(&path, &listing.json).expect("write listing");
+        self.run(&["fill", path.to_str().unwrap()], &[]);
+    }
+}
+
+/// A listing file the CLI wrote: the file as written, and what the tests
+/// read from it.
+struct CliListing {
+    json: String,
+    name: String,
+    /// Where the seller is paid.
+    payment_addr: String,
+    /// `(price, lockTime)` of each step, in the file's order.
+    steps: Vec<(u64, u64)>,
+}
+
+impl CliListing {
+    fn new(json: String) -> Self {
+        let v: serde_json::Value = serde_json::from_str(&json).expect("listing json");
+        let name = v["name"].as_str().expect("listing name").to_string();
+        let payment_addr = v["paymentAddr"].as_str().expect("paymentAddr").to_string();
+        let steps = v["data"]
+            .as_array()
+            .expect("price steps")
+            .iter()
+            .map(|s| {
+                (
+                    s["price"].as_u64().expect("price"),
+                    s["lockTime"].as_u64().expect("lockTime"),
+                )
+            })
+            .collect();
+        CliListing {
+            json,
+            name,
+            payment_addr,
+            steps,
+        }
+    }
+
+    fn price(&self, step: usize) -> u64 {
+        self.steps[step].0
+    }
+
+    fn lock_time(&self, step: usize) -> u64 {
+        self.steps[step].1
+    }
+}
+
+/// A funded Namehold buyer on a fresh account of the node under test.
+struct ShakedexBuyer {
+    app: tauri::App<tauri::test::MockRuntime>,
+    db_path: std::path::PathBuf,
+    cl: NodeRpcClient,
+    addr: String,
+}
+
+impl ShakedexBuyer {
+    async fn new(url: &str, key: &str) -> Self {
+        let cl = client(url, key);
+        // Mined first so a second buyer in the same test gets its own account.
+        let (miner, _, _) = leaf00();
+        cl.generate_to_address(1, &miner).await.expect("mine");
+        let tip = cl.get_blockchain_info().await.expect("info").blocks;
+        let acct = fresh_acct(tip);
+        let (db_path, app) = file_backed_app(url, key, acct);
+        let (addr, _, _) = leaf00_at(acct);
+        cl.generate_to_address(101, &addr).await.expect("fund");
+        sync_wallet_state(app.state(), None).await.expect("sync");
+        ShakedexBuyer {
+            app,
+            db_path,
+            cl,
+            addr,
+        }
+    }
+
+    /// Run the purchase job as the app's sync does.
+    async fn refresh(&self) {
+        crate::shakedex_jobs::refresh_purchases_step(
+            self.db_path.to_str().unwrap(),
+            PROFILE,
+            crate::shakedex_jobs::Rebroadcast::Allowed,
+        )
+        .await;
+    }
+
+    /// How many coins `draft_id` holds reserved.
+    fn reserved_by(&self, draft_id: &str) -> i64 {
+        let state = self.app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.query_row(
+            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = ?1",
+            params![draft_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// The purchase of `name`.
+    fn purchase(&self, name: &str) -> db::queries::ShakedexPurchase {
+        let state = self.app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        let id: String = c
+            .query_row(
+                "SELECT id FROM shakedex_purchases WHERE wallet_profile_id = ?1 AND name = ?2",
+                params![PROFILE, name],
+                |r| r.get(0),
+            )
+            .expect("purchase row");
+        db::queries::get_shakedex_purchase(&c, &id)
+            .unwrap()
+            .expect("purchase")
+    }
+
+    /// Build and sign the purchase of `listing_json`, not yet sent.
+    async fn sign_purchase(
+        &self,
+        listing: &CliListing,
+    ) -> crate::noncustodial::types::TxDraftSummary {
+        let draft = self
+            .build_purchase(listing)
+            .await
+            .expect("build purchase draft");
+        unlock(&self.app);
+        sign_tx_draft_inner(&self.app.state(), &draft.id)
+            .await
+            .expect("sign");
+        draft
+    }
+
+    async fn build_purchase(
+        &self,
+        listing: &CliListing,
+    ) -> Result<crate::noncustodial::types::TxDraftSummary, crate::error::AppError> {
+        crate::commands::shakedex::shakedex_build_purchase_draft(
+            self.app.state(),
+            listing.json.clone(),
+            None,
+            false,
+            Some(1),
+        )
+        .await
+    }
+
+    async fn import(&self, listing: &CliListing) -> serde_json::Value {
+        let row = crate::commands::shakedex::shakedex_import_listing(
+            self.app.state(),
+            crate::commands::shakedex::ImportSource::Text {
+                json: listing.json.clone(),
+            },
+        )
+        .await
+        .expect("import listing");
+        serde_json::to_value(row).unwrap()
+    }
+}
+
+impl Drop for ShakedexBuyer {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.db_path);
+    }
+}
+
+/// Move the node's median time past `t`: set the node's clock just after `t`
+/// unless it is already later, and mine 11 blocks, so the median of the last
+/// 11 timestamps follows. The clock only moves forward: hsd keeps
+/// `setmocktime` as an offset that goes on ticking and reports it as
+/// `getinfo.timeoffset`, so the node's clock is ours plus that offset.
+async fn advance_mtp_past(cl: &NodeRpcClient, addr: &str, t: u64) {
+    let offset = cl.get_info().await.expect("getinfo")["timeoffset"]
+        .as_i64()
+        .expect("timeoffset");
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    if wall + offset <= t as i64 {
+        cl.set_mock_time(t + 1).await.expect("setmocktime");
+    }
+    cl.generate_to_address(11, addr).await.expect("mine");
+    let after = cl
+        .get_blockchain_info()
+        .await
+        .expect("info")
+        .mediantime
+        .expect("mediantime");
+    assert!(after > t, "median time {after} did not pass {t}");
+}
+
+/// R30, Namehold-buys half: buy a fixed-price listing the CLI wrote, through
+/// the mempool, the transfer lockup and the finalize, to owned.
+#[tokio::test]
+async fn shakedex_cli_listing_is_bought() {
+    let Some((url, key, cli)) = shakedex_env("shakedex_cli_listing_is_bought") else {
+        return;
+    };
+    let listing = cli.sell_fixed(5);
+    let name = listing.name.clone();
+    let b = ShakedexBuyer::new(&url, &key).await;
+    advance_mtp_past(&b.cl, &b.addr, listing.lock_time(0)).await;
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+
+    let draft = b.sign_purchase(&listing).await;
+    let bc = broadcast_tx_draft(b.app.state(), draft.id.clone())
+        .await
+        .expect("broadcast");
+    assert_eq!(bc.status, "broadcasted");
+
+    // In the mempool: unconfirmed (hsd sends `height: -1`), and the draft
+    // lifecycle leaves the purchase draft to the purchase job.
+    b.refresh().await;
+    assert_eq!(
+        b.purchase(&name).state,
+        db::queries::PurchaseState::Unconfirmed
+    );
+    refresh_tx_confirmations(b.app.state(), None)
+        .await
+        .expect("refresh confirmations");
+    assert_eq!(draft_status(&b.app, &draft.id).status, "broadcasted");
+
+    settle(&b.app, &b.cl, &b.addr, &draft.id).await;
+    b.refresh().await;
+    let p = b.purchase(&name);
+    assert_eq!(p.state, db::queries::PurchaseState::AwaitingFinalize);
+    // Mined at the tip: hsd judges the FINALIZE at the next block (R13's N).
+    assert_eq!(
+        p.blocks_remaining,
+        Some(i64::from(NET.name_params().transfer_lockup) - 1)
+    );
+    // The seller is paid the listing's price, on chain.
+    assert_eq!(
+        paid_to(&b.cl, &bc.txid, &listing.payment_addr).await,
+        5_000_000
+    );
+
+    // Finalize once the transfer lockup is over.
+    b.cl.generate_to_address(NET.name_params().transfer_lockup, &b.addr)
+        .await
+        .expect("mine lockup");
+    b.refresh().await;
+    let fin = crate::commands::shakedex::shakedex_build_purchase_finalize_draft(
+        b.app.state(),
+        p.id.clone(),
+        Some(1),
+    )
+    .await
+    .expect("build finalize draft");
+    broadcast_only(&b.app, &fin.id).await;
+    settle(&b.app, &b.cl, &b.addr, &fin.id).await;
+    b.refresh().await;
+    assert_eq!(b.purchase(&name).state, db::queries::PurchaseState::Owned);
+
+    // The node agrees: the name's owner coin pays the purchase's destination.
+    let info = b.cl.get_name_info(&name).await.expect("name info");
+    let owner = &info["info"]["owner"];
+    let coin =
+        b.cl.get_coin(
+            owner["hash"].as_str().expect("owner hash"),
+            owner["index"].as_u64().expect("owner index") as u32,
+        )
+        .await
+        .expect("owner coin")
+        .expect("owner coin exists");
+    assert_eq!(
+        coin.address.as_deref(),
+        Some(p.destination_address.as_str())
+    );
+
+    // The node's history of our destination, as it really sends it, holds
+    // the FINALIZE as the spender of the purchase's TRANSFER: what the job
+    // reads to tell a finalized purchase whose name moved on since.
+    let history =
+        b.cl.get_txs_by_address(&p.destination_address)
+            .await
+            .expect("destination history");
+    let spenders: Vec<u64> = history
+        .iter()
+        .filter_map(|tx| {
+            crate::shakedex_jobs::transfer_spent_into(tx, &bc.txid).expect("hsd's tx shape")
+        })
+        .collect();
+    assert_eq!(
+        spenders,
+        [u64::from(crate::noncustodial::sync::COV_FINALIZE)]
+    );
+}
+
+/// R13: a purchase finalized and moved on before the purchase job looked at it
+/// again. The job finds the TRANSFER spent and the name's owner elsewhere,
+/// and reads our destination's history from the real node: our FINALIZE is
+/// there as the TRANSFER's spender, so the purchase was owned — not left
+/// awaiting a finalize the backend would refuse for ever.
+#[tokio::test]
+async fn shakedex_finalized_name_moved_on_before_a_sync_is_owned() {
+    let Some((url, key, cli)) =
+        shakedex_env("shakedex_finalized_name_moved_on_before_a_sync_is_owned")
+    else {
+        return;
+    };
+    let lockup = NET.name_params().transfer_lockup;
+    let listing = cli.sell_fixed(5);
+    let name = listing.name.clone();
+    let b = ShakedexBuyer::new(&url, &key).await;
+    advance_mtp_past(&b.cl, &b.addr, listing.lock_time(0)).await;
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+
+    let draft = b.sign_purchase(&listing).await;
+    broadcast_tx_draft(b.app.state(), draft.id.clone())
+        .await
+        .expect("broadcast");
+    settle(&b.app, &b.cl, &b.addr, &draft.id).await;
+    b.refresh().await;
+    let p = b.purchase(&name);
+    assert_eq!(p.state, db::queries::PurchaseState::AwaitingFinalize);
+
+    // Our FINALIZE, then the name moved on: a TRANSFER to an address that is
+    // not the purchase's destination and its FINALIZE — all before the
+    // purchase job runs again.
+    b.cl.generate_to_address(lockup, &b.addr)
+        .await
+        .expect("mine lockup");
+    let fin = crate::commands::shakedex::shakedex_build_purchase_finalize_draft(
+        b.app.state(),
+        p.id.clone(),
+        Some(1),
+    )
+    .await
+    .expect("build purchase finalize");
+    broadcast_only(&b.app, &fin.id).await;
+    settle(&b.app, &b.cl, &b.addr, &fin.id).await;
+
+    // The app learns it holds the name as the full sync's discovery would:
+    // track it, and sync picks up the owner coin at our destination.
+    {
+        let state = b.app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO tracked_name_states (wallet_profile_id, name, name_hash_hex, state) VALUES (?1, ?2, '', 'UNKNOWN')",
+            params![PROFILE, name],
+        )
+        .unwrap();
+    }
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+
+    let (_sk, _pk, elsewhere) =
+        crate::noncustodial::hd::derive_address(NET, &seed(), 0, 0, 1).unwrap();
+    assert_ne!(elsewhere, p.destination_address);
+    let out = crate::commands::names::build_transfer_draft(
+        b.app.state(),
+        name.clone(),
+        elsewhere.clone(),
+        Some(1),
+    )
+    .await
+    .expect("build transfer out");
+    broadcast_only(&b.app, &out.id).await;
+    settle(&b.app, &b.cl, &b.addr, &out.id).await;
+    b.cl.generate_to_address(lockup, &b.addr)
+        .await
+        .expect("mine lockup");
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+    let out_fin =
+        crate::commands::names::build_finalize_draft(b.app.state(), name.clone(), Some(1))
+            .await
+            .expect("build finalize out");
+    broadcast_only(&b.app, &out_fin.id).await;
+    settle(&b.app, &b.cl, &b.addr, &out_fin.id).await;
+
+    // The node agrees the name has left our destination.
+    let info = b.cl.get_name_info(&name).await.expect("name info");
+    let owner = &info["info"]["owner"];
+    let coin =
+        b.cl.get_coin(
+            owner["hash"].as_str().expect("owner hash"),
+            owner["index"].as_u64().expect("owner index") as u32,
+        )
+        .await
+        .expect("owner coin")
+        .expect("owner coin exists");
+    assert_eq!(coin.address.as_deref(), Some(elsewhere.as_str()));
+
+    b.refresh().await;
+    let p = b.purchase(&name);
+    assert_eq!(p.state, db::queries::PurchaseState::Owned);
+    assert_eq!(p.lost_reason, None);
+}
+
+/// R13 "Lost, nothing paid": the CLI buys the listing between our review and
+/// our broadcast. hsd 8.0.0's `sendrawtransaction` answers with the txid
+/// whatever its mempool does (`rpc.js`: `this.node.relay(tx)`, not awaited,
+/// its error only logged), so the broadcast reads as sent; the purchase job
+/// then finds the purchase missing and the lock coin spent, and loses it with
+/// nothing paid. Its coins are free again, and the listing is no longer
+/// offered.
+#[tokio::test]
+async fn shakedex_cli_buyer_first_loses_ours_with_nothing_paid() {
+    let Some((url, key, cli)) =
+        shakedex_env("shakedex_cli_buyer_first_loses_ours_with_nothing_paid")
+    else {
+        return;
+    };
+    let listing = cli.sell_fixed(3);
+    let name = listing.name.clone();
+    let b = ShakedexBuyer::new(&url, &key).await;
+    advance_mtp_past(&b.cl, &b.addr, listing.lock_time(0)).await;
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+
+    let draft = b.sign_purchase(&listing).await;
+    assert!(b.reserved_by(&draft.id) > 0, "the purchase holds its coins");
+    cli.fill(&listing);
+    let bc = broadcast_tx_draft(b.app.state(), draft.id.clone())
+        .await
+        .expect("hsd answers with the txid");
+    assert_eq!(bc.status, "broadcasted");
+    assert!(
+        b.cl.get_tx_by_hash(&bc.txid)
+            .await
+            .expect("tx lookup")
+            .is_null(),
+        "the node did not take the purchase"
+    );
+
+    b.refresh().await;
+    let p = b.purchase(&name);
+    assert_eq!(p.state, db::queries::PurchaseState::Lost);
+    // R13: the reason the spec gives, on the purchase and on the draft
+    // Activity shows.
+    let bought_by_other = "someone else bought the name first, or the seller cancelled the listing — nothing was paid";
+    assert_eq!(p.lost_reason.as_deref(), Some(bought_by_other));
+    let row = draft_status(&b.app, &draft.id);
+    assert_eq!(row.status, "dropped");
+    assert_eq!(row.error_message.as_deref(), Some(bought_by_other));
+    assert_eq!(
+        b.reserved_by(&draft.id),
+        0,
+        "the purchase's funding coins are free again"
+    );
+
+    let row = b.import(&listing).await;
+    assert_eq!(row["verdict"]["verdict"], "hidden", "{row}");
+    assert_eq!(row["verdict"]["kind"], "soldOrCancelled", "{row}");
+    assert!(b.build_purchase(&listing).await.is_err());
+}
+
+/// R13 "A reorg moves the state back", and the one rebroadcast. hsd's
+/// `invalidateblock` rewinds through `reset`, which empties the mempool
+/// (unlike a reorg to a heavier chain, which puts the block's transactions
+/// back): so the purchase whose block is taken away is gone from the node
+/// altogether. It reads as unconfirmed, is rebroadcast once by the app's sync
+/// after six blocks missing, and is mined again. Later the block that mined
+/// the FINALIZE is taken away: awaiting finalize again, and owned once the
+/// same FINALIZE is mined again (as a real reorg's mempool would).
+#[tokio::test]
+async fn shakedex_purchase_follows_reorgs_of_its_own_blocks() {
+    let Some((url, key, cli)) = shakedex_env("shakedex_purchase_follows_reorgs_of_its_own_blocks")
+    else {
+        return;
+    };
+    let listing = cli.sell_fixed(4);
+    let name = listing.name.clone();
+    let b = ShakedexBuyer::new(&url, &key).await;
+    advance_mtp_past(&b.cl, &b.addr, listing.lock_time(0)).await;
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+
+    let draft = b.sign_purchase(&listing).await;
+    let bc = broadcast_tx_draft(b.app.state(), draft.id.clone())
+        .await
+        .expect("broadcast");
+    settle(&b.app, &b.cl, &b.addr, &draft.id).await;
+    b.refresh().await;
+    let p = b.purchase(&name);
+    assert_eq!(p.state, db::queries::PurchaseState::AwaitingFinalize);
+    let bought_at = p.purchase_height.expect("purchase height");
+
+    let block = b.cl.get_block_hash(bought_at).await.expect("blockhash");
+    b.cl.invalidate_block(&block).await.expect("invalidate");
+    assert!(
+        b.cl.get_tx_by_hash(&bc.txid)
+            .await
+            .expect("tx lookup")
+            .is_null(),
+        "invalidateblock leaves the purchase nowhere"
+    );
+    b.refresh().await;
+    let p = b.purchase(&name);
+    assert_eq!(p.state, db::queries::PurchaseState::Unconfirmed);
+    assert_eq!(p.rebroadcast_count, 0);
+
+    // Six blocks missing: the app's sync sends it once more, and it is mined.
+    b.cl.generate_to_address(6, &b.addr).await.expect("mine");
+    b.refresh().await;
+    let p = b.purchase(&name);
+    assert_eq!(p.rebroadcast_count, 1, "rebroadcast once");
+    // The node took the rebroadcast.
+    wait_until_node_has(&b.cl, &bc.txid).await;
+    b.cl.generate_to_address(1, &b.addr).await.expect("mine");
+    b.cl.reconsider_block(&block).await.expect("reconsider");
+    b.refresh().await;
+    let p = b.purchase(&name);
+    assert_eq!(p.state, db::queries::PurchaseState::AwaitingFinalize);
+    assert!(p.purchase_height.expect("purchase height") > bought_at);
+
+    b.cl.generate_to_address(NET.name_params().transfer_lockup, &b.addr)
+        .await
+        .expect("mine lockup");
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+    b.refresh().await;
+    let fin = crate::commands::shakedex::shakedex_build_purchase_finalize_draft(
+        b.app.state(),
+        p.id.clone(),
+        Some(1),
+    )
+    .await
+    .expect("build finalize draft");
+    broadcast_only(&b.app, &fin.id).await;
+    settle(&b.app, &b.cl, &b.addr, &fin.id).await;
+    b.refresh().await;
+    assert_eq!(b.purchase(&name).state, db::queries::PurchaseState::Owned);
+
+    let fin_row = draft_status(&b.app, &fin.id);
+    let finalized_at = fin_row.confirmation_height.expect("finalize height");
+    let block = b.cl.get_block_hash(finalized_at).await.expect("blockhash");
+    b.cl.invalidate_block(&block).await.expect("invalidate");
+    b.refresh().await;
+    assert_eq!(
+        b.purchase(&name).state,
+        db::queries::PurchaseState::AwaitingFinalize,
+        "the FINALIZE's block is gone"
+    );
+    b.cl.send_raw_transaction(fin_row.signed_tx_hex.as_deref().expect("signed finalize"))
+        .await
+        .expect("resend finalize");
+    b.cl.generate_to_address(1, &b.addr).await.expect("mine");
+    b.cl.reconsider_block(&block).await.expect("reconsider");
+    b.refresh().await;
+    assert_eq!(b.purchase(&name).state, db::queries::PurchaseState::Owned);
+}
+
+/// R10/R12 on a reverse auction the CLI wrote: the purchase pays the step the
+/// node's median time makes current, and a purchase signed at one step is
+/// refused at broadcast once a cheaper step has become valid; built again,
+/// it pays the cheaper step.
+#[tokio::test]
+async fn shakedex_reverse_auction_pays_the_current_step_and_refuses_a_stale_one() {
+    let Some((url, key, cli)) =
+        shakedex_env("shakedex_reverse_auction_pays_the_current_step_and_refuses_a_stale_one")
+    else {
+        return;
+    };
+    let listing = cli.sell_auction(10, 5);
+    let name = listing.name.clone();
+    let b = ShakedexBuyer::new(&url, &key).await;
+    // Past step 0 and short of step 1 (15 minutes later, so its 512-second
+    // rounding cannot make it valid yet).
+    advance_mtp_past(&b.cl, &b.addr, listing.lock_time(0)).await;
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+    let row = b.import(&listing).await;
+    assert_eq!(row["kind"], "reverseAuction", "{row}");
+    assert_eq!(row["currentPrice"], listing.price(0), "{row}");
+    assert_eq!(row["nextPrice"], listing.price(1), "{row}");
+
+    let stale = b.sign_purchase(&listing).await;
+    assert_eq!(stale.summary["priceDoos"], listing.price(0));
+    advance_mtp_past(&b.cl, &b.addr, listing.lock_time(1)).await;
+    let err = broadcast_tx_draft(b.app.state(), stale.id.clone())
+        .await
+        .expect_err("a cheaper step became valid");
+    assert!(
+        err.to_string()
+            .contains(crate::noncustodial::shakedex::verify::PRICE_CHANGED),
+        "{err}"
+    );
+    {
+        let state = b.app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        assert!(
+            db::queries::get_tx_draft(&c, &stale.id).unwrap().is_none(),
+            "the stale draft is discarded"
+        );
+        let purchases: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM shakedex_purchases WHERE wallet_profile_id = ?1 AND name = ?2",
+                params![PROFILE, name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(purchases, 0, "and its purchase record with it");
+    }
+    assert_eq!(b.reserved_by(&stale.id), 0, "its coins are free");
+
+    let fresh = b.sign_purchase(&listing).await;
+    assert_eq!(fresh.summary["priceDoos"], listing.price(1));
+    let bc = broadcast_tx_draft(b.app.state(), fresh.id.clone())
+        .await
+        .expect("broadcast");
+    settle(&b.app, &b.cl, &b.addr, &fresh.id).await;
+    b.refresh().await;
+    let p = b.purchase(&name);
+    assert_eq!(p.state, db::queries::PurchaseState::AwaitingFinalize);
+    assert_eq!(p.price_doos as u64, listing.price(1));
+    assert_eq!(
+        paid_to(&b.cl, &bc.txid, &listing.payment_addr).await,
+        listing.price(1),
+        "the seller is paid the cheaper step, on chain"
+    );
+}
+
+/// R7: a listing whose seller took the name back out of its lock is shown as
+/// sold or cancelled and cannot be bought.
+#[tokio::test]
+async fn shakedex_cancelled_listing_is_not_offered() {
+    let Some((url, key, cli)) = shakedex_env("shakedex_cancelled_listing_is_not_offered") else {
+        return;
+    };
+    let listing = cli.sell_fixed(2);
+    let b = ShakedexBuyer::new(&url, &key).await;
+    advance_mtp_past(&b.cl, &b.addr, listing.lock_time(0)).await;
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+    assert_eq!(b.import(&listing).await["verdict"]["verdict"], "buyable");
+
+    cli.cancel(&listing.name);
+    let row = b.import(&listing).await;
+    assert_eq!(row["verdict"]["verdict"], "hidden", "{row}");
+    assert_eq!(row["verdict"]["kind"], "soldOrCancelled", "{row}");
+    assert!(b.build_purchase(&listing).await.is_err());
 }

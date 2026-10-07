@@ -227,13 +227,33 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 - [ ] "Transfer Selected" takes one recipient in the action bar and repeats it in the modal
 - [ ] Deselecting all hides the batch action bar
 
-### J. Paid name swaps (withdrawn)
-The two entry points were removed on 2026-09-21; see
-`docs/specs/2026-09-21-paid-name-swaps.md`. What remains is the claim path for
-an offer recorded before that.
-- [ ] No "Buy with payment" or "Sell with payment" button appears on any name
-- [ ] Saved offers list shows pending offers recorded earlier
-- [ ] claim_paid_transfer verifies the broadcast tx before marking paid
+### J. Buying names on the Market (Shakedex)
+Paid name swaps were withdrawn on 2026-09-21 (`docs/specs/2026-09-21-paid-name-swaps.md`); a claim panel for an offer recorded before that still works. Buying through Shakedex replaces them; selling is not shipped yet.
+- [ ] Market is the 7th sidebar item and hotkey 7 opens it
+- [ ] Browse: listings load with name, current step price, and Buy Now / Reverse auction kind; next-price times read as approximate
+- [ ] Hidden counter, below the table, shows a total and expands to names and a reason each
+- [ ] A market longer than 100 listings shows "Page 1 of N"; Next and Previous move between pages and are disabled at the ends; one page shows no pager
+- [ ] Testnet/regtest: the Market page says there is no market for that network; file and paste import work, link import is refused; imported rows carry a "From file" badge
+- [ ] Import a listing file; import pasted JSON; import a market.learnhns.com/listing/<name> link; a bad one shows an error
+- [ ] A link import is badged "From LearnHNS link" and its published market fee is pre-ticked as for a market row; file and pasted imports are badged "From file" and never pre-tick a fee
+- [ ] A buyable import can be bought while the market page is still loading or LearnHNS is unreachable; in SPV/Explorer an import shows "Not verified" and no Buy
+- [ ] A listing with a non-zero fee and an unusable feeAddr (another network, not 20-byte v0) still verifies; its fee line says it names no valid fee address and no fee output is added
+- [ ] A listing over a single-bid name (lock coin worth 0) verifies and can be bought
+- [ ] Market fee published by LearnHNS is pre-ticked; an unpublished fee address is unticked with a warning
+- [ ] Purchase dialog shows price, market fee with its percentage, network fee, total; the secure window adds the market fee address
+- [ ] Purchase goes through the secure window and the name appears as "Unconfirmed purchase"
+- [ ] Cancel the secure window: the prepared purchase is discarded and Buy on the same listing works again at once, without a sync
+- [ ] Reverse auction: if a cheaper step becomes valid between confirming and broadcast, nothing is sent; the dialog says "the price changed — review the purchase again" and shows the new figures
+- [ ] Unconfirmed purchase stays "Unconfirmed purchase" (not "Awaiting finalize") while its TRANSFER is only in the mempool, also on a node without a transaction index
+- [ ] A purchase on its way does not appear in Renewals
+- [ ] After confirmation it reads "Awaiting finalize · N blocks", then "Ready to finalize" with a Finalize button
+- [ ] Finalize works; the DNS records are then updated by the buyer
+- [ ] SPV and Explorer modes can browse but Buy is disabled with a reason
+- [ ] Remote node with "Allow sending via remote node" off: the purchase dialog shows "Could not price this purchase" with the backend's reason and Buy stays disabled
+- [ ] Ledger and watch-only wallets cannot buy; Finalize on a purchase row is not offered for them
+- [ ] Mainnet without "Shakedex (experimental)" in Settings: clicking Buy in the purchase dialog is refused with "Shakedex purchases on mainnet are experimental: enable them in Settings"; testnet and regtest need no flag; Finalize works regardless
+- [ ] Regtest: buy a listing created by the shakedex CLI end to end
+- [ ] Legacy: saved offers list still shows offers recorded before the withdrawal, and claim_paid_transfer verifies the broadcast tx before marking paid
 
 ### K. Bid recovery
 - [ ] REVEAL-phase name with no local bid data shows "Recover bid" panel
