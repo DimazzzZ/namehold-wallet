@@ -166,6 +166,11 @@ jobs:
         timeout-minutes: 20
         run: |
           export DISPLAY=:99
+          # WebKitGTK's DMA-BUF renderer needs a default EGL display, which
+          # Xvfb has none of on some runner images: the app then aborts with
+          # "Could not create default EGL display: EGL_BAD_PARAMETER" and every
+          # WebDriver session dies ("invalid session id").
+          export WEBKIT_DISABLE_DMABUF_RENDERER=1
           Xvfb :99 -screen 0 1280x1024x24 >/tmp/xvfb.log 2>&1 &
           XVFB_PID=$!
           sleep 2
