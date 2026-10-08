@@ -47,6 +47,16 @@ describe("Page Components - Smoke Tests", () => {
     expect(container).toBeTruthy();
   });
 
+  it("Layout lists Market right after Auctions, marked New", () => {
+    renderWithProviders(<Layout />);
+    const labels = Array.from(document.querySelectorAll("nav a")).map((a) =>
+      a.textContent?.replace("New", "").trim(),
+    );
+    expect(labels.indexOf("Market")).toBe(labels.indexOf("Auctions") + 1);
+    expect(document.querySelector('[data-testid="nav-badge-market"]')).toHaveTextContent("New");
+    expect(document.querySelectorAll('[data-testid^="nav-badge-"]')).toHaveLength(1);
+  });
+
   it("Onboarding renders", () => {
     const { container } = renderWithProviders(<Onboarding />);
     expect(container).toBeTruthy();

@@ -5,6 +5,8 @@ export interface PrimaryRoute {
   to: string;
   label: string;
   description: string;
+  /** A short tag beside the label, such as "New" for a recently added section. */
+  badge?: string;
 }
 
 /**
@@ -28,6 +30,13 @@ export const PRIMARY_ROUTES: PrimaryRoute[] = [
     description: "Acquire new Handshake TLDs",
   },
   {
+    key: "market",
+    to: "/market",
+    label: "Market",
+    description: "Buy names listed through Shakedex",
+    badge: "New",
+  },
+  {
     key: "watchlist",
     to: "/watchlist",
     label: "Watchlist",
@@ -40,12 +49,6 @@ export const PRIMARY_ROUTES: PrimaryRoute[] = [
     description: "Guided transfer of your domains from Namebase",
   },
   { key: "settings", to: "/settings", label: "Settings", description: "Configuration and safety" },
-  {
-    key: "market",
-    to: "/market",
-    label: "Market",
-    description: "Buy names listed through Shakedex",
-  },
 ];
 
 export const MIGRATION_TABS: WorkspaceTab<MigrationSectionKey>[] = [

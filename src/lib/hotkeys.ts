@@ -36,10 +36,10 @@ export const HOTKEY_BINDINGS: HotkeyBinding[] = [
   { keys: "1", label: "1", description: "Go to Wallet", category: "nav", scope: "*" },
   { keys: "2", label: "2", description: "Go to Activity", category: "nav", scope: "*" },
   { keys: "3", label: "3", description: "Go to Auctions", category: "nav", scope: "*" },
-  { keys: "4", label: "4", description: "Go to Watchlist", category: "nav", scope: "*" },
-  { keys: "5", label: "5", description: "Go to Move from Namebase", category: "nav", scope: "*" },
-  { keys: "6", label: "6", description: "Go to Settings", category: "nav", scope: "*" },
-  { keys: "7", label: "7", description: "Go to Market", category: "nav", scope: "*" },
+  { keys: "4", label: "4", description: "Go to Market", category: "nav", scope: "*" },
+  { keys: "5", label: "5", description: "Go to Watchlist", category: "nav", scope: "*" },
+  { keys: "6", label: "6", description: "Go to Move from Namebase", category: "nav", scope: "*" },
+  { keys: "7", label: "7", description: "Go to Settings", category: "nav", scope: "*" },
 
   // --- Dialogs (global) ---
   {

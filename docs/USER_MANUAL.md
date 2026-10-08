@@ -101,10 +101,12 @@ The sidebar has seven top-level sections:
 | **Wallet** | Balance, receive, send, recent transactions, owned names. Default page. |
 | **Activity** | Transaction history and pending activity. |
 | **Auctions** | Look up a name, place bids, reveal, register, see active auctions. |
+| **Market** (marked New) | Browse LearnHNS Market listings, import a listing file, and buy a listed name. |
 | **Watchlist** | Names you track without owning them. |
 | **Move from Namebase** | Retired: the legacy Namebase shut down on 1 October 2026. Explains the shutdown and imports history you exported earlier. |
 | **Settings** | Connections, node control, backups, notifications, advanced options. |
-| **Market** | Browse LearnHNS Market listings, import a listing file, and buy a listed name. Hotkey `7`. |
+
+The digit keys `1`–`7` open the sections in this order.
 
 The header shows two badges:
 
@@ -395,7 +397,7 @@ carrying too many covenants.
 
 ### Buying names on the Market
 
-The Market is the seventh sidebar section (hotkey `7`, after Settings). It lists the names that sellers have put up for sale through Shakedex, taken from the LearnHNS Market, and lets you buy one with the wallet you already have.
+The Market is the fourth sidebar section (hotkey `4`, right after Auctions, marked New). It lists the names that sellers have put up for sale through Shakedex, taken from the LearnHNS Market, and lets you buy one with the wallet you already have.
 
 A listing is either a Buy Now at one price or a Reverse auction whose price steps fall over time. Each row shows the current step, which is the price the wallet buys at, and for a Reverse auction when the next price step becomes valid. Those times are approximate, because they are measured against your node's median time: a step becomes valid once its lock time, rounded down to a multiple of 512 seconds, is below that median time, so it can be listed as "now" up to about eight and a half minutes before its own lock time.
 

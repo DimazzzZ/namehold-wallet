@@ -229,7 +229,7 @@ hsd-cli rpc generate 1440 # advance through REVEAL phase
 
 ### J. Buying names on the Market (Shakedex)
 Paid name swaps were withdrawn on 2026-09-21 (`docs/specs/2026-09-21-paid-name-swaps.md`); a claim panel for an offer recorded before that still works. Buying through Shakedex replaces them; selling is not shipped yet.
-- [ ] Market is the 7th sidebar item and hotkey 7 opens it
+- [ ] Market is the 4th sidebar item, right after Auctions, with a "New" tag, and hotkey 4 opens it; 5, 6 and 7 open Watchlist, Move from Namebase and Settings
 - [ ] Browse: listings load with name, current step price, and Buy Now / Reverse auction kind; next-price times read as approximate
 - [ ] Hidden counter, below the table, shows a total and expands to names and a reason each
 - [ ] A market longer than 100 listings shows "Page 1 of N"; Next and Previous move between pages and are disabled at the ends; one page shows no pager
