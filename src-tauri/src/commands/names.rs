@@ -542,7 +542,8 @@ pub(crate) fn find_name_action_context(
                     | "update"
                     | "transfer"
                     | "finalize"
-                    | "cancel_transfer"
+                    // build_cancel_draft's action; "cancel_transfer" is the capability's name, never a draft's.
+                    | "cancel"
                     | "renew"
                     | "revoke"
                     | crate::noncustodial::shakedex::purchase::PURCHASE_FINALIZE_ACTION
