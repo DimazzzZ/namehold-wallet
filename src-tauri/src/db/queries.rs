@@ -1333,6 +1333,12 @@ pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result
          WHERE finalize_draft_id = ?1",
         params![id],
     )?;
+    // An unsent Cancel transfer aborts nothing (R19).
+    tx.execute(
+        "UPDATE shakedex_listings SET abort_draft_id = NULL, updated_at = datetime('now')
+         WHERE abort_draft_id = ?1",
+        params![id],
+    )?;
     Ok(())
 }
 
@@ -1720,6 +1726,111 @@ pub fn listing_blocking_owner_actions(
     };
     let alive = status.is_some_and(|s| LIVE_LOCK_DRAFT_STATUSES.contains(&s.as_str()));
     Ok(alive.then_some(listing))
+}
+
+/// R19: link a Cancel transfer draft to the listing it aborts: the open
+/// listing of `name` whose abort is still the Cancel transfer
+/// ([`ListingState::aborts_by_cancel_transfer`]) and whose lock TRANSFER is
+/// the coin `(transfer_txid, transfer_vout)` the cancel spends. Any other
+/// cancel links nothing. Returns how many listings were linked (0 or 1).
+pub fn link_shakedex_listing_abort(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+    transfer_txid: &str,
+    transfer_vout: u32,
+    draft_id: &str,
+) -> Result<usize, AppError> {
+    // The lock TRANSFER is output 0 of its draft (the plan's covenant output).
+    if transfer_vout != 0 {
+        return Ok(0);
+    }
+    Ok(conn.execute(
+        "UPDATE shakedex_listings SET abort_draft_id = ?1, updated_at = datetime('now')
+         WHERE wallet_profile_id = ?2 AND name = ?3 AND lock_transfer_txid = ?4
+           AND state IN (?5, ?6)",
+        params![
+            draft_id,
+            profile_id,
+            name,
+            transfer_txid,
+            ListingState::Locking,
+            ListingState::ReadyToFinalize
+        ],
+    )?)
+}
+
+/// The listings whose abort the chain may still move (R19): those with a
+/// linked Cancel transfer that are still Locking or ReadyToFinalize, and
+/// those Aborted within the last `recheck_days`, which a reorg could still
+/// make Locking again.
+pub fn list_shakedex_listings_with_abort(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    recheck_days: u32,
+) -> Result<Vec<ShakedexListing>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
+         WHERE wallet_profile_id = ?1 AND abort_draft_id IS NOT NULL
+           AND (state IN (?2, ?3)
+                OR (state = ?4 AND updated_at >= datetime('now', ?5)))
+         ORDER BY created_at"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params![
+            profile_id,
+            ListingState::Locking,
+            ListingState::ReadyToFinalize,
+            ListingState::Aborted,
+            format!("-{recheck_days} days")
+        ],
+        row_to_shakedex_listing,
+    )?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// R19: the listing's Cancel transfer is mined, so the listing is Aborted.
+/// Only a listing whose abort is still the Cancel transfer moves. Returns how
+/// many rows changed (0 or 1).
+pub fn abort_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
+    Ok(conn.execute(
+        "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
+         WHERE id = ?1 AND abort_draft_id IS NOT NULL AND state IN (?3, ?4)",
+        params![
+            id,
+            ListingState::Aborted,
+            ListingState::Locking,
+            ListingState::ReadyToFinalize
+        ],
+    )?)
+}
+
+/// R19: a reorg took an Aborted listing's Cancel transfer out of the chain,
+/// so the listing is Locking again — unless another listing of the name is
+/// open by now (`idx_shakedex_listings_open_name` allows one): that newer
+/// listing stays the open one, and this one stays Aborted. Returns how many
+/// rows changed (0 or 1).
+pub fn unabort_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
+    let [t0, t1, t2, t3] = ListingState::TERMINAL;
+    Ok(conn.execute(
+        "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
+         WHERE id = ?1 AND abort_draft_id IS NOT NULL AND state = ?3
+           AND NOT EXISTS (
+               SELECT 1 FROM shakedex_listings o
+               WHERE o.wallet_profile_id = shakedex_listings.wallet_profile_id
+                 AND o.name = shakedex_listings.name AND o.id <> shakedex_listings.id
+                 AND o.state NOT IN (?4, ?5, ?6, ?7))",
+        params![
+            id,
+            ListingState::Locking,
+            ListingState::Aborted,
+            t0,
+            t1,
+            t2,
+            t3
+        ],
+    )?)
 }
 
 /// A purchase's state with the chain facts tracked alongside it; written

@@ -880,3 +880,345 @@ async fn lock_confirmation_shows_what_locking_costs() {
         "{details}"
     );
 }
+
+// --- the abort ------------------------------------------------------------
+
+use crate::commands::names::build_cancel_draft;
+use crate::noncustodial::rpc::NodeCoin;
+use crate::shakedex_jobs::refresh_listing_aborts_with_client;
+use crate::tests::mock_node_rpc::{MockNodeRpc, RpcCall};
+
+/// Lock NAME, then make the wallet's records what a sync leaves after the
+/// lock TRANSFER is mined: our TRANSFER coin at 0/0 is the owner coin.
+/// Returns the lock txid.
+async fn locked_on_chain(app: &App) -> String {
+    let draft = build(app).await.expect("lock builds");
+    let txid = draft.summary["txid"].as_str().unwrap().to_string();
+    with_db(app, |c| {
+        queries::update_tx_draft_status(c, &draft.id, "broadcasted", None, Some(&txid)).unwrap();
+        queries::update_tx_draft_confirmation(c, &draft.id, QUIET_TIP - 100, None).unwrap();
+        // The funding coin the lock reserved stands in for its change, so
+        // the cancel has a coin to pay its fee from.
+        queries::release_reserved_utxos_for_draft(c, &draft.id).unwrap();
+        c.execute(
+            "UPDATE tracked_utxos SET spent_by_txid = ?1 WHERE txid = ?2",
+            params![txid, OWNER_TXID],
+        )
+        .unwrap();
+        c.execute(
+            "DELETE FROM tracked_name_states WHERE name = ?1",
+            params![NAME],
+        )
+        .unwrap();
+        seed_owner_coin(c, Network::Regtest, &txid, COV_TRANSFER);
+    });
+    txid
+}
+
+/// A coin as hsd's `GET /coin/:hash/:index` sends it: `height` is the block
+/// it was mined in, -1 in the mempool, absent when a test leaves it out.
+fn node_coin(txid: &str, vout: u32, height: Option<i64>) -> NodeCoin {
+    let mut coin = json!({ "hash": txid, "index": vout, "value": NAME_VALUE });
+    if let Some(h) = height {
+        coin["height"] = h.into();
+    }
+    serde_json::from_value(coin).unwrap()
+}
+
+/// A node whose `GET /coin` knows the cancel's UPDATE (output 0) at
+/// `cancel_height` and the lock TRANSFER coin when `transfer_unspent`;
+/// `None` for a coin hsd answers 404 for (spent, or never existed).
+fn chain(
+    cancel_txid: &str,
+    cancel_height: Option<Option<i64>>,
+    lock_txid: &str,
+    transfer_unspent: bool,
+) -> MockNodeRpc {
+    let (cancel_txid, lock_txid) = (cancel_txid.to_string(), lock_txid.to_string());
+    MockNodeRpc::new().with_get_coin(move |txid, vout| {
+        Ok(if txid == cancel_txid && vout == 0 {
+            cancel_height.map(|h| node_coin(txid, vout, h))
+        } else if txid == lock_txid && vout == 0 && transfer_unspent {
+            Some(node_coin(txid, vout, Some(QUIET_TIP - 100)))
+        } else {
+            None
+        })
+    })
+}
+
+/// Run the abort job on the app's database, as the sync step does. The
+/// connection is taken out of the app for the call, so no lock is held
+/// across an await.
+async fn run_abort_job(app: &App, rpc: &MockNodeRpc) {
+    let conn = std::mem::replace(
+        &mut *app.state::<AppState>().db.lock().unwrap(),
+        Connection::open_in_memory().unwrap(),
+    );
+    let res = refresh_listing_aborts_with_client(&conn, rpc, PROFILE).await;
+    *app.state::<AppState>().db.lock().unwrap() = conn;
+    res.expect("abort job runs");
+    assert_eq!(
+        rpc.count_matching(|c| matches!(c, RpcCall::SendRawTransaction(_))),
+        0,
+        "the job sends nothing (it runs in the daemon too)"
+    );
+}
+
+fn listing_state(app: &App, id: &str) -> ListingState {
+    with_db(app, |c| {
+        queries::get_shakedex_listing(c, id).unwrap().unwrap().state
+    })
+}
+
+/// R19: Cancel transfer on a name still Locking is the abort. Building or
+/// sending it changes nothing (hsd answers a refused send with its txid);
+/// once its UPDATE is a mined coin the listing is Aborted, and a reorg that
+/// takes it out (the UPDATE back in the mempool, or the lock TRANSFER
+/// unspent again) makes the listing Locking again.
+#[tokio::test]
+async fn cancel_transfer_aborts_the_listing() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let lock_txid = locked_on_chain(&app).await;
+    assert_eq!(
+        open_listing(&app).unwrap().lock_transfer_txid.as_deref(),
+        Some(lock_txid.as_str())
+    );
+
+    let cancel = build_cancel_draft(app.state(), NAME.into(), None)
+        .await
+        .expect("cancel builds");
+    let l = open_listing(&app).unwrap();
+    assert_eq!(l.abort_draft_id.as_deref(), Some(cancel.id.as_str()));
+    assert_eq!(l.state, ListingState::Locking, "built, not sent");
+    let ctxid = cancel.summary["txid"].as_str().unwrap().to_string();
+    with_db(&app, |c| {
+        queries::update_tx_draft_status(c, &cancel.id, "broadcasted", None, Some(&ctxid)).unwrap();
+    });
+
+    // Sent, nothing on chain yet: the lock TRANSFER is still unspent.
+    run_abort_job(&app, &chain(&ctxid, None, &lock_txid, true)).await;
+    assert_eq!(
+        listing_state(&app, &l.id),
+        ListingState::Locking,
+        "not taken"
+    );
+    run_abort_job(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
+    assert_eq!(
+        listing_state(&app, &l.id),
+        ListingState::Locking,
+        "in the mempool"
+    );
+
+    run_abort_job(
+        &app,
+        &chain(&ctxid, Some(Some(QUIET_TIP)), &lock_txid, false),
+    )
+    .await;
+    assert_eq!(listing_state(&app, &l.id), ListingState::Aborted);
+    assert!(open_listing(&app).is_none(), "the name is free again");
+
+    run_abort_job(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
+    assert_eq!(
+        listing_state(&app, &l.id),
+        ListingState::Locking,
+        "a reorg took the cancel back to the mempool"
+    );
+
+    run_abort_job(
+        &app,
+        &chain(&ctxid, Some(Some(QUIET_TIP)), &lock_txid, false),
+    )
+    .await;
+    assert_eq!(
+        listing_state(&app, &l.id),
+        ListingState::Aborted,
+        "mined again"
+    );
+    run_abort_job(&app, &chain(&ctxid, None, &lock_txid, true)).await;
+    assert_eq!(
+        listing_state(&app, &l.id),
+        ListingState::Locking,
+        "a reorg took the cancel out and the lock TRANSFER is unspent again"
+    );
+}
+
+/// A final verdict needs the node's word: a coin without its height, the
+/// cancel's UPDATE gone with the lock TRANSFER spent (mined and spent since,
+/// or another spend), or no answer at all leave the listing as it is.
+#[tokio::test]
+async fn abort_needs_the_nodes_word() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let lock_txid = locked_on_chain(&app).await;
+    let cancel = build_cancel_draft(app.state(), NAME.into(), None)
+        .await
+        .unwrap();
+    let ctxid = cancel.summary["txid"].as_str().unwrap().to_string();
+    let id = open_listing(&app).unwrap().id;
+
+    for state in [ListingState::Locking, ListingState::Aborted] {
+        with_db(&app, |c| {
+            c.execute(
+                "UPDATE shakedex_listings SET state = ?1 WHERE id = ?2",
+                params![state, id],
+            )
+            .unwrap();
+        });
+        for (what, rpc) in [
+            ("no height", chain(&ctxid, Some(None), &lock_txid, true)),
+            ("both spent", chain(&ctxid, None, &lock_txid, false)),
+            ("no answer", MockNodeRpc::new()),
+        ] {
+            run_abort_job(&app, &rpc).await;
+            assert_eq!(listing_state(&app, &id), state, "{what}");
+        }
+    }
+}
+
+/// Only a cancel of this listing's own lock TRANSFER aborts it.
+#[tokio::test]
+async fn cancel_of_another_transfer_leaves_the_listing_alone() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let lock = build(&app).await.expect("lock builds"); // never sent
+                                                        // A TRANSFER of the name that is not the lock's (another device).
+    with_db(&app, |c| {
+        queries::release_reserved_utxos_for_draft(c, &lock.id).unwrap();
+        c.execute(
+            "UPDATE tracked_utxos SET spent_by_txid = 'x' WHERE txid = ?1",
+            params![OWNER_TXID],
+        )
+        .unwrap();
+        c.execute(
+            "DELETE FROM tracked_name_states WHERE name = ?1",
+            params![NAME],
+        )
+        .unwrap();
+        seed_owner_coin(c, Network::Regtest, &"77".repeat(32), COV_TRANSFER);
+    });
+    build_cancel_draft(app.state(), NAME.into(), None)
+        .await
+        .expect("cancel builds");
+    assert_eq!(open_listing(&app).unwrap().abort_draft_id, None);
+}
+
+#[tokio::test]
+async fn deleting_an_unsent_cancel_unlinks_it() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    locked_on_chain(&app).await;
+    let cancel = build_cancel_draft(app.state(), NAME.into(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        open_listing(&app).unwrap().abort_draft_id.as_deref(),
+        Some(cancel.id.as_str())
+    );
+    with_db(&app, |c| queries::delete_tx_draft(c, &cancel.id).unwrap());
+    assert_eq!(open_listing(&app).unwrap().abort_draft_id, None);
+}
+
+/// A reorg that takes the abort out after the name was locked again: the new
+/// listing is the one open (`idx_shakedex_listings_open_name` allows one per
+/// name), so the old listing stays Aborted and the job carries on. The new
+/// lock TRANSFER spends the cancel's UPDATE, so it is mined only if the
+/// cancel is.
+#[tokio::test]
+async fn reorged_abort_leaves_a_newer_listing_open() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let lock_txid = locked_on_chain(&app).await;
+    let cancel = build_cancel_draft(app.state(), NAME.into(), None)
+        .await
+        .unwrap();
+    let ctxid = cancel.summary["txid"].as_str().unwrap().to_string();
+    let old = open_listing(&app).unwrap().id;
+    run_abort_job(
+        &app,
+        &chain(&ctxid, Some(Some(QUIET_TIP)), &lock_txid, false),
+    )
+    .await;
+    assert_eq!(listing_state(&app, &old), ListingState::Aborted);
+
+    let mut newer = listing("newer", NAME, ListingState::Locking);
+    newer.wallet_profile_id = PROFILE.into();
+    with_db(&app, |c| {
+        queries::insert_shakedex_listing(c, &newer).unwrap()
+    });
+
+    run_abort_job(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
+    assert_eq!(listing_state(&app, &old), ListingState::Aborted);
+    assert_eq!(open_listing(&app).unwrap().id, "newer");
+    // Refused by the guard, not by the index: no error for the job to log.
+    with_db(&app, |c| {
+        assert_eq!(queries::unabort_shakedex_listing(c, &old).unwrap(), 0);
+    });
+}
+
+/// The abort is a sync step: both the app's sync and the daemon's run it
+/// against an authoritative node, and neither sends anything (SECURITY.md,
+/// "Daemon is read-only").
+#[tokio::test]
+async fn sync_aborts_the_listing_in_the_app_and_the_daemon() {
+    use crate::commands::sync::{run_sync_steps, SyncCaller, SyncStatus};
+
+    for caller in [SyncCaller::Daemon, SyncCaller::App] {
+        let (_lock_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+        locked_on_chain(&app).await;
+        let cancel = build_cancel_draft(app.state(), NAME.into(), None)
+            .await
+            .unwrap();
+        let ctxid = cancel.summary["txid"].as_str().unwrap().to_string();
+        let id = open_listing(&app).unwrap().id;
+
+        let mut node = mockito::Server::new_async().await;
+        let path = std::env::temp_dir().join(format!(
+            "namehold_sell_abort_{}_{caller:?}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let db_path = path.to_str().unwrap().to_string();
+        with_db(&app, |c| {
+            queries::set_setting(c, "node_rpc_url", &node.url()).unwrap();
+            c.execute("VACUUM INTO ?1", params![db_path]).unwrap();
+        });
+        let send = node
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("sendrawtransaction".into()))
+            .expect(0)
+            .create_async()
+            .await;
+        let _info = node
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "method": "getblockchaininfo" }),
+            ))
+            .with_header("content-type", "application/json")
+            .with_body(rpc_ok(json!({
+                "chain": "regtest", "blocks": QUIET_TIP, "headers": QUIET_TIP,
+                "verificationprogress": 1.0, "mediantime": 1_700_000_000u64
+            })))
+            .create_async()
+            .await;
+        let _mined = node
+            .mock("GET", format!("/coin/{ctxid}/0").as_str())
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({ "hash": ctxid, "index": 0, "value": NAME_VALUE, "height": QUIET_TIP })
+                    .to_string(),
+            )
+            .create_async()
+            .await;
+
+        match caller {
+            SyncCaller::Daemon => crate::daemon::sync_profile(&db_path, PROFILE).await,
+            SyncCaller::App => {
+                let status = std::sync::Arc::new(tokio::sync::Mutex::new(SyncStatus::default()));
+                run_sync_steps(&status, &db_path, PROFILE, SyncCaller::App).await;
+            }
+        }
+
+        send.assert_async().await;
+        let conn = Connection::open(&path).unwrap();
+        let got = queries::get_shakedex_listing(&conn, &id).unwrap().unwrap();
+        assert_eq!(got.state, ListingState::Aborted, "{caller:?}");
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+}

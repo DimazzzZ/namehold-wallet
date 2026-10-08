@@ -1,4 +1,4 @@
-//! Background jobs for Shakedex purchases (R13).
+//! Background jobs for Shakedex purchases (R13) and listings (R19).
 //!
 //! Every sync derives each open purchase's state from the chain — from what
 //! the node knows about the purchase transaction, the seller's lock coin and
@@ -32,6 +32,10 @@
 //! that draft. The job runs from `commands::sync::run_sync_steps` when the
 //! profile's node is authoritative, so both the app and the background daemon
 //! execute it.
+//!
+//! The same step moves a listing whose abort is the name's Cancel transfer
+//! (R19): Aborted once the cancel is mined, Locking again if a reorg takes it
+//! out ([`refresh_listing_aborts_with_client`]). It only reads the node.
 
 use crate::db::queries::{self, PurchaseProgress, PurchaseState, ShakedexPurchase, TxDraftRow};
 use crate::error::AppError;
@@ -774,4 +778,125 @@ impl Job<'_> {
     fn save(&self, p: &ShakedexPurchase, progress: PurchaseProgress) -> Result<(), AppError> {
         queries::update_shakedex_purchase_state(self.conn, &p.id, &progress)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Listings: the abort through the Cancel transfer (R19)
+// ---------------------------------------------------------------------------
+
+/// How long an Aborted listing is looked at again for a reorg that takes its
+/// Cancel transfer out of the chain, the same window as a lost purchase's
+/// revival.
+pub const ABORT_RECHECK_DAYS: u32 = REVIVE_WINDOW_DAYS;
+
+/// What the chain shows about a listing's Cancel transfer. Every coin lookup
+/// is hsd's `GET /coin/:hash/:index`, which needs no transaction index and
+/// answers 404 for a coin spent in a block or in the mempool
+/// (`node.getCoin`).
+#[derive(Debug, PartialEq, Eq)]
+enum CancelOnChain {
+    /// The cancel's UPDATE is a coin mined in a block.
+    Mined,
+    /// The cancel is in no block: its UPDATE is a coin only in the mempool,
+    /// or the lock TRANSFER it spends is still a coin.
+    NotMined,
+    /// No answer that decides it: a transport error, a coin without hsd's
+    /// height, or both coins gone (the cancel mined and its UPDATE spent
+    /// since, or the lock TRANSFER spent by another transaction).
+    Unknown,
+}
+
+/// Read [`CancelOnChain`] for the cancel `cancel_txid`, which spends the
+/// lock TRANSFER at `lock_transfer_txid:0`. The cancel's UPDATE is its
+/// output 0 (`actions::build_plan` puts the covenant output first).
+async fn cancel_on_chain(
+    client: &dyn NodeRpc,
+    cancel_txid: &str,
+    lock_transfer_txid: &str,
+) -> CancelOnChain {
+    match client.get_coin(cancel_txid, 0).await {
+        Ok(Some(update)) => match update.mined_height() {
+            Ok(Some(_)) => CancelOnChain::Mined,
+            Ok(None) => CancelOnChain::NotMined,
+            Err(_) => CancelOnChain::Unknown,
+        },
+        Ok(None) => match client.get_coin(lock_transfer_txid, 0).await {
+            Ok(Some(_)) => CancelOnChain::NotMined,
+            Ok(None) | Err(_) => CancelOnChain::Unknown,
+        },
+        Err(_) => CancelOnChain::Unknown,
+    }
+}
+
+/// Best-effort sync step: move each listing whose abort is linked to a
+/// Cancel transfer by what the chain shows (see
+/// [`refresh_listing_aborts_with_client`]). Like the other sync steps it
+/// returns silently when the database or the profile's node client cannot be
+/// opened; a failed refresh is logged. It only reads the node, so it runs in
+/// the daemon as it does in the app; the caller runs it only when the node is
+/// authoritative, since a node that is behind would show a mined cancel's
+/// lock TRANSFER as unspent.
+pub async fn refresh_listing_aborts_step(db_path: &str, profile_id: &str) {
+    let conn = match crate::db::connection::open_migrated(db_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let client = match NodeRpcClient::for_profile(&conn, profile_id) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if let Err(e) = refresh_listing_aborts_with_client(&conn, &client, profile_id).await {
+        eprintln!("shakedex listings: abort refresh failed for {profile_id}: {e}");
+    }
+}
+
+/// R19: a listing still Locking whose linked Cancel transfer is mined is
+/// Aborted — a found fact, the cancel's UPDATE mined in a block, never the
+/// broadcast (hsd answers `sendrawtransaction` with the txid even when it
+/// refuses). An Aborted listing whose cancel a reorg took out is Locking
+/// again ([`queries::unabort_shakedex_listing`]). Anything the node does not
+/// answer leaves the listing as it is. Sends nothing. A failure on one
+/// listing is logged and leaves it for the next sync.
+pub async fn refresh_listing_aborts_with_client(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    profile_id: &str,
+) -> Result<(), AppError> {
+    for l in queries::list_shakedex_listings_with_abort(conn, profile_id, ABORT_RECHECK_DAYS)? {
+        if let Err(e) = refresh_abort(conn, client, &l).await {
+            eprintln!("shakedex listings: {} ({}): {e}", l.id, l.name);
+        }
+    }
+    Ok(())
+}
+
+async fn refresh_abort(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    l: &queries::ShakedexListing,
+) -> Result<(), AppError> {
+    let (Some(draft_id), Some(lock_transfer_txid)) =
+        (l.abort_draft_id.as_deref(), l.lock_transfer_txid.as_deref())
+    else {
+        return Ok(());
+    };
+    // The link is cleared when an unsent cancel is deleted; a draft that is
+    // gone anyway has nothing to look up.
+    let Some(draft) = queries::get_tx_draft(conn, draft_id)? else {
+        return Ok(());
+    };
+    // The txid is the no-witness hash: the same before and after signing.
+    let raw = hex::decode(&draft.unsigned_tx_hex)
+        .map_err(|e| AppError::Other(format!("cancel draft {draft_id} is not hex: {e}")))?;
+    let cancel_txid = crate::noncustodial::tx::Transaction::decode(&raw)?.txid();
+    match cancel_on_chain(client, &cancel_txid, lock_transfer_txid).await {
+        CancelOnChain::Mined if l.state.aborts_by_cancel_transfer() => {
+            queries::abort_shakedex_listing(conn, &l.id)?;
+        }
+        CancelOnChain::NotMined if l.state == queries::ListingState::Aborted => {
+            queries::unabort_shakedex_listing(conn, &l.id)?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
