@@ -55,6 +55,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../sql/032_clear_seeded_mainnet_explorer.sql"),
     ),
     ("033", include_str!("../sql/033_shakedex.sql")),
+    ("034", include_str!("../sql/034_shakedex_listings.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -96,7 +97,52 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 33, "expected 33 migrations, got {count}");
+        assert_eq!(count, 34, "expected 34 migrations, got {count}");
+    }
+
+    /// A database already at 033 (a real upgrade) takes 034 on top of its
+    /// schema and keeps its rows.
+    #[test]
+    fn migration_034_applies_on_top_of_033() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v != "034") {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [version],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, watch_only)
+             VALUES ('p', 'P', 'mnemonic_hot', 'regtest', 'xpub', 0, 0)",
+            [],
+        )
+        .unwrap();
+        run(&conn).unwrap();
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'shakedex_listings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 1);
+        let profiles: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wallet_profiles", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(profiles, 1);
+        let top: String = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(top, "034");
     }
 
     #[test]
@@ -107,7 +153,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 33);
+        assert_eq!(count, 34);
     }
 
     #[test]
