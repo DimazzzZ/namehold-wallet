@@ -624,6 +624,41 @@ async fn refresh_leaves_an_unseen_purchase_to_the_purchase_job() {
     assert!(!reserved_txids_for(&app, "buy").is_empty());
 }
 
+/// Only the purchase itself is left to the purchase job. A purchase's
+/// FINALIZE is an ordinary name action for the poll: hsd's own "not found"
+/// drops it and frees its coins, so the purchase can be finalized again.
+#[tokio::test]
+async fn refresh_drops_an_unseen_purchase_finalize_like_any_draft() {
+    use crate::noncustodial::shakedex::purchase::PURCHASE_FINALIZE_ACTION;
+    let mut server = mockito::Server::new_async().await;
+    let (_info, _tx) = mock_node(&mut server, 500, HSD_TX_NOT_FOUND).await;
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    db::queries::insert_tx_draft(
+        &conn,
+        "fin",
+        PROFILE,
+        PURCHASE_FINALIZE_ACTION,
+        "00",
+        "{}",
+        "{}",
+    )
+    .unwrap();
+    db::queries::update_tx_draft_status(&conn, "fin", "broadcasted", None, Some(DRAFT_TXID))
+        .unwrap();
+    conn.execute(
+        "UPDATE tracked_utxos SET reserved_by_draft_id = 'fin' WHERE txid = ?1",
+        params![COIN_TXID],
+    )
+    .unwrap();
+    backdate(&conn, "fin");
+    let app = app_with(conn);
+
+    let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
+    assert_eq!(res["dropped"], 1);
+    assert_eq!(draft_row(&app, "fin").status, "dropped");
+    assert!(reserved_txids_for(&app, "fin").is_empty());
+}
+
 #[tokio::test]
 async fn refresh_drops_an_unseen_send_on_hsds_own_not_found() {
     let mut server = mockito::Server::new_async().await;

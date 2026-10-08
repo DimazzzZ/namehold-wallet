@@ -57,6 +57,7 @@ Built with Tauri v2, React + TypeScript, Rust, and SQLite.
 - **Name watchlist** — track names you don't own for monitoring. Watchlist page
   in the sidebar with add/remove, tags, CSV import/export, and "Add to
   Watchlist" buttons in name modals.
+- **Buy names on the Market** — browse LearnHNS Market listings, verified against your own node, or import a listing file, pasted JSON or a market.learnhns.com link, and buy at the current step. The confirmation shows the price, market fee and network fee; the purchase then shows in Owned Names until you finalize it. Needs a node and a recovery-phrase wallet; mainnet buying is behind "Shakedex (experimental)" in Settings.
 - **Recover lost bids** — if you lose your local bid data (reinstall, seed-
   restore, import from another wallet), Namehold can brute-force the bid value
   from your seed and reveal it before the window closes. See

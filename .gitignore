@@ -37,6 +37,8 @@ credentials.*
 .vscode/
 .idea/
 .mimocode/
+# Agent working files (plans, specs drafts): kept locally, like .mimocode/
+docs/superpowers/
 .clinerules/
 .cline/
 .github/copilot-instructions.md

@@ -44,14 +44,14 @@ use crate::noncustodial::shakedex::verify;
 
 /// Blocks a sent purchase may be absent from the node's mempool and chain
 /// before it is rebroadcast (once) and then given up as lost.
-const MISSING_BLOCKS: i64 = 6;
+pub(crate) const MISSING_BLOCKS: i64 = 6;
 
 /// hsd's mempool expiry (`policy.MEMPOOL_EXPIRY_TIME`, 72 hours) in blocks
 /// at the target spacing (432). A purchase missing from the node this long is in no
 /// mempool that keeps hsd's default: one that may not be resent from here is
 /// given up as lost rather than kept reserved for ever (a late mining still
 /// revives it, [`REVIVE_WINDOW_DAYS`]).
-const MEMPOOL_EXPIRY_BLOCKS: i64 =
+pub(crate) const MEMPOOL_EXPIRY_BLOCKS: i64 =
     72 * 60 * 60 / crate::noncustodial::network::TARGET_SPACING_SECS as i64;
 
 /// How long past the reservation TTL an unsent purchase draft is kept before

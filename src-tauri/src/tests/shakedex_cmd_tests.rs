@@ -1640,6 +1640,37 @@ async fn broadcast_refused_without_median_time() {
     assert_unsent_purchase_discarded(&app, &draft_id);
 }
 
+/// A proxy's error page where the node's answer should be, just before the
+/// send: the price cannot be re-checked, so nothing is sent and the purchase
+/// is discarded for the user to review again (R10, "or the node cannot say").
+#[tokio::test]
+async fn broadcast_refused_when_the_node_answers_with_a_proxy_error() {
+    let mut node = mockito::Server::new_async().await;
+    let (app, draft_id, info) = signed_reverse_auction_purchase(&mut node).await;
+    info.remove_async().await;
+    let _proxy = node
+        .mock("POST", "/")
+        .match_body(Matcher::PartialJson(
+            json!({ "method": "getblockchaininfo" }),
+        ))
+        .with_status(502)
+        .with_header("content-type", "text/html")
+        .with_body("<html><body>502 Bad Gateway</body></html>")
+        .create_async()
+        .await;
+    let send = mock_send(&mut node, 0).await;
+
+    let err = crate::commands::tx::broadcast_tx_draft(app.state(), draft_id.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        err_text(err).contains("502"),
+        "the proxy's status is reported"
+    );
+    send.assert_async().await;
+    assert_unsent_purchase_discarded(&app, &draft_id);
+}
+
 #[tokio::test]
 async fn broadcast_refused_when_the_purchase_is_no_longer_recorded() {
     let mut node = mockito::Server::new_async().await;
@@ -1700,8 +1731,8 @@ async fn broadcast_sends_while_the_paid_step_is_still_the_cheapest() {
     let mut node = mockito::Server::new_async().await;
     let (app, draft_id, info) = signed_reverse_auction_purchase(&mut node).await;
     info.remove_async().await;
-    // Still before the 5 HNS step, valid once
-    // floor((MTP + 1024) / 512) * 512 = MTP + 768 < MTP.
+    // Still before the 5 HNS step: its lock time MTP + 1024 rounds down to
+    // MTP + 768, valid only once the median time is above that.
     let _later = mock_regtest_info(&mut node, Some(REGTEST_MTP + 768)).await;
     let send = mock_send(&mut node, 1).await;
 

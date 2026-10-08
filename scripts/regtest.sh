@@ -7,6 +7,8 @@
 #
 # Usage:
 #   scripts/regtest.sh start              # launch node (idempotent), wait for RPC
+#   scripts/regtest.sh start --with-wallet  # same, but with the hsd wallet enabled
+#   scripts/regtest.sh --with-wallet      # shorthand for the line above
 #   scripts/regtest.sh stop               # graceful stop, fall back to pid kill
 #   scripts/regtest.sh reset              # stop + wipe .regtest/ (fresh chain)
 #   scripts/regtest.sh fund <addr> [n]    # mine n blocks (default 110) to <addr>
@@ -27,6 +29,10 @@ RPC_PORT="14037"
 RPC_URL="http://$RPC_HOST:$RPC_PORT"
 API_KEY="test"
 NETWORK="regtest"
+WALLET_PORT="14039"
+WALLET_URL="http://$RPC_HOST:$WALLET_PORT"
+# Set by --with-wallet: leave the hsd wallet plugin enabled (default: --no-wallet).
+WITH_WALLET=0
 
 log()  { printf '[regtest] %s\n' "$*" >&2; }
 die()  { printf '[regtest] error: %s\n' "$*" >&2; exit 1; }
@@ -52,15 +58,31 @@ assert_safe_regtest_dir() {
   [ "$REGTEST_DIR" = "$REPO_ROOT/.regtest" ] || die "REGTEST_DIR drifted from repo-local path: '$REGTEST_DIR'"
 }
 
+# True if the hsd wallet HTTP API answers (only up when started --with-wallet).
+wallet_alive() {
+  curl -fsS --max-time 2 -u "x:$API_KEY" "$WALLET_URL/" >/dev/null 2>&1
+}
+
+print_wallet_info() {
+  log "wallet API: $WALLET_URL (port $WALLET_PORT, api-key=$API_KEY, wallet id: primary)"
+}
+
 cmd_start() {
   need hsd
   assert_safe_regtest_dir
   if rpc_alive; then
     log "node already responding on $RPC_URL"
+    if [ "$WITH_WALLET" = 1 ]; then
+      need curl
+      wallet_alive || die "node is running without the wallet; run: regtest.sh stop, then start --with-wallet"
+      print_wallet_info
+    fi
     return 0
   fi
   mkdir -p "$REGTEST_DIR"
-  log "starting hsd regtest node (prefix=$REGTEST_DIR)"
+  local wallet_flags=(--no-wallet)
+  [ "$WITH_WALLET" = 1 ] && wallet_flags=(--wallet-http-host="$RPC_HOST")
+  log "starting hsd regtest node (prefix=$REGTEST_DIR, wallet=$([ "$WITH_WALLET" = 1 ] && echo on || echo off))"
   # --index-address --index-tx are REQUIRED and must be set from a fresh chain;
   # hsd cannot add an index to an existing chain (run reset if the dir was ever
   # created without them).
@@ -68,7 +90,7 @@ cmd_start() {
       --index-address --index-tx \
       --http-host="$RPC_HOST" --api-key="$API_KEY" \
       --prefix="$REGTEST_DIR" \
-      --no-wallet \
+      "${wallet_flags[@]}" \
       --daemon
   pgrep -f "hsd .*--prefix=$REGTEST_DIR" | head -1 > "$PID_FILE" 2>/dev/null || true
 
@@ -80,6 +102,9 @@ cmd_start() {
     sleep 0.5
   done
   log "node up on $RPC_URL (api-key=$API_KEY)"
+  if [ "$WITH_WALLET" = 1 ]; then
+    print_wallet_info
+  fi
 }
 
 cmd_stop() {
@@ -146,6 +171,14 @@ cmd_run_it() {
 }
 
 main() {
+  # --with-wallet may appear anywhere; strip it and, if it is the only
+  # argument, imply the start subcommand.
+  local args=() a
+  for a in "$@"; do
+    if [ "$a" = "--with-wallet" ]; then WITH_WALLET=1; else args+=("$a"); fi
+  done
+  set -- ${args[@]+"${args[@]}"}
+  if [ "$WITH_WALLET" = 1 ] && [ "$#" -eq 0 ]; then set -- start; fi
   local sub="${1:-}"; shift || true
   case "$sub" in
     start)   cmd_start "$@" ;;
@@ -156,7 +189,7 @@ main() {
     rpc)     cmd_rpc "$@" ;;
     run-it)  cmd_run_it "$@" ;;
     ""|-h|--help|help)
-      sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       ;;
     *) die "unknown subcommand: '$sub' (try: start stop reset fund mine rpc run-it)" ;;
   esac

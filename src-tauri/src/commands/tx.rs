@@ -167,7 +167,8 @@ pub(crate) fn confirm_details_for_draft(
     Ok(serde_json::json!({ "rows": rows }))
 }
 
-/// A Shakedex draft's typed summary, or a "corrupted draft" refusal.
+/// A draft's summary as the type `T` it was stored as (a plain `TxSummary`
+/// or a Shakedex one), or a "corrupted draft" refusal.
 fn read_summary<T: serde::de::DeserializeOwned>(summary_json: &str) -> Result<T, AppError> {
     serde_json::from_str(summary_json)
         .map_err(|e| AppError::Other(format!("corrupted draft: unreadable summary: {e}")))
