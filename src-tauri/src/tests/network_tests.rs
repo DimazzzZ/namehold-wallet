@@ -235,6 +235,19 @@ fn finalize_is_accepted_from_the_block_where_the_lockup_ends() {
     assert_eq!(p.blocks_until_finalize(100, 500), 0);
 }
 
+// ── blocks_until_renew ───────────────────────────────────────────────
+
+#[test]
+fn renew_is_accepted_from_the_block_a_tree_interval_after_the_last_renewal() {
+    // Regtest tree interval is 5: a name renewed (or registered) at 100 may
+    // be renewed again in block 105, i.e. built while the tip is 104.
+    let p = Network::Regtest.name_params();
+    assert_eq!(p.blocks_until_renew(100, 100), 4);
+    assert_eq!(p.blocks_until_renew(100, 103), 1);
+    assert_eq!(p.blocks_until_renew(100, 104), 0);
+    assert_eq!(p.blocks_until_renew(100, 500), 0);
+}
+
 // ── roundtrip as_str / from_str_opt ──────────────────────────────────
 
 #[test]

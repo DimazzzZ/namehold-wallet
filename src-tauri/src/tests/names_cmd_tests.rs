@@ -1097,10 +1097,52 @@ fn seed_bid_commitment(conn: &rusqlite::Connection, profile_id: &str, name: &str
 pub(crate) async fn mock_names_rpc(
     server: &mut mockito::Server,
 ) -> (mockito::Mock, mockito::Mock, mockito::Mock) {
+    mock_names_rpc_with_info(server, names_rpc_info()).await
+}
+
+/// The `getnameinfo` `info` [`mock_names_rpc`] answers with, in hsd's
+/// `NameState.getJSON` shape (`lib/covenants/namestate.js`): a registered name
+/// last renewed at 120 and transferred at 900, both far enough behind the
+/// mocked tip (1000) for a RENEW or FINALIZE to be accepted, whose owner coin
+/// is none a test seeds — so a reveal coin a test seeds is a losing one.
+pub(crate) fn names_rpc_info() -> serde_json::Value {
+    serde_json::json!({
+        "name": "alpha",
+        "nameHash": "00".repeat(32),
+        "state": "CLOSED",
+        "height": 100,
+        "renewal": 120,
+        "owner": {"hash": "0f".repeat(32), "index": 0},
+        "value": 50000,
+        "highest": 60000,
+        "data": "",
+        "transfer": 900,
+        "revoked": 0,
+        "claimed": 1,
+        "renewals": 2,
+        "registered": true,
+        "expired": false,
+        "weak": false,
+        "stats": null
+    })
+}
+
+/// [`mock_names_rpc`] answering `getnameinfo` with `info`.
+pub(crate) async fn mock_names_rpc_with_info(
+    server: &mut mockito::Server,
+    info: serde_json::Value,
+) -> (mockito::Mock, mockito::Mock, mockito::Mock) {
     let name_info = server
         .mock("POST", "/")
         .match_body(mockito::Matcher::Regex("getnameinfo".into()))
-        .with_body(r#"{"result":{"info":{"height":100,"value":50000,"renewals":2,"claimed":1,"weak":false}},"error":null,"id":1}"#)
+        .with_body(
+            serde_json::json!({
+                "result": {"start": {"reserved": false, "week": 17, "start": 34}, "info": info},
+                "error": null,
+                "id": 1
+            })
+            .to_string(),
+        )
         .expect_at_least(1)
         .create_async()
         .await;
@@ -3867,4 +3909,194 @@ async fn capabilities_uses_per_profile_node_override() {
         "phase must come from the per-profile override node"
     );
     o_name.assert_async().await;
+}
+
+// --- consensus guards: the wrappers refuse what hsd would reject ------------
+//
+// hsd's `sendrawtransaction` returns the txid even when its mempool refuses
+// the transaction, so a RENEW, FINALIZE or REDEEM the chain rejects has to be
+// refused while it is built. Each test answers `getnameinfo` with a name the
+// node would refuse the action for, at the mocked tip of 1000.
+
+fn drafts_of(app: &tauri::App<tauri::test::MockRuntime>) -> i64 {
+    let state = app.state::<crate::AppState>();
+    let conn = state.db.lock().unwrap();
+    conn.query_row("SELECT COUNT(*) FROM wallet_tx_drafts", [], |r| r.get(0))
+        .unwrap()
+}
+
+fn with_info(changes: serde_json::Value) -> serde_json::Value {
+    let mut info = names_rpc_info();
+    for (k, v) in changes.as_object().unwrap() {
+        info[k] = v.clone();
+    }
+    info
+}
+
+/// Renewed at 997: hsd accepts a RENEW from block 1002 (`renewal +
+/// treeInterval`, regtest 5), and a draft built on tip 1000 is judged at 1001.
+#[tokio::test]
+async fn renew_wrappers_refuse_a_premature_renewal() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks =
+        mock_names_rpc_with_info(&mut server, with_info(serde_json::json!({"renewal": 997}))).await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"23".repeat(32));
+        seed_owner_coin_at_derived(&conn, &id, "alpha", &"a1".repeat(32), 0, None);
+        seed_owner_coin_at_derived(&conn, &id, "bravo", &"b1".repeat(32), 0, None);
+    }
+    let app = mock_app_with(state);
+    let err = names::build_renew_draft(app.state(), "alpha".into(), None)
+        .await
+        .expect_err("a premature RENEW must be refused");
+    assert!(
+        format!("{err}").contains("can be renewed in 1 block"),
+        "{err}"
+    );
+    let err =
+        names::build_batch_renew_draft(app.state(), vec!["alpha".into(), "bravo".into()], None)
+            .await
+            .expect_err("a premature batch RENEW must be refused");
+    assert!(format!("{err}").contains("renewed too recently"), "{err}");
+    assert_eq!(drafts_of(&app), 0, "nothing is persisted");
+}
+
+/// Transferred at 995: hsd accepts a FINALIZE from block 1005 (`transfer +
+/// transferLockup`, regtest 10); a draft built on tip 1000 is judged at 1001.
+#[tokio::test]
+async fn finalize_wrappers_refuse_a_finalize_inside_the_transfer_lockup() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks =
+        mock_names_rpc_with_info(&mut server, with_info(serde_json::json!({"transfer": 995})))
+            .await;
+    let state = create_full_test_state();
+    let payment_addr = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"56".repeat(32));
+        for (name, txid) in [("alpha", "a4".repeat(32)), ("bravo", "b4".repeat(32))] {
+            let cov = transfer_covenant_json_for(name);
+            seed_owner_coin_at_derived(
+                &conn,
+                &id,
+                name,
+                &txid,
+                crate::noncustodial::sync::COV_TRANSFER as i64,
+                Some(&cov),
+            );
+        }
+        first_derived_address(&conn, &id)
+    };
+    let app = mock_app_with(state);
+    let err = names::build_finalize_draft(app.state(), "alpha".into(), None)
+        .await
+        .expect_err("a FINALIZE inside the lockup must be refused");
+    assert!(
+        format!("{err}").contains("still locked for 4 more blocks"),
+        "{err}"
+    );
+    let err =
+        names::build_batch_finalize_draft(app.state(), vec!["alpha".into(), "bravo".into()], None)
+            .await
+            .expect_err("a batch FINALIZE inside the lockup must be refused");
+    assert!(format!("{err}").contains("still locked"), "{err}");
+    let err = names::build_finalize_with_payment_draft(
+        app.state(),
+        "alpha".into(),
+        payment_addr,
+        3_000_000,
+        None,
+    )
+    .await
+    .expect_err("a paid FINALIZE inside the lockup must be refused");
+    assert!(format!("{err}").contains("still locked"), "{err}");
+    assert_eq!(drafts_of(&app), 0, "nothing is persisted");
+}
+
+/// The node names the wallet's only reveal as the owner: it won, and hsd
+/// refuses to redeem it (`bad-redeem-owner`). The wallet has no record of the
+/// owner (the name was never tracked), so only the node can tell.
+#[tokio::test]
+async fn redeem_wrappers_refuse_to_redeem_the_winning_reveal() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc_with_info(
+        &mut server,
+        with_info(serde_json::json!({"owner": {"hash": "ac".repeat(32), "index": 0}})),
+    )
+    .await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"78".repeat(32));
+        let addr = first_derived_address(&conn, &id);
+        let cov = covenant_json_for("alpha", crate::noncustodial::sync::COV_REVEAL, "REVEAL");
+        seed_covenant_coin(
+            &conn,
+            &id,
+            &"ac".repeat(32),
+            &addr,
+            crate::noncustodial::sync::COV_REVEAL,
+            1000,
+            Some(&cov),
+        );
+        seed_bid_commitment(&conn, &id, "alpha", &addr);
+    }
+    let app = mock_app_with(state);
+    let err = names::build_redeem_draft(app.state(), "alpha".into(), None)
+        .await
+        .expect_err("redeeming the owner coin must be refused");
+    assert!(format!("{err}").contains("won the auction"), "{err}");
+    let err = names::build_batch_redeem_draft(app.state(), vec!["alpha".into()], None)
+        .await
+        .expect_err("batch-redeeming the owner coin must be refused");
+    assert!(format!("{err}").contains("won the auction"), "{err}");
+    assert_eq!(drafts_of(&app), 0, "nothing is persisted");
+}
+
+/// A wallet that outbid itself holds the winning reveal and a losing one: the
+/// batch redeem spends the loser and leaves the owner coin alone.
+#[tokio::test]
+async fn batch_redeem_spends_every_losing_reveal_but_not_the_owner() {
+    let mut server = mockito::Server::new_async().await;
+    let _mocks = mock_names_rpc_with_info(
+        &mut server,
+        with_info(serde_json::json!({"owner": {"hash": "ad".repeat(32), "index": 0}})),
+    )
+    .await;
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "regtest");
+        set_node_rpc_url(&conn, &server.url());
+        insert_extra_funding(&conn, &id, &"79".repeat(32));
+        let addr = first_derived_address(&conn, &id);
+        let cov = covenant_json_for("alpha", crate::noncustodial::sync::COV_REVEAL, "REVEAL");
+        for txid in ["ad".repeat(32), "ae".repeat(32), "af".repeat(32)] {
+            seed_covenant_coin(
+                &conn,
+                &id,
+                &txid,
+                &addr,
+                crate::noncustodial::sync::COV_REVEAL,
+                1000,
+                Some(&cov),
+            );
+        }
+        seed_bid_commitment(&conn, &id, "alpha", &addr);
+    }
+    let app = mock_app_with(state);
+    let draft = names::build_batch_redeem_draft(app.state(), vec!["alpha".into()], None)
+        .await
+        .expect("the losing reveals are redeemable");
+    let inputs = draft_signing_inputs(&app, &draft.id);
+    assert!(!inputs.contains(&"ad".repeat(32)), "owner spent: {inputs}");
+    assert!(inputs.contains(&"ae".repeat(32)), "loser left: {inputs}");
+    assert!(inputs.contains(&"af".repeat(32)), "loser left: {inputs}");
 }

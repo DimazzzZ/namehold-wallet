@@ -232,3 +232,132 @@ pub(crate) async fn renewal_block(
     h.copy_from_slice(&bytes);
     Ok(h)
 }
+
+// --- consensus guards -------------------------------------------------------
+//
+// A draft hsd's consensus would refuse is refused here, before it is persisted
+// and signed: hsd 8.0.0's `sendrawtransaction` hands back the txid even when
+// its mempool turns the transaction away, so a broadcast cannot be trusted to
+// say so. Each guard asks the node itself — `getnameinfo` and the tip — what
+// `chain.js` will judge the transaction against, at the next block's height
+// (`tip + 1`), never the wallet's cached copy of either.
+
+/// The `info` object of hsd's `getnameinfo` reply for `name`. `null` is a name
+/// with no state; a reply without the key is not hsd's answer (it always sends
+/// one).
+async fn node_name_info(client: &dyn NodeRpc, name: &str) -> Result<serde_json::Value, AppError> {
+    let mut reply = client.get_name_info(name).await?;
+    match reply.get_mut("info").map(serde_json::Value::take) {
+        None => Err(AppError::Rpc(format!(
+            "node did not report the name's info for '{name}'"
+        ))),
+        Some(serde_json::Value::Null) => Err(AppError::InvalidInput(format!(
+            "name '{name}' has no on-chain state"
+        ))),
+        Some(info) => Ok(info),
+    }
+}
+
+/// A block height field of `getnameinfo.info` (`renewal`, `transfer`), read
+/// exactly as the node reports it: a reply without it gives no verdict.
+fn info_height(info: &serde_json::Value, name: &str, key: &str) -> Result<i64, AppError> {
+    info.get(key)
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok())
+        .map(i64::from)
+        .ok_or_else(|| AppError::Rpc(format!("node did not report the name's {key} for '{name}'")))
+}
+
+fn blocks_word(n: i64) -> &'static str {
+    if n == 1 {
+        "block"
+    } else {
+        "blocks"
+    }
+}
+
+/// Refuses a RENEW of `name` that hsd would reject as `bad-renewal-premature`:
+/// a name may be renewed only once `tree_interval` blocks have passed since it
+/// was last registered, renewed or finalized (`ns.renewal`).
+pub(crate) async fn ensure_renew_not_premature(
+    client: &dyn NodeRpc,
+    network: Network,
+    name: &str,
+) -> Result<(), AppError> {
+    let info = node_name_info(client, name).await?;
+    let renewal = info_height(&info, name, "renewal")?;
+    let tip = client.get_blockchain_info().await?.blocks;
+    let blocks = network.name_params().blocks_until_renew(renewal, tip);
+    if blocks > 0 {
+        return Err(AppError::InvalidInput(format!(
+            "'{name}' was renewed too recently: it can be renewed in {blocks} {}",
+            blocks_word(blocks)
+        )));
+    }
+    Ok(())
+}
+
+/// Refuses a FINALIZE of `name` that hsd would reject: with no transfer
+/// recorded on the name, or as `bad-finalize-maturity` while the transfer
+/// lockup is not over (the same [`NameParams::blocks_until_finalize`] the
+/// Finalize button is offered by).
+///
+/// [`NameParams::blocks_until_finalize`]: crate::noncustodial::network::NameParams::blocks_until_finalize
+pub(crate) async fn ensure_finalize_matured(
+    client: &dyn NodeRpc,
+    network: Network,
+    name: &str,
+) -> Result<(), AppError> {
+    let info = node_name_info(client, name).await?;
+    let transfer = info_height(&info, name, "transfer")?;
+    if transfer == 0 {
+        return Err(AppError::InvalidInput(format!(
+            "the node reports no transfer of '{name}': nothing to finalize"
+        )));
+    }
+    let tip = client.get_blockchain_info().await?.blocks;
+    let blocks = network.name_params().blocks_until_finalize(transfer, tip);
+    if blocks > 0 {
+        return Err(AppError::InvalidInput(format!(
+            "the transfer of '{name}' is still locked for {blocks} more {}",
+            blocks_word(blocks)
+        )));
+    }
+    Ok(())
+}
+
+/// The reveal coins in `coins` that a REDEEM may spend: every one but the
+/// name's owner coin as the node reports it (`getnameinfo.info.owner`). Until
+/// REGISTER spends it, the winning reveal IS the owner coin, and hsd rejects
+/// redeeming it (`bad-redeem-owner`), taking the whole transaction down with
+/// it. Refused when `coins` held nothing but the owner coin; an empty `coins`
+/// is returned as it is, for the caller to say there is nothing to redeem.
+pub(crate) async fn exclude_owner_reveal(
+    client: &dyn NodeRpc,
+    name: &str,
+    coins: Vec<queries::NameCoin>,
+) -> Result<Vec<queries::NameCoin>, AppError> {
+    if coins.is_empty() {
+        return Ok(coins);
+    }
+    let info = node_name_info(client, name).await?;
+    let owner = info.get("owner");
+    let hash = owner.and_then(|o| o.get("hash")).and_then(|h| h.as_str());
+    let index = owner.and_then(|o| o.get("index")).and_then(|i| i.as_u64());
+    let (Some(hash), Some(index)) = (hash, index) else {
+        return Err(AppError::Rpc(format!(
+            "node did not report the name's owner for '{name}'"
+        )));
+    };
+    let losing: Vec<_> = coins
+        .into_iter()
+        .filter(|c| !(c.txid.eq_ignore_ascii_case(hash) && u64::from(c.vout) == index))
+        .collect();
+    if losing.is_empty() {
+        return Err(AppError::InvalidInput(format!(
+            "your reveal for '{name}' won the auction: it is the name's owner coin and cannot \
+             be redeemed (register the name instead)"
+        )));
+    }
+    Ok(losing)
+}

@@ -225,6 +225,14 @@ impl NameParams {
         (transfer_height + i64::from(self.transfer_lockup) - (tip + 1)).max(0)
     }
 
+    /// Blocks until a RENEW of a name last renewed (registered, renewed or
+    /// finalized) at `renewal_height` is accepted, 0 once it is. hsd refuses
+    /// one while `height < renewal + tree_interval` (`bad-renewal-premature`),
+    /// and a transaction built now is judged at `tip + 1`.
+    pub fn blocks_until_renew(self, renewal_height: i64, tip: i64) -> i64 {
+        (renewal_height + i64::from(self.tree_interval) - (tip + 1)).max(0)
+    }
+
     /// The height at which a name last renewed at `renewal` expires: the end
     /// of its renewal window, or for a `claimed` (reserved) name not before
     /// the claim period is over. hsd `NameState.isExpired`: "Claimed names can

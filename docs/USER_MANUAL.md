@@ -360,7 +360,7 @@ In the Name Actions modal for an owned name, click **Show all actions**:
 | Action | What it does |
 |--------|--------------|
 | **Update** | Replace the on-chain DNS records (uses the DNS editor). |
-| **Renew** | Extend the name's expiry. |
+| **Renew** | Extend the name's expiry. Not right after the name was registered, renewed or finalized: the network accepts a renewal only 36 blocks (about 6 hours) later on mainnet and testnet, 5 on regtest, and until then the button says how many blocks are left. |
 | **Transfer** | Start a transfer to another Handshake address. Enters a `TRANSFER` covenant. |
 | **Finalize** | Complete a transfer after the lockup period (mainnet: ~2 days). |
 | **Cancel** | Revert a pending transfer before it's finalized. |
