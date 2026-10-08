@@ -5549,7 +5549,7 @@ async fn shakedex_listing_expiring_before_finalize_is_not_offered() {
     // tip + 1 + transferLockup + 1 day, a day being the lockup on regtest.
     let p = NET.name_params();
     let lockup = u64::from(p.transfer_lockup);
-    let day = lockup.min(crate::noncustodial::network::BLOCKS_PER_DAY as u64);
+    let day = u64::from(p.margin_day());
     let last_buyable_tip = end - 2 - lockup - day;
 
     let mut tip =

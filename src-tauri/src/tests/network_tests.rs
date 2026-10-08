@@ -341,3 +341,22 @@ fn block_target_is_ten_minutes_on_every_network() {
     assert_eq!(crate::noncustodial::network::TARGET_SPACING_SECS, 600);
     assert_eq!(BLOCKS_PER_DAY, 144.0);
 }
+
+/// R9's day: 144 blocks, or the transfer lockup where that is shorter.
+#[test]
+fn margin_day_is_the_lockup_where_shorter_than_a_day() {
+    assert_eq!(Network::Main.name_params().margin_day(), 144);
+    assert_eq!(Network::Testnet.name_params().margin_day(), 144);
+    assert_eq!(Network::Regtest.name_params().margin_day(), 10);
+    assert_eq!(Network::Simnet.name_params().margin_day(), 5);
+}
+
+/// The next block, the lockup still to run and a day.
+#[test]
+fn finalize_margin_counts_the_next_block_the_lockup_left_and_a_day() {
+    let p = Network::Main.name_params();
+    assert_eq!(p.finalize_margin(1_000, 288), 1_000 + 1 + 288 + 144);
+    assert_eq!(p.finalize_margin(1_000, 0), 1_000 + 1 + 144);
+    let r = Network::Regtest.name_params();
+    assert_eq!(r.finalize_margin(1_000, 10), 1_021);
+}

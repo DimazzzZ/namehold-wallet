@@ -233,6 +233,20 @@ impl NameParams {
         (renewal_height + i64::from(self.tree_interval) - (tip + 1)).max(0)
     }
 
+    /// R9's "one day" in blocks: 144, or the transfer lockup where that is
+    /// shorter (regtest 10, simnet 5), whose blocks are mined on demand.
+    pub fn margin_day(self) -> u32 {
+        self.transfer_lockup.min(BLOCKS_PER_DAY as u32)
+    }
+
+    /// The highest expiry end at which a name can no longer be finalized after
+    /// a transfer judged now: the next block (`tip + 1`), the `lockup_left`
+    /// still to run, and a day's margin (R9, R31). A name whose expiry end is
+    /// at or below this is refused.
+    pub fn finalize_margin(self, tip: i64, lockup_left: i64) -> i64 {
+        tip + 1 + lockup_left + i64::from(self.margin_day())
+    }
+
     /// The height at which a name last renewed at `renewal` expires: the end
     /// of its renewal window, or for a `claimed` (reserved) name not before
     /// the claim period is over. hsd `NameState.isExpired`: "Claimed names can
