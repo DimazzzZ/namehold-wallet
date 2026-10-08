@@ -5,36 +5,28 @@
 //! funding...] -> [FINALIZE to us, change?]`.
 
 use crate::error::AppError;
-use crate::noncustodial::actions::{
-    rebuild_unsigned, DraftPlan, PlanInput, PlanOutput, PlanResult, FINAL_SEQUENCE,
-};
+use crate::noncustodial::actions::{PlanInput, PlanResult, FINAL_SEQUENCE};
 use crate::noncustodial::address;
 use crate::noncustodial::covenants;
 use crate::noncustodial::names;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::{NodeCoin, NodeCovenant};
-use crate::noncustodial::send::{SpendableCoin, DUST_THRESHOLD};
+use crate::noncustodial::send::SpendableCoin;
+use crate::noncustodial::shakedex::funding::{cov_out, fund, plain};
 use crate::noncustodial::shakedex::listing_file::ListingFile;
 use crate::noncustodial::shakedex::script::{lock_address, lock_script};
 use crate::noncustodial::shakedex::template::{encode_lock_time, STEP_SEQUENCE, STEP_SIGHASH};
 use crate::noncustodial::sync::COV_TRANSFER;
-use crate::noncustodial::tx::{sighash, Covenant, OutputAddress};
-use crate::noncustodial::types::doos_to_hns_string;
+use crate::noncustodial::tx::{sighash, OutputAddress};
 
 /// `wallet_tx_drafts.action` of a purchase draft.
 pub const PURCHASE_ACTION: &str = "shakedex_purchase";
 /// `wallet_tx_drafts.action` of a draft finalizing a purchased name.
 pub const PURCHASE_FINALIZE_ACTION: &str = "shakedex_purchase_finalize";
 
-/// Fee floor for Shakedex transactions, in doos per virtual byte: the
-/// 5000 doos/kB floor shakedex itself uses (spec R4).
-pub const SHAKEDEX_MIN_RATE_PER_BYTE: u64 = 5;
 /// Handshake's money supply cap in dollarydoos: hsd 8.0.0
 /// lib/protocol/consensus.js `MAX_MONEY = 2.04e9 * COIN` with `COIN = 10^6`.
 pub const MAX_MONEY: u64 = 2_040_000_000_000_000;
-/// Witness item sizes of a signed P2WPKH input: signature + sighash byte,
-/// compressed public key.
-const DUMMY_SIG_AND_PUBKEY: [usize; 2] = [65, 33];
 
 /// The summary a purchase draft stores (`wallet_tx_drafts.summary_json`):
 /// what the purchase dialog, the draft list and the secure confirmation
@@ -169,61 +161,6 @@ fn addr_string(network: Network, a: &OutputAddress) -> Result<String, AppError> 
     )))
 }
 
-fn plain(value: u64, address: String) -> PlanOutput {
-    PlanOutput {
-        value,
-        address,
-        covenant_type: 0,
-        covenant_items_hex: vec![],
-    }
-}
-
-fn cov_out(value: u64, address: String, c: &Covenant) -> PlanOutput {
-    PlanOutput {
-        value,
-        address,
-        covenant_type: c.covenant_type,
-        covenant_items_hex: c.items.iter().map(hex::encode).collect(),
-    }
-}
-
-fn own_input(c: &SpendableCoin) -> PlanInput {
-    PlanInput {
-        txid: c.txid.clone(),
-        vout: c.vout,
-        value: c.value,
-        branch: c.branch,
-        child_index: c.child_index,
-        sighash_type: sighash::ALL,
-        sequence: FINAL_SEQUENCE,
-        foreign_witness_hex: None,
-    }
-}
-
-/// Exact vsize of `plan` once our inputs carry P2WPKH witnesses; foreign
-/// inputs already carry their finished witnesses.
-fn signed_vsize(plan: &DraftPlan, network: Network) -> Result<u64, AppError> {
-    let mut tx = rebuild_unsigned(plan, network)?;
-    for (i, inp) in plan.inputs.iter().enumerate() {
-        if inp.foreign_witness_hex.is_none() {
-            tx.inputs[i].witness = DUMMY_SIG_AND_PUBKEY.iter().map(|n| vec![0u8; *n]).collect();
-        }
-    }
-    Ok(tx.vsize())
-}
-
-fn overflow() -> AppError {
-    AppError::InvalidInput("amounts overflow: this purchase cannot be built".into())
-}
-
-/// Sum money values, refusing (never wrapping or panicking) on overflow.
-fn checked_sum(values: impl IntoIterator<Item = u64>) -> Result<u64, AppError> {
-    values
-        .into_iter()
-        .try_fold(0u64, |acc, v| acc.checked_add(v))
-        .ok_or_else(overflow)
-}
-
 /// The encoded lock time a purchase draft's plan carries: that of the price
 /// step it pays, which tells the step apart from others at the same price.
 pub fn plan_lock_time(plan_json: &str) -> Result<u32, AppError> {
@@ -235,97 +172,6 @@ pub fn plan_lock_time(plan_json: &str) -> Result<u32, AppError> {
                  the purchase was not sent"
             ))
         })
-}
-
-/// Choose funding in the order given (callers pass load_spendable_coins
-/// order, largest-first) until `spend + fee` is covered, sizing the
-/// fee on the real transaction. `before_change`/`after_change` are the
-/// outputs on either side of the change slot.
-#[allow(clippy::too_many_arguments)]
-fn fund(
-    network: Network,
-    account: u32,
-    locktime: u32,
-    foreign: PlanInput,
-    foreign_value: u64,
-    before_change: Vec<PlanOutput>,
-    after_change: Vec<PlanOutput>,
-    funding: &[SpendableCoin],
-    change_address: &str,
-    rate: u64,
-    fixed_fee: Option<u64>,
-) -> Result<PlanResult, AppError> {
-    let rate = rate.max(SHAKEDEX_MIN_RATE_PER_BYTE);
-    let out_total = checked_sum(
-        before_change
-            .iter()
-            .chain(after_change.iter())
-            .map(|o| o.value),
-    )?;
-    let have = checked_sum(funding.iter().map(|c| c.value))?;
-    for taken in 0..=funding.len() {
-        let mut inputs = vec![foreign.clone()];
-        inputs.extend(funding[..taken].iter().map(own_input));
-        let in_total = checked_sum(
-            std::iter::once(foreign_value).chain(funding[..taken].iter().map(|c| c.value)),
-        )?;
-        for with_change in [true, false] {
-            let mut outputs = before_change.clone();
-            let change_index = with_change.then_some(outputs.len());
-            if with_change {
-                outputs.push(plain(0, change_address.to_owned()));
-            }
-            outputs.extend(after_change.iter().cloned());
-            let mut plan = DraftPlan {
-                version: 0,
-                locktime,
-                account,
-                network: network.as_str().into(),
-                inputs: inputs.clone(),
-                outputs,
-                change_output_index: change_index,
-            };
-            let vsize = signed_vsize(&plan, network)?;
-            crate::noncustodial::send::check_standard_weight(vsize, plan.inputs.len() as u64)?;
-            let fee = match fixed_fee {
-                Some(f) => f,
-                None => vsize.checked_mul(rate).ok_or_else(overflow)?,
-            };
-            let spend = out_total.checked_add(fee).ok_or_else(overflow)?;
-            let Some(rest) = in_total.checked_sub(spend) else {
-                continue;
-            };
-            if let Some(idx) = change_index {
-                if rest < DUST_THRESHOLD {
-                    continue;
-                }
-                plan.outputs[idx].value = rest;
-            }
-            let (fee, change) = if with_change {
-                (fee, rest)
-            } else {
-                // rest < in_total - spend, so fee + rest <= in_total.
-                (fee + rest, 0)
-            };
-            let tx = rebuild_unsigned(&plan, network)?;
-            return Ok(PlanResult {
-                unsigned_tx_hex: tx.to_hex(),
-                txid: tx.txid(),
-                fee,
-                change,
-                input_total: in_total,
-                plan,
-            });
-        }
-    }
-    // The TRANSFER/FINALIZE output carries the foreign coin's value back,
-    // so what the buyer adds is everything else: price and market fee.
-    let need = out_total.saturating_sub(foreign_value);
-    Err(AppError::InvalidInput(format!(
-        "not enough HNS: need {} plus fees, have {}",
-        doos_to_hns_string(need),
-        doos_to_hns_string(have)
-    )))
 }
 
 /// Buy the name at price step `p.step`: spend the seller's lock coin with
@@ -360,6 +206,7 @@ pub fn build_purchase_plan(p: &PurchaseInput) -> Result<PlanResult, AppError> {
         sighash_type: STEP_SIGHASH,
         sequence: STEP_SEQUENCE,
         foreign_witness_hex: Some(vec![hex::encode(step.signature), hex::encode(&script)]),
+        lock_key_name: None,
     };
     let transfer = covenants::transfer(&nh, p.name_height, p.dest.version, &p.dest.hash);
     let mut before = vec![cov_out(p.lock_value, lock_addr, &transfer)];
@@ -376,7 +223,6 @@ pub fn build_purchase_plan(p: &PurchaseInput) -> Result<PlanResult, AppError> {
         p.account,
         encode_lock_time(step.lock_time)?,
         foreign,
-        p.lock_value,
         before,
         after,
         p.funding,
@@ -398,6 +244,7 @@ pub fn build_purchase_finalize_plan(f: &FinalizeInput) -> Result<PlanResult, App
         sighash_type: sighash::ALL,
         sequence: FINAL_SEQUENCE,
         foreign_witness_hex: Some(vec![hex::encode(lock_script(&f.lock_pubkey))]),
+        lock_key_name: None,
     };
     let fin = covenants::finalize(
         &nh,
@@ -418,7 +265,6 @@ pub fn build_purchase_finalize_plan(f: &FinalizeInput) -> Result<PlanResult, App
         f.account,
         0,
         foreign,
-        f.transfer_value,
         before,
         vec![],
         f.funding,
@@ -512,7 +358,10 @@ pub fn finalize_wait_text(network: Network) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::noncustodial::actions::{rebuild_unsigned, DraftPlan};
     use crate::noncustodial::hd::{self, ExtendedPrivKey};
+    use crate::noncustodial::send::DUST_THRESHOLD;
+    use crate::noncustodial::shakedex::funding::SHAKEDEX_MIN_RATE_PER_BYTE;
     use crate::noncustodial::shakedex::listing_file::PriceStep;
     use crate::noncustodial::sync::{COV_FINALIZE, COV_TRANSFER};
     use crate::noncustodial::tx::Transaction;

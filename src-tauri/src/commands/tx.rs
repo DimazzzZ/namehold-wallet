@@ -1104,6 +1104,7 @@ mod ledger_signing_guards_tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             }],
             outputs: vec![
                 crate::noncustodial::actions::PlanOutput {
@@ -1148,6 +1149,7 @@ mod ledger_signing_guards_tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             }],
             outputs: vec![
                 crate::noncustodial::actions::PlanOutput {
@@ -1199,6 +1201,7 @@ mod ledger_signing_guards_tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             }],
             outputs: vec![crate::noncustodial::actions::PlanOutput {
                 value: 99_500_000,
@@ -1232,6 +1235,7 @@ mod ledger_signing_guards_tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             }],
             outputs: vec![crate::noncustodial::actions::PlanOutput {
                 value: 100_000_000, // output > input (impossible)
@@ -1251,10 +1255,11 @@ mod ledger_signing_guards_tests {
 
 /// The Ledger signer streams every input as the wallet's own P2WPKH with a
 /// final sequence (`providers/ledger/signing.rs`). A plan with a foreign
-/// input, a custom sequence or a lock time would be signed wrongly, so it is
-/// refused before the device is touched, and so is a plan that cannot be
-/// read. A `send_hns` draft stores build parameters, not a plan: the signer
-/// builds that plan from the wallet's own coins, so it has nothing to refuse.
+/// input, a lock coin of ours signed by its lock key, a custom sequence or a
+/// lock time would be signed wrongly, so it is refused before the device is
+/// touched, and so is every Shakedex draft and a plan that cannot be read. A
+/// `send_hns` draft stores build parameters, not a plan: the signer builds
+/// that plan from the wallet's own coins, so it has nothing to refuse.
 pub(crate) fn refuse_unsupported_ledger_plan(
     profile_kind: &str,
     action: &str,
@@ -1262,6 +1267,15 @@ pub(crate) fn refuse_unsupported_ledger_plan(
 ) -> Result<(), AppError> {
     if profile_kind != "ledger_hardware" || action == "send_hns" {
         return Ok(());
+    }
+    // Shakedex is for recovery-phrase wallets only (R16, R29), refused as a
+    // class: the FINALIZE into a lock is an ordinary plan the device could
+    // sign, and a class keeps a new Shakedex action from slipping past a
+    // list of known ones.
+    if crate::noncustodial::shakedex::is_shakedex_action(action) {
+        return Err(AppError::InvalidInput(
+            crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY.into(),
+        ));
     }
     let plan = serde_json::from_str::<crate::noncustodial::actions::DraftPlan>(plan_json)
         .map_err(|e| AppError::Other(format!("corrupted draft: unreadable signing plan: {e}")))?;
@@ -2639,6 +2653,7 @@ mod pure_helper_tests {
             sighash_type: 1,
             sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
             foreign_witness_hex: None,
+            lock_key_name: None,
         }
     }
 

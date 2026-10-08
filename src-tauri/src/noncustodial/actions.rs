@@ -17,6 +17,7 @@ use crate::noncustodial::hd::bip44_path;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::send::{estimate_fee_with_primary, SpendableCoin, DUST_THRESHOLD};
 use crate::noncustodial::session::SignerSession;
+use crate::noncustodial::shakedex::lock_key::derive_lock_key;
 use crate::noncustodial::tx::{
     output_address_from_string, sighash, Covenant, Input, Outpoint, Output, Transaction,
 };
@@ -46,6 +47,15 @@ pub struct PlanInput {
     /// We never sign it; `branch`/`child_index` are ignored for it.
     #[serde(default)]
     pub foreign_witness_hex: Option<Vec<String>>,
+    /// One of our lock coins, signed with the lock key of this name. The key
+    /// is derived from the seed at sign time (`derive_lock_key` with the
+    /// plan's network and account), never stored, and signs only a cancel
+    /// (R17); the witness is `[signature, lock script]`. For such an input
+    /// `branch` and `child_index` are the derivation path of the address of
+    /// ours the cancel's TRANSFER commits the name to, which the signer
+    /// re-derives and checks; its coin is not a tracked coin.
+    #[serde(default)]
+    pub lock_key_name: Option<String>,
 }
 
 /// One output of a draft plan (value + address + covenant items as hex).
@@ -74,21 +84,26 @@ pub struct DraftPlan {
 
 impl DraftPlan {
     /// True when the plan carries anything the Ledger signer cannot
-    /// represent: a foreign input, a non-final sequence, or a lock time.
+    /// represent: a foreign input, a lock-key input, a non-final sequence, or
+    /// a lock time.
     pub fn has_foreign_or_custom_inputs(&self) -> bool {
         self.locktime != 0
-            || self
-                .inputs
-                .iter()
-                .any(|i| i.foreign_witness_hex.is_some() || i.sequence != FINAL_SEQUENCE)
+            || self.inputs.iter().any(|i| {
+                i.foreign_witness_hex.is_some()
+                    || i.lock_key_name.is_some()
+                    || i.sequence != FINAL_SEQUENCE
+            })
     }
 
-    /// The outpoints of the wallet's own inputs — every input but the foreign
-    /// ones (a seller's lock coin) — which are the coins a draft reserves.
+    /// The outpoints of the wallet's own tracked coins, which a draft
+    /// reserves: every input but the foreign ones (a seller's lock coin) and
+    /// our own lock coin signed by a lock key
+    /// (`insert_tx_draft_reserving_coins_in_tx` refuses an outpoint it cannot
+    /// claim).
     pub fn own_inputs(&self) -> Vec<(String, u32)> {
         self.inputs
             .iter()
-            .filter(|i| i.foreign_witness_hex.is_none())
+            .filter(|i| i.foreign_witness_hex.is_none() && i.lock_key_name.is_none())
             .map(|i| (i.txid.clone(), i.vout))
             .collect()
     }
@@ -240,6 +255,7 @@ pub fn build_plan(
             sighash_type: n.sighash_type,
             sequence: FINAL_SEQUENCE,
             foreign_witness_hex: None,
+            lock_key_name: None,
         });
     }
     for c in &funding[..taken] {
@@ -252,6 +268,7 @@ pub fn build_plan(
             sighash_type: sighash::ALL,
             sequence: FINAL_SEQUENCE,
             foreign_witness_hex: None,
+            lock_key_name: None,
         });
     }
 
@@ -367,6 +384,7 @@ pub fn build_batch_plan(
             sighash_type: n.sighash_type,
             sequence: FINAL_SEQUENCE,
             foreign_witness_hex: None,
+            lock_key_name: None,
         });
     }
     for c in &funding[..taken] {
@@ -379,6 +397,7 @@ pub fn build_batch_plan(
             sighash_type: sighash::ALL,
             sequence: FINAL_SEQUENCE,
             foreign_witness_hex: None,
+            lock_key_name: None,
         });
     }
 
@@ -493,6 +512,7 @@ pub fn build_finalize_with_payment_plan(
         sighash_type: name_input.sighash_type,
         sequence: FINAL_SEQUENCE,
         foreign_witness_hex: None,
+        lock_key_name: None,
     }];
     for c in &funding[..taken] {
         plan_inputs.push(PlanInput {
@@ -504,6 +524,7 @@ pub fn build_finalize_with_payment_plan(
             sighash_type: sighash::ALL,
             sequence: FINAL_SEQUENCE,
             foreign_witness_hex: None,
+            lock_key_name: None,
         });
     }
 
@@ -617,6 +638,21 @@ fn sign_plan_tx(session: &mut SignerSession, plan: &DraftPlan) -> Result<Transac
     let mut tx = rebuild_unsigned(plan, network)?;
     let master = session.master()?;
     for (i, inp) in plan.inputs.iter().enumerate() {
+        if let Some(name) = &inp.lock_key_name {
+            if inp.foreign_witness_hex.is_some() {
+                return Err(AppError::InvalidInput(
+                    "a plan input cannot be both foreign and ours to sign".into(),
+                ));
+            }
+            let key = derive_lock_key(master, network, plan.account, name)?;
+            crate::noncustodial::shakedex::cancel::check_lock_key_input(
+                plan, i, name, &key, master, network,
+            )?;
+            let sig =
+                tx.sign_p2wsh_input(i, &key.secret, &key.script, inp.value, inp.sighash_type)?;
+            tx.inputs[i].witness = vec![sig.to_vec(), key.script.clone()];
+            continue;
+        }
         if inp.foreign_witness_hex.is_some() {
             continue;
         }
@@ -633,7 +669,9 @@ fn sign_plan_tx(session: &mut SignerSession, plan: &DraftPlan) -> Result<Transac
 mod tests {
     use super::*;
     use crate::noncustodial::covenants;
-    use crate::noncustodial::hd::ExtendedPrivKey;
+    use crate::noncustodial::hd::{ExtendedPrivKey, HARDENED_OFFSET};
+    use crate::noncustodial::shakedex::cancel::CANCEL_SIGHASH;
+    use crate::noncustodial::shakedex::lock_key::LockKey;
 
     fn coin(txid_byte: u8, value: u64, child: u32) -> SpendableCoin {
         SpendableCoin {
@@ -1329,7 +1367,40 @@ mod tests {
         let plan: DraftPlan = serde_json::from_str(json).unwrap();
         assert_eq!(plan.inputs[0].sequence, FINAL_SEQUENCE);
         assert!(plan.inputs[0].foreign_witness_hex.is_none());
+        assert!(plan.inputs[0].lock_key_name.is_none());
         assert!(!plan.has_foreign_or_custom_inputs());
+    }
+
+    /// A plan stored before `lock_key_name` existed signs to the same bytes it
+    /// signed to before (hex pinned from the signer at c25b655).
+    #[test]
+    fn old_plan_json_signs_as_before() {
+        let json = r#"{"version":0,"locktime":0,"account":0,"network":"main",
+            "inputs":[{"txid":"0101010101010101010101010101010101010101010101010101010101010101",
+                       "vout":0,"value":5000,"branch":0,"child_index":3,"sighash_type":1}],
+            "outputs":[{"value":4000,"address":"hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx",
+                        "covenant_type":0,"covenant_items_hex":[]}],
+            "change_output_index":null}"#;
+        let plan: DraftPlan = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            plan.own_inputs(),
+            vec![(plan.inputs[0].txid.clone(), plan.inputs[0].vout)]
+        );
+        let mut session = SignerSession::unlock("p1".into(), Network::Main, seed_master(), 60_000);
+        let (hex, txid) = sign_plan(&mut session, &plan).unwrap();
+        assert_eq!(
+            hex,
+            "0000000001010101010101010101010101010101010101010101010101010101\
+             010101010100000000ffffffff01a00f00000000000000146d5571fdbca1019c\
+             d0f0cd792d1b0bdfa7651c7e00000000000002411861b40c9d4b662be02c9226\
+             cb8aefb7723e9a75f05e85d3629864d5af550f4a33da353dcc46b3390e66b2ca\
+             19c9f9d07031009c328c4e331a3383f9c0d0a9d7012103949384d01f9fd552ec\
+             a60eb2bf942b8c547b112a195b5494c5a27fe93953fc5c"
+        );
+        assert_eq!(
+            txid,
+            "b71854753e90aa5fd7466fc3601c5e431ab16d41bcfc67ebec0b6d56ae6315e1"
+        );
     }
 
     fn plan_with_foreign_input(witness: Vec<String>) -> DraftPlan {
@@ -1359,6 +1430,7 @@ mod tests {
                 sighash_type: 0x84,
                 sequence: 0xffff_fffe,
                 foreign_witness_hex: Some(witness),
+                lock_key_name: None,
             },
         );
         plan
@@ -1397,5 +1469,191 @@ mod tests {
         let tx = sign_plan_tx(&mut session, &plan).unwrap();
         assert_eq!(tx.inputs[0].witness, vec![vec![0xaa]]);
         assert_eq!(tx.inputs[1].witness.len(), 2, "own input signed as P2WPKH");
+    }
+
+    fn seed_master() -> ExtendedPrivKey {
+        ExtendedPrivKey::from_seed(&[7u8; 64]).unwrap()
+    }
+
+    /// The key hash of our address at m/44'/5353'/0'/`branch`/`child` under
+    /// [`seed_master`].
+    fn our_hash_at(branch: u32, child: u32) -> [u8; 20] {
+        let path = bip44_path(Network::Main, 0, branch, child);
+        address::pubkey_to_hash160(
+            &seed_master()
+                .derive_path(&path)
+                .unwrap()
+                .compressed_pubkey(),
+        )
+    }
+
+    /// The fixture's cancel commits the name to our address at 0/11.
+    fn our_cancel_hash() -> [u8; 20] {
+        our_hash_at(0, 11)
+    }
+
+    /// `plan`'s lock input names `branch`/`child` and its TRANSFER commits to
+    /// our address there, so only the path rule can refuse it.
+    fn commit_to_path(mut plan: DraftPlan, branch: u32, child: u32) -> DraftPlan {
+        plan.inputs[0].branch = branch;
+        plan.inputs[0].child_index = child;
+        plan.outputs[0].covenant_items_hex[3] = hex::encode(our_hash_at(branch, child));
+        plan
+    }
+
+    /// Input 0 spends `key`'s lock coin into output 0, a TRANSFER of
+    /// "dexreviews" paying `transfer_to` and committing to our address at
+    /// branch 0, index 11 (the input's path); input 1 is one of our coins.
+    fn plan_with_lock_key_input(sighash_type: u32, transfer_to: &str) -> DraftPlan {
+        let nh = crate::noncustodial::names::hash_name("dexreviews").unwrap();
+        let transfer = covenants::transfer(&nh, 120, 0, &our_cancel_hash());
+        let mut plan = build_plan(
+            Network::Main,
+            0,
+            None,
+            PrimaryOutput {
+                value: 100_000,
+                address: ADDR.into(),
+                covenant: Covenant::default(),
+            },
+            &[coin(1, 1_000_000, 0)],
+            ADDR,
+            1,
+        )
+        .unwrap()
+        .plan;
+        plan.inputs.insert(
+            0,
+            PlanInput {
+                txid: hex::encode([9u8; 32]),
+                vout: 0,
+                value: 1_000_000,
+                branch: 0,
+                child_index: 11,
+                sighash_type,
+                sequence: FINAL_SEQUENCE,
+                foreign_witness_hex: None,
+                lock_key_name: Some("dexreviews".into()),
+            },
+        );
+        plan.outputs.insert(
+            0,
+            PlanOutput {
+                value: 1_000_000,
+                address: transfer_to.into(),
+                covenant_type: transfer.covenant_type,
+                covenant_items_hex: transfer.items.iter().map(hex::encode).collect(),
+            },
+        );
+        plan.change_output_index = plan.change_output_index.map(|i| i + 1);
+        plan
+    }
+
+    fn lock_key() -> LockKey {
+        derive_lock_key(&seed_master(), Network::Main, 0, "dexreviews").unwrap()
+    }
+
+    /// The signer derives the lock key from the seed by the input's name and
+    /// signs the cancel's lock input 0x83 with witness [signature, script].
+    #[test]
+    fn sign_plan_signs_a_lock_key_input_with_the_lock_key() {
+        let key = lock_key();
+        let plan = plan_with_lock_key_input(CANCEL_SIGHASH, &key.address);
+        let unsigned = rebuild_unsigned(&plan, Network::Main).unwrap();
+        let mut session = SignerSession::unlock("p1".into(), Network::Main, seed_master(), 60_000);
+        let tx = sign_plan_tx(&mut session, &plan).unwrap();
+        let [sig, script] = tx.inputs[0].witness.as_slice() else {
+            panic!("witness is [signature, script]: {:?}", tx.inputs[0].witness);
+        };
+        assert_eq!(script, &key.script);
+        assert_eq!(sig.len(), 65);
+        assert_eq!(u32::from(sig[64]), CANCEL_SIGHASH);
+        let digest = unsigned
+            .signature_hash(0, &key.script, 1_000_000, CANCEL_SIGHASH)
+            .unwrap();
+        secp256k1::Secp256k1::verification_only()
+            .verify_ecdsa(
+                &secp256k1::Message::from_digest(digest),
+                &secp256k1::ecdsa::Signature::from_compact(&sig[..64]).unwrap(),
+                &secp256k1::PublicKey::from_slice(&key.pubkey).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(tx.inputs[1].witness.len(), 2, "own input signed as P2WPKH");
+    }
+
+    /// A lock coin is not a tracked coin a draft can reserve, and a Ledger
+    /// cannot sign it.
+    #[test]
+    fn own_inputs_leave_out_a_lock_key_input_and_the_ledger_refuses_it() {
+        let plan = plan_with_lock_key_input(CANCEL_SIGHASH, &lock_key().address);
+        assert_eq!(
+            plan.own_inputs(),
+            vec![(plan.inputs[1].txid.clone(), plan.inputs[1].vout)]
+        );
+        assert!(plan.has_foreign_or_custom_inputs());
+    }
+
+    /// R17: a lock key signs only price steps (outside any plan) and
+    /// cancels. Any other sighash, an output at the input's index that is
+    /// missing, not a TRANSFER, not at the lock address, a TRANSFER of
+    /// another name or to an address that is not the input's path of ours,
+    /// or an input that is also foreign, is refused before anything is
+    /// signed.
+    #[test]
+    fn sign_plan_refuses_a_lock_key_input_that_is_not_a_cancel() {
+        let key = lock_key();
+        let other = derive_lock_key(&seed_master(), Network::Main, 0, "namehold").unwrap();
+        let mut not_transfer = plan_with_lock_key_input(CANCEL_SIGHASH, &key.address);
+        not_transfer.outputs[0].covenant_type = crate::noncustodial::sync::COV_FINALIZE;
+        let mut no_output = plan_with_lock_key_input(CANCEL_SIGHASH, &key.address);
+        no_output.outputs.clear();
+        no_output.change_output_index = None;
+        let mut also_foreign = plan_with_lock_key_input(CANCEL_SIGHASH, &key.address);
+        also_foreign.inputs[0].foreign_witness_hex = Some(vec!["aa".into()]);
+        let mut other_name = plan_with_lock_key_input(CANCEL_SIGHASH, &key.address);
+        other_name.outputs[0].covenant_items_hex[0] =
+            hex::encode(crate::noncustodial::names::hash_name("namehold").unwrap());
+        let mut foreign_dest = plan_with_lock_key_input(CANCEL_SIGHASH, &key.address);
+        foreign_dest.outputs[0].covenant_items_hex[3] = hex::encode([7u8; 20]);
+        let mut other_path = plan_with_lock_key_input(CANCEL_SIGHASH, &key.address);
+        other_path.inputs[0].child_index = 12;
+        let mut script_dest = plan_with_lock_key_input(CANCEL_SIGHASH, &key.address);
+        script_dest.outputs[0].covenant_items_hex[2] = "01".into();
+        let mut short_transfer = plan_with_lock_key_input(CANCEL_SIGHASH, &key.address);
+        short_transfer.outputs[0].covenant_items_hex.truncate(2);
+        let cancel = || plan_with_lock_key_input(CANCEL_SIGHASH, &key.address);
+        let change_branch = commit_to_path(cancel(), 1, 11);
+        let hardened_index = commit_to_path(cancel(), 0, HARDENED_OFFSET + 11);
+        let mut not_final = cancel();
+        not_final.inputs[0].sequence = 0xffff_fffe;
+        let mut lock_time = cancel();
+        lock_time.locktime = 500_000_000;
+        for (case, plan) in [
+            ("price step", plan_with_lock_key_input(0x84, &key.address)),
+            ("ALL", plan_with_lock_key_input(sighash::ALL, &key.address)),
+            (
+                "another lock",
+                plan_with_lock_key_input(CANCEL_SIGHASH, &other.address),
+            ),
+            ("not a TRANSFER", not_transfer),
+            ("no output", no_output),
+            ("also foreign", also_foreign),
+            ("another name", other_name),
+            ("a foreign destination", foreign_dest),
+            ("a destination off the input's path", other_path),
+            ("destination version 1", script_dest),
+            ("a TRANSFER without its address items", short_transfer),
+            ("a change-branch destination", change_branch),
+            ("a hardened destination index", hardened_index),
+            ("a non-final sequence", not_final),
+            ("a lock time", lock_time),
+        ] {
+            let mut session =
+                SignerSession::unlock("p1".into(), Network::Main, seed_master(), 60_000);
+            let Err(err) = sign_plan_tx(&mut session, &plan) else {
+                panic!("{case}: signed");
+            };
+            assert!(matches!(err, AppError::InvalidInput(_)), "{case}: {err:?}");
+        }
     }
 }

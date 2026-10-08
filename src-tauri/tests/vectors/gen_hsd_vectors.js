@@ -218,6 +218,8 @@ const TXID_C = Buffer.from(Array.from({ length: 32 }, (_, i) => 0x80 + i)).toStr
 // Reference vectors for buying a name sold through a Shakedex lock: the lock
 // script and address, one price step (sighash 0x84 = SINGLEREVERSE|ANYONECANPAY),
 // the buyer's purchase transaction, and the buyer's FINALIZE out of the lock.
+// And, under `sell`, the seller's side: the FINALIZE into the lock, price steps
+// signed by the R17 key, the cancel and its FINALIZE.
 // The purchase and the finalize are verified by hsd's own script interpreter.
 
 function lockScript(pub) {
@@ -367,6 +369,204 @@ const shakedex = (() => {
     "a name with the top bit set",
   );
 
+  // Selling with the same R17 lock key, chained as on chain: our TRANSFER
+  // coin (committing to the lock program) is finalized into the lock; price
+  // steps are signed over that FINALIZE coin; the cancel spends it with 0x83
+  // into a TRANSFER at the lock address committing to our cancel address; the
+  // cancel's FINALIZE brings the name there. hsd's interpreter verifies every
+  // transaction, and each step through a purchase that spends it.
+  const sell = (() => {
+    const finalizeCov = (renewalBlock) =>
+      cov(T.FINALIZE, (c) => {
+        c.pushHash(nameHash);
+        c.pushU32(height);
+        c.push(Buffer.from(name));
+        c.pushU8(0);
+        c.pushU32(0);
+        c.pushU32(0);
+        c.pushHash(renewalBlock);
+      });
+    const transferCov = (hash) =>
+      cov(T.TRANSFER, (c) => {
+        c.pushHash(nameHash);
+        c.pushU32(height);
+        c.pushU8(0);
+        c.push(hash);
+      });
+
+    // FINALIZE into the lock: our TRANSFER coin at our own address, funded
+    // by one of our coins.
+    const transferInput = {
+      displayTxid: Buffer.alloc(32, 0x31).toString("hex"),
+      vout: 0,
+      value: lockValue,
+      branch: 0,
+      index: 7,
+    };
+    const owner = ring(transferInput.branch, transferInput.index);
+    const transferCoin = new Coin({
+      version: 0,
+      height: height + 10,
+      value: lockValue,
+      address: owner.getAddress(),
+      hash: prevoutHash(transferInput.displayTxid),
+      index: transferInput.vout,
+      covenant: transferCov(sha3.digest(script)),
+    });
+    const lfFunding = { displayTxid: TXID_C, vout: 1, value: 2_000_000, branch: 0, index: 8 };
+    const lfRing = ring(lfFunding.branch, lfFunding.index);
+    const lfRenewal = Buffer.alloc(32, 0x77);
+    const lfFee = 10_000;
+    const lf = new MTX();
+    lf.version = 0;
+    lf.addCoin(transferCoin);
+    lf.addCoin(mkCoin(lfFunding.displayTxid, lfFunding.vout, lfFunding.value, lfRing));
+    lf.addOutput({ address: lockAddress, value: lockValue, covenant: finalizeCov(lfRenewal) });
+    lf.addOutput(Address.fromString(addr(1, 1), "main"), lfFunding.value - lfFee);
+    assert.strictEqual(lf.sign([owner, lfRing]), 2, "lock finalize: both inputs are ours");
+    assert(lf.verify(), "lock finalize verifies in hsd");
+    assert(
+      transferCoin.covenant.items[3].equals(lf.outputs[0].address.hash),
+      "the FINALIZE pays the program the TRANSFER commits to",
+    );
+    const lockCoin = Coin.fromTX(lf.toTX(), 0, height + 20);
+
+    // Price steps over the lock coin, each as SD's template builds it (a
+    // placeholder TRANSFER output 0, the payment last), each bought once.
+    const paymentAddr = addr(0, 9);
+    const buyer = ring(0, 6);
+    const steps = [
+      { price: 300_000_000, lockTimeSecs: 1_783_700_000 },
+      { price: 200_000_000, lockTimeSecs: 1_783_786_400 },
+      { price: 100_000_000, lockTimeSecs: 1_783_872_800 },
+    ].map(({ price, lockTimeSecs }) => {
+      const tpl = new MTX();
+      tpl.version = 0;
+      tpl.addCoin(lockCoin);
+      const placeholder = new Output();
+      placeholder.covenant.type = T.TRANSFER;
+      tpl.outputs.push(placeholder);
+      tpl.addOutput(Address.fromString(paymentAddr, "main"), price);
+      tpl.setLocktime(lockTimeSecs, true);
+      assert.strictEqual(tpl.inputs[0].sequence, 0xfffffffe, "step sequence");
+      const prev = Script.decode(script);
+      const sighash = tpl.signatureHash(0, prev, lockValue, SIGHASH);
+      const signature = tpl.signature(0, prev, lockValue, lockKey.privateKey, SIGHASH);
+      const fill = new MTX();
+      fill.version = 0;
+      fill.locktime = tpl.locktime;
+      fill.addCoin(lockCoin);
+      fill.inputs[0].sequence = 0xfffffffe;
+      fill.inputs[0].witness = Witness.fromItems([signature, script]);
+      fill.addOutput({
+        address: lockAddress,
+        value: lockValue,
+        covenant: transferCov(buyer.getKeyHash()),
+      });
+      fill.addOutput(Address.fromString(paymentAddr, "main"), price);
+      assert(fill.verify(), "a purchase of the step verifies in hsd");
+      return {
+        price,
+        lockTimeSecs,
+        encodedLocktime: tpl.locktime,
+        sighash: sighash.toString("hex"),
+        signature: signature.toString("hex"),
+      };
+    });
+
+    // Cancel: the lock key signs input 0 with ANYONECANPAY|SINGLE, output 0
+    // a TRANSFER at the lock address committing to our cancel address; our
+    // funding input is signed ALL.
+    const CANCEL_SIGHASH = Script.hashType.ANYONECANPAY | Script.hashType.SINGLE;
+    assert.strictEqual(CANCEL_SIGHASH, 0x83, "cancel sighash");
+    const cancelDest = ring(0, 11);
+    const cFunding = { displayTxid: TXID_A, vout: 2, value: 1_000_000, branch: 0, index: 10 };
+    const cRing = ring(cFunding.branch, cFunding.index);
+    const cFee = 10_000;
+    const c = new MTX();
+    c.version = 0;
+    c.addCoin(lockCoin);
+    c.addCoin(mkCoin(cFunding.displayTxid, cFunding.vout, cFunding.value, cRing));
+    c.addOutput({
+      address: lockAddress,
+      value: lockValue,
+      covenant: transferCov(cancelDest.getKeyHash()),
+    });
+    c.addOutput(Address.fromString(addr(1, 2), "main"), cFunding.value - cFee);
+    const cancelSig = c.signature(
+      0,
+      Script.decode(script),
+      lockValue,
+      lockKey.privateKey,
+      CANCEL_SIGHASH,
+    );
+    c.inputs[0].witness = Witness.fromItems([cancelSig, script]);
+    assert.strictEqual(c.sign([cRing]), 1, "cancel: only the funding input is signed ALL");
+    assert(c.verify(), "cancel verifies in hsd");
+
+    // The cancel's FINALIZE out of the lock to the cancel address.
+    const cancelCoin = Coin.fromTX(c.toTX(), 0, height + 30);
+    const cfFunding = { displayTxid: TXID_B, vout: 3, value: 1_000_000, branch: 0, index: 12 };
+    const cfRing = ring(cfFunding.branch, cfFunding.index);
+    const cfRenewal = Buffer.alloc(32, 0x88);
+    const cfFee = 10_000;
+    const cf = new MTX();
+    cf.version = 0;
+    cf.addCoin(cancelCoin);
+    cf.inputs[0].witness = Witness.fromItems([script]);
+    cf.addCoin(mkCoin(cfFunding.displayTxid, cfFunding.vout, cfFunding.value, cfRing));
+    cf.addOutput({
+      address: cancelDest.getAddress(),
+      value: lockValue,
+      covenant: finalizeCov(cfRenewal),
+    });
+    cf.addOutput(Address.fromString(addr(1, 3), "main"), cfFunding.value - cfFee);
+    assert.strictEqual(cf.sign([cfRing]), 1, "cancel finalize: only the funding input is signed");
+    assert(cf.verify(), "cancel finalize verifies in hsd");
+
+    return {
+      lockFinalize: {
+        transferInput,
+        fundingInput: lfFunding,
+        renewalBlock: lfRenewal.toString("hex"),
+        changeAddress: addr(1, 1),
+        fee: lfFee,
+        vsize: lf.getVirtualSize(),
+        signedHex: lf.toRaw().toString("hex"),
+        txid: lf.txid(),
+      },
+      steps: {
+        lockCoin: { hash: lf.txid(), index: 0, value: lockValue },
+        paymentAddr,
+        data: steps,
+      },
+      cancel: {
+        lockCoin: { hash: lf.txid(), index: 0, value: lockValue },
+        sighashType: CANCEL_SIGHASH,
+        cancelAddress: cancelDest.getAddress().toString("main"),
+        fundingInput: cFunding,
+        changeAddress: addr(1, 2),
+        fee: cFee,
+        vsize: c.getVirtualSize(),
+        signedHex: c.toRaw().toString("hex"),
+        txid: c.txid(),
+      },
+      cancelFinalize: {
+        cancelCoin: { hash: c.txid(), index: 0, value: lockValue },
+        fundingInput: cfFunding,
+        renewalBlock: cfRenewal.toString("hex"),
+        flags: 0,
+        claimed: 0,
+        renewals: 0,
+        changeAddress: addr(1, 3),
+        fee: cfFee,
+        vsize: cf.getVirtualSize(),
+        signedHex: cf.toRaw().toString("hex"),
+        txid: cf.txid(),
+      },
+    };
+  })();
+
   return {
     name,
     nameHash: nameHash.toString("hex"),
@@ -403,6 +603,7 @@ const shakedex = (() => {
       txid: f.txid(),
     },
     lockPath,
+    sell,
   };
 })();
 
