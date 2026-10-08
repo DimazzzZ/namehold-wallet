@@ -18,7 +18,7 @@ use crate::market::learnhns::{
 };
 use crate::models::settings::SettingsMap;
 use crate::noncustodial::derivation;
-use crate::noncustodial::network::Network;
+use crate::noncustodial::network::{NameParams, Network};
 use crate::noncustodial::rpc::{self, ChainSource, NodeRpcClient};
 use crate::noncustodial::send::{self, DUST_THRESHOLD};
 use crate::noncustodial::shakedex::listing_file::{ListingFile, MAX_LISTING_FILE_BYTES};
@@ -498,6 +498,80 @@ fn read_listing_file(path: &str) -> Result<String, AppError> {
 
 fn expiry_warning() -> String {
     "This name expires soon after the purchase: finalize it in time or it is lost.".into()
+}
+
+/// R31's verdict on locking a name now, or (T3) on finalizing it into the
+/// lock.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExpiryNotice {
+    Ok,
+    /// Allowed, with R31's warning: the name expires less than 180 R9 days
+    /// after the tip.
+    Warn {
+        blocks_left: i64,
+    },
+    /// The name expires at or before `tip + 1 + remaining lockup + day`: it
+    /// would expire on a TRANSFER coin before its FINALIZE into the lock.
+    Refuse {
+        expiry_end: i64,
+    },
+}
+
+/// Six months, in R9 days (R31's warning).
+#[cfg_attr(not(test), allow(dead_code))]
+const LOCK_WARN_DAYS: i64 = 180;
+
+/// R31. `name_info` is hsd's `getnameinfo` reply; its renewal height and
+/// claimed count are read field by field, and a reply without either is "could
+/// not check" (fail closed). `remaining_lockup` is the full transfer lockup at
+/// Lock and `NameParams::blocks_until_finalize` of the lock TRANSFER at
+/// Finalize & sign.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn lock_expiry_guard(
+    params: &NameParams,
+    name_info: &serde_json::Value,
+    tip: i64,
+    remaining_lockup: i64,
+) -> Result<ExpiryNotice, AppError> {
+    let info = match name_info.get("info") {
+        None => {
+            return Err(AppError::Rpc(
+                "node did not report the name's info: could not check when it expires".into(),
+            ))
+        }
+        Some(serde_json::Value::Null) => {
+            return Err(AppError::InvalidInput(
+                "the name has no on-chain state".into(),
+            ))
+        }
+        Some(i) => i,
+    };
+    let Some(renewal) = info
+        .get("renewal")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|r| u32::try_from(r).ok())
+    else {
+        return Err(AppError::Rpc(
+            "node did not report the name's renewal height: could not check when it expires".into(),
+        ));
+    };
+    let Some(claimed) = info.get("claimed").and_then(serde_json::Value::as_u64) else {
+        return Err(AppError::Rpc(
+            "node did not report whether the name was claimed: could not check when it expires"
+                .into(),
+        ));
+    };
+    let end = params.expiry_end(i64::from(renewal), claimed > 0);
+    if end <= params.finalize_margin(tip, remaining_lockup) {
+        return Ok(ExpiryNotice::Refuse { expiry_end: end });
+    }
+    let blocks_left = end - tip;
+    if blocks_left < LOCK_WARN_DAYS * i64::from(params.margin_day()) {
+        Ok(ExpiryNotice::Warn { blocks_left })
+    } else {
+        Ok(ExpiryNotice::Ok)
+    }
 }
 
 // --- commands ---------------------------------------------------------------
@@ -1116,5 +1190,118 @@ mod tests {
             first_valid_in_secs: 61,
         });
         assert!(e.to_string().contains("2 minutes"));
+    }
+
+    fn info(renewal: u64, claimed: u64) -> serde_json::Value {
+        serde_json::json!({ "info": { "renewal": renewal, "claimed": claimed } })
+    }
+
+    /// R31 at Lock, both sides of the refusal block on mainnet and regtest:
+    /// refused while the expiry end is at or below tip + 1 + lockup + day,
+    /// allowed (with the warning, being near) one block earlier.
+    #[test]
+    fn lock_expiry_guard_refuses_at_the_margin_and_locks_one_block_earlier() {
+        for (net, lockup, day) in [(Network::Main, 288i64, 144i64), (Network::Regtest, 10, 10)] {
+            let p = net.name_params();
+            assert_eq!(i64::from(p.transfer_lockup), lockup, "{net:?}");
+            let end = 1_000 + i64::from(p.renewal_window);
+            let refused_tip = end - 1 - lockup - day;
+            assert_eq!(
+                lock_expiry_guard(&p, &info(1_000, 0), refused_tip, lockup).unwrap(),
+                ExpiryNotice::Refuse { expiry_end: end },
+                "{net:?}"
+            );
+            assert_eq!(
+                lock_expiry_guard(&p, &info(1_000, 0), refused_tip + 1, lockup).unwrap(),
+                ExpiryNotice::Refuse { expiry_end: end },
+                "{net:?}: past the margin"
+            );
+            assert_eq!(
+                lock_expiry_guard(&p, &info(1_000, 0), refused_tip - 1, lockup).unwrap(),
+                ExpiryNotice::Warn {
+                    blocks_left: 1 + 1 + lockup + day
+                },
+                "{net:?}"
+            );
+        }
+    }
+
+    /// Finalize & sign (T3) passes what is left of the lockup, 0 once it is
+    /// over: no second lockup is required there.
+    #[test]
+    fn lock_expiry_guard_counts_only_the_remaining_lockup() {
+        let p = Network::Regtest.name_params();
+        let end: i64 = 100 + 5_000;
+        assert!(matches!(
+            lock_expiry_guard(&p, &info(100, 0), end - 1 - 10, 0).unwrap(),
+            ExpiryNotice::Refuse { .. }
+        ));
+        assert!(matches!(
+            lock_expiry_guard(&p, &info(100, 0), end - 1 - 10 - 1, 0).unwrap(),
+            ExpiryNotice::Warn { .. }
+        ));
+    }
+
+    /// Six months is 180 R9 days from the tip: 25 920 blocks on mainnet, 1800
+    /// on regtest. The last tip that warns and the first that does not, and
+    /// the warning never carries a non-positive block count.
+    #[test]
+    fn lock_expiry_guard_warns_below_180_days() {
+        for (net, day) in [(Network::Main, 144i64), (Network::Regtest, 10)] {
+            let p = net.name_params();
+            let lockup = i64::from(p.transfer_lockup);
+            let end = 1_000 + i64::from(p.renewal_window);
+            assert_eq!(
+                lock_expiry_guard(&p, &info(1_000, 0), end - 180 * day, lockup).unwrap(),
+                ExpiryNotice::Ok,
+                "{net:?}"
+            );
+            assert_eq!(
+                lock_expiry_guard(&p, &info(1_000, 0), end - 180 * day + 1, lockup).unwrap(),
+                ExpiryNotice::Warn {
+                    blocks_left: 180 * day - 1
+                },
+                "{net:?}"
+            );
+            for tip in (end - 180 * day..end + 5).step_by(7) {
+                if let ExpiryNotice::Warn { blocks_left } =
+                    lock_expiry_guard(&p, &info(1_000, 0), tip, lockup).unwrap()
+                {
+                    assert!(blocks_left > 0, "{net:?} tip {tip}");
+                }
+            }
+        }
+    }
+
+    /// A claimed name does not expire before the claim period (regtest
+    /// 250 000), however old its renewal.
+    #[test]
+    fn lock_expiry_guard_reads_the_claim_period() {
+        let p = Network::Regtest.name_params();
+        assert_eq!(
+            lock_expiry_guard(&p, &info(100, 1), 6_000, 10).unwrap(),
+            ExpiryNotice::Ok
+        );
+        assert!(matches!(
+            lock_expiry_guard(&p, &info(100, 0), 6_000, 10).unwrap(),
+            ExpiryNotice::Refuse { .. }
+        ));
+    }
+
+    /// Fail closed: a reply without the renewal height or the claimed count
+    /// is "could not check", never a guess.
+    #[test]
+    fn lock_expiry_guard_cannot_check_without_renewal_or_claimed() {
+        let p = Network::Regtest.name_params();
+        for bad in [
+            serde_json::json!({ "info": { "claimed": 0 } }),
+            serde_json::json!({ "info": { "renewal": 100 } }),
+            serde_json::json!({}),
+        ] {
+            let e = lock_expiry_guard(&p, &bad, 1_000, 10).unwrap_err();
+            assert!(matches!(e, AppError::Rpc(_)), "{bad}: {e:?}");
+        }
+        let e = lock_expiry_guard(&p, &serde_json::json!({ "info": null }), 1_000, 10).unwrap_err();
+        assert!(e.to_string().contains("no on-chain state"), "{e}");
     }
 }

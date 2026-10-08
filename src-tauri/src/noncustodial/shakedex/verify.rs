@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::error::AppError;
 
-use crate::noncustodial::network::{NameParams, Network, BLOCKS_PER_DAY};
+use crate::noncustodial::network::{NameParams, Network};
 use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::shakedex::listing_file::ListingFile;
 use crate::noncustodial::shakedex::script::lock_address;
@@ -56,13 +56,10 @@ pub enum Verdict {
 /// `(buyable, warn)`: whether the name outlives the transfer lockup plus a
 /// day's margin after `tip`, and whether it expires within a month beyond that.
 pub fn finalize_deadline_ok(expiry_end: u32, tip: u32, p: &NameParams) -> (bool, bool) {
-    // "One day" in blocks; on regtest/simnet, whose lockup is shorter than a
-    // day, the lockup itself.
-    let day = u64::from(p.transfer_lockup).min(BLOCKS_PER_DAY as u64);
-    let margin = tip as u64 + 1 + p.transfer_lockup as u64 + day;
-    let ok = (expiry_end as u64) > margin;
-    let warn = (expiry_end as u64) <= margin + 30 * day;
-    (ok, warn)
+    let day = i64::from(p.margin_day());
+    let margin = p.finalize_margin(i64::from(tip), i64::from(p.transfer_lockup));
+    let end = i64::from(expiry_end);
+    (end > margin, end <= margin + 30 * day)
 }
 
 /// The node's tip height and median time past, which every verification is
