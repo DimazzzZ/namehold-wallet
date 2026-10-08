@@ -61,9 +61,13 @@ const names = [
 
 /**
  * Build a NameActionCapabilities row with per-action toggles. Each of
- * `canReveal` / `canRedeem` / `canFinalize` gates the matching batch button.
+ * `canReveal` / `canRedeem` / `canFinalize` / `canRenew` gates the matching
+ * batch button; `canRenew` is allowed unless `renew` is false.
  */
-function cap(name: string, opts: { reveal?: boolean; redeem?: boolean; finalize?: boolean } = {}) {
+function cap(
+  name: string,
+  opts: { reveal?: boolean; redeem?: boolean; finalize?: boolean; renew?: boolean } = {},
+) {
   const yes = { allowed: true, reason: null };
   const no = { allowed: false, reason: "not allowed" };
   return {
@@ -76,7 +80,7 @@ function cap(name: string, opts: { reveal?: boolean; redeem?: boolean; finalize?
     canReveal: opts.reveal ? yes : no,
     canRedeem: opts.redeem ? yes : no,
     canRegister: no,
-    canRenew: yes,
+    canRenew: opts.renew === false ? no : yes,
     canUpdate: yes,
     canTransfer: no,
     canFinalize: opts.finalize ? yes : no,
@@ -175,6 +179,8 @@ function routeInvoke(o: Overrides = {}) {
         return Promise.resolve(draftFor("redeem"));
       case "build_batch_finalize_draft":
         return Promise.resolve(draftFor("finalize"));
+      case "build_batch_renew_draft":
+        return Promise.resolve(draftFor("renew"));
       case "sign_tx_draft":
         return Promise.resolve({ id: "draft-x-001" });
       case "broadcast_tx_draft":
@@ -218,6 +224,7 @@ describe("WalletView — batch reveal/redeem/finalize", () => {
     ["reveal", "batch-reveal-btn", "build_batch_reveal_draft"],
     ["redeem", "batch-redeem-btn", "build_batch_redeem_draft"],
     ["finalize", "batch-finalize-btn", "build_batch_finalize_draft"],
+    ["renew", "batch-renew-btn", "build_batch_renew_draft"],
   ])(
     "clicking %s invokes %s with { names, feeRate: undefined }",
     async (_action, testid, command) => {
@@ -240,6 +247,8 @@ describe("WalletView — batch reveal/redeem/finalize", () => {
     ["reveal", "batch-reveal-btn", { reveal: false, redeem: true, finalize: true }],
     ["redeem", "batch-redeem-btn", { reveal: true, redeem: false, finalize: true }],
     ["finalize", "batch-finalize-btn", { reveal: true, redeem: true, finalize: false }],
+    // R27: a name locked for sale is not renewed, the batch included.
+    ["renew", "batch-renew-btn", { reveal: true, redeem: true, finalize: true, renew: false }],
   ])(
     "%s button is disabled when any selected name isn't eligible",
     async (_action, testid, flags) => {

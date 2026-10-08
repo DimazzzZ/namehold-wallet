@@ -364,6 +364,9 @@ pub(crate) struct NameActionContext {
     pub bid_value_doos: Option<i64>,
     /// The lockup value (doos) from the local commitment row, if any.
     pub lockup_value_doos: Option<i64>,
+    /// The state of this name's open Shakedex listing (R27); `None` when it
+    /// has none. While one is open the name is locking or locked for sale.
+    pub listing_state: Option<queries::ListingState>,
 }
 
 /// Gather wallet evidence from the DB for a name.
@@ -547,6 +550,8 @@ pub(crate) fn find_name_action_context(
                     | "renew"
                     | "revoke"
                     | crate::noncustodial::shakedex::purchase::PURCHASE_FINALIZE_ACTION
+                    | crate::noncustodial::shakedex::sell::LOCK_ACTION
+                    | crate::noncustodial::shakedex::sell::LOCK_FINALIZE_ACTION
             )
         });
 
@@ -578,6 +583,8 @@ pub(crate) fn find_name_action_context(
     // compares a height against the tip.
     let current_height =
         crate::commands::node_readiness::estimate_persisted_height(conn, profile_id)?;
+    let listing_state =
+        queries::open_shakedex_listing_for_name(conn, profile_id, name)?.map(|l| l.state);
 
     Ok(NameActionContext {
         has_bid_commitment: bid.is_some(),
@@ -602,6 +609,7 @@ pub(crate) fn find_name_action_context(
         reveal_draft_status,
         bid_value_doos,
         lockup_value_doos,
+        listing_state,
     })
 }
 
@@ -1121,6 +1129,27 @@ pub(crate) fn build_name_action_capabilities(
             can_revoke,
         )
     };
+
+    // R27: a name locking or locked for sale is not updated, renewed,
+    // transferred or finalized from here, whatever else is true of it; this
+    // reason wins over the spend lock, since a listed name has no owner coin
+    // of ours by design. Cancel transfer stays while it is the listing's
+    // abort (R19); after that, the listing's own Cancel (T5) is the way out.
+    let for_sale = |cap: NameActionCapability, still_allowed: bool| match action_ctx.listing_state {
+        Some(_) if !still_allowed => NameActionCapability {
+            allowed: false,
+            reason: Some(crate::noncustodial::shakedex::NAME_LOCKED_FOR_SALE.to_string()),
+        },
+        _ => cap,
+    };
+    let abortable = action_ctx
+        .listing_state
+        .is_some_and(|s| s.aborts_by_cancel_transfer());
+    let can_update = for_sale(can_update, false);
+    let can_transfer = for_sale(can_transfer, false);
+    let can_finalize = for_sale(can_finalize, false);
+    let can_renew = for_sale(can_renew, false);
+    let can_cancel_transfer = for_sale(can_cancel_transfer, abortable);
 
     // 5. Derive task state. Days-until-expire comes from the node/explorer
     // stats when present (`daysUntilExpire`, falling back to
@@ -2336,6 +2365,31 @@ pub(crate) fn build_register_draft_inner(
     persist_with_conn(conn, &ctx.profile_id, "register", name, None, None, &res)
 }
 
+/// R27: the owner actions a name locking or locked for sale refuses, checked
+/// against the listings table before anything is built or asked of the node.
+/// `cancel` is the Cancel transfer, which stays the listing's abort while
+/// [`queries::ListingState::aborts_by_cancel_transfer`] says so (R19).
+fn refuse_while_listed(
+    state: &State<'_, AppState>,
+    profile_id: &str,
+    names: &[String],
+    cancel: bool,
+) -> Result<(), AppError> {
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    for name in names {
+        if let Some(l) = queries::open_shakedex_listing_for_name(&conn, profile_id, name)? {
+            if cancel && l.state.aborts_by_cancel_transfer() {
+                continue;
+            }
+            return Err(AppError::InvalidInput(format!(
+                "'{name}': {}",
+                crate::noncustodial::shakedex::NAME_LOCKED_FOR_SALE
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub async fn build_update_draft(
@@ -2345,6 +2399,7 @@ pub async fn build_update_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_update_draft_inner(&conn, &ctx, &name, &records, fee_rate, &ns, &coin)
@@ -2396,6 +2451,7 @@ pub async fn build_renew_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = ctx.node.clone();
     ensure_renew_not_premature(&client, ctx.network, &name).await?;
@@ -2451,6 +2507,7 @@ pub async fn build_transfer_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_transfer_draft_inner(&conn, &ctx, &name, &recipient, fee_rate, &ns, &coin)
@@ -2511,6 +2568,7 @@ pub async fn build_finalize_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = ctx.node.clone();
     ensure_finalize_matured(&client, ctx.network, &name).await?;
@@ -2612,6 +2670,7 @@ pub async fn build_cancel_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), true)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
@@ -2693,6 +2752,7 @@ pub async fn build_batch_renew_draft(
         )));
     }
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, &names, false)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
@@ -2780,6 +2840,7 @@ pub async fn build_batch_transfer_draft(
         )));
     }
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, &names, false)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     // Decode the shared recipient once, up front, so a bad address aborts the
     // whole batch before any owner-coin prefetch or DB write.
@@ -3143,6 +3204,7 @@ pub async fn build_batch_finalize_draft(
         )));
     }
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, &names, false)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let client = ctx.node.clone();
     let rblock = renewal_block(&client, ctx.network).await?;
@@ -3300,6 +3362,7 @@ pub async fn build_finalize_with_payment_draft(
         ));
     }
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = ctx.node.clone();
@@ -3448,6 +3511,7 @@ mod tests {
             reveal_draft_status: None,
             bid_value_doos: None,
             lockup_value_doos: None,
+            listing_state: None,
         }
     }
 
