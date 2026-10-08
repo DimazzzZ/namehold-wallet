@@ -264,7 +264,10 @@ pub fn derive_next_for_profile(
 /// once (R21), so the next allocation returns another one. Listing payment
 /// and cancel destinations are reserved this way: nothing reaches them until a
 /// buyer pays or a cancel is mined, possibly days later. The address is the
-/// one right after the used range, so a restore's gap-limit scan reaches it.
+/// one right after the used range. It is persisted and marked used, so it is not
+/// reissued and sync of this profile queries it. After a restore it is found only
+/// while its index is inside the restore window of `address_gap_limit`
+/// addresses (the window is not extended).
 ///
 /// Runs under a SAVEPOINT: atomic on its own, and usable inside a caller's
 /// transaction (a nested BEGIN would fail).
@@ -280,11 +283,17 @@ pub fn reserve_receive_address(conn: &Connection, profile_id: &str) -> Result<St
             Ok(address)
         }
         Err(e) => {
-            // Best effort: the reservation's own error is what the caller
-            // needs; a failed rollback leaves at most an unmarked address.
-            let _ = conn.execute_batch(
-                "ROLLBACK TO reserve_receive_address; RELEASE reserve_receive_address",
-            );
+            // The reservation's own error is what the caller needs. Rollback
+            // and release are separate statements so RELEASE runs even when
+            // the rollback fails (otherwise a non-nested call would leave the
+            // connection inside an open transaction); a rollback error is
+            // logged, not returned.
+            if let Err(rb) = conn.execute_batch("ROLLBACK TO reserve_receive_address") {
+                eprintln!("reserve_receive_address: rollback failed: {rb}");
+            }
+            if let Err(rl) = conn.execute_batch("RELEASE reserve_receive_address") {
+                eprintln!("reserve_receive_address: release failed: {rl}");
+            }
             Err(e)
         }
     }

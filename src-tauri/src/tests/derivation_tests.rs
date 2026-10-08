@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use rusqlite::{params, Connection};
 
 use crate::commands::secure_wallet::{gap_limit, provision_addresses};
-use crate::db::queries::{get_profile_addresses, list_receive_addresses};
+use crate::db::queries::list_receive_addresses;
 use crate::noncustodial::derivation::{
     derive_one, next_unused_receive_address, reserve_receive_address, BRANCH_RECEIVE,
 };
@@ -78,12 +78,6 @@ fn reserved_addresses_are_not_reissued() {
     for addr in [&a, &b] {
         assert!(rows.iter().any(|r| &r.address == addr && r.used), "{addr}");
     }
-
-    // A restore provisions the gap-limit window from index 0: the reserved
-    // addresses sit right after the used range, so the scan reaches them.
-    let (restored, _) = profile_db();
-    let scanned = get_profile_addresses(&restored, "p1").unwrap();
-    assert!(scanned.contains(&a) && scanned.contains(&b));
 
     // Inside a caller's transaction (T2 reserves while it records a listing).
     let tx = conn.unchecked_transaction().unwrap();

@@ -322,7 +322,9 @@ pub fn get_sync_height(conn: &Connection, profile_id: &str) -> Result<i64, AppEr
 }
 
 /// Mark a derived address as used at a given height (called when a coin is
-/// found paying to it). Updates `used` and the first/last seen heights.
+/// found paying to it). Updates `used` and the first/last seen heights. Also
+/// called to reserve an address (`derivation::reserve_receive_address`, height
+/// `None`): the seen heights then stay NULL.
 pub fn mark_address_used(
     conn: &Connection,
     profile_id: &str,
