@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Button } from "../ui/Button";
-import { Input } from "../ui/Input";
 import { open } from "../../lib/dialog";
 import { mapError } from "../../lib/errors";
 import { useImportListing } from "../../queries/shakedex";
@@ -13,14 +12,30 @@ interface ImportListingProps {
   linkRefusal?: string | null;
 }
 
-/** Bring in a listing from a listing file, pasted JSON or a market link. */
+/** A pasted `http(s)://` text is a market link, not a listing file. */
+function isLink(text: string): boolean {
+  return /^https?:\/\//i.test(text.trim());
+}
+
+/**
+ * Bring in a listing: one field takes a listing file's JSON or a market link
+ * (told apart by what was pasted), or a file is chosen from disk.
+ */
 export function ImportListing({ onImported, linkRefusal = null }: ImportListingProps) {
-  const [json, setJson] = useState("");
-  const [url, setUrl] = useState("");
+  const [text, setText] = useState("");
   const importListing = useImportListing();
+  const pasted = text.trim();
+  const link = isLink(pasted);
+  // A link here cannot be imported at all: say so before the click.
+  const blocked = link && linkRefusal !== null;
 
   const run = (source: ImportSource) => {
-    importListing.mutate(source, { onSuccess: (row) => onImported(row, source.kind) });
+    importListing.mutate(source, {
+      onSuccess: (row) => {
+        onImported(row, source.kind);
+        setText("");
+      },
+    });
   };
 
   const pickFile = async () => {
@@ -32,64 +47,44 @@ export function ImportListing({ onImported, linkRefusal = null }: ImportListingP
   };
 
   return (
-    <div className="space-y-3">
-      <div>
+    <div className="space-y-2">
+      <label htmlFor="listing-paste" className="block text-sm text-gray-600">
+        Paste a listing file or a market.learnhns.com link
+      </label>
+      <textarea
+        id="listing-paste"
+        data-testid="listing-paste"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={link ? 1 : 3}
+        placeholder='{"version":2,"name":"…"} or https://market.learnhns.com/listing/name'
+        className="w-full border border-gray-300 rounded-md px-3 py-2 text-xs font-mono bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+      <div className="flex items-center gap-3">
         <Button
           size="sm"
+          variant="primary"
+          data-testid={link ? "import-listing-link" : "import-listing-text"}
+          disabled={importListing.isPending || pasted === "" || blocked}
+          onClick={() =>
+            // The raw text for a file: its own bytes, as pasted.
+            run(link ? { kind: "link", url: pasted } : { kind: "text", json: text })
+          }
+        >
+          {importListing.isPending ? "Checking…" : link ? "Import link" : "Import"}
+        </Button>
+        <span className="text-sm text-gray-400">or</span>
+        <button
+          type="button"
           data-testid="import-listing-file"
           onClick={pickFile}
           disabled={importListing.isPending}
+          className="text-sm text-blue-600 hover:text-blue-800 hover:underline disabled:text-gray-400 cursor-pointer"
         >
-          Choose listing file…
-        </Button>
+          choose a file…
+        </button>
       </div>
-      <div className="space-y-1">
-        <label htmlFor="listing-paste" className="text-sm font-medium text-gray-700">
-          Or paste a listing file
-        </label>
-        <textarea
-          id="listing-paste"
-          data-testid="listing-paste"
-          value={json}
-          onChange={(e) => setJson(e.target.value)}
-          rows={4}
-          className="w-full border border-gray-300 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        <Button
-          size="sm"
-          data-testid="import-listing-text"
-          disabled={importListing.isPending || json.trim() === ""}
-          onClick={() => {
-            // A pasted market link is a link, not a listing file: import it as
-            // one, so the user gets the link's answer instead of a JSON error.
-            const pasted = json.trim();
-            run(
-              /^https?:\/\//i.test(pasted) ? { kind: "link", url: pasted } : { kind: "text", json },
-            );
-          }}
-        >
-          Import
-        </Button>
-      </div>
-      <div className="flex items-end gap-2">
-        <div className="flex-1">
-          <Input
-            label="Or a market link"
-            placeholder="https://market.learnhns.com/listing/name"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-          />
-        </div>
-        <Button
-          size="sm"
-          data-testid="import-listing-link"
-          disabled={importListing.isPending || url.trim() === "" || linkRefusal !== null}
-          onClick={() => run({ kind: "link", url: url.trim() })}
-        >
-          Import link
-        </Button>
-      </div>
-      {linkRefusal && <p className="text-xs text-gray-500">{linkRefusal}</p>}
+      {blocked && <p className="text-xs text-gray-500">{linkRefusal}</p>}
       {importListing.isError && (
         <p role="alert" className="text-sm text-red-600">
           {mapError(importListing.error)}

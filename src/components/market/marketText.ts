@@ -2,6 +2,7 @@ import { settingToBool } from "../../lib/settingsBool";
 import { formatDate } from "../../lib/utils";
 import type {
   HiddenCounts,
+  MarketRow,
   ShakedexHidden,
   WalletNetwork,
   WalletProfileKind,
@@ -119,7 +120,7 @@ export function hiddenReasonText(r: ShakedexHidden): string {
     case "notYetValid":
       return `Not valid yet; the first price step becomes valid in ${approxWait(r.firstValidInSecs)}.`;
     case "couldNotCheck":
-      return `Could not be checked: ${r.reason}`;
+      return `Could not be checked: ${nodeReason(r.reason)}`;
     case "unverified":
       return NOT_VERIFIED;
   }
@@ -137,4 +138,45 @@ export function listedUntilText(expiresAt: number): string | null {
   const d = new Date(expiresAt * 1000);
   if (Number.isNaN(d.getTime())) return null;
   return `Listed until ${formatDate(d.toISOString().slice(0, 10))} · stays buyable until sold or cancelled`;
+}
+
+/**
+ * A node failure in the user's words. The backend's text names the layer
+ * ("Node RPC error: …"); the user needs what happened and where to fix it.
+ */
+export function nodeReason(reason: string): string {
+  const bare = reason.replace(/^Node RPC error:\s*/i, "").replace(/^HTTP error:\s*/i, "");
+  if (/error sending request|connection refused|tcp connect|dns error/i.test(bare)) {
+    return "your node did not answer. Is it running? Check Settings → Connections.";
+  }
+  if (/timed out|timeout/i.test(bare)) {
+    return "your node took too long to answer. Try again in a moment.";
+  }
+  return bare;
+}
+
+/** How a listing's status reads on the Market: a tone and one sentence. */
+export type StatusTone = "ok" | "warn" | "muted" | "bad";
+
+export function listingStatus(row: MarketRow): { tone: StatusTone; text: string } {
+  const v = row.verdict;
+  if (v.verdict === "buyable") {
+    return v.warnExpiry
+      ? {
+          tone: "warn",
+          text: "Ready to buy. The name expires soon after it can be finalized: finalize in time.",
+        }
+      : { tone: "ok", text: "Ready to buy" };
+  }
+  switch (v.kind) {
+    case "soldOrCancelled":
+    case "unverified":
+    case "notYetValid":
+      return { tone: "muted", text: hiddenReasonText(v) };
+    case "couldNotCheck":
+    case "expiresBeforeFinalize":
+      return { tone: "warn", text: hiddenReasonText(v) };
+    case "failedVerification":
+      return { tone: "bad", text: hiddenReasonText(v) };
+  }
 }
