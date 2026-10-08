@@ -740,7 +740,7 @@ A freshly imported wallet won't show any HNS until:
 
 ### Send fails with "Not sent"
 
-The dialog stays open with the exact error. Common causes: not enough HNS to cover amount + fee, or the node could not be reached mid-broadcast. A transaction the node does not accept still reads as sent (hsd answers with its txid either way) and is marked dropped once it is not seen. Fix the issue and click Sign & Broadcast again — the draft is still there.
+The dialog stays open with the exact error. Common causes: not enough HNS to cover amount + fee, or the node could not be reached mid-broadcast. After sending, the wallet looks the transaction up on the node: if the node does not have it, the dialog says "The node did not take the transaction". hsd does not say why; most often its coins were already spent by another transaction. The coins stay held, and Activity shows the send as waiting until the node is checked again. Fix the issue and click Sign & Broadcast again — the draft is still there. A send already sent, or one marked dropped or failed (its coins were released), cannot be signed or sent again: build a new one. A send marked dropped or failed that is mined after all, within 72 hours, turns confirmed by itself.
 
 ### CSV import shows errors
 

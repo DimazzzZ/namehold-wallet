@@ -24,5 +24,6 @@ pub mod session;
 pub mod shakedex;
 pub mod sync;
 pub mod tx;
+pub mod tx_evidence;
 pub mod types;
 pub mod vault;

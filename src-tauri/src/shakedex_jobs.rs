@@ -41,6 +41,7 @@ use crate::noncustodial::rpc::{self, NodeRpcClient};
 use crate::noncustodial::send::RESERVATION_TTL_SECS;
 use crate::noncustodial::shakedex::purchase::{self, transfer_commits_to};
 use crate::noncustodial::shakedex::verify;
+use crate::noncustodial::tx_evidence;
 
 /// Blocks a sent purchase may be absent from the node's mempool and chain
 /// before it is rebroadcast (once) and then given up as lost.
@@ -374,7 +375,18 @@ impl Job<'_> {
             verify::PaidStep::NotValid => return wait().await,
         }
         match self.client.send_raw_transaction(signed).await {
-            Ok(_) => self.unconfirmed(p, None, 1),
+            // hsd answers with the txid whatever its mempool does with the
+            // purchase: only a look-up says whether the node took it.
+            Ok(_) => {
+                match tx_evidence::taken_by_node_with_client(self.client, signed, &p.purchase_txid)
+                    .await
+                {
+                    tx_evidence::Taken::No => self.lose_unless_traced(p, REFUSED, Some(1)).await,
+                    // Taken, mined meanwhile (the next sync traces it), or no
+                    // answer: the one rebroadcast is spent either way.
+                    _ => self.unconfirmed(p, None, 1),
+                }
+            }
             // hsd's own error: it did not take the transaction (in hsd 8.0.0
             // only for input it cannot parse; a mempool refusal still
             // answers with the txid).

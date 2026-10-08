@@ -184,16 +184,31 @@ async fn full_lifecycle_build_sign_broadcast_succeeds() {
     let mut server = mockito::Server::new_async().await;
     // hsd returns the txid string as the JSON-RPC result.
     let node_txid = "abc0000000000000000000000000000000000000000000000000000000000def";
-    // Two POSTs now: the chain-identity probe `broadcast_tx_draft` runs before
-    // it hands over a signed transaction, then `sendrawtransaction` itself. The
-    // probe gets this same txid-shaped body, fails to decode as blockchain info,
-    // and — a probe failure being no evidence of a mismatch — lets the broadcast
-    // proceed.
+    // Three POSTs: the chain-identity probe `broadcast_tx_draft` runs before
+    // it hands over a signed transaction, `sendrawtransaction` itself, then
+    // `getrawtransaction` to see that the node took it (hsd answers the txid
+    // whatever its mempool does). The probe gets the txid-shaped body, fails to
+    // decode as blockchain info, and — a probe failure being no evidence of a
+    // mismatch — lets the broadcast proceed.
     let m = server
         .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex(
+            "getblockchaininfo|sendrawtransaction".into(),
+        ))
         .with_header("content-type", "application/json")
         .with_body(format!(r#"{{"result":"{node_txid}","error":null,"id":1}}"#))
         .expect(2)
+        .create_async()
+        .await;
+    let taken = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex(format!(
+            "getrawtransaction.*{node_txid}"
+        )))
+        .with_body(format!(
+            r#"{{"result":{{"txid":"{node_txid}","blockhash":null,"confirmations":0}},"error":null,"id":1}}"#
+        ))
+        .expect(1)
         .create_async()
         .await;
 
@@ -238,6 +253,7 @@ async fn full_lifecycle_build_sign_broadcast_succeeds() {
     assert_eq!(result.status, "broadcasted");
     assert_eq!(result.txid, node_txid);
     m.assert_async().await;
+    taken.assert_async().await;
 
     // The draft row reflects the broadcast.
     let row = draft_row(&app, &draft_id);
@@ -3123,4 +3139,143 @@ async fn resolve_fee_rate_uses_per_profile_node_override() {
         rate, 10,
         "fee estimate must come from the override node, not the default fallback"
     );
+}
+
+// --- honest broadcast: the node must have what it answered a txid for -----
+
+/// Spec honest-broadcast R2: hsd answered `sendrawtransaction` with the txid
+/// but never had the transaction (its not-found on every check, its coin
+/// still unspent). The send is not sent: an error the dialog shows, the
+/// draft `broadcast_pending` with the note, and its coins held.
+#[tokio::test]
+async fn broadcast_not_taken_keeps_its_coins_and_says_why() {
+    let mut server = mockito::Server::new_async().await;
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    let app = app_with(conn);
+    let draft = build_send_hns_draft(app.state(), recv_addr(), 500_000, Some(1), None)
+        .await
+        .unwrap();
+    unlock(&app, PROFILE);
+    sign_tx_draft_inner(&app.state(), &draft.id).await.unwrap();
+    let txid = summary_of(&draft_row(&app, &draft.id)).txid.unwrap();
+
+    let _probe = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getblockchaininfo".into()))
+        .with_body(r#"{"result":{"blocks":500,"headers":500},"error":null,"id":1}"#)
+        .create_async()
+        .await;
+    let _send = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("sendrawtransaction".into()))
+        .with_body(format!(r#"{{"result":"{txid}","error":null,"id":1}}"#))
+        .create_async()
+        .await;
+    let checks = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("getrawtransaction".into()))
+        .with_body(HSD_TX_NOT_FOUND)
+        .expect(crate::noncustodial::tx_evidence::TAKEN_CHECKS as usize)
+        .create_async()
+        .await;
+    mock_unmoved_coins(&mut server).await;
+    for vout in 0..2 {
+        server
+            .mock("GET", format!("/coin/{txid}/{vout}").as_str())
+            .with_status(404)
+            .create_async()
+            .await;
+    }
+
+    let err = broadcast_tx_draft(app.state(), draft.id.clone())
+        .await
+        .expect_err("not taken is not sent");
+    assert!(err.to_string().contains("did not take"), "{err}");
+    checks.assert_async().await;
+    let row = draft_row(&app, &draft.id);
+    assert_eq!(row.status, "broadcast_pending");
+    assert_eq!(
+        row.error_message.as_deref(),
+        Some(crate::noncustodial::tx_evidence::NOT_TAKEN)
+    );
+    assert_eq!(
+        reserved_txids_for(&app, &draft.id),
+        vec![COIN_TXID.to_string()]
+    );
+}
+
+/// A draft already sent is not signed or sent again, and a `dropped` or
+/// `failed` one, whose coins were released and may fund another draft by now,
+/// is not either: nothing reaches the node, and the draft keeps its status.
+#[tokio::test]
+async fn sign_and_broadcast_refuse_a_sent_or_released_draft() {
+    let mut server = mockito::Server::new_async().await;
+    let none = server.mock("POST", "/").expect(0).create_async().await;
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    for status in ["broadcasted", "confirmed", "dropped", "failed"] {
+        db::queries::insert_tx_draft(&conn, status, PROFILE, "send_hns", &draft_hex(), "{}", "{}")
+            .unwrap();
+        conn.execute(
+            "UPDATE wallet_tx_drafts SET status = ?2, signed_tx_hex = ?3 WHERE id = ?1",
+            params![status, status, draft_hex()],
+        )
+        .unwrap();
+    }
+    let app = app_with(conn);
+    for status in ["broadcasted", "confirmed", "dropped", "failed"] {
+        let err = broadcast_tx_draft(app.state(), status.to_string())
+            .await
+            .expect_err(status);
+        let want = if matches!(status, "broadcasted" | "confirmed") {
+            "already sent"
+        } else {
+            "coins were released"
+        };
+        assert!(err.to_string().contains(want), "{status}: {err}");
+        // Signing would flip it back to `signed` and open the same door.
+        unlock(&app, PROFILE);
+        let err = sign_tx_draft_inner(&app.state(), status)
+            .await
+            .expect_err(status);
+        assert!(err.to_string().contains(want), "sign {status}: {err}");
+        assert_eq!(draft_row(&app, status).status, status);
+    }
+    none.assert_async().await;
+}
+
+/// A `dropped` draft whose transaction is mined after all (another node held
+/// it) is confirmed by the next poll, never left reading "not sent"; one
+/// released longer ago than hsd keeps a mempool entry is no longer looked at.
+#[tokio::test]
+async fn refresh_confirms_a_dropped_draft_mined_after_all() {
+    let mut server = mockito::Server::new_async().await;
+    let (_info, _tx) = mock_node(
+        &mut server,
+        500,
+        r#"{"result":{"confirmations":2,"blockhash":"abababababababababababababababababababababababababababababababab"},"error":null,"id":1}"#,
+    )
+    .await;
+    let conn = seeded_conn(&server.url(), 2_000_000);
+    for id in ["late", "old"] {
+        seed_broadcasted_draft(&conn, id);
+        conn.execute(
+            "UPDATE wallet_tx_drafts SET status = 'dropped', signed_tx_hex = unsigned_tx_hex WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET updated_at = datetime('now', '-73 hours') WHERE id = 'old'",
+        [],
+    )
+    .unwrap();
+    let app = app_with(conn);
+
+    let res = refresh_tx_confirmations(app.state(), None).await.unwrap();
+    assert_eq!(res["revived"], 1, "{res}");
+    let row = draft_row(&app, "late");
+    assert_eq!(row.status, "confirmed");
+    assert_eq!(row.confirmation_height, Some(499));
+    assert_eq!(row.error_message, None);
+    assert_eq!(draft_row(&app, "old").status, "dropped");
 }
