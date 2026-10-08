@@ -150,6 +150,13 @@ fn only_learnhns_listing_links() {
         name_from_listing_link("https://market.learnhns.com/listing/Dex-1_x").as_deref(),
         Some("dex-1_x")
     );
+    // The listing's own file, as the market links it.
+    assert_eq!(
+        name_from_listing_link("https://market.learnhns.com/listing/enstransfer/proof.json")
+            .as_deref(),
+        Some("enstransfer")
+    );
+    assert!(name_from_listing_link("https://market.learnhns.com/listing/x/other.json").is_none());
     // The chain's own name rule: no `-` or `_` at either end.
     for bad in ["-dex", "dex-", "_dex", "dex_"] {
         let link = format!("https://market.learnhns.com/listing/{bad}");

@@ -467,6 +467,21 @@ describe("MarketPage", () => {
     expect(screen.getByText("From file")).toBeInTheDocument();
   });
 
+  it("a market link pasted where a listing file goes is imported as a link", async () => {
+    mockMarket(page({ rows: [], networkHasMarket: false }), "mnemonic_hot", true, "regtest");
+    renderPage();
+    const link = "https://market.learnhns.com/listing/enstransfer/proof.json";
+    fireEvent.change(await screen.findByTestId("listing-paste"), {
+      target: { value: `  ${link}\n` },
+    });
+    fireEvent.click(screen.getByTestId("import-listing-text"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("shakedex_import_listing", {
+        source: { kind: "link", url: link },
+      }),
+    );
+  });
+
   it("gives an SPV import the backend's unverified verdict and no Buy", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "shakedex_list_market")

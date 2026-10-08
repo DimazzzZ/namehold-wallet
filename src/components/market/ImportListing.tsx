@@ -59,7 +59,14 @@ export function ImportListing({ onImported, linkRefusal = null }: ImportListingP
           size="sm"
           data-testid="import-listing-text"
           disabled={importListing.isPending || json.trim() === ""}
-          onClick={() => run({ kind: "text", json })}
+          onClick={() => {
+            // A pasted market link is a link, not a listing file: import it as
+            // one, so the user gets the link's answer instead of a JSON error.
+            const pasted = json.trim();
+            run(
+              /^https?:\/\//i.test(pasted) ? { kind: "link", url: pasted } : { kind: "text", json },
+            );
+          }}
         >
           Import
         </Button>

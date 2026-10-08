@@ -100,9 +100,39 @@ fn expiry_seconds(v: &Value) -> Result<Option<u64>, AppError> {
     }
 }
 
+/// How a network is named to the user: "mainnet", not hsd's "main".
+fn network_name(network: Network) -> &'static str {
+    match network {
+        Network::Main => "mainnet",
+        other => other.as_str(),
+    }
+}
+
 fn check_address(network: Network, addr: &str, field: &str) -> Result<(), AppError> {
-    let (version, program) = address::decode(network, addr)
-        .map_err(|_| bad(format!("{field} is not a {} address", network.as_str())))?;
+    let (version, program) = address::decode(network, addr).map_err(|_| {
+        // An address of another network means the whole listing is for that
+        // network: say so, rather than that one field is malformed.
+        let other = [
+            Network::Main,
+            Network::Testnet,
+            Network::Regtest,
+            Network::Simnet,
+        ]
+        .into_iter()
+        .find(|n| *n != network && address::decode(*n, addr).is_ok());
+        match other {
+            Some(other) => AppError::InvalidInput(format!(
+                "this listing is for {}, but this wallet is on {}: open it with a {} wallet",
+                network_name(other),
+                network_name(network),
+                network_name(other)
+            )),
+            None => bad(format!(
+                "{field} is not a {} address",
+                network_name(network)
+            )),
+        }
+    })?;
     if version != 0 || program.len() != 20 {
         return Err(bad(format!("{field} must be a version-0, 20-byte address")));
     }

@@ -122,9 +122,32 @@ fn unknown_step_fields_preserved() {
     assert_eq!(v(&l.to_json().unwrap()), j);
 }
 
+/// A mainnet listing opened by a regtest wallet is refused, and says which
+/// network the listing is for: "paymentAddr is not a regtest address" left
+/// the user guessing.
 #[test]
-fn other_network_prefix_refused() {
-    assert!(ListingFile::parse(DEX, Network::Regtest).is_err());
+fn other_network_listing_names_its_network() {
+    let err = ListingFile::parse(DEX, Network::Regtest)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("this listing is for mainnet, but this wallet is on regtest"),
+        "{err}"
+    );
+}
+
+/// An address of no network at all is still a malformed field.
+#[test]
+fn malformed_address_names_the_field() {
+    let mut j: Value = serde_json::from_str(DEX).unwrap();
+    j["paymentAddr"] = "not-an-address".into();
+    let err = ListingFile::parse(&j.to_string(), Network::Main)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("paymentAddr is not a mainnet address"),
+        "{err}"
+    );
 }
 
 /// The seller is paid only at a version-0, 20-byte address, as R2 asks: a
