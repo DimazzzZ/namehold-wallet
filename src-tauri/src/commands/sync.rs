@@ -430,7 +430,8 @@ impl SyncCaller {
 ///    authoritative, since Step 1 already refreshed coins from the node).
 /// 3. Discover new names — node path when authoritative, explorer path otherwise.
 /// 4. Shakedex purchases — only when the node is authoritative; never sends
-///    from the daemon.
+///    from the daemon. Then the Shakedex listing aborts (R19), on the same
+///    condition; that step sends nothing from either caller.
 ///
 /// `caller` says who runs it. The app writes `SyncStatus` progress labels (the
 /// UI polls them) and may rebroadcast a missing purchase; the daemon has no
@@ -551,6 +552,9 @@ pub async fn run_sync_steps(
     if node_authoritative {
         crate::shakedex_jobs::refresh_purchases_step(db_path, profile_id, caller.rebroadcast())
             .await;
+        // R19: a listing whose Cancel transfer is mined is Aborted. Reads the
+        // node only, so the daemon runs it as the app does.
+        crate::shakedex_jobs::refresh_listing_aborts_step(db_path, profile_id).await;
     }
 }
 

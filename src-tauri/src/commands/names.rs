@@ -81,6 +81,31 @@ fn persist_with_conn(
     name_list: Option<&[&str]>,
     res: &actions::PlanResult,
 ) -> Result<TxDraftSummary, AppError> {
+    let tx = conn.unchecked_transaction()?;
+    let id = persist_in_tx(&tx, profile_id, action, name, recipient, name_list, res)?;
+    tx.commit()?;
+    draft_summary(conn, &id)
+}
+
+/// The summary of the draft [`persist_in_tx`] just inserted.
+fn draft_summary(conn: &rusqlite::Connection, id: &str) -> Result<TxDraftSummary, AppError> {
+    db::queries::get_tx_draft(conn, id)?
+        .map(|d| d.to_summary())
+        .ok_or_else(|| AppError::Other("draft vanished after insert".into()))
+}
+
+/// [`persist_with_conn`] inside the caller's transaction, for a draft that
+/// commits together with other writes; returns the new draft's id. An error
+/// leaves the caller's transaction to roll back on drop.
+fn persist_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    profile_id: &str,
+    action: &str,
+    name: &str,
+    recipient: Option<&str>,
+    name_list: Option<&[&str]>,
+    res: &actions::PlanResult,
+) -> Result<String, AppError> {
     let summary = ActionSummary {
         action,
         name,
@@ -117,8 +142,8 @@ fn persist_with_conn(
         .iter()
         .map(|i| (i.txid.clone(), i.vout))
         .collect();
-    db::queries::insert_tx_draft_reserving_coins(
-        conn,
+    db::queries::insert_tx_draft_reserving_coins_in_tx(
+        tx,
         &id,
         profile_id,
         action,
@@ -127,9 +152,7 @@ fn persist_with_conn(
         &serde_json::to_string(&summary)?,
         &reserved_inputs,
     )?;
-    db::queries::get_tx_draft(conn, &id)?
-        .map(|d| d.to_summary())
-        .ok_or_else(|| AppError::Other("draft vanished after insert".into()))
+    Ok(id)
 }
 
 // ============================================================================
@@ -2690,7 +2713,15 @@ pub async fn build_cancel_draft(
         &ctx.change_address,
         rate,
     )?;
-    persist(&state, &ctx.profile_id, "cancel", &name, None, None, &res)
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    // R19: a Cancel transfer of a name still locking is its listing's abort.
+    // The link commits with the draft; the listing becomes Aborted only once
+    // this cancel is mined (`shakedex_jobs::refresh_listing_aborts_with_client`).
+    let tx = conn.unchecked_transaction()?;
+    let id = persist_in_tx(&tx, &ctx.profile_id, "cancel", &name, None, None, &res)?;
+    queries::link_shakedex_listing_abort(&tx, &ctx.profile_id, &name, &coin.txid, coin.vout, &id)?;
+    tx.commit()?;
+    draft_summary(&conn, &id)
 }
 
 #[tauri::command]
