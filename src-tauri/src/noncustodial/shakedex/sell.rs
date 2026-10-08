@@ -12,7 +12,7 @@ use crate::noncustodial::shakedex::funding::{cov_out, fund, own_input};
 use crate::noncustodial::shakedex::lock_key::LockKey;
 use crate::noncustodial::shakedex::script;
 use crate::noncustodial::shakedex::template::{verify_step_signature, StepTemplate};
-use crate::noncustodial::tx::OutputAddress;
+use crate::noncustodial::tx::{Covenant, OutputAddress};
 
 /// One lock-time unit: hsd encodes a time lock in 512-second steps.
 const LOCK_TIME_UNIT_SECS: u64 = 512;
@@ -61,6 +61,62 @@ pub fn lock_self_check(key: &LockKey, network: Network) -> Result<(), AppError> 
 /// and the step is valid in the next block (`template::is_valid_at`).
 pub fn buy_now_lock_time(mtp: u64) -> u64 {
     mtp.saturating_sub(LOCK_TIME_UNIT_SECS)
+}
+
+/// `wallet_tx_drafts.action` of the day-0 TRANSFER committing our name to its
+/// lock address.
+pub const LOCK_ACTION: &str = "shakedex_lock";
+
+/// R19, day 0: the TRANSFER covenant committing `name` (registered at
+/// `name_height`) to the lock of `lock_pubkey`: version 0, and the program
+/// SHA3-256 of the lock script.
+pub fn lock_transfer_covenant(
+    name: &str,
+    name_height: u32,
+    lock_pubkey: &[u8; 33],
+) -> Result<Covenant, AppError> {
+    let nh = names::hash_name(name)?;
+    Ok(covenants::transfer(
+        &nh,
+        name_height,
+        0,
+        &script::lock_program(lock_pubkey),
+    ))
+}
+
+/// What locking costs (R27), shown with the lock draft. The lock script lets
+/// the name out only by a TRANSFER signed with the lock key or a FINALIZE, and
+/// hsd renews a name on every FINALIZE.
+pub const LOCK_COSTS: &str = "Once the name is finalized into the lock, its DNS records \
+     cannot be changed and it cannot be renewed; the listing lasts at most one renewal \
+     window from that finalize, which renews the name.";
+
+/// R31's warning when the name expires less than six months after the tip.
+pub fn near_expiry_warning(blocks_left: i64) -> String {
+    format!(
+        "The name expires in {blocks_left} blocks: do Finalize & sign before then. The \
+         FINALIZE into the lock renews the name, so this expiry does not cut the listing short."
+    )
+}
+
+/// The summary a lock TRANSFER draft stores. It reads as a plain `TxSummary`
+/// (the secure window's generic rows, `warnings` as Warning rows), and its
+/// `name` ties the draft to the name (`pending_broadcast_actions_for_name`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LockSummary {
+    pub action: String,
+    pub name: String,
+    pub send_total_doos: i64,
+    pub fee_doos: i64,
+    pub change_doos: i64,
+    pub input_total_doos: i64,
+    pub num_inputs: i64,
+    /// The lock address the TRANSFER commits the name to.
+    pub recipient_address: Option<String>,
+    pub txid: Option<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// `wallet_tx_drafts.action` of a draft finalizing our name into its lock.

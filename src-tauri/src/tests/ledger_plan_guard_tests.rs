@@ -235,6 +235,7 @@ fn every_shakedex_action_is_refused_for_the_ledger() {
     for action in [
         purchase::PURCHASE_ACTION,
         purchase::PURCHASE_FINALIZE_ACTION,
+        sell::LOCK_ACTION,
         sell::LOCK_FINALIZE_ACTION,
         cancel::CANCEL_ACTION,
         cancel::CANCEL_FINALIZE_ACTION,
