@@ -1287,3 +1287,41 @@ fn find_name_action_context_counts_a_purchase_finalize_as_an_owner_spend() {
     let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
     assert!(ctx.owner_spend_in_flight);
 }
+
+/// `build_cancel_draft` sends its draft as `"cancel"`; until it is mined the
+/// TRANSFER coin is spent by our own transaction and the name is still ours.
+#[test]
+fn find_name_action_context_counts_a_cancel_in_flight_as_an_owner_spend() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_TRANSFER);
+    seed_tracked_utxo(
+        &conn,
+        "owner",
+        0,
+        ADDRESS,
+        sync::COV_TRANSFER as i64,
+        Some(&cov),
+    );
+    conn.execute(
+        "UPDATE tracked_utxos SET spent_by_txid = 'spent' WHERE txid = 'owner'",
+        [],
+    )
+    .unwrap();
+    seed_tracked_name_state(
+        &conn,
+        NAME,
+        &nh_hex,
+        "CLOSED",
+        Some("owner"),
+        Some(0),
+        Some(779),
+    );
+    seed_draft(&conn, "d-cancel", "cancel", NAME);
+    db::queries::update_tx_draft_status(&conn, "d-cancel", "broadcasted", None, Some("canceltx"))
+        .unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+    assert!(ctx.owner_spend_in_flight);
+}
