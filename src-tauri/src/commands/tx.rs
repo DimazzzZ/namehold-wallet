@@ -1255,9 +1255,9 @@ mod ledger_signing_guards_tests {
 
 /// The Ledger signer streams every input as the wallet's own P2WPKH with a
 /// final sequence (`providers/ledger/signing.rs`). A plan with a foreign
-/// input, a custom sequence or a lock time would be signed wrongly, so it is
-/// refused before the device is touched, and so is a plan that cannot be
-/// read. A `send_hns` draft stores build parameters, not a plan: the signer
+/// input, a lock coin of ours signed by its lock key, a custom sequence or a
+/// lock time would be signed wrongly, so it is refused before the device is
+/// touched, and so is a plan that cannot be read. A `send_hns` draft stores build parameters, not a plan: the signer
 /// builds that plan from the wallet's own coins, so it has nothing to refuse.
 pub(crate) fn refuse_unsupported_ledger_plan(
     profile_kind: &str,

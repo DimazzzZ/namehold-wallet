@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::noncustodial::address;
-use crate::noncustodial::hd::bip44_path;
+use crate::noncustodial::derivation::BRANCH_RECEIVE;
+use crate::noncustodial::hd::{bip44_path, ExtendedPrivKey, HARDENED_OFFSET};
 use crate::noncustodial::network::Network;
 use crate::noncustodial::send::{estimate_fee_with_primary, SpendableCoin, DUST_THRESHOLD};
 use crate::noncustodial::session::SignerSession;
@@ -647,10 +648,7 @@ fn sign_plan_tx(session: &mut SignerSession, plan: &DraftPlan) -> Result<Transac
                 ));
             }
             let key = derive_lock_key(master, network, plan.account, name)?;
-            let dest_path = bip44_path(network, plan.account, inp.branch, inp.child_index);
-            let dest =
-                address::pubkey_to_hash160(&master.derive_path(&dest_path)?.compressed_pubkey());
-            refuse_unless_cancel(plan, i, name, &key, &dest)?;
+            refuse_unless_cancel(plan, i, name, &key, master, network)?;
             let sig =
                 tx.sign_p2wsh_input(i, &key.secret, &key.script, inp.value, inp.sighash_type)?;
             tx.inputs[i].witness = vec![sig.to_vec(), key.script.clone()];
@@ -673,22 +671,42 @@ fn sign_plan_tx(session: &mut SignerSession, plan: &DraftPlan) -> Result<Transac
 /// `ANYONECANPAY|SINGLE`, which commits to output `i` alone, so that output
 /// must exist (hsd's SINGLE past the last output commits to none) and be the
 /// TRANSFER at this key's lock address that consensus requires of a cancel,
-/// of this name (item 0), to `dest` (items 2 and 3: version 0 and the key
-/// hash of the address of ours the input's path names). A TRANSFER to any
-/// other address would give the name away once finalized.
+/// of this name (item 0), to the address of ours the input's path names
+/// (items 2 and 3: version 0 and its key hash). A TRANSFER to any other
+/// address would give the name away once finalized. That path must be a
+/// receive address (the cancel commits to a reserved one, R21/R28) at an
+/// unhardened index: any other path derives from the seed but is never
+/// synced or restored, which would strand the name. The input's sequence must
+/// be final and the plan's lock time 0, as in shakedex's cancel: the
+/// signature commits to both, and a far lock time would make a cancel that
+/// cannot be mined while the price steps stay fillable.
 fn refuse_unless_cancel(
     plan: &DraftPlan,
     i: usize,
     name: &str,
     key: &LockKey,
-    dest: &[u8; 20],
+    master: &ExtendedPrivKey,
+    network: Network,
 ) -> Result<(), AppError> {
-    let sighash_type = plan.inputs[i].sighash_type;
+    let inp = &plan.inputs[i];
+    let sighash_type = inp.sighash_type;
     if sighash_type != CANCEL_SIGHASH {
         return Err(AppError::InvalidInput(format!(
             "a lock key signs only a cancel (sighash 0x83), not sighash {sighash_type:#04x}"
         )));
     }
+    if inp.sequence != FINAL_SEQUENCE || plan.locktime != 0 {
+        return Err(AppError::InvalidInput(
+            "a cancel has a final sequence and no lock time".into(),
+        ));
+    }
+    if inp.branch != BRANCH_RECEIVE || inp.child_index >= HARDENED_OFFSET {
+        return Err(AppError::InvalidInput(
+            "a cancel commits the name to a receive address of ours".into(),
+        ));
+    }
+    let dest_path = bip44_path(network, plan.account, inp.branch, inp.child_index);
+    let dest = address::pubkey_to_hash160(&master.derive_path(&dest_path)?.compressed_pubkey());
     let name_hash = hex::encode(crate::noncustodial::names::hash_name(name)?);
     match plan.outputs.get(i) {
         Some(o)
@@ -713,7 +731,6 @@ fn refuse_unless_cancel(
 mod tests {
     use super::*;
     use crate::noncustodial::covenants;
-    use crate::noncustodial::hd::ExtendedPrivKey;
 
     fn coin(txid_byte: u8, value: u64, child: u32) -> SpendableCoin {
         SpendableCoin {
@@ -1517,16 +1534,30 @@ mod tests {
         ExtendedPrivKey::from_seed(&[7u8; 64]).unwrap()
     }
 
-    /// The key hash of our address at m/44'/5353'/0'/0/11 under
-    /// [`seed_master`], where the fixture's cancel commits the name.
-    fn our_cancel_hash() -> [u8; 20] {
-        let path = bip44_path(Network::Main, 0, 0, 11);
+    /// The key hash of our address at m/44'/5353'/0'/`branch`/`child` under
+    /// [`seed_master`].
+    fn our_hash_at(branch: u32, child: u32) -> [u8; 20] {
+        let path = bip44_path(Network::Main, 0, branch, child);
         address::pubkey_to_hash160(
             &seed_master()
                 .derive_path(&path)
                 .unwrap()
                 .compressed_pubkey(),
         )
+    }
+
+    /// The fixture's cancel commits the name to our address at 0/11.
+    fn our_cancel_hash() -> [u8; 20] {
+        our_hash_at(0, 11)
+    }
+
+    /// `plan`'s lock input names `branch`/`child` and its TRANSFER commits to
+    /// our address there, so only the path rule can refuse it.
+    fn commit_to_path(mut plan: DraftPlan, branch: u32, child: u32) -> DraftPlan {
+        plan.inputs[0].branch = branch;
+        plan.inputs[0].child_index = child;
+        plan.outputs[0].covenant_items_hex[3] = hex::encode(our_hash_at(branch, child));
+        plan
     }
 
     /// Input 0 spends `key`'s lock coin into output 0, a TRANSFER of
@@ -1649,6 +1680,13 @@ mod tests {
         script_dest.outputs[0].covenant_items_hex[2] = "01".into();
         let mut short_transfer = plan_with_lock_key_input(CANCEL_SIGHASH, &key.address);
         short_transfer.outputs[0].covenant_items_hex.truncate(2);
+        let cancel = || plan_with_lock_key_input(CANCEL_SIGHASH, &key.address);
+        let change_branch = commit_to_path(cancel(), 1, 11);
+        let hardened_index = commit_to_path(cancel(), 0, HARDENED_OFFSET + 11);
+        let mut not_final = cancel();
+        not_final.inputs[0].sequence = 0xffff_fffe;
+        let mut lock_time = cancel();
+        lock_time.locktime = 500_000_000;
         for (case, plan) in [
             ("price step", plan_with_lock_key_input(0x84, &key.address)),
             ("ALL", plan_with_lock_key_input(sighash::ALL, &key.address)),
@@ -1664,6 +1702,10 @@ mod tests {
             ("a destination off the input's path", other_path),
             ("destination version 1", script_dest),
             ("a TRANSFER without its address items", short_transfer),
+            ("a change-branch destination", change_branch),
+            ("a hardened destination index", hardened_index),
+            ("a non-final sequence", not_final),
+            ("a lock time", lock_time),
         ] {
             let mut session =
                 SignerSession::unlock("p1".into(), Network::Main, seed_master(), 60_000);
