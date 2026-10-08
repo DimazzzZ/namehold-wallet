@@ -221,7 +221,9 @@ impl Balances {
 /// would select, using the same coinbase-maturity predicate and the same tip, so
 /// the number shown as spendable is the number that can be spent. Immature
 /// coinbase value is reported separately rather than dropped — the wallet owns
-/// it, it simply cannot move it yet.
+/// it, it simply cannot move it yet. Like coin selection it counts only coins at
+/// the profile's derived addresses, so a coin at a Shakedex lock address (ADR
+/// 0004) is never shown as spendable.
 pub fn compute_balances(
     conn: &Connection,
     profile_id: &str,
@@ -231,15 +233,18 @@ pub fn compute_balances(
     let spend_height = get_sync_height(conn, profile_id)? + 1;
 
     let mut stmt = conn.prepare(
-        "SELECT spend_class,
-                COALESCE(SUM(value_doos), 0),
-                COALESCE(SUM(CASE WHEN coinbase = 1 AND height + ?2 > ?3
-                                  THEN value_doos ELSE 0 END), 0),
-                MIN(CASE WHEN coinbase = 1 AND height + ?2 > ?3
-                         THEN height + ?2 END)
-         FROM tracked_utxos
-         WHERE wallet_profile_id = ?1 AND spent_by_txid IS NULL
-         GROUP BY spend_class",
+        "SELECT u.spend_class,
+                COALESCE(SUM(u.value_doos), 0),
+                COALESCE(SUM(CASE WHEN u.coinbase = 1 AND u.height + ?2 > ?3
+                                  THEN u.value_doos ELSE 0 END), 0),
+                MIN(CASE WHEN u.coinbase = 1 AND u.height + ?2 > ?3
+                         THEN u.height + ?2 END)
+         FROM tracked_utxos u
+         JOIN derived_addresses d
+           ON d.wallet_profile_id = u.wallet_profile_id
+          AND d.address = u.address
+         WHERE u.wallet_profile_id = ?1 AND u.spent_by_txid IS NULL
+         GROUP BY u.spend_class",
     )?;
     let rows = stmt.query_map(params![profile_id, maturity, spend_height], |row| {
         Ok((
@@ -480,6 +485,8 @@ mod tests {
             [],
         )
         .unwrap();
+        // The address `coin` puts its coins at: a derived one, as sync leaves it.
+        crate::tests::command_helpers::own_address(&conn, "p1", "hs1qexample");
         conn
     }
 
@@ -882,15 +889,8 @@ mod tests {
     /// `mark_address_used` flips `used` and stamps the seen heights.
     #[test]
     fn mark_address_used_sets_flags() {
+        // `mem_db` already derives `hs1qexample` for `p1`.
         let conn = mem_db();
-        conn.execute(
-            "INSERT INTO derived_addresses
-                (wallet_profile_id, account_index, branch, child_index,
-                 address, script_pubkey_hex, public_key_hex)
-             VALUES ('p1', 0, 0, 0, 'hs1qexample', '0014abcd', 'aabb')",
-            [],
-        )
-        .unwrap();
 
         mark_address_used(&conn, "p1", "hs1qexample", Some(123)).unwrap();
 

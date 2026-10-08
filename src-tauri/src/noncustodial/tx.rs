@@ -464,7 +464,9 @@ impl Transaction {
     /// `hash_type`. Returns the 65-byte witness signature and leaves the
     /// witness alone: the stack differs per spend (a price step's purchase
     /// carries `[signature, script]`, a FINALIZE out of a lock `[script]`), so
-    /// the caller sets it.
+    /// the caller sets it. The script code is the whole witness script, which
+    /// matches hsd only for a script without OP_CODESEPARATOR (hsd signs
+    /// `getSubscript(lastSep)`), as the Shakedex lock script is.
     pub fn sign_p2wsh_input(
         &self,
         index: usize,

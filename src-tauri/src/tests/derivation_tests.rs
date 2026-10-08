@@ -1,49 +1,13 @@
 //! Address allocation outside `derivation.rs`'s own unit tests: reservation
 //! (R21).
 
-use std::collections::HashMap;
-
-use rusqlite::{params, Connection};
-
-use crate::commands::secure_wallet::{gap_limit, provision_addresses};
 use crate::db::queries::list_receive_addresses;
 use crate::noncustodial::derivation::{
     derive_one, next_unused_receive_address, reserve_receive_address, BRANCH_RECEIVE,
 };
-use crate::noncustodial::hd::{ExtendedPubKey, HARDENED_OFFSET};
+use crate::noncustodial::hd::ExtendedPubKey;
 use crate::noncustodial::network::Network;
-use crate::tests::hsd_parity_tests::master_from_known_mnemonic;
-
-/// A mainnet mnemonic profile `p1` on the test phrase's account 0 xpub, with
-/// the receive and change windows a new wallet gets.
-fn profile_db() -> (Connection, ExtendedPubKey) {
-    let conn = Connection::open_in_memory().unwrap();
-    crate::db::migrations::run(&conn).unwrap();
-    let account = master_from_known_mnemonic()
-        .derive_path(&[
-            HARDENED_OFFSET + 44,
-            HARDENED_OFFSET + Network::Main.coin_type(),
-            HARDENED_OFFSET,
-        ])
-        .unwrap();
-    let xpub = ExtendedPubKey::from_priv(&account);
-    let xpub_str = xpub.to_base58check(Network::Main);
-    conn.execute(
-        "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub)
-         VALUES ('p1', 'Seller', 'mnemonic_hot', 'mainnet', ?1)",
-        params![xpub_str],
-    )
-    .unwrap();
-    provision_addresses(
-        &conn,
-        "p1",
-        Network::Main,
-        &xpub_str,
-        gap_limit(&HashMap::new()),
-    )
-    .unwrap();
-    (conn, xpub)
-}
+use crate::tests::command_helpers::{insert_liquid_coin, mnemonic_profile_db};
 
 fn receive(xpub: &ExtendedPubKey, index: u32) -> String {
     derive_one(Network::Main, xpub, BRANCH_RECEIVE, index)
@@ -53,16 +17,10 @@ fn receive(xpub: &ExtendedPubKey, index: u32) -> String {
 
 #[test]
 fn reserved_addresses_are_not_reissued() {
-    let (conn, xpub) = profile_db();
+    let (conn, xpub) = mnemonic_profile_db(Network::Main);
     // Index 0 already received coins.
-    conn.execute(
-        "INSERT INTO tracked_utxos
-            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
-             value_doos, covenant_type, spend_class)
-         VALUES ('aa', 0, 'p1', ?1, '00', 1000, 0, 'liquid_hns')",
-        params![receive(&xpub, 0)],
-    )
-    .unwrap();
+    let r0 = receive(&xpub, 0);
+    insert_liquid_coin(&conn, 0xaa, &r0, "00", 1000);
 
     // Two reservations give two addresses, next to the used range.
     let a = reserve_receive_address(&conn, "p1").unwrap();

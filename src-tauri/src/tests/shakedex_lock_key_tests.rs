@@ -1,12 +1,11 @@
 //! R17: lock keys come from the seed (ADR 0004).
 
-use rusqlite::{params, Connection};
 use secp256k1::{PublicKey, SECP256K1};
 use serde_json::Value;
 
 use crate::db::queries::get_profile_addresses;
 use crate::error::AppError;
-use crate::noncustodial::derivation::{self, BRANCH_CHANGE, BRANCH_RECEIVE};
+use crate::noncustodial::derivation::{self, BRANCH_RECEIVE};
 use crate::noncustodial::hd::{ExtendedPubKey, HARDENED_OFFSET};
 use crate::noncustodial::network::Network;
 use crate::noncustodial::send::load_spendable_coins;
@@ -14,6 +13,8 @@ use crate::noncustodial::shakedex::lock_key::{
     derive_lock_key, lock_key_index, lock_key_path, LOCK_BRANCH,
 };
 use crate::noncustodial::shakedex::script;
+use crate::noncustodial::sync::compute_balances;
+use crate::tests::command_helpers::{insert_liquid_coin, mnemonic_profile_db};
 use crate::tests::hsd_parity_tests::master_from_known_mnemonic;
 
 const VECTORS: &str = include_str!("../../tests/vectors/vectors.json");
@@ -40,7 +41,7 @@ fn network_named(name: &str) -> Network {
 }
 
 #[test]
-fn golden_path() {
+fn lock_key_matches_the_r17_golden_vector() {
     let master = master_from_known_mnemonic();
 
     // R17's table, copied from the spec: the source of truth.
@@ -57,7 +58,7 @@ fn golden_path() {
             "rs1qr3mxw2n44nxqf43jqr69d42nmypn84jgzxtxeafpxn4nq58tylzsrz9ec5",
         ),
     ] {
-        let p = lock_key_path(network.coin_type(), 0, "dexreviews").unwrap();
+        let p = lock_key_path(network, 0, "dexreviews").unwrap();
         assert_eq!(path_string(&p), path, "{network:?}");
         let key = derive_lock_key(&master, network, 0, "dexreviews").unwrap();
         assert_eq!(key.address, address, "{network:?}");
@@ -81,7 +82,7 @@ fn golden_path() {
             e["index"].as_u64().unwrap(),
             "{name}"
         );
-        let p = lock_key_path(network.coin_type(), 0, name).unwrap();
+        let p = lock_key_path(network, 0, name).unwrap();
         assert_eq!(path_string(&p), e["path"].as_str().unwrap(), "{name}");
         let key = derive_lock_key(&master, network, 0, name).unwrap();
         assert_eq!(hex::encode(key.pubkey), e["lockPub"].as_str().unwrap());
@@ -102,7 +103,7 @@ fn every_level_is_hardened() {
     for name in ["dexreviews", "namehold", "a", long.as_str()] {
         for account in [0, 1, HARDENED_OFFSET - 1] {
             for network in [Network::Main, Network::Regtest] {
-                let p = lock_key_path(network.coin_type(), account, name).unwrap();
+                let p = lock_key_path(network, account, name).unwrap();
                 assert!(
                     p.iter().all(|&i| i >= HARDENED_OFFSET),
                     "{name} account {account}: {}",
@@ -118,7 +119,7 @@ fn every_level_is_hardened() {
     // An account that cannot be hardened is refused, not wrapped or clamped.
     for account in [HARDENED_OFFSET, u32::MAX] {
         assert!(matches!(
-            lock_key_path(Network::Main.coin_type(), account, "dexreviews"),
+            lock_key_path(Network::Main, account, "dexreviews"),
             Err(AppError::InvalidInput(_))
         ));
     }
@@ -127,7 +128,7 @@ fn every_level_is_hardened() {
 #[test]
 fn lock_key_is_not_derivable_from_the_account_xpub() {
     let master = master_from_known_mnemonic();
-    let path = lock_key_path(Network::Main.coin_type(), 0, "dexreviews").unwrap();
+    let path = lock_key_path(Network::Main, 0, "dexreviews").unwrap();
     let account = master.derive_path(&path[..3]).unwrap();
     let xpub = ExtendedPubKey::from_priv(&account);
 
@@ -164,57 +165,9 @@ fn lock_key_of_an_invalid_name_is_refused() {
     }
 }
 
-/// A regtest mnemonic profile `p1` with its account xpub from the test phrase
-/// and the usual 20-address receive and change windows.
-fn regtest_profile_with_addresses() -> (Connection, ExtendedPubKey) {
-    let conn = Connection::open_in_memory().unwrap();
-    crate::db::migrations::run(&conn).unwrap();
-    let master = master_from_known_mnemonic();
-    let account = master
-        .derive_path(&[
-            HARDENED_OFFSET + 44,
-            HARDENED_OFFSET + Network::Regtest.coin_type(),
-            HARDENED_OFFSET,
-        ])
-        .unwrap();
-    let xpub = ExtendedPubKey::from_priv(&account);
-    conn.execute(
-        "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub)
-         VALUES ('p1', 'Seller', 'mnemonic_hot', 'regtest', ?1)",
-        params![xpub.to_base58check(Network::Regtest)],
-    )
-    .unwrap();
-    for branch in [BRANCH_RECEIVE, BRANCH_CHANGE] {
-        derivation::ensure_addresses(&conn, "p1", 0, Network::Regtest, &xpub, branch, 20).unwrap();
-    }
-    (conn, xpub)
-}
-
-fn insert_liquid_coin(
-    conn: &Connection,
-    txid_byte: u8,
-    address: &str,
-    script_hex: &str,
-    value: u64,
-) {
-    conn.execute(
-        "INSERT INTO tracked_utxos
-            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
-             value_doos, covenant_type, spend_class)
-         VALUES (?1, 0, 'p1', ?2, ?3, ?4, 0, 'liquid_hns')",
-        params![
-            hex::encode([txid_byte; 32]),
-            address,
-            script_hex,
-            value as i64
-        ],
-    )
-    .unwrap();
-}
-
 #[test]
 fn coins_at_a_lock_address_are_not_spendable() {
-    let (conn, xpub) = regtest_profile_with_addresses();
+    let (conn, xpub) = mnemonic_profile_db(Network::Regtest);
     let master = master_from_known_mnemonic();
     let lock = derive_lock_key(&master, Network::Regtest, 0, "dexreviews").unwrap();
 
@@ -245,4 +198,8 @@ fn coins_at_a_lock_address_are_not_spendable() {
     assert_eq!(coins.len(), 1, "only the receive-address coin");
     assert_eq!(coins[0].txid, hex::encode([0xaa; 32]));
     assert_eq!(coins[0].value, 100_000);
+
+    // The balance shown agrees: the lock-address coin is not counted.
+    let balances = compute_balances(&conn, "p1", Network::Regtest).unwrap();
+    assert_eq!(balances.liquid, 100_000, "only the receive-address coin");
 }

@@ -193,10 +193,11 @@ pub fn ensure_addresses(
 ///
 /// "Used" means the derived receive address is marked used (sync saw coins
 /// there, or it was reserved by `reserve_receive_address`), or is referenced by
-/// any tracked UTXO (coins ever landed there per sync) or by any bid commitment
+/// any tracked UTXO (coins ever landed there per sync), by any bid commitment
 /// (a bid draft was already built to it, even if not yet broadcast/synced — so
-/// back-to-back bids never share an address). The next index is `max(used) + 1` (0 on a fresh
-/// wallet), keeping the used range contiguous for gap-limit scanning.
+/// back-to-back bids never share an address), or by any Shakedex purchase
+/// destination. The next index is `max(used) + 1` (0 on a fresh wallet),
+/// keeping the used range contiguous for gap-limit scanning.
 ///
 /// The allocated address is persisted to `derived_addresses`, so the sync scan
 /// (`get_profile_addresses`) and the coin lookups that JOIN on that table see

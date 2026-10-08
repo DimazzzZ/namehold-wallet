@@ -27,10 +27,11 @@ pub fn lock_key_index(name: &str) -> Result<u32, AppError> {
     Ok(u32::from_be_bytes([h[0], h[1], h[2], h[3]]) & INDEX_MASK)
 }
 
-/// `[44', coin_type', account', 2', index']`. An account at or above 2^31 is
+/// `[44', coin type', account', 2', index']`, the coin type taken from
+/// `network`. An account at or above 2^31 is
 /// refused rather than clamped: a lock key derived on another path than the
 /// one the lock was made with could never move the name.
-pub fn lock_key_path(coin_type: u32, account: u32, name: &str) -> Result<[u32; 5], AppError> {
+pub fn lock_key_path(network: Network, account: u32, name: &str) -> Result<[u32; 5], AppError> {
     if account >= HARDENED_OFFSET {
         return Err(AppError::InvalidInput(format!(
             "account {account} is out of range for a lock key"
@@ -39,7 +40,7 @@ pub fn lock_key_path(coin_type: u32, account: u32, name: &str) -> Result<[u32; 5
     let index = lock_key_index(name)?;
     Ok([
         HARDENED_OFFSET + 44,
-        HARDENED_OFFSET + coin_type,
+        HARDENED_OFFSET + network.coin_type(),
         HARDENED_OFFSET + account,
         HARDENED_OFFSET + LOCK_BRANCH,
         HARDENED_OFFSET + index,
@@ -58,13 +59,16 @@ pub struct LockKey {
     pub address: String,
 }
 
+/// The one derivation entry point for lock keys: the key at
+/// [`lock_key_path`] under `master`, with the lock script, program and address
+/// it defines. Refuses an invalid name or an out-of-range account.
 pub fn derive_lock_key(
     master: &ExtendedPrivKey,
     network: Network,
     account: u32,
     name: &str,
 ) -> Result<LockKey, AppError> {
-    let path = lock_key_path(network.coin_type(), account, name)?;
+    let path = lock_key_path(network, account, name)?;
     let child = master.derive_path(&path)?;
     let pubkey = child.compressed_pubkey();
     Ok(LockKey {

@@ -41,8 +41,8 @@ fn add_profile(conn: &rusqlite::Connection, id: &str, network: &str) {
     .unwrap();
 }
 
-/// A liquid coin worth `value` doos for a profile. No derived_addresses are
-/// seeded, so `read_balance` skips the explorer and reads the per-profile cache
+/// A liquid coin worth `value` doos for a profile, at a derived address (the
+/// cache counts only those). `read_balance` reads the per-profile cache
 /// deterministically (the regtest/offline path).
 fn add_liquid(conn: &rusqlite::Connection, profile: &str, txid: &str, value: i64) {
     conn.execute(
@@ -53,6 +53,7 @@ fn add_liquid(conn: &rusqlite::Connection, profile: &str, txid: &str, value: i64
         params![txid, profile, value],
     )
     .unwrap();
+    crate::tests::command_helpers::own_address(conn, profile, "addr");
 }
 
 fn add_owned_name(conn: &rusqlite::Connection, profile: &str, name: &str, txid: &str) {

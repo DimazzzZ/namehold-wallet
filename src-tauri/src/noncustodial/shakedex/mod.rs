@@ -1,5 +1,5 @@
-//! Shakedex name sales: lock script, lock keys, price-step template, listing file,
-//! verification and purchase plans. Shakedex's own words (auction, bid,
+//! Shakedex name sales: lock script, lock keys, price-step template, listing
+//! file, verification and purchase plans. Shakedex's own words (auction, bid,
 //! presign, proof, fill) are allowed inside this module only; everything it
 //! exports speaks the CONTEXT.md vocabulary.
 
