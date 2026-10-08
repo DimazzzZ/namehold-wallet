@@ -1104,6 +1104,7 @@ mod ledger_signing_guards_tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             }],
             outputs: vec![
                 crate::noncustodial::actions::PlanOutput {
@@ -1148,6 +1149,7 @@ mod ledger_signing_guards_tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             }],
             outputs: vec![
                 crate::noncustodial::actions::PlanOutput {
@@ -1199,6 +1201,7 @@ mod ledger_signing_guards_tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             }],
             outputs: vec![crate::noncustodial::actions::PlanOutput {
                 value: 99_500_000,
@@ -1232,6 +1235,7 @@ mod ledger_signing_guards_tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             }],
             outputs: vec![crate::noncustodial::actions::PlanOutput {
                 value: 100_000_000, // output > input (impossible)
@@ -2639,6 +2643,7 @@ mod pure_helper_tests {
             sighash_type: 1,
             sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
             foreign_witness_hex: None,
+            lock_key_name: None,
         }
     }
 

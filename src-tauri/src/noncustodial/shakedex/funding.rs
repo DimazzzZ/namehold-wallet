@@ -45,6 +45,7 @@ pub(super) fn own_input(c: &SpendableCoin) -> PlanInput {
         sighash_type: sighash::ALL,
         sequence: FINAL_SEQUENCE,
         foreign_witness_hex: None,
+        lock_key_name: None,
     }
 }
 

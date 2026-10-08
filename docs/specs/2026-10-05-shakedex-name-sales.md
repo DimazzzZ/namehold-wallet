@@ -106,8 +106,8 @@ A mined purchase whose TRANSFER is spent on chain is never lost: only our FINALI
 | main | `m/44'/5353'/0'/2'/1433607229'` | `hs1qkq6yytu0c4puw0xlrdwedylkk5a04yrgecgz9wgyu2sua3mzh4jqt74rdj` |
 | regtest | `m/44'/5355'/0'/2'/1433607229'` | `rs1qr3mxw2n44nxqf43jqr69d42nmypn84jgzxtxeafpxn4nq58tylzsrz9ec5` |
 
-*Enforced:* `noncustodial/shakedex/lock_key.rs` on `ExtendedPrivKey::derive_path`.
-*Pinned:* `shakedex_lock_key_tests::{lock_key_matches_the_r17_golden_vector, every_level_is_hardened, lock_key_is_not_derivable_from_the_account_xpub, coins_at_a_lock_address_are_not_spendable, lock_key_of_an_invalid_name_is_refused}`.
+*Enforced:* `noncustodial/shakedex/lock_key.rs` on `ExtendedPrivKey::derive_path`; `noncustodial/actions.rs::sign_plan` derives a lock key only at sign time and signs only a cancel with it: sighash `0x83` into the output at the input's index, which must be a TRANSFER of that name at the key's lock address committing to the address of ours the input's `branch`/`child_index` derive.
+*Pinned:* `shakedex_lock_key_tests::{lock_key_matches_the_r17_golden_vector, every_level_is_hardened, lock_key_is_not_derivable_from_the_account_xpub, coins_at_a_lock_address_are_not_spendable, lock_key_of_an_invalid_name_is_refused}`; `noncustodial::actions` unit tests `{sign_plan_signs_a_lock_key_input_with_the_lock_key, sign_plan_refuses_a_lock_key_input_that_is_not_a_cancel, own_inputs_leave_out_a_lock_key_input_and_the_ledger_refuses_it}`.
 
 **R18 — The lock is checked before the name enters it.** A wrong key or script would strand the name: FINALIZE into the lock needs no signature, but every way out does. Before broadcasting the day-0 TRANSFER, the wallet derives the lock key, builds the script and address, signs a test `0x84` over a template and verifies it. Before the FINALIZE into the lock, it re-derives and checks that the confirmed TRANSFER's covenant commits to SHA3-256 of `lock_script(derived pub)`. Either check failing refuses the step.
 *Enforced:* `noncustodial/shakedex/sell.rs::lock_self_check`, `commands/shakedex.rs::{shakedex_build_lock_draft, shakedex_finalize_and_sign}`.
