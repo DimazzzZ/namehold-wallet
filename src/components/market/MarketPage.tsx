@@ -165,6 +165,43 @@ function ListingsTable({ rows, canBuy, refusal, onBuy }: ListingsTableProps) {
   );
 }
 
+/** A small spinner; still for those who ask for reduced motion. */
+function Spinner() {
+  return (
+    <span
+      aria-hidden
+      className="inline-block h-3.5 w-3.5 shrink-0 rounded-full border-2 border-gray-300 border-t-blue-600 motion-safe:animate-spin"
+    />
+  );
+}
+
+/**
+ * The market's first load: every listing is checked against the node before
+ * the page answers, which takes a moment. Placeholder lines in the shape of
+ * the list, and a line saying what is going on.
+ */
+function MarketLoading() {
+  return (
+    <div data-testid="market-loading" aria-busy="true">
+      <p className="mb-2 flex items-center gap-2 text-sm text-gray-600">
+        <Spinner />
+        Checking listings against your node…
+      </p>
+      <ul aria-hidden className="divide-y divide-gray-100 border-y border-gray-100 bg-white">
+        {[0, 1, 2, 3].map((i) => (
+          <li key={i} className="flex items-start gap-4 px-3 py-3">
+            <div className="flex-1 space-y-2">
+              <div className="h-3.5 w-40 rounded bg-gray-200 motion-safe:animate-pulse" />
+              <div className="h-3 w-64 rounded bg-gray-100 motion-safe:animate-pulse" />
+            </div>
+            <div className="h-3.5 w-20 rounded bg-gray-200 motion-safe:animate-pulse" />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /**
  * What an empty market page says. A listing the node could not check is not
  * known to be unbuyable, so the page does not claim there are none.
@@ -200,6 +237,8 @@ export default function MarketPage() {
 
   const page = market.data;
   const summary = page ? hiddenSummary(page.hidden) : null;
+  // Another page is on its way; the one on screen is the previous page.
+  const turningPage = market.isFetching && market.isPlaceholderData;
 
   const linkRefusal = profile != null && profile.network !== "mainnet" ? MARKET_MAINNET_ONLY : null;
 
@@ -233,42 +272,59 @@ export default function MarketPage() {
         {(market.isLoading || market.isError || page?.networkHasMarket) && (
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-gray-700">LearnHNS Market</h3>
-            {market.isLoading && <p className="text-sm text-gray-500">Loading listings…</p>}
+            {market.isLoading && <MarketLoading />}
             {market.isError && (
               <Alert tone="error" title="Could not load the market">
                 {mapError(market.error)}
               </Alert>
             )}
-            {page && page.networkHasMarket && page.rows.length === 0 && (
+            {page && page.networkHasMarket && page.rows.length === 0 && !turningPage && (
               <p className="text-sm text-gray-500">
                 {emptyPageText(page.pageCount, page.hidden.couldNotCheck)}
               </p>
             )}
             {page && page.networkHasMarket && page.rows.length > 0 && (
-              <ListingsTable
-                rows={page.rows.map((row) => ({ row, origin: "market" as const }))}
-                canBuy={canBuy}
-                refusal={refusal}
-                onBuy={onBuy}
-              />
+              <div
+                aria-busy={turningPage}
+                className={turningPage ? "pointer-events-none opacity-50 transition-opacity" : ""}
+              >
+                <ListingsTable
+                  rows={page.rows.map((row) => ({ row, origin: "market" as const }))}
+                  canBuy={canBuy}
+                  refusal={refusal}
+                  onBuy={onBuy}
+                />
+              </div>
             )}
             {page && page.networkHasMarket && page.pageCount > 1 && (
               <div className="flex items-center gap-3 text-sm">
                 <Button
                   size="sm"
                   data-testid="market-prev"
-                  disabled={page.page <= 1}
+                  disabled={page.page <= 1 || turningPage}
                   onClick={() => setPageNumber(page.page - 1)}
                 >
                   Previous
                 </Button>
-                <span data-testid="market-page-of" className="text-gray-500">
-                  Page {page.page} of {page.pageCount}
+                <span
+                  data-testid="market-page-of"
+                  className="flex items-center gap-2 text-gray-500"
+                >
+                  {turningPage ? (
+                    <>
+                      <Spinner />
+                      Loading page {pageNumber}…
+                    </>
+                  ) : (
+                    <>
+                      Page {page.page} of {page.pageCount}
+                    </>
+                  )}
                 </span>
                 <Button
                   size="sm"
                   data-testid="market-next"
-                  disabled={page.page >= page.pageCount}
+                  disabled={page.page >= page.pageCount || turningPage}
                   onClick={() => setPageNumber(page.page + 1)}
                 >
                   Next

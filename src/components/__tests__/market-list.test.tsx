@@ -156,6 +156,50 @@ describe("MarketPage", () => {
     expect(await screen.findByText(".name2")).toBeInTheDocument();
   });
 
+  it("shows that the market is being checked while the first page loads", async () => {
+    let answer: (p: unknown) => void = () => {};
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "list_wallet_profiles") return Promise.resolve([profile()]);
+      if (cmd === "get_write_capability") return Promise.resolve(writeCapability());
+      if (cmd === "shakedex_list_market") return new Promise((resolve) => (answer = resolve));
+      return Promise.resolve(null);
+    });
+    renderPage();
+    expect(await screen.findByTestId("market-loading")).toHaveTextContent(
+      "Checking listings against your node",
+    );
+    expect(screen.queryByTestId("market-page-of")).toBeNull();
+    expect(screen.queryByText(/No buyable listings/)).toBeNull();
+    answer(page({ pageCount: 2 }));
+    expect(await screen.findByText(".dexreviews")).toBeInTheDocument();
+    expect(screen.queryByTestId("market-loading")).toBeNull();
+  });
+
+  it("while another page loads, says so and holds the pager", async () => {
+    let answerPage2: (p: unknown) => void = () => {};
+    invokeMock.mockImplementation((cmd: string, args?: { page?: number }) => {
+      if (cmd === "list_wallet_profiles") return Promise.resolve([profile()]);
+      if (cmd === "get_write_capability") return Promise.resolve(writeCapability());
+      if (cmd === "shakedex_list_market") {
+        const n = args?.page ?? 1;
+        if (n === 2) return new Promise((resolve) => (answerPage2 = resolve));
+        return Promise.resolve(page({ page: n, pageCount: 3, rows: [row({ name: `name${n}` })] }));
+      }
+      return Promise.resolve(null);
+    });
+    renderPage();
+    expect(await screen.findByText(".name1")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("market-next"));
+    await waitFor(() =>
+      expect(screen.getByTestId("market-page-of")).toHaveTextContent("Loading page 2…"),
+    );
+    expect(screen.getByTestId("market-next")).toBeDisabled();
+    expect(screen.getByTestId("market-prev")).toBeDisabled();
+    answerPage2(page({ page: 2, pageCount: 3, rows: [row({ name: "name2" })] }));
+    expect(await screen.findByText(".name2")).toBeInTheDocument();
+    expect(screen.getByTestId("market-page-of")).toHaveTextContent("Page 2 of 3");
+  });
+
   it("says a page without buyable listings is only this page", async () => {
     mockMarket(page({ rows: [], page: 1, pageCount: 2 }));
     renderPage();
