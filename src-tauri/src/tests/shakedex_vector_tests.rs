@@ -322,3 +322,114 @@ fn lock_finalize_matches_hsd_signed_hex() {
         "fee on hsd's vsize"
     );
 }
+
+fn cancel_input<'a>(
+    v: &'a Value,
+    funding: &'a [crate::noncustodial::send::SpendableCoin],
+    rate: u64,
+) -> crate::noncustodial::shakedex::cancel::CancelInput<'a> {
+    let c = &v["sell"]["cancel"];
+    let lock = &c["lockCoin"];
+    crate::noncustodial::shakedex::cancel::CancelInput {
+        network: Network::Main,
+        account: 0,
+        name: v["name"].as_str().unwrap(),
+        name_height: v["height"].as_u64().unwrap() as u32,
+        lock_outpoint: (
+            h(lock["hash"].as_str().unwrap()),
+            lock["index"].as_u64().unwrap() as u32,
+        ),
+        lock_value: lock["value"].as_u64().unwrap(),
+        lock_pubkey: h(v["lockPub"].as_str().unwrap()),
+        cancel_address: c["cancelAddress"].as_str().unwrap(),
+        // The generator's `cancelDest = ring(0, 11)`.
+        cancel_branch: 0,
+        cancel_index: 11,
+        funding,
+        change_address: c["changeAddress"].as_str().unwrap(),
+        rate,
+        fixed_fee: None,
+    }
+}
+
+/// R1 and R4: the cancel, built the way T5 will build it and accepted by the
+/// signer (which re-derives the lock key and our cancel address from the
+/// seed), equals hsd's signed transaction byte for byte, and at a fee rate it
+/// pays hsd's vsize times the rate.
+#[test]
+fn cancel_matches_hsd_signed_hex() {
+    use crate::noncustodial::shakedex::cancel::{build_cancel_plan, CANCEL_SIGHASH};
+    let v = sd();
+    let c = &v["sell"]["cancel"];
+    assert_eq!(c["sighashType"].as_u64().unwrap() as u32, CANCEL_SIGHASH);
+    assert_eq!(c["lockCoin"]["hash"], v["sell"]["lockFinalize"]["txid"]);
+    let funding = [vector_funding(&c["fundingInput"])];
+    let fee = c["fee"].as_u64().unwrap();
+    let res =
+        build_cancel_plan(&cancel_input(&v, &funding, 0).with_fixed_fee_for_tests(fee)).unwrap();
+    assert_eq!(res.fee, fee);
+    let (hex, txid) = sign_with_known_mnemonic(&res.plan);
+    assert_eq!(hex, c["signedHex"].as_str().unwrap());
+    assert_eq!(txid, c["txid"].as_str().unwrap());
+    assert_eq!(res.txid, txid);
+
+    let at_rate = build_cancel_plan(&cancel_input(&v, &funding, 7)).unwrap();
+    assert_eq!(
+        at_rate.fee,
+        c["vsize"].as_u64().unwrap() * 7,
+        "fee on hsd's vsize"
+    );
+}
+
+/// R1 and R4: the cancel's FINALIZE out of the lock to our cancel address
+/// equals hsd's signed transaction, and at a fee rate it pays hsd's vsize
+/// times the rate.
+#[test]
+fn cancel_finalize_matches_hsd_signed_hex() {
+    use crate::noncustodial::shakedex::cancel::{build_cancel_finalize_plan, CancelFinalizeInput};
+    let v = sd();
+    let c = &v["sell"]["cancel"];
+    let f = &v["sell"]["cancelFinalize"];
+    let cc = &f["cancelCoin"];
+    assert_eq!(
+        cc["hash"], c["txid"],
+        "the FINALIZE spends the cancel's TRANSFER"
+    );
+    let funding = [vector_funding(&f["fundingInput"])];
+    let flags = f["flags"].as_u64().unwrap();
+    assert!(flags <= 1, "flags carry only the weak bit");
+    let input = |rate| CancelFinalizeInput {
+        network: Network::Main,
+        account: 0,
+        transfer_outpoint: (
+            h(cc["hash"].as_str().unwrap()),
+            cc["index"].as_u64().unwrap() as u32,
+        ),
+        transfer_value: cc["value"].as_u64().unwrap(),
+        lock_pubkey: h(v["lockPub"].as_str().unwrap()),
+        name: v["name"].as_str().unwrap(),
+        name_height: v["height"].as_u64().unwrap() as u32,
+        weak: flags == 1,
+        claimed: f["claimed"].as_u64().unwrap() as u32,
+        renewals: f["renewals"].as_u64().unwrap() as u32,
+        renewal_block: h(f["renewalBlock"].as_str().unwrap()),
+        dest_address: c["cancelAddress"].as_str().unwrap(),
+        funding: &funding,
+        change_address: f["changeAddress"].as_str().unwrap(),
+        rate,
+        fixed_fee: None,
+    };
+    let fee = f["fee"].as_u64().unwrap();
+    let res = build_cancel_finalize_plan(&input(0).with_fixed_fee_for_tests(fee)).unwrap();
+    assert_eq!(res.fee, fee);
+    let (hex, txid) = sign_with_known_mnemonic(&res.plan);
+    assert_eq!(hex, f["signedHex"].as_str().unwrap());
+    assert_eq!(txid, f["txid"].as_str().unwrap());
+
+    let at_rate = build_cancel_finalize_plan(&input(7)).unwrap();
+    assert_eq!(
+        at_rate.fee,
+        f["vsize"].as_u64().unwrap() * 7,
+        "fee on hsd's vsize"
+    );
+}
