@@ -458,6 +458,7 @@ impl NodeRpcClient {
             .await?;
 
         let status = resp.status();
+        refuse_unauthorized(status)?;
         // hsd returns the JSON-RPC envelope even for some 4xx (e.g. method
         // errors), so parse the body before treating status as fatal.
         let body: serde_json::Value = resp
@@ -555,6 +556,7 @@ impl NodeRpcClient {
             .send()
             .await?;
         let status = resp.status();
+        refuse_unauthorized(status)?;
         let body: serde_json::Value = resp.json().await.map_err(|e| {
             AppError::Rpc(format!(
                 "node returned non-JSON for coins (status {status}): {e}"
@@ -582,6 +584,7 @@ impl NodeRpcClient {
             .send()
             .await?;
         let status = resp.status();
+        refuse_unauthorized(status)?;
         if status == reqwest::StatusCode::NOT_FOUND {
             return hsd_not_found(resp, "coin").await.map(|()| None);
         }
@@ -646,6 +649,7 @@ impl NodeRpcClient {
             .send()
             .await?;
         let status = resp.status();
+        refuse_unauthorized(status)?;
         let body: serde_json::Value = resp.json().await.map_err(|e| {
             AppError::Rpc(format!(
                 "node returned non-JSON for tx-by-address (status {status}): {e}"
@@ -714,6 +718,7 @@ impl NodeRpcClient {
             .send()
             .await?;
         let status = resp.status();
+        refuse_unauthorized(status)?;
         if status == reqwest::StatusCode::NOT_FOUND {
             return hsd_not_found(resp, "tx-by-hash")
                 .await
@@ -1064,6 +1069,20 @@ pub fn mined_height(
         Some(h) if h >= 0 => Ok(Some(h)),
         _ => Err(AppError::Rpc(format!("node did not report {}", what()))),
     }
+}
+
+/// The node refused the API key (HTTP 401): say so, and where to fix it,
+/// instead of "non-JSON body". Still not hsd's verdict on any transaction, so
+/// a transport error like any other.
+fn refuse_unauthorized(status: reqwest::StatusCode) -> Result<(), AppError> {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(AppError::Rpc(
+            "the node refused the API key (HTTP 401): set the node's API key in \
+             Settings → Connections"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 /// The message of a failed REST reply: hsd sends `{"error":{"message":…}}`
@@ -2351,6 +2370,38 @@ mod tests {
         let coin = client.get_coin("aa11", 0).await.unwrap().unwrap();
         assert_eq!(coin.value, 1_000_000);
         assert_eq!(coin.covenant.unwrap().kind, 10);
+    }
+
+    /// hsd answers a wrong or missing API key with 401 and no body (bweb's
+    /// `basicauth`; recorded from a live node: `Content-Length: 0`). The
+    /// error says the key was refused and where to set it, for JSON-RPC and
+    /// REST alike, instead of "non-JSON body".
+    #[tokio::test]
+    async fn a_refused_api_key_says_so() {
+        let mut server = mockito::Server::new_async().await;
+        let _rpc = server
+            .mock("POST", "/")
+            .with_status(401)
+            .with_header("www-authenticate", "Basic realm=\"node\"")
+            .with_body("")
+            .create_async()
+            .await;
+        let _rest = server
+            .mock("GET", "/coin/bb22/1")
+            .with_status(401)
+            .with_header("www-authenticate", "Basic realm=\"node\"")
+            .with_body("")
+            .create_async()
+            .await;
+        let client = NodeRpcClient::new(&server.url(), "wrong", ChainSource::LocalNode);
+        for err in [
+            client.get_blockchain_info().await.unwrap_err(),
+            client.get_coin("bb22", 1).await.unwrap_err(),
+        ] {
+            assert!(matches!(err, AppError::Rpc(_)), "{err:?}");
+            assert!(err.to_string().contains("refused the API key"), "{err}");
+            assert!(err.to_string().contains("Settings"), "{err}");
+        }
     }
 
     #[tokio::test]
