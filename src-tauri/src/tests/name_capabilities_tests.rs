@@ -55,6 +55,7 @@ fn ctx(
         reveal_draft_status,
         bid_value_doos,
         lockup_value_doos: None,
+        listing_state: None,
     }
 }
 

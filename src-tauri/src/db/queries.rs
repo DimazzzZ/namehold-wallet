@@ -1459,6 +1459,13 @@ impl ListingState {
     pub fn is_terminal(self) -> bool {
         Self::TERMINAL.contains(&self)
     }
+
+    /// Whether the name's own Cancel transfer is still this listing's abort
+    /// (R19): from day 0 until the FINALIZE into the lock is built, the owner
+    /// coin is our TRANSFER to the lock and nothing else spends it.
+    pub fn aborts_by_cancel_transfer(self) -> bool {
+        matches!(self, Self::Locking | Self::ReadyToFinalize)
+    }
 }
 
 impl std::str::FromStr for ListingState {

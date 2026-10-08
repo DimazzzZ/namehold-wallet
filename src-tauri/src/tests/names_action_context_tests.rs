@@ -1325,3 +1325,63 @@ fn find_name_action_context_counts_a_cancel_in_flight_as_an_owner_spend() {
     let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
     assert!(ctx.owner_spend_in_flight);
 }
+
+/// R27: the lock TRANSFER (day 0) and the FINALIZE into the lock (T3) spend
+/// our owner coin; in flight, the name is still ours.
+#[test]
+fn find_name_action_context_counts_a_lock_transfer_as_an_owner_spend() {
+    use crate::noncustodial::shakedex::sell::{LOCK_ACTION, LOCK_FINALIZE_ACTION};
+    for action in [LOCK_ACTION, LOCK_FINALIZE_ACTION] {
+        let conn = test_db();
+        seed_profile(&conn);
+        seed_derived_address(&conn, ADDRESS, 0, 0);
+        let nh_hex = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+        let cov = format!(r#"{{"type":{},"items":["{nh_hex}"]}}"#, sync::COV_REGISTER);
+        seed_tracked_utxo(
+            &conn,
+            "owner",
+            0,
+            ADDRESS,
+            sync::COV_REGISTER as i64,
+            Some(&cov),
+        );
+        conn.execute(
+            "UPDATE tracked_utxos SET spent_by_txid = 'spent' WHERE txid = 'owner'",
+            [],
+        )
+        .unwrap();
+        seed_tracked_name_state(
+            &conn,
+            NAME,
+            &nh_hex,
+            "CLOSED",
+            Some("owner"),
+            Some(0),
+            Some(779),
+        );
+        seed_draft(&conn, "d-lock", action, NAME);
+        db::queries::update_tx_draft_status(&conn, "d-lock", "broadcasted", None, Some("locktx"))
+            .unwrap();
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, Some(779)).unwrap();
+        assert!(ctx.owner_spend_in_flight, "{action}");
+    }
+}
+
+#[test]
+fn find_name_action_context_reads_the_open_listing() {
+    use crate::db::queries::ListingState;
+    let conn = test_db();
+    seed_profile(&conn);
+    conn.execute(
+        "INSERT INTO shakedex_listings (id, wallet_profile_id, name, mode, state, lock_pubkey_hex)
+         VALUES ('l1', ?1, ?2, 'buy_now', 'locking', '02')",
+        rusqlite::params![PROFILE, NAME],
+    )
+    .unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    assert_eq!(ctx.listing_state, Some(ListingState::Locking));
+    conn.execute("UPDATE shakedex_listings SET state = 'aborted'", [])
+        .unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    assert_eq!(ctx.listing_state, None, "an ended listing locks nothing");
+}
