@@ -212,3 +212,59 @@ fn purchase_finalize_plan_matches_hsd_signed_hex() {
     // The finalize spends the purchase's TRANSFER output.
     assert_eq!(tc["hash"].as_str().unwrap(), p["txid"].as_str().unwrap());
 }
+
+/// R1: the seller's price steps, signed by the R17 lock key from the test
+/// phrase, equal hsd's signatures over the lock FINALIZE's output 0.
+#[test]
+fn seller_steps_match_hsd() {
+    use crate::noncustodial::shakedex::lock_key::derive_lock_key;
+    use crate::noncustodial::shakedex::sell::sign_step;
+    let v = sd();
+    let s = &v["sell"]["steps"];
+    let key = derive_lock_key(
+        &crate::tests::hsd_parity_tests::master_from_known_mnemonic(),
+        Network::Main,
+        0,
+        v["name"].as_str().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        hex::encode(key.pubkey),
+        v["lockPub"].as_str().unwrap(),
+        "the R17 key"
+    );
+    let lock = &s["lockCoin"];
+    assert_eq!(
+        lock["hash"], v["sell"]["lockFinalize"]["txid"],
+        "steps spend the lock FINALIZE"
+    );
+    let payment =
+        output_address_from_string(Network::Main, s["paymentAddr"].as_str().unwrap()).unwrap();
+    let steps = s["data"].as_array().unwrap();
+    assert_eq!(steps.len(), 3);
+    for st in steps {
+        let t = StepTemplate {
+            lock_outpoint: (
+                h(lock["hash"].as_str().unwrap()),
+                lock["index"].as_u64().unwrap() as u32,
+            ),
+            lock_value: lock["value"].as_u64().unwrap(),
+            lock_pubkey: &key.pubkey,
+            payment: payment.clone(),
+            price: st["price"].as_u64().unwrap(),
+            lock_time_secs: st["lockTimeSecs"].as_u64().unwrap(),
+        };
+        assert_eq!(
+            template::encode_lock_time(t.lock_time_secs).unwrap() as u64,
+            st["encodedLocktime"].as_u64().unwrap()
+        );
+        assert_eq!(
+            hex::encode(template::step_sighash(&t).unwrap()),
+            st["sighash"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(sign_step(&key, &t).unwrap()),
+            st["signature"].as_str().unwrap()
+        );
+    }
+}

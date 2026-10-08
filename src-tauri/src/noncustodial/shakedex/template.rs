@@ -4,7 +4,7 @@
 //! 0x84 at input 0 commits to that input, the last output and the lock time
 //! only, so a buyer may add inputs and other outputs freely.
 
-use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1};
+use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1, SecretKey};
 
 use crate::error::AppError;
 use crate::noncustodial::shakedex::script::lock_script;
@@ -68,6 +68,22 @@ fn template_tx(t: &StepTemplate) -> Result<Transaction, AppError> {
     });
     tx.locktime = encode_lock_time(t.lock_time_secs)?;
     Ok(tx)
+}
+
+impl StepTemplate<'_> {
+    /// Sign this step with the lock key's secret: `0x84` over input 0 of the
+    /// template, the whole lock script as the script code, low-S (the
+    /// secp256k1 crate normalizes on signing). Callers verify the result
+    /// against the template (`sell::sign_step`).
+    pub fn sign(&self, secret: &SecretKey) -> Result<[u8; 65], AppError> {
+        template_tx(self)?.sign_p2wsh_input(
+            0,
+            secret,
+            &lock_script(self.lock_pubkey),
+            self.lock_value,
+            STEP_SIGHASH,
+        )
+    }
 }
 
 pub fn step_sighash(t: &StepTemplate) -> Result<[u8; 32], AppError> {

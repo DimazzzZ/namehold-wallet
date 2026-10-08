@@ -8,6 +8,7 @@ pub mod listing_file;
 pub mod lock_key;
 pub mod purchase;
 pub mod script;
+pub mod sell;
 pub mod template;
 pub mod verify;
 
