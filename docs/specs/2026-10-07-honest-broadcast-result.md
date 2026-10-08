@@ -1,6 +1,6 @@
 # Honest broadcast result
 
-Status: specified, not implemented. Merges after `feat/shakedex-buy` (PR 1 of Shakedex name sales), which adds `noncustodial::rpc::is_node_rejection` and changes the functions this spec touches. Its row in `docs/specs/README.md` is added with the implementation, after PR 1 has added its own there.
+Status: specified, not implemented. Builds on Shakedex name sales (merged) and on the chain evidence the confirmation poll reads for hsd's not-found (`fix/no-tx-index-send-verdicts`, `commands/tx.rs::chain_evidence_with_client`), which merges first. Its row in `docs/specs/README.md` is added with the implementation.
 
 ## 1. Summary
 
@@ -8,15 +8,15 @@ When the user sends a transaction, the wallet says "sent" only once the node has
 
 ## 2. Terms
 
-- **Taken by the node** — `getrawtransaction <txid>` answers the transaction: hsd looks in its mempool first and then in its chain (`node.getMeta`), so a transaction just accepted is found with or without a transaction index.
-- **hsd's not-found** — hsd's own JSON-RPC answer to `getrawtransaction` for a transaction it does not have: `Transaction not found.`, code -1 (`RPCError(errs.MISC_ERROR, …)` in `lib/node/rpc.js`), sent with HTTP 200. Recognised by `rpc::is_node_rejection`; a proxy's page, a timeout or any reply that is not hsd's is not this answer.
+- **Taken by the node** — `getrawtransaction <txid>` answers the transaction: hsd looks in its mempool first and then in its transaction index (`node.getMeta`), so a transaction just accepted is found with or without a transaction index. A transaction already mined is found only through the index; on a node without one, an output of the transaction that is a coin mined in a block (`chain_evidence_with_client` → `Mined`) is the same answer.
+- **hsd's not-found** — hsd's own JSON-RPC answer to `getrawtransaction` for a transaction it does not have: `Transaction not found.`, code -1 (`RPCError(errs.MISC_ERROR, …)` in `lib/node/rpc.js`), sent with HTTP 200. Recognised by `rpc::is_tx_not_found`; a proxy's page, a timeout or any reply that is not hsd's is not this answer.
 - **Not taken** — every check in the window got hsd's not-found.
 
 ## 3. Requirements
 
-**R1 — Sent means taken.** After `sendrawtransaction` returns a txid, the wallet checks the transaction with `getrawtransaction` up to 5 times, 400 ms apart (hsd adds the transaction to its mempool asynchronously after answering). The first check that finds it ends the window: the draft is `broadcasted` with that txid, as today.
+**R1 — Sent means taken.** After `sendrawtransaction` returns a txid, the wallet checks the transaction with `getrawtransaction` up to 5 times, 400 ms apart (hsd adds the transaction to its mempool asynchronously after answering). The first check that finds it ends the window: the draft is `broadcasted` with that txid, as today. A check that gets hsd's not-found also reads the chain evidence for the draft; `Mined` ends the window too, the draft `confirmed` at that height.
 *Enforced:* `commands/tx.rs::classify_broadcast_outcome_with_client`.
-*Pinned:* `node_rpc_injected_tests::{broadcast_taken_by_the_node_is_success, broadcast_taken_on_a_later_check_is_success}`.
+*Pinned:* `node_rpc_injected_tests::{broadcast_taken_by_the_node_is_success, broadcast_taken_on_a_later_check_is_success, broadcast_mined_without_tx_index_is_success}`.
 
 **R2 — Not taken is not sent, and the user is told.** When every check gets hsd's not-found, the broadcast returns an error and the draft becomes `broadcast_pending` with the note "The node did not take the transaction. hsd does not say why; often its coins are already spent elsewhere. You can try again; the coins stay held until the node is checked again." Its coin reservation is kept. The send dialog shows the error as it shows any failed send ("Not sent"), and a retry is allowed, as for any `broadcast_pending` draft.
 *Enforced:* `commands/tx.rs::broadcast_tx_draft`.
@@ -26,9 +26,9 @@ When the user sends a transaction, the wallet says "sent" only once the node has
 *Enforced:* `commands/tx.rs::classify_broadcast_outcome_with_client`.
 *Pinned:* `node_rpc_injected_tests::broadcast_check_without_hsds_answer_is_success`.
 
-**R4 — The draft lifecycle resolves it as before.** `refresh_tx_confirmations` promotes a `broadcast_pending` draft the node later knows, and after its grace window marks one hsd still does not know `failed` and releases its coins (unchanged).
+**R4 — The draft lifecycle resolves it as before.** `refresh_tx_confirmations` promotes a `broadcast_pending` draft the node later knows or finds mined by its outputs, and after its grace window resolves one hsd still does not know by the chain evidence (unchanged): every coin it spends unspent marks it `failed` and releases its coins; a coin it spends spent by another transaction, on a node with a transaction index, marks it `dropped` saying so and releases its coins; otherwise it stays held.
 *Enforced:* `commands/tx.rs::refresh_tx_confirmations`.
-*Pinned:* `live_node_it::live_send_broadcast_double_spend_releases_reservation`, now deterministic: the second spend of a coin is not taken (`broadcast_pending`, the error returned), and is never mined.
+*Pinned:* `live_node_it::live_coins_spent_by_another_tx_drop_the_draft_and_say_so`, changed to expect the R2 error from the second spend of a coin (`broadcast_pending`), then `dropped` after the grace window.
 
 **R5 — A Shakedex purchase follows the same rule.** The purchase broadcast goes through R1–R3. The one automatic rebroadcast (spec 2026-10-05 R13) uses the same check: a rebroadcast that is not taken loses the purchase with the existing REFUSED reason ("the node refused to take the purchase, so nothing was paid"), unless the chain still traces to it.
 *Enforced:* `shakedex_jobs.rs::refresh_missing`.
@@ -41,7 +41,7 @@ When the user sends a transaction, the wallet says "sent" only once the node has
 
 ## 5. Known gaps
 
-- **Mined inside the window on a node without a transaction index.** A transaction mined before the first check is found only through the index. On regtest with instant mining, or a remote node without `--index-tx`, such a send can read as not taken; R4 then marks it `failed` after the grace window, the gap the confirmation poll already has on such nodes.
+- **Mined inside the window on a node without a transaction index, its outputs already spent.** R1 finds a mined transaction on such a node only through an output that is still a coin. One whose every output was spent within the window reads as not taken, and R4 leaves it held.
 - **Up to two seconds more per send** when the node does not have the transaction; a transaction the node takes is found on the first check.
 
 ## 6. Pointers
