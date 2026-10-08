@@ -13,14 +13,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::noncustodial::address;
-use crate::noncustodial::derivation::BRANCH_RECEIVE;
-use crate::noncustodial::hd::{bip44_path, ExtendedPrivKey, HARDENED_OFFSET};
+use crate::noncustodial::hd::bip44_path;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::send::{estimate_fee_with_primary, SpendableCoin, DUST_THRESHOLD};
 use crate::noncustodial::session::SignerSession;
-use crate::noncustodial::shakedex::cancel::CANCEL_SIGHASH;
-use crate::noncustodial::shakedex::lock_key::{derive_lock_key, LockKey};
-use crate::noncustodial::sync::COV_TRANSFER;
+use crate::noncustodial::shakedex::lock_key::derive_lock_key;
 use crate::noncustodial::tx::{
     output_address_from_string, sighash, Covenant, Input, Outpoint, Output, Transaction,
 };
@@ -648,7 +645,9 @@ fn sign_plan_tx(session: &mut SignerSession, plan: &DraftPlan) -> Result<Transac
                 ));
             }
             let key = derive_lock_key(master, network, plan.account, name)?;
-            refuse_unless_cancel(plan, i, name, &key, master, network)?;
+            crate::noncustodial::shakedex::cancel::check_lock_key_input(
+                plan, i, name, &key, master, network,
+            )?;
             let sig =
                 tx.sign_p2wsh_input(i, &key.secret, &key.script, inp.value, inp.sighash_type)?;
             tx.inputs[i].witness = vec![sig.to_vec(), key.script.clone()];
@@ -666,71 +665,13 @@ fn sign_plan_tx(session: &mut SignerSession, plan: &DraftPlan) -> Result<Transac
     Ok(tx)
 }
 
-/// R17: a lock key signs price steps (`shakedex::sell::sign_step`, outside
-/// any plan) and cancels, nothing else. A cancel signs its lock input `i`
-/// `ANYONECANPAY|SINGLE`, which commits to output `i` alone, so that output
-/// must exist (hsd's SINGLE past the last output commits to none) and be the
-/// TRANSFER at this key's lock address that consensus requires of a cancel,
-/// of this name (item 0), to the address of ours the input's path names
-/// (items 2 and 3: version 0 and its key hash). A TRANSFER to any other
-/// address would give the name away once finalized. That path must be a
-/// receive address (the cancel commits to a reserved one, R21/R28) at an
-/// unhardened index: any other path derives from the seed but is never
-/// synced or restored, which would strand the name. The input's sequence must
-/// be final and the plan's lock time 0, as in shakedex's cancel: the
-/// signature commits to both, and a far lock time would make a cancel that
-/// cannot be mined while the price steps stay fillable.
-fn refuse_unless_cancel(
-    plan: &DraftPlan,
-    i: usize,
-    name: &str,
-    key: &LockKey,
-    master: &ExtendedPrivKey,
-    network: Network,
-) -> Result<(), AppError> {
-    let inp = &plan.inputs[i];
-    let sighash_type = inp.sighash_type;
-    if sighash_type != CANCEL_SIGHASH {
-        return Err(AppError::InvalidInput(format!(
-            "a lock key signs only a cancel (sighash 0x83), not sighash {sighash_type:#04x}"
-        )));
-    }
-    if inp.sequence != FINAL_SEQUENCE || plan.locktime != 0 {
-        return Err(AppError::InvalidInput(
-            "a cancel has a final sequence and no lock time".into(),
-        ));
-    }
-    if inp.branch != BRANCH_RECEIVE || inp.child_index >= HARDENED_OFFSET {
-        return Err(AppError::InvalidInput(
-            "a cancel commits the name to a receive address of ours".into(),
-        ));
-    }
-    let dest_path = bip44_path(network, plan.account, inp.branch, inp.child_index);
-    let dest = address::pubkey_to_hash160(&master.derive_path(&dest_path)?.compressed_pubkey());
-    let name_hash = hex::encode(crate::noncustodial::names::hash_name(name)?);
-    match plan.outputs.get(i) {
-        Some(o)
-            if o.covenant_type == COV_TRANSFER
-                && o.address == key.address
-                && o.covenant_items_hex.len() == 4
-                && o.covenant_items_hex[0] == name_hash
-                && o.covenant_items_hex[2] == "00"
-                && o.covenant_items_hex[3] == hex::encode(dest) =>
-        {
-            Ok(())
-        }
-        _ => Err(AppError::InvalidInput(
-            "a cancel's lock input must be matched by a TRANSFER of its name at its lock \
-             address to an address of ours"
-                .into(),
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::noncustodial::covenants;
+    use crate::noncustodial::hd::{ExtendedPrivKey, HARDENED_OFFSET};
+    use crate::noncustodial::shakedex::cancel::CANCEL_SIGHASH;
+    use crate::noncustodial::shakedex::lock_key::LockKey;
 
     fn coin(txid_byte: u8, value: u64, child: u32) -> SpendableCoin {
         SpendableCoin {

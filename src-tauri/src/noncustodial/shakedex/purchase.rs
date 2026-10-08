@@ -24,9 +24,6 @@ pub const PURCHASE_ACTION: &str = "shakedex_purchase";
 /// `wallet_tx_drafts.action` of a draft finalizing a purchased name.
 pub const PURCHASE_FINALIZE_ACTION: &str = "shakedex_purchase_finalize";
 
-/// Fee floor for Shakedex transactions, in doos per virtual byte: the
-/// 5000 doos/kB floor shakedex itself uses (spec R4).
-pub const SHAKEDEX_MIN_RATE_PER_BYTE: u64 = 5;
 /// Handshake's money supply cap in dollarydoos: hsd 8.0.0
 /// lib/protocol/consensus.js `MAX_MONEY = 2.04e9 * COIN` with `COIN = 10^6`.
 pub const MAX_MONEY: u64 = 2_040_000_000_000_000;
@@ -226,7 +223,6 @@ pub fn build_purchase_plan(p: &PurchaseInput) -> Result<PlanResult, AppError> {
         p.account,
         encode_lock_time(step.lock_time)?,
         foreign,
-        p.lock_value,
         before,
         after,
         p.funding,
@@ -269,7 +265,6 @@ pub fn build_purchase_finalize_plan(f: &FinalizeInput) -> Result<PlanResult, App
         f.account,
         0,
         foreign,
-        f.transfer_value,
         before,
         vec![],
         f.funding,
@@ -366,6 +361,7 @@ mod tests {
     use crate::noncustodial::actions::{rebuild_unsigned, DraftPlan};
     use crate::noncustodial::hd::{self, ExtendedPrivKey};
     use crate::noncustodial::send::DUST_THRESHOLD;
+    use crate::noncustodial::shakedex::funding::SHAKEDEX_MIN_RATE_PER_BYTE;
     use crate::noncustodial::shakedex::listing_file::PriceStep;
     use crate::noncustodial::sync::{COV_FINALIZE, COV_TRANSFER};
     use crate::noncustodial::tx::Transaction;
