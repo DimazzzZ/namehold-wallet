@@ -268,20 +268,25 @@ pub fn derive_next_for_profile(
 /// one right after the used range. It is persisted and marked used, so it is not
 /// reissued and sync of this profile queries it. After a restore it is found only
 /// while its index is inside the restore window of `address_gap_limit`
-/// addresses (the window is not extended).
+/// addresses (the window is not extended). Returns the reserved address with
+/// its branch and index (R21: a cancel address's index rides on the cancel's
+/// lock input, T5).
 ///
 /// Runs under a SAVEPOINT: atomic on its own, and usable inside a caller's
 /// transaction (a nested BEGIN would fail).
-pub fn reserve_receive_address(conn: &Connection, profile_id: &str) -> Result<String, AppError> {
+pub fn reserve_receive_address(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<DerivedAddress, AppError> {
     conn.execute_batch("SAVEPOINT reserve_receive_address")?;
     let reserved = derive_next_for_profile(conn, profile_id).and_then(|d| {
         crate::noncustodial::sync::mark_address_used(conn, profile_id, &d.address, None)?;
-        Ok(d.address)
+        Ok(d)
     });
     match reserved {
-        Ok(address) => {
+        Ok(d) => {
             conn.execute_batch("RELEASE reserve_receive_address")?;
-            Ok(address)
+            Ok(d)
         }
         Err(e) => {
             // The reservation's own error is what the caller needs. Rollback
