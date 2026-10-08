@@ -1333,12 +1333,17 @@ pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result
          WHERE finalize_draft_id = ?1",
         params![id],
     )?;
-    // An unsent Cancel transfer aborts nothing (R19).
-    tx.execute(
-        "UPDATE shakedex_listings SET abort_draft_id = NULL, updated_at = datetime('now')
-         WHERE abort_draft_id = ?1",
-        params![id],
-    )?;
+    // A Cancel transfer never sent (`draft`, `signed`) aborts nothing, so its
+    // listing loses the link (R19). A `dropped` or `failed` one was broadcast
+    // and may still be mined: its listing keeps the link, so the abort job
+    // still finds it.
+    if matches!(status.as_str(), "draft" | "signed") {
+        tx.execute(
+            "UPDATE shakedex_listings SET abort_draft_id = NULL, updated_at = datetime('now')
+             WHERE abort_draft_id = ?1",
+            params![id],
+        )?;
+    }
     Ok(())
 }
 

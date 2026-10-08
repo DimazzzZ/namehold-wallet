@@ -894,7 +894,14 @@ async fn refresh_abort(
             queries::abort_shakedex_listing(conn, &l.id)?;
         }
         CancelOnChain::NotMined if l.state == queries::ListingState::Aborted => {
-            queries::unabort_shakedex_listing(conn, &l.id)?;
+            let reverted = queries::unabort_shakedex_listing(conn, &l.id)?;
+            if reverted == 0 {
+                eprintln!(
+                    "shakedex listings: {} ({}): its cancel is no longer mined, but it stays \
+                     aborted: another listing of the name is open",
+                    l.id, l.name
+                );
+            }
         }
         _ => {}
     }

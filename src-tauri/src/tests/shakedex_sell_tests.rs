@@ -1100,19 +1100,39 @@ async fn cancel_of_another_transfer_leaves_the_listing_alone() {
     assert_eq!(open_listing(&app).unwrap().abort_draft_id, None);
 }
 
+/// Deleting a Cancel transfer that was never sent (`draft`, `signed`) clears
+/// its link: it aborts nothing. A `dropped` or `failed` one was broadcast and
+/// may still be mined, so its listing keeps the link.
 #[tokio::test]
 async fn deleting_an_unsent_cancel_unlinks_it() {
-    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
-    locked_on_chain(&app).await;
-    let cancel = build_cancel_draft(app.state(), NAME.into(), None)
-        .await
-        .unwrap();
-    assert_eq!(
-        open_listing(&app).unwrap().abort_draft_id.as_deref(),
-        Some(cancel.id.as_str())
-    );
-    with_db(&app, |c| queries::delete_tx_draft(c, &cancel.id).unwrap());
-    assert_eq!(open_listing(&app).unwrap().abort_draft_id, None);
+    for (status, keeps_link) in [
+        ("draft", false),
+        ("signed", false),
+        ("dropped", true),
+        ("failed", true),
+    ] {
+        let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+        locked_on_chain(&app).await;
+        let cancel = build_cancel_draft(app.state(), NAME.into(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            open_listing(&app).unwrap().abort_draft_id.as_deref(),
+            Some(cancel.id.as_str())
+        );
+        with_db(&app, |c| {
+            if status != "draft" {
+                queries::update_tx_draft_status(c, &cancel.id, status, None, None).unwrap();
+            }
+            queries::delete_tx_draft(c, &cancel.id).unwrap();
+        });
+        let expected = keeps_link.then(|| cancel.id.clone());
+        assert_eq!(
+            open_listing(&app).unwrap().abort_draft_id,
+            expected,
+            "{status}"
+        );
+    }
 }
 
 /// A reorg that takes the abort out after the name was locked again: the new
