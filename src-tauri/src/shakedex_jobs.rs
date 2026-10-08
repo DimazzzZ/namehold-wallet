@@ -51,7 +51,7 @@ pub(crate) const MISSING_BLOCKS: i64 = 6;
 /// mempool that keeps hsd's default: one that may not be resent from here is
 /// given up as lost rather than kept reserved for ever (a late mining still
 /// revives it, [`REVIVE_WINDOW_DAYS`]).
-const MEMPOOL_EXPIRY_BLOCKS: i64 =
+pub(crate) const MEMPOOL_EXPIRY_BLOCKS: i64 =
     72 * 60 * 60 / crate::noncustodial::network::TARGET_SPACING_SECS as i64;
 
 /// How long past the reservation TTL an unsent purchase draft is kept before

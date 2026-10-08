@@ -15,6 +15,13 @@
 #                                       finalize-lock-cancel); needs the
 #                                       SHAKEDEX_WORK the listing was made in
 #   shakedex-cli-sell.sh fill LISTING   buy LISTING with the hsd wallet
+#   shakedex-cli-sell.sh register       register NAME (default: a fresh name)
+#                                       with the hsd wallet; prints the name
+#   shakedex-cli-sell.sh lock-to NAME ADDRESS
+#                                       transfer NAME to ADDRESS and finalize it
+#                                       there, as a lock the caller holds the key
+#                                       of; prints the name's owner outpoint
+#                                       ("txid index"). Neither needs the CLI.
 #
 # The seller and the CLI buyer are the hsd wallet of that node. The shakedex
 # CLI is cloned at a pinned SHA into a work dir (nothing is installed
@@ -72,7 +79,12 @@ case "$MODE" in
     [ -n "${SHAKEDEX_WORK:-}" ] || die "cancel needs SHAKEDEX_WORK, the work dir the lock was made in"
     ;;
   fill) LISTING="${2:?usage: shakedex-cli-sell.sh fill LISTING}" ;;
-  *) die "unknown command '$MODE' (fixed, auction, cancel NAME, fill LISTING)" ;;
+  register) NAME="${NAME:-shkreg$RANDOM$RANDOM}" ;;
+  lock-to)
+    NAME="${2:?usage: shakedex-cli-sell.sh lock-to NAME ADDRESS}"
+    LOCK_ADDR="${3:?usage: shakedex-cli-sell.sh lock-to NAME ADDRESS}"
+    ;;
+  *) die "unknown command '$MODE' (fixed, auction, cancel NAME, fill LISTING, register, lock-to NAME ADDRESS)" ;;
 esac
 
 if [ "$MODE" = fixed ] || [ "$MODE" = auction ]; then
@@ -155,6 +167,30 @@ if [ "$MODE" = fixed ] || [ "$MODE" = auction ]; then
   [ "$REGISTER" = 1 ] && register_name
   [ "$(name_state)" = CLOSED ] || die "$NAME is not registered (state: $(name_state)); use REGISTER=1"
 fi
+
+case "$MODE" in
+  register)
+    register_name
+    [ "$(name_state)" = CLOSED ] || die "$NAME did not register (state: $(name_state))"
+    printf '%s\n' "$NAME"
+    exit 0
+    ;;
+  lock-to)
+    [ "$(name_state)" = CLOSED ] || die "$NAME is not registered (state: $(name_state))"
+    log "transfer $NAME to $LOCK_ADDR"
+    wrpc sendtransfer "$NAME" "$LOCK_ADDR" >/dev/null
+    mine $((TRANSFER_LOCKUP + 1))
+    log "finalize $NAME at $LOCK_ADDR"
+    wrpc sendfinalize "$NAME" >/dev/null
+    mine 1
+    owner_hash="$(name_field owner.hash)"
+    owner_index="$(name_field owner.index)"
+    addr="$(rpc gettxout "$owner_hash" "$owner_index" | json address.string)"
+    [ "$addr" = "$LOCK_ADDR" ] || die "$NAME's owner coin is at '$addr', not $LOCK_ADDR"
+    printf '%s %s\n' "$owner_hash" "$owner_index"
+    exit 0
+    ;;
+esac
 
 WORK="${SHAKEDEX_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/shakedex-cli.XXXXXX")}"
 mkdir -p "$WORK"
