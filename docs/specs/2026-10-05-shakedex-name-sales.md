@@ -31,7 +31,7 @@ Requirements name the code that enforces them and the test that pins them. Those
 *Pinned:* `noncustodial::shakedex::template` unit tests `{boundary_at_mtp, sequence_is_fffffffe}`.
 
 **R4 — Fees are charged on vsize, including foreign witnesses.** The purchase (seller's input witness `[sig65, lockScript]`), the buyer's FINALIZE (`[lockScript]`), the cancel and the cancel's FINALIZE are sized with their real witnesses, not the P2WPKH constants, at the profile's fee rate with a floor of 5000 doos/kB as shakedex uses.
-*Enforced:* `noncustodial/shakedex/purchase.rs` (the fee is charged on the vsize of the plan signed in full, foreign witness included, with the floor `SHAKEDEX_MIN_RATE_PER_BYTE`).
+*Enforced:* `noncustodial/shakedex/funding.rs` (the fee is charged on the vsize of the plan signed in full, foreign witness included, with the floor `SHAKEDEX_MIN_RATE_PER_BYTE`), used by `purchase.rs`, `sell.rs` and `cancel.rs`.
 *Pinned:* `noncustodial::shakedex::purchase` unit test `fee_covers_hsd_vsize_with_foreign_witness`, and `shakedex_vector_tests::{purchase_plan_matches_hsd_signed_hex, purchase_finalize_plan_matches_hsd_signed_hex}` against hsd-signed transactions; selling adds `noncustodial::shakedex::cancel` unit test `fee_covers_hsd_vsize_with_the_lock_witness`, and on a live node `tests/live_node_it.rs::{shakedex_lock_finalize_pays_its_fee_rate_on_vsize, shakedex_cancel_pays_its_fee_rate_on_vsize}`.
 
 ### 3.2 Buying

@@ -3,6 +3,7 @@
 //! presign, proof, fill) are allowed inside this module only; everything it
 //! exports speaks the CONTEXT.md vocabulary.
 
+pub mod funding;
 pub mod listing_file;
 pub mod lock_key;
 pub mod purchase;
