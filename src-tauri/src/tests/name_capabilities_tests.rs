@@ -50,6 +50,7 @@ fn ctx(
         owner_spend_in_flight: false,
         transfer_height: None,
         current_height: None,
+        renewal_height: None,
         reveal_txid,
         reveal_draft_status,
         bid_value_doos,

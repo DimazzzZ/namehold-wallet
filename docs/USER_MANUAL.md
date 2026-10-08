@@ -360,7 +360,7 @@ In the Name Actions modal for an owned name, click **Show all actions**:
 | Action | What it does |
 |--------|--------------|
 | **Update** | Replace the on-chain DNS records (uses the DNS editor). |
-| **Renew** | Extend the name's expiry. |
+| **Renew** | Extend the name's expiry. Not right after the name was registered, renewed or finalized: the network accepts a renewal only 36 blocks (about 6 hours) later on mainnet and testnet, 5 on regtest, and until then the button says how many blocks are left. |
 | **Transfer** | Start a transfer to another Handshake address. Enters a `TRANSFER` covenant. |
 | **Finalize** | Complete a transfer after the lockup period (mainnet: ~2 days). |
 | **Cancel** | Revert a pending transfer before it's finalized. |
@@ -740,7 +740,7 @@ A freshly imported wallet won't show any HNS until:
 
 ### Send fails with "Not sent"
 
-The dialog stays open with the exact error. Common causes: not enough HNS to cover amount + fee, or the node could not be reached mid-broadcast. A transaction the node does not accept still reads as sent (hsd answers with its txid either way) and is marked dropped once it is not seen. Fix the issue and click Sign & Broadcast again — the draft is still there.
+The dialog stays open with the exact error. Common causes: not enough HNS to cover amount + fee, or the node could not be reached mid-broadcast. After sending, the wallet looks the transaction up on the node: if the node does not have it, the dialog says "The node did not take the transaction". hsd does not say why; most often its coins were already spent by another transaction. The coins stay held, and Activity shows the send as waiting until the node is checked again. Fix the issue and click Sign & Broadcast again — the draft is still there. A send already sent, or one marked dropped or failed (its coins were released), cannot be signed or sent again: build a new one. A send marked dropped or failed that is mined after all, within 72 hours, turns confirmed by itself.
 
 ### CSV import shows errors
 

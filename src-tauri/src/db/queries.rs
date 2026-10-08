@@ -1945,6 +1945,31 @@ pub fn list_drafts_awaiting_confirmation(
     Ok(out)
 }
 
+/// `dropped` and `failed` drafts last updated within `max_age_secs`: their
+/// coins were released, but a transaction other nodes still hold can be mined
+/// after the verdict, and the confirmation poll keeps looking for it that long.
+pub fn list_released_drafts_to_watch(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    max_age_secs: i64,
+) -> Result<Vec<TxDraftRow>, AppError> {
+    let sql = format!(
+        "SELECT {DRAFT_COLS} FROM wallet_tx_drafts
+         WHERE wallet_profile_id = ?1
+           AND status IN ('dropped', 'failed')
+           AND signed_tx_hex IS NOT NULL
+           AND (julianday('now') - julianday(updated_at)) * 86400 < ?2
+         ORDER BY created_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![profile_id, max_age_secs], row_to_draft)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 /// All derived address strings for a profile (both branches). Used by the sync
 /// engine to scan the node for coins.
 pub fn get_profile_addresses(

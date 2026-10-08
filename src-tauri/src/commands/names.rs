@@ -25,6 +25,7 @@ use crate::noncustodial::types::TxDraftSummary;
 use crate::noncustodial::{address, bids, covenants, names, resource};
 use crate::AppState;
 
+use super::draft_ctx::{ensure_finalize_matured, ensure_renew_not_premature, exclude_owner_reveal};
 // Re-exported: the `*_inner` builders take these, and their tests name them
 // through this module.
 pub(crate) use super::draft_ctx::{
@@ -360,6 +361,11 @@ pub(crate) struct NameActionContext {
     /// the node would accept must not be refused on a guess.
     pub transfer_height: Option<i64>,
     pub current_height: Option<i64>,
+    /// The block the name was last registered, renewed or finalized in
+    /// (`getnameinfo.renewal`). hsd refuses a RENEW until `tree_interval`
+    /// blocks have passed since (`bad-renewal-premature`); `None` means we
+    /// cannot tell, and Renew is not refused on a guess.
+    pub renewal_height: Option<i64>,
     /// The `reveal_txid` stamped on the bid commitment row (if any).
     pub reveal_txid: Option<String>,
     /// Status of the local tx_draft matching `reveal_txid` (if one exists).
@@ -574,6 +580,10 @@ pub(crate) fn find_name_action_context(
         .as_ref()
         .and_then(|t| t.transfer_height)
         .filter(|h| *h > 0);
+    let renewal_height = tracked_row
+        .as_ref()
+        .and_then(|t| t.renewal_height)
+        .filter(|h| *h > 0);
     // The same call is already propagated further down this file; a failure
     // here read as "height unknown", which quietly widens every gate that
     // compares a height against the tip.
@@ -590,6 +600,7 @@ pub(crate) fn find_name_action_context(
         transfer_has_items: transfer,
         transfer_height,
         current_height,
+        renewal_height,
         existing_bid_count,
         has_pending_open,
         pending_broadcast_action,
@@ -1053,10 +1064,28 @@ pub(crate) fn build_name_action_capabilities(
     // just as UPDATE does (`chain.js`), so extending the registration ends a
     // transfer in flight without saying so. Cancel the transfer first and the
     // renewal is one click away; the reverse order loses the transfer silently.
+    //
+    // Nor is Renew offered before hsd would take it: the same rule
+    // `build_renew_draft` refuses a premature RENEW by, read
+    // here from the tracked renewal height instead of a fresh node answer.
+    let blocks_until_renew = action_ctx
+        .renewal_height
+        .zip(action_ctx.current_height)
+        .map(|(renewal, tip)| network.name_params().blocks_until_renew(renewal, tip))
+        .filter(|b| *b > 0);
     let can_renew = NameActionCapability {
-        allowed: can_spend_as_owner && !transfer_pending,
+        allowed: can_spend_as_owner && !transfer_pending && blocks_until_renew.is_none(),
         reason: owner_gate().or_else(|| {
-            transfer_pending.then(|| "a transfer is pending — renewing would cancel it".into())
+            if transfer_pending {
+                Some("a transfer is pending — renewing would cancel it".into())
+            } else {
+                blocks_until_renew.map(|blocks| {
+                    format!(
+                        "the name was renewed too recently — it can be renewed in {blocks} block{}",
+                        if blocks == 1 { "" } else { "s" }
+                    )
+                })
+            }
         }),
     };
 
@@ -2161,25 +2190,19 @@ pub async fn build_redeem_draft(
     let coins = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let nh_hex = hex::encode(names::hash_name(&name)?);
-        let all = queries::find_unspent_covenant_utxos_by_name_hash(
+        queries::find_unspent_covenant_utxos_by_name_hash(
             &conn,
             &ctx.profile_id,
             sync::COV_REVEAL as i64,
             &nh_hex,
-        )?;
-        // The winning reveal IS the name's owner coin until REGISTER spends it,
-        // and consensus rejects redeeming it (`bad-redeem-owner`) — which would
-        // take the whole transaction down with it.
-        let owner = queries::get_name_coin(&conn, &ctx.profile_id, &name)?;
-        all.into_iter()
-            .filter(|c| {
-                owner
-                    .as_ref()
-                    .map(|o| !(o.txid == c.txid && o.vout == c.vout))
-                    .unwrap_or(true)
-            })
-            .collect::<Vec<_>>()
+        )?
     };
+    // The winning reveal IS the name's owner coin until REGISTER spends it,
+    // and consensus rejects redeeming it (`bad-redeem-owner`). Which coin that
+    // is comes from the node: the wallet's own record of the owner is missing
+    // whenever the name was never tracked, which is exactly when a reveal that
+    // won looks like one that lost.
+    let coins = exclude_owner_reveal(&client, &name, coins).await?;
     if coins.is_empty() {
         return Err(AppError::NotFound(format!(
             "no unspent losing reveal coin for '{name}' (sync first?)"
@@ -2386,6 +2409,7 @@ pub async fn build_renew_draft(
     let ctx = load_ctx(&state)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = ctx.node.clone();
+    ensure_renew_not_premature(&client, ctx.network, &name).await?;
     let rblock = renewal_block(&client, ctx.network).await?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_renew_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &coin, &rblock)
@@ -2500,6 +2524,7 @@ pub async fn build_finalize_draft(
     let ctx = load_ctx(&state)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = ctx.node.clone();
+    ensure_finalize_matured(&client, ctx.network, &name).await?;
     let rblock = renewal_block(&client, ctx.network).await?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_finalize_draft_inner(&conn, &ctx, &name, fee_rate, &ns, &coin, &rblock)
@@ -2687,6 +2712,7 @@ pub async fn build_batch_renew_draft(
     for name in &names {
         let nh = names::hash_name(name)?;
         let (coin, ns) = owner_coin_and_state(&state, &ctx, name).await?;
+        ensure_renew_not_premature(&client, ctx.network, name).await?;
         per_name.push((name.clone(), nh, coin, ns));
     }
 
@@ -3022,27 +3048,33 @@ pub async fn build_batch_redeem_draft(
     for name in &names {
         let nh = names::hash_name(name)?;
         let ns = fetch_name_state(&client, name).await?;
-        let (bid, coin) = {
+        // Every reveal the wallet holds for the name, as the single redeem
+        // takes them: a wallet that outbid itself has several, each on its own
+        // address, so the newest commitment's address finds only one of them.
+        let (bid, coins) = {
             let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
             let bid = queries::get_bid_commitment(&conn, &ctx.profile_id, name)?
                 .ok_or_else(|| AppError::NotFound(format!("no bid for '{}'", name)))?;
-            let coin = queries::find_unspent_covenant_utxo(
+            let coins = queries::find_unspent_covenant_utxos_by_name_hash(
                 &conn,
                 &ctx.profile_id,
-                &bid.address,
                 sync::COV_REVEAL as i64,
-                name,
                 &hex::encode(nh),
-            )?
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "no unspent losing reveal coin for '{}' (sync first?)",
-                    name
-                ))
-            })?;
-            (bid, coin)
+            )?;
+            (bid, coins)
         };
-        per_name.push((name.clone(), nh, bid, coin, ns));
+        // The winning reveal is the name's owner coin until REGISTER spends
+        // it, and hsd refuses to redeem it (`bad-redeem-owner`).
+        let coins = exclude_owner_reveal(&client, name, coins).await?;
+        if coins.is_empty() {
+            return Err(AppError::NotFound(format!(
+                "no unspent losing reveal coin for '{}' (sync first?)",
+                name
+            )));
+        }
+        for coin in coins {
+            per_name.push((name.clone(), nh, bid.clone(), coin, ns.clone()));
+        }
     }
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -3053,8 +3085,9 @@ pub async fn build_batch_redeem_draft(
 /// `State<AppState>`. The caller must hold the DB mutex for the full duration.
 ///
 /// `per_name` is `(name, name_hash, bid_commitment, reveal_coin,
-/// on_chain_state)` for every name in the batch. The wrapper's per-name RPC +
-/// DB prefetch resolves all of these; the inner builds the REDEEM covenant
+/// on_chain_state)` for every losing reveal coin in the batch — several rows
+/// for a name the wallet outbid itself on. The wrapper's per-name RPC + DB
+/// prefetch resolves all of these; the inner builds the REDEEM covenant
 /// outputs and persists the batch draft.
 pub(crate) fn build_batch_redeem_draft_inner(
     conn: &rusqlite::Connection,
@@ -3074,7 +3107,11 @@ pub(crate) fn build_batch_redeem_draft_inner(
             address: coin.address.clone(),
             covenant: cov,
         });
-        batch_names.push(name);
+        // One row per reveal coin: a name with several losing reveals is
+        // still one name in the batch.
+        if !batch_names.contains(&name) {
+            batch_names.push(name);
+        }
     }
 
     let res = actions::build_batch_plan(
@@ -3126,6 +3163,7 @@ pub async fn build_batch_finalize_draft(
         let nh = names::hash_name(name)?;
         let raw = names::raw_name(name)?;
         let (coin, ns) = owner_coin_and_state(&state, &ctx, name).await?;
+        ensure_finalize_matured(&client, ctx.network, name).await?;
         per_name.push((name.clone(), nh, raw, coin, ns));
     }
 
@@ -3145,7 +3183,8 @@ pub(crate) type PerNameOwner = Vec<(String, [u8; 32], queries::NameCoin, NameSta
 
 /// Per-name prefetch for a batch that spends a bid: the name, its hash, the
 /// commitment row the bid was made from, the coin it created, and the on-chain
-/// state. Used by reveal and by redeem, which ignores the commitment.
+/// state. Used by reveal and by redeem, which ignores the commitment and has
+/// one row per losing reveal coin.
 pub(crate) type PerNameBid = Vec<(
     String,
     [u8; 32],
@@ -3275,6 +3314,7 @@ pub async fn build_finalize_with_payment_draft(
     let rate = self::fee_rate(&ctx, fee_rate);
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
     let client = ctx.node.clone();
+    ensure_finalize_matured(&client, ctx.network, &name).await?;
     let rblock = renewal_block(&client, ctx.network).await?;
 
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
@@ -3414,6 +3454,7 @@ mod tests {
             owner_spend_in_flight: false,
             transfer_height: None,
             current_height: None,
+            renewal_height: None,
             reveal_txid: None,
             reveal_draft_status: None,
             bid_value_doos: None,
@@ -4609,6 +4650,61 @@ mod tests {
             Network::Regtest,
         );
         assert!(caps.can_finalize.allowed, "the next block may carry it");
+    }
+
+    /// hsd refuses a RENEW until `tree_interval` blocks have passed since the
+    /// name was last registered, renewed or finalized (`bad-renewal-premature`,
+    /// chain.js) — the rule `build_renew_draft` refuses one by. Offering the
+    /// button meanwhile sends the user at that refusal.
+    #[test]
+    fn renew_waits_a_tree_interval_after_the_last_renewal() {
+        // Regtest tree interval is 5. Renewed at 800, a renew is valid in
+        // block 805 — i.e. once the tip reaches 804.
+        let just_renewed = NameActionContext {
+            has_owner_coin: true,
+            owner_covenant_type: Some(COV_REGISTER as i64),
+            transfer_has_items: Some(false),
+            renewal_height: Some(800),
+            current_height: Some(802),
+            ..ctx_default()
+        };
+        let caps = |ctx: &NameActionContext| {
+            build_name_action_capabilities(
+                "n".into(),
+                "CLOSED".into(),
+                "CLOSED",
+                None,
+                ctx,
+                true,
+                false,
+                None,
+                Network::Regtest,
+            )
+        };
+        let early = caps(&just_renewed);
+        assert!(!early.can_renew.allowed, "renewed too recently");
+        let reason = early.can_renew.reason.unwrap_or_default();
+        assert!(
+            reason.contains("in 2 blocks"),
+            "the reason must say how many blocks are left, got {reason:?}"
+        );
+
+        let ready = NameActionContext {
+            current_height: Some(804),
+            ..just_renewed
+        };
+        assert!(
+            caps(&ready).can_renew.allowed,
+            "the next block may carry it"
+        );
+
+        // Without a renewal height we cannot say: Renew stays offered.
+        let unknown = NameActionContext {
+            renewal_height: None,
+            current_height: Some(801),
+            ..ready
+        };
+        assert!(caps(&unknown).can_renew.allowed);
     }
 
     /// Without heights we cannot say, and refusing an action the node would

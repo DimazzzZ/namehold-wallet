@@ -735,14 +735,141 @@ async fn resolve_ownership_propagates_getnameinfo_error() {
 
 // ------- classify_broadcast_outcome_with_client ---------------------------
 
+/// hsd's `getrawtransaction` verbose reply for a transaction in its mempool,
+/// the fields the look-up reads (`txToJSON`: no block, 0 confirmations).
+fn hsd_mempool_tx() -> serde_json::Value {
+    json!({ "txid": "abc123", "blockhash": null, "confirmations": 0 })
+}
+
+fn hsd_not_found() -> AppError {
+    AppError::NodeRefused {
+        message: "Transaction not found.".into(),
+        code: -1,
+    }
+}
+
+/// Spec honest-broadcast R1: hsd answered the txid and has the transaction.
 #[tokio::test]
-async fn broadcast_classify_success_returns_txid() {
-    let mock = MockNodeRpc::new().with_send_raw_transaction("abc123".to_string());
+async fn broadcast_taken_by_the_node_is_success() {
+    let mock = MockNodeRpc::new()
+        .with_send_raw_transaction("abc123".to_string())
+        .with_raw_transaction(hsd_mempool_tx());
     let out = crate::commands::tx::classify_broadcast_outcome_with_client(&mock, "deadbeef").await;
     match out {
         crate::commands::tx::BroadcastOutcome::Success(txid) => assert_eq!(txid, "abc123"),
         other => panic!("expected Success, got {other:?}"),
     }
+    assert!(mock
+        .calls()
+        .contains(&crate::tests::mock_node_rpc::RpcCall::RawTransaction(
+            "abc123".into()
+        )));
+}
+
+/// R1: hsd adds a transaction to its mempool after answering, so a later
+/// check that finds it ends the window as a success.
+#[tokio::test]
+async fn broadcast_taken_on_a_later_check_is_success() {
+    let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = n.clone();
+    let mock = MockNodeRpc::new()
+        .with_send_raw_transaction("abc123".to_string())
+        .with_raw_transaction_fn(move || {
+            if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                Err(hsd_not_found())
+            } else {
+                Ok(hsd_mempool_tx())
+            }
+        });
+    let out = crate::commands::tx::classify_broadcast_outcome_with_client(&mock, "deadbeef").await;
+    assert!(
+        matches!(out, crate::commands::tx::BroadcastOutcome::Success(_)),
+        "{out:?}"
+    );
+    assert_eq!(n.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+/// R1 and R2: hsd's not-found on every check, with every coin the
+/// transaction spends unspent, is not taken. Each check asks hsd.
+#[tokio::test]
+async fn broadcast_not_taken_by_the_node_is_pending() {
+    let (d, txid) = evidence_draft();
+    let own = txid.clone();
+    let reply = txid.clone();
+    let mock = MockNodeRpc::new()
+        .with_send_raw_transaction(reply)
+        .with_raw_transaction_not_found()
+        .with_get_coin(move |h, i| Ok((h != own).then(|| hsd_coin(h, i, 10))));
+    let out =
+        crate::commands::tx::classify_broadcast_outcome_with_client(&mock, &d.unsigned_tx_hex)
+            .await;
+    match out {
+        crate::commands::tx::BroadcastOutcome::NotTaken(t) => assert_eq!(t, txid),
+        other => panic!("expected NotTaken, got {other:?}"),
+    }
+    let checks = mock
+        .calls()
+        .into_iter()
+        .filter(|c| matches!(c, crate::tests::mock_node_rpc::RpcCall::RawTransaction(_)))
+        .count();
+    assert_eq!(
+        checks,
+        crate::noncustodial::tx_evidence::TAKEN_CHECKS as usize
+    );
+}
+
+/// R1: on a node without a transaction index a send already mined reads as
+/// not found; its output mined is the node having it.
+#[tokio::test]
+async fn broadcast_mined_without_tx_index_is_success() {
+    let (d, txid) = evidence_draft();
+    let own = txid.clone();
+    let mock = MockNodeRpc::new()
+        .with_send_raw_transaction(txid.clone())
+        .with_raw_transaction_not_found()
+        .with_get_coin(move |h, i| Ok((h == own && i == 0).then(|| hsd_coin(h, i, 77))));
+    let out =
+        crate::commands::tx::classify_broadcast_outcome_with_client(&mock, &d.unsigned_tx_hex)
+            .await;
+    match out {
+        crate::commands::tx::BroadcastOutcome::Mined(t, h) => {
+            assert_eq!((t.as_str(), h), (txid.as_str(), 77))
+        }
+        other => panic!("expected Mined, got {other:?}"),
+    }
+}
+
+/// R3: a check without hsd's answer ends the window with no verdict: the
+/// node returned a txid, so the send stands.
+#[tokio::test]
+async fn broadcast_check_without_hsds_answer_is_success() {
+    let mock = MockNodeRpc::new()
+        .with_send_raw_transaction("abc123".to_string())
+        .with_raw_transaction_err("node returned non-JSON body (status 502 Bad Gateway)");
+    let out = crate::commands::tx::classify_broadcast_outcome_with_client(&mock, "deadbeef").await;
+    assert!(
+        matches!(out, crate::commands::tx::BroadcastOutcome::Success(_)),
+        "{out:?}"
+    );
+    assert_eq!(
+        mock.calls().len(),
+        2,
+        "one send, one check: {:?}",
+        mock.calls()
+    );
+}
+
+#[tokio::test]
+async fn taken_reads_unknown_evidence_as_no_verdict() {
+    // Not found on every check, and the coin look-ups fail: no verdict.
+    let (d, txid) = evidence_draft();
+    let mock = MockNodeRpc::new()
+        .with_raw_transaction_not_found()
+        .with_get_coin(|_, _| Err(AppError::Rpc("proxy page".into())));
+    assert_eq!(
+        taken_by_node_with_client(&mock, &d.unsigned_tx_hex, &txid).await,
+        Taken::Unknown
+    );
 }
 
 #[tokio::test]
@@ -1580,10 +1707,11 @@ async fn broadcast_gates_pass_a_local_node_and_an_approved_remote_on_our_chain()
     .unwrap();
 }
 
-// ------- chain_evidence_with_client / node_has_tx_index_with_client (tx.rs) --
+// ------- noncustodial::tx_evidence --------------------------------------------
 
-use crate::commands::tx::{
-    chain_evidence_with_client, node_has_tx_index_with_client, ChainEvidence,
+use crate::noncustodial::tx_evidence::{
+    chain_evidence_with_client, node_has_tx_index_with_client, taken_by_node_with_client,
+    ChainEvidence, Taken,
 };
 
 /// A draft spending `[0x11;32]:0` and `[0x22;32]:1` into two outputs, and its
@@ -1650,7 +1778,7 @@ async fn evidence_an_output_mined_is_mined_at_its_height() {
     let mock = MockNodeRpc::new()
         .with_get_coin(move |h, i| Ok((h == own && i == 1).then(|| hsd_coin(h, i, 812))));
     assert_eq!(
-        chain_evidence_with_client(&mock, &d, &txid).await,
+        chain_evidence_with_client(&mock, &d.unsigned_tx_hex, &txid).await,
         ChainEvidence::Mined(812)
     );
 }
@@ -1662,7 +1790,7 @@ async fn evidence_inputs_all_unspent() {
     let mock =
         MockNodeRpc::new().with_get_coin(move |h, i| Ok((h != own).then(|| hsd_coin(h, i, 10))));
     assert_eq!(
-        chain_evidence_with_client(&mock, &d, &txid).await,
+        chain_evidence_with_client(&mock, &d.unsigned_tx_hex, &txid).await,
         ChainEvidence::InputsUnspent
     );
     let asked: Vec<_> = mock
@@ -1685,7 +1813,7 @@ async fn evidence_one_input_spent() {
     let mock =
         MockNodeRpc::new().with_get_coin(|h, i| Ok((h == PREV_A).then(|| hsd_coin(h, i, 10))));
     assert_eq!(
-        chain_evidence_with_client(&mock, &d, &txid).await,
+        chain_evidence_with_client(&mock, &d.unsigned_tx_hex, &txid).await,
         ChainEvidence::InputsSpent
     );
 }
@@ -1698,7 +1826,7 @@ async fn evidence_without_a_deciding_answer_is_unknown() {
     let mempool =
         MockNodeRpc::new().with_get_coin(move |h, i| Ok((h == own).then(|| hsd_coin(h, i, -1))));
     assert_eq!(
-        chain_evidence_with_client(&mempool, &d, &txid).await,
+        chain_evidence_with_client(&mempool, &d.unsigned_tx_hex, &txid).await,
         ChainEvidence::Unknown
     );
     // A failed lookup of an input.
@@ -1711,13 +1839,13 @@ async fn evidence_without_a_deciding_answer_is_unknown() {
         }
     });
     assert_eq!(
-        chain_evidence_with_client(&failing, &d, &txid).await,
+        chain_evidence_with_client(&failing, &d.unsigned_tx_hex, &txid).await,
         ChainEvidence::Unknown
     );
     // A draft whose bytes are not this txid's.
     let any = MockNodeRpc::new().with_get_coin(|h, i| Ok(Some(hsd_coin(h, i, 5))));
     assert_eq!(
-        chain_evidence_with_client(&any, &d, "ab").await,
+        chain_evidence_with_client(&any, &d.unsigned_tx_hex, "ab").await,
         ChainEvidence::Unknown
     );
     assert!(

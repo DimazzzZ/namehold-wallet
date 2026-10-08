@@ -439,6 +439,10 @@ async fn live_auction_open_bid_reveal_register() {
     assert_eq!(node_state(&cl, &name).await.as_deref(), Some("CLOSED"));
 }
 
+/// A genuine loser redeems: a rival wallet on the same node outbids this one,
+/// so the rival's reveal becomes the name's owner and this wallet's reveal is
+/// a losing one. REDEEM spends exactly that losing reveal and returns its
+/// value; the rival's winning reveal stays the owner.
 #[tokio::test]
 async fn live_auction_open_bid_reveal_redeem() {
     let Some((url, key)) = it_env() else {
@@ -449,10 +453,18 @@ async fn live_auction_open_bid_reveal_redeem() {
     let app = app_with(conn);
     let cl = client(&url, &key);
     let (addr, _, _) = leaf00();
+    let (rival, rival_addr) = rival_wallet(&url, &key);
 
-    // Fund the wallet.
+    // Fund both wallets.
     cl.generate_to_address(101, &addr).await.expect("fund");
+    // A few coinbases are plenty for one bid (regtest coinbase maturity is 2).
+    cl.generate_to_address(5, &rival_addr)
+        .await
+        .expect("fund rival");
     sync_wallet_state(app.state(), None).await.expect("sync");
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
 
     // A per-run-unique name (avoid collisions with names already on the node).
     let tip = cl.get_blockchain_info().await.expect("info").blocks;
@@ -469,43 +481,131 @@ async fn live_auction_open_bid_reveal_redeem() {
         node_state(&cl, &name).await
     );
 
-    // BID → advance to REVEAL.
+    // BID from both wallets; the rival bids higher → advance to REVEAL.
     sync_wallet_state(app.state(), None).await.expect("sync");
     let bid = build_bid_draft(app.state(), name.clone(), 500_000, 1_000_000, Some(1))
         .await
         .expect("build bid");
     execute(&app, &cl, &addr, bid.id).await;
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let rival_bid = build_bid_draft(rival.state(), name.clone(), 800_000, 1_600_000, Some(1))
+        .await
+        .expect("build rival bid");
+    execute(&rival, &cl, &addr, rival_bid.id).await;
     assert!(
         mine_until(&cl, &name, "REVEAL", &addr, 30).await,
         "name {name} did not reach REVEAL; state={:?}",
         node_state(&cl, &name).await
     );
 
-    // REVEAL → advance to CLOSED.
+    // REVEAL from both → advance to CLOSED.
     sync_wallet_state(app.state(), None).await.expect("sync");
     let reveal = build_reveal_draft(app.state(), name.clone(), Some(1))
         .await
         .expect("build reveal");
-    execute(&app, &cl, &addr, reveal.id).await;
+    execute(&app, &cl, &addr, reveal.id.clone()).await;
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let rival_reveal = build_reveal_draft(rival.state(), name.clone(), Some(1))
+        .await
+        .expect("build rival reveal");
+    execute(&rival, &cl, &addr, rival_reveal.id.clone()).await;
     assert!(
         mine_until(&cl, &name, "CLOSED", &addr, 40).await,
         "name {name} did not reach CLOSED; state={:?}",
         node_state(&cl, &name).await
     );
 
-    // Do NOT insert tracked_name_states for this name. The sync therefore
-    // won't pick up the owner coin → wallet sees no owner → can redeem.
-    sync_wallet_state(app.state(), None).await.expect("sync");
+    // The node names the rival's reveal as the owner: ours lost.
+    let rival_reveal_txid = draft_status(&rival, &rival_reveal.id)
+        .txid
+        .expect("rival reveal txid");
+    assert_eq!(
+        name_owner(&cl, &name).await.0,
+        rival_reveal_txid,
+        "the higher bid must own the name"
+    );
+    let ours = covenant_outpoints(
+        &cl,
+        &draft_status(&app, &reveal.id).txid.expect("reveal txid"),
+        COV_TYPE_REVEAL,
+    )
+    .await;
+    assert_eq!(ours.len(), 1, "one reveal output: {ours:?}");
 
-    // REDEEM: there is an unspent reveal coin at the bid commitment address.
-    // The wallet can reclaim it without needing the name's owner coin.
+    // REDEEM the losing reveal.
+    sync_wallet_state(app.state(), None).await.expect("sync");
     let redeem = build_redeem_draft(app.state(), name.clone(), Some(1))
         .await
         .expect("build redeem");
-    execute(&app, &cl, &addr, redeem.id).await;
+    execute(&app, &cl, &addr, redeem.id.clone()).await;
 
-    // After redeem, the name stays CLOSED on-chain.
-    assert_eq!(node_state(&cl, &name).await.as_deref(), Some("CLOSED"));
+    // The redeem spent exactly our losing reveal, which is gone from the UTXO
+    // set, and paid its value (the true bid) back; the owner is unchanged.
+    let redeem_txid = draft_status(&app, &redeem.id).txid.expect("redeem txid");
+    assert_spends_reveals(&cl, &redeem_txid, &ours).await;
+    assert_eq!(
+        output_value_by_covenant_type(&cl, &redeem_txid, COV_TYPE_REDEEM).await,
+        Some(500_000),
+        "REDEEM returns the losing reveal's value"
+    );
+    assert_eq!(name_owner(&cl, &name).await.0, rival_reveal_txid);
+}
+
+/// The guard behind REDEEM on a real node: a lone bidder's reveal won, and
+/// until REGISTER spends it it is the name's owner coin, which hsd refuses to
+/// redeem (`bad-redeem-owner`). The name is never tracked, so the wallet has
+/// no record of the owner of its own — only the node's answer can refuse it.
+#[tokio::test]
+async fn live_redeem_of_the_winning_reveal_is_refused() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_redeem_of_the_winning_reveal_is_refused: set HNS_IT_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    cl.generate_to_address(101, &addr).await.expect("fund");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("wonrv{tip}");
+
+    let open = build_open_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build open");
+    execute(&app, &cl, &addr, open.id).await;
+    assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let bid = build_bid_draft(app.state(), name.clone(), 500_000, 1_000_000, Some(1))
+        .await
+        .expect("build bid");
+    execute(&app, &cl, &addr, bid.id).await;
+    assert!(mine_until(&cl, &name, "REVEAL", &addr, 30).await);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let reveal = build_reveal_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("build reveal");
+    execute(&app, &cl, &addr, reveal.id.clone()).await;
+    assert!(mine_until(&cl, &name, "CLOSED", &addr, 40).await);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let reveal_txid = draft_status(&app, &reveal.id).txid.expect("reveal txid");
+    assert_eq!(
+        name_owner(&cl, &name).await.0,
+        reveal_txid,
+        "the lone reveal owns the name"
+    );
+    expect_err(
+        build_redeem_draft(app.state(), name.clone(), Some(1)).await,
+        "won the auction",
+    );
+    // Nothing spent it: it is still the owner coin, waiting for REGISTER.
+    let (hash, index) = name_owner(&cl, &name).await;
+    assert!(cl.get_coin(&hash, index).await.expect("coin").is_some());
 }
 
 #[tokio::test]
@@ -582,14 +682,37 @@ async fn live_auction_register_transfer_finalize() {
     execute(&app, &cl, &addr, transfer.id).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
 
-    // After TRANSFER, the name stays on-chain in some state still allowing finalize.
+    // hsd refuses a FINALIZE until the transfer lockup is over
+    // (`bad-finalize-maturity`), so the builder refuses it too.
     use crate::commands::names::build_finalize_draft;
+    expect_err(
+        build_finalize_draft(app.state(), name.clone(), Some(1)).await,
+        "still locked",
+    );
+
+    // Mine exactly the rest of the lockup, then finalize.
+    let transfer_height = name_info_height(&cl, &name, "transfer").await;
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let left = NET
+        .name_params()
+        .blocks_until_finalize(transfer_height, tip);
+    assert!(left > 0, "the lockup was not over a moment ago");
+    cl.generate_to_address(left as u32, &addr)
+        .await
+        .expect("lockup");
+    sync_wallet_state(app.state(), None).await.expect("sync");
     let finalize = build_finalize_draft(app.state(), name.clone(), Some(1))
         .await
         .expect("build finalize");
     execute(&app, &cl, &addr, finalize.id).await;
 
-    // After finalize, the name is at the new address. Check state.
+    // The name's owner coin is now at the recipient, and no transfer is
+    // pending.
+    assert_eq!(
+        owner_coin_address(&cl, &name).await.as_deref(),
+        Some(addr2.as_str())
+    );
+    assert_eq!(name_info_height(&cl, &name, "transfer").await, 0);
     assert_eq!(node_state(&cl, &name).await.as_deref(), Some("CLOSED"));
 }
 
@@ -715,8 +838,8 @@ async fn live_batch_transfer_two_names() {
         );
     }
 
-    // Finalize each name after the transfer lockup elapses. FINALIZE is per-name
-    // (there is no batch finalize command); advance past the regtest transfer
+    // Finalize each name on its own after the transfer lockup elapses (the
+    // batch finalize has its own test); advance past the regtest transfer
     // lockup (10 blocks) so each finalize is valid.
     sync_wallet_state(app.state(), None).await.expect("sync");
     cl.generate_to_address(11, &addr).await.expect("lockup");
@@ -727,10 +850,20 @@ async fn live_batch_transfer_two_names() {
             .await
             .expect("build finalize");
         execute(&app, &cl, &addr, finalize.id).await;
+        // The first finalize spent a funding coin for its fee. Without a sync
+        // the wallet still holds that coin as unspent, and the second finalize
+        // spent it again: hsd took that transaction as an orphan, its input
+        // missing. In the app a sync runs between any two actions.
+        sync_wallet_state(app.state(), None).await.expect("sync");
     }
 
     // After finalize, both names are at the recipient address and CLOSED.
     for name in [&name_a, &name_b] {
+        assert_eq!(
+            owner_coin_address(&cl, name).await.as_deref(),
+            Some(recipient.as_str()),
+            "name {name} did not move to the recipient"
+        );
         assert_eq!(
             node_state(&cl, name).await.as_deref(),
             Some("CLOSED"),
@@ -908,6 +1041,102 @@ fn expect_err<T: std::fmt::Debug>(res: Result<T, crate::error::AppError>, needle
                 "error {msg:?} did not contain {needle:?}"
             );
         }
+    }
+}
+
+/// hsd covenant type codes (`lib/covenants/rules.js` `types`).
+const COV_TYPE_REVEAL: u64 = 4;
+const COV_TYPE_REDEEM: u64 = 5;
+
+/// A second wallet on the same node: its own in-memory database and a BIP44
+/// account nothing else uses, so it bids against this test's wallet as a
+/// stranger would. Returns the app and its funding address.
+fn rival_wallet(url: &str, key: &str) -> (tauri::App<tauri::test::MockRuntime>, String) {
+    let acct = unique_acct();
+    let app = app_with(seeded_conn_acct(url, key, acct));
+    (app, leaf00_at(acct).0)
+}
+
+/// A height field of the node's `getnameinfo` → `info` (`renewal`,
+/// `transfer`).
+async fn name_info_height(cl: &NodeRpcClient, name: &str, key: &str) -> i64 {
+    let info = cl.get_name_info(name).await.expect("name info");
+    info["info"][key]
+        .as_i64()
+        .unwrap_or_else(|| panic!("no {key} for {name}: {info}"))
+}
+
+/// Mine exactly as many blocks as the latest-renewed of `names` needs before
+/// hsd accepts a RENEW of it (`renewal + tree_interval`, judged at `tip + 1`).
+async fn mine_until_renewable(cl: &NodeRpcClient, names: &[&str], addr: &str) {
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let mut left = 0;
+    for name in names {
+        let renewal = name_info_height(cl, name, "renewal").await;
+        left = left.max(NET.name_params().blocks_until_renew(renewal, tip));
+    }
+    if left > 0 {
+        cl.generate_to_address(left as u32, addr)
+            .await
+            .expect("mine to renewable");
+    }
+}
+
+/// The name's owner outpoint as the node reports it (`getnameinfo` →
+/// `info.owner`).
+async fn name_owner(cl: &NodeRpcClient, name: &str) -> (String, u32) {
+    let info = cl.get_name_info(name).await.expect("name info");
+    let owner = &info["info"]["owner"];
+    (
+        owner["hash"].as_str().expect("owner hash").to_string(),
+        owner["index"].as_u64().expect("owner index") as u32,
+    )
+}
+
+/// The outpoints of `txid`'s outputs carrying covenant `want_type`.
+async fn covenant_outpoints(cl: &NodeRpcClient, txid: &str, want_type: u64) -> Vec<(String, u32)> {
+    let tx = cl.get_tx_by_hash(txid).await.expect("tx lookup");
+    tx["outputs"]
+        .as_array()
+        .expect("outputs")
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o["covenant"]["type"].as_u64() == Some(want_type))
+        .map(|(i, _)| (txid.to_string(), i as u32))
+        .collect()
+}
+
+/// The mined transaction `txid` spends every outpoint in `reveals`, and the
+/// node no longer has any of them as a coin.
+async fn assert_spends_reveals(cl: &NodeRpcClient, txid: &str, reveals: &[(String, u32)]) {
+    let tx = cl.get_tx_by_hash(txid).await.expect("tx lookup");
+    assert!(
+        tx["height"].as_i64().unwrap_or(-1) >= 0,
+        "{txid} is not mined"
+    );
+    let spent: Vec<(String, u32)> = tx["inputs"]
+        .as_array()
+        .expect("inputs")
+        .iter()
+        .map(|i| {
+            (
+                i["prevout"]["hash"]
+                    .as_str()
+                    .expect("prevout hash")
+                    .to_string(),
+                i["prevout"]["index"].as_u64().expect("prevout index") as u32,
+            )
+        })
+        .collect();
+    for (hash, index) in reveals {
+        assert!(
+            spent.contains(&(hash.clone(), *index)),
+            "{txid} does not spend {hash}:{index}; inputs {spent:?}"
+        );
+        assert!(
+            cl.get_coin(hash, *index).await.expect("coin").is_none(),
+            "{hash}:{index} is still unspent"
+        );
     }
 }
 
@@ -1289,103 +1518,29 @@ async fn live_send_wrong_network_address_rejected() {
     );
 }
 
-/// A8. Double-spend safety: broadcast a competing tx spending one of a
-/// draft's inputs via a second draft, then try to broadcast the first —
-/// the node rejects it, the draft flips to `failed`, and its reservation
-/// is released so future drafts can reuse the coin.
+/// A8. Double spend: a draft whose coin another mined draft spent is not
+/// sent. hsd answers its txid but never takes it, and the wallet says so
+/// (honest-broadcast R2, in [`double_spent_draft`]); it is never mined.
 #[tokio::test]
-async fn live_send_broadcast_double_spend_releases_reservation() {
+async fn live_send_double_spend_is_not_sent() {
     let Some((url, key)) = it_env() else {
-        eprintln!(
-            "skip live_send_broadcast_double_spend_releases_reservation: set HNS_IT_NODE_URL"
-        );
+        eprintln!("skip live_send_double_spend_is_not_sent: set HNS_IT_NODE_URL");
         return;
     };
-    let conn = seeded_conn_regtest(&url, &key);
-    let app = app_with(conn);
-    let cl = client(&url, &key);
-    let (addr, _, _) = leaf00();
-
-    // A single spendable coinbase.
-    fund(&cl, &addr, 103).await;
-    sync_wallet_state(app.state(), None).await.expect("sync");
-
-    // Draft A: build & sign but DO NOT broadcast yet.
-    let draft_a = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None)
-        .await
-        .expect("build A");
-    unlock(&app);
-    sign_tx_draft_inner(&app.state(), &draft_a.id)
-        .await
-        .expect("sign A");
-
-    // Manually free A's reservation so draft B can select the same coin(s).
-    {
-        let state = app.state::<AppState>();
-        let c = state.db.lock().unwrap();
-        db::queries::release_reserved_utxos_for_draft(&c, &draft_a.id).unwrap();
-    }
-
-    // Draft B: send a DIFFERENT amount so its signed hex is a different tx
-    // (same inputs -> conflicts on broadcast). Sign + broadcast + mine.
-    let draft_b = build_send_hns_draft(app.state(), addr.clone(), 200_000, Some(1), None)
-        .await
-        .expect("build B");
-    execute(&app, &cl, &addr, draft_b.id).await;
-
-    // Now broadcast A. Its inputs were already spent on-chain by B, so A can
-    // never CONFIRM. hsd's mempool is permissive and may still accept the raw
-    // tx (returning a txid) OR reject it outright — both are safe. The real
-    // double-spend invariant is confirmation-level: A must NOT end up mined.
-    let res = broadcast_tx_draft(app.state(), draft_a.id.clone()).await;
-    let a_txid = draft_status(&app, &draft_a.id).txid;
-
-    // Mine a block; a valid tx would confirm here. A conflicts with B's
-    // already-confirmed spend, so it cannot.
-    cl.generate_to_address(1, &addr).await.expect("mine");
-    if let Some(txid) = a_txid.clone() {
-        let on_chain = cl.get_tx_by_hash(&txid).await.ok();
-        let confirmed = on_chain
-            .as_ref()
-            .filter(|v| !v.is_null())
-            .and_then(|v| v.get("height"))
-            .and_then(|h| h.as_i64())
-            .map(|h| h >= 0)
-            .unwrap_or(false);
-        assert!(
-            !confirmed,
-            "double-spend tx A must NEVER confirm (B already spent the input)"
-        );
-    }
-
-    // If broadcast failed, the draft's reservation must have been released;
-    // if it succeeded into the mempool, release it here to mirror the app's
-    // eventual settle. Either way, A holds no reservation afterward.
-    if res.is_err() {
-        assert_eq!(
-            draft_status(&app, &draft_a.id).status,
-            "failed",
-            "a rejected double-spend draft must be marked failed"
-        );
-    } else {
-        crate::commands::tx::release_tx_draft_reservation(app.state(), draft_a.id.clone())
+    let (app, a) = double_spent_draft(&url, &key).await;
+    let txid = summary_txid(&app, &a);
+    assert!(
+        client(&url, &key)
+            .get_tx_by_hash(&txid)
             .await
-            .ok();
-    }
-    let state = app.state::<AppState>();
-    let c = state.db.lock().unwrap();
-    let held: i64 = c
-        .query_row(
-            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = ?1",
-            params![draft_a.id],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(held, 0, "A's reservation must be gone afterward");
+            .expect("tx lookup")
+            .is_null(),
+        "the double spend is never mined"
+    );
 }
 
-/// A9. Rebroadcasting the same signed draft after it has been mined -> node
-/// rejects (inputs already spent). Confirms there is no accidental RBF.
+/// A9. A draft already sent and mined is not sent again: the wallet refuses
+/// before anything reaches the node, and the draft keeps its one txid.
 #[tokio::test]
 async fn live_send_rebroadcast_same_draft_rejected() {
     let Some((url, key)) = it_env() else {
@@ -1407,18 +1562,11 @@ async fn live_send_rebroadcast_same_draft_rejected() {
         .txid
         .expect("draft mined so it has a txid");
 
-    // Same signed hex, second broadcast. hsd's mempool is idempotent here:
-    // `sendrawtransaction` on a tx already in the chain returns the same
-    // txid without error (older builds may reject it — either is fine). The
-    // safety-relevant invariant is that no SECOND, conflicting tx is created
-    // and the wallet's ledger sees exactly the one confirmed spend.
-    let res = broadcast_tx_draft(app.state(), draft.id.clone()).await;
-    if let Ok(bc) = &res {
-        assert_eq!(
-            bc.txid, original_txid,
-            "rebroadcast must yield the same txid, never a fresh conflicting one"
-        );
-    }
+    let err = broadcast_tx_draft(app.state(), draft.id.clone())
+        .await
+        .expect_err("a sent draft is not sent again");
+    assert!(err.to_string().contains("already sent"), "{err}");
+    assert_eq!(draft_status(&app, &draft.id).status, "confirmed");
     // Draft's recorded txid is unchanged either way.
     assert_eq!(
         draft_status(&app, &draft.id).txid.as_deref(),
@@ -1830,18 +1978,15 @@ async fn live_confirm_reorg_reverts_to_broadcasted() {
     );
 
     // Restore the chain and drive the draft back to `confirmed`. hsd's
-    // `invalidateblock` doesn't automatically resurrect the invalidated
-    // block's transactions into the mempool for later re-mining — after
-    // `reconsiderblock` the previously-invalidated block is no longer
-    // invalid-marked, but the tx may or may not have been retained in the
-    // node's mempool. To make the "re-confirms after reorg" step robust
-    // against that upstream ambiguity, we re-broadcast the signed tx (a
-    // no-op if it's already known) and mine, then refresh.
+    // `invalidateblock` rewinds through `reset`, which empties the mempool,
+    // and `reconsiderblock` only clears the invalid mark: the tx is nowhere.
+    // A real reorg puts a disconnected block's transactions back in the
+    // mempool; the test does that by hand, handing the signed tx to the node
+    // directly (the wallet does not send a `broadcasted` draft again).
     cl.reconsider_block(&block_hash).await.expect("reconsider");
-    // Rebroadcast is idempotent — either resubmits the tx to the mempool or
-    // returns the same txid if it's still there. Failure here is fine: on
-    // some hsd builds the reconsider path may already have the tx queued.
-    let _ = broadcast_tx_draft(app.state(), d.id.clone()).await;
+    let signed = row.signed_tx_hex.clone().expect("signed hex");
+    cl.send_raw_transaction(&signed).await.expect("resubmit");
+    wait_until_node_has(&cl, row.txid.as_deref().expect("txid")).await;
     cl.generate_to_address(1, &addr).await.expect("remine");
     refresh_tx_confirmations(app.state(), None)
         .await
@@ -2058,6 +2203,11 @@ async fn live_update_records() {
 /// D2. Regression guard for commit 78bba67: RENEW references the renewal
 /// block decoded in hsd internal (UNREVERSED) byte order, so the node accepts
 /// it (no bad-register-renewal). The name stays owned and its value is kept.
+///
+/// A RENEW right after REGISTER is refused by hsd (`bad-renewal-premature`:
+/// not before `renewal + tree_interval`), so the builder refuses it first;
+/// once that many blocks are mined the renewal lands and moves `renewal` to
+/// the block it was mined in.
 #[tokio::test]
 async fn live_renew_extends_lease() {
     let Some((url, key)) = it_env() else {
@@ -2080,14 +2230,28 @@ async fn live_renew_extends_lease() {
         .and_then(|i| i.get("value"))
         .and_then(|v| v.as_u64());
 
+    // Just registered: too early to renew.
+    expect_err(
+        crate::commands::names::build_renew_draft(app.state(), name.clone(), Some(1)).await,
+        "renewed too recently",
+    );
+    let renewal_before = name_info_height(&cl, &name, "renewal").await;
+    mine_until_renewable(&cl, &[&name], &addr).await;
+
     // build_renew_draft calls renewal_block() -> getblockhash decoded
     // UNREVERSED. If the byte order regressed, the node would reject the
     // covenant with bad-register-renewal on broadcast; execute() asserts the
-    // broadcast succeeds.
+    // node took it.
     let renew = crate::commands::names::build_renew_draft(app.state(), name.clone(), Some(1))
         .await
         .expect("build renew");
     execute(&app, &cl, &addr, renew.id).await;
+
+    // The renewal is on chain: `renewal` is now the block it was mined in.
+    let mined_at = cl.get_blockchain_info().await.expect("info").blocks;
+    let renewal_after = name_info_height(&cl, &name, "renewal").await;
+    assert!(renewal_after > renewal_before, "renewal did not advance");
+    assert_eq!(renewal_after, mined_at, "renewed in the block just mined");
 
     assert_eq!(node_state(&cl, &name).await.as_deref(), Some("CLOSED"));
     let after = cl.get_name_info(&name).await.expect("info");
@@ -2336,8 +2500,10 @@ async fn live_batch_reveal_two_names() {
     }
 }
 
-/// E3. A losing batch bid can be reclaimed with build_batch_redeem_draft after
-/// the auction closes; both lockups are returned in one tx.
+/// E3. Losing batch bids are reclaimed with build_batch_redeem_draft after the
+/// auctions close: a rival wallet on the same node outbids this one on both
+/// names, and one REDEEM transaction spends both of this wallet's losing
+/// reveals while the rival's reveals stay the owners.
 #[tokio::test]
 async fn live_batch_redeem_two_names() {
     let Some((url, key)) = it_env() else {
@@ -2348,17 +2514,20 @@ async fn live_batch_redeem_two_names() {
     let app = app_with(conn);
     let cl = client(&url, &key);
     let (addr, _, _) = leaf00();
+    let (rival, rival_addr) = rival_wallet(&url, &key);
     fund(&cl, &addr, 101).await;
+    fund(&cl, &rival_addr, 5).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
     let tip = cl.get_blockchain_info().await.expect("info").blocks;
     let name_a = format!("brdm{tip}a");
     let name_b = format!("brdm{tip}b");
+    let names = vec![name_a.clone(), name_b.clone()];
     open_two_to_bidding(&app, &cl, &addr, &name_a, &name_b).await;
 
     sync_wallet_state(app.state(), None).await.expect("sync");
     let bid = crate::commands::names::build_batch_bid_draft(
         app.state(),
-        vec![name_a.clone(), name_b.clone()],
+        names.clone(),
         500_000,
         1_000_000,
         Some(1),
@@ -2366,6 +2535,19 @@ async fn live_batch_redeem_two_names() {
     .await
     .expect("build batch bid");
     execute(&app, &cl, &addr, bid.id).await;
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let rival_bid = crate::commands::names::build_batch_bid_draft(
+        rival.state(),
+        names.clone(),
+        800_000,
+        1_600_000,
+        Some(1),
+    )
+    .await
+    .expect("build rival batch bid");
+    execute(&rival, &cl, &addr, rival_bid.id).await;
     for name in [&name_a, &name_b] {
         assert!(
             mine_until(&cl, name, "REVEAL", &addr, 30).await,
@@ -2374,14 +2556,19 @@ async fn live_batch_redeem_two_names() {
     }
 
     sync_wallet_state(app.state(), None).await.expect("sync");
-    let reveal = crate::commands::names::build_batch_reveal_draft(
-        app.state(),
-        vec![name_a.clone(), name_b.clone()],
-        Some(1),
-    )
-    .await
-    .expect("build batch reveal");
-    execute(&app, &cl, &addr, reveal.id).await;
+    let reveal =
+        crate::commands::names::build_batch_reveal_draft(app.state(), names.clone(), Some(1))
+            .await
+            .expect("build batch reveal");
+    execute(&app, &cl, &addr, reveal.id.clone()).await;
+    sync_wallet_state(rival.state(), None)
+        .await
+        .expect("sync rival");
+    let rival_reveal =
+        crate::commands::names::build_batch_reveal_draft(rival.state(), names.clone(), Some(1))
+            .await
+            .expect("build rival batch reveal");
+    execute(&rival, &cl, &addr, rival_reveal.id.clone()).await;
     for name in [&name_a, &name_b] {
         assert!(
             mine_until(&cl, name, "CLOSED", &addr, 40).await,
@@ -2389,18 +2576,40 @@ async fn live_batch_redeem_two_names() {
         );
     }
 
-    // Do NOT track the names → sync won't record an owner coin → the wallet
-    // sees only its unspent reveal coins and can redeem both.
-    sync_wallet_state(app.state(), None).await.expect("sync");
-    let redeem = crate::commands::names::build_batch_redeem_draft(
-        app.state(),
-        vec![name_a.clone(), name_b.clone()],
-        Some(1),
-    )
-    .await
-    .expect("build batch redeem");
-    execute(&app, &cl, &addr, redeem.id).await;
+    // The rival's reveals own both names; both of ours lost.
+    let rival_reveal_txid = draft_status(&rival, &rival_reveal.id)
+        .txid
+        .expect("rival reveal txid");
     for name in [&name_a, &name_b] {
+        assert_eq!(name_owner(&cl, name).await.0, rival_reveal_txid, "{name}");
+    }
+    let ours = covenant_outpoints(
+        &cl,
+        &draft_status(&app, &reveal.id).txid.expect("reveal txid"),
+        COV_TYPE_REVEAL,
+    )
+    .await;
+    assert_eq!(ours.len(), 2, "one reveal output per name: {ours:?}");
+
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let redeem =
+        crate::commands::names::build_batch_redeem_draft(app.state(), names.clone(), Some(1))
+            .await
+            .expect("build batch redeem");
+    execute(&app, &cl, &addr, redeem.id.clone()).await;
+
+    // One transaction spent both losing reveals; the owners are unchanged.
+    let redeem_txid = draft_status(&app, &redeem.id).txid.expect("redeem txid");
+    assert_spends_reveals(&cl, &redeem_txid, &ours).await;
+    assert_eq!(
+        covenant_outpoints(&cl, &redeem_txid, COV_TYPE_REDEEM)
+            .await
+            .len(),
+        2,
+        "one REDEEM output per name"
+    );
+    for name in [&name_a, &name_b] {
+        assert_eq!(name_owner(&cl, name).await.0, rival_reveal_txid, "{name}");
         assert_eq!(node_state(&cl, name).await.as_deref(), Some("CLOSED"));
     }
 }
@@ -2423,16 +2632,31 @@ async fn live_batch_renew_two_names() {
     let name_a = format!("brnw{tip}a");
     let name_b = format!("brnw{tip}b");
     acquire_two_names(&app, &cl, &addr, &name_a, &name_b).await;
+    let names = vec![name_a.clone(), name_b.clone()];
 
-    let renew = crate::commands::names::build_batch_renew_draft(
-        app.state(),
-        vec![name_a.clone(), name_b.clone()],
-        Some(1),
-    )
-    .await
-    .expect("build batch renew");
+    // `name_b` was registered in the last block: the batch would carry a
+    // RENEW hsd refuses (`bad-renewal-premature`), so the builder refuses the
+    // whole batch.
+    expect_err(
+        crate::commands::names::build_batch_renew_draft(app.state(), names.clone(), Some(1)).await,
+        "renewed too recently",
+    );
+    let before = [
+        name_info_height(&cl, &name_a, "renewal").await,
+        name_info_height(&cl, &name_b, "renewal").await,
+    ];
+    mine_until_renewable(&cl, &[&name_a, &name_b], &addr).await;
+
+    let renew =
+        crate::commands::names::build_batch_renew_draft(app.state(), names.clone(), Some(1))
+            .await
+            .expect("build batch renew");
     execute(&app, &cl, &addr, renew.id).await;
-    for name in [&name_a, &name_b] {
+    let mined_at = cl.get_blockchain_info().await.expect("info").blocks;
+    for (name, before) in names.iter().zip(before) {
+        let after = name_info_height(&cl, name, "renewal").await;
+        assert!(after > before, "{name}: renewal did not advance");
+        assert_eq!(after, mined_at, "{name} renewed in the block just mined");
         assert_eq!(node_state(&cl, name).await.as_deref(), Some("CLOSED"));
     }
 }
@@ -2523,8 +2747,9 @@ async fn output_value_by_covenant_type(
     None
 }
 
-/// F1. Finalize BEFORE transfer_lockup (10 blocks on regtest) is rejected by
-/// the node; after the lockup, it is accepted.
+/// F1. Finalize BEFORE transfer_lockup (10 blocks on regtest) is refused by
+/// the builder, as hsd would refuse it; after the lockup, it is accepted and
+/// the name moves to the recipient.
 #[tokio::test]
 async fn live_premature_finalize_rejected() {
     let Some((url, key)) = it_env() else {
@@ -2543,59 +2768,48 @@ async fn live_premature_finalize_rejected() {
 
     // Transfer to leaf 0/1.
     let recipient = recv_leaf_01();
-    let transfer =
-        crate::commands::names::build_transfer_draft(app.state(), name.clone(), recipient, Some(1))
-            .await
-            .expect("build transfer");
+    let transfer = crate::commands::names::build_transfer_draft(
+        app.state(),
+        name.clone(),
+        recipient.clone(),
+        Some(1),
+    )
+    .await
+    .expect("build transfer");
     execute(&app, &cl, &addr, transfer.id).await;
     sync_wallet_state(app.state(), None).await.expect("sync");
 
     // Try to finalize IMMEDIATELY — before the transfer lockup elapses. hsd
-    // ACCEPTS a premature FINALIZE into the mempool (`sendrawtransaction`
-    // returns success) but silently DROPS it when assembling the next block:
-    // the covenant's finalize-height rule is enforced at block-connect, not at
-    // mempool admission. So the correct invariant is not "broadcast fails" but
-    // "the finalize never CONFIRMS while the lockup is unmet" — the name's
-    // TRANSFER stays pending across a mined block.
-    let fin = crate::commands::names::build_finalize_draft(app.state(), name.clone(), Some(1))
-        .await
-        .expect("build finalize");
-    unlock(&app);
-    sign_tx_draft_inner(&app.state(), &fin.id)
-        .await
-        .expect("sign");
-    // Broadcast may succeed (mempool) or fail (older hsd) — either is fine.
-    let _ = broadcast_tx_draft(app.state(), fin.id.clone()).await;
-    let fin_txid = draft_status(&app, &fin.id).txid;
-
-    // Mine a block. A valid finalize would confirm here; the premature one is
-    // dropped from the block template.
-    cl.generate_to_address(1, &addr).await.expect("mine");
-    // The finalize tx must NOT be on-chain, and the name's transfer must still
-    // be pending (not yet finalized).
-    if let Some(txid) = fin_txid {
-        let on_chain = cl.get_tx_by_hash(&txid).await.ok();
-        assert!(
-            matches!(on_chain, None | Some(serde_json::Value::Null)),
-            "premature finalize must NOT confirm before the transfer lockup"
-        );
-    }
-    let info = cl.get_name_info(&name).await.expect("nameinfo");
-    let still_pending = info
-        .get("info")
-        .and_then(|i| i.get("transfer"))
-        .map(|t| !t.is_null())
-        .unwrap_or(false);
-    assert!(
-        still_pending,
-        "name's TRANSFER must still be pending after a premature finalize attempt: {info}"
+    // refuses that FINALIZE (`bad-finalize-maturity`), but its
+    // `sendrawtransaction` hands back the txid all the same, so the wallet
+    // cannot leave the refusal to the broadcast: the builder refuses it, says
+    // how long the lockup still runs, and persists nothing.
+    let drafts_before = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.query_row("SELECT COUNT(*) FROM wallet_tx_drafts", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+    expect_err(
+        crate::commands::names::build_finalize_draft(app.state(), name.clone(), Some(1)).await,
+        "still locked for 9 more blocks",
     );
-
-    // Release the draft's reservation so the next finalize can pick up the
-    // owner coin.
-    crate::commands::tx::release_tx_draft_reservation(app.state(), fin.id)
-        .await
-        .ok();
+    let drafts_after = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.query_row("SELECT COUNT(*) FROM wallet_tx_drafts", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        drafts_before, drafts_after,
+        "a refused finalize persists nothing"
+    );
+    let transfer_h = name_info_height(&cl, &name, "transfer").await;
+    assert!(transfer_h > 0, "the transfer is still pending");
 
     // Advance past the transfer lockup (10 blocks), sync, and retry — accepted.
     cl.generate_to_address(11, &addr).await.expect("lockup");
@@ -2604,6 +2818,10 @@ async fn live_premature_finalize_rejected() {
         .await
         .expect("build finalize 2");
     execute(&app, &cl, &addr, fin2.id).await;
+    assert_eq!(
+        owner_coin_address(&cl, &name).await.as_deref(),
+        Some(recipient.as_str())
+    );
     assert_eq!(node_state(&cl, &name).await.as_deref(), Some("CLOSED"));
 }
 
@@ -3523,6 +3741,15 @@ async fn live_batch_large_covenant_count() {
         names.push(name);
     }
 
+    // The last name was registered in the last block; hsd accepts a RENEW
+    // only a tree interval after that (`bad-renewal-premature`).
+    let name_refs: Vec<&str> = names.iter().map(|n| n.as_str()).collect();
+    mine_until_renewable(&cl, &name_refs, &addr).await;
+    let mut before = Vec::new();
+    for name in &names {
+        before.push(name_info_height(&cl, name, "renewal").await);
+    }
+
     // Batch renew all 20 names in one tx.
     let batch =
         crate::commands::names::build_batch_renew_draft(app.state(), names.clone(), Some(1))
@@ -3532,14 +3759,19 @@ async fn live_batch_large_covenant_count() {
     // Broadcast the batch.
     execute(&app, &cl, &addr, batch.id.clone()).await;
 
-    // Verify the batch was accepted: draft status shows broadcasted/confirmed.
+    // The node took it and mined it: every name's renewal moved to that block.
     let row = draft_status(&app, &batch.id);
     assert!(
         matches!(row.status.as_str(), "broadcasted" | "confirmed"),
-        "large batch (20 names) must broadcast successfully, got status: {}",
+        "large batch (20 names) must be sent, got status: {}",
         row.status
     );
-    eprintln!("✓ Large batch (20 covenants) assembled and broadcast successfully");
+    let mined_at = cl.get_blockchain_info().await.expect("info").blocks;
+    for (name, before) in names.iter().zip(before) {
+        let after = name_info_height(&cl, name, "renewal").await;
+        assert!(after > before, "{name}: renewal did not advance");
+        assert_eq!(after, mined_at, "{name} renewed in the block just mined");
+    }
 }
 
 /// End-to-end proof for the chain scanner against a real node: OPEN a name,
@@ -4199,10 +4431,17 @@ async fn live_multi_bid_lifecycle_leaves_no_coin_stranded() {
     for (what, cap) in [
         ("update", &caps.can_update),
         ("transfer", &caps.can_transfer),
-        ("renew", &caps.can_renew),
     ] {
         assert!(cap.allowed, "{what} must be offered: {:?}", cap.reason);
     }
+    // Renew is held back for the plain reason hsd gives, not a transfer: a
+    // name registered in the last block may be renewed only a tree interval
+    // later (`bad-renewal-premature`).
+    let renew_reason = caps.can_renew.reason.clone().unwrap_or_default();
+    assert!(
+        !caps.can_renew.allowed && renew_reason.contains("renewed too recently"),
+        "renew must wait out the tree interval: {renew_reason:?}"
+    );
     assert!(!caps.can_finalize.allowed, "nothing to finalize");
     // The guided panel is what tells a user what to do next. Registered, with
     // its own losing lockups still out there, the wallet must point at them —
@@ -5031,10 +5270,11 @@ async fn shakedex_finalized_name_moved_on_before_a_sync_is_owned() {
 /// R13 "Lost, nothing paid": the CLI buys the listing between our review and
 /// our broadcast. hsd 8.0.0's `sendrawtransaction` answers with the txid
 /// whatever its mempool does (`rpc.js`: `this.node.relay(tx)`, not awaited,
-/// its error only logged), so the broadcast reads as sent; the purchase job
-/// then finds the purchase missing and the lock coin spent, and loses it with
-/// nothing paid. Its coins are free again, and the listing is no longer
-/// offered.
+/// its error only logged); the look-up after it finds the node did not take
+/// the purchase (honest-broadcast R2, R5), so the broadcast says "not sent"
+/// and the draft waits as `broadcast_pending`. The purchase job then finds
+/// the lock coin spent and loses it with nothing paid. Its coins are free
+/// again, and the listing is no longer offered.
 #[tokio::test]
 async fn shakedex_cli_buyer_first_loses_ours_with_nothing_paid() {
     let Some((url, key, cli)) =
@@ -5051,10 +5291,12 @@ async fn shakedex_cli_buyer_first_loses_ours_with_nothing_paid() {
     let draft = b.sign_purchase(&listing).await;
     assert!(b.reserved_by(&draft.id) > 0, "the purchase holds its coins");
     cli.fill(&listing);
-    let bc = broadcast_tx_draft(b.app.state(), draft.id.clone())
+    let err = broadcast_tx_draft(b.app.state(), draft.id.clone())
         .await
-        .expect("hsd answers with the txid");
-    assert_eq!(bc.status, "broadcasted");
+        .expect_err("the node did not take the purchase");
+    assert!(err.to_string().contains("did not take"), "{err}");
+    assert_eq!(draft_status(&b.app, &draft.id).status, "broadcast_pending");
+    let purchase_txid = summary_txid(&b.app, &draft.id);
 
     b.refresh().await;
     let p = b.purchase(&name);
@@ -5076,7 +5318,7 @@ async fn shakedex_cli_buyer_first_loses_ours_with_nothing_paid() {
     // whatever its answer to the broadcast said.
     b.cl.generate_to_address(1, &b.addr).await.expect("mine");
     assert!(
-        b.cl.get_tx_by_hash(&bc.txid)
+        b.cl.get_tx_by_hash(&purchase_txid)
             .await
             .expect("tx lookup")
             .is_null(),
@@ -5891,7 +6133,7 @@ async fn live_noindex_unsent_draft_with_unspent_coins_is_dropped() {
 /// Draft A's coin is spent by draft B, mined; A is then sent, and hsd's
 /// mempool turns it away while still answering its txid. On a node without a
 /// transaction index the wallet cannot tell A's spend from B's, so it gives
-/// no verdict on A — above all not "dropped, the coins were not moved".
+/// no verdict on A — above all not "failed, the coins were not moved".
 #[tokio::test]
 async fn live_noindex_coins_spent_by_another_tx_give_no_verdict() {
     let Some((url, key)) = noindex_env() else {
@@ -5904,7 +6146,7 @@ async fn live_noindex_coins_spent_by_another_tx_give_no_verdict() {
         .await
         .expect("refresh");
     let row = draft_status(&app, &a);
-    assert_eq!(row.status, "broadcasted", "{:?}", row.error_message);
+    assert_eq!(row.status, "broadcast_pending", "{:?}", row.error_message);
 }
 
 /// The same double spend on a node WITH a transaction index: hsd's not-found
@@ -5931,8 +6173,9 @@ async fn live_coins_spent_by_another_tx_drop_the_draft_and_say_so() {
 }
 
 /// Draft A signed over one coin, draft B spending the same coin mined, then
-/// A sent: hsd answers A's txid and keeps it out of its mempool. Returns the
-/// app and A's id.
+/// A sent: hsd answers A's txid and keeps it out of its mempool, and the
+/// wallet says so (honest-broadcast R2): not sent, `broadcast_pending`.
+/// Returns the app and A's id.
 async fn double_spent_draft(
     url: &str,
     key: &str,
@@ -5961,10 +6204,203 @@ async fn double_spent_draft(
         .expect("build B");
     execute(&app, &cl, &addr, b.id).await;
 
-    let res = broadcast_tx_draft(app.state(), a.id.clone())
+    let err = broadcast_tx_draft(app.state(), a.id.clone())
         .await
-        .expect("hsd answers a txid for a tx its mempool turns away");
-    assert_eq!(res.status, "broadcasted");
+        .expect_err("hsd answers a txid for a tx its mempool turns away");
+    assert!(err.to_string().contains("did not take"), "{err}");
+    let row = draft_status(&app, &a.id);
+    assert_eq!(row.status, "broadcast_pending");
+    assert_eq!(
+        row.error_message.as_deref(),
+        Some(crate::noncustodial::tx_evidence::NOT_TAKEN)
+    );
     cl.generate_to_address(1, &addr).await.expect("mine");
     (app, a.id)
+}
+
+/// A send judged `dropped` that is mined after all is confirmed by the next
+/// poll. The verdict is forced here while the send sits in the mempool, as a
+/// node that lost its mempool on a restart would have reached it, with its
+/// coins released; the block then mines it.
+async fn dropped_send_mined_after_all_is_confirmed(url: &str, key: &str) {
+    let conn = seeded_conn_regtest(url, key);
+    let app = app_with(conn);
+    let cl = client(url, key);
+    let (addr, _, _) = leaf00();
+    fund(&cl, &addr, 103).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let d = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None)
+        .await
+        .expect("build");
+    broadcast_only(&app, &d.id).await;
+    let txid = draft_status(&app, &d.id).txid.expect("txid");
+    wait_until_node_has(&cl, &txid).await;
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::update_tx_draft_status(&c, &d.id, "dropped", Some("judged dropped"), None)
+            .unwrap();
+        db::queries::release_reserved_utxos_for_draft(&c, &d.id).unwrap();
+    }
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    let mined_at = cl.get_blockchain_info().await.expect("info").blocks;
+
+    let r = refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh");
+    let row = draft_status(&app, &d.id);
+    assert_eq!(row.status, "confirmed", "{r} {:?}", row.error_message);
+    assert_eq!(row.confirmation_height, Some(mined_at));
+    assert_eq!(row.txid.as_deref(), Some(txid.as_str()));
+    assert_eq!(r["revived"], 1, "{r}");
+}
+
+#[tokio::test]
+async fn live_dropped_send_mined_after_all_is_confirmed() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip live_dropped_send_mined_after_all_is_confirmed: set HNS_IT_NODE_URL");
+        return;
+    };
+    dropped_send_mined_after_all_is_confirmed(&url, &key).await;
+}
+
+/// The same on a node without a transaction index: the mined send is found
+/// by its outputs.
+#[tokio::test]
+async fn live_noindex_dropped_send_mined_after_all_is_confirmed() {
+    let Some((url, key)) = noindex_env() else {
+        eprintln!(
+            "skip live_noindex_dropped_send_mined_after_all_is_confirmed: set HNS_IT_NOINDEX_NODE_URL"
+        );
+        return;
+    };
+    dropped_send_mined_after_all_is_confirmed(&url, &key).await;
+}
+
+/// The fee rate is the one figure of a purchase consensus does not pin: an
+/// excess is simply paid to the miner. A purchase and its FINALIZE built at a
+/// rate above the 5 doos/byte floor pay that rate on hsd's virtual size,
+/// the seller's input and signature included (spec R4); hsd's `GET /tx/:hash`
+/// works the rate out the same way.
+#[tokio::test]
+async fn shakedex_purchase_and_finalize_pay_their_fee_rate_on_vsize() {
+    let Some((url, key, cli)) =
+        shakedex_env("shakedex_purchase_and_finalize_pay_their_fee_rate_on_vsize")
+    else {
+        return;
+    };
+    let per_byte = 20;
+    let listing = cli.sell_fixed(3);
+    let b = ShakedexBuyer::new(&url, &key).await;
+    advance_mtp_past(&b.cl, &b.addr, listing.lock_time(0)).await;
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+
+    let draft = crate::commands::shakedex::shakedex_build_purchase_draft(
+        b.app.state(),
+        listing.json.clone(),
+        None,
+        false,
+        Some(per_byte),
+    )
+    .await
+    .expect("build purchase");
+    broadcast_only(&b.app, &draft.id).await;
+    settle(&b.app, &b.cl, &b.addr, &draft.id).await;
+    assert_pays_rate(&b, &draft, per_byte).await;
+
+    b.cl.generate_to_address(NET.name_params().transfer_lockup, &b.addr)
+        .await
+        .expect("mine lockup");
+    b.refresh().await;
+    let p = b.purchase(&listing.name);
+    let fin = crate::commands::shakedex::shakedex_build_purchase_finalize_draft(
+        b.app.state(),
+        p.id.clone(),
+        Some(per_byte),
+    )
+    .await
+    .expect("build finalize");
+    broadcast_only(&b.app, &fin.id).await;
+    settle(&b.app, &b.cl, &b.addr, &fin.id).await;
+    assert_pays_rate(&b, &fin, per_byte).await;
+}
+
+/// `draft`, mined, paid the fee its summary shows, at `per_byte` doos per
+/// virtual byte as hsd works it out (doos per 1000 virtual bytes), within the
+/// byte or two a signature's length can vary.
+async fn assert_pays_rate(
+    b: &ShakedexBuyer,
+    draft: &crate::noncustodial::types::TxDraftSummary,
+    per_byte: u64,
+) {
+    let txid = draft_status(&b.app, &draft.id).txid.expect("txid");
+    let tx = b.cl.get_tx_by_hash(&txid).await.expect("tx");
+    assert_eq!(tx["fee"], draft.summary["feeDoos"], "{tx}");
+    let rate = tx["rate"].as_u64().expect("rate");
+    let asked = per_byte * 1000;
+    assert!(
+        (asked..=asked * 102 / 100).contains(&rate),
+        "asked {asked} doos/kvB, hsd reports {rate}: {tx}"
+    );
+}
+
+/// R13 and R10 on a live node: a purchase taken out of the chain by a reorg
+/// is missing, and its one rebroadcast is checked like any broadcast. A
+/// cheaper step of the reverse auction became valid meanwhile, so the old
+/// price is not sent again: the purchase is lost with nothing paid, its coins
+/// released, and the node never sees it again.
+#[tokio::test]
+async fn shakedex_rebroadcast_after_a_price_drop_is_not_sent() {
+    let Some((url, key, cli)) = shakedex_env("shakedex_rebroadcast_after_a_price_drop_is_not_sent")
+    else {
+        return;
+    };
+    let listing = cli.sell_auction(10, 5);
+    let name = listing.name.clone();
+    let b = ShakedexBuyer::new(&url, &key).await;
+    advance_mtp_past(&b.cl, &b.addr, listing.lock_time(0)).await;
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+
+    let draft = b.sign_purchase(&listing).await;
+    assert_eq!(draft.summary["priceDoos"], listing.price(0));
+    let bc = broadcast_tx_draft(b.app.state(), draft.id.clone())
+        .await
+        .expect("broadcast");
+    settle(&b.app, &b.cl, &b.addr, &draft.id).await;
+    b.refresh().await;
+    let bought_at = b.purchase(&name).purchase_height.expect("purchase height");
+
+    // `invalidateblock` empties the mempool: the purchase is nowhere.
+    let block = b.cl.get_block_hash(bought_at).await.expect("blockhash");
+    b.cl.invalidate_block(&block).await.expect("invalidate");
+    b.refresh().await;
+    assert_eq!(
+        b.purchase(&name).state,
+        db::queries::PurchaseState::Unconfirmed
+    );
+
+    // Step 1 becomes valid; the 11 blocks this mines are more than the six
+    // missing blocks that call for the rebroadcast.
+    advance_mtp_past(&b.cl, &b.addr, listing.lock_time(1)).await;
+    b.refresh().await;
+    let p = b.purchase(&name);
+    assert_eq!(p.state, db::queries::PurchaseState::Lost);
+    assert!(
+        p.lost_reason
+            .as_deref()
+            .is_some_and(|r| r.contains("not sent again")),
+        "{:?}",
+        p.lost_reason
+    );
+    assert_eq!(p.rebroadcast_count, 0, "nothing was sent");
+    assert_eq!(b.reserved_by(&draft.id), 0, "its coins are free");
+    b.cl.generate_to_address(1, &b.addr).await.expect("mine");
+    assert!(
+        b.cl.get_tx_by_hash(&bc.txid)
+            .await
+            .expect("tx lookup")
+            .is_null(),
+        "the old price never reached the node again"
+    );
+    b.cl.reconsider_block(&block).await.expect("reconsider");
 }

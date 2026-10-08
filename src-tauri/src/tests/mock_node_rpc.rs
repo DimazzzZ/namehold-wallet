@@ -232,6 +232,16 @@ impl MockNodeRpc {
         self
     }
 
+    /// `getrawtransaction` answered by `f`, called once per look-up: a test
+    /// whose answer changes between look-ups keeps its own count.
+    pub fn with_raw_transaction_fn(
+        mut self,
+        f: impl Fn() -> Result<serde_json::Value, AppError> + Send + Sync + 'static,
+    ) -> Self {
+        self.raw_transaction = Box::new(f);
+        self
+    }
+
     /// hsd's own `getrawtransaction` answer for a transaction it does not
     /// find: `Transaction not found.`, code -1, as `call` returns it.
     pub fn with_raw_transaction_not_found(mut self) -> Self {

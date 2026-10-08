@@ -1095,6 +1095,77 @@ async fn rebroadcast_refused_by_hsd_is_lost() {
     assert_eq!(reservation(&conn), None, "funding coin released");
 }
 
+/// Spec honest-broadcast R5: the one rebroadcast is checked like any send.
+/// hsd answered the txid but never had the purchase (its not-found on every
+/// check, the coin it spends still unspent): it was not taken, so nothing was
+/// paid, and the purchase is lost with the refusal's reason.
+#[tokio::test]
+async fn rebroadcast_not_taken_is_lost() {
+    use crate::noncustodial::tx::{Covenant, Input, Outpoint, Output, OutputAddress, Transaction};
+    let mut tx = Transaction::new();
+    tx.inputs.push(Input::new(Outpoint {
+        hash: [0x44; 32],
+        index: 0,
+    }));
+    tx.outputs.push(Output {
+        value: 1,
+        address: OutputAddress {
+            version: 0,
+            hash: vec![0xaa; 20],
+        },
+        covenant: Covenant::default(),
+    });
+    let (signed, txid) = (tx.to_hex(), tx.txid());
+    let conn = seeded("broadcasted", "unconfirmed");
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET signed_tx_hex = ?1, txid = ?2",
+        params![signed, txid],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE shakedex_purchases SET purchase_txid = ?1, missing_since_height = 1000",
+        params![txid],
+    )
+    .unwrap();
+    let funding = hex::encode([0x44u8; 32]);
+    let own = txid.clone();
+    let rpc = MockNodeRpc::new()
+        .with_blockchain_info(tip(1006))
+        .with_tx_by_hash(Value::Null)
+        .with_name_info(foreign_owner())
+        .with_send_raw_transaction(txid.clone())
+        .with_raw_transaction_not_found()
+        .with_get_coin(move |h, vout| {
+            if h == own {
+                Ok(None)
+            } else if h == funding {
+                Ok(Some(coin(
+                    h,
+                    vout,
+                    &elsewhere(),
+                    json!({"type": 0, "items": []}),
+                )))
+            } else {
+                untraced(h, vout, Some(lock_coin()))
+            }
+        });
+
+    run(&conn, &rpc).await;
+
+    let p = row(&conn);
+    assert_eq!(
+        rpc.count_matching(|c| matches!(c, RpcCall::SendRawTransaction(_))),
+        1
+    );
+    assert_eq!(p.state, crate::db::queries::PurchaseState::Lost);
+    assert_eq!(
+        p.lost_reason.as_deref(),
+        Some("the node refused to take the purchase, so nothing was paid")
+    );
+    assert_eq!(p.rebroadcast_count, 1);
+    assert_eq!(reservation(&conn), None, "funding coin released");
+}
+
 #[tokio::test]
 async fn dropped_purchase_is_never_rebroadcast() {
     let conn = seeded("dropped", "unconfirmed");

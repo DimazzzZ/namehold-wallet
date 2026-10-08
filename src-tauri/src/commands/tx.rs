@@ -36,6 +36,10 @@ use crate::noncustodial::send;
 use crate::noncustodial::shakedex::purchase::{
     PurchaseFinalizeSummary, PurchaseSummary, PURCHASE_ACTION, PURCHASE_FINALIZE_ACTION,
 };
+use crate::noncustodial::tx_evidence::{
+    chain_evidence_with_client, node_has_tx_index_with_client, taken_by_node_with_client,
+    ChainEvidence, Taken, NOT_TAKEN,
+};
 use crate::noncustodial::types::{doos_to_hns_string, BroadcastResult, TxDraftSummary, TxSummary};
 use crate::noncustodial::{derivation, sync};
 use crate::AppState;
@@ -706,6 +710,9 @@ pub(crate) async fn sign_tx_draft_inner(
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let draft = db::queries::get_tx_draft(&conn, draft_id)?
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
+        // Signing flips a draft to `signed`, which `broadcast_tx_draft` sends:
+        // the same draft statuses are refused here.
+        refuse_unless_sendable(&draft.status)?;
         let profile = db::queries::get_wallet_profile(&conn, &draft.wallet_profile_id)?
             .ok_or_else(|| {
                 AppError::NotFound(format!("wallet profile {}", draft.wallet_profile_id))
@@ -772,6 +779,22 @@ pub(crate) async fn sign_tx_draft_inner(
     persist_signed_draft(state, draft_id, &signed_hex, &summary_json)?;
 
     load_draft_summary(state, draft_id)
+}
+
+/// Only a draft never sent, or one whose send is not settled
+/// (`broadcast_pending`), is signed or sent. A sent one is the node's to
+/// confirm; a `dropped` or `failed` one has had its coins released, which
+/// another draft may hold by now.
+fn refuse_unless_sendable(status: &str) -> Result<(), AppError> {
+    match status {
+        "draft" | "signed" | "broadcast_pending" => Ok(()),
+        "broadcasted" | "confirmed" => Err(AppError::InvalidInput(
+            "this transaction was already sent".to_string(),
+        )),
+        other => Err(AppError::InvalidInput(format!(
+            "this transaction is {other} and its coins were released; build it again to send it"
+        ))),
+    }
 }
 
 /// Persist the signed hex + summary and flip the draft's status to `signed`.
@@ -1483,6 +1506,11 @@ pub async fn sign_name_message(
 pub(crate) enum BroadcastOutcome {
     /// Node accepted the tx and returned a txid.
     Success(String),
+    /// Node returned a txid and the chain already shows the tx mined at this
+    /// height (found by its outputs on a node without a transaction index).
+    Mined(String, i64),
+    /// Node returned a txid but did not take the tx ([`Taken::No`]).
+    NotTaken(String),
     /// hsd refused the tx with its own JSON-RPC error (for
     /// `sendrawtransaction`, only a body it cannot decode) — the tx was
     /// definitively rejected and coins are unspent. The wrapped
@@ -1497,8 +1525,9 @@ pub(crate) enum BroadcastOutcome {
 }
 
 /// Client-injected broadcast outcome classification for [`broadcast_tx_draft`].
-/// Calls `send_raw_transaction` and classifies the result into three
-/// categories: success (txid), RPC error (hsd's own refusal, see
+/// Calls `send_raw_transaction`, then [`taken_by_node_with_client`], and
+/// classifies the result: success (txid, the node has it), mined, not taken,
+/// RPC error (hsd's own refusal, see
 /// [`crate::noncustodial::rpc::is_node_rejection`]), or transport error
 /// (ambiguous: no reply, or a reply that is not hsd's). Testable against a
 /// mock.
@@ -1507,7 +1536,13 @@ pub(crate) async fn classify_broadcast_outcome_with_client(
     signed_hex: &str,
 ) -> BroadcastOutcome {
     match client.send_raw_transaction(signed_hex).await {
-        Ok(txid) => BroadcastOutcome::Success(txid),
+        // hsd answers with the txid whatever its mempool does with the
+        // transaction: only a look-up says whether the node has it.
+        Ok(txid) => match taken_by_node_with_client(client, signed_hex, &txid).await {
+            Taken::Yes | Taken::Unknown => BroadcastOutcome::Success(txid),
+            Taken::Mined(height) => BroadcastOutcome::Mined(txid, height),
+            Taken::No => BroadcastOutcome::NotTaken(txid),
+        },
         // Only hsd's own refusal proves the transaction will not be accepted;
         // a reply that is not hsd's (a proxy's error page) is as ambiguous
         // as a dropped connection.
@@ -1661,6 +1696,7 @@ pub async fn broadcast_tx_draft(
         } else {
             None
         };
+        refuse_unless_sendable(&draft.status)?;
         let maybe_sent = db::queries::may_have_reached_chain(&draft.status);
         // An unsent purchase draft past its coin reservation is discarded
         // with its purchase, as the sync would: its coins may fund another
@@ -1735,6 +1771,33 @@ pub async fn broadcast_tx_draft(
                 status: "broadcasted".to_string(),
             })
         }
+        BroadcastOutcome::Mined(txid, height) => {
+            db::queries::update_tx_draft_status(
+                &conn,
+                &draft_id,
+                "broadcasted",
+                None,
+                Some(&txid),
+            )?;
+            db::queries::update_tx_draft_confirmation(&conn, &draft_id, height, None)?;
+            Ok(BroadcastResult {
+                draft_id,
+                txid,
+                status: "confirmed".to_string(),
+            })
+        }
+        // Not sent: held as `broadcast_pending` (coins kept, retry allowed)
+        // for the confirmation poll to resolve from the chain.
+        BroadcastOutcome::NotTaken(_) => {
+            db::queries::update_tx_draft_status(
+                &conn,
+                &draft_id,
+                "broadcast_pending",
+                Some(NOT_TAKEN),
+                None,
+            )?;
+            Err(AppError::Rpc(NOT_TAKEN.to_string()))
+        }
         BroadcastOutcome::RpcError(e) => {
             // hsd's refusal itself, so its words are said once.
             let msg = e.to_string();
@@ -1799,6 +1862,12 @@ const EVICTION_GRACE_SECS: i64 = 600;
 /// used for finality on Bitcoin-family chains.
 const CONFIRMATION_FINALITY_DEPTH: i64 = 12;
 
+/// How long a `dropped` or `failed` draft is still looked for on chain: hsd
+/// keeps a transaction in its mempool for 72 hours
+/// (`policy.MEMPOOL_EXPIRY_TIME`), so a node that held it may still have it
+/// mined that long after this wallet's verdict.
+const RELEASED_WATCH_SECS: i64 = 72 * 60 * 60;
+
 /// Extract the txid a draft's `summary_json` already carries. Both plain-send
 /// [`crate::noncustodial::types::TxSummary`] and the covenant-action
 /// `ActionSummary` (`commands::names`) serialize a `"txid"` field, computed
@@ -1825,74 +1894,10 @@ fn local_txid_from_summary(summary_json: &str) -> Option<String> {
         })
 }
 
-/// What the chain shows about a draft's transaction that hsd answered with
-/// its own "Transaction not found.".
-///
-/// That answer is not evidence the transaction is in no block: hsd looks a
-/// transaction up in its mempool and then in its transaction index
-/// (`node.getMeta` → `chaindb.getMeta`, null without `--index-tx`), so on a
-/// node without the index every mined transaction reads as not found. The
-/// coin lookups below need no transaction index (`GET /coin/:hash/:index`,
-/// mempool then chain UTXO set), and decide the verdict instead.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ChainEvidence {
-    /// One of its outputs is a coin mined at this height: the transaction is
-    /// in that block.
-    Mined(i64),
-    /// Every coin it spends is unspent: it is in no block and no mempool of
-    /// this node, and its coins were not moved.
-    InputsUnspent,
-    /// A coin it spends is spent and none of its outputs is a coin: another
-    /// transaction spent the coin, or — only on a node without a transaction
-    /// index — it was mined and its outputs were spent since.
-    InputsSpent,
-    /// No answer that decides it (a transport error, a reply that is not
-    /// hsd's, an output only in the mempool, a draft that does not parse).
-    Unknown,
-}
-
-/// Read [`ChainEvidence`] for draft `d`, whose transaction is `txid`, from
-/// the coins of its own outputs and of its inputs.
-pub(crate) async fn chain_evidence_with_client(
-    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
-    d: &db::queries::TxDraftRow,
-    txid: &str,
-) -> ChainEvidence {
-    let raw = d.signed_tx_hex.as_deref().unwrap_or(&d.unsigned_tx_hex);
-    let Some(tx) = hex::decode(raw)
-        .ok()
-        .and_then(|b| crate::noncustodial::tx::Transaction::decode(&b).ok())
-        .filter(|tx| tx.txid() == txid)
-    else {
-        return ChainEvidence::Unknown;
-    };
-    for vout in 0..tx.outputs.len() as u32 {
-        match client
-            .get_coin(txid, vout)
-            .await
-            .map(|c| c.map(|c| c.mined_height()))
-        {
-            Ok(Some(Ok(Some(height)))) => return ChainEvidence::Mined(height),
-            // Its coin in the mempool, though hsd just did not find the
-            // transaction there; or a height that is not hsd's.
-            Ok(Some(_)) | Err(_) => return ChainEvidence::Unknown,
-            Ok(None) => {}
-        }
-    }
-    let mut all_unspent = true;
-    for input in &tx.inputs {
-        let prev = hex::encode(input.prevout.hash);
-        match client.get_coin(&prev, input.prevout.index).await {
-            Ok(Some(_)) => {}
-            Ok(None) => all_unspent = false,
-            Err(_) => return ChainEvidence::Unknown,
-        }
-    }
-    if all_unspent {
-        ChainEvidence::InputsUnspent
-    } else {
-        ChainEvidence::InputsSpent
-    }
+/// A draft's transaction bytes: signed once it is, else unsigned (the same
+/// inputs, outputs and txid).
+fn draft_hex(d: &db::queries::TxDraftRow) -> &str {
+    d.signed_tx_hex.as_deref().unwrap_or(&d.unsigned_tx_hex)
 }
 
 /// Whether the node keeps a transaction index, asked at most once per
@@ -1912,20 +1917,6 @@ impl TxIndexProbe {
             self.0 = Some(node_has_tx_index_with_client(client, tip).await);
         }
         self.0.flatten()
-    }
-}
-
-pub(crate) async fn node_has_tx_index_with_client(
-    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
-    tip: i64,
-) -> Option<bool> {
-    let hash = client.get_block_hash(tip).await.ok()?;
-    let block = client.get_block(&hash).await.ok()?;
-    let coinbase = block.get("tx")?.get(0)?.get("txid")?.as_str()?.to_string();
-    match client.get_raw_transaction(&coinbase).await {
-        Ok(_) => Some(true),
-        Err(e) if crate::noncustodial::rpc::is_tx_not_found(&e) => Some(false),
-        Err(_) => None,
     }
 }
 
@@ -1966,7 +1957,7 @@ pub async fn refresh_tx_confirmations(
             "walletProfileId": profile_id,
             "nodeReachable": node_reachable,
             "checked": 0, "confirmed": 0, "dropped": 0,
-            "reverted": 0, "promoted": 0, "failed": 0,
+            "reverted": 0, "promoted": 0, "failed": 0, "revived": 0,
         })
     }
 
@@ -2003,7 +1994,11 @@ pub async fn refresh_tx_confirmations(
             CONFIRMATION_FINALITY_DEPTH,
         )?
     };
-    if drafts.is_empty() {
+    let released = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        db::queries::list_released_drafts_to_watch(&conn, &profile_id, RELEASED_WATCH_SECS)?
+    };
+    if drafts.is_empty() && released.is_empty() {
         return Ok(empty_result(Some(&profile_id), true));
     }
 
@@ -2042,7 +2037,7 @@ pub async fn refresh_tx_confirmations(
                     if d.action == PURCHASE_ACTION {
                         continue;
                     }
-                    match chain_evidence_with_client(&client, d, &txid).await {
+                    match chain_evidence_with_client(&client, draft_hex(d), &txid).await {
                         ChainEvidence::Mined(height) => {
                             confirmed_updates.push((d.id.clone(), height, Some(txid)))
                         }
@@ -2087,7 +2082,7 @@ pub async fn refresh_tx_confirmations(
                 if d.action == PURCHASE_ACTION && d.status != "confirmed" {
                     continue;
                 }
-                match chain_evidence_with_client(&client, d, txid).await {
+                match chain_evidence_with_client(&client, draft_hex(d), txid).await {
                     ChainEvidence::Mined(height) => {
                         confirmed_updates.push((d.id.clone(), height, None))
                     }
@@ -2118,6 +2113,35 @@ pub async fn refresh_tx_confirmations(
             // Transport error or a reply that is not hsd's: skip; the next
             // tick retries.
             Err(_) => {}
+        }
+    }
+
+    // 4b. A `dropped` or `failed` draft mined after all (other nodes held it,
+    //     or this node lost its mempool on a restart): confirmed, so it never
+    //     reads "not sent" for a payment that went through. Only a mined
+    //     transaction is a verdict here; a purchase is the purchase job's.
+    let mut revived = 0;
+    for d in released.iter().filter(|d| d.action != PURCHASE_ACTION) {
+        let Some(txid) = d
+            .txid
+            .clone()
+            .or_else(|| local_txid_from_summary(&d.summary_json))
+        else {
+            continue;
+        };
+        let height = match client.get_raw_transaction(&txid).await {
+            Ok(tx) => raw_tx_mined_height(&tx, tip).ok().flatten(),
+            Err(e) if crate::noncustodial::rpc::is_tx_not_found(&e) => {
+                match chain_evidence_with_client(&client, draft_hex(d), &txid).await {
+                    ChainEvidence::Mined(height) => Some(height),
+                    _ => None,
+                }
+            }
+            Err(_) => None,
+        };
+        if let Some(height) = height {
+            confirmed_updates.push((d.id.clone(), height, Some(txid)));
+            revived += 1;
         }
     }
 
@@ -2212,7 +2236,8 @@ pub async fn refresh_tx_confirmations(
     Ok(serde_json::json!({
         "walletProfileId": profile_id,
         "nodeReachable": true,
-        "checked": drafts.len(),
+        "checked": drafts.len() + released.len(),
+        "revived": revived,
         "confirmed": n_conf,
         "dropped": n_drop,
         "reverted": n_revert,

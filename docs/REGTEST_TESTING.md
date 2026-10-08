@@ -217,8 +217,9 @@ The following scenarios must be validated against a running regtest node to conf
 |------|--------|----------------|
 | 1 | Register a name (from Scenario 1) | Name is owned |
 | 2 | Transfer the name to another regtest address | TRANSFER tx broadcasted |
-| 3 | Finalize the transfer | FINALIZE tx broadcasted; name moves to recipient |
-| 4 | Verify original wallet no longer `ownsName` | `capabilities.ownsName` is `false` |
+| 3 | Finalize the transfer right away | Refused: "the transfer of '…' is still locked for N more blocks" |
+| 4 | Mine the transfer lockup (10 blocks on regtest), then finalize | FINALIZE tx broadcasted; name moves to recipient |
+| 5 | Verify original wallet no longer `ownsName` | `capabilities.ownsName` is `false` |
 
 ### Scenario 4: Missed Reveal (simulated)
 
@@ -263,9 +264,9 @@ This runs the following tests:
 | Test | Lifecycle |
 |------|-----------|
 | `live_auction_open_bid_reveal_register` | Winner: OPEN → BID → REVEAL → REGISTER |
-| `live_auction_open_bid_reveal_redeem` | Loser redeem: OPEN → BID → REVEAL → REDEEM |
-| `live_auction_register_transfer_finalize` | Post-win: REGISTER → TRANSFER → FINALIZE |
-| `live_batch_transfer_two_names` | Batch: acquire 2 → BATCH TRANSFER → FINALIZE each |
+| `live_auction_open_bid_reveal_redeem` | Loser redeem: OPEN → BID, a rival wallet on the same node bids higher → both REVEAL → REDEEM; the redeem spends exactly the losing reveal, returns its value, and the rival's reveal stays the owner |
+| `live_auction_register_transfer_finalize` | Post-win: REGISTER → TRANSFER → FINALIZE refused inside the lockup → mine the rest of it → FINALIZE; the owner coin is at the recipient and `transfer` is 0 |
+| `live_batch_transfer_two_names` | Batch: acquire 2 → BATCH TRANSFER → lockup → FINALIZE each, syncing in between; both owner coins are at the recipient |
 
 ### Send-path money invariants (Group A)
 
@@ -279,8 +280,8 @@ This runs the following tests:
 | `live_send_max_sweeps_all_coins` | `max=true` sweeps every coin, no change, single output |
 | `live_send_immature_coinbase_rejected_then_matures` | Guards commit `a520456`: immature coinbase not spendable until `height+maturity ≤ tip+1` |
 | `live_send_wrong_network_address_rejected` | Mainnet `hs1q…` on regtest → rejected before signing |
-| `live_send_broadcast_double_spend_releases_reservation` | A draft whose coin another mined draft spent never confirms (hsd still answers its txid). It does not check the draft's status; `live_coins_spent_by_another_tx_drop_the_draft_and_say_so` does |
-| `live_send_rebroadcast_same_draft_rejected` | Second broadcast of a mined draft → node rejects (no RBF) |
+| `live_send_double_spend_is_not_sent` | A draft whose coin another mined draft spent is not sent: hsd answers its txid, the look-up after it finds nothing, the broadcast errors "did not take" and the draft is `broadcast_pending`; it is never mined |
+| `live_send_rebroadcast_same_draft_rejected` | A mined draft is not sent again: refused "already sent" before anything reaches the node, still `confirmed` |
 | `live_send_estimate_fee_smoke` | `estimate_tx_draft_fee` matches a real build's fee/change/inputs |
 | `live_send_txid_matches_node` | Local txid == node-returned txid (sighash/serialization guard) |
 
@@ -303,7 +304,8 @@ These drive REAL reorgs via a `#[cfg(test)]` `invalidateblock`/`reconsiderblock`
 | `live_confirm_finality_ceiling` | ≥ `CONFIRMATION_FINALITY_DEPTH` confs → refresh stops churning |
 | `live_broadcast_pending_promotes` | `broadcast_pending` draft on-chain → refresh promotes via `local_txid_from_summary` |
 | `live_coinbase_reorg_immaturity` | Unmine a confirmed coinbase → wallet treats the re-mined one as freshly immature |
-| `live_coins_spent_by_another_tx_drop_the_draft_and_say_so` | A sent draft whose coin another mined transaction spent is `dropped` after the grace window, saying another transaction spent its coins, never "the coins were not moved" |
+| `live_coins_spent_by_another_tx_drop_the_draft_and_say_so` | A draft whose coin another mined transaction spent is not sent (`broadcast_pending`), then `dropped` after the grace window, saying another transaction spent its coins, never "the coins were not moved" |
+| `live_dropped_send_mined_after_all_is_confirmed` | A send judged `dropped` (coins released) that is then mined is `confirmed` at its block by the next poll |
 
 ### A node without a transaction index (Group C, second node)
 
@@ -322,14 +324,15 @@ HNS_IT_NOINDEX_NODE_URL=http://127.0.0.1:24037 HNS_IT_NOINDEX_NODE_API_KEY=test 
 | `live_noindex_mined_send_is_confirmed_not_dropped` | A mined send is `confirmed` at its block after the grace window, and stays so on the next poll; never `dropped` |
 | `live_noindex_mined_pending_broadcast_is_confirmed_not_failed` | A mined `broadcast_pending` draft is `confirmed` with its txid; never `failed` |
 | `live_noindex_unsent_draft_with_unspent_coins_is_dropped` | A draft the node never had, its coins unspent, is `dropped` and its coins released |
-| `live_noindex_coins_spent_by_another_tx_give_no_verdict` | A draft whose coin another transaction spent stays `broadcasted`: without the index the wallet cannot tell that from a mined one |
+| `live_noindex_coins_spent_by_another_tx_give_no_verdict` | A draft whose coin another transaction spent is not sent and stays `broadcast_pending`: without the index the wallet cannot tell that from a mined one |
+| `live_noindex_dropped_send_mined_after_all_is_confirmed` | A send judged `dropped` that is then mined is `confirmed`, found by its outputs |
 
 ### Covenant actions (Group D)
 
 | Test | Asserts |
 |------|---------|
 | `live_update_records` | UPDATE writes records; name stays CLOSED, owner value preserved |
-| `live_renew_extends_lease` | Guards commit `78bba67`: RENEW uses `getblockhash` UNREVERSED (no `bad-register-renewal`) |
+| `live_renew_extends_lease` | RENEW straight after REGISTER is refused (`bad-renewal-premature`: not before `renewal + tree_interval`); after that many blocks it lands, `renewal` moves to the block it was mined in and the value is kept. Guards commit `78bba67`: RENEW uses `getblockhash` UNREVERSED (no `bad-register-renewal`) |
 | `live_cancel_reverts_transfer` | CANCEL clears a pending transfer; name still owned |
 | `live_revoke_burns_control` | REVOKE → name state REVOKED |
 
@@ -339,18 +342,20 @@ HNS_IT_NOINDEX_NODE_URL=http://127.0.0.1:24037 HNS_IT_NOINDEX_NODE_API_KEY=test 
 |------|---------|
 | `live_batch_bid_two_names` | Shared-lockup batch bid → both BIDs land, commitments persisted |
 | `live_batch_reveal_two_names` | Batch reveal after batch bid → both reveals accepted |
-| `live_batch_redeem_two_names` | Losing batch → batch redeem reclaims both lockups |
-| `live_batch_renew_two_names` | Shared `renewal_block` → both renewed |
+| `live_batch_redeem_two_names` | A rival wallet outbids this one on both names; one batch REDEEM spends both losing reveals, one REDEEM output per name, and the rival's reveals stay the owners |
+| `live_batch_renew_two_names` | Batch refused while the last-registered name is too recently renewed; after the tree interval, shared `renewal_block` → both names' `renewal` moves to the block it was mined in |
+| `live_batch_large_covenant_count` | 20 names renewed in one transaction once the last one may be renewed; every name's `renewal` moves to that block |
 | `live_batch_finalize_two_names` | Single-tx batch finalize after batch transfer + lockup |
 
 ### Covenant invariant + timing negatives (Group F)
 
 | Test | Asserts |
 |------|---------|
-| `live_premature_finalize_rejected` | Finalize before `transfer_lockup` (10) → rejected; after → accepted |
+| `live_premature_finalize_rejected` | Finalize before `transfer_lockup` (10) → the builder refuses it ("still locked for 9 more blocks") and persists nothing, as hsd would refuse it (`bad-finalize-maturity`); after → accepted and the name is at the recipient |
 | `live_bid_lockup_invariant_and_reveal_value` | On-chain: BID value == lockup; REVEAL value == true bid |
 | `live_register_value_is_clearing_price` | REGISTER output value == `getnameinfo.info.value` |
 | `live_redeem_when_won_rejected` | Winner cannot `build_redeem_draft` (no losing reveal to reclaim) |
+| `live_redeem_of_the_winning_reveal_is_refused` | A lone bidder's reveal, before REGISTER and with the name never tracked, is the owner coin the node reports: `build_redeem_draft` refuses it ("won the auction"), as hsd would (`bad-redeem-owner`), and the coin stays unspent |
 | `live_double_open_and_double_bid_guarded` | Second OPEN/BID while first pending → command-level rejection |
 
 ### Atomic swap + signing + capability (Group G)
@@ -390,9 +395,10 @@ What the tests check:
 
 - `shakedex_cli_listing_is_bought` — a fixed-price listing is bought: unconfirmed in the mempool, awaiting finalize once mined, owned after the lockup and the FINALIZE, with the node's owner coin paying the purchase's destination.
 - `shakedex_finalized_name_moved_on_before_a_sync_is_owned` — the purchase is finalized and the name then sent elsewhere (TRANSFER, lockup, FINALIZE) before the purchase job runs again; the job finds our FINALIZE as the TRANSFER's spender in the node's history of our destination and marks the purchase owned. The shakedex lock script lets the TRANSFER be spent only into a FINALIZE, so there is no other ending to test.
-- `shakedex_cli_buyer_first_loses_ours_with_nothing_paid` — the CLI buys the listing between our review and our broadcast. hsd 8.0.0's `sendrawtransaction` answers with the txid whatever its mempool does with the transaction (here it is kept as an orphan, its lock coin already spent), so the broadcast reads as sent; the purchase job then loses it as bought by someone else, with nothing paid, and frees its coins.
+- `shakedex_cli_buyer_first_loses_ours_with_nothing_paid` — the CLI buys the listing between our review and our broadcast. hsd 8.0.0's `sendrawtransaction` answers with the txid anyway; the look-up after it finds the node did not take the purchase, so the broadcast says "did not take" and the draft waits as `broadcast_pending`. The purchase job then finds the lock coin spent and loses the purchase with nothing paid, its coins free again, and the listing is no longer offered.
 - `shakedex_purchase_follows_reorgs_of_its_own_blocks` — the purchase's block is invalidated (hsd's `invalidateblock` empties the mempool too, so the purchase is gone from the node), the app's sync rebroadcasts it once after six blocks missing, and it is mined again; then the FINALIZE's block is invalidated and the purchase awaits finalize again until the same FINALIZE is mined.
 - `shakedex_reverse_auction_pays_the_current_step_and_refuses_a_stale_one` — a purchase signed at one step is refused at broadcast once the node's median time makes a cheaper step valid, and built again it pays that step.
+- `shakedex_rebroadcast_after_a_price_drop_is_not_sent` — the purchase's block is invalidated, which leaves it nowhere; a cheaper step of the reverse auction becomes valid before its one rebroadcast is due, so the old price is not sent again: the purchase is lost with nothing paid, its coins free, and the node never sees it again.
 - `shakedex_cancelled_listing_is_not_offered` — after the seller cancels, the listing is "sold or cancelled" and cannot be bought.
 - `shakedex_listing_expiring_before_finalize_is_not_offered` — R9 at the boundary: the chain is mined until the name's expiry (hsd's own `renewalPeriodEnd`) is one block past the margin (tip + 1 + transfer lockup + one day, a day being the lockup on regtest), where the listing is buyable with the expiry warning; one block later it is "expires before it can be finalized" and building the purchase is refused. It mines about 5000 blocks, regtest's renewal window.
 
@@ -405,7 +411,7 @@ Some listings the CLI cannot write: it publishes a market fee only through Learn
 - `shakedex_purchase_at_a_same_price_step_not_valid_is_not_sent` — two steps at one price, the purchase signed at the later; the blocks that moved the median time past it are taken back, so only the earlier step is valid, and the purchase is refused before it is sent. Checking the price alone sent it, and hsd answered with its txid although it could only hold it as non-final.
 - `shakedex_purchase_the_node_lost_is_given_up_after_mempool_expiry` — the purchase's block is invalidated (the node then has nothing of it); with the daemon's no-resend rule it waits, still unconfirmed one block before hsd's mempool expiry and lost with nothing paid at it, and nothing is sent again.
 
-`live_send_pays_its_fee_rate_on_vsize` (no CLI needed) checks a send against the rate hsd itself reports for it, worked out on the virtual size.
+`live_send_pays_its_fee_rate_on_vsize` (no CLI needed) checks a send against the rate hsd itself reports for it, worked out on the virtual size. `shakedex_purchase_and_finalize_pay_their_fee_rate_on_vsize` does the same for a purchase and its FINALIZE built at 20 doos/byte, above the 5 doos/byte floor every other test's rate falls under.
 
 The tests move the node's clock forward with `setmocktime` to make price steps valid. hsd keeps that as an offset that goes on ticking, and the median time never goes back, so the clock is only ever moved forward; never run `setmocktime 0` against this node, which sets its clock to 0 and stalls mining (`scripts/regtest.sh reset` starts over).
 
