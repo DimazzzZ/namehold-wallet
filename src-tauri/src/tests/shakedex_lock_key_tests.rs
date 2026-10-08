@@ -1,11 +1,15 @@
 //! R17: lock keys come from the seed (ADR 0004).
 
+use rusqlite::{params, Connection};
 use secp256k1::{PublicKey, SECP256K1};
 use serde_json::Value;
 
+use crate::db::queries::get_profile_addresses;
 use crate::error::AppError;
+use crate::noncustodial::derivation::{self, BRANCH_CHANGE, BRANCH_RECEIVE};
 use crate::noncustodial::hd::{ExtendedPubKey, HARDENED_OFFSET};
 use crate::noncustodial::network::Network;
+use crate::noncustodial::send::load_spendable_coins;
 use crate::noncustodial::shakedex::lock_key::{
     derive_lock_key, lock_key_index, lock_key_path, LOCK_BRANCH,
 };
@@ -158,4 +162,87 @@ fn lock_key_of_an_invalid_name_is_refused() {
             "{name:?}"
         );
     }
+}
+
+/// A regtest mnemonic profile `p1` with its account xpub from the test phrase
+/// and the usual 20-address receive and change windows.
+fn regtest_profile_with_addresses() -> (Connection, ExtendedPubKey) {
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::migrations::run(&conn).unwrap();
+    let master = master_from_known_mnemonic();
+    let account = master
+        .derive_path(&[
+            HARDENED_OFFSET + 44,
+            HARDENED_OFFSET + Network::Regtest.coin_type(),
+            HARDENED_OFFSET,
+        ])
+        .unwrap();
+    let xpub = ExtendedPubKey::from_priv(&account);
+    conn.execute(
+        "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub)
+         VALUES ('p1', 'Seller', 'mnemonic_hot', 'regtest', ?1)",
+        params![xpub.to_base58check(Network::Regtest)],
+    )
+    .unwrap();
+    for branch in [BRANCH_RECEIVE, BRANCH_CHANGE] {
+        derivation::ensure_addresses(&conn, "p1", 0, Network::Regtest, &xpub, branch, 20).unwrap();
+    }
+    (conn, xpub)
+}
+
+fn insert_liquid_coin(
+    conn: &Connection,
+    txid_byte: u8,
+    address: &str,
+    script_hex: &str,
+    value: u64,
+) {
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+             value_doos, covenant_type, spend_class)
+         VALUES (?1, 0, 'p1', ?2, ?3, ?4, 0, 'liquid_hns')",
+        params![
+            hex::encode([txid_byte; 32]),
+            address,
+            script_hex,
+            value as i64
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn coins_at_a_lock_address_are_not_spendable() {
+    let (conn, xpub) = regtest_profile_with_addresses();
+    let master = master_from_known_mnemonic();
+    let lock = derive_lock_key(&master, Network::Regtest, 0, "dexreviews").unwrap();
+
+    // Sync never asks the node for the lock address's coins: it is not one of
+    // the profile's derived addresses.
+    let synced = get_profile_addresses(&conn, "p1").unwrap();
+    assert_eq!(synced.len(), 40);
+    assert!(!synced.contains(&lock.address));
+
+    // Even a plain coin at the lock address recorded as liquid HNS (the worst
+    // case) is not offered by coin selection; one at a receive address is.
+    let receive0 = derivation::derive_one(Network::Regtest, &xpub, BRANCH_RECEIVE, 0).unwrap();
+    insert_liquid_coin(
+        &conn,
+        0xaa,
+        &receive0.address,
+        &receive0.script_pubkey_hex,
+        100_000,
+    );
+    insert_liquid_coin(
+        &conn,
+        0xbb,
+        &lock.address,
+        &format!("0020{}", hex::encode(lock.program)),
+        900_000,
+    );
+    let coins = load_spendable_coins(&conn, "p1", None, Network::Regtest).unwrap();
+    assert_eq!(coins.len(), 1, "only the receive-address coin");
+    assert_eq!(coins[0].txid, hex::encode([0xaa; 32]));
+    assert_eq!(coins[0].value, 100_000);
 }
