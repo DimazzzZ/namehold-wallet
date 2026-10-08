@@ -3,7 +3,12 @@
 //! Now lock time (R19) and the FINALIZE into the lock.
 
 use crate::error::AppError;
+use crate::noncustodial::actions::PlanResult;
+use crate::noncustodial::covenants;
+use crate::noncustodial::names;
 use crate::noncustodial::network::Network;
+use crate::noncustodial::send::SpendableCoin;
+use crate::noncustodial::shakedex::funding::{cov_out, fund, own_input};
 use crate::noncustodial::shakedex::lock_key::LockKey;
 use crate::noncustodial::shakedex::script;
 use crate::noncustodial::shakedex::template::{verify_step_signature, StepTemplate};
@@ -58,14 +63,86 @@ pub fn buy_now_lock_time(mtp: u64) -> u64 {
     mtp.saturating_sub(LOCK_TIME_UNIT_SECS)
 }
 
+/// `wallet_tx_drafts.action` of a draft finalizing our name into its lock.
+pub const LOCK_FINALIZE_ACTION: &str = "shakedex_lock_finalize";
+
+pub struct LockFinalizeInput<'a> {
+    pub network: Network,
+    pub account: u32,
+    /// Our name's TRANSFER coin, at our own address, whose covenant commits
+    /// to the lock (checked by the caller against the re-derived key, R18).
+    pub transfer: &'a SpendableCoin,
+    pub lock_pubkey: [u8; 33],
+    pub name: &'a str,
+    pub name_height: u32,
+    pub weak: bool,
+    pub claimed: u32,
+    pub renewals: u32,
+    pub renewal_block: [u8; 32],
+    pub funding: &'a [SpendableCoin],
+    pub change_address: &'a str,
+    pub rate: u64,
+    #[cfg(test)]
+    pub fixed_fee: Option<u64>,
+}
+
+#[cfg(test)]
+impl LockFinalizeInput<'_> {
+    /// Pin the fee instead of sizing it, to reproduce a vector's fee.
+    pub fn with_fixed_fee_for_tests(mut self, fee: u64) -> Self {
+        self.fixed_fee = Some(fee);
+        self
+    }
+}
+
+/// FINALIZE our name's TRANSFER coin into the P2WSH lock address:
+/// `[our TRANSFER coin, our funding...] -> [FINALIZE at the lock, change?]`.
+/// The generic finalize pays only P2WPKH addresses; this one pays the lock.
+pub fn build_lock_finalize_plan(i: &LockFinalizeInput) -> Result<PlanResult, AppError> {
+    let nh = names::hash_name(i.name)?;
+    let fin = covenants::finalize(
+        &nh,
+        i.name_height,
+        i.name.as_bytes(),
+        u8::from(i.weak),
+        i.claimed,
+        i.renewals,
+        &i.renewal_block,
+    );
+    let lock = script::lock_address(i.network, &i.lock_pubkey)?;
+    let before = vec![cov_out(i.transfer.value, lock, &fin)];
+    #[cfg(test)]
+    let fixed = i.fixed_fee;
+    #[cfg(not(test))]
+    let fixed = None;
+    fund(
+        i.network,
+        i.account,
+        0,
+        own_input(i.transfer),
+        i.transfer.value,
+        before,
+        vec![],
+        i.funding,
+        i.change_address,
+        i.rate,
+        fixed,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::noncustodial::actions::{sign_plan, FINAL_SEQUENCE};
     use crate::noncustodial::hd::ExtendedPrivKey;
+    use crate::noncustodial::send::SpendableCoin;
+    use crate::noncustodial::session::SignerSession;
     use crate::noncustodial::shakedex::lock_key::derive_lock_key;
     use crate::noncustodial::shakedex::template::{
         encode_lock_time, is_valid_at, low_s_signature, verify_step_signature,
     };
+    use crate::noncustodial::sync::COV_FINALIZE;
+    use crate::noncustodial::tx::{sighash, Transaction};
 
     fn key(name: &str) -> LockKey {
         let master = ExtendedPrivKey::from_seed(&[7u8; 64]).unwrap();
@@ -157,5 +234,63 @@ mod tests {
         }
         assert_eq!(buy_now_lock_time(1_783_696_480), 1_783_695_968);
         assert_eq!(buy_now_lock_time(100), 0, "never below zero");
+    }
+
+    const CHANGE: &str = "hs1qdhtaj7ws7chd2z2tulrmakqww428myx08d6w3v";
+
+    fn coin(txid_byte: u8, value: u64, child: u32) -> SpendableCoin {
+        SpendableCoin {
+            txid: hex::encode([txid_byte; 32]),
+            vout: 0,
+            value,
+            branch: 0,
+            child_index: child,
+        }
+    }
+
+    /// Our name's TRANSFER coin is input 0, signed by us as P2WPKH (ALL,
+    /// final sequence); output 0 is the FINALIZE at the lock address carrying
+    /// the name's value; the fee is the signed vsize times the rate.
+    #[test]
+    fn lock_finalize_pays_the_lock_address_and_its_fee_on_vsize() {
+        let k = key("dexreviews");
+        let transfer = coin(0x31, 1_000_000, 7);
+        let funding = [coin(1, 2_000_000, 8)];
+        let res = build_lock_finalize_plan(&LockFinalizeInput {
+            network: Network::Main,
+            account: 0,
+            transfer: &transfer,
+            lock_pubkey: k.pubkey,
+            name: "dexreviews",
+            name_height: 120,
+            weak: false,
+            claimed: 0,
+            renewals: 0,
+            renewal_block: [0x77; 32],
+            funding: &funding,
+            change_address: CHANGE,
+            rate: 7,
+            fixed_fee: None,
+        })
+        .unwrap();
+        let inp0 = &res.plan.inputs[0];
+        assert_eq!(inp0.txid, transfer.txid);
+        assert_eq!((inp0.branch, inp0.child_index), (0, 7));
+        assert_eq!(inp0.sighash_type, sighash::ALL);
+        assert_eq!(inp0.sequence, FINAL_SEQUENCE);
+        assert!(inp0.foreign_witness_hex.is_none());
+        assert_eq!(res.plan.locktime, 0);
+        let out0 = &res.plan.outputs[0];
+        assert_eq!(out0.covenant_type, COV_FINALIZE);
+        assert_eq!(out0.address, k.address);
+        assert_eq!(out0.value, 1_000_000);
+        assert_eq!(res.plan.outputs[1].address, CHANGE);
+        let master = ExtendedPrivKey::from_seed(&[7u8; 64]).unwrap();
+        let mut session = SignerSession::unlock("p".into(), Network::Main, master, 60_000);
+        let (hex, _) = sign_plan(&mut session, &res.plan).unwrap();
+        let signed = Transaction::decode(&hex::decode(hex).unwrap()).unwrap();
+        assert_eq!(res.fee, signed.vsize() * 7);
+        let out: u64 = res.plan.outputs.iter().map(|o| o.value).sum();
+        assert_eq!(res.input_total, out + res.fee);
     }
 }
