@@ -158,6 +158,14 @@ fn select_funding(
         let n_in = base_in + taken as u64;
 
         if n_in >= 1 {
+            crate::noncustodial::send::check_standard_weight(
+                crate::noncustodial::send::estimate_size_with_primary(
+                    n_in,
+                    total_primary_vbytes,
+                    1,
+                ),
+                n_in,
+            )?;
             let fee_wc = estimate_fee_with_primary(n_in, total_primary_vbytes, 1, rate);
             let fee_nc = estimate_fee_with_primary(n_in, total_primary_vbytes, 0, rate);
             if total_in >= total_output_value + fee_wc {
@@ -1181,6 +1189,25 @@ mod tests {
         assert_eq!(change, 0);
         // Fee absorbs the entire leftover.
         assert_eq!(fee, 200);
+    }
+
+    /// A name action needing more funding coins than a standard transaction
+    /// carries is refused, as a send is (`send::check_standard_weight`).
+    #[test]
+    fn select_funding_refuses_more_coins_than_a_standard_tx_carries() {
+        let funding: Vec<SpendableCoin> = (0..3_000u32)
+            .map(|i| SpendableCoin {
+                txid: format!("{i:064x}"),
+                vout: 0,
+                value: 10_000,
+                branch: 0,
+                child_index: i,
+            })
+            .collect();
+        let err = select_funding(25_000_000, 34, 0, 0, &funding, 1).unwrap_err();
+        assert!(err.to_string().contains("standard"), "{err}");
+        // A few coins cover a small output.
+        assert!(select_funding(50_000, 34, 0, 0, &funding, 1).is_ok());
     }
 
     // --- Coverage-driven tests ---

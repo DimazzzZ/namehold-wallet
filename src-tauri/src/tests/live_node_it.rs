@@ -73,7 +73,36 @@ fn account_xpub_at(acct: u32) -> String {
 
 /// Receive address + script-pubkey hex + pubkey hex for leaf 0/0 on regtest.
 fn leaf00() -> (String, String, String) {
-    leaf00_at(0)
+    leaf00_at(test_acct())
+}
+
+thread_local! {
+    /// The account [`seeded_conn_regtest`] gave this test's profile.
+    static TEST_ACCT: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// The account of this test's profile, set by [`seeded_conn_regtest`]; 0 for
+/// a helper that only mines and seeded no profile.
+fn test_acct() -> u32 {
+    TEST_ACCT.with(|a| a.get()).unwrap_or(0)
+}
+
+/// A BIP44 account no earlier test or run has funded. The tests once shared
+/// account 0, which gathered thousands of coinbases a run: sync and coin
+/// selection then walked them all, a sweep outgrew a standard transaction and
+/// hsd's regtest mempool kept it unmined, and every test spending its change
+/// stalled behind it. Clear of the fixed private accounts (0-24) and of
+/// [`fresh_acct`] (100 000 up); hardened indexes stay below 2^31.
+fn unique_acct() -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // Seconds mod 10^7 (about 115 days) times 100 tests per second: a rerun
+    // repeats an account only after that.
+    1_000_000_000 + ((secs % 10_000_000) as u32) * 100 + n % 100
 }
 
 /// A private BIP44 account index that is guaranteed empty on EVERY run,
@@ -104,7 +133,9 @@ fn leaf00_at(acct: u32) -> (String, String, String) {
 /// Migrate + seed a regtest profile owning leaf 0/0. No pre-seeded UTXO — the
 /// wallet is funded by mining to its address, then `sync_wallet_state`.
 fn seeded_conn_regtest(url: &str, api_key: &str) -> rusqlite::Connection {
-    seeded_conn_acct(url, api_key, 0)
+    let acct = unique_acct();
+    TEST_ACCT.with(|a| a.set(Some(acct)));
+    seeded_conn_acct(url, api_key, acct)
 }
 
 /// Like [`seeded_conn_regtest`] but seeds the profile at BIP44 account `acct`
@@ -897,7 +928,7 @@ async fn acquire_two_names(
 /// address `build_send_hns_draft` writes to. Test-only mirror of the private
 /// `change_address` helper in `commands/tx.rs`.
 fn change_addr_00() -> String {
-    let (_sk, _pk, a) = hd::derive_address(NET, &seed(), 0, 1, 0).unwrap();
+    let (_sk, _pk, a) = hd::derive_address(NET, &seed(), test_acct(), 1, 0).unwrap();
     a
 }
 
@@ -1109,13 +1140,16 @@ async fn live_send_max_sweeps_all_coins() {
         eprintln!("skip live_send_max_sweeps_all_coins: set HNS_IT_NODE_URL");
         return;
     };
-    // Private account (see `seeded_conn_acct`): this test asserts on the exact
-    // coin set / calls getcoinsbyaddress, so it needs an address that no other
-    // serial test funds.
-    let conn = seeded_conn_acct(&url, &key, 12);
-    let app = app_with(conn);
+    // A fresh account (see `fresh_acct`): this test asserts on the exact coin
+    // set and sweeps all of it. A fixed account gathered 105 coinbases a run;
+    // after enough runs its sweep outgrew a standard transaction (8299 coins,
+    // 1.17 MB), which hsd's regtest mempool took and no block ever mined,
+    // stalling every later test that spent its change.
     let cl = client(&url, &key);
-    let (addr, _, _) = leaf00_at(12);
+    let acct = fresh_acct(cl.get_blockchain_info().await.expect("info").blocks);
+    let conn = seeded_conn_acct(&url, &key, acct);
+    let app = app_with(conn);
+    let (addr, _, _) = leaf00_at(acct);
 
     // Mine several coinbases so there are multiple spendable coins to sweep.
     fund(&cl, &addr, 105).await;
@@ -2704,8 +2738,11 @@ async fn live_redeem_when_won_rejected() {
     assert!(res.is_err(), "winner must not be able to redeem");
 }
 
-/// F5. A second OPEN or BID for the same name while the first draft is still
-/// pending is rejected at the command layer (no duplicate hits the chain).
+/// F5. A second OPEN for the same name while the first draft is still pending
+/// is rejected at the command layer (no duplicate hits the chain). A second
+/// BID is not: the wallet lets you bid on one name as many times as you like
+/// (`docs/specs/2026-09-20-multiple-bids-per-name.md`), and each bid draft
+/// holds coins of its own.
 #[tokio::test]
 async fn live_double_open_and_double_bid_guarded() {
     let Some((url, key)) = it_env() else {
@@ -2756,14 +2793,32 @@ async fn live_double_open_and_double_bid_guarded() {
     assert!(mine_until(&cl, &name, "BIDDING", &addr, 30).await);
     sync_wallet_state(app.state(), None).await.expect("sync");
 
-    // First BID: builds fine. Second BID: rejected.
-    let _bid1 = build_bid_draft(app.state(), name.clone(), 500_000, 1_000_000, Some(1))
+    // Two BIDs while both are drafts: both build, on different coins.
+    let bid1 = build_bid_draft(app.state(), name.clone(), 500_000, 1_000_000, Some(1))
         .await
         .expect("bid 1");
-    let bid2 = build_bid_draft(app.state(), name.clone(), 500_000, 1_000_000, Some(1)).await;
+    let bid2 = build_bid_draft(app.state(), name.clone(), 500_000, 1_000_000, Some(1))
+        .await
+        .expect("a second bid on the same name builds");
+    let reserved = |id: &str| -> Vec<(String, i64)> {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        let mut stmt = c
+            .prepare("SELECT txid, vout FROM tracked_utxos WHERE reserved_by_draft_id = ?1")
+            .unwrap();
+        stmt.query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let (coins1, coins2) = (reserved(&bid1.id), reserved(&bid2.id));
     assert!(
-        bid2.is_err(),
-        "second BID while first is pending must be rejected"
+        !coins1.is_empty() && !coins2.is_empty(),
+        "each bid holds coins"
+    );
+    assert!(
+        coins1.iter().all(|c| !coins2.contains(c)),
+        "no coin funds both bids"
     );
 }
 
@@ -3324,10 +3379,12 @@ async fn live_max_send_leaves_only_sweep_output_liquid() {
         eprintln!("skip live_max_send_leaves_only_sweep_output_liquid: set HNS_IT_NODE_URL");
         return;
     };
-    let conn = seeded_conn_acct(&url, &key, 24);
-    let app = app_with(conn);
+    // A fresh account, as `live_send_max_sweeps_all_coins` explains.
     let cl = client(&url, &key);
-    let (addr, _, _) = leaf00_at(24);
+    let acct = fresh_acct(cl.get_blockchain_info().await.expect("info").blocks);
+    let conn = seeded_conn_acct(&url, &key, acct);
+    let app = app_with(conn);
+    let (addr, _, _) = leaf00_at(acct);
 
     fund(&cl, &addr, 105).await;
     let burn = recv_leaf_01_at(94);
@@ -4134,6 +4191,19 @@ async fn live_multi_bid_lifecycle_leaves_no_coin_stranded() {
         "two losing reveals are sitting there; Redeem must be offered: {:?}",
         caps.can_redeem.reason
     );
+    // A REGISTER owner coin carries four covenant items, as a TRANSFER does;
+    // it is no transfer. Read as one, a just-registered name refused Update,
+    // Transfer and Renew, and offered Finalize, until an UPDATE that same
+    // refusal blocked.
+    assert!(!caps.transfer_pending, "no transfer was ever started");
+    for (what, cap) in [
+        ("update", &caps.can_update),
+        ("transfer", &caps.can_transfer),
+        ("renew", &caps.can_renew),
+    ] {
+        assert!(cap.allowed, "{what} must be offered: {:?}", cap.reason);
+    }
+    assert!(!caps.can_finalize.allowed, "nothing to finalize");
     // The guided panel is what tells a user what to do next. Registered, with
     // its own losing lockups still out there, the wallet must point at them —
     // an enabled button behind an "advanced" toggle is not being told.

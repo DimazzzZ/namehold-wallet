@@ -338,6 +338,28 @@ pub fn load_spendable_coins(
     Ok(coins)
 }
 
+/// hsd's standard transaction weight (`policy.MAX_TX_WEIGHT`, a tenth of a
+/// block's). A mainnet mempool refuses anything heavier as non-standard
+/// (`tx-size`), and hsd's own wallet refuses to build it ("TX exceeds policy
+/// weight"). Testnet and regtest mempools take it anyway, and it can then sit
+/// there unmined, with every spend of its change stuck behind it.
+pub const MAX_STANDARD_TX_WEIGHT: u64 = 400_000;
+
+/// Refuse a transaction of `vsize` virtual bytes spending `n_inputs` coins
+/// when it is heavier than [`MAX_STANDARD_TX_WEIGHT`]. A virtual byte weighs
+/// four units, so `vsize * 4` is never below the weight it rounds up from.
+pub fn check_standard_weight(vsize: u64, n_inputs: u64) -> Result<(), AppError> {
+    if vsize.saturating_mul(4) > MAX_STANDARD_TX_WEIGHT {
+        return Err(AppError::InvalidInput(format!(
+            "this would spend {n_inputs} coins in one transaction, more than a standard \
+             transaction can carry (about {} kB): send a smaller amount, which uses the \
+             largest coins first",
+            MAX_STANDARD_TX_WEIGHT / 4 / 1000
+        )));
+    }
+    Ok(())
+}
+
 /// The outcome of coin selection: the coins to spend, the fee, and the change
 /// amount (0 if no change output should be created).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -372,6 +394,17 @@ pub fn select_coins(
         )));
     }
 
+    // Short of the amount altogether: that is the answer, before any coin
+    // count is weighed against a standard transaction.
+    let available_total = available
+        .iter()
+        .fold(0u64, |sum, c| sum.saturating_add(c.value));
+    if available_total < amount {
+        return Err(AppError::InvalidInput(
+            "insufficient funds to cover amount and fee".to_string(),
+        ));
+    }
+
     let mut selected: Vec<SpendableCoin> = Vec::new();
     let mut input_total: u64 = 0;
 
@@ -380,6 +413,8 @@ pub fn select_coins(
         input_total = input_total.saturating_add(coin.value);
 
         let n_inputs = selected.len() as u64;
+        // Coins only add weight: past the limit, no further coin can help.
+        check_standard_weight(estimate_size(n_inputs, 2), n_inputs)?;
 
         // Fee assuming a change output exists (recipient + change = 2 outputs).
         let fee_with_change = estimate_fee(n_inputs, 2, rate_per_byte);
@@ -463,8 +498,10 @@ pub fn select_all_coins(
         ));
     }
     let input_total: u64 = available.iter().map(|c| c.value).sum();
+    let n_inputs = available.len() as u64;
+    check_standard_weight(estimate_size(n_inputs, 1), n_inputs)?;
     // One recipient output, no change.
-    let fee = estimate_fee(available.len() as u64, 1, rate_per_byte);
+    let fee = estimate_fee(n_inputs, 1, rate_per_byte);
     if input_total <= fee || input_total - fee < DUST_THRESHOLD {
         return Err(AppError::InvalidInput(format!(
             "balance ({input_total}) is too low to cover the network fee ({fee})"
@@ -1455,6 +1492,76 @@ mod tests {
             err,
             AppError::Crypto(_) | AppError::InvalidInput(_)
         ));
+    }
+
+    /// The most inputs a standard transaction with `outputs` plain outputs
+    /// can carry, by the same estimate selection uses.
+    fn max_standard_inputs(outputs: u64) -> u64 {
+        (1..)
+            .take_while(|&n| estimate_size(n, outputs) * 4 <= MAX_STANDARD_TX_WEIGHT)
+            .last()
+            .unwrap()
+    }
+
+    fn many_coins(n: u64, value: u64) -> Vec<SpendableCoin> {
+        (0..n)
+            .map(|i| SpendableCoin {
+                txid: format!("{i:064x}"),
+                vout: 0,
+                value,
+                branch: 0,
+                child_index: i as u32,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn check_standard_weight_is_hsds_policy_limit_on_both_sides() {
+        assert_eq!(MAX_STANDARD_TX_WEIGHT, 400_000, "hsd policy.MAX_TX_WEIGHT");
+        assert!(check_standard_weight(100_000, 1).is_ok());
+        let err = check_standard_weight(100_001, 7).unwrap_err().to_string();
+        assert!(err.contains("7 coins"), "{err}");
+    }
+
+    /// A sweep of more coins than a standard transaction carries is refused,
+    /// not built: hsd's mainnet mempool would refuse it as non-standard, and
+    /// a testnet or regtest one would keep it unmined, with every spend of
+    /// its output stuck behind it. One coin fewer than the limit sweeps.
+    #[test]
+    fn select_all_coins_refuses_more_coins_than_a_standard_tx_carries() {
+        let n = max_standard_inputs(1);
+        assert!(select_all_coins(&many_coins(n, 100_000), 1).is_ok());
+        let err = select_all_coins(&many_coins(n + 1, 100_000), 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("standard"), "{err}");
+    }
+
+    /// More than the wallet holds is "insufficient funds", whatever the number
+    /// of coins: the weight of a transaction that cannot be funded anyway is
+    /// not the reason to give.
+    #[test]
+    fn select_coins_says_insufficient_funds_before_weighing_coins() {
+        let n = max_standard_inputs(2);
+        let coins = many_coins(n + 50, 100_000);
+        let err = select_coins(&coins, 100_000 * (n + 51), 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("insufficient funds"), "{err}");
+    }
+
+    /// An amount the largest coins cover in a standard transaction is sent;
+    /// one that needs more coins than that is refused.
+    #[test]
+    fn select_coins_refuses_an_amount_only_too_many_coins_cover() {
+        let n = max_standard_inputs(2);
+        let coins = many_coins(n + 50, 100_000);
+        // Covered by fewer coins than the limit.
+        assert!(select_coins(&coins, 100_000 * (n - 10), 1).is_ok());
+        let err = select_coins(&coins, 100_000 * (n + 10), 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("standard"), "{err}");
     }
 
     #[test]

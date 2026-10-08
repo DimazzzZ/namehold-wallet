@@ -285,11 +285,11 @@ fn fund(
                 outputs,
                 change_output_index: change_index,
             };
+            let vsize = signed_vsize(&plan, network)?;
+            crate::noncustodial::send::check_standard_weight(vsize, plan.inputs.len() as u64)?;
             let fee = match fixed_fee {
                 Some(f) => f,
-                None => signed_vsize(&plan, network)?
-                    .checked_mul(rate)
-                    .ok_or_else(overflow)?,
+                None => vsize.checked_mul(rate).ok_or_else(overflow)?,
             };
             let spend = out_total.checked_add(fee).ok_or_else(overflow)?;
             let Some(rest) = in_total.checked_sub(spend) else {
@@ -832,6 +832,24 @@ mod tests {
         };
         let msg = invalid_input(build_purchase_plan(&purchase(&l, &funding, Some(mf), 5)));
         assert!(msg.contains("money supply"), "{msg}");
+    }
+
+    /// A purchase only many small coins can fund is refused once it outgrows
+    /// a standard transaction, as a send is (`send::check_standard_weight`).
+    #[test]
+    fn purchase_needing_more_coins_than_a_standard_tx_carries_is_refused() {
+        let l = listing(PRICE);
+        let funding: Vec<SpendableCoin> = (0..3_000u32)
+            .map(|i| SpendableCoin {
+                txid: format!("{i:064x}"),
+                vout: 0,
+                value: 100_000,
+                branch: 0,
+                child_index: i,
+            })
+            .collect();
+        let msg = invalid_input(build_purchase_plan(&purchase(&l, &funding, None, 5)));
+        assert!(msg.contains("standard"), "{msg}");
     }
 
     #[test]

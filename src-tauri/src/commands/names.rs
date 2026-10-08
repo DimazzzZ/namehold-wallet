@@ -316,6 +316,8 @@ pub(crate) struct NameActionContext {
     pub has_owner_coin: bool,
     pub owner_covenant_type: Option<i64>,
     pub name_height: Option<i64>,
+    /// Whether the owner coin is a TRANSFER (a transfer is pending); `None`
+    /// without an owner coin.
     pub transfer_has_items: Option<bool>,
     pub existing_bid_count: i64,
     /// Task 1: an OPEN for this name is already pending — either an unspent
@@ -489,14 +491,10 @@ pub(crate) fn find_name_action_context(
     let owner_cov_type = owner_coin.as_ref().map(|c| c.covenant_type);
     let nh = owner_coin.as_ref().and_then(|c| c.name_height);
 
-    // Check if there's a TRANSFER output we can finalize.
-    let transfer = owner_coin.as_ref().and_then(|c| {
-        c.covenant_json.as_ref().and_then(|j| {
-            let v: serde_json::Value = serde_json::from_str(j).ok()?;
-            let items = v.get("items")?.as_array()?;
-            Some(items.len() >= 4)
-        })
-    });
+    // A transfer is pending while the name's owner coin is a TRANSFER. Its
+    // covenant type says so; its item count does not: a REGISTER carries four
+    // items too.
+    let transfer = owner_cov_type.map(|t| t == i64::from(sync::COV_TRANSFER));
 
     // Count existing bids for bid multiplicity rule — this auction's only.
     let existing_bid_count = commitments.len() as i64;
