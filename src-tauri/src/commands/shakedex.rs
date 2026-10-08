@@ -889,6 +889,24 @@ pub async fn shakedex_build_purchase_finalize_draft(
         )));
     }
     let ns = draft_ctx::fetch_name_state_strict(&ctx.node, &p.name).await?;
+    // hsd links a FINALIZE to its TRANSFER only at the same name height
+    // (rules.js, TRANSFER → FINALIZE). A different height is a name that
+    // expired and was registered again since: the FINALIZE would be refused
+    // only after the user signed it.
+    let transfer_name_height = transfer
+        .covenant
+        .as_ref()
+        .and_then(purchase::covenant_name_height)
+        .ok_or_else(|| {
+            AppError::Rpc("node did not report a readable height in the transfer's covenant".into())
+        })?;
+    if transfer_name_height != ns.height {
+        return Err(AppError::InvalidInput(
+            "the name expired and was registered again since the purchase: it can no longer \
+             be finalized"
+                .into(),
+        ));
+    }
     let renewal_block = draft_ctx::renewal_block(&ctx.node, ctx.network).await?;
     let mut transfer_txid = [0u8; 32];
     hex::decode_to_slice(&p.purchase_txid, &mut transfer_txid)
@@ -934,6 +952,15 @@ pub async fn shakedex_build_purchase_finalize_draft(
     // The replaced draft, the new draft and its link on the purchase commit
     // together. Deleting the old draft refuses one that was sent meanwhile.
     let tx = conn.unchecked_transaction()?;
+    // Another build of this purchase may have linked its own draft while this
+    // one waited on the node: linking ours over it would orphan that draft
+    // and the coins it reserved.
+    let linked = queries::get_shakedex_purchase(&tx, &p.id)?.and_then(|q| q.finalize_draft_id);
+    if linked != p.finalize_draft_id {
+        return Err(AppError::InvalidInput(
+            "a finalize of this purchase was prepared meanwhile — try again".into(),
+        ));
+    }
     if let Some(old) = replaces.as_deref() {
         queries::delete_tx_draft_in_tx(&tx, old)?;
     }

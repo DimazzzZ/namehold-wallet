@@ -1612,6 +1612,7 @@ async fn recheck_purchase(
     client: &NodeRpcClient,
     network: Option<&str>,
     purchase: Option<&db::queries::ShakedexPurchase>,
+    plan_json: &str,
 ) -> Result<(), AppError> {
     let p = purchase.ok_or_else(|| {
         AppError::InvalidInput(
@@ -1629,8 +1630,15 @@ async fn recheck_purchase(
             "{e}, so it could not be re-checked; the purchase was not sent"
         ))
     })?;
-    crate::noncustodial::shakedex::verify::recheck_price(client, network, &p.listing_json, paid)
-        .await
+    let paid_lock_time = crate::noncustodial::shakedex::purchase::plan_lock_time(plan_json)?;
+    crate::noncustodial::shakedex::verify::recheck_price(
+        client,
+        network,
+        &p.listing_json,
+        paid,
+        paid_lock_time,
+    )
+    .await
 }
 
 /// Broadcast a signed draft via node RPC.
@@ -1646,9 +1654,10 @@ pub async fn broadcast_tx_draft(
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
         // `Some(None)`: a purchase draft whose record is gone.
         let purchase = if draft.action == PURCHASE_ACTION {
-            Some(db::queries::get_shakedex_purchase_by_draft(
-                &conn, &draft_id,
-            )?)
+            Some((
+                db::queries::get_shakedex_purchase_by_draft(&conn, &draft_id)?,
+                draft.signing_inputs_json.clone(),
+            ))
         } else {
             None
         };
@@ -1657,7 +1666,7 @@ pub async fn broadcast_tx_draft(
         // with its purchase, as the sync would: its coins may fund another
         // draft by now. Refused here, at the TTL, a send always starts well
         // before the sync's own deletion (`shakedex_jobs::SEND_GRACE_SECS`).
-        if let Some(Some(p)) = &purchase {
+        if let Some((Some(p), _)) = &purchase {
             if db::queries::delete_abandoned_shakedex_purchase(
                 &conn,
                 &p.id,
@@ -1697,8 +1706,10 @@ pub async fn broadcast_tx_draft(
     // refusal apart from a failed send. A retry of an attempt the node may
     // already hold (`broadcast_pending`) keeps its draft and record for the
     // sync to resolve, and still reports the re-check's reason.
-    if let Some(p) = purchase {
-        if let Err(e) = recheck_purchase(&client, expected_network.as_deref(), p.as_ref()).await {
+    if let Some((p, plan_json)) = purchase {
+        if let Err(e) =
+            recheck_purchase(&client, expected_network.as_deref(), p.as_ref(), &plan_json).await
+        {
             if !maybe_sent {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
                 db::queries::delete_tx_draft(&conn, &draft_id)?;

@@ -100,6 +100,31 @@ fn seeded(draft_status: &str, state: &str) -> Connection {
     conn
 }
 
+/// The plan a purchase draft stores, as `build_purchase` writes it: its lock
+/// time is that of the step it pays (`PRICE`), which the rebroadcast re-checks.
+fn paid_plan_json() -> String {
+    let steps = crate::noncustodial::shakedex::listing_file::ListingFile::parse(
+        LISTING_FILE,
+        Network::Main,
+    )
+    .unwrap()
+    .encoded_steps()
+    .unwrap();
+    let (_, locktime) = steps
+        .into_iter()
+        .find(|(price, _)| *price == PRICE as u64)
+        .expect("a step at PRICE");
+    serde_json::json!({
+        "version": 0,
+        "locktime": locktime,
+        "account": 0,
+        "network": "main",
+        "inputs": [],
+        "outputs": [],
+    })
+    .to_string()
+}
+
 /// [`seeded`] into an existing connection (a file-backed DB a sync opens by
 /// path).
 fn seed_db(conn: &Connection, draft_status: &str, state: &str) {
@@ -143,7 +168,7 @@ fn seed_db(conn: &Connection, draft_status: &str, state: &str) {
         PROFILE,
         "shakedex_purchase",
         "00",
-        "{}",
+        &paid_plan_json(),
         "{}",
         &[(FUNDING_TXID.to_string(), 0)],
     )

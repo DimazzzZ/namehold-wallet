@@ -382,6 +382,7 @@ Some listings the CLI cannot write: it publishes a market fee only through Learn
 - `shakedex_listing_not_valid_yet_becomes_buyable` — a step an hour ahead of the median time is "not valid yet" and cannot be bought; once the median time passes it, it is buyable.
 - `shakedex_purchase_change_is_held_back_until_seen_mined` — the purchase's change, tracked once mined, stays out of coin selection until the purchase job has seen the purchase mined.
 - `shakedex_name_expired_before_finalize_is_lost_with_the_price_paid` — R13 "Lost, paid": the chain is mined to the name's expiry (hsd then reports `info: null`), and the purchase is lost as paid; the blocks are taken back before anything is asserted.
+- `shakedex_purchase_at_a_same_price_step_not_valid_is_not_sent` — two steps at one price, the purchase signed at the later; the blocks that moved the median time past it are taken back, so only the earlier step is valid, and the purchase is refused before it is sent. Checking the price alone sent it, and hsd answered with its txid although it could only hold it as non-final.
 - `shakedex_purchase_the_node_lost_is_given_up_after_mempool_expiry` — the purchase's block is invalidated (the node then has nothing of it); with the daemon's no-resend rule it waits, still unconfirmed one block before hsd's mempool expiry and lost with nothing paid at it, and nothing is sent again.
 
 `live_send_pays_its_fee_rate_on_vsize` (no CLI needed) checks a send against the rate hsd itself reports for it, worked out on the virtual size.

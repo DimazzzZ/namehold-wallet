@@ -1559,6 +1559,60 @@ async fn broadcast_refused_when_the_paid_step_is_no_longer_valid() {
     assert_unsent_purchase_discarded(&app, &draft_id);
 }
 
+/// The re-check tells the paid step by its lock time, not its price. The
+/// shakedex CLI writes a listing whose steps all share one price when a
+/// reverse auction starts and ends at the same price. Here our purchase pays
+/// the later of two such steps; the median time then goes back between them,
+/// so only the earlier step is valid. Its price is ours, but hsd would take
+/// our purchase only as non-final: nothing is sent.
+#[tokio::test]
+async fn broadcast_refused_when_only_another_step_at_the_same_price_is_valid() {
+    let mut node = mockito::Server::new_async().await;
+    let r = regtest_listing_with(
+        1_000_000,
+        &[
+            (5_000_000, REGTEST_MTP - 50_000),
+            (5_000_000, REGTEST_MTP - 100_000),
+        ],
+    );
+    let info = mock_regtest_info(&mut node, Some(REGTEST_MTP)).await;
+    let _n = mock_name_info(&mut node, r.name_info.clone()).await;
+    let _c = mock_coin(&mut node, &r.txid, r.coin.clone()).await;
+    let app = app_with(seeded("regtest", "mnemonic_hot", &node.url()));
+    let draft = shakedex_build_purchase_draft(app.state(), r.json.clone(), None, false, None)
+        .await
+        .expect("purchase builds");
+    let plan_lock_time = with_db(&app, |c| {
+        let row = db::queries::get_tx_draft(c, &draft.id).unwrap().unwrap();
+        crate::noncustodial::shakedex::purchase::plan_lock_time(&row.signing_inputs_json).unwrap()
+    });
+    assert_eq!(
+        plan_lock_time,
+        crate::noncustodial::shakedex::template::encode_lock_time(REGTEST_MTP - 50_000).unwrap(),
+        "the purchase pays the later step"
+    );
+    with_db(&app, |c| {
+        c.execute(
+            "UPDATE wallet_tx_drafts SET status = 'signed', signed_tx_hex = '00' WHERE id = ?1",
+            params![draft.id],
+        )
+        .unwrap();
+    });
+    info.remove_async().await;
+    let _between = mock_regtest_info(&mut node, Some(REGTEST_MTP - 75_000)).await;
+    let send = mock_send(&mut node, 0).await;
+
+    let err = crate::commands::tx::broadcast_tx_draft(app.state(), draft.id.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        err_text(err).contains("the price changed — review the purchase again"),
+        "refused before sending"
+    );
+    send.assert_async().await;
+    assert_unsent_purchase_discarded(&app, &draft.id);
+}
+
 #[tokio::test]
 async fn retry_of_a_maybe_sent_purchase_keeps_it_and_says_why() {
     // The first attempt hit a transport error, so the node may hold the

@@ -39,7 +39,7 @@ use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::{self, NodeRpcClient};
 use crate::noncustodial::send::RESERVATION_TTL_SECS;
-use crate::noncustodial::shakedex::purchase::transfer_commits_to;
+use crate::noncustodial::shakedex::purchase::{self, transfer_commits_to};
 use crate::noncustodial::shakedex::verify;
 
 /// Blocks a sent purchase may be absent from the node's mempool and chain
@@ -199,13 +199,9 @@ fn name_info(reply: &serde_json::Value) -> Result<Option<&serde_json::Value>, Ap
 /// always sends `height`, -1 for a mempool transaction (`TXMeta.getJSON`):
 /// a reply without it, or with anything else, is not hsd's answer.
 fn tx_height(tx: &serde_json::Value) -> Result<Option<i64>, AppError> {
-    match tx.get("height").and_then(|h| h.as_i64()) {
-        Some(-1) => Ok(None),
-        Some(h) if h >= 0 => Ok(Some(h)),
-        _ => Err(AppError::Rpc(
-            "node did not report the purchase's height".into(),
-        )),
-    }
+    rpc::mined_height(tx.get("height").and_then(|h| h.as_i64()), || {
+        "the purchase's height".into()
+    })
 }
 
 /// If a transaction from hsd's `GET /tx/address` spends the TRANSFER at
@@ -359,14 +355,23 @@ impl Job<'_> {
         // spending the one rebroadcast — wait instead. A price we cannot
         // re-check is an error, and the next sync tries again.
         let paid = p.paid_doos()?;
-        match verify::current_price(self.client, self.network, &p.listing_json).await? {
-            Some(price) if price == paid => {}
-            Some(price) if price < paid => {
+        let paid_lock_time = purchase::plan_lock_time(&draft.signing_inputs_json)?;
+        match verify::paid_step(
+            self.client,
+            self.network,
+            &p.listing_json,
+            paid,
+            paid_lock_time,
+        )
+        .await?
+        {
+            verify::PaidStep::Current => {}
+            verify::PaidStep::Cheaper => {
                 return self
                     .lose_unless_traced(p, NOT_RESENT_PRICE_DROPPED, None)
                     .await;
             }
-            _ => return wait().await,
+            verify::PaidStep::NotValid => return wait().await,
         }
         match self.client.send_raw_transaction(signed).await {
             Ok(_) => self.unconfirmed(p, None, 1),
