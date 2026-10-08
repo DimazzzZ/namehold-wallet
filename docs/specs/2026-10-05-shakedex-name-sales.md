@@ -107,7 +107,7 @@ A mined purchase whose TRANSFER is spent on chain is never lost: only our FINALI
 | regtest | `m/44'/5355'/0'/2'/1433607229'` | `rs1qr3mxw2n44nxqf43jqr69d42nmypn84jgzxtxeafpxn4nq58tylzsrz9ec5` |
 
 *Enforced:* `noncustodial/shakedex/lock_key.rs` on `ExtendedPrivKey::derive_path`.
-*Pinned:* `shakedex_lock_key_tests::{golden_path, every_level_is_hardened, lock_key_is_not_derivable_from_the_account_xpub, coins_at_a_lock_address_are_not_spendable}`.
+*Pinned:* `shakedex_lock_key_tests::{golden_path, every_level_is_hardened, lock_key_is_not_derivable_from_the_account_xpub, coins_at_a_lock_address_are_not_spendable, lock_key_of_an_invalid_name_is_refused}`.
 
 **R18 — The lock is checked before the name enters it.** A wrong key or script would strand the name: FINALIZE into the lock needs no signature, but every way out does. Before broadcasting the day-0 TRANSFER, the wallet derives the lock key, builds the script and address, signs a test `0x84` over a template and verifies it. Before the FINALIZE into the lock, it re-derives and checks that the confirmed TRANSFER's covenant commits to SHA3-256 of `lock_script(derived pub)`. Either check failing refuses the step.
 *Enforced:* `noncustodial/shakedex/sell.rs::lock_self_check`, `commands/shakedex.rs::{shakedex_build_lock_draft, shakedex_finalize_and_sign}`.

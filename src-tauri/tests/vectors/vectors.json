@@ -343,14 +343,38 @@
       {
         "network": "main",
         "name": "dexreviews",
+        "nameHashPrefix": 1433607229,
+        "index": 1433607229,
         "path": "m/44'/5353'/0'/2'/1433607229'",
+        "lockPub": "023809abd55689f5a5172aa75de58b6359a19d9c4326233f909c058ea6c3ed5d2c",
         "lockAddress": "hs1qkq6yytu0c4puw0xlrdwedylkk5a04yrgecgz9wgyu2sua3mzh4jqt74rdj"
       },
       {
         "network": "regtest",
         "name": "dexreviews",
+        "nameHashPrefix": 1433607229,
+        "index": 1433607229,
         "path": "m/44'/5355'/0'/2'/1433607229'",
+        "lockPub": "0316148018bd1be9577f7f3b3abaa1d133eecd7fd99d23c721e290c7def26b0743",
         "lockAddress": "rs1qr3mxw2n44nxqf43jqr69d42nmypn84jgzxtxeafpxn4nq58tylzsrz9ec5"
+      },
+      {
+        "network": "main",
+        "name": "namehold",
+        "nameHashPrefix": 2931327788,
+        "index": 783844140,
+        "path": "m/44'/5353'/0'/2'/783844140'",
+        "lockPub": "03e5dc6dff68d017e28a3e900913dea560e5fc0d881164043b66e5604af7fd1303",
+        "lockAddress": "hs1q3ng7kafcn49eevq9s0qjp7hkemuw72604jx66z8s77e78qkad4gsv8ef6e"
+      },
+      {
+        "network": "regtest",
+        "name": "namehold",
+        "nameHashPrefix": 2931327788,
+        "index": 783844140,
+        "path": "m/44'/5355'/0'/2'/783844140'",
+        "lockPub": "0377803b1319de1d5178ee88836c4d878d6c32e000946ad62b7a31773e8d42a461",
+        "lockAddress": "rs1qvkatmvhvf56f6xwhy0tptm8vtlhs8jmfysyha7qn04elnag282sqjlpvjr"
       }
     ]
   }
