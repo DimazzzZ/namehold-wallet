@@ -79,6 +79,14 @@ _Avoid_: Proof, auction file, swap proof
 The state of a name transferred to the seller's own lock address so that it can be sold through a listing. Leaving it again needs the seller's cancel or a buyer's purchase.
 _Avoid_: Escrow (nobody else holds it)
 
+**Locking**:
+The state of a name between the seller's transfer toward its lock and the finalize into the lock being mined: the name still sits at the seller's own address, waiting out the transfer lockup or the seller's Finalize & sign, and no price step can be bought yet, because the lock coin does not exist until that finalize is mined. The seller can abort with the ordinary Cancel transfer only until the finalize into the lock is broadcast.
+_Avoid_: Listed, pending listing (that is the market's announcement, not the name's state)
+
+**Restored lock**:
+A name in its lock that the wallet adopted after a restore, by its name: the wallet knows the lock is its own, because the lock key follows from the recovery phrase and the name, but not the price steps or the payment address, which were never on chain. It can be cancelled; importing its listing file makes it a full listing again.
+_Avoid_: Recovered listing (the listing is not recovered, only the lock), orphan lock
+
 **Lock key**:
 The key that controls a name's lock: it alone can cancel the listing or sign its price steps. Each name has its own, derived from the recovery phrase and the name, so listing the same name again reuses it. The wallet never uses it as a receiving address and uses it for nothing else.
 _Avoid_: Listing key, swap key
@@ -110,3 +118,7 @@ _Avoid_: Delist (taking a listing off a market does not stop anyone holding the 
 **Lower price**:
 Signing a new, cheaper price step on an existing listing. Instant and needs no cancel, because any buyer can take the cheapest valid step and this wallet always does. Raising a price is impossible without a cancel.
 _Avoid_: Edit price, reprice
+
+**My listings**:
+The place, on the Market page, where a seller sees their own listings and acts on them — Finalize & sign, Lower price, Cancel, export the listing file — and restores a lock by name. Selling a name starts from the name itself, among Owned Names.
+_Avoid_: My sales, Sell tab
