@@ -341,17 +341,31 @@ const shakedex = (() => {
   assert.strictEqual(f.sign([fr2]), 1, "finalize: only the funding input is signed");
   assert(f.verify(), "finalize verifies in hsd");
 
-  const lockPath = ["main", "regtest"].map((net) => {
-    const coin = Network.get(net).keyPrefix.coinType;
-    const path = `m/44'/${coin}'/0'/2'/${idx}'`;
-    const k = master.derivePath(path);
-    return {
-      network: net,
-      name,
-      path,
-      lockAddress: Address.fromScripthash(sha3.digest(lockScript(k.publicKey))).toString(net),
-    };
-  });
+  // "dexreviews" is R17's golden name; "namehold" has the top bit of its
+  // name hash set, so only the 0x7fffffff mask keeps its index below 2^31.
+  const lockPath = [];
+  for (const n of ["dexreviews", "namehold"]) {
+    const h = rules.hashName(n);
+    const index = h.readUInt32BE(0) & 0x7fffffff;
+    for (const net of ["main", "regtest"]) {
+      const coin = Network.get(net).keyPrefix.coinType;
+      const path = `m/44'/${coin}'/0'/2'/${index}'`;
+      const k = master.derivePath(path);
+      lockPath.push({
+        network: net,
+        name: n,
+        nameHashPrefix: h.readUInt32BE(0),
+        index,
+        path,
+        lockPub: k.publicKey.toString("hex"),
+        lockAddress: Address.fromScripthash(sha3.digest(lockScript(k.publicKey))).toString(net),
+      });
+    }
+  }
+  assert(
+    lockPath.some((e) => e.nameHashPrefix >= 0x80000000),
+    "a name with the top bit set",
+  );
 
   return {
     name,
@@ -389,6 +403,49 @@ const shakedex = (() => {
       txid: f.txid(),
     },
     lockPath,
+  };
+})();
+
+// --- P2WSH spend (hsd-generated) -----------------------------------------
+//
+// One input paying a P2WSH program (SHA3-256 of `<pub> OP_CHECKSIG`) spent
+// with SIGHASH_ALL to a plain address, witness [signature, script]. Pins
+// `Transaction::sign_p2wsh_input` in src-tauri/src/noncustodial/tx.rs; hsd's
+// own interpreter verifies the spend.
+
+const p2wshSpend = (() => {
+  const privateKey = Buffer.alloc(32, 0x11);
+  const pub = KeyRing.fromPrivate(privateKey).publicKey;
+  const script = Buffer.concat([Buffer.from([0x21]), pub, Buffer.from([0xac])]);
+  const value = 500_000;
+  const fee = 10_000;
+  const coin = new Coin({
+    version: 0,
+    height: 100,
+    value,
+    address: Address.fromScripthash(sha3.digest(script)),
+    hash: prevoutHash(TXID_A),
+    index: 1,
+  });
+  const recipient = addr(0, 0);
+  const mtx = new MTX();
+  mtx.version = 0;
+  mtx.addCoin(coin);
+  mtx.addOutput(Address.fromString(recipient, "main"), value - fee);
+  const signature = mtx.signature(0, Script.decode(script), value, privateKey, HASH_ALL);
+  mtx.inputs[0].witness = Witness.fromItems([signature, script]);
+  assert(mtx.verify(), "p2wsh spend verifies in hsd");
+  return {
+    privateKey: privateKey.toString("hex"),
+    script: script.toString("hex"),
+    coin: { hash: TXID_A, index: 1, value },
+    recipient,
+    fee,
+    hashType: HASH_ALL,
+    sighash: mtx.signatureHash(0, Script.decode(script), value, HASH_ALL).toString("hex"),
+    signature: signature.toString("hex"),
+    signedHex: mtx.toRaw().toString("hex"),
+    txid: mtx.txid(),
   };
 })();
 
@@ -647,6 +704,8 @@ const vectors = {
   },
 
   shakedex,
+
+  p2wshSpend,
 };
 
 const outPath = path.join(__dirname, "vectors.json");

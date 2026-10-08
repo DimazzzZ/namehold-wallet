@@ -21,6 +21,8 @@
 //!     `prev` when signing a P2WPKH input:
 //!     `OP_DUP(0x76) OP_BLAKE160(0xc0) <push20:0x14> <hash160>
 //!      OP_EQUALVERIFY(0x88) OP_CHECKSIG(0xac)` (25 bytes).
+//!   - `lib/script/script.js` / `tx.js` `signatureHash(index, prev, ...)` — for a
+//!     P2WSH input `prev` is the witness (redeem) script itself.
 //!   - hsd signs with bcrypto `secp256k1.sign` which returns a 64-byte COMPACT
 //!     (R||S, low-S) ECDSA signature; `signature()` appends a 1-byte sighash
 //!     type → 65-byte witness signature.
@@ -286,6 +288,18 @@ impl Default for Transaction {
     }
 }
 
+/// Sign a sighash the way hsd `signature()` does: a 64-byte compact (R||S)
+/// ECDSA signature, low-S (the crate normalizes on signing), followed by the
+/// low byte of the sighash type (hsd does `bw.writeU8(type)`).
+fn sign_sighash(key: &SecretKey, sighash: [u8; 32], hash_type: u32) -> [u8; 65] {
+    let secp = Secp256k1::signing_only();
+    let sig = secp.sign_ecdsa(&Message::from_digest(sighash), key);
+    let mut out = [0u8; 65];
+    out[..64].copy_from_slice(&sig.serialize_compact());
+    out[64] = (hash_type & 0xff) as u8;
+    out
+}
+
 impl Transaction {
     /// New empty transaction (version 0, locktime 0 — hsd defaults).
     pub fn new() -> Self {
@@ -438,22 +452,31 @@ impl Transaction {
 
         let script_code = p2wpkh_script_code(prev_hash160);
         let sighash = self.signature_hash(index, &script_code, value, hash_type)?;
+        let sig = sign_sighash(key, sighash, hash_type);
 
-        let msg = Message::from_digest(sighash);
-        let sig = secp.sign_ecdsa(&msg, key);
-        // 64-byte compact (R||S), low-S normalized by the crate on signing.
-        let compact = sig.serialize_compact();
-
-        // hsd witness signature: 64-byte compact + 1-byte sighash type.
-        // The sighash type byte is the low byte of the (u32) type, matching
-        // hsd `signature()` which does `bw.writeU8(type)`.
-        let mut sig_bytes = Vec::with_capacity(65);
-        sig_bytes.extend_from_slice(&compact);
-        sig_bytes.push((hash_type & 0xff) as u8);
-
-        let witness = vec![sig_bytes, compressed.to_vec()];
+        let witness = vec![sig.to_vec(), compressed.to_vec()];
         self.inputs[index].witness = witness;
         Ok(())
+    }
+
+    /// Sign input `index` as a P2WSH spend of `script` (the witness script
+    /// whose SHA3-256 is the spent output's program), worth `value`, under
+    /// `hash_type`. Returns the 65-byte witness signature and leaves the
+    /// witness alone: the stack differs per spend (a price step's purchase
+    /// carries `[signature, script]`, a FINALIZE out of a lock `[script]`), so
+    /// the caller sets it. The script code is the whole witness script, which
+    /// matches hsd only for a script without OP_CODESEPARATOR (hsd signs
+    /// `getSubscript(lastSep)`), as the Shakedex lock script is.
+    pub fn sign_p2wsh_input(
+        &self,
+        index: usize,
+        key: &SecretKey,
+        script: &[u8],
+        value: u64,
+        hash_type: u32,
+    ) -> Result<[u8; 65], AppError> {
+        let sighash = self.signature_hash(index, script, value, hash_type)?;
+        Ok(sign_sighash(key, sighash, hash_type))
     }
 
     /// Serialize the base (no-witness) form used for txid computation:
@@ -663,6 +686,54 @@ mod tests {
             hex::encode(h),
             "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8"
         );
+    }
+
+    /// R1: a P2WSH signature equals hsd's for the same transaction, key and
+    /// script, and the signed transaction is byte-identical once the caller
+    /// sets the witness `[signature, script]`.
+    #[test]
+    fn sign_p2wsh_input_matches_hsd() {
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/vectors/vectors.json")).unwrap();
+        let p = &v["p2wshSpend"];
+        let hx = |k: &serde_json::Value| hex::decode(k.as_str().unwrap()).unwrap();
+        let key = SecretKey::from_slice(&hx(&p["privateKey"])).unwrap();
+        let script = hx(&p["script"]);
+        let value = p["coin"]["value"].as_u64().unwrap();
+        let fee = p["fee"].as_u64().unwrap();
+        let hash_type = p["hashType"].as_u64().unwrap() as u32;
+        assert_eq!(hash_type, sighash::ALL);
+
+        let mut tx = Transaction::new();
+        tx.inputs.push(Input::new(Outpoint {
+            hash: hx(&p["coin"]["hash"]).try_into().unwrap(),
+            index: p["coin"]["index"].as_u64().unwrap() as u32,
+        }));
+        tx.outputs.push(Output {
+            value: value - fee,
+            address: output_address_from_string(Network::Main, p["recipient"].as_str().unwrap())
+                .unwrap(),
+            covenant: Covenant::default(),
+        });
+
+        assert_eq!(
+            hex::encode(tx.signature_hash(0, &script, value, hash_type).unwrap()),
+            p["sighash"].as_str().unwrap()
+        );
+        let sig = tx
+            .sign_p2wsh_input(0, &key, &script, value, hash_type)
+            .unwrap();
+        assert_eq!(hex::encode(sig), p["signature"].as_str().unwrap());
+        assert!(
+            tx.inputs[0].witness.is_empty(),
+            "the caller sets the witness"
+        );
+
+        tx.inputs[0].witness = vec![sig.to_vec(), script];
+        assert_eq!(tx.to_hex(), p["signedHex"].as_str().unwrap());
+        assert_eq!(tx.txid(), p["txid"].as_str().unwrap());
+
+        assert!(tx.sign_p2wsh_input(1, &key, &[], value, hash_type).is_err());
     }
 
     #[test]
