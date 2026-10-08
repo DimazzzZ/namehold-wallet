@@ -80,7 +80,7 @@ The state of a name transferred to the seller's own lock address so that it can 
 _Avoid_: Escrow (nobody else holds it)
 
 **Locking**:
-The state of a name between the seller's transfer toward its lock and the finalize into the lock being mined: the name still sits at the seller's own address, waiting out the transfer lockup or the seller's Finalize & sign, and no price is signed yet, so nobody can buy it. The seller can still abort with the ordinary Cancel transfer.
+The state of a name between the seller's transfer toward its lock and the finalize into the lock being mined: the name still sits at the seller's own address, waiting out the transfer lockup or the seller's Finalize & sign, and no price step can be bought yet, because the lock coin does not exist until that finalize is mined. The seller can abort with the ordinary Cancel transfer only until the finalize into the lock is broadcast.
 _Avoid_: Listed, pending listing (that is the market's announcement, not the name's state)
 
 **Restored lock**:
