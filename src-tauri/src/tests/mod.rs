@@ -29,6 +29,7 @@ mod csv_import_tests;
 mod csv_tests;
 mod daemon_ctl_cmd_tests;
 mod deadlines_cmd_tests;
+mod derivation_tests;
 mod discover_names_tests;
 mod draft_ctx_tests;
 mod error_tests;

@@ -1995,8 +1995,9 @@ pub struct ReceiveAddressRow {
     /// BIP44 child index within the receive branch (branch = 0).
     pub index: u32,
     pub address: String,
-    /// True when the address is referenced by any tracked UTXO or bid
-    /// commitment. Mirrors the "used" test in
+    /// True when the address is marked used (sync saw coins there, or it was
+    /// reserved) or is referenced by any tracked UTXO, bid commitment or
+    /// Shakedex purchase destination. Mirrors the "used" test in
     /// `derivation::next_unused_receive_address`, so what the list marks as
     /// used is exactly what address allocation skips over.
     pub used: bool,
