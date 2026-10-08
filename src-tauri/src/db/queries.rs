@@ -1318,12 +1318,16 @@ pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result
          WHERE purchase_draft_id = ?1 AND state = ?2",
         params![id, PurchaseState::PendingSend],
     )?;
-    // A listing still Locking goes with its unsent lock TRANSFER draft: the
-    // name never left; its reserved addresses stay used.
-    tx.execute(
-        "DELETE FROM shakedex_listings WHERE lock_transfer_draft_id = ?1 AND state = ?2",
-        params![id, ListingState::Locking],
-    )?;
+    // A listing still Locking goes with its lock TRANSFER draft only when the
+    // draft was never sent (`draft`, `signed`): the name never left; its
+    // reserved addresses stay used. A `dropped` or `failed` draft was
+    // broadcast and may still be mined, so its listing stays.
+    if matches!(status.as_str(), "draft" | "signed") {
+        tx.execute(
+            "DELETE FROM shakedex_listings WHERE lock_transfer_draft_id = ?1 AND state = ?2",
+            params![id, ListingState::Locking],
+        )?;
+    }
     tx.execute(
         "UPDATE shakedex_purchases SET finalize_draft_id = NULL, updated_at = datetime('now')
          WHERE finalize_draft_id = ?1",

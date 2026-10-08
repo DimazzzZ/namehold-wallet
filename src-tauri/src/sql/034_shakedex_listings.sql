@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS shakedex_listings (
     publish INTEGER NOT NULL DEFAULT 0 CHECK (publish IN (0, 1)),
     market_status TEXT,
     market_retry_at TEXT,
+    -- Unix seconds: the listing file's expiresAt (spec R23, MTP + 365 days).
     expires_at INTEGER,
     -- The Cancel transfer draft that withdraws a listing still locking.
     abort_draft_id TEXT,
