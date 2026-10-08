@@ -7,6 +7,12 @@ const FOREIGN: &str = r#"{"version":0,"locktime":2147483700,"account":0,"network
   "inputs":[{"txid":"0909090909090909090909090909090909090909090909090909090909090909","vout":0,
   "value":0,"branch":0,"child_index":0,"sighash_type":132,"sequence":4294967294,
   "foreign_witness_hex":["aa"]}],"outputs":[]}"#;
+/// A cancel's lock coin of ours, signed by its lock key: final sequence, no
+/// lock time, nothing foreign.
+const LOCK_KEY: &str = r#"{"version":0,"locktime":0,"account":0,"network":"main",
+  "inputs":[{"txid":"0909090909090909090909090909090909090909090909090909090909090909","vout":0,
+  "value":0,"branch":0,"child_index":11,"sighash_type":131,"sequence":4294967295,
+  "lock_key_name":"dexreviews"}],"outputs":[]}"#;
 /// A `send_hns` draft stores its build parameters, not a plan; the signer
 /// builds the plan from the wallet's own coins.
 const SEND_PARAMS: &str = r#"{"network":"main","account":0,"to_address":"hs1q","amount_doos":1}"#;
@@ -14,6 +20,12 @@ const SEND_PARAMS: &str = r#"{"network":"main","account":0,"to_address":"hs1q","
 #[test]
 fn ledger_refuses_plan_with_foreign_input() {
     let err = refuse_unsupported_ledger_plan("ledger_hardware", "register", FOREIGN).unwrap_err();
+    assert!(matches!(err, AppError::InvalidInput(m) if m.contains("recovery-phrase wallet")));
+}
+
+#[test]
+fn ledger_refuses_plan_with_lock_key_input() {
+    let err = refuse_unsupported_ledger_plan("ledger_hardware", "register", LOCK_KEY).unwrap_err();
     assert!(matches!(err, AppError::InvalidInput(m) if m.contains("recovery-phrase wallet")));
 }
 

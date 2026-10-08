@@ -11,8 +11,11 @@ use crate::noncustodial::network::Network;
 const PREFIX: [u8; 4] = [0xd0, 0x59, 0x87, 0x63]; // OP_TYPE OP_9 OP_EQUAL OP_IF
 const SUFFIX: [u8; 6] = [0xac, 0x67, 0xd0, 0x5a, 0x87, 0x68]; // CHECKSIG ELSE TYPE OP_10 EQUAL ENDIF
 
+/// Every lock script is this long: 4 + 1 + 33 + 6 bytes.
+pub const LOCK_SCRIPT_LEN: usize = 44;
+
 pub fn lock_script(pubkey: &[u8; 33]) -> Vec<u8> {
-    let mut s = Vec::with_capacity(44);
+    let mut s = Vec::with_capacity(LOCK_SCRIPT_LEN);
     s.extend_from_slice(&PREFIX);
     s.push(0x21);
     s.extend_from_slice(pubkey);
