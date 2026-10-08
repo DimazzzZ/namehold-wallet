@@ -268,3 +268,57 @@ fn seller_steps_match_hsd() {
         );
     }
 }
+
+fn lock_finalize_input<'a>(
+    v: &'a Value,
+    transfer: &'a crate::noncustodial::send::SpendableCoin,
+    funding: &'a [crate::noncustodial::send::SpendableCoin],
+    rate: u64,
+) -> crate::noncustodial::shakedex::sell::LockFinalizeInput<'a> {
+    let lf = &v["sell"]["lockFinalize"];
+    crate::noncustodial::shakedex::sell::LockFinalizeInput {
+        network: Network::Main,
+        account: 0,
+        transfer,
+        lock_pubkey: h(v["lockPub"].as_str().unwrap()),
+        name: v["name"].as_str().unwrap(),
+        name_height: v["height"].as_u64().unwrap() as u32,
+        weak: false,
+        claimed: 0,
+        renewals: 0,
+        renewal_block: h(lf["renewalBlock"].as_str().unwrap()),
+        funding,
+        change_address: lf["changeAddress"].as_str().unwrap(),
+        rate,
+        fixed_fee: None,
+    }
+}
+
+/// R1 and R4: the FINALIZE of our TRANSFER coin into the lock equals hsd's
+/// signed transaction, and at a fee rate it pays hsd's vsize times the rate.
+#[test]
+fn lock_finalize_matches_hsd_signed_hex() {
+    use crate::noncustodial::shakedex::sell::build_lock_finalize_plan;
+    let v = sd();
+    let lf = &v["sell"]["lockFinalize"];
+    let transfer = vector_funding(&lf["transferInput"]);
+    let funding = [vector_funding(&lf["fundingInput"])];
+    let fee = lf["fee"].as_u64().unwrap();
+    let res = build_lock_finalize_plan(
+        &lock_finalize_input(&v, &transfer, &funding, 0).with_fixed_fee_for_tests(fee),
+    )
+    .unwrap();
+    assert_eq!(res.fee, fee);
+    let (hex, txid) = sign_with_known_mnemonic(&res.plan);
+    assert_eq!(hex, lf["signedHex"].as_str().unwrap());
+    assert_eq!(txid, lf["txid"].as_str().unwrap());
+    assert_eq!(res.txid, txid);
+
+    let at_rate =
+        build_lock_finalize_plan(&lock_finalize_input(&v, &transfer, &funding, 7)).unwrap();
+    assert_eq!(
+        at_rate.fee,
+        lf["vsize"].as_u64().unwrap() * 7,
+        "fee on hsd's vsize"
+    );
+}
