@@ -5542,3 +5542,70 @@ async fn shakedex_purchase_the_node_lost_is_given_up_after_mempool_expiry() {
     );
     assert!(never_sent.is_null(), "nothing was sent again");
 }
+
+/// R10 on a live node: the step a purchase pays is told by its lock time, not
+/// its price. A listing with two steps at one price (the CLI writes such a
+/// listing when a reverse auction starts and ends at the same price); the
+/// purchase is signed at the later one, the current step once both are
+/// valid. The blocks that moved the median time past the later step are then
+/// taken back: only the earlier step is valid, at our price, and the purchase
+/// is refused before it is sent. Checking the price alone sent a transaction
+/// hsd takes only as non-final, while still answering with its txid.
+#[tokio::test]
+async fn shakedex_purchase_at_a_same_price_step_not_valid_is_not_sent() {
+    let Some((url, key, cli)) =
+        shakedex_env("shakedex_purchase_at_a_same_price_step_not_valid_is_not_sent")
+    else {
+        return;
+    };
+    use crate::noncustodial::shakedex::template::{encode_lock_time, is_valid_at};
+    let lock = OwnLock::new(&cli, &url, &key).await;
+    let b = ShakedexBuyer::new(&url, &key).await;
+    let mtp = node_mtp(&b.cl).await;
+    let (early, late) = (mtp + 1_000, mtp + 4_000);
+    let listing = lock.listing(&[(2_000_000, late), (2_000_000, early)], 0);
+    advance_mtp_past(&b.cl, &b.addr, early).await;
+    let between = b.cl.get_blockchain_info().await.expect("info").blocks;
+    advance_mtp_past(&b.cl, &b.addr, late).await;
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+
+    let draft = b.sign_purchase(&listing).await;
+    let signed_at = {
+        let row = draft_status(&b.app, &draft.id);
+        crate::noncustodial::shakedex::purchase::plan_lock_time(&row.signing_inputs_json)
+            .expect("plan lock time")
+    };
+    assert_eq!(
+        signed_at,
+        encode_lock_time(late).unwrap(),
+        "pays the later step"
+    );
+
+    rewind_to(&b.cl, between).await;
+    let mtp = node_mtp(&b.cl).await;
+    assert!(
+        is_valid_at(encode_lock_time(early).unwrap(), mtp),
+        "early step valid at {mtp}"
+    );
+    assert!(!is_valid_at(signed_at, mtp), "our step not valid at {mtp}");
+
+    let err = broadcast_tx_draft(b.app.state(), draft.id.clone())
+        .await
+        .expect_err("refused before sending");
+    assert!(
+        err.to_string()
+            .contains(crate::noncustodial::shakedex::verify::PRICE_CHANGED),
+        "{err}"
+    );
+    let txid = draft.summary["txid"]
+        .as_str()
+        .expect("draft txid")
+        .to_string();
+    assert!(
+        b.cl.get_tx_by_hash(&txid)
+            .await
+            .expect("tx lookup")
+            .is_null(),
+        "nothing reached the node"
+    );
+}
