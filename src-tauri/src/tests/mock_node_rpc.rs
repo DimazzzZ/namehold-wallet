@@ -232,6 +232,18 @@ impl MockNodeRpc {
         self
     }
 
+    /// hsd's own `getrawtransaction` answer for a transaction it does not
+    /// find: `Transaction not found.`, code -1, as `call` returns it.
+    pub fn with_raw_transaction_not_found(mut self) -> Self {
+        self.raw_transaction = Box::new(|| {
+            Err(AppError::NodeRefused {
+                message: "Transaction not found.".to_string(),
+                code: -1,
+            })
+        });
+        self
+    }
+
     pub fn with_send_raw_transaction(mut self, txid: String) -> Self {
         self.send_raw_transaction = Box::new(move || Ok(txid.clone()));
         self

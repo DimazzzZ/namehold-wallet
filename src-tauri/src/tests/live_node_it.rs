@@ -5679,3 +5679,292 @@ async fn shakedex_purchase_at_a_same_price_step_not_valid_is_not_sent() {
         "nothing reached the node"
     );
 }
+
+// --- A node without a transaction index ------------------------------------
+//
+// hsd answers `getrawtransaction` from its mempool, then from its chain's
+// transaction index (`chaindb.getMeta`), which is null on a node started
+// without `--index-tx`. On such a node every MINED transaction reads as hsd's
+// own "Transaction not found.", the same answer as for one the node never
+// had. These tests run against a second regtest node started with
+// `--index-address` only:
+//
+// ```sh
+// hsd --network=regtest --index-address --no-wallet --listen=false \
+//     --http-host=127.0.0.1 --http-port=24037 --port=24038 \
+//     --ns-port=25449 --rs-port=25450 --api-key=test --prefix=<dir> --daemon
+// HNS_IT_NOINDEX_NODE_URL=http://127.0.0.1:24037 HNS_IT_NOINDEX_NODE_API_KEY=test \
+//   cargo test --manifest-path src-tauri/Cargo.toml live_noindex -- --test-threads=1
+// ```
+
+/// `Some((url, api_key))` of the node without a transaction index, else `None`.
+fn noindex_env() -> Option<(String, String)> {
+    let url = std::env::var("HNS_IT_NOINDEX_NODE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
+    let key = std::env::var("HNS_IT_NOINDEX_NODE_API_KEY").unwrap_or_default();
+    Some((url, key))
+}
+
+/// Move a draft's `updated_at` back past the refresh's eviction grace window.
+fn age_past_grace(app: &tauri::App<tauri::test::MockRuntime>, draft_id: &str) {
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    c.execute(
+        "UPDATE wallet_tx_drafts SET updated_at = datetime('now', '-700 seconds') WHERE id = ?1",
+        params![draft_id],
+    )
+    .unwrap();
+}
+
+/// The txid a signed draft's summary carries.
+fn summary_txid(app: &tauri::App<tauri::test::MockRuntime>, draft_id: &str) -> String {
+    let row = draft_status(app, draft_id);
+    let v: serde_json::Value = serde_json::from_str(&row.summary_json).unwrap();
+    v["txid"].as_str().expect("summary txid").to_string()
+}
+
+/// A send mined on a node without a transaction index is confirmed at its
+/// block — never `dropped` with "the coins were not moved", which would invite
+/// the user to pay a second time.
+#[tokio::test]
+async fn live_noindex_mined_send_is_confirmed_not_dropped() {
+    let Some((url, key)) = noindex_env() else {
+        eprintln!(
+            "skip live_noindex_mined_send_is_confirmed_not_dropped: set HNS_IT_NOINDEX_NODE_URL"
+        );
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    fund(&cl, &addr, 103).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let d = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None)
+        .await
+        .expect("build");
+    unlock(&app);
+    sign_tx_draft_inner(&app.state(), &d.id)
+        .await
+        .expect("sign");
+    let bc = broadcast_tx_draft(app.state(), d.id.clone())
+        .await
+        .expect("broadcast");
+    assert_eq!(bc.status, "broadcasted");
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    let mined_at = cl.get_blockchain_info().await.expect("info").blocks;
+    let txid = draft_status(&app, &d.id).txid.expect("txid");
+    assert!(
+        crate::noncustodial::rpc::is_tx_not_found(
+            &cl.get_raw_transaction(&txid)
+                .await
+                .expect_err("no tx index")
+        ),
+        "precondition: this node answers a mined tx with hsd's not-found"
+    );
+
+    age_past_grace(&app, &d.id);
+    let r = refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh");
+    let row = draft_status(&app, &d.id);
+    assert_eq!(row.status, "confirmed", "{r} {:?}", row.error_message);
+    assert_eq!(row.confirmation_height, Some(mined_at));
+
+    // A confirmed draft is polled again until final: hsd's not-found must
+    // not read as a reorg either.
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh");
+    let row = draft_status(&app, &d.id);
+    assert_eq!(row.status, "confirmed", "{:?}", row.error_message);
+    assert_eq!(row.confirmation_height, Some(mined_at));
+}
+
+/// The same for a `broadcast_pending` draft (an ambiguous broadcast): mined
+/// on a node without a transaction index, it is confirmed, never `failed`.
+#[tokio::test]
+async fn live_noindex_mined_pending_broadcast_is_confirmed_not_failed() {
+    let Some((url, key)) = noindex_env() else {
+        eprintln!("skip live_noindex_mined_pending_broadcast_is_confirmed_not_failed: set HNS_IT_NOINDEX_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    fund(&cl, &addr, 103).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let d = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None)
+        .await
+        .expect("build");
+    unlock(&app);
+    sign_tx_draft_inner(&app.state(), &d.id)
+        .await
+        .expect("sign");
+    broadcast_tx_draft(app.state(), d.id.clone())
+        .await
+        .expect("broadcast");
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "UPDATE wallet_tx_drafts SET status = 'broadcast_pending', txid = NULL WHERE id = ?1",
+            params![d.id],
+        )
+        .unwrap();
+    }
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    let mined_at = cl.get_blockchain_info().await.expect("info").blocks;
+
+    age_past_grace(&app, &d.id);
+    refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh");
+    let row = draft_status(&app, &d.id);
+    assert_eq!(row.status, "confirmed", "{:?}", row.error_message);
+    assert_eq!(row.confirmation_height, Some(mined_at));
+    assert_eq!(
+        row.txid.as_deref(),
+        Some(summary_txid(&app, &d.id).as_str())
+    );
+}
+
+/// A transaction the node never had, whose coins are all still unspent, is
+/// `dropped` with its coins released on a node without a transaction index
+/// too: here "the coins were not moved" is what the chain shows.
+#[tokio::test]
+async fn live_noindex_unsent_draft_with_unspent_coins_is_dropped() {
+    let Some((url, key)) = noindex_env() else {
+        eprintln!("skip live_noindex_unsent_draft_with_unspent_coins_is_dropped: set HNS_IT_NOINDEX_NODE_URL");
+        return;
+    };
+    let conn = seeded_conn_regtest(&url, &key);
+    let app = app_with(conn);
+    let cl = client(&url, &key);
+    let (addr, _, _) = leaf00();
+    fund(&cl, &addr, 103).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let d = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None)
+        .await
+        .expect("build");
+    unlock(&app);
+    sign_tx_draft_inner(&app.state(), &d.id)
+        .await
+        .expect("sign");
+    // Recorded as broadcast, but never sent: as if the mempool evicted it.
+    let txid = summary_txid(&app, &d.id);
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.execute(
+            "UPDATE wallet_tx_drafts SET status = 'broadcasted', txid = ?2 WHERE id = ?1",
+            params![d.id, txid],
+        )
+        .unwrap();
+    }
+    cl.generate_to_address(1, &addr).await.expect("mine");
+
+    age_past_grace(&app, &d.id);
+    refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh");
+    let row = draft_status(&app, &d.id);
+    assert_eq!(row.status, "dropped", "{:?}", row.error_message);
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    let held: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = ?1",
+            params![d.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(held, 0, "a dropped draft's coins are released");
+}
+
+/// Draft A's coin is spent by draft B, mined; A is then sent, and hsd's
+/// mempool turns it away while still answering its txid. On a node without a
+/// transaction index the wallet cannot tell A's spend from B's, so it gives
+/// no verdict on A — above all not "dropped, the coins were not moved".
+#[tokio::test]
+async fn live_noindex_coins_spent_by_another_tx_give_no_verdict() {
+    let Some((url, key)) = noindex_env() else {
+        eprintln!("skip live_noindex_coins_spent_by_another_tx_give_no_verdict: set HNS_IT_NOINDEX_NODE_URL");
+        return;
+    };
+    let (app, a) = double_spent_draft(&url, &key).await;
+    age_past_grace(&app, &a);
+    refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh");
+    let row = draft_status(&app, &a);
+    assert_eq!(row.status, "broadcasted", "{:?}", row.error_message);
+}
+
+/// The same double spend on a node WITH a transaction index: hsd's not-found
+/// is the chain's answer there, so A is `dropped` — and told why: another
+/// transaction spent its coins, not "the coins were not moved".
+#[tokio::test]
+async fn live_coins_spent_by_another_tx_drop_the_draft_and_say_so() {
+    let Some((url, key)) = it_env() else {
+        eprintln!(
+            "skip live_coins_spent_by_another_tx_drop_the_draft_and_say_so: set HNS_IT_NODE_URL"
+        );
+        return;
+    };
+    let (app, a) = double_spent_draft(&url, &key).await;
+    age_past_grace(&app, &a);
+    refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh");
+    let row = draft_status(&app, &a);
+    assert_eq!(row.status, "dropped", "{:?}", row.error_message);
+    let msg = row.error_message.unwrap_or_default().to_lowercase();
+    assert!(msg.contains("another transaction"), "{msg}");
+    assert!(!msg.contains("not moved"), "{msg}");
+}
+
+/// Draft A signed over one coin, draft B spending the same coin mined, then
+/// A sent: hsd answers A's txid and keeps it out of its mempool. Returns the
+/// app and A's id.
+async fn double_spent_draft(
+    url: &str,
+    key: &str,
+) -> (tauri::App<tauri::test::MockRuntime>, String) {
+    let conn = seeded_conn_regtest(url, key);
+    let app = app_with(conn);
+    let cl = client(url, key);
+    let (addr, _, _) = leaf00();
+    fund(&cl, &addr, 103).await;
+    sync_wallet_state(app.state(), None).await.expect("sync");
+
+    let a = build_send_hns_draft(app.state(), addr.clone(), 100_000, Some(1), None)
+        .await
+        .expect("build A");
+    unlock(&app);
+    sign_tx_draft_inner(&app.state(), &a.id)
+        .await
+        .expect("sign A");
+    {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::release_reserved_utxos_for_draft(&c, &a.id).unwrap();
+    }
+    let b = build_send_hns_draft(app.state(), addr.clone(), 200_000, Some(1), None)
+        .await
+        .expect("build B");
+    execute(&app, &cl, &addr, b.id).await;
+
+    let res = broadcast_tx_draft(app.state(), a.id.clone())
+        .await
+        .expect("hsd answers a txid for a tx its mempool turns away");
+    assert_eq!(res.status, "broadcasted");
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    (app, a.id)
+}
