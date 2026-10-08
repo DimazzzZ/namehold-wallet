@@ -1579,3 +1579,185 @@ async fn broadcast_gates_pass_a_local_node_and_an_approved_remote_on_our_chain()
     .await
     .unwrap();
 }
+
+// ------- chain_evidence_with_client / node_has_tx_index_with_client (tx.rs) --
+
+use crate::commands::tx::{
+    chain_evidence_with_client, node_has_tx_index_with_client, ChainEvidence,
+};
+
+/// A draft spending `[0x11;32]:0` and `[0x22;32]:1` into two outputs, and its
+/// txid.
+fn evidence_draft() -> (crate::db::queries::TxDraftRow, String) {
+    use crate::noncustodial::tx::{Covenant, Input, Outpoint, Output, OutputAddress, Transaction};
+    let mut tx = Transaction::new();
+    for (b, i) in [(0x11u8, 0u32), (0x22, 1)] {
+        tx.inputs.push(Input::new(Outpoint {
+            hash: [b; 32],
+            index: i,
+        }));
+    }
+    for v in [500_000u64, 499_000] {
+        tx.outputs.push(Output {
+            value: v,
+            address: OutputAddress {
+                version: 0,
+                hash: vec![0xaa; 20],
+            },
+            covenant: Covenant::default(),
+        });
+    }
+    let txid = tx.txid();
+    let row = crate::db::queries::TxDraftRow {
+        id: "d1".into(),
+        wallet_profile_id: "p".into(),
+        action: "send".into(),
+        unsigned_tx_hex: tx.to_hex(),
+        signed_tx_hex: None,
+        signing_inputs_json: "{}".into(),
+        summary_json: "{}".into(),
+        status: "broadcasted".into(),
+        error_message: None,
+        txid: Some(txid.clone()),
+        confirmation_height: None,
+        created_at: String::new(),
+    };
+    (row, txid)
+}
+
+/// hsd's `GET /coin/:hash/:index` reply, as recorded from hsd 8.0.0 regtest.
+fn hsd_coin(hash: &str, index: u32, height: i64) -> NodeCoin {
+    serde_json::from_value(json!({
+        "version": 0,
+        "height": height,
+        "value": 2002210000,
+        "address": "rs1q7q3h4chglps004u3yn79z0cp9ed24rfrhvrxnx",
+        "covenant": { "type": 0, "action": "NONE", "items": [] },
+        "coinbase": false,
+        "hash": hash,
+        "index": index
+    }))
+    .unwrap()
+}
+
+const PREV_A: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const PREV_B: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+#[tokio::test]
+async fn evidence_an_output_mined_is_mined_at_its_height() {
+    let (d, txid) = evidence_draft();
+    let own = txid.clone();
+    let mock = MockNodeRpc::new()
+        .with_get_coin(move |h, i| Ok((h == own && i == 1).then(|| hsd_coin(h, i, 812))));
+    assert_eq!(
+        chain_evidence_with_client(&mock, &d, &txid).await,
+        ChainEvidence::Mined(812)
+    );
+}
+
+#[tokio::test]
+async fn evidence_inputs_all_unspent() {
+    let (d, txid) = evidence_draft();
+    let own = txid.clone();
+    let mock =
+        MockNodeRpc::new().with_get_coin(move |h, i| Ok((h != own).then(|| hsd_coin(h, i, 10))));
+    assert_eq!(
+        chain_evidence_with_client(&mock, &d, &txid).await,
+        ChainEvidence::InputsUnspent
+    );
+    let asked: Vec<_> = mock
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            crate::tests::mock_node_rpc::RpcCall::GetCoin(h, i) if h != txid => Some((h, i)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        asked,
+        vec![(PREV_A.to_string(), 0), (PREV_B.to_string(), 1)]
+    );
+}
+
+#[tokio::test]
+async fn evidence_one_input_spent() {
+    let (d, txid) = evidence_draft();
+    let mock =
+        MockNodeRpc::new().with_get_coin(|h, i| Ok((h == PREV_A).then(|| hsd_coin(h, i, 10))));
+    assert_eq!(
+        chain_evidence_with_client(&mock, &d, &txid).await,
+        ChainEvidence::InputsSpent
+    );
+}
+
+#[tokio::test]
+async fn evidence_without_a_deciding_answer_is_unknown() {
+    let (d, txid) = evidence_draft();
+    // An output coin only in the mempool.
+    let own = txid.clone();
+    let mempool =
+        MockNodeRpc::new().with_get_coin(move |h, i| Ok((h == own).then(|| hsd_coin(h, i, -1))));
+    assert_eq!(
+        chain_evidence_with_client(&mempool, &d, &txid).await,
+        ChainEvidence::Unknown
+    );
+    // A failed lookup of an input.
+    let own = txid.clone();
+    let failing = MockNodeRpc::new().with_get_coin(move |h, _| {
+        if h == own {
+            Ok(None)
+        } else {
+            Err(AppError::Rpc("proxy page".into()))
+        }
+    });
+    assert_eq!(
+        chain_evidence_with_client(&failing, &d, &txid).await,
+        ChainEvidence::Unknown
+    );
+    // A draft whose bytes are not this txid's.
+    let any = MockNodeRpc::new().with_get_coin(|h, i| Ok(Some(hsd_coin(h, i, 5))));
+    assert_eq!(
+        chain_evidence_with_client(&any, &d, "ab").await,
+        ChainEvidence::Unknown
+    );
+    assert!(
+        any.calls().is_empty(),
+        "nothing is asked for a draft that does not parse"
+    );
+}
+
+fn tip_block() -> serde_json::Value {
+    json!({ "hash": "bb", "height": 5, "tx": [{ "txid": "cb", "vin": [], "vout": [] }] })
+}
+
+#[tokio::test]
+async fn tx_index_probe_reads_the_tip_coinbase() {
+    let indexed = MockNodeRpc::new()
+        .with_block_hash("bb".into())
+        .with_block(tip_block())
+        .with_raw_transaction(json!({ "txid": "cb", "confirmations": 1, "blockhash": "bb" }));
+    assert_eq!(node_has_tx_index_with_client(&indexed, 5).await, Some(true));
+    assert!(indexed
+        .calls()
+        .contains(&crate::tests::mock_node_rpc::RpcCall::RawTransaction(
+            "cb".into()
+        )));
+
+    let unindexed = MockNodeRpc::new()
+        .with_block_hash("bb".into())
+        .with_block(tip_block())
+        .with_raw_transaction_not_found();
+    assert_eq!(
+        node_has_tx_index_with_client(&unindexed, 5).await,
+        Some(false)
+    );
+
+    let not_hsd = MockNodeRpc::new()
+        .with_block_hash("bb".into())
+        .with_block(tip_block())
+        .with_raw_transaction_err("proxy page");
+    assert_eq!(node_has_tx_index_with_client(&not_hsd, 5).await, None);
+
+    let no_block = MockNodeRpc::new().with_block_hash_err("down");
+    assert_eq!(node_has_tx_index_with_client(&no_block, 5).await, None);
+}

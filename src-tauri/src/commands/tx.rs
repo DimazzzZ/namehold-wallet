@@ -1825,6 +1825,110 @@ fn local_txid_from_summary(summary_json: &str) -> Option<String> {
         })
 }
 
+/// What the chain shows about a draft's transaction that hsd answered with
+/// its own "Transaction not found.".
+///
+/// That answer is not evidence the transaction is in no block: hsd looks a
+/// transaction up in its mempool and then in its transaction index
+/// (`node.getMeta` → `chaindb.getMeta`, null without `--index-tx`), so on a
+/// node without the index every mined transaction reads as not found. The
+/// coin lookups below need no transaction index (`GET /coin/:hash/:index`,
+/// mempool then chain UTXO set), and decide the verdict instead.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ChainEvidence {
+    /// One of its outputs is a coin mined at this height: the transaction is
+    /// in that block.
+    Mined(i64),
+    /// Every coin it spends is unspent: it is in no block and no mempool of
+    /// this node, and its coins were not moved.
+    InputsUnspent,
+    /// A coin it spends is spent and none of its outputs is a coin: another
+    /// transaction spent the coin, or — only on a node without a transaction
+    /// index — it was mined and its outputs were spent since.
+    InputsSpent,
+    /// No answer that decides it (a transport error, a reply that is not
+    /// hsd's, an output only in the mempool, a draft that does not parse).
+    Unknown,
+}
+
+/// Read [`ChainEvidence`] for draft `d`, whose transaction is `txid`, from
+/// the coins of its own outputs and of its inputs.
+pub(crate) async fn chain_evidence_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    d: &db::queries::TxDraftRow,
+    txid: &str,
+) -> ChainEvidence {
+    let raw = d.signed_tx_hex.as_deref().unwrap_or(&d.unsigned_tx_hex);
+    let Some(tx) = hex::decode(raw)
+        .ok()
+        .and_then(|b| crate::noncustodial::tx::Transaction::decode(&b).ok())
+        .filter(|tx| tx.txid() == txid)
+    else {
+        return ChainEvidence::Unknown;
+    };
+    for vout in 0..tx.outputs.len() as u32 {
+        match client
+            .get_coin(txid, vout)
+            .await
+            .map(|c| c.map(|c| c.mined_height()))
+        {
+            Ok(Some(Ok(Some(height)))) => return ChainEvidence::Mined(height),
+            // Its coin in the mempool, though hsd just did not find the
+            // transaction there; or a height that is not hsd's.
+            Ok(Some(_)) | Err(_) => return ChainEvidence::Unknown,
+            Ok(None) => {}
+        }
+    }
+    let mut all_unspent = true;
+    for input in &tx.inputs {
+        let prev = hex::encode(input.prevout.hash);
+        match client.get_coin(&prev, input.prevout.index).await {
+            Ok(Some(_)) => {}
+            Ok(None) => all_unspent = false,
+            Err(_) => return ChainEvidence::Unknown,
+        }
+    }
+    if all_unspent {
+        ChainEvidence::InputsUnspent
+    } else {
+        ChainEvidence::InputsSpent
+    }
+}
+
+/// Whether the node keeps a transaction index, asked at most once per
+/// refresh: the coinbase of the tip block is mined, so hsd finds it with
+/// `getrawtransaction` exactly when it has the index. `None` when the answer
+/// is not hsd's or does not come.
+#[derive(Default)]
+struct TxIndexProbe(Option<Option<bool>>);
+
+impl TxIndexProbe {
+    async fn get(
+        &mut self,
+        client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+        tip: i64,
+    ) -> Option<bool> {
+        if self.0.is_none() {
+            self.0 = Some(node_has_tx_index_with_client(client, tip).await);
+        }
+        self.0.flatten()
+    }
+}
+
+pub(crate) async fn node_has_tx_index_with_client(
+    client: &dyn crate::noncustodial::node_rpc::NodeRpc,
+    tip: i64,
+) -> Option<bool> {
+    let hash = client.get_block_hash(tip).await.ok()?;
+    let block = client.get_block(&hash).await.ok()?;
+    let coinbase = block.get("tx")?.get(0)?.get("txid")?.as_str()?.to_string();
+    match client.get_raw_transaction(&coinbase).await {
+        Ok(_) => Some(true),
+        Err(e) if crate::noncustodial::rpc::is_tx_not_found(&e) => Some(false),
+        Err(_) => None,
+    }
+}
+
 /// Re-poll the node for the on-chain status of this profile's in-flight drafts.
 ///
 /// Three states are tracked (I5):
@@ -1912,6 +2016,8 @@ pub async fn refresh_tx_confirmations(
     let mut reverted: Vec<String> = Vec::new();
     let mut promoted_broadcasted: Vec<(String, String)> = Vec::new();
     let mut maybe_failed_pending: Vec<String> = Vec::new();
+    let mut maybe_spent_elsewhere: Vec<String> = Vec::new();
+    let mut tx_index = TxIndexProbe::default();
 
     for d in &drafts {
         if d.status == "broadcast_pending" {
@@ -1927,12 +2033,26 @@ pub async fn refresh_tx_confirmations(
                     // Not hsd's answer: no verdict.
                     Err(_) => {}
                 },
-                // hsd's own "never seen this tx" — see the grace-window
-                // handling below. A purchase is given up only by the
-                // purchase job, after its one rebroadcast (R13).
+                // hsd's own "never seen this tx": on a node without a
+                // transaction index also the answer for a MINED one, so the
+                // chain decides (`chain_evidence_with_client`). A purchase is
+                // given up only by the purchase job, after its one
+                // rebroadcast (R13).
                 Err(e) if crate::noncustodial::rpc::is_tx_not_found(&e) => {
-                    if d.action != PURCHASE_ACTION {
-                        maybe_failed_pending.push(d.id.clone());
+                    if d.action == PURCHASE_ACTION {
+                        continue;
+                    }
+                    match chain_evidence_with_client(&client, d, &txid).await {
+                        ChainEvidence::Mined(height) => {
+                            confirmed_updates.push((d.id.clone(), height, Some(txid)))
+                        }
+                        ChainEvidence::InputsUnspent => maybe_failed_pending.push(d.id.clone()),
+                        ChainEvidence::InputsSpent
+                            if tx_index.get(&client, tip).await == Some(true) =>
+                        {
+                            maybe_spent_elsewhere.push(d.id.clone())
+                        }
+                        ChainEvidence::InputsSpent | ChainEvidence::Unknown => {}
                     }
                 }
                 // Transport error or a reply that is not hsd's (a proxy's
@@ -1959,17 +2079,40 @@ pub async fn refresh_tx_confirmations(
                 // Not hsd's answer: no verdict.
                 Err(_) => {}
             },
-            // Only hsd's own "not found" says the node does not know the tx.
+            // Only hsd's own "not found" says the node does not know the tx,
+            // and on a node without a transaction index it says so of every
+            // mined tx too: the chain decides (`chain_evidence_with_client`).
+            // A purchase is the purchase job's to give up (see above).
             Err(e) if crate::noncustodial::rpc::is_tx_not_found(&e) => {
-                if d.status == "confirmed" {
-                    // The node no longer knows this tx at all: a reorg
-                    // un-mined it.
-                    reverted.push(d.id.clone());
-                } else if d.action != PURCHASE_ACTION {
-                    // `broadcasted`, never found → candidate for `dropped`
-                    // (grace window applied below). A purchase is the
-                    // purchase job's to give up (see above).
-                    maybe_dropped.push(d.id.clone());
+                if d.action == PURCHASE_ACTION && d.status != "confirmed" {
+                    continue;
+                }
+                match chain_evidence_with_client(&client, d, txid).await {
+                    ChainEvidence::Mined(height) => {
+                        confirmed_updates.push((d.id.clone(), height, None))
+                    }
+                    // Every coin it spends is unspent: a reorg un-mined a
+                    // `confirmed` one; a `broadcasted` one is a candidate for
+                    // `dropped` (grace window applied below).
+                    ChainEvidence::InputsUnspent if d.status == "confirmed" => {
+                        reverted.push(d.id.clone())
+                    }
+                    ChainEvidence::InputsUnspent => maybe_dropped.push(d.id.clone()),
+                    // A coin it spends is spent and none of its outputs is a
+                    // coin. With a transaction index, hsd's not-found means it
+                    // is in no block: another transaction spent the coin.
+                    // Without one, it may be mined with its outputs spent
+                    // since: no verdict.
+                    ChainEvidence::InputsSpent
+                        if tx_index.get(&client, tip).await == Some(true) =>
+                    {
+                        if d.status == "confirmed" {
+                            reverted.push(d.id.clone());
+                        } else {
+                            maybe_spent_elsewhere.push(d.id.clone());
+                        }
+                    }
+                    ChainEvidence::InputsSpent | ChainEvidence::Unknown => {}
                 }
             }
             // Transport error or a reply that is not hsd's: skip; the next
@@ -2038,6 +2181,23 @@ pub async fn refresh_tx_confirmations(
                 // the coins were never actually spent — free the reservation.
                 db::queries::release_reserved_utxos_for_draft(&conn, id)?;
                 n_fail += 1;
+            }
+        }
+        for id in &maybe_spent_elsewhere {
+            if db::queries::draft_updated_age_secs(&conn, id)? >= EVICTION_GRACE_SECS {
+                db::queries::update_tx_draft_status(
+                    &conn,
+                    id,
+                    "dropped",
+                    Some(
+                        "Another transaction spent this transaction's coins, so it can never \
+                         confirm. Nothing was paid by this transaction.",
+                    ),
+                    None,
+                )?;
+                // Its coins are spent: the reservation holds nothing.
+                db::queries::release_reserved_utxos_for_draft(&conn, id)?;
+                n_drop += 1;
             }
         }
         (
