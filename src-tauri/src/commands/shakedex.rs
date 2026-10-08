@@ -11,24 +11,31 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::commands::draft_ctx::{self, random_id, Ctx};
-use crate::db::queries::{self, PurchaseState, ShakedexPurchase};
+use crate::db::queries::{
+    self, ListingMode, ListingState, NameCoin, PurchaseState, ShakedexListing, ShakedexPurchase,
+};
 use crate::error::AppError;
 use crate::market::learnhns::{
     market_fee_is_published, name_from_listing_link, FeeInfo, LearnHnsClient,
 };
 use crate::models::settings::SettingsMap;
+use crate::noncustodial::actions::{self, PrimaryOutput};
 use crate::noncustodial::derivation;
 use crate::noncustodial::network::{NameParams, Network};
 use crate::noncustodial::rpc::{self, ChainSource, NodeRpcClient};
 use crate::noncustodial::send::{self, DUST_THRESHOLD};
+use crate::noncustodial::session::session_ttl_ms;
 use crate::noncustodial::shakedex::listing_file::{ListingFile, MAX_LISTING_FILE_BYTES};
+use crate::noncustodial::shakedex::lock_key::{derive_lock_key, LockKey};
 use crate::noncustodial::shakedex::purchase::{
     self, FinalizeInput, MarketFee, PurchaseFinalizeSummary, PurchaseInput, PurchaseSummary,
     PURCHASE_ACTION, PURCHASE_FINALIZE_ACTION,
 };
 use crate::noncustodial::shakedex::script::lock_address;
+use crate::noncustodial::shakedex::sell::{self, LockSummary, LOCK_ACTION, LOCK_COSTS};
 use crate::noncustodial::shakedex::template;
 use crate::noncustodial::shakedex::verify::{self, Buyable, Hidden, Verdict};
+use crate::noncustodial::sync::{COV_FINALIZE, COV_REGISTER, COV_RENEW, COV_TRANSFER, COV_UPDATE};
 use crate::noncustodial::tx::output_address_from_string;
 use crate::noncustodial::types::TxDraftSummary;
 use crate::providers::signer::WriteCapability;
@@ -397,6 +404,18 @@ fn software_writer_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     Ok(ctx)
 }
 
+/// R15/R29: a new purchase or a new listing on mainnet needs the
+/// `shakedex_experimental` setting; testnet and regtest need nothing.
+/// Actions on what already exists never ask.
+fn new_trade_allowed(ctx: &Ctx) -> bool {
+    ctx.network != Network::Main
+        || ctx
+            .settings
+            .get("shakedex_experimental")
+            .map(String::as_str)
+            == Some("true")
+}
+
 /// Run the purchase gates in order, verify the listing on the node and
 /// decide the market fee. `for_draft` also enforces the mainnet experimental
 /// flag, which gates only new purchase drafts (R15).
@@ -408,14 +427,7 @@ async fn prepare(
     for_draft: bool,
 ) -> Result<Prepared, AppError> {
     let ctx = software_writer_ctx(state)?;
-    if for_draft
-        && ctx.network == Network::Main
-        && ctx
-            .settings
-            .get("shakedex_experimental")
-            .map(String::as_str)
-            != Some("true")
-    {
+    if for_draft && !new_trade_allowed(&ctx) {
         return Err(AppError::InvalidInput(
             crate::noncustodial::shakedex::MAINNET_EXPERIMENTAL.into(),
         ));
@@ -502,7 +514,6 @@ fn expiry_warning() -> String {
 
 /// R31's verdict on locking a name now, or (T3) on finalizing it into the
 /// lock.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExpiryNotice {
     Ok,
@@ -512,14 +523,14 @@ pub(crate) enum ExpiryNotice {
         blocks_left: i64,
     },
     /// The name expires at or before `tip + 1 + remaining lockup + day`: it
-    /// would expire on a TRANSFER coin before its FINALIZE into the lock.
+    /// would expire on a TRANSFER coin before its FINALIZE into the lock, or
+    /// within a day of it.
     Refuse {
         expiry_end: i64,
     },
 }
 
 /// Six months, in R9 days (R31's warning).
-#[cfg_attr(not(test), allow(dead_code))]
 const LOCK_WARN_DAYS: i64 = 180;
 
 /// R31. `name_info` is hsd's `getnameinfo` reply; its renewal height and
@@ -527,7 +538,6 @@ const LOCK_WARN_DAYS: i64 = 180;
 /// not check" (fail closed). `remaining_lockup` is the full transfer lockup at
 /// Lock and `NameParams::blocks_until_finalize` of the lock TRANSFER at
 /// Finalize & sign.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn lock_expiry_guard(
     params: &NameParams,
     name_info: &serde_json::Value,
@@ -542,7 +552,7 @@ pub(crate) fn lock_expiry_guard(
         }
         Some(serde_json::Value::Null) => {
             return Err(AppError::InvalidInput(
-                "the name has no on-chain state".into(),
+                "the name has no on-chain state or has expired".into(),
             ))
         }
         Some(i) => i,
@@ -572,6 +582,158 @@ pub(crate) fn lock_expiry_guard(
     } else {
         Ok(ExpiryNotice::Ok)
     }
+}
+
+/// What the day-0 lock draft is built from, every node read and the lock key
+/// already in hand.
+pub(crate) struct LockDraftInput<'a> {
+    pub(crate) ctx: &'a Ctx,
+    pub(crate) key: &'a LockKey,
+    pub(crate) name: &'a str,
+    pub(crate) mode: ListingMode,
+    pub(crate) publish: bool,
+    /// Our owner coin of the name.
+    pub(crate) owner: &'a NameCoin,
+    pub(crate) name_height: u32,
+    /// R31's verdict at the node's tip.
+    pub(crate) notice: ExpiryNotice,
+    pub(crate) rate: u64,
+}
+
+fn expires_before_the_lock(name: &str, expiry_end: i64) -> AppError {
+    AppError::InvalidInput(format!(
+        "'{name}' expires at block {expiry_end}, before its transfer into the lock could be \
+         finalized: renew it first"
+    ))
+}
+
+/// Day 0 (R18, R19, R21, R31): check the lock key, build the TRANSFER that
+/// commits the name to its lock address, and write the draft and the
+/// Locking listing with its reserved payment and cancel addresses in one
+/// database transaction. Every refusal comes before any write.
+pub(crate) fn build_lock_draft_inner(
+    conn: &rusqlite::Connection,
+    i: &LockDraftInput,
+) -> Result<TxDraftSummary, AppError> {
+    let ctx = i.ctx;
+    if let ExpiryNotice::Refuse { expiry_end } = i.notice {
+        return Err(expires_before_the_lock(i.name, expiry_end));
+    }
+    // hsd lets REGISTER, UPDATE, RENEW and FINALIZE go to a TRANSFER
+    // (`rules.verifyCovenants`); a TRANSFER coin cannot.
+    let t = i.owner.covenant_type;
+    if t == i64::from(COV_TRANSFER) {
+        return Err(AppError::InvalidInput(format!(
+            "a transfer of '{}' is pending: cancel or finalize it before locking the name",
+            i.name
+        )));
+    }
+    if ![COV_REGISTER, COV_UPDATE, COV_RENEW, COV_FINALIZE]
+        .iter()
+        .any(|c| i64::from(*c) == t)
+    {
+        return Err(AppError::InvalidInput(format!(
+            "'{}' is not registered to this wallet",
+            i.name
+        )));
+    }
+    if queries::open_shakedex_listing_for_name(conn, &ctx.profile_id, i.name)?.is_some() {
+        return Err(AppError::InvalidInput(format!(
+            "'{}' is already locked for sale",
+            i.name
+        )));
+    }
+    sell::lock_self_check(i.key, ctx.network)?;
+
+    let res = actions::build_plan(
+        ctx.network,
+        ctx.account,
+        Some(draft_ctx::name_input_from(i.owner.clone())),
+        PrimaryOutput {
+            value: i.owner.value,
+            address: i.owner.address.clone(),
+            covenant: sell::lock_transfer_covenant(i.name, i.name_height, &i.key.pubkey)?,
+        },
+        &ctx.funding,
+        &ctx.change_address,
+        i.rate,
+    )?;
+    let mut warnings = vec![LOCK_COSTS.to_string()];
+    if let ExpiryNotice::Warn { blocks_left } = i.notice {
+        warnings.push(sell::near_expiry_warning(blocks_left));
+    }
+    let summary = LockSummary {
+        action: LOCK_ACTION.into(),
+        name: i.name.into(),
+        // Every output but change, as the other name actions report it.
+        send_total_doos: res
+            .plan
+            .outputs
+            .iter()
+            .enumerate()
+            .filter(|(n, _)| Some(*n) != res.plan.change_output_index)
+            .map(|(_, o)| o.value as i64)
+            .sum(),
+        fee_doos: res.fee as i64,
+        change_doos: res.change as i64,
+        input_total_doos: res.input_total as i64,
+        num_inputs: res.plan.inputs.len() as i64,
+        recipient_address: Some(i.key.address.clone()),
+        txid: Some(res.txid.clone()),
+        warnings,
+    };
+    let draft_id = random_id();
+    // The draft, the two reserved addresses and the listing commit together:
+    // a lock TRANSFER without its listing could never be followed, and a
+    // listing without its draft locks nothing.
+    let tx = conn.unchecked_transaction()?;
+    queries::insert_tx_draft_reserving_coins_in_tx(
+        &tx,
+        &draft_id,
+        &ctx.profile_id,
+        LOCK_ACTION,
+        &res.unsigned_tx_hex,
+        &serde_json::to_string(&res.plan)?,
+        &serde_json::to_string(&summary)?,
+        &res.plan.own_inputs(),
+    )?;
+    // Both on the receive branch (R21); the cancel's index rides on its lock
+    // input in T5.
+    let payment = derivation::reserve_receive_address(&tx, &ctx.profile_id)?;
+    let cancel = derivation::reserve_receive_address(&tx, &ctx.profile_id)?;
+    queries::insert_shakedex_listing(
+        &tx,
+        &ShakedexListing {
+            id: random_id(),
+            wallet_profile_id: ctx.profile_id.clone(),
+            name: i.name.into(),
+            mode: i.mode,
+            state: ListingState::Locking,
+            lock_pubkey_hex: hex::encode(i.key.pubkey),
+            lock_transfer_draft_id: Some(draft_id.clone()),
+            lock_transfer_txid: Some(res.txid.clone()),
+            lock_txid: None,
+            lock_vout: None,
+            payment_address: Some(payment.address),
+            cancel_address: Some(cancel.address),
+            cancel_child_index: Some(i64::from(cancel.child_index)),
+            steps_json: "[]".into(),
+            listing_file_json: None,
+            publish: i.publish,
+            market_status: None,
+            market_retry_at: None,
+            expires_at: None,
+            abort_draft_id: None,
+            sold_txid: None,
+            cancel_txid: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    )?;
+    tx.commit()?;
+    queries::get_tx_draft(conn, &draft_id)?
+        .map(|d| d.to_summary())
+        .ok_or_else(|| AppError::Other("draft vanished after insert".into()))
 }
 
 // --- commands ---------------------------------------------------------------
@@ -1055,6 +1217,77 @@ pub async fn shakedex_build_purchase_finalize_draft(
         .ok_or_else(|| AppError::Other("draft vanished after insert".into()))
 }
 
+/// Lock a name for sale, day 0 (R19): the TRANSFER committing it to its lock
+/// address (action `shakedex_lock`), and the Locking listing. Prices are
+/// chosen at Finalize & sign (T3); day 0 records the mode only. Needs the
+/// unlocked signer: the lock key is derived from the seed to read its public
+/// key and run the R18 self-check, and is not kept.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_build_lock_draft(
+    state: State<'_, AppState>,
+    name: String,
+    mode: ListingMode,
+    publish: bool,
+    fee_rate: Option<u64>,
+) -> Result<TxDraftSummary, AppError> {
+    let ctx = software_writer_ctx(&state)?;
+    if !new_trade_allowed(&ctx) {
+        return Err(AppError::InvalidInput(
+            crate::noncustodial::shakedex::MAINNET_SELLING_EXPERIMENTAL.into(),
+        ));
+    }
+    if publish && ctx.network != Network::Main {
+        return Err(AppError::InvalidInput(MARKET_MAINNET_ONLY.into()));
+    }
+    let key = {
+        let mut slot = state
+            .signer
+            .lock()
+            .map_err(|e| AppError::Lock(e.to_string()))?;
+        let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
+        session.authorize(&ctx.profile_id, session_ttl_ms(&ctx.settings))?;
+        derive_lock_key(session.master()?, ctx.network, ctx.account, &name)?
+    };
+    let owner = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        queries::get_name_coin(&conn, &ctx.profile_id, &name)?
+            .ok_or_else(|| AppError::NotFound(format!("wallet does not hold '{name}' (sync?)")))?
+    };
+    // R31 and the covenant read one `getnameinfo` reply, and the tip comes
+    // from the node's own report of it: either missing is "could not check".
+    let reply = ctx.node.get_name_info(&name).await?;
+    let tip = ctx
+        .node
+        .get_blockchain_info()
+        .await
+        .map_err(|e| {
+            AppError::Rpc(format!(
+                "node did not report its tip: could not check when '{name}' expires ({e})"
+            ))
+        })?
+        .blocks;
+    let params = ctx.network.name_params();
+    let notice = lock_expiry_guard(&params, &reply, tip, i64::from(params.transfer_lockup))?;
+    let ns = draft_ctx::name_state_strict(&reply, &name)?;
+    let rate = draft_ctx::fee_rate(&ctx, fee_rate);
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    build_lock_draft_inner(
+        &conn,
+        &LockDraftInput {
+            ctx: &ctx,
+            key: &key,
+            name: &name,
+            mode,
+            publish,
+            owner: &owner,
+            name_height: ns.height,
+            notice,
+            rate,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1302,6 +1535,9 @@ mod tests {
             assert!(matches!(e, AppError::Rpc(_)), "{bad}: {e:?}");
         }
         let e = lock_expiry_guard(&p, &serde_json::json!({ "info": null }), 1_000, 10).unwrap_err();
-        assert!(e.to_string().contains("no on-chain state"), "{e}");
+        assert!(
+            e.to_string().contains("no on-chain state or has expired"),
+            "{e}"
+        );
     }
 }

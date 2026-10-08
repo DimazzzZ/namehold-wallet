@@ -9,11 +9,13 @@ use tauri::State;
 
 use crate::db::queries;
 use crate::error::AppError;
+use crate::noncustodial::actions::NameInputSpec;
 use crate::noncustodial::hd::ExtendedPubKey;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::NodeRpcClient;
 use crate::noncustodial::send::{self, SpendableCoin};
+use crate::noncustodial::tx::sighash;
 use crate::AppState;
 
 pub(crate) fn random_id() -> String {
@@ -91,6 +93,18 @@ pub(crate) fn load_ctx(state: &State<'_, AppState>) -> Result<Ctx, AppError> {
     })
 }
 
+/// The input spending our owner coin of a name, signed SIGHASH_ALL.
+pub(crate) fn name_input_from(coin: queries::NameCoin) -> NameInputSpec {
+    NameInputSpec {
+        txid: coin.txid,
+        vout: coin.vout,
+        value: coin.value,
+        branch: coin.branch,
+        child_index: coin.child_index,
+        sighash_type: sighash::ALL,
+    }
+}
+
 /// The fee rate to build with: the caller's, else the user's setting, else
 /// the default. An unset or unreadable setting falls back to the default
 /// rather than failing the build: the resulting fee is shown in the
@@ -147,7 +161,12 @@ pub(crate) async fn fetch_name_state_strict(
     client: &dyn NodeRpc,
     name: &str,
 ) -> Result<NameState, AppError> {
-    let v = client.get_name_info(name).await?;
+    name_state_strict(&client.get_name_info(name).await?, name)
+}
+
+/// [`fetch_name_state_strict`] of a `getnameinfo` reply already in hand, so a
+/// caller that also reads other fields of it judges them on the same reply.
+pub(crate) fn name_state_strict(v: &serde_json::Value, name: &str) -> Result<NameState, AppError> {
     // hsd always sends `info` (`null` for a name with no state): a reply
     // without the key is not its answer.
     let info = match v.get("info") {

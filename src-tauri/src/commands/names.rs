@@ -16,11 +16,10 @@ use tauri::State;
 
 use crate::db::{self, queries};
 use crate::error::AppError;
-use crate::noncustodial::actions::{self, NameInputSpec, PrimaryOutput};
+use crate::noncustodial::actions::{self, PrimaryOutput};
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::NodeRpcClient;
 use crate::noncustodial::sync::{self, COV_REGISTER, COV_REVEAL};
-use crate::noncustodial::tx::sighash;
 use crate::noncustodial::types::TxDraftSummary;
 use crate::noncustodial::{address, bids, covenants, names, resource};
 use crate::AppState;
@@ -29,7 +28,7 @@ use super::draft_ctx::{ensure_finalize_matured, ensure_renew_not_premature, excl
 // Re-exported: the `*_inner` builders take these, and their tests name them
 // through this module.
 pub(crate) use super::draft_ctx::{
-    fee_rate, fetch_name_state, load_ctx, random_id, renewal_block, Ctx, NameState,
+    fee_rate, fetch_name_state, load_ctx, name_input_from, random_id, renewal_block, Ctx, NameState,
 };
 use super::names_pure;
 
@@ -131,17 +130,6 @@ fn persist_with_conn(
     db::queries::get_tx_draft(conn, &id)?
         .map(|d| d.to_summary())
         .ok_or_else(|| AppError::Other("draft vanished after insert".into()))
-}
-
-pub(crate) fn name_input_from(coin: queries::NameCoin) -> NameInputSpec {
-    NameInputSpec {
-        txid: coin.txid,
-        vout: coin.vout,
-        value: coin.value,
-        branch: coin.branch,
-        child_index: coin.child_index,
-        sighash_type: sighash::ALL,
-    }
 }
 
 // ============================================================================

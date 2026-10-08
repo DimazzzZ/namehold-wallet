@@ -280,3 +280,603 @@ fn deleting_another_draft_keeps_a_locking_listing() {
         .unwrap()
         .is_some());
 }
+
+// --- the lock command -------------------------------------------------------
+
+use mockito::{Mock, ServerGuard};
+use serde_json::{json, Value};
+use tauri::Manager;
+
+use crate::commands::shakedex::{
+    build_lock_draft_inner, shakedex_build_lock_draft, ExpiryNotice, LockDraftInput,
+};
+use crate::noncustodial::actions::DraftPlan;
+use crate::noncustodial::address;
+use crate::noncustodial::derivation;
+use crate::noncustodial::hd::{self, ExtendedPrivKey};
+use crate::noncustodial::network::Network;
+use crate::noncustodial::session::SignerSession;
+use crate::noncustodial::shakedex::lock_key::derive_lock_key;
+use crate::noncustodial::shakedex::sell::{self, LOCK_ACTION, LOCK_COSTS};
+use crate::noncustodial::sync::{COV_REGISTER, COV_REVEAL, COV_TRANSFER};
+use crate::noncustodial::types::TxSummary;
+use crate::tests::shakedex_cmd_tests::{
+    app_with, err_text, mock_blockchain_info, mock_name_info, rpc_ok, seed, seeded, set, with_db,
+    PROFILE,
+};
+use crate::AppState;
+
+type App = tauri::App<tauri::test::MockRuntime>;
+
+const NAME: &str = "dexsale";
+const OWNER_TXID: &str = "5555555555555555555555555555555555555555555555555555555555555555";
+const NAME_HEIGHT: u32 = 50;
+const NAME_VALUE: u64 = 1_000_000;
+/// Regtest: renewal 1000 + window 5000.
+const RENEWAL: u64 = 1_000;
+const REGTEST_END: i64 = 6_000;
+/// Far from expiry on regtest (end - tip = 4000 >= 1800).
+const QUIET_TIP: i64 = 2_000;
+
+fn net_of(network: &str) -> Network {
+    derivation::network_from_profile(network).unwrap()
+}
+
+fn master() -> ExtendedPrivKey {
+    ExtendedPrivKey::from_seed(&seed()).unwrap()
+}
+
+/// Our receive address 0/0, where `seeded` puts the funding coin.
+fn addr00(net: Network) -> (String, String) {
+    let (_sk, pk, addr) = hd::derive_address(net, &seed(), 0, 0, 0).unwrap();
+    (
+        addr,
+        hex::encode(address::script_pubkey_from_pubkey(&pk).unwrap()),
+    )
+}
+
+fn covenant_json(cov_type: u8, items: &[String]) -> String {
+    json!({ "type": cov_type, "action": "", "items": items }).to_string()
+}
+
+/// The name's owner coin, `cov_type` (REGISTER unless a test says
+/// otherwise), at our address 0/0, and the tracked row pointing at it.
+fn seed_owner_coin(conn: &Connection, net: Network, txid: &str, cov_type: u8) {
+    let (addr, spk) = addr00(net);
+    let nh = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let items = [nh.clone(), hex::encode(NAME_HEIGHT.to_le_bytes())];
+    conn.execute(
+        "INSERT INTO tracked_utxos
+            (txid, vout, wallet_profile_id, address, script_pubkey_hex, value_doos,
+             covenant_type, covenant_json, spend_class, spent_by_txid)
+         VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, 'name_control', NULL)",
+        params![
+            txid,
+            PROFILE,
+            addr,
+            spk,
+            NAME_VALUE as i64,
+            i64::from(cov_type),
+            covenant_json(cov_type, &items)
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO tracked_name_states
+            (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, owner_address, height)
+         VALUES (?1, ?2, ?3, 'CLOSED', ?4, 0, ?5, ?6)",
+        params![PROFILE, NAME, nh, txid, addr, i64::from(NAME_HEIGHT)],
+    )
+    .unwrap();
+}
+
+fn name_info(renewal: u64, claimed: u64, owner_txid: &str) -> Value {
+    json!({
+        "info": {
+            "name": NAME, "state": "CLOSED", "height": NAME_HEIGHT, "renewal": renewal,
+            "renewals": 0, "claimed": claimed, "weak": false, "transfer": 0,
+            "owner": { "hash": owner_txid, "index": 0 }, "value": NAME_VALUE
+        },
+        "start": null
+    })
+}
+
+fn unlock(app: &App, net: Network) {
+    *app.state::<AppState>().signer.lock().unwrap() = Some(SignerSession::unlock(
+        PROFILE.into(),
+        net,
+        master(),
+        600_000,
+    ));
+}
+
+/// A profile of `kind` on `network` owning NAME as a coin of `cov_type`,
+/// unlocked, and a node at `tip` answering `info` for the name.
+async fn fixture_with(
+    network: &str,
+    kind: &str,
+    tip: i64,
+    cov_type: u8,
+    info: Value,
+) -> (ServerGuard, Vec<Mock>, App) {
+    let mut node = mockito::Server::new_async().await;
+    let mocks = vec![
+        mock_blockchain_info(&mut node, tip, Some(1_700_000_000)).await,
+        mock_name_info(&mut node, info).await,
+    ];
+    let conn = seeded(network, kind, &node.url());
+    seed_owner_coin(&conn, net_of(network), OWNER_TXID, cov_type);
+    let app = app_with(conn);
+    unlock(&app, net_of(network));
+    (node, mocks, app)
+}
+
+/// A profile of `kind` on `network` owning NAME, unlocked, and a node at `tip`.
+async fn lock_fixture(network: &str, kind: &str, tip: i64) -> (ServerGuard, Vec<Mock>, App) {
+    fixture_with(
+        network,
+        kind,
+        tip,
+        COV_REGISTER,
+        name_info(RENEWAL, 0, OWNER_TXID),
+    )
+    .await
+}
+
+async fn build(
+    app: &App,
+) -> Result<crate::noncustodial::types::TxDraftSummary, crate::error::AppError> {
+    shakedex_build_lock_draft(app.state(), NAME.into(), ListingMode::BuyNow, false, None).await
+}
+
+fn count(app: &App, table: &str) -> i64 {
+    with_db(app, |c| {
+        c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    })
+}
+
+fn open_listing(app: &App) -> Option<ShakedexListing> {
+    with_db(app, |c| {
+        queries::open_shakedex_listing_for_name(c, PROFILE, NAME).unwrap()
+    })
+}
+
+/// Nothing written: no draft, no listing, no reserved address.
+fn assert_nothing_written(app: &App, addresses_before: i64) {
+    assert_eq!(count(app, "wallet_tx_drafts"), 0);
+    assert_eq!(count(app, "shakedex_listings"), 0);
+    assert_eq!(count(app, "derived_addresses"), addresses_before);
+}
+
+/// R19 day 0 and R18: the draft spends our owner coin into a TRANSFER that
+/// stays at our address and commits to SHA3-256 of the lock script of the
+/// key derived from the seed for this name and account; the listing is
+/// Locking with that public key and this draft.
+#[tokio::test]
+async fn lock_draft_commits_to_the_derived_lock_address() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let draft = build(&app).await.expect("lock builds");
+    assert_eq!(draft.action, LOCK_ACTION);
+
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let row = with_db(&app, |c| {
+        queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
+    });
+    let plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+    assert_eq!(
+        (plan.inputs[0].txid.as_str(), plan.inputs[0].vout),
+        (OWNER_TXID, 0)
+    );
+    let out = &plan.outputs[0];
+    assert_eq!(out.covenant_type, COV_TRANSFER);
+    assert_eq!(
+        out.address,
+        addr00(Network::Regtest).0,
+        "stays home until finalized"
+    );
+    assert_eq!(out.value, NAME_VALUE);
+    let nh = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    assert_eq!(
+        out.covenant_items_hex,
+        vec![
+            nh,
+            hex::encode(NAME_HEIGHT.to_le_bytes()),
+            "00".into(),
+            hex::encode(key.program)
+        ]
+    );
+    assert_eq!(draft.summary["recipientAddress"], key.address);
+    assert_eq!(draft.summary["name"], NAME);
+
+    let l = open_listing(&app).expect("a listing");
+    assert_eq!(l.state, ListingState::Locking);
+    assert_eq!(l.mode, ListingMode::BuyNow);
+    assert_eq!(l.lock_pubkey_hex, hex::encode(key.pubkey));
+    assert_eq!(l.lock_transfer_draft_id.as_deref(), Some(draft.id.as_str()));
+    assert_eq!(
+        l.lock_transfer_txid,
+        row.summary_json
+            .parse::<Value>()
+            .ok()
+            .and_then(|s| s["txid"].as_str().map(str::to_owned))
+    );
+    assert!(l.lock_transfer_txid.is_some());
+    assert!(!l.publish);
+    assert_eq!(
+        (l.lock_txid, l.lock_vout),
+        (None, None),
+        "set by Finalize & sign (T3)"
+    );
+}
+
+/// R18: a key that fails its self-check never reaches a draft, a listing or
+/// a reserved address.
+#[tokio::test]
+async fn refuses_lock_on_self_check_failure() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let ctx = crate::commands::draft_ctx::load_ctx(&app.state()).unwrap();
+    let mut key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    key.address = other.address.clone();
+    let addresses_before = count(&app, "derived_addresses");
+    let err = with_db(&app, |c| {
+        let owner = queries::get_name_coin(c, PROFILE, NAME).unwrap().unwrap();
+        build_lock_draft_inner(
+            c,
+            &LockDraftInput {
+                ctx: &ctx,
+                key: &key,
+                name: NAME,
+                mode: ListingMode::BuyNow,
+                publish: false,
+                owner: &owner,
+                name_height: NAME_HEIGHT,
+                notice: ExpiryNotice::Ok,
+                rate: 10,
+            },
+        )
+        .unwrap_err()
+    });
+    assert!(err_text(err).contains("self-check"));
+    assert_nothing_written(&app, addresses_before);
+}
+
+/// R6/R29: no lock on a node that cannot send.
+#[tokio::test]
+async fn lock_refused_without_write_capability() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    with_db(&app, |c| set(c, "chain_source", "explorer"));
+    let err = build(&app).await.unwrap_err();
+    assert!(err_text(err).contains(crate::commands::shakedex::NEEDS_SENDING_NODE));
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// R16/R29: Ledger, watch-only and extended-private-key profiles cannot
+/// lock, with the sentence the UI shows.
+#[tokio::test]
+async fn lock_refused_for_ledger_and_watch_only() {
+    let sentence = crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY;
+    for kind in ["ledger_hardware", "xpriv_hot", "watch_only_xpub"] {
+        let (_n, _m, app) = lock_fixture("regtest", kind, QUIET_TIP).await;
+        if kind == "watch_only_xpub" {
+            with_db(&app, |c| {
+                c.execute(
+                    "UPDATE wallet_profiles SET watch_only = 1 WHERE id = ?1",
+                    params![PROFILE],
+                )
+                .unwrap();
+            });
+        }
+        let err = err_text(build(&app).await.unwrap_err());
+        assert!(err.contains(sentence), "{kind}: {err}");
+        assert_eq!(count(&app, "shakedex_listings"), 0, "{kind}");
+    }
+}
+
+/// R15/R29: a new listing on mainnet needs the experimental flag.
+#[tokio::test]
+async fn mainnet_lock_needs_experimental_flag() {
+    // Mainnet: renewal 1000 + 105 120; tip 2000 is far from expiry.
+    let (_node, _m, app) = lock_fixture("mainnet", "mnemonic_hot", 2_000).await;
+    let err = build(&app).await.unwrap_err();
+    assert!(err_text(err).contains(crate::noncustodial::shakedex::MAINNET_SELLING_EXPERIMENTAL));
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+    with_db(&app, |c| set(c, "shakedex_experimental", "true"));
+    let draft = build(&app).await.expect("flag set: the lock builds");
+    assert_eq!(draft.action, LOCK_ACTION);
+}
+
+#[tokio::test]
+async fn regtest_lock_ignores_flag() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    with_db(&app, |c| set(c, "shakedex_experimental", "false"));
+    let draft = build(&app).await.expect("regtest needs no flag");
+    assert_eq!(draft.action, LOCK_ACTION);
+}
+
+/// R23/R29: off mainnet a listing is shared as a file only.
+#[tokio::test]
+async fn regtest_lock_cannot_publish_to_the_market() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let err = shakedex_build_lock_draft(app.state(), NAME.into(), ListingMode::BuyNow, true, None)
+        .await
+        .unwrap_err();
+    assert!(err_text(err).contains(crate::commands::shakedex::MARKET_MAINNET_ONLY));
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// R18: Lock derives the lock key, so it needs the unlocked signer: not a
+/// locked session, not another profile's, not none.
+#[tokio::test]
+async fn lock_needs_the_unlocked_signer() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    app.state::<AppState>()
+        .signer
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .lock();
+    assert!(matches!(
+        build(&app).await.unwrap_err(),
+        crate::error::AppError::WalletLocked
+    ));
+    *app.state::<AppState>().signer.lock().unwrap() = Some(SignerSession::unlock(
+        "another".into(),
+        Network::Regtest,
+        master(),
+        600_000,
+    ));
+    assert!(err_text(build(&app).await.unwrap_err()).contains("different wallet profile"));
+    *app.state::<AppState>().signer.lock().unwrap() = None;
+    assert!(matches!(
+        build(&app).await.unwrap_err(),
+        crate::error::AppError::WalletLocked
+    ));
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// R31 at Lock, regtest: expiry 6000; refused at tip 5979 (6000 <= 5979 +
+/// 1 + 10 + 10), built at tip 5978, with nothing written by the refusal.
+#[tokio::test]
+async fn lock_refused_when_the_name_would_expire_during_the_lockup() {
+    let (mut node, mut mocks, app) =
+        lock_fixture("regtest", "mnemonic_hot", REGTEST_END - 21).await;
+    let addresses_before = count(&app, "derived_addresses");
+    let err = err_text(build(&app).await.unwrap_err());
+    assert!(
+        err.contains("before its transfer into the lock could be finalized"),
+        "R31 refusal: {err}"
+    );
+    assert!(err.contains(&REGTEST_END.to_string()), "{err}");
+    assert_nothing_written(&app, addresses_before);
+
+    mocks.remove(0).remove_async().await;
+    mocks.push(mock_blockchain_info(&mut node, REGTEST_END - 22, Some(1_700_000_000)).await);
+    build(&app)
+        .await
+        .expect("one block earlier the lock builds");
+}
+
+/// R31's warning: below 180 R9 days (1800 regtest blocks) from the tip the
+/// draft carries it; at 1800 it does not. LOCK_COSTS is always there.
+#[tokio::test]
+async fn lock_warns_below_six_months() {
+    let (mut node, mut mocks, app) =
+        lock_fixture("regtest", "mnemonic_hot", REGTEST_END - 1_799).await;
+    let draft = build(&app).await.expect("builds with the warning");
+    let warnings: Vec<String> = serde_json::from_value(draft.summary["warnings"].clone()).unwrap();
+    assert_eq!(
+        warnings,
+        vec![LOCK_COSTS.to_string(), sell::near_expiry_warning(1_799)]
+    );
+    // The unsent draft goes, and its listing with it; the owner coin is free.
+    with_db(&app, |c| queries::delete_tx_draft(c, &draft.id).unwrap());
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+
+    mocks.remove(0).remove_async().await;
+    mocks.push(mock_blockchain_info(&mut node, REGTEST_END - 1_800, Some(1_700_000_000)).await);
+    let draft = build(&app).await.expect("builds without it");
+    let warnings: Vec<String> = serde_json::from_value(draft.summary["warnings"].clone()).unwrap();
+    assert_eq!(warnings, vec![LOCK_COSTS.to_string()]);
+}
+
+/// R27 and R31: the sentences say what the spec says; the warning carries
+/// the block count it is given.
+#[test]
+fn lock_sentences_say_what_locking_costs() {
+    for phrase in ["cannot be changed", "cannot be renewed", "renews the name"] {
+        assert!(LOCK_COSTS.contains(phrase), "{phrase}");
+    }
+    let w = sell::near_expiry_warning(1_234);
+    assert!(w.contains("expires in 1234 blocks"), "{w}");
+    assert!(w.contains("renews the name"), "{w}");
+}
+
+/// The lock draft's summary reads back as the plain `TxSummary` the secure
+/// window and the frontend's `TxDraftSummary.summary` expect, plus `name`.
+#[tokio::test]
+async fn lock_summary_reads_as_a_tx_summary() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let draft = build(&app).await.unwrap();
+    let row = with_db(&app, |c| {
+        queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
+    });
+    let s: TxSummary = serde_json::from_str(&row.summary_json).unwrap();
+    assert_eq!(s.action, LOCK_ACTION);
+    assert_eq!(s.warnings, vec![LOCK_COSTS.to_string()]);
+    assert_eq!(
+        s.send_total_doos, NAME_VALUE as i64,
+        "the name's own output"
+    );
+    assert!(s.fee_doos > 0);
+    assert!(s.txid.is_some());
+    assert_eq!(open_listing(&app).unwrap().lock_transfer_txid, s.txid);
+    assert_eq!(draft.summary["name"], NAME);
+}
+
+/// R21: the listing pays a fresh receive address and cancels to another,
+/// both marked used when the listing is created, so the next allocation
+/// returns a third; the cancel address's receive-branch index is stored.
+#[tokio::test]
+async fn lock_reserves_payment_and_cancel_addresses() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    build(&app).await.expect("lock builds");
+    let l = open_listing(&app).unwrap();
+    let pay = l.payment_address.clone().expect("payment address");
+    let cancel = l.cancel_address.clone().expect("cancel address");
+    assert_ne!(pay, cancel);
+    with_db(&app, |c| {
+        let rows = queries::list_receive_addresses(c, PROFILE, 0).unwrap();
+        for a in [&pay, &cancel] {
+            assert!(
+                rows.iter().any(|r| &r.address == a && r.used),
+                "{a} reserved and used"
+            );
+        }
+        let cancel_row = rows.iter().find(|r| r.address == cancel).unwrap();
+        assert_eq!(l.cancel_child_index, Some(i64::from(cancel_row.index)));
+        assert_ne!(
+            cancel_row.index, 0,
+            "not the address the owner coin sits at"
+        );
+        let next = derivation::reserve_receive_address(c, PROFILE).unwrap();
+        assert!(next.address != pay && next.address != cancel);
+    });
+}
+
+/// hsd lets a TRANSFER coin go only to UPDATE, RENEW, FINALIZE or REVOKE:
+/// a name already in a transfer is not locked.
+#[tokio::test]
+async fn lock_refused_while_a_transfer_is_pending() {
+    let (_node, _m, app) = fixture_with(
+        "regtest",
+        "mnemonic_hot",
+        QUIET_TIP,
+        COV_TRANSFER,
+        name_info(RENEWAL, 0, OWNER_TXID),
+    )
+    .await;
+    let before = count(&app, "derived_addresses");
+    let err = err_text(build(&app).await.unwrap_err());
+    assert!(
+        err.contains("a transfer of 'dexsale' is pending: cancel or finalize it"),
+        "{err}"
+    );
+    assert_nothing_written(&app, before);
+}
+
+/// Only an owner coin hsd lets go to a TRANSFER (REGISTER, UPDATE, RENEW,
+/// FINALIZE) is locked; a name the wallet does not hold is not either.
+#[tokio::test]
+async fn lock_refused_for_a_name_not_ours_or_not_registered() {
+    let (_node, _m, app) = fixture_with(
+        "regtest",
+        "mnemonic_hot",
+        QUIET_TIP,
+        COV_REVEAL,
+        name_info(RENEWAL, 0, OWNER_TXID),
+    )
+    .await;
+    let before = count(&app, "derived_addresses");
+    let err = err_text(build(&app).await.unwrap_err());
+    assert!(err.contains("is not registered to this wallet"), "{err}");
+    assert_nothing_written(&app, before);
+
+    with_db(&app, |c| {
+        c.execute("DELETE FROM tracked_name_states", []).unwrap();
+    });
+    let err = err_text(build(&app).await.unwrap_err());
+    assert!(err.contains("wallet does not hold"), "{err}");
+    assert_nothing_written(&app, before);
+}
+
+#[tokio::test]
+async fn second_lock_of_a_name_is_refused() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    build(&app).await.expect("first lock builds");
+    let before = count(&app, "derived_addresses");
+    assert!(err_text(build(&app).await.unwrap_err()).contains("already locked for sale"));
+    assert_eq!(count(&app, "shakedex_listings"), 1);
+    assert_eq!(count(&app, "wallet_tx_drafts"), 1);
+    assert_eq!(count(&app, "derived_addresses"), before);
+}
+
+/// Fail closed: R31 reads the tip, the renewal height and the claimed count
+/// from the node; a reply without one of them refuses the lock ("could not
+/// check"), and a name with no state is refused as such.
+#[tokio::test]
+async fn lock_refused_when_the_node_cannot_say_when_the_name_expires() {
+    let mut no_renewal = name_info(RENEWAL, 0, OWNER_TXID);
+    no_renewal["info"]
+        .as_object_mut()
+        .unwrap()
+        .remove("renewal");
+    let mut no_claimed = name_info(RENEWAL, 0, OWNER_TXID);
+    no_claimed["info"]
+        .as_object_mut()
+        .unwrap()
+        .remove("claimed");
+    for (what, info) in [("renewal", no_renewal), ("claimed", no_claimed)] {
+        let (_n, _m, app) =
+            fixture_with("regtest", "mnemonic_hot", QUIET_TIP, COV_REGISTER, info).await;
+        let before = count(&app, "derived_addresses");
+        let err = err_text(build(&app).await.unwrap_err());
+        assert!(err.contains("could not check"), "{what}: {err}");
+        assert_nothing_written(&app, before);
+    }
+
+    let (_n, _m, app) = fixture_with(
+        "regtest",
+        "mnemonic_hot",
+        QUIET_TIP,
+        COV_REGISTER,
+        json!({ "info": null, "start": null }),
+    )
+    .await;
+    let err = err_text(build(&app).await.unwrap_err());
+    assert!(err.contains("no on-chain state or has expired"), "{err}");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+
+    // A getblockchaininfo reply without the tip.
+    let mut node = mockito::Server::new_async().await;
+    let _b = node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::PartialJson(
+            json!({ "method": "getblockchaininfo" }),
+        ))
+        .with_header("content-type", "application/json")
+        .with_body(rpc_ok(json!({ "chain": "regtest", "headers": QUIET_TIP })))
+        .create_async()
+        .await;
+    let _n = mock_name_info(&mut node, name_info(RENEWAL, 0, OWNER_TXID)).await;
+    let conn = seeded("regtest", "mnemonic_hot", &node.url());
+    seed_owner_coin(&conn, Network::Regtest, OWNER_TXID, COV_REGISTER);
+    let app = app_with(conn);
+    unlock(&app, Network::Regtest);
+    let before = count(&app, "derived_addresses");
+    let err = err_text(build(&app).await.unwrap_err());
+    assert!(err.contains("could not check"), "no tip: {err}");
+    assert_nothing_written(&app, before);
+}
+
+/// R27 in the secure window: the lock draft's confirmation carries what
+/// locking costs as a Warning row.
+#[tokio::test]
+async fn lock_confirmation_shows_what_locking_costs() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let draft = build(&app).await.unwrap();
+    let row = with_db(&app, |c| {
+        queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
+    });
+    let details = crate::commands::tx::confirm_details_for_draft(&row).unwrap();
+    assert!(
+        details["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["label"] == "Warning" && r["value"] == LOCK_COSTS),
+        "{details}"
+    );
+}

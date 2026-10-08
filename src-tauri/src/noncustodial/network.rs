@@ -239,10 +239,10 @@ impl NameParams {
         self.transfer_lockup.min(BLOCKS_PER_DAY as u32)
     }
 
-    /// The highest expiry end at which a name can no longer be finalized after
-    /// a transfer judged now: the next block (`tip + 1`), the `lockup_left`
-    /// still to run, and a day's margin (R9, R31). A name whose expiry end is
-    /// at or below this is refused.
+    /// The highest expiry end refused — a day's margin past the earliest
+    /// FINALIZE hsd accepts — for a transfer judged now: the next block
+    /// (`tip + 1`), the `lockup_left` still to run, and R9's day (R9, R31). A
+    /// name whose expiry end is at or below this is refused.
     pub fn finalize_margin(self, tip: i64, lockup_left: i64) -> i64 {
         tip + 1 + lockup_left + i64::from(self.margin_day())
     }
