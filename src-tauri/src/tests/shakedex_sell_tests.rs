@@ -202,3 +202,81 @@ fn deleting_a_draft_keeps_a_listing_past_locking() {
         .unwrap()
         .is_some());
 }
+
+/// A `dropped` or `failed` draft was broadcast (eviction grace, a timed-out
+/// broadcast): its TRANSFER may still be mined, so deleting the draft is no
+/// evidence the name never left, and the listing stays.
+#[test]
+fn deleting_a_broadcast_then_dropped_or_failed_draft_keeps_the_locking_listing() {
+    for status in ["dropped", "failed"] {
+        let conn = store_conn();
+        queries::insert_tx_draft(
+            &conn,
+            "lockdraft",
+            STORE_PROFILE,
+            "shakedex_lock",
+            "",
+            "{}",
+            "{}",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = 'lockdraft'",
+            params![status],
+        )
+        .unwrap();
+        let mut l = listing("l1", "maybe", ListingState::Locking);
+        l.lock_transfer_draft_id = Some("lockdraft".into());
+        queries::insert_shakedex_listing(&conn, &l).unwrap();
+        queries::delete_tx_draft(&conn, "lockdraft").unwrap();
+        assert!(
+            queries::get_shakedex_listing(&conn, "l1")
+                .unwrap()
+                .is_some(),
+            "{status}"
+        );
+    }
+}
+
+#[test]
+fn deleting_a_signed_lock_draft_deletes_its_listing() {
+    let conn = store_conn();
+    queries::insert_tx_draft(
+        &conn,
+        "lockdraft",
+        STORE_PROFILE,
+        "shakedex_lock",
+        "",
+        "{}",
+        "{}",
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET status = 'signed' WHERE id = 'lockdraft'",
+        [],
+    )
+    .unwrap();
+    let mut l = listing("l1", "unsent", ListingState::Locking);
+    l.lock_transfer_draft_id = Some("lockdraft".into());
+    queries::insert_shakedex_listing(&conn, &l).unwrap();
+    queries::delete_tx_draft(&conn, "lockdraft").unwrap();
+    assert!(queries::get_shakedex_listing(&conn, "l1")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn deleting_another_draft_keeps_a_locking_listing() {
+    let conn = store_conn();
+    for id in ["lockdraft", "other"] {
+        queries::insert_tx_draft(&conn, id, STORE_PROFILE, "shakedex_lock", "", "{}", "{}")
+            .unwrap();
+    }
+    let mut l = listing("l1", "mine", ListingState::Locking);
+    l.lock_transfer_draft_id = Some("lockdraft".into());
+    queries::insert_shakedex_listing(&conn, &l).unwrap();
+    queries::delete_tx_draft(&conn, "other").unwrap();
+    assert!(queries::get_shakedex_listing(&conn, "l1")
+        .unwrap()
+        .is_some());
+}
