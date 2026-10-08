@@ -378,6 +378,10 @@
       }
     ],
     "sell": {
+      "lockTransfer": {
+        "nameHeight": 120,
+        "covenantRaw": "09042055731c3d821c3b845e3943d7485b3321a39e6ed1de290518d43240438d40b5c10478000000010020b034422f8fc543c73cdf1b5d9693f6b53afa9068ce1022b904e2a1cec762bd64"
+      },
       "lockFinalize": {
         "transferInput": {
           "displayTxid": "3131313131313131313131313131313131313131313131313131313131313131",

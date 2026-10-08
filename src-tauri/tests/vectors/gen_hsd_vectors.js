@@ -525,6 +525,10 @@ const shakedex = (() => {
     assert(cf.verify(), "cancel finalize verifies in hsd");
 
     return {
+      lockTransfer: {
+        nameHeight: height,
+        covenantRaw: transferCoin.covenant.encode().toString("hex"),
+      },
       lockFinalize: {
         transferInput,
         fundingInput: lfFunding,
