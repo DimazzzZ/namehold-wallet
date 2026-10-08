@@ -279,7 +279,7 @@ This runs the following tests:
 | `live_send_max_sweeps_all_coins` | `max=true` sweeps every coin, no change, single output |
 | `live_send_immature_coinbase_rejected_then_matures` | Guards commit `a520456`: immature coinbase not spendable until `height+maturity ≤ tip+1` |
 | `live_send_wrong_network_address_rejected` | Mainnet `hs1q…` on regtest → rejected before signing |
-| `live_send_broadcast_double_spend_releases_reservation` | Double-spend broadcast → `failed` status, reservation freed |
+| `live_send_broadcast_double_spend_releases_reservation` | A draft whose coin another mined draft spent never confirms (hsd still answers its txid). It does not check the draft's status; `live_coins_spent_by_another_tx_drop_the_draft_and_say_so` does |
 | `live_send_rebroadcast_same_draft_rejected` | Second broadcast of a mined draft → node rejects (no RBF) |
 | `live_send_estimate_fee_smoke` | `estimate_tx_draft_fee` matches a real build's fee/change/inputs |
 | `live_send_txid_matches_node` | Local txid == node-returned txid (sighash/serialization guard) |
@@ -303,6 +303,26 @@ These drive REAL reorgs via a `#[cfg(test)]` `invalidateblock`/`reconsiderblock`
 | `live_confirm_finality_ceiling` | ≥ `CONFIRMATION_FINALITY_DEPTH` confs → refresh stops churning |
 | `live_broadcast_pending_promotes` | `broadcast_pending` draft on-chain → refresh promotes via `local_txid_from_summary` |
 | `live_coinbase_reorg_immaturity` | Unmine a confirmed coinbase → wallet treats the re-mined one as freshly immature |
+| `live_coins_spent_by_another_tx_drop_the_draft_and_say_so` | A sent draft whose coin another mined transaction spent is `dropped` after the grace window, saying another transaction spent its coins, never "the coins were not moved" |
+
+### A node without a transaction index (Group C, second node)
+
+hsd finds a transaction by txid only in its mempool and its transaction index, so on a node without `--index-tx` every mined transaction reads as hsd's "Transaction not found.". These tests need a second regtest node started with the address index alone, on ports of its own; they are skipped while `HNS_IT_NOINDEX_NODE_URL` is unset or empty:
+
+```bash
+hsd --network=regtest --index-address --no-wallet --listen=false \
+    --http-host=127.0.0.1 --http-port=24037 --port=24038 \
+    --ns-port=25449 --rs-port=25450 --api-key=test --prefix=<a fresh dir> --daemon
+HNS_IT_NOINDEX_NODE_URL=http://127.0.0.1:24037 HNS_IT_NOINDEX_NODE_API_KEY=test \
+  cargo test --manifest-path src-tauri/Cargo.toml live_noindex -- --test-threads=1
+```
+
+| Test | Asserts |
+|------|---------|
+| `live_noindex_mined_send_is_confirmed_not_dropped` | A mined send is `confirmed` at its block after the grace window, and stays so on the next poll; never `dropped` |
+| `live_noindex_mined_pending_broadcast_is_confirmed_not_failed` | A mined `broadcast_pending` draft is `confirmed` with its txid; never `failed` |
+| `live_noindex_unsent_draft_with_unspent_coins_is_dropped` | A draft the node never had, its coins unspent, is `dropped` and its coins released |
+| `live_noindex_coins_spent_by_another_tx_give_no_verdict` | A draft whose coin another transaction spent stays `broadcasted`: without the index the wallet cannot tell that from a mined one |
 
 ### Covenant actions (Group D)
 

@@ -516,6 +516,129 @@ impl Transaction {
     pub fn to_hex(&self) -> String {
         hex::encode(self.serialize())
     }
+
+    /// Parse a transaction serialized by [`Transaction::serialize`] (hsd
+    /// `tx.js` `read`): the base form followed by one witness stack per input.
+    /// Refuses truncated input and trailing bytes.
+    pub fn decode(raw: &[u8]) -> Result<Transaction, AppError> {
+        let mut r = Reader { buf: raw, pos: 0 };
+        let version = r.read_u32()?;
+        let n_in = r.read_count()?;
+        let mut inputs = Vec::with_capacity(n_in);
+        for _ in 0..n_in {
+            let hash: [u8; 32] = r.read_bytes(32)?.try_into().expect("32 bytes");
+            let index = r.read_u32()?;
+            let sequence = r.read_u32()?;
+            inputs.push(Input {
+                prevout: Outpoint { hash, index },
+                sequence,
+                witness: Vec::new(),
+            });
+        }
+        let n_out = r.read_count()?;
+        let mut outputs = Vec::with_capacity(n_out);
+        for _ in 0..n_out {
+            let value = r.read_u64()?;
+            let version = r.read_u8()?;
+            let len = r.read_u8()? as usize;
+            let hash = r.read_bytes(len)?.to_vec();
+            let covenant_type = r.read_u8()?;
+            let n_items = r.read_count()?;
+            let mut items = Vec::with_capacity(n_items);
+            for _ in 0..n_items {
+                items.push(r.read_var_bytes()?);
+            }
+            outputs.push(Output {
+                value,
+                address: OutputAddress { version, hash },
+                covenant: Covenant {
+                    covenant_type,
+                    items,
+                },
+            });
+        }
+        let locktime = r.read_u32()?;
+        for input in &mut inputs {
+            let n_items = r.read_count()?;
+            for _ in 0..n_items {
+                input.witness.push(r.read_var_bytes()?);
+            }
+        }
+        if r.pos != raw.len() {
+            return Err(AppError::InvalidInput(
+                "transaction has trailing bytes".to_string(),
+            ));
+        }
+        Ok(Transaction {
+            version,
+            inputs,
+            outputs,
+            locktime,
+        })
+    }
+}
+
+/// A bounds-checked little-endian reader, the inverse of [`Writer`], for
+/// [`Transaction::decode`].
+struct Reader<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn read_bytes(&mut self, n: usize) -> Result<&'a [u8], AppError> {
+        let end = self
+            .pos
+            .checked_add(n)
+            .filter(|&e| e <= self.buf.len())
+            .ok_or_else(|| AppError::InvalidInput("transaction is truncated".to_string()))?;
+        let s = &self.buf[self.pos..end];
+        self.pos = end;
+        Ok(s)
+    }
+
+    fn read_u8(&mut self) -> Result<u8, AppError> {
+        Ok(self.read_bytes(1)?[0])
+    }
+
+    fn read_u32(&mut self) -> Result<u32, AppError> {
+        Ok(u32::from_le_bytes(
+            self.read_bytes(4)?.try_into().expect("4 bytes"),
+        ))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, AppError> {
+        Ok(u64::from_le_bytes(
+            self.read_bytes(8)?.try_into().expect("8 bytes"),
+        ))
+    }
+
+    fn read_varint(&mut self) -> Result<u64, AppError> {
+        Ok(match self.read_u8()? {
+            0xff => self.read_u64()?,
+            0xfe => self.read_u32()? as u64,
+            0xfd => u16::from_le_bytes(self.read_bytes(2)?.try_into().expect("2 bytes")) as u64,
+            n => n as u64,
+        })
+    }
+
+    /// A varint count of items that follow, each at least one byte long: a
+    /// count beyond the bytes left is a truncated transaction, refused before
+    /// anything is allocated for it.
+    fn read_count(&mut self) -> Result<usize, AppError> {
+        let n = self.read_varint()?;
+        if n > (self.buf.len() - self.pos) as u64 {
+            return Err(AppError::InvalidInput(
+                "transaction is truncated".to_string(),
+            ));
+        }
+        Ok(n as usize)
+    }
+
+    fn read_var_bytes(&mut self) -> Result<Vec<u8>, AppError> {
+        let n = self.read_count()?;
+        Ok(self.read_bytes(n)?.to_vec())
+    }
 }
 
 /// Convert a validated Handshake bech32 address into an `OutputAddress`
@@ -745,6 +868,52 @@ mod tests {
         assert_eq!(tx.inputs[1].witness.len(), 2);
         assert_eq!(tx.inputs[0].witness[0].len(), 65);
         assert_eq!(tx.inputs[0].witness[1].len(), 33);
+    }
+
+    #[test]
+    fn decode_reads_back_what_serialize_wrote() {
+        let (sk, h160) = test_key();
+        let mut tx = two_in_two_out();
+        tx.outputs.push(out(
+            0,
+            0xcc,
+            Covenant {
+                covenant_type: 9,
+                items: vec![vec![0x01; 32], vec![], vec![0x02; 300]],
+            },
+        ));
+        tx.locktime = 1234;
+        for unsigned in [true, false] {
+            if !unsigned {
+                tx.sign_p2wpkh_input(0, &sk, &h160, 1_000_000, sighash::ALL)
+                    .unwrap();
+                tx.sign_p2wpkh_input(1, &sk, &h160, 50_000, sighash::ALL)
+                    .unwrap();
+            }
+            let raw = tx.serialize();
+            let back = Transaction::decode(&raw).unwrap();
+            assert_eq!(back.serialize(), raw);
+            assert_eq!(back.txid(), tx.txid());
+            assert_eq!(back.inputs[1].prevout.hash, [0x22; 32]);
+            assert_eq!(back.inputs[1].prevout.index, 1);
+            assert_eq!(back.outputs.len(), 3);
+            assert_eq!(back.outputs[2].covenant.items[2].len(), 300);
+        }
+    }
+
+    #[test]
+    fn decode_refuses_truncated_and_trailing_bytes() {
+        let raw = two_in_two_out().serialize();
+        for cut in [0, 1, 4, 40, raw.len() - 1] {
+            assert!(Transaction::decode(&raw[..cut]).is_err(), "cut at {cut}");
+        }
+        let mut long = raw.clone();
+        long.push(0);
+        assert!(Transaction::decode(&long).is_err());
+        // A count far beyond the bytes left is refused, not allocated.
+        let mut huge = 0u32.to_le_bytes().to_vec();
+        huge.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f]);
+        assert!(Transaction::decode(&huge).is_err());
     }
 
     #[test]

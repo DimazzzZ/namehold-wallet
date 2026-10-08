@@ -346,12 +346,50 @@ async fn broadcast_refused_in_spv_mode() {
 
 // --- confirmation tracking (broadcasted -> confirmed / dropped) ------------
 
-const DRAFT_TXID: &str = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0";
+/// A one-in, one-out transaction spending `[prev; 32]:0`: its hex and txid.
+/// The poll reads a draft's own bytes for the coins it spends and creates
+/// (`chain_evidence_with_client`), so a seeded draft carries a real one.
+fn test_tx(prev: u8) -> (String, String) {
+    use crate::noncustodial::tx::{Covenant, Input, Outpoint, Output, OutputAddress, Transaction};
+    let mut tx = Transaction::new();
+    tx.inputs.push(Input::new(Outpoint {
+        hash: [prev; 32],
+        index: 0,
+    }));
+    tx.outputs.push(Output {
+        value: 100_000,
+        address: OutputAddress {
+            version: 0,
+            hash: vec![0xaa; 20],
+        },
+        covenant: Covenant::default(),
+    });
+    (tx.to_hex(), tx.txid())
+}
+
+/// The coin a `broadcasted` / `confirmed` test draft spends.
+const DRAFT_PREV: u8 = 0x11;
+/// The coin a `broadcast_pending` test draft spends.
+const PENDING_PREV: u8 = 0x33;
+
+fn draft_hex() -> String {
+    test_tx(DRAFT_PREV).0
+}
+fn draft_txid() -> String {
+    test_tx(DRAFT_PREV).1
+}
+fn pending_hex() -> String {
+    test_tx(PENDING_PREV).0
+}
+fn pending_txid() -> String {
+    test_tx(PENDING_PREV).1
+}
 
 /// Seed a `broadcasted` draft (with a txid) for the active profile.
 fn seed_broadcasted_draft(conn: &rusqlite::Connection, id: &str) {
-    db::queries::insert_tx_draft(conn, id, PROFILE, "send_hns", "00", "{}", "{}").unwrap();
-    db::queries::update_tx_draft_status(conn, id, "broadcasted", None, Some(DRAFT_TXID)).unwrap();
+    db::queries::insert_tx_draft(conn, id, PROFILE, "send_hns", &draft_hex(), "{}", "{}").unwrap();
+    db::queries::update_tx_draft_status(conn, id, "broadcasted", None, Some(draft_txid().as_str()))
+        .unwrap();
 }
 
 /// getblockchaininfo + getrawtransaction mocks (matched by method in the body).
@@ -375,7 +413,31 @@ async fn mock_node(
         .with_body(getrawtx_body)
         .create_async()
         .await;
+    mock_unmoved_coins(server).await;
     (info, tx)
+}
+
+/// `GET /coin/:hash/:index` as hsd answers it when a test draft's coins were
+/// not moved: every coin a test draft spends is unspent, and no output of a
+/// test draft is a coin (hsd's empty 404).
+async fn mock_unmoved_coins(server: &mut mockito::Server) {
+    for prev in [DRAFT_PREV, PENDING_PREV] {
+        let hash = hex::encode([prev; 32]);
+        server
+            .mock("GET", format!("/coin/{hash}/0").as_str())
+            .with_body(format!(
+                r#"{{"version":0,"height":400,"value":2000000,"address":"rs1q7q3h4chglps004u3yn79z0cp9ed24rfrhvrxnx","covenant":{{"type":0,"action":"NONE","items":[]}},"coinbase":false,"hash":"{hash}","index":0}}"#
+            ))
+            .create_async()
+            .await;
+    }
+    for txid in [draft_txid(), pending_txid()] {
+        server
+            .mock("GET", format!("/coin/{txid}/0").as_str())
+            .with_status(404)
+            .create_async()
+            .await;
+    }
 }
 
 #[tokio::test]
@@ -585,16 +647,31 @@ async fn refresh_leaves_an_unseen_purchase_to_the_purchase_job() {
     let mut server = mockito::Server::new_async().await;
     let (_info, _tx) = mock_node(&mut server, 500, HSD_TX_NOT_FOUND).await;
     let conn = seeded_conn(&server.url(), 2_000_000);
-    db::queries::insert_tx_draft(&conn, "buy", PROFILE, PURCHASE_ACTION, "00", "{}", "{}").unwrap();
-    db::queries::update_tx_draft_status(&conn, "buy", "broadcasted", None, Some(DRAFT_TXID))
-        .unwrap();
-    let summary = format!(r#"{{"txid":"{PENDING_TXID}"}}"#);
+    db::queries::insert_tx_draft(
+        &conn,
+        "buy",
+        PROFILE,
+        PURCHASE_ACTION,
+        &draft_hex(),
+        "{}",
+        "{}",
+    )
+    .unwrap();
+    db::queries::update_tx_draft_status(
+        &conn,
+        "buy",
+        "broadcasted",
+        None,
+        Some(draft_txid().as_str()),
+    )
+    .unwrap();
+    let summary = format!(r#"{{"txid":"{}"}}"#, pending_txid());
     db::queries::insert_tx_draft(
         &conn,
         "buy2",
         PROFILE,
         PURCHASE_ACTION,
-        "00",
+        &pending_hex(),
         "{}",
         &summary,
     )
@@ -638,13 +715,19 @@ async fn refresh_drops_an_unseen_purchase_finalize_like_any_draft() {
         "fin",
         PROFILE,
         PURCHASE_FINALIZE_ACTION,
-        "00",
+        &draft_hex(),
         "{}",
         "{}",
     )
     .unwrap();
-    db::queries::update_tx_draft_status(&conn, "fin", "broadcasted", None, Some(DRAFT_TXID))
-        .unwrap();
+    db::queries::update_tx_draft_status(
+        &conn,
+        "fin",
+        "broadcasted",
+        None,
+        Some(draft_txid().as_str()),
+    )
+    .unwrap();
     conn.execute(
         "UPDATE tracked_utxos SET reserved_by_draft_id = 'fin' WHERE txid = ?1",
         params![COIN_TXID],
@@ -708,8 +791,9 @@ async fn refresh_is_a_soft_noop_when_node_unreachable() {
 /// Seed a `confirmed` draft (with a txid + recorded height) for the active
 /// profile.
 fn seed_confirmed_draft(conn: &rusqlite::Connection, id: &str, height: i64) {
-    db::queries::insert_tx_draft(conn, id, PROFILE, "send_hns", "00", "{}", "{}").unwrap();
-    db::queries::update_tx_draft_status(conn, id, "broadcasted", None, Some(DRAFT_TXID)).unwrap();
+    db::queries::insert_tx_draft(conn, id, PROFILE, "send_hns", &draft_hex(), "{}", "{}").unwrap();
+    db::queries::update_tx_draft_status(conn, id, "broadcasted", None, Some(draft_txid().as_str()))
+        .unwrap();
     db::queries::update_tx_draft_confirmation(conn, id, height, None).unwrap();
 }
 
@@ -742,7 +826,7 @@ async fn refresh_reverts_a_reorged_confirmed_draft_to_broadcasted() {
     );
     assert_eq!(
         row.txid.as_deref(),
-        Some(DRAFT_TXID),
+        Some(draft_txid().as_str()),
         "txid must survive the revert"
     );
     assert!(
@@ -844,14 +928,21 @@ async fn refresh_does_not_repoll_a_deeply_buried_confirmed_draft() {
 
 // --- broadcast_pending auto-resolution (folded-in from Task 5 review) ------
 
-const PENDING_TXID: &str = "cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafeba";
-
 /// Seed a `broadcast_pending` draft (transport-ambiguous broadcast, no DB
 /// txid) whose `summary_json` carries the locally-computed txid, exactly as
 /// `build_send_hns_draft`/`sign_tx_draft` persist it in production.
 fn seed_broadcast_pending_draft(conn: &rusqlite::Connection, id: &str) {
-    let summary = format!(r#"{{"txid":"{PENDING_TXID}"}}"#);
-    db::queries::insert_tx_draft(conn, id, PROFILE, "send_hns", "00", "{}", &summary).unwrap();
+    let summary = format!(r#"{{"txid":"{}"}}"#, pending_txid());
+    db::queries::insert_tx_draft(
+        conn,
+        id,
+        PROFILE,
+        "send_hns",
+        &pending_hex(),
+        "{}",
+        &summary,
+    )
+    .unwrap();
     db::queries::update_tx_draft_status(conn, id, "broadcast_pending", Some("ambiguous"), None)
         .unwrap();
 }
@@ -879,7 +970,7 @@ async fn refresh_promotes_broadcast_pending_to_broadcasted_when_node_knows_it() 
 
     let row = draft_row(&app, "drf7");
     assert_eq!(row.status, "broadcasted");
-    assert_eq!(row.txid.as_deref(), Some(PENDING_TXID));
+    assert_eq!(row.txid.as_deref(), Some(pending_txid().as_str()));
 }
 
 #[tokio::test]
@@ -903,7 +994,7 @@ async fn refresh_promotes_broadcast_pending_straight_to_confirmed_when_already_m
     let row = draft_row(&app, "drf8");
     assert_eq!(row.status, "confirmed");
     assert_eq!(row.confirmation_height, Some(499));
-    assert_eq!(row.txid.as_deref(), Some(PENDING_TXID));
+    assert_eq!(row.txid.as_deref(), Some(pending_txid().as_str()));
 }
 
 #[tokio::test]
