@@ -209,6 +209,7 @@ pub fn build_purchase_plan(p: &PurchaseInput) -> Result<PlanResult, AppError> {
         sighash_type: STEP_SIGHASH,
         sequence: STEP_SEQUENCE,
         foreign_witness_hex: Some(vec![hex::encode(step.signature), hex::encode(&script)]),
+        lock_key_name: None,
     };
     let transfer = covenants::transfer(&nh, p.name_height, p.dest.version, &p.dest.hash);
     let mut before = vec![cov_out(p.lock_value, lock_addr, &transfer)];
@@ -247,6 +248,7 @@ pub fn build_purchase_finalize_plan(f: &FinalizeInput) -> Result<PlanResult, App
         sighash_type: sighash::ALL,
         sequence: FINAL_SEQUENCE,
         foreign_witness_hex: Some(vec![hex::encode(lock_script(&f.lock_pubkey))]),
+        lock_key_name: None,
     };
     let fin = covenants::finalize(
         &nh,

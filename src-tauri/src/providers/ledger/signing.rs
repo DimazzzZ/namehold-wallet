@@ -45,10 +45,10 @@ pub fn sign_transaction<T: HidIo>(
 ) -> Result<(String, String), AppError> {
     // Every input below is streamed as the wallet's own P2WPKH with a final
     // sequence and no lock time. A plan that is anything else (a Shakedex
-    // purchase's foreign lock coin, its 0xfffffffe sequence or lock time)
-    // would be signed wrongly, so it never reaches the device (R16). The
-    // draft path refuses it first (`commands::tx`); this is the signer's own
-    // guard.
+    // purchase's foreign lock coin, a lock coin of ours signed by its lock
+    // key, a 0xfffffffe sequence or a lock time) would be signed wrongly, so
+    // it never reaches the device (R16). The draft path refuses it first
+    // (`commands::tx`); this is the signer's own guard.
     if plan.has_foreign_or_custom_inputs() {
         return Err(AppError::InvalidInput(
             crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY.into(),
@@ -247,6 +247,7 @@ mod tests {
                 sighash_type: 1,
                 sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
                 foreign_witness_hex: None,
+                lock_key_name: None,
             }],
             outputs: vec![crate::noncustodial::actions::PlanOutput {
                 value: 99_000_000,
@@ -300,6 +301,7 @@ mod tests {
             sighash_type: 1,
             sequence: crate::noncustodial::actions::FINAL_SEQUENCE,
             foreign_witness_hex: None,
+            lock_key_name: None,
         }
     }
 
@@ -860,7 +862,9 @@ mod tests {
         sequence.inputs[0].sequence = 0xffff_fffe;
         let mut locktime = one_input_plan();
         locktime.locktime = 0x8000_0001;
-        for plan in [foreign, sequence, locktime] {
+        let mut lock_key = one_input_plan();
+        lock_key.inputs[0].lock_key_name = Some("dexreviews".into());
+        for plan in [foreign, sequence, locktime, lock_key] {
             let mut signer =
                 LedgerSigner::with_transport(Transport::new(FailAtHid::new(0, 0x6985)));
             let err = sign_transaction(
