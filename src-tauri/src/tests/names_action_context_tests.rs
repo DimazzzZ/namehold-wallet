@@ -1372,9 +1372,16 @@ fn find_name_action_context_reads_the_open_listing() {
     use crate::db::queries::ListingState;
     let conn = test_db();
     seed_profile(&conn);
+    seed_draft(
+        &conn,
+        "d-lock",
+        crate::noncustodial::shakedex::sell::LOCK_ACTION,
+        NAME,
+    );
     conn.execute(
-        "INSERT INTO shakedex_listings (id, wallet_profile_id, name, mode, state, lock_pubkey_hex)
-         VALUES ('l1', ?1, ?2, 'buy_now', 'locking', '02')",
+        "INSERT INTO shakedex_listings
+            (id, wallet_profile_id, name, mode, state, lock_pubkey_hex, lock_transfer_draft_id)
+         VALUES ('l1', ?1, ?2, 'buy_now', 'locking', '02', 'd-lock')",
         rusqlite::params![PROFILE, NAME],
     )
     .unwrap();
@@ -1384,4 +1391,72 @@ fn find_name_action_context_reads_the_open_listing() {
         .unwrap();
     let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
     assert_eq!(ctx.listing_state, None, "an ended listing locks nothing");
+}
+
+/// R27 (ruling, fix round 1): a Locking listing blocks owner actions only
+/// while its lock TRANSFER draft is alive. A dropped, failed or deleted lock
+/// draft leaves it to the chain refresh (T4); a listing past Locking always
+/// blocks, whatever its lock draft became.
+#[test]
+fn a_locking_listing_blocks_only_while_its_lock_draft_is_alive() {
+    use crate::db::queries::ListingState;
+    let cases: [(Option<&str>, bool); 8] = [
+        (Some("draft"), true),
+        (Some("signed"), true),
+        (Some("broadcast_pending"), true),
+        (Some("broadcasted"), true),
+        (Some("confirmed"), true),
+        (Some("dropped"), false),
+        (Some("failed"), false),
+        // `d-lock` linked, but no draft row has that id (deleted).
+        (None, false),
+    ];
+    for (status, blocks) in cases {
+        let conn = test_db();
+        seed_profile(&conn);
+        if let Some(status) = status {
+            seed_draft(
+                &conn,
+                "d-lock",
+                crate::noncustodial::shakedex::sell::LOCK_ACTION,
+                NAME,
+            );
+            db::queries::update_tx_draft_status(&conn, "d-lock", status, None, None).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO shakedex_listings
+                (id, wallet_profile_id, name, mode, state, lock_pubkey_hex, lock_transfer_draft_id)
+             VALUES ('l1', ?1, ?2, 'buy_now', 'locking', '02', 'd-lock')",
+            rusqlite::params![PROFILE, NAME],
+        )
+        .unwrap();
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+        assert_eq!(
+            ctx.listing_state.is_some(),
+            blocks,
+            "locking, lock draft {status:?}"
+        );
+        conn.execute(
+            "UPDATE shakedex_listings SET state = 'ready_to_finalize'",
+            [],
+        )
+        .unwrap();
+        let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+        assert_eq!(
+            ctx.listing_state,
+            Some(ListingState::ReadyToFinalize),
+            "past locking, lock draft {status:?}"
+        );
+    }
+    // A Locking listing that links no lock draft at all has none alive.
+    let conn = test_db();
+    seed_profile(&conn);
+    conn.execute(
+        "INSERT INTO shakedex_listings (id, wallet_profile_id, name, mode, state, lock_pubkey_hex)
+         VALUES ('l1', ?1, ?2, 'buy_now', 'locking', '02')",
+        rusqlite::params![PROFILE, NAME],
+    )
+    .unwrap();
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    assert_eq!(ctx.listing_state, None, "locking, no lock draft linked");
 }

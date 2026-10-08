@@ -4101,8 +4101,39 @@ async fn batch_redeem_spends_every_losing_reveal_but_not_the_owner() {
     assert!(inputs.contains(&"af".repeat(32)), "loser left: {inputs}");
 }
 
+/// A Locking listing of `name` whose lock TRANSFER draft `d-lock` has
+/// `lock_draft_status`; `None` links a draft id that no row has (deleted).
+fn seed_locking_listing(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+    lock_draft_status: Option<&str>,
+) {
+    if let Some(status) = lock_draft_status {
+        let summary = serde_json::json!({ "name": name }).to_string();
+        db::queries::insert_tx_draft(
+            conn,
+            "d-lock",
+            profile_id,
+            crate::noncustodial::shakedex::sell::LOCK_ACTION,
+            "0100000000",
+            "[]",
+            &summary,
+        )
+        .unwrap();
+        db::queries::update_tx_draft_status(conn, "d-lock", status, None, None).unwrap();
+    }
+    conn.execute(
+        "INSERT INTO shakedex_listings
+            (id, wallet_profile_id, name, mode, state, lock_pubkey_hex, lock_transfer_draft_id)
+         VALUES ('l1', ?1, ?2, 'buy_now', 'locking', '02', 'd-lock')",
+        rusqlite::params![profile_id, name],
+    )
+    .unwrap();
+}
+
 /// R27: while a name is locking (its owner coin is our TRANSFER to the lock)
-/// or locked (at the lock address), Update, Renew, Transfer and Finalize are
+/// or locked (at the lock address), Update, Renew, Transfer, Finalize and Revoke are
 /// not offered, each saying why, and their builders, the batch ones included,
 /// refuse it. Cancel transfer stays offered while locking and once the lockup
 /// is over (it is the abort, R19), but not once the FINALIZE into the lock is
@@ -4139,12 +4170,7 @@ async fn locked_name_offers_no_owner_actions() {
             rusqlite::params![&id, owner_txid, &owner_addr],
         )
         .unwrap();
-        conn.execute(
-            "INSERT INTO shakedex_listings (id, wallet_profile_id, name, mode, state, lock_pubkey_hex)
-             VALUES ('l1', ?1, 'testname', 'buy_now', 'locking', '02')",
-            rusqlite::params![&id],
-        )
-        .unwrap();
+        seed_locking_listing(&conn, &id, "testname", Some("broadcasted"));
         (id, owner_addr)
     };
     let app = mock_app_with(state);
@@ -4171,6 +4197,7 @@ async fn locked_name_offers_no_owner_actions() {
             ("renew", &c.can_renew),
             ("transfer", &c.can_transfer),
             ("finalize", &c.can_finalize),
+            ("revoke", &c.can_revoke),
         ] {
             assert!(!cap.allowed, "{when}: {what} offered");
             assert_eq!(
@@ -4219,6 +4246,9 @@ async fn locked_name_offers_no_owner_actions() {
                     .await
                     .unwrap_err(),
                 names::build_batch_finalize_draft(app.state(), n(), None)
+                    .await
+                    .unwrap_err(),
+                names::build_revoke_draft(app.state(), "testname".into(), None)
                     .await
                     .unwrap_err(),
             ] {
@@ -4295,4 +4325,94 @@ async fn locked_name_offers_no_owner_actions() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains(NAME_LOCKED_FOR_SALE), "{err}");
+}
+
+/// R27 (ruling, fix round 1): a Locking listing whose lock TRANSFER draft is
+/// dead (dropped, failed or deleted) does not freeze the name: the owner
+/// actions are offered and their builders do not refuse for the listing.
+#[tokio::test]
+async fn dead_lock_draft_does_not_freeze_the_name() {
+    use crate::noncustodial::shakedex::NAME_LOCKED_FOR_SALE;
+    for dead in [Some("dropped"), Some("failed"), None] {
+        let mut server = mockito::Server::new_async().await;
+        let _mocks = mock_blockchain_and_name(&mut server, 1.0, Some("CLOSED")).await;
+        let state = create_full_test_state();
+        let (profile_id, owner_addr) = {
+            let conn = state.db.lock().unwrap();
+            let id = insert_valid_profile(&conn, "regtest");
+            set_node_rpc_url(&conn, &server.url());
+            let owner_addr = first_derived_address(&conn, &id);
+            let owner_txid = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+            // The lock TRANSFER never made it: the owner coin is the REGISTER.
+            let cov = covenant_json_for(
+                "testname",
+                crate::noncustodial::sync::COV_REGISTER,
+                "REGISTER",
+            );
+            conn.execute(
+                "INSERT INTO tracked_utxos
+                    (txid, vout, wallet_profile_id, address, script_pubkey_hex,
+                     value_doos, covenant_type, covenant_json, spend_class, spent_by_txid)
+                 VALUES (?1, 0, ?2, ?3, '00', 10000, ?4, ?5, 'name_control', NULL)",
+                rusqlite::params![
+                    owner_txid,
+                    &id,
+                    &owner_addr,
+                    crate::noncustodial::sync::COV_REGISTER,
+                    cov
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tracked_name_states
+                    (wallet_profile_id, name, name_hash_hex, state, owner_txid, owner_vout, owner_address, height)
+                 VALUES (?1, 'testname', 'aabb', 'CLOSED', ?2, 0, ?3, 100)",
+                rusqlite::params![&id, owner_txid, &owner_addr],
+            )
+            .unwrap();
+            seed_locking_listing(&conn, &id, "testname", dead);
+            (id, owner_addr)
+        };
+        let app = mock_app_with(state);
+        let c =
+            names::get_name_action_capabilities(app.state(), "testname".into(), Some(profile_id))
+                .await
+                .unwrap();
+        for (what, cap) in [
+            ("update", &c.can_update),
+            ("renew", &c.can_renew),
+            ("transfer", &c.can_transfer),
+            ("revoke", &c.can_revoke),
+        ] {
+            assert!(
+                cap.allowed,
+                "{dead:?}: {what} not offered: {:?}",
+                cap.reason
+            );
+        }
+        assert_ne!(
+            c.can_finalize.reason.as_deref(),
+            Some(NAME_LOCKED_FOR_SALE),
+            "{dead:?}"
+        );
+        let n = || vec!["testname".to_string()];
+        for r in [
+            names::build_update_draft(app.state(), "testname".into(), vec![], None).await,
+            names::build_renew_draft(app.state(), "testname".into(), None).await,
+            names::build_transfer_draft(app.state(), "testname".into(), owner_addr.clone(), None)
+                .await,
+            names::build_finalize_draft(app.state(), "testname".into(), None).await,
+            names::build_revoke_draft(app.state(), "testname".into(), None).await,
+            names::build_batch_renew_draft(app.state(), n(), None).await,
+            names::build_batch_transfer_draft(app.state(), n(), owner_addr.clone(), None).await,
+            names::build_batch_finalize_draft(app.state(), n(), None).await,
+        ] {
+            if let Err(e) = r {
+                assert!(
+                    !e.to_string().contains(NAME_LOCKED_FOR_SALE),
+                    "{dead:?}: {e}"
+                );
+            }
+        }
+    }
 }
