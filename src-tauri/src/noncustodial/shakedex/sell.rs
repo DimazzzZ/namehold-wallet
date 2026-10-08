@@ -122,7 +122,6 @@ pub fn build_lock_finalize_plan(i: &LockFinalizeInput) -> Result<PlanResult, App
         i.account,
         0,
         own_input(i.transfer),
-        i.transfer.value,
         before,
         vec![],
         i.funding,

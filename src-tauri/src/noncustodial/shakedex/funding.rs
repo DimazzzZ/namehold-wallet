@@ -9,10 +9,13 @@ use crate::noncustodial::actions::{
 };
 use crate::noncustodial::network::Network;
 use crate::noncustodial::send::{SpendableCoin, DUST_THRESHOLD};
-use crate::noncustodial::shakedex::purchase::SHAKEDEX_MIN_RATE_PER_BYTE;
 use crate::noncustodial::shakedex::script::LOCK_SCRIPT_LEN;
 use crate::noncustodial::tx::{sighash, Covenant};
 use crate::noncustodial::types::doos_to_hns_string;
+
+/// Fee floor for Shakedex transactions, in doos per virtual byte: the
+/// 5000 doos/kB floor shakedex itself uses (spec R4).
+pub const SHAKEDEX_MIN_RATE_PER_BYTE: u64 = 5;
 
 /// Witness item sizes of a signed P2WPKH input: signature + sighash byte,
 /// compressed public key.
@@ -86,7 +89,7 @@ fn checked_sum(values: impl IntoIterator<Item = u64>) -> Result<u64, AppError> {
 
 /// Choose funding in the order given (callers pass load_spendable_coins
 /// order, largest-first) until `spend + fee` is covered, sizing the fee on
-/// the real transaction. `lead` is input 0, worth `lead_value`; the name
+/// the real transaction. `lead` is input 0, worth `lead.value`; the name
 /// output at index 0 carries that value back. `before_change`/`after_change`
 /// are the outputs on either side of the change slot.
 #[allow(clippy::too_many_arguments)]
@@ -95,7 +98,6 @@ pub(super) fn fund(
     account: u32,
     locktime: u32,
     lead: PlanInput,
-    lead_value: u64,
     before_change: Vec<PlanOutput>,
     after_change: Vec<PlanOutput>,
     funding: &[SpendableCoin],
@@ -111,11 +113,13 @@ pub(super) fn fund(
             .map(|o| o.value),
     )?;
     let have = checked_sum(funding.iter().map(|c| c.value))?;
+    let lead_value = lead.value;
+    let mut last_fee = 0;
     for taken in 0..=funding.len() {
         let mut inputs = vec![lead.clone()];
         inputs.extend(funding[..taken].iter().map(own_input));
         let in_total = checked_sum(
-            std::iter::once(lead_value).chain(funding[..taken].iter().map(|c| c.value)),
+            std::iter::once(lead.value).chain(funding[..taken].iter().map(|c| c.value)),
         )?;
         for with_change in [true, false] {
             let mut outputs = before_change.clone();
@@ -139,6 +143,7 @@ pub(super) fn fund(
                 Some(f) => f,
                 None => vsize.checked_mul(rate).ok_or_else(overflow)?,
             };
+            last_fee = fee;
             let spend = out_total.checked_add(fee).ok_or_else(overflow)?;
             let Some(rest) = in_total.checked_sub(spend) else {
                 continue;
@@ -169,6 +174,15 @@ pub(super) fn fund(
     // The name output carries the lead's value back, so what we add is
     // everything else.
     let need = out_total.saturating_sub(lead_value);
+    if need == 0 {
+        // The outputs cost nothing beyond the lead (a cancel, a FINALIZE
+        // into a lock): what is missing is only the network fee.
+        return Err(AppError::InvalidInput(format!(
+            "not enough HNS: the network fee (at least {}) needs HNS beyond the name's own coin, have {}",
+            doos_to_hns_string(last_fee),
+            doos_to_hns_string(have)
+        )));
+    }
     Err(AppError::InvalidInput(format!(
         "not enough HNS: need {} plus fees, have {}",
         doos_to_hns_string(need),
@@ -225,7 +239,6 @@ mod tests {
             0,
             0,
             lead,
-            1_000_000,
             vec![cov_out(1_000_000, key.address.clone(), &transfer)],
             vec![],
             &funding,
@@ -239,5 +252,49 @@ mod tests {
         let signed = Transaction::decode(&hex::decode(hex).unwrap()).unwrap();
         assert_eq!(signed.inputs[0].witness[1], key.script);
         assert_eq!(res.fee, signed.vsize() * 7);
+    }
+
+    /// With no funding coins a cancel (whose outputs cost nothing beyond its
+    /// lock coin) fails on the network fee alone, and says so.
+    #[test]
+    fn no_funding_for_a_cancel_reports_the_fee_shortfall() {
+        let master = ExtendedPrivKey::from_seed(&[7u8; 64]).unwrap();
+        let key = derive_lock_key(&master, Network::Main, 0, "dexreviews").unwrap();
+        let dest = bip44_path(Network::Main, 0, 0, 11);
+        let dest =
+            address::pubkey_to_hash160(&master.derive_path(&dest).unwrap().compressed_pubkey());
+        let nh = names::hash_name("dexreviews").unwrap();
+        let transfer = covenants::transfer(&nh, 120, 0, &dest);
+        let lead = PlanInput {
+            txid: hex::encode([9u8; 32]),
+            vout: 0,
+            value: 1_000_000,
+            branch: 0,
+            child_index: 11,
+            sighash_type: CANCEL_SIGHASH,
+            sequence: FINAL_SEQUENCE,
+            foreign_witness_hex: None,
+            lock_key_name: Some("dexreviews".into()),
+        };
+        let change = address::encode_p2wpkh(Network::Main, &dest).unwrap();
+        let err = fund(
+            Network::Main,
+            0,
+            0,
+            lead,
+            vec![cov_out(1_000_000, key.address, &transfer)],
+            vec![],
+            &[],
+            &change,
+            7,
+            None,
+        )
+        .unwrap_err();
+        let AppError::InvalidInput(msg) = err else {
+            panic!("{err:?}");
+        };
+        assert!(msg.contains("the network fee (at least 0."), "{msg}");
+        assert!(!msg.contains("need 0"), "{msg}");
+        assert!(msg.ends_with("have 0.000000 HNS"), "{msg}");
     }
 }

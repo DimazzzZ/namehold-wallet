@@ -242,5 +242,9 @@ fn every_shakedex_action_is_refused_for_the_ledger() {
         assert!(is_shakedex_action(action), "{action}");
         refused_with_the_r16_reason(action, PLAIN);
     }
-    assert!(!is_shakedex_action("transfer"));
+    for not_shakedex in ["transfer", "shakedex", "shakedexfoo", ""] {
+        assert!(!is_shakedex_action(not_shakedex), "{not_shakedex:?}");
+    }
+    // A software profile is never refused by the class.
+    refuse_unsupported_ledger_plan("mnemonic_hot", purchase::PURCHASE_ACTION, PLAIN).unwrap();
 }
