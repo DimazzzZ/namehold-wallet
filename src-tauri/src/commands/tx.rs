@@ -33,6 +33,7 @@ use crate::error::AppError;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::{cross_network_refusal, ChainSource, NodeRpcClient};
 use crate::noncustodial::send;
+use crate::noncustodial::session::session_ttl_ms;
 use crate::noncustodial::shakedex::purchase::{
     PurchaseFinalizeSummary, PurchaseSummary, PURCHASE_ACTION, PURCHASE_FINALIZE_ACTION,
 };
@@ -70,15 +71,6 @@ fn change_address(network: Network, account_xpub: &str) -> Result<String, AppErr
     let xpub = crate::noncustodial::hd::ExtendedPubKey::from_xpub(network, account_xpub)?;
     let derived = derivation::derive_one(network, &xpub, derivation::BRANCH_CHANGE, 0)?;
     Ok(derived.address)
-}
-
-fn session_ttl_ms(settings: &std::collections::HashMap<String, String>) -> u128 {
-    let secs = settings
-        .get("signer_session_timeout_seconds")
-        .and_then(|s| s.parse::<u64>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(900);
-    (secs as u128) * 1000
 }
 
 /// Compute the TxSummary for a send_hns draft after signing.
@@ -824,15 +816,7 @@ fn sign_via_hot_session(
             .lock()
             .map_err(|e| AppError::Lock(e.to_string()))?;
         let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
-        if !session.is_unlocked() {
-            return Err(AppError::WalletLocked);
-        }
-        if session.wallet_profile_id() != draft.wallet_profile_id {
-            return Err(AppError::InvalidInput(
-                "the unlocked signer is for a different wallet profile".to_string(),
-            ));
-        }
-        session.touch(ttl_ms);
+        session.authorize(&draft.wallet_profile_id, ttl_ms)?;
 
         if draft.action == "send_hns" {
             let params: SendBuildParams = serde_json::from_str(&draft.signing_inputs_json)?;
@@ -1485,15 +1469,7 @@ pub async fn sign_name_message(
             .lock()
             .map_err(|e| AppError::Lock(e.to_string()))?;
         let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
-        if !session.is_unlocked() {
-            return Err(AppError::WalletLocked);
-        }
-        if session.wallet_profile_id() != id {
-            return Err(AppError::InvalidInput(
-                "the unlocked signer is for a different wallet profile".to_string(),
-            ));
-        }
-        session.touch(ttl_ms);
+        session.authorize(&id, ttl_ms)?;
 
         let network = session.network();
         let path =
@@ -2628,7 +2604,6 @@ mod pure_helper_tests {
     use super::*;
     use crate::noncustodial::actions::{DraftPlan, PlanInput, PlanOutput};
     use crate::noncustodial::hd::ExtendedPubKey;
-    use std::collections::HashMap;
 
     /// Deterministic test-only account xpub (mirrors the helper in
     /// `ledger_signing_guards_tests` — kept local because that one is
@@ -2730,54 +2705,6 @@ mod pure_helper_tests {
         // Any error kind is fine — this asserts we don't silently succeed or
         // panic when the xpub can't be parsed.
         let _ = format!("{err:?}");
-    }
-
-    // ---------- session_ttl_ms --------------------------------------------
-
-    #[test]
-    fn session_ttl_ms_default_when_setting_absent() {
-        let settings: HashMap<String, String> = HashMap::new();
-        // Default 900 seconds → 900_000 ms.
-        assert_eq!(session_ttl_ms(&settings), 900_000u128);
-    }
-
-    #[test]
-    fn session_ttl_ms_reads_valid_numeric_setting() {
-        let mut settings = HashMap::new();
-        settings.insert(
-            "signer_session_timeout_seconds".to_string(),
-            "60".to_string(),
-        );
-        assert_eq!(session_ttl_ms(&settings), 60_000u128);
-    }
-
-    #[test]
-    fn session_ttl_ms_falls_back_when_setting_is_non_numeric() {
-        let mut settings = HashMap::new();
-        settings.insert(
-            "signer_session_timeout_seconds".to_string(),
-            "not-a-number".to_string(),
-        );
-        assert_eq!(session_ttl_ms(&settings), 900_000u128);
-    }
-
-    #[test]
-    fn session_ttl_ms_falls_back_when_setting_is_empty_string() {
-        let mut settings = HashMap::new();
-        settings.insert("signer_session_timeout_seconds".to_string(), String::new());
-        assert_eq!(session_ttl_ms(&settings), 900_000u128);
-    }
-
-    #[test]
-    fn session_ttl_ms_falls_back_when_setting_is_zero() {
-        // Zero is filtered out (`filter(|n| *n > 0)`), so we still get the
-        // default rather than a 0-ms TTL that would time out immediately.
-        let mut settings = HashMap::new();
-        settings.insert(
-            "signer_session_timeout_seconds".to_string(),
-            "0".to_string(),
-        );
-        assert_eq!(session_ttl_ms(&settings), 900_000u128);
     }
 
     // ---------- compute_send_summary --------------------------------------
