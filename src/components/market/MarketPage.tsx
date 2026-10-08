@@ -9,12 +9,13 @@ import { ImportListing } from "./ImportListing";
 import { PurchaseConfirm } from "./PurchaseConfirm";
 import {
   MARKET_MAINNET_ONLY,
-  NOT_VERIFIED,
+  type StatusTone,
   approxWait,
   canBuyShakedex,
   hiddenReasonText,
   hiddenSummary,
   listedUntilText,
+  listingStatus,
   purchaseRefusal,
 } from "./marketText";
 import { useMarketPage } from "../../queries/shakedex";
@@ -25,28 +26,44 @@ import { mapError } from "../../lib/errors";
 import { formatHns } from "../../lib/utils";
 import type { ImportSource, MarketRow } from "../../types";
 
-function PriceCell({ row }: { row: MarketRow }) {
-  if (row.verdict.verdict !== "buyable") return <span className="text-gray-500">—</span>;
+/** Where a listed row came from: the market page, or an import. */
+type Origin = "market" | "file" | "link";
+
+/** An imported row and how it was imported. */
+interface ImportedRow {
+  row: MarketRow;
+  origin: Exclude<Origin, "market">;
+}
+
+const ORIGIN_LABEL: Record<Exclude<Origin, "market">, string> = {
+  file: "From file",
+  link: "From LearnHNS link",
+};
+
+const DOT: Record<StatusTone, string> = {
+  ok: "bg-green-500",
+  warn: "bg-amber-500",
+  muted: "bg-gray-300",
+  bad: "bg-red-500",
+};
+
+/** A reverse auction's next step and floor, with every step behind a toggle. */
+function AuctionSteps({ row }: { row: MarketRow }) {
   return (
-    <div>
-      <div>{formatHns(row.currentPrice)} HNS</div>
-      {row.kind === "reverseAuction" && (
-        <div className="text-xs text-gray-500">
-          {row.nextPrice != null && row.nextValidInSecs != null && (
-            <>
-              next {formatHns(row.nextPrice)} in {approxWait(row.nextValidInSecs)} ·{" "}
-            </>
-          )}
-          floor {formatHns(row.floorPrice)}
-        </div>
+    <div className="mt-1 text-xs text-gray-500">
+      {row.nextPrice != null && row.nextValidInSecs != null && (
+        <>
+          Next {formatHns(row.nextPrice)} HNS in {approxWait(row.nextValidInSecs)} ·{" "}
+        </>
       )}
-      {row.kind === "reverseAuction" && row.steps.length > 0 && (
+      floor {formatHns(row.floorPrice)} HNS
+      {row.steps.length > 0 && (
         <Disclosure
           summary={`All ${row.steps.length} price steps`}
           className="text-xs"
           testId="price-steps-toggle"
         >
-          <ul className="space-y-0.5" data-testid="price-steps">
+          <ul className="space-y-0.5 tabular-nums" data-testid="price-steps">
             {row.steps.map((s, i) => {
               // Only buyable rows reach here, and `market_row` gives each of
               // their steps a wait; a missing one would read as "now".
@@ -64,20 +81,6 @@ function PriceCell({ row }: { row: MarketRow }) {
   );
 }
 
-/** Where a listed row came from: the market page, or an import. */
-type Origin = "market" | "file" | "link";
-
-/** An imported row and how it was imported. */
-interface ImportedRow {
-  row: MarketRow;
-  origin: Exclude<Origin, "market">;
-}
-
-const ORIGIN_BADGE: Record<Exclude<Origin, "market">, string> = {
-  file: "From file",
-  link: "From LearnHNS link",
-};
-
 interface ListingsTableProps {
   rows: { row: MarketRow; origin: Origin }[];
   /** False for a profile that cannot buy (R16): Buy shows, disabled. */
@@ -87,79 +90,115 @@ interface ListingsTableProps {
   onBuy: (row: MarketRow, fromMarket: boolean) => void;
 }
 
+/**
+ * One line per listing: the name, its kind and where it came from, then its
+ * status in a sentence, with the price and Buy on the right. The status is
+ * the thing to read, so it gets the colour; the rest stays quiet.
+ */
 function ListingsTable({ rows, canBuy, refusal, onBuy }: ListingsTableProps) {
   return (
-    <table className="w-full text-sm">
-      <thead>
-        <tr className="text-left text-gray-500 border-b">
-          <th className="py-1 pr-4">Name</th>
-          <th className="py-1 pr-4">Type</th>
-          <th className="py-1 pr-4">Price</th>
-          <th className="py-1 pr-4">Notes</th>
-          <th className="py-1">
-            <span className="sr-only">Actions</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map(({ row, origin }, i) => {
-          const listedUntil = row.expiresAt != null ? listedUntilText(row.expiresAt) : null;
-          return (
-            <tr
-              key={`${row.name}-${i}`}
-              className="border-t border-gray-100 hover:bg-gray-50"
-              data-testid="market-row"
-            >
-              <td className="py-1 pr-4 font-mono">.{displayName(row.name)}</td>
-              <td className="py-1 pr-4">
-                {row.kind === "reverseAuction" ? "Reverse auction" : "Buy Now"}
-              </td>
-              <td className="py-1 pr-4">
-                <PriceCell row={row} />
-              </td>
-              <td className="py-1 pr-4 text-gray-500">
-                <div className="flex flex-wrap gap-1">
-                  {origin !== "market" && <Badge>{ORIGIN_BADGE[origin]}</Badge>}
-                  {row.verdict.verdict === "buyable" && row.verdict.warnExpiry && (
-                    <Badge
-                      variant="warning"
-                      title="The name expires within about a month of the earliest finalize."
-                    >
-                      Expires soon
-                    </Badge>
-                  )}
-                  {listedUntil && <span>{listedUntil}</span>}
-                  {row.verdict.verdict === "hidden" && row.verdict.kind !== "unverified" && (
-                    <span>{hiddenReasonText(row.verdict)}</span>
-                  )}
-                </div>
-              </td>
-              <td className="py-1 text-right">
-                {row.verdict.verdict === "hidden" && row.verdict.kind === "unverified" ? (
-                  <span className="text-xs text-gray-500">{NOT_VERIFIED}</span>
-                ) : row.verdict.verdict !== "buyable" ? null : (
-                  // Only a row verified on the node is buyable: in SPV and
-                  // Explorer modes every row comes back unverified. A LearnHNS
-                  // link is the market's own listing file: its published fee
-                  // applies just as for a row of the market page.
-                  <Tooltip content={canBuy ? null : refusal}>
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      data-testid="market-buy"
-                      disabled={!canBuy}
-                      onClick={() => onBuy(row, origin !== "file")}
-                    >
-                      Buy
-                    </Button>
-                  </Tooltip>
+    <ul className="divide-y divide-gray-100 border-y border-gray-100 bg-white">
+      {rows.map(({ row, origin }, i) => {
+        const buyable = row.verdict.verdict === "buyable";
+        const status = listingStatus(row);
+        const listedUntil = row.expiresAt != null ? listedUntilText(row.expiresAt) : null;
+        return (
+          <li
+            key={`${row.name}-${i}`}
+            className="flex items-start gap-4 px-3 py-3"
+            data-testid="market-row"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <span className="font-mono text-sm font-medium text-gray-900">
+                  .{displayName(row.name)}
+                </span>
+                <span className="text-xs text-gray-500">
+                  {row.kind === "reverseAuction" ? "Reverse auction" : "Buy now"}
+                </span>
+                {origin !== "market" && <Badge>{ORIGIN_LABEL[origin]}</Badge>}
+                {buyable && row.verdict.verdict === "buyable" && row.verdict.warnExpiry && (
+                  <Badge
+                    variant="warning"
+                    title="The name expires within about a month of the earliest finalize."
+                  >
+                    Expires soon
+                  </Badge>
                 )}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+              </div>
+              <div className="mt-1 flex items-start gap-2 text-sm text-gray-700">
+                <span
+                  aria-hidden
+                  className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${DOT[status.tone]}`}
+                />
+                <span data-testid="market-status">{status.text}</span>
+              </div>
+              {buyable && row.kind === "reverseAuction" && <AuctionSteps row={row} />}
+              {listedUntil && <div className="mt-1 text-xs text-gray-400">{listedUntil}</div>}
+            </div>
+            <div className="flex shrink-0 flex-col items-end gap-2">
+              <span className="text-sm font-semibold tabular-nums text-gray-900">
+                {buyable ? `${formatHns(row.currentPrice)} HNS` : "—"}
+              </span>
+              {buyable && (
+                // Only a row verified on the node is buyable: in SPV and
+                // Explorer modes every row comes back unverified. A LearnHNS
+                // link is the market's own listing file: its published fee
+                // applies just as for a row of the market page.
+                <Tooltip content={canBuy ? null : refusal}>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    data-testid="market-buy"
+                    disabled={!canBuy}
+                    onClick={() => onBuy(row, origin !== "file")}
+                  >
+                    Buy
+                  </Button>
+                </Tooltip>
+              )}
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** A small spinner; still for those who ask for reduced motion. */
+function Spinner() {
+  return (
+    <span
+      aria-hidden
+      className="inline-block h-3.5 w-3.5 shrink-0 rounded-full border-2 border-gray-300 border-t-blue-600 motion-safe:animate-spin"
+    />
+  );
+}
+
+/**
+ * The market's first load: every listing is checked against the node before
+ * the page answers, which takes a moment. Placeholder lines in the shape of
+ * the list, and a line saying what is going on.
+ */
+function MarketLoading() {
+  return (
+    <div data-testid="market-loading" aria-busy="true">
+      <p className="mb-2 flex items-center gap-2 text-sm text-gray-600">
+        <Spinner />
+        Checking listings against your node…
+      </p>
+      <ul aria-hidden className="divide-y divide-gray-100 border-y border-gray-100 bg-white">
+        {[0, 1, 2, 3].map((i) => (
+          <li key={i} className="flex items-start gap-4 px-3 py-3">
+            <div className="flex-1 space-y-2">
+              <div className="h-3.5 w-40 rounded bg-gray-200 motion-safe:animate-pulse" />
+              <div className="h-3 w-64 rounded bg-gray-100 motion-safe:animate-pulse" />
+            </div>
+            <div className="h-3.5 w-20 rounded bg-gray-200 motion-safe:animate-pulse" />
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -198,6 +237,10 @@ export default function MarketPage() {
 
   const page = market.data;
   const summary = page ? hiddenSummary(page.hidden) : null;
+  // Another page is on its way; the one on screen is the previous page.
+  const turningPage = market.isFetching && market.isPlaceholderData;
+
+  const linkRefusal = profile != null && profile.network !== "mainnet" ? MARKET_MAINNET_ONLY : null;
 
   return (
     <div>
@@ -207,85 +250,104 @@ export default function MarketPage() {
       />
       <div className="space-y-6">
         {profile != null && refusal && <Alert tone="info">{refusal}</Alert>}
-        {market.isLoading && <p className="text-sm text-gray-500">Loading listings…</p>}
-        {market.isError && (
-          <Alert tone="error" title="Could not load the market">
-            {mapError(market.error)}
-          </Alert>
-        )}
         {page && !page.networkHasMarket && (
-          <Alert tone="info">
-            There is no LearnHNS Market for this network. You can still buy a name from a listing
-            file or pasted text below.
-          </Alert>
-        )}
-        {page && page.networkHasMarket && page.rows.length === 0 && (
-          <p className="text-sm text-gray-500">
-            {emptyPageText(page.pageCount, page.hidden.couldNotCheck)}
+          <p className="text-sm text-gray-600">
+            There is no LearnHNS Market for this network. Import a listing file or paste one below.
           </p>
         )}
-        {page && page.networkHasMarket && page.rows.length > 0 && (
-          <ListingsTable
-            rows={page.rows.map((row) => ({ row, origin: "market" as const }))}
-            canBuy={canBuy}
-            refusal={refusal}
-            onBuy={onBuy}
-          />
-        )}
-        {page && page.networkHasMarket && page.pageCount > 1 && (
-          <div className="flex items-center gap-3 text-sm">
-            <Button
-              size="sm"
-              data-testid="market-prev"
-              disabled={page.page <= 1}
-              onClick={() => setPageNumber(page.page - 1)}
-            >
-              Previous
-            </Button>
-            <span data-testid="market-page-of" className="text-gray-500">
-              Page {page.page} of {page.pageCount}
-            </span>
-            <Button
-              size="sm"
-              data-testid="market-next"
-              disabled={page.page >= page.pageCount}
-              onClick={() => setPageNumber(page.page + 1)}
-            >
-              Next
-            </Button>
-          </div>
-        )}
-        {summary && page && (
-          <Disclosure summary={summary} testId="hidden-summary">
-            <ul className="space-y-1 text-sm">
-              {page.hiddenRows.map((h, i) => (
-                <li key={`${h.name}-${i}`} data-testid="hidden-row">
-                  <span className="font-mono">
-                    {h.name === null ? "Unnamed listing" : `.${displayName(h.name)}`}
-                  </span>{" "}
-                  <span className="text-gray-500">{hiddenReasonText(h.reason)}</span>
-                </li>
-              ))}
-            </ul>
-          </Disclosure>
-        )}
+
+        <section className="rounded-md border border-gray-200 bg-white p-4">
+          <ImportListing onImported={onImported} linkRefusal={linkRefusal} />
+        </section>
+
         {imported.length > 0 && (
-          <div>
-            <h3 className="text-sm font-semibold text-gray-700 mb-1">Imported listings</h3>
+          <section>
+            <h3 className="mb-2 text-sm font-semibold text-gray-700">Imported listings</h3>
             {/* Each import was verified on its own; the market page's state
                 (loading, down, SPV) says nothing about it. */}
             <ListingsTable rows={imported} canBuy={canBuy} refusal={refusal} onBuy={onBuy} />
-          </div>
+          </section>
         )}
-        <div>
-          <h3 className="text-sm font-semibold text-gray-700 mb-2">Import a listing</h3>
-          <ImportListing
-            onImported={onImported}
-            linkRefusal={
-              profile != null && profile.network !== "mainnet" ? MARKET_MAINNET_ONLY : null
-            }
-          />
-        </div>
+
+        {(market.isLoading || market.isError || page?.networkHasMarket) && (
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-gray-700">LearnHNS Market</h3>
+            {market.isLoading && <MarketLoading />}
+            {market.isError && (
+              <Alert tone="error" title="Could not load the market">
+                {mapError(market.error)}
+              </Alert>
+            )}
+            {page && page.networkHasMarket && page.rows.length === 0 && !turningPage && (
+              <p className="text-sm text-gray-500">
+                {emptyPageText(page.pageCount, page.hidden.couldNotCheck)}
+              </p>
+            )}
+            {page && page.networkHasMarket && page.rows.length > 0 && (
+              <div
+                aria-busy={turningPage}
+                className={turningPage ? "pointer-events-none opacity-50 transition-opacity" : ""}
+              >
+                <ListingsTable
+                  rows={page.rows.map((row) => ({ row, origin: "market" as const }))}
+                  canBuy={canBuy}
+                  refusal={refusal}
+                  onBuy={onBuy}
+                />
+              </div>
+            )}
+            {page && page.networkHasMarket && page.pageCount > 1 && (
+              <div className="flex items-center gap-3 text-sm">
+                <Button
+                  size="sm"
+                  data-testid="market-prev"
+                  disabled={page.page <= 1 || turningPage}
+                  onClick={() => setPageNumber(page.page - 1)}
+                >
+                  Previous
+                </Button>
+                <span
+                  data-testid="market-page-of"
+                  className="flex items-center gap-2 text-gray-500"
+                >
+                  {turningPage ? (
+                    <>
+                      <Spinner />
+                      Loading page {pageNumber}…
+                    </>
+                  ) : (
+                    <>
+                      Page {page.page} of {page.pageCount}
+                    </>
+                  )}
+                </span>
+                <Button
+                  size="sm"
+                  data-testid="market-next"
+                  disabled={page.page >= page.pageCount || turningPage}
+                  onClick={() => setPageNumber(page.page + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            )}
+            {summary && page && (
+              <Disclosure summary={summary} testId="hidden-summary">
+                <ul className="space-y-1 text-sm">
+                  {page.hiddenRows.map((h, i) => (
+                    <li key={`${h.name}-${i}`} data-testid="hidden-row">
+                      <span className="font-mono">
+                        {h.name === null ? "Unnamed listing" : `.${displayName(h.name)}`}
+                      </span>{" "}
+                      <span className="text-gray-500">{hiddenReasonText(h.reason)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Disclosure>
+            )}
+          </section>
+        )}
+
         {purchase && (
           <PurchaseConfirm
             open

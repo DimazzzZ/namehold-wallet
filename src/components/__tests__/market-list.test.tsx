@@ -3,7 +3,6 @@ import "@testing-library/jest-dom";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
-import { assertCanonicalTable } from "../../test/canonicalTable";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -118,11 +117,11 @@ describe("MarketPage", () => {
         hiddenRows: [{ name: "gone", reason: { kind: "soldOrCancelled" } }],
       }),
     );
-    const { container } = renderPage();
+    renderPage();
     expect(await screen.findByText(".dexreviews")).toBeInTheDocument();
-    assertCanonicalTable(container.querySelector("table") as HTMLTableElement, {
-      name: "market",
-    });
+    // One line per listing, its status in words.
+    expect(screen.getAllByTestId("market-row")).toHaveLength(1);
+    expect(screen.getByTestId("market-status")).toHaveTextContent("Ready to buy");
     expect(
       screen.getByText("Hidden 32: 28 already sold or cancelled, 4 failed verification"),
     ).toBeInTheDocument();
@@ -155,6 +154,50 @@ describe("MarketPage", () => {
 
     fireEvent.click(screen.getByTestId("market-prev"));
     expect(await screen.findByText(".name2")).toBeInTheDocument();
+  });
+
+  it("shows that the market is being checked while the first page loads", async () => {
+    let answer: (p: unknown) => void = () => {};
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "list_wallet_profiles") return Promise.resolve([profile()]);
+      if (cmd === "get_write_capability") return Promise.resolve(writeCapability());
+      if (cmd === "shakedex_list_market") return new Promise((resolve) => (answer = resolve));
+      return Promise.resolve(null);
+    });
+    renderPage();
+    expect(await screen.findByTestId("market-loading")).toHaveTextContent(
+      "Checking listings against your node",
+    );
+    expect(screen.queryByTestId("market-page-of")).toBeNull();
+    expect(screen.queryByText(/No buyable listings/)).toBeNull();
+    answer(page({ pageCount: 2 }));
+    expect(await screen.findByText(".dexreviews")).toBeInTheDocument();
+    expect(screen.queryByTestId("market-loading")).toBeNull();
+  });
+
+  it("while another page loads, says so and holds the pager", async () => {
+    let answerPage2: (p: unknown) => void = () => {};
+    invokeMock.mockImplementation((cmd: string, args?: { page?: number }) => {
+      if (cmd === "list_wallet_profiles") return Promise.resolve([profile()]);
+      if (cmd === "get_write_capability") return Promise.resolve(writeCapability());
+      if (cmd === "shakedex_list_market") {
+        const n = args?.page ?? 1;
+        if (n === 2) return new Promise((resolve) => (answerPage2 = resolve));
+        return Promise.resolve(page({ page: n, pageCount: 3, rows: [row({ name: `name${n}` })] }));
+      }
+      return Promise.resolve(null);
+    });
+    renderPage();
+    expect(await screen.findByText(".name1")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("market-next"));
+    await waitFor(() =>
+      expect(screen.getByTestId("market-page-of")).toHaveTextContent("Loading page 2…"),
+    );
+    expect(screen.getByTestId("market-next")).toBeDisabled();
+    expect(screen.getByTestId("market-prev")).toBeDisabled();
+    answerPage2(page({ page: 2, pageCount: 3, rows: [row({ name: "name2" })] }));
+    expect(await screen.findByText(".name2")).toBeInTheDocument();
+    expect(screen.getByTestId("market-page-of")).toHaveTextContent("Page 2 of 3");
   });
 
   it("says a page without buyable listings is only this page", async () => {
@@ -414,7 +457,7 @@ describe("MarketPage", () => {
     mockMarket(page({ rows: [], networkHasMarket: false }), "mnemonic_hot", true, "regtest");
     renderPage();
     await screen.findByText(/no LearnHNS Market for this network/);
-    fireEvent.change(screen.getByPlaceholderText("https://market.learnhns.com/listing/name"), {
+    fireEvent.change(screen.getByTestId("listing-paste"), {
       target: { value: "https://market.learnhns.com/listing/dexreviews" },
     });
     expect(screen.getByTestId("import-listing-link")).toBeDisabled();
@@ -425,7 +468,7 @@ describe("MarketPage", () => {
     mockMarket(page(), "mnemonic_hot", true, "mainnet");
     renderPage();
     await screen.findByText(".dexreviews");
-    fireEvent.change(screen.getByPlaceholderText("https://market.learnhns.com/listing/name"), {
+    fireEvent.change(screen.getByTestId("listing-paste"), {
       target: { value: "https://market.learnhns.com/listing/dexreviews" },
     });
     expect(screen.getByTestId("import-listing-link")).toBeEnabled();
@@ -448,7 +491,7 @@ describe("MarketPage", () => {
     );
     renderPage();
     expect(await screen.findByText(/900\.000000 HNS/)).toBeInTheDocument();
-    expect(screen.getByText(/800\.000000 in ~6 h/)).toBeInTheDocument();
+    expect(screen.getByText(/Next 800\.000000 HNS in ~6 h/)).toBeInTheDocument();
     expect(screen.getByText(/floor 600\.000000/)).toBeInTheDocument();
   });
 
@@ -465,6 +508,22 @@ describe("MarketPage", () => {
     );
     expect(await screen.findByText(".imported")).toBeInTheDocument();
     expect(screen.getByText("From file")).toBeInTheDocument();
+  });
+
+  it("a market link pasted where a listing file goes is imported as a link", async () => {
+    mockMarket(page({ rows: [] }), "mnemonic_hot", true, "mainnet");
+    renderPage();
+    const link = "https://market.learnhns.com/listing/enstransfer/proof.json";
+    fireEvent.change(await screen.findByTestId("listing-paste"), {
+      target: { value: `  ${link}\n` },
+    });
+    // The field sees a link: its button imports a link.
+    fireEvent.click(screen.getByTestId("import-listing-link"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("shakedex_import_listing", {
+        source: { kind: "link", url: link },
+      }),
+    );
   });
 
   it("gives an SPV import the backend's unverified verdict and no Buy", async () => {
@@ -513,7 +572,7 @@ describe("MarketPage", () => {
   it("badges a LearnHNS link import and buys it as from the market", async () => {
     mockMarket(page({ rows: [] }));
     renderPage();
-    fireEvent.change(await screen.findByLabelText("Or a market link"), {
+    fireEvent.change(await screen.findByTestId("listing-paste"), {
       target: { value: "https://market.learnhns.com/listing/imported" },
     });
     fireEvent.click(screen.getByTestId("import-listing-link"));

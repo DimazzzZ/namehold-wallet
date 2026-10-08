@@ -185,11 +185,13 @@ fn validate_base_url(base_url: &str) -> Result<(), AppError> {
 }
 
 /// The name in `https://market.learnhns.com/listing/<name>` (optional trailing
-/// `/`), lowercased; anything else is refused.
+/// `/`), or in the listing's own `…/listing/<name>/proof.json`, lowercased;
+/// anything else is refused.
 pub fn name_from_listing_link(url: &str) -> Option<String> {
     let rest = url
         .strip_prefix(LEARNHNS_BASE_URL)?
         .strip_prefix("/listing/")?;
+    let rest = rest.strip_suffix("/proof.json").unwrap_or(rest);
     // One trailing slash is allowed, not required.
     let name = rest.strip_suffix('/').unwrap_or(rest).to_ascii_lowercase();
     crate::noncustodial::names::verify_name(&name).then_some(name)
