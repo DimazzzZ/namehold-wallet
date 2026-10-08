@@ -294,7 +294,12 @@ fn find_name_action_context_with_owner_coin() {
     let owner_covenant = serde_json::json!({
         "type": 6,
         "action": "REGISTER",
-        "items": [name_hash_hex, "example", "0"]
+        "items": [
+            name_hash_hex,
+            "5d1d0000",
+            "",
+            "6ba2f2242f6ef5c116924611d268df08e94e4c61d17f744e78c7d48467dd572a"
+        ]
     })
     .to_string();
 
@@ -857,6 +862,45 @@ fn find_name_action_context_reveal_draft_status() {
     assert_eq!(ctx.reveal_draft_status.as_deref(), Some("confirmed"));
 }
 
+/// A freshly registered name's owner coin is a REGISTER, whose covenant hsd
+/// writes with four items (name hash, height, resource, renewal block hash),
+/// as many as a TRANSFER's. It is not a transfer: reading it as one refused
+/// Update, Transfer and Renew on every name until its first UPDATE, which
+/// that same refusal blocked.
+#[test]
+fn find_name_action_context_register_owner_is_not_a_transfer() {
+    let conn = test_db();
+    seed_profile(&conn);
+    seed_derived_address(&conn, ADDRESS, 0, 0);
+    let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    // The shape a live hsd 8.0.0 node reported for a REGISTER owner coin.
+    let register_covenant = serde_json::json!({
+        "type": 6,
+        "action": "REGISTER",
+        "items": [
+            name_hash_hex,
+            "5d1d0000",
+            "",
+            "6ba2f2242f6ef5c116924611d268df08e94e4c61d17f744e78c7d48467dd572a"
+        ]
+    })
+    .to_string();
+    seed_tracked_utxo(&conn, "tx5", 0, ADDRESS, 6, Some(&register_covenant));
+    seed_tracked_name_state(
+        &conn,
+        NAME,
+        name_hash_hex,
+        "CLOSED",
+        Some("tx5"),
+        Some(0),
+        Some(7517),
+    );
+
+    let ctx = find_name_action_context(&conn, PROFILE, NAME, None).unwrap();
+    assert!(ctx.has_owner_coin);
+    assert_eq!(ctx.transfer_has_items, Some(false));
+}
+
 #[test]
 fn find_name_action_context_transfer_with_items() {
     // Owner coin with a TRANSFER covenant that has items (pending finalize).
@@ -868,10 +912,12 @@ fn find_name_action_context_transfer_with_items() {
     // coin lookup derives it from the name rather than trusting the stored
     // copy — an arbitrary placeholder here was never a reachable state.
     let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    // hsd's TRANSFER: name hash, height, then the recipient's address
+    // version and hash.
     let transfer_covenant = serde_json::json!({
-        "type": 8,
+        "type": 9,
         "action": "TRANSFER",
-        "items": [name_hash_hex, "recipient_addr", "0", "0"]
+        "items": [name_hash_hex, "5d1d0000", "00", "0909090909090909090909090909090909090909"]
     })
     .to_string();
 
@@ -880,7 +926,7 @@ fn find_name_action_context_transfer_with_items() {
         "tx4",
         0,
         ADDRESS,
-        8, // COV_TRANSFER
+        9, // COV_TRANSFER
         Some(&transfer_covenant),
     );
 
@@ -899,39 +945,25 @@ fn find_name_action_context_transfer_with_items() {
     assert_eq!(ctx.transfer_has_items, Some(true));
 }
 
+/// An UPDATE owner coin (three items) is not a transfer either.
 #[test]
-fn find_name_action_context_transfer_without_items() {
-    // Owner coin with a TRANSFER covenant that has no items (shouldn't happen,
-    // but the code handles it gracefully).
+fn find_name_action_context_update_owner_is_not_a_transfer() {
     let conn = test_db();
     seed_profile(&conn);
     seed_derived_address(&conn, ADDRESS, 0, 0);
-
-    // The real hash: production always stores `hash_name(name)`, and the
-    // coin lookup derives it from the name rather than trusting the stored
-    // copy — an arbitrary placeholder here was never a reachable state.
     let name_hash_hex = &hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
-    let transfer_covenant = serde_json::json!({
-        "type": 8,
-        "action": "TRANSFER",
-        "items": []
+    let update_covenant = serde_json::json!({
+        "type": 7,
+        "action": "UPDATE",
+        "items": [name_hash_hex, "5d1d0000", ""]
     })
     .to_string();
-
-    seed_tracked_utxo(
-        &conn,
-        "tx4",
-        0,
-        ADDRESS,
-        8, // COV_TRANSFER
-        Some(&transfer_covenant),
-    );
-
+    seed_tracked_utxo(&conn, "tx4", 0, ADDRESS, 7, Some(&update_covenant));
     seed_tracked_name_state(
         &conn,
         NAME,
         name_hash_hex,
-        "TRANSFER",
+        "CLOSED",
         Some("tx4"),
         Some(0),
         None,
