@@ -1681,6 +1681,47 @@ pub fn open_shakedex_listing_for_name(
     Ok(row)
 }
 
+/// The lock TRANSFER draft statuses under which a Locking listing still
+/// holds its name: the draft may yet be sent, or was sent and not given up.
+const LIVE_LOCK_DRAFT_STATUSES: [&str; 5] = [
+    "draft",
+    "signed",
+    "broadcast_pending",
+    "broadcasted",
+    "confirmed",
+];
+
+/// The open listing that keeps `name`'s owner actions away (R27), if any.
+/// A listing past Locking always does. A Locking one does only while its
+/// lock TRANSFER draft is alive ([`LIVE_LOCK_DRAFT_STATUSES`]): a dropped,
+/// failed or deleted lock draft does not freeze the name; the chain refresh
+/// (T4) resolves the row, and a TRANSFER mined after all shows as a pending
+/// transfer that Cancel transfer handles.
+pub fn listing_blocking_owner_actions(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    name: &str,
+) -> Result<Option<ShakedexListing>, AppError> {
+    let Some(listing) = open_shakedex_listing_for_name(conn, profile_id, name)? else {
+        return Ok(None);
+    };
+    if listing.state != ListingState::Locking {
+        return Ok(Some(listing));
+    }
+    let status: Option<String> = match listing.lock_transfer_draft_id.as_deref() {
+        Some(id) => conn
+            .query_row(
+                "SELECT status FROM wallet_tx_drafts WHERE id = ?1 AND wallet_profile_id = ?2",
+                params![id, profile_id],
+                |r| r.get(0),
+            )
+            .optional()?,
+        None => None,
+    };
+    let alive = status.is_some_and(|s| LIVE_LOCK_DRAFT_STATUSES.contains(&s.as_str()));
+    Ok(alive.then_some(listing))
+}
+
 /// A purchase's state with the chain facts tracked alongside it; written
 /// together by [`update_shakedex_purchase_state`].
 #[derive(Debug, Clone, PartialEq, Eq)]

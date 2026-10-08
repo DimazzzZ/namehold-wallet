@@ -364,8 +364,9 @@ pub(crate) struct NameActionContext {
     pub bid_value_doos: Option<i64>,
     /// The lockup value (doos) from the local commitment row, if any.
     pub lockup_value_doos: Option<i64>,
-    /// The state of this name's open Shakedex listing (R27); `None` when it
-    /// has none. While one is open the name is locking or locked for sale.
+    /// The state of the Shakedex listing that keeps this name's owner
+    /// actions away (R27, [`queries::listing_blocking_owner_actions`]);
+    /// `None` when there is none.
     pub listing_state: Option<queries::ListingState>,
 }
 
@@ -584,7 +585,7 @@ pub(crate) fn find_name_action_context(
     let current_height =
         crate::commands::node_readiness::estimate_persisted_height(conn, profile_id)?;
     let listing_state =
-        queries::open_shakedex_listing_for_name(conn, profile_id, name)?.map(|l| l.state);
+        queries::listing_blocking_owner_actions(conn, profile_id, name)?.map(|l| l.state);
 
     Ok(NameActionContext {
         has_bid_commitment: bid.is_some(),
@@ -1131,7 +1132,7 @@ pub(crate) fn build_name_action_capabilities(
     };
 
     // R27: a name locking or locked for sale is not updated, renewed,
-    // transferred or finalized from here, whatever else is true of it; this
+    // transferred, finalized or revoked from here, whatever else is true of it; this
     // reason wins over the spend lock, since a listed name has no owner coin
     // of ours by design. Cancel transfer stays while it is the listing's
     // abort (R19); after that, the listing's own Cancel (T5) is the way out.
@@ -1149,6 +1150,7 @@ pub(crate) fn build_name_action_capabilities(
     let can_transfer = for_sale(can_transfer, false);
     let can_finalize = for_sale(can_finalize, false);
     let can_renew = for_sale(can_renew, false);
+    let can_revoke = for_sale(can_revoke, false);
     let can_cancel_transfer = for_sale(can_cancel_transfer, abortable);
 
     // 5. Derive task state. Days-until-expire comes from the node/explorer
@@ -2366,7 +2368,8 @@ pub(crate) fn build_register_draft_inner(
 }
 
 /// R27: the owner actions a name locking or locked for sale refuses, checked
-/// against the listings table before anything is built or asked of the node.
+/// against [`queries::listing_blocking_owner_actions`] before anything is
+/// built or asked of the node.
 /// `cancel` is the Cancel transfer, which stays the listing's abort while
 /// [`queries::ListingState::aborts_by_cancel_transfer`] says so (R19).
 fn refuse_while_listed(
@@ -2377,7 +2380,7 @@ fn refuse_while_listed(
 ) -> Result<(), AppError> {
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     for name in names {
-        if let Some(l) = queries::open_shakedex_listing_for_name(&conn, profile_id, name)? {
+        if let Some(l) = queries::listing_blocking_owner_actions(&conn, profile_id, name)? {
             if cancel && l.state.aborts_by_cancel_transfer() {
                 continue;
             }
@@ -2698,6 +2701,7 @@ pub async fn build_revoke_draft(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     let ctx = load_ctx(&state)?;
+    refuse_while_listed(&state, &ctx.profile_id, std::slice::from_ref(&name), false)?;
     let rate = self::fee_rate(&ctx, fee_rate);
     let nh = names::hash_name(&name)?;
     let (coin, ns) = owner_coin_and_state(&state, &ctx, &name).await?;
