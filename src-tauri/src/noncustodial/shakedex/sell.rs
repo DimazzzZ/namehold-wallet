@@ -52,7 +52,7 @@ pub fn lock_self_check(key: &LockKey, network: Network) -> Result<(), AppError> 
         price: 1,
         lock_time_secs: 0,
     };
-    sign_step(key, &probe).map_err(|_| fail("test signature"))?;
+    sign_step(key, &probe).map_err(|e| fail(&format!("test signature: {e}")))?;
     Ok(())
 }
 
@@ -66,6 +66,8 @@ pub fn buy_now_lock_time(mtp: u64) -> u64 {
 /// `wallet_tx_drafts.action` of a draft finalizing our name into its lock.
 pub const LOCK_FINALIZE_ACTION: &str = "shakedex_lock_finalize";
 
+/// What the caller supplies from the name state to build the FINALIZE into
+/// the lock; the caller checks the TRANSFER commitment.
 pub struct LockFinalizeInput<'a> {
     pub network: Network,
     pub account: u32,

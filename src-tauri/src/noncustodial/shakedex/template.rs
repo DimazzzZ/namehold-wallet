@@ -75,7 +75,7 @@ impl StepTemplate<'_> {
     /// template, the whole lock script as the script code, low-S (the
     /// secp256k1 crate normalizes on signing). Callers verify the result
     /// against the template (`sell::sign_step`).
-    pub fn sign(&self, secret: &SecretKey) -> Result<[u8; 65], AppError> {
+    pub(super) fn sign(&self, secret: &SecretKey) -> Result<[u8; 65], AppError> {
         template_tx(self)?.sign_p2wsh_input(
             0,
             secret,

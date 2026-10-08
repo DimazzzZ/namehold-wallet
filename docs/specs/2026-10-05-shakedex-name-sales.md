@@ -93,9 +93,9 @@ A mined purchase whose TRANSFER is spent on chain is never lost: only our FINALI
 *Enforced:* `commands/shakedex.rs` (`shakedex_experimental`, default off).
 *Pinned:* `shakedex_cmd_tests::{mainnet_purchase_needs_experimental_flag, regtest_purchase_ignores_flag}`, `shakedex_finalize_tests::finalize_ignores_experimental_flag`.
 
-**R16 — Shakedex from recovery-phrase profiles only, for now.** Ledger, watch-only and extended-private-key profiles have Buy and Sell disabled with "Shakedex works with a recovery-phrase wallet for now". An extended-private-key profile signs in software too, but its signing of a plan with a foreign input is not verified yet, so it is held back with the others. The backend refuses to send any plan with a foreign input, a non-default sequence or a fixed witness to the Ledger signer, which would otherwise sign every input with `0xffffffff` and a P2WPKH witness.
+**R16 — Shakedex from recovery-phrase profiles only, for now.** Ledger, watch-only and extended-private-key profiles have Buy and Sell disabled with "Shakedex works with a recovery-phrase wallet for now". An extended-private-key profile signs in software too, but its signing of a plan with a foreign input is not verified yet, so it is held back with the others. The backend refuses to send any Shakedex draft, and any plan with a foreign input, a lock-key input, a non-default sequence or a fixed witness, to the Ledger signer, which would otherwise sign every input with `0xffffffff` and a P2WPKH witness.
 *Enforced:* `commands/tx.rs::refuse_unsupported_ledger_plan`, called from `sign_tx_draft_inner` before any Ledger signing; `providers/ledger/signing.rs::sign_transaction`'s own guard.
-*Pinned:* `ledger_plan_guard_tests::{ledger_refuses_plan_with_foreign_input, ledger_refuses_cancel_plan}`, `providers::ledger::signing` unit test `foreign_or_custom_plan_is_refused_before_the_device`, `market-list.test.tsx` and `purchase-confirm.test.tsx` (Buy disabled with the reason).
+*Pinned:* `ledger_plan_guard_tests::{ledger_refuses_plan_with_foreign_input, ledger_refuses_cancel_plan, every_shakedex_action_is_refused_for_the_ledger}`, `providers::ledger::signing` unit test `foreign_or_custom_plan_is_refused_before_the_device`, `market-list.test.tsx` and `purchase-confirm.test.tsx` (Buy disabled with the reason).
 
 ### 3.3 Selling
 

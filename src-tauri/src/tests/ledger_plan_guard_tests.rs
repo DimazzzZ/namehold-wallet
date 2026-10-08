@@ -113,3 +113,134 @@ async fn signing_a_ledger_draft_with_an_unreadable_plan_is_refused() {
         .unwrap_err();
     assert!(matches!(err, AppError::Other(m) if m.contains("unreadable signing plan")));
 }
+
+const CHANGE: &str = "hs1qdhtaj7ws7chd2z2tulrmakqww428myx08d6w3v";
+const PAY: &str = "hs1qd42hrldu5yqee58se4uj6xctm7nk28r70e84vx";
+
+fn coin(txid_byte: u8, child: u32) -> crate::noncustodial::send::SpendableCoin {
+    crate::noncustodial::send::SpendableCoin {
+        txid: hex::encode([txid_byte; 32]),
+        vout: 0,
+        value: 50_000_000,
+        branch: 0,
+        child_index: child,
+    }
+}
+
+fn refused_with_the_r16_reason(action: &str, plan_json: &str) {
+    let err = refuse_unsupported_ledger_plan("ledger_hardware", action, plan_json).unwrap_err();
+    assert!(
+        matches!(&err, AppError::InvalidInput(m) if m == crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY),
+        "{action}: {err:?}"
+    );
+}
+
+/// R16: the cancel and both FINALIZE plans never reach a Ledger. The cancel
+/// (a lock-key input) and its FINALIZE (a fixed witness) are refused by
+/// their shape under any action; the FINALIZE into the lock is an ordinary
+/// plan the device could sign, refused because it is a Shakedex draft.
+#[test]
+fn ledger_refuses_cancel_plan() {
+    use crate::noncustodial::network::Network;
+    use crate::noncustodial::shakedex::cancel::{
+        build_cancel_finalize_plan, build_cancel_plan, CancelFinalizeInput, CancelInput,
+        CANCEL_ACTION, CANCEL_FINALIZE_ACTION,
+    };
+    use crate::noncustodial::shakedex::sell::{
+        build_lock_finalize_plan, LockFinalizeInput, LOCK_FINALIZE_ACTION,
+    };
+    let pubkey = [2u8; 33];
+    let transfer = coin(0x31, 0);
+    let funding = [coin(1, 1)];
+    let lock_finalize = build_lock_finalize_plan(&LockFinalizeInput {
+        network: Network::Main,
+        account: 0,
+        transfer: &transfer,
+        lock_pubkey: pubkey,
+        name: "dexreviews",
+        name_height: 120,
+        weak: false,
+        claimed: 0,
+        renewals: 0,
+        renewal_block: [0x77; 32],
+        funding: &funding,
+        change_address: CHANGE,
+        rate: 5,
+        fixed_fee: None,
+    })
+    .unwrap()
+    .plan;
+    let cancel = build_cancel_plan(&CancelInput {
+        network: Network::Main,
+        account: 0,
+        name: "dexreviews",
+        name_height: 120,
+        lock_outpoint: ([0x2c; 32], 0),
+        lock_value: 1_000_000,
+        lock_pubkey: pubkey,
+        cancel_address: PAY,
+        cancel_branch: 0,
+        cancel_index: 11,
+        funding: &funding,
+        change_address: CHANGE,
+        rate: 5,
+        fixed_fee: None,
+    })
+    .unwrap()
+    .plan;
+    let cancel_finalize = build_cancel_finalize_plan(&CancelFinalizeInput {
+        network: Network::Main,
+        account: 0,
+        transfer_outpoint: ([0xba; 32], 0),
+        transfer_value: 1_000_000,
+        lock_pubkey: pubkey,
+        name: "dexreviews",
+        name_height: 120,
+        weak: false,
+        claimed: 0,
+        renewals: 0,
+        renewal_block: [0x88; 32],
+        dest_address: PAY,
+        funding: &funding,
+        change_address: CHANGE,
+        rate: 5,
+        fixed_fee: None,
+    })
+    .unwrap()
+    .plan;
+
+    for (action, plan) in [
+        (LOCK_FINALIZE_ACTION, &lock_finalize),
+        (CANCEL_ACTION, &cancel),
+        (CANCEL_FINALIZE_ACTION, &cancel_finalize),
+    ] {
+        let json = serde_json::to_string(plan).unwrap();
+        refused_with_the_r16_reason(action, &json);
+        refuse_unsupported_ledger_plan("mnemonic_hot", action, &json).unwrap();
+    }
+    for plan in [&cancel, &cancel_finalize] {
+        refused_with_the_r16_reason("transfer", &serde_json::to_string(plan).unwrap());
+    }
+    assert!(
+        !lock_finalize.has_foreign_or_custom_inputs(),
+        "only its action tells the lock FINALIZE apart"
+    );
+}
+
+/// R16/R29: every Shakedex draft action is in the refused class, so a new
+/// one cannot reach a Ledger by being missing from a list.
+#[test]
+fn every_shakedex_action_is_refused_for_the_ledger() {
+    use crate::noncustodial::shakedex::{cancel, is_shakedex_action, purchase, sell};
+    for action in [
+        purchase::PURCHASE_ACTION,
+        purchase::PURCHASE_FINALIZE_ACTION,
+        sell::LOCK_FINALIZE_ACTION,
+        cancel::CANCEL_ACTION,
+        cancel::CANCEL_FINALIZE_ACTION,
+    ] {
+        assert!(is_shakedex_action(action), "{action}");
+        refused_with_the_r16_reason(action, PLAIN);
+    }
+    assert!(!is_shakedex_action("transfer"));
+}

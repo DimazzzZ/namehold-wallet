@@ -13,6 +13,16 @@ pub mod sell;
 pub mod template;
 pub mod verify;
 
+/// Every Shakedex draft action starts with this (`purchase::PURCHASE_ACTION`,
+/// `sell::LOCK_FINALIZE_ACTION`, `cancel::CANCEL_ACTION`, ...).
+pub const ACTION_PREFIX: &str = "shakedex_";
+
+/// Whether a draft's action is a Shakedex one, which the Ledger never signs
+/// (R16, R29).
+pub fn is_shakedex_action(action: &str) -> bool {
+    action.starts_with(ACTION_PREFIX)
+}
+
 /// Why any profile but a recovery-phrase (mnemonic) one is refused (R16): a
 /// Ledger, a watch-only profile or an imported extended private key. The UI
 /// shows the same sentence on its disabled buttons

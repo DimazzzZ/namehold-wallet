@@ -425,6 +425,7 @@ fn cancel_finalize_matches_hsd_signed_hex() {
     let (hex, txid) = sign_with_known_mnemonic(&res.plan);
     assert_eq!(hex, f["signedHex"].as_str().unwrap());
     assert_eq!(txid, f["txid"].as_str().unwrap());
+    assert_eq!(res.txid, txid);
 
     let at_rate = build_cancel_finalize_plan(&input(7)).unwrap();
     assert_eq!(

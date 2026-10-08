@@ -25,6 +25,8 @@ pub const CANCEL_ACTION: &str = "shakedex_cancel";
 /// name out of the lock.
 pub const CANCEL_FINALIZE_ACTION: &str = "shakedex_cancel_finalize";
 
+/// What the caller supplies from the name state to build a cancel; the caller
+/// checks the lock coin's TRANSFER commitment.
 pub struct CancelInput<'a> {
     pub network: Network,
     pub account: u32,
@@ -212,8 +214,9 @@ mod tests {
     }
 
     /// R4: the fee is sized with the real lock witness ([65-byte signature,
-    /// 44-byte script]), not a P2WPKH one, so it equals the vsize of the
-    /// transaction as signed times the rate.
+    /// 44-byte script]), not a P2WPKH one, so it equals the signed
+    /// transaction's own vsize times the rate. That this vsize is hsd's is
+    /// pinned by `cancel_matches_hsd_signed_hex`.
     #[test]
     fn fee_covers_hsd_vsize_with_the_lock_witness() {
         let k = key();
