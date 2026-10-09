@@ -1519,3 +1519,47 @@ async fn sold_follows_its_purchase_back_to_the_mempool_and_a_competing_purchase(
         "FINALIZE in the mempool"
     );
 }
+
+/// A Sold listing whose purchase is still the one hsd shows is not written
+/// again: each sync leaves `updated_at` as it was, so the listing leaves
+/// the after-lock set once [`crate::shakedex_jobs::SOLD_RECHECK_DAYS`]
+/// pass, instead of being re-checked for ever.
+#[tokio::test]
+async fn a_stable_sold_listing_is_not_written_again() {
+    let f = fx(ListingState::Sold);
+    let buy = txid("b1");
+    paid(&f, &buy, 2, TIP, false);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET sold_txid = ?1,
+                 updated_at = datetime('now', '-6 days', '-1 hours') WHERE id = ?2",
+            params![buy, f.id],
+        )
+        .unwrap();
+    let before = listing(&f).updated_at;
+    let chain = node(
+        info((&buy, 0)),
+        vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+        purchase_rest(&f, &buy, TIP, &f.payment),
+    );
+    for _ in 0..2 {
+        run(&f, &chain).await;
+    }
+    assert!(
+        chain.count_matching(|c| matches!(c, RpcCall::TxByHash(t) if *t == buy)) > 0,
+        "the purchase was read, so the job reached the sale"
+    );
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::Sold, Some(buy.as_str()))
+    );
+    assert_eq!(l.updated_at, before, "not written again");
+    // A day later the window is over.
+    let window = crate::shakedex_jobs::SOLD_RECHECK_DAYS - 1;
+    assert!(
+        queries::list_shakedex_listings_after_lock(&f.conn, PROFILE, window)
+            .unwrap()
+            .is_empty()
+    );
+}

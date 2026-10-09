@@ -562,10 +562,20 @@ pub(crate) fn build_lock_draft_inner(
         )));
     }
     if queries::open_shakedex_listing_for_name(conn, &ctx.profile_id, i.name)?.is_some() {
-        return Err(AppError::InvalidInput(format!(
-            "'{}' is already locked for sale",
-            i.name
-        )));
+        // A Locking listing whose lock draft is dead holds the name's one
+        // open listing until the next sync ends it from the chain (R19); no
+        // state is written here without that evidence.
+        let dead =
+            queries::listing_blocking_owner_actions(conn, &ctx.profile_id, i.name)?.is_none();
+        return Err(AppError::InvalidInput(if dead {
+            format!(
+                "an earlier lock of '{}' was never mined: the next sync ends it, then the name \
+                 can be locked again",
+                i.name
+            )
+        } else {
+            format!("'{}' is already locked for sale", i.name)
+        }));
     }
     sell::lock_self_check(i.key, ctx.network)?;
 

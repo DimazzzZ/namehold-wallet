@@ -4192,6 +4192,299 @@ async fn mined_lock_transfer_that_is_not_the_owner_changes_nothing() {
     }
 }
 
+/// T3 carry: the name expired and was opened again while the lock TRANSFER
+/// is still a coin. hsd's owner is the new auction's, and the TRANSFER is
+/// mined but not the owner — which alone is no consistent answer; but its
+/// covenant commits to the name height of a registration hsd no longer
+/// has (`info.height` is the new auction's), so the listing is Expired, not
+/// an error on every sync. The same TRANSFER with hsd's own name height
+/// stays no verdict.
+#[tokio::test]
+async fn reopened_name_expires_a_listing_before_the_lock() {
+    for state in [ListingState::Locking, ListingState::ReadyToFinalize] {
+        let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+        let lock_txid = locked_on_chain(&app).await;
+        let id = open_listing(&app).unwrap().id;
+        set_state(&app, &id, state);
+        let program = derive_lock_key(&master(), Network::Regtest, 0, NAME)
+            .unwrap()
+            .program;
+        let transfer: NodeCoin = serde_json::from_value(lock_transfer_coin(
+            Network::Regtest,
+            &lock_txid,
+            &program,
+            TRANSFER_HEIGHT,
+        ))
+        .unwrap();
+        let mut same = name_info(RENEWAL, 0, &"0e".repeat(32));
+        run_abort_job(
+            &app,
+            &chain_at(same.clone(), QUIET_TIP, vec![transfer.clone()]),
+        )
+        .await;
+        assert_eq!(
+            listing_state(&app, &id),
+            state,
+            "{state:?}: same registration"
+        );
+        same["info"]["height"] = 7_000.into();
+        run_abort_job(&app, &chain_at(same, QUIET_TIP, vec![transfer])).await;
+        assert_eq!(
+            listing_state(&app, &id),
+            ListingState::Expired,
+            "{state:?}: reopened"
+        );
+    }
+}
+
+/// hsd's `getblock <hash> true true` holding the one transaction `rest`
+/// (hsd's `GET /tx` shape) at `height`.
+fn block_holding(rest: &Value, height: i64) -> Value {
+    let vin: Vec<_> = rest["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| json!({ "txid": i["prevout"]["hash"], "vout": i["prevout"]["index"] }))
+        .collect();
+    let vout: Vec<_> = rest["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(n, o)| {
+            json!({ "n": n, "value": 0.0,
+                "address": { "version": 0, "hash": "00", "string": o["address"] },
+                "covenant": o["covenant"] })
+        })
+        .collect();
+    json!({ "height": height, "tx": [ { "txid": rest["hash"], "vin": vin, "vout": vout } ] })
+}
+
+/// How hsd shows the FINALIZE whose lock coin a purchase spent, in
+/// [`dropped_finalize_mined_and_bought_before_a_sync_is_sold`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FinalizeSeen {
+    /// Our FINALIZE into the lock, spending this listing's lock TRANSFER.
+    Ours,
+    /// A FINALIZE at the lock address spending another coin (another
+    /// listing's lock TRANSFER of the name).
+    OtherTransfer,
+    /// Our lock TRANSFER spent into an output that is not a FINALIZE.
+    NotFinalize,
+    /// A FINALIZE spending our lock TRANSFER, of another name.
+    OtherName,
+    /// A FINALIZE spending our lock TRANSFER, not at the lock address.
+    OtherAddress,
+    /// Our FINALIZE, but `GET /tx` shows it in the mempool: not hsd's
+    /// picture of a coin a mined purchase spent.
+    InMempool,
+}
+
+/// T3 carry: our FINALIZE was dropped (the listing back at ReadyToFinalize
+/// without its outpoint), mined after all, and the lock coin it made bought
+/// before a sync saw any of it. The listing is Sold only once hsd shows the
+/// coin the purchase spent as a FINALIZE at this listing's lock address
+/// spending this listing's lock TRANSFER, and with that coin as its lock
+/// outpoint — read with the index (`GET /tx`) or without it (the FINALIZE's
+/// block at `info.renewal`, the purchase's at our coin's height). With the
+/// purchase's TRANSFER still the owner or the buyer's FINALIZE the owner;
+/// never Aborted. A purchase whose spent coin hsd cannot show (the buyer
+/// finalized, no index), or shows as anything else, leaves the listing as
+/// it is.
+#[tokio::test]
+async fn dropped_finalize_mined_and_bought_before_a_sync_is_sold() {
+    use FinalizeSeen::*;
+    let cases = [
+        // (buyer finalized, index, how the FINALIZE is shown, Sold)
+        (false, true, Ours, true),
+        (true, true, Ours, true),
+        (false, false, Ours, true),
+        (true, false, Ours, false),
+        (false, true, OtherTransfer, false),
+        (true, true, NotFinalize, false),
+        (false, true, InMempool, false),
+        (false, true, OtherName, false),
+        (false, true, OtherAddress, false),
+    ];
+    for (buyer_finalized, index, seen, sold) in cases {
+        let what = format!("buyer finalized {buyer_finalized}, index {index}, {seen:?}");
+        let r = ready_fixture("regtest").await;
+        let (fin, vout) = finalized(&r).await;
+        set_lock_draft_status(&r.app, &r.listing_id, "confirmed");
+        let fin_draft = r.listing().lock_finalize_draft_id.unwrap();
+        with_db(&r.app, |c| {
+            queries::update_tx_draft_status(c, &fin_draft, "dropped", None, Some(&fin)).unwrap();
+        });
+        let tip = ready_tip(Network::Regtest) + 1;
+        run_listing_jobs(
+            &r.app,
+            &chain_at(
+                r.info(),
+                tip,
+                vec![lock_transfer_at(&r.lock_txid, TRANSFER_HEIGHT)],
+            ),
+        )
+        .await;
+        assert_eq!(
+            listing_state(&r.app, &r.listing_id),
+            ListingState::ReadyToFinalize
+        );
+        assert_eq!(
+            r.listing().lock_txid,
+            None,
+            "the outpoint went with the FINALIZE"
+        );
+
+        let payment = r.listing().payment_address.unwrap();
+        let lock = lock_address(Network::Regtest);
+        let buy = "b1".repeat(32);
+        let buyer = address::encode_p2wpkh(Network::Regtest, &[9; 20]).unwrap();
+        let nh = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+        let items = vec![
+            nh.clone(),
+            hex::encode(NAME_HEIGHT.to_le_bytes()),
+            "00".into(),
+            hex::encode([9u8; 20]),
+        ];
+        with_db(&r.app, |c| {
+            c.execute(
+                "INSERT INTO tracked_utxos (txid, vout, wallet_profile_id, address,
+                     script_pubkey_hex, value_doos, height, covenant_type, spend_class,
+                     spent_by_txid)
+                 VALUES (?1, 2, ?2, ?3, '00', 5000000, ?4, 0, 'liquid_hns', NULL)",
+                params![buy, PROFILE, payment, tip + 1],
+            )
+            .unwrap();
+        });
+        let plain = |to: &str, value: u64| {
+            json!({ "value": value, "address": to,
+                "covenant": { "type": 0, "action": "NONE", "items": [] } })
+        };
+        let none = || plain(&buyer, 1);
+        let rest = json!({ "hash": buy, "height": tip + 1, "hex": "00",
+            "inputs": [ { "prevout": { "hash": fin, "index": vout } } ],
+            "outputs": [
+                { "value": NAME_VALUE, "address": lock,
+                  "covenant": { "type": COV_TRANSFER, "action": "TRANSFER", "items": items } },
+                none(),
+                plain(&payment, 5_000_000)
+            ] });
+        // The FINALIZE: input `vout` spends the lock TRANSFER (or another
+        // coin), output `vout` is the lock coin (or not a FINALIZE).
+        let spent = if seen == OtherTransfer {
+            "e9".repeat(32)
+        } else {
+            r.lock_txid.clone()
+        };
+        let mut fin_inputs =
+            vec![json!({ "prevout": { "hash": "aa".repeat(32), "index": 1 } }); vout as usize + 1];
+        fin_inputs[vout as usize] = json!({ "prevout": { "hash": spent, "index": 0 } });
+        let mut fin_outputs = vec![none(); vout as usize + 1];
+        let (cov, action) = if seen == NotFinalize {
+            (COV_UPDATE, "UPDATE")
+        } else {
+            (COV_FINALIZE, "FINALIZE")
+        };
+        let fin_name = if seen == OtherName {
+            "ab".repeat(32)
+        } else {
+            nh.clone()
+        };
+        let fin_to = if seen == OtherAddress {
+            buyer.clone()
+        } else {
+            lock.clone()
+        };
+        fin_outputs[vout as usize] = json!({ "value": NAME_VALUE, "address": fin_to,
+            "covenant": { "type": cov, "action": action,
+                          "items": [fin_name, hex::encode(NAME_HEIGHT.to_le_bytes())] } });
+        let fin_height = if seen == InMempool { -1 } else { tip };
+        let fin_rest = json!({ "hash": fin, "height": fin_height, "hex": "00",
+            "inputs": fin_inputs, "outputs": fin_outputs });
+
+        let (owner, coins) = if buyer_finalized {
+            let y = "a9".repeat(32);
+            (
+                y.clone(),
+                vec![coin_at(&y, 0, &buyer, COV_FINALIZE, tip + 12)],
+            )
+        } else {
+            let mut t: Value = coin_json(&buy, 0, &lock, COV_TRANSFER, tip + 1);
+            t["covenant"]["items"] = rest["outputs"][0]["covenant"]["items"].clone();
+            (buy.clone(), vec![serde_json::from_value(t).unwrap()])
+        };
+        // hsd's FINALIZE sets `renewal` to its block; a TRANSFER leaves it.
+        let mut info = name_info(RENEWAL, 0, &owner);
+        if !buyer_finalized {
+            info["info"]["renewal"] = tip.into();
+        }
+        let txs = [(buy.clone(), rest.clone()), (fin.clone(), fin_rest.clone())];
+        let blocks = [
+            (format!("{:064x}", tip + 1), block_holding(&rest, tip + 1)),
+            (format!("{tip:064x}"), block_holding(&fin_rest, tip)),
+        ];
+        let chain = chain_at(info, tip + 13, coins)
+            .with_tx_by_hash_fn(move |h| {
+                Ok(match txs.iter().find(|(t, _)| *t == h) {
+                    Some((_, v)) if index => v.clone(),
+                    _ => Value::Null,
+                })
+            })
+            .with_block_hash_fn(|height| Ok(format!("{height:064x}")))
+            .with_block_fn(move |h| {
+                Ok(blocks
+                    .iter()
+                    .find(|(b, _)| *b == h)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_else(|| json!({ "height": 1, "tx": [] })))
+            });
+        run_listing_jobs(&r.app, &chain).await;
+        let l = r.listing();
+        if sold {
+            assert_eq!(l.state, ListingState::Sold, "{what}");
+            assert_eq!(l.sold_txid.as_deref(), Some(buy.as_str()), "{what}");
+            assert_eq!(
+                (l.lock_txid.as_deref(), l.lock_vout),
+                (Some(fin.as_str()), Some(i64::from(vout))),
+                "{what}"
+            );
+        } else {
+            assert_eq!(l.state, ListingState::ReadyToFinalize, "{what}");
+            assert_eq!((l.sold_txid, l.lock_txid), (None, None), "{what}");
+        }
+    }
+}
+
+/// The T2 carry: a Locking listing whose lock TRANSFER draft is dead
+/// (dropped, failed, deleted) still holds the name's one open listing until
+/// the next sync ends it from the chain. Lock says so, instead of "already
+/// locked for sale"; after that sync it builds.
+#[tokio::test]
+async fn lock_refused_while_a_dead_lock_waits_for_the_sync() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let lock = build(&app).await.expect("lock builds");
+    let e = build(&app).await.unwrap_err();
+    assert!(err_text(e).contains("already locked for sale"));
+    with_db(&app, |c| {
+        queries::update_tx_draft_status(c, &lock.id, "dropped", None, None).unwrap();
+        queries::release_reserved_utxos_for_draft(c, &lock.id).unwrap();
+    });
+    let e = err_text(build(&app).await.unwrap_err());
+    assert!(
+        e.contains("was never mined") && e.contains("next sync"),
+        "{e}"
+    );
+    run_abort_job(
+        &app,
+        &facts(
+            info_with(OWNER_TXID, 0, 0),
+            &[(OWNER_TXID, 0, COV_REGISTER)],
+        ),
+    )
+    .await;
+    build(&app).await.expect("a new lock after the sync");
+}
+
 /// The chain once something other than our FINALIZE spent the lock
 /// TRANSFER: `info` as hsd answers, the lock TRANSFER and our lock coin
 /// hsd's 404, and `owner` (when given) a coin mined at `address` with

@@ -24,6 +24,8 @@ use crate::noncustodial::rpc::{BlockchainInfo, ChainSource, NodeCoin};
 type ResponseFn<T> = Box<dyn Fn() -> Result<T, AppError> + Send + Sync>;
 /// [`ResponseFn`] for a method whose reply depends on its two arguments.
 type ResponseFn2<A, B, T> = Box<dyn Fn(A, B) -> Result<T, AppError> + Send + Sync>;
+/// [`ResponseFn`] for a method whose reply depends on its one argument.
+type ResponseFn1<A, T> = Box<dyn Fn(A) -> Result<T, AppError> + Send + Sync>;
 
 /// One recorded invocation of a [`MockNodeRpc`] method, capturing the method
 /// name and its salient argument(s). Lets a test assert not just that the code
@@ -70,9 +72,9 @@ pub struct MockNodeRpc {
     get_coin: ResponseFn2<String, u32, Option<NodeCoin>>,
     txs_by_address: ResponseFn<Vec<serde_json::Value>>,
     raw_transaction: ResponseFn<serde_json::Value>,
-    tx_by_hash: ResponseFn<serde_json::Value>,
-    block_hash: ResponseFn<String>,
-    block: ResponseFn<serde_json::Value>,
+    tx_by_hash: ResponseFn1<String, serde_json::Value>,
+    block_hash: ResponseFn1<i64, String>,
+    block: ResponseFn1<String, serde_json::Value>,
     generate_to_address: ResponseFn<serde_json::Value>,
     stop: ResponseFn<()>,
     send_raw_transaction: ResponseFn<String>,
@@ -102,9 +104,9 @@ impl MockNodeRpc {
             get_coin: Box::new(|_, _| Err(AppError::Rpc("not configured".to_string()))),
             txs_by_address: err("not configured"),
             raw_transaction: err("not configured"),
-            tx_by_hash: err("not configured"),
-            block_hash: err("not configured"),
-            block: err("not configured"),
+            tx_by_hash: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
+            block_hash: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
+            block: Box::new(|_| Err(AppError::Rpc("not configured".to_string()))),
             generate_to_address: err("not configured"),
             stop: Box::new(|| Ok(())),
             send_raw_transaction: err("not configured"),
@@ -143,29 +145,54 @@ impl MockNodeRpc {
     }
 
     pub fn with_tx_by_hash(mut self, v: serde_json::Value) -> Self {
-        self.tx_by_hash = Box::new(move || Ok(v.clone()));
+        self.tx_by_hash = Box::new(move |_| Ok(v.clone()));
+        self
+    }
+    /// `GET /tx/:hash` answered per txid by `f` (`Value::Null`: hsd's
+    /// not-found).
+    pub fn with_tx_by_hash_fn(
+        mut self,
+        f: impl Fn(String) -> Result<serde_json::Value, AppError> + Send + Sync + 'static,
+    ) -> Self {
+        self.tx_by_hash = Box::new(f);
         self
     }
     pub fn with_tx_by_hash_err(mut self, msg: &'static str) -> Self {
-        self.tx_by_hash = Box::new(move || Err(AppError::Rpc(msg.to_string())));
+        self.tx_by_hash = Box::new(move |_| Err(AppError::Rpc(msg.to_string())));
         self
     }
 
     pub fn with_block_hash(mut self, hash: String) -> Self {
-        self.block_hash = Box::new(move || Ok(hash.clone()));
+        self.block_hash = Box::new(move |_| Ok(hash.clone()));
+        self
+    }
+    /// `getblockhash` answered per height by `f`.
+    pub fn with_block_hash_fn(
+        mut self,
+        f: impl Fn(i64) -> Result<String, AppError> + Send + Sync + 'static,
+    ) -> Self {
+        self.block_hash = Box::new(f);
         self
     }
     pub fn with_block_hash_err(mut self, msg: &'static str) -> Self {
-        self.block_hash = Box::new(move || Err(AppError::Rpc(msg.to_string())));
+        self.block_hash = Box::new(move |_| Err(AppError::Rpc(msg.to_string())));
         self
     }
 
     pub fn with_block(mut self, v: serde_json::Value) -> Self {
-        self.block = Box::new(move || Ok(v.clone()));
+        self.block = Box::new(move |_| Ok(v.clone()));
+        self
+    }
+    /// `getblock` answered per block hash by `f`.
+    pub fn with_block_fn(
+        mut self,
+        f: impl Fn(String) -> Result<serde_json::Value, AppError> + Send + Sync + 'static,
+    ) -> Self {
+        self.block = Box::new(f);
         self
     }
     pub fn with_block_err(mut self, msg: &'static str) -> Self {
-        self.block = Box::new(move || Err(AppError::Rpc(msg.to_string())));
+        self.block = Box::new(move |_| Err(AppError::Rpc(msg.to_string())));
         self
     }
 
@@ -397,17 +424,17 @@ impl NodeRpc for MockNodeRpc {
 
     async fn get_tx_by_hash(&self, txid: &str) -> Result<serde_json::Value, AppError> {
         self.record(RpcCall::TxByHash(txid.to_string()));
-        (self.tx_by_hash)()
+        (self.tx_by_hash)(txid.to_string())
     }
 
     async fn get_block_hash(&self, height: i64) -> Result<String, AppError> {
         self.record(RpcCall::BlockHash(height));
-        (self.block_hash)()
+        (self.block_hash)(height)
     }
 
     async fn get_block(&self, hash: &str) -> Result<serde_json::Value, AppError> {
         self.record(RpcCall::Block(hash.to_string()));
-        (self.block)()
+        (self.block)(hash.to_string())
     }
 
     async fn generate_to_address(
