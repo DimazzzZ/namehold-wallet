@@ -5958,18 +5958,17 @@ fn hsw_rpc(api_key: &str, args: &[&str]) -> String {
         .to_string()
 }
 
-/// Run both listing jobs on the app's database against the live node, as
+/// Run the listing step's body (`shakedex_jobs::refresh_listings_with_client`,
+/// both listing jobs) on the app's database against the live node, as
 /// `run_sync_steps` does (connection swapped out, as in `abort_job`).
 async fn listing_jobs(app: &tauri::App<tauri::test::MockRuntime>, cl: &NodeRpcClient) {
-    abort_job(app, cl).await;
     let conn = std::mem::replace(
         &mut *app.state::<AppState>().db.lock().unwrap(),
         rusqlite::Connection::open_in_memory().unwrap(),
     );
-    let res =
-        crate::shakedex_jobs::refresh_listings_after_lock_with_client(&conn, cl, PROFILE).await;
+    let res = crate::shakedex_jobs::refresh_listings_with_client(&conn, cl, PROFILE).await;
     *app.state::<AppState>().db.lock().unwrap() = conn;
-    res.expect("finalize job runs");
+    res.expect("listing jobs run");
 }
 
 /// A fresh name locked on chain and its lockup mined out; the listing

@@ -552,17 +552,11 @@ pub async fn run_sync_steps(
     if node_authoritative {
         crate::shakedex_jobs::refresh_purchases_step(db_path, profile_id, caller.rebroadcast())
             .await;
-        // R19: a listing before the FINALIZE into the lock is Aborted or
-        // Expired from chain facts. Reads the node only, so the daemon runs it
-        // as the app does.
-        crate::shakedex_jobs::refresh_listings_before_lock_step(db_path, profile_id).await;
-        // R19: a listing whose FINALIZE into the lock is built is Listed once
-        // it is mined, Finalizing again on a reorg, and ReadyToFinalize again
-        // if it never landed. Reads the node only. It runs after the step
-        // above, and the two never take the same listing: that one reads
-        // Locking, ReadyToFinalize and Aborted listings, this one Finalizing
-        // and Listed ones.
-        crate::shakedex_jobs::refresh_lock_finalize_step(db_path, profile_id).await;
+        // R19, R22: every listing's state from chain facts — before the
+        // FINALIZE into the lock (Aborted, Expired, ReadyToFinalize,
+        // Restored) and after it (Listed, SalePending, Sold). Reads the node
+        // and the database only, so the daemon runs it as the app does.
+        crate::shakedex_jobs::refresh_listings_step(db_path, profile_id).await;
     }
 }
 
