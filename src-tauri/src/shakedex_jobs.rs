@@ -1527,16 +1527,11 @@ async fn lock_coin_held(
             queries::mark_listing_finalizing_again(conn, &l.id)?;
         }
         (queries::ListingState::SalePending | queries::ListingState::Sold, mined) => {
-            // The FINALIZE into the lock back in the mempool goes straight to
-            // Finalizing: the file is not exported over an unmined FINALIZE.
-            let to = match (l.listing_file_json.is_some(), mined) {
-                (false, _) => queries::ListingState::Restored,
-                (true, None) if l.lock_finalize_draft_id.is_some() => {
-                    queries::ListingState::Finalizing
-                }
-                (true, _) => queries::ListingState::Listed,
+            let seen = match mined {
+                Some(_) => LockFinalizeSeen::Mined,
+                None => LockFinalizeSeen::Mempool,
             };
-            if queries::unsell_shakedex_listing(conn, &l.id, to)? == 0 {
+            if queries::unsell_shakedex_listing(conn, &l.id, unsell_target(l, seen))? == 0 {
                 eprintln!(
                     "shakedex listings: {} ({}): its purchase is no longer on chain, but it \
                      stays sold: another listing of the name is open",
@@ -1553,6 +1548,37 @@ async fn lock_coin_held(
         _ => {}
     }
     Ok(())
+}
+
+/// Where hsd shows the FINALIZE into the lock of a listing whose purchase
+/// is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LockFinalizeSeen {
+    /// The lock coin is a coin mined in a block.
+    Mined,
+    /// The lock coin is a coin in the mempool (`height: -1`).
+    Mempool,
+    /// In no block and no mempool: the lock TRANSFER is a coin again.
+    Nowhere,
+}
+
+/// Where a SalePending or Sold listing goes back to when its purchase is
+/// gone (R22, [`queries::unsell_shakedex_listing`]): Finalizing while the
+/// FINALIZE into the lock is not mined and the listing has our FINALIZE
+/// draft (its file is not exported over an unmined FINALIZE); Listed when
+/// the lock coin is a coin and the listing has its file; Restored otherwise
+/// (no file, or a FINALIZE from another device that is in no block and no
+/// mempool: the next sync takes a Restored lock adopted from our lock
+/// TRANSFER to Locking).
+fn unsell_target(l: &queries::ShakedexListing, seen: LockFinalizeSeen) -> queries::ListingState {
+    use queries::ListingState as S;
+    let draft = l.lock_finalize_draft_id.is_some();
+    let file = l.listing_file_json.is_some();
+    match seen {
+        LockFinalizeSeen::Mempool | LockFinalizeSeen::Nowhere if draft => S::Finalizing,
+        LockFinalizeSeen::Mined | LockFinalizeSeen::Mempool if file => S::Listed,
+        _ => S::Restored,
+    }
 }
 
 /// hsd's 404 for the lock coin: spent in a block or in the mempool
@@ -1577,15 +1603,8 @@ async fn lock_coin_spent(
                 queries::ListingState::Listed => {
                     queries::mark_listing_finalizing_again(conn, &l.id)?;
                 }
-                // With our FINALIZE draft → Finalizing; adopted from another
-                // device's FINALIZE (no draft here) → Restored, and the next
-                // sync takes that to Locking.
                 queries::ListingState::SalePending | queries::ListingState::Sold => {
-                    let to = if l.lock_finalize_draft_id.is_some() {
-                        queries::ListingState::Finalizing
-                    } else {
-                        queries::ListingState::Restored
-                    };
+                    let to = unsell_target(l, LockFinalizeSeen::Nowhere);
                     if queries::unsell_shakedex_listing(conn, &l.id, to)? == 0 {
                         eprintln!(
                             "shakedex listings: {} ({}): its FINALIZE is no longer on chain, \
