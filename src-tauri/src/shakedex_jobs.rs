@@ -1345,9 +1345,10 @@ async fn lock_coin_spent(
 }
 
 /// What the chain shows about a purchase of a listing's lock coin (R22).
-/// `lock` is the coin the purchase spends: the listing's own lock outpoint
-/// (a FINALIZE at its lock address, checked when the listing got it), which
-/// the database write compares again ([`queries::sell_shakedex_listing`]).
+/// `lock` is the coin the purchase spends, the input [`sell::purchase_in`]
+/// found spending the listing's stored lock outpoint (a FINALIZE at its lock
+/// address, checked when the listing got it), which the database write
+/// compares again ([`queries::sell_shakedex_listing`]).
 #[derive(Debug, PartialEq, Eq)]
 enum Sale {
     /// Mined in a block.
@@ -1396,24 +1397,52 @@ async fn spend_view(
     sell::spend_view_from_block(&block, txid)
 }
 
+/// Transaction `txid` found on chain ([`spend_view`], `seen_at` the height
+/// to read its block at without the index) and judged by
+/// [`sell::purchase_in`]: its block height (`None` in the mempool) and the
+/// lock coin it spends, or `None` when it is not found or is not a purchase
+/// of `p`'s lock coin.
+async fn purchase_found(
+    client: &dyn NodeRpc,
+    txid: &str,
+    seen_at: Option<i64>,
+    p: &sell::PurchaseOf<'_>,
+) -> Result<Option<(Option<i64>, (String, u32))>, AppError> {
+    let Some(tx) = spend_view(client, txid, seen_at).await? else {
+        return Ok(None);
+    };
+    Ok(sell::purchase_in(&tx, p)?.map(|spent| (tx.height, spent)))
+}
+
 /// R22: look for a purchase of listing `l`'s lock coin, the name's owner
 /// being `owner`. Nothing without a payment address (a lock restored by
-/// name, until its file is imported) or without a lock outpoint. A coin of
-/// ours in `tracked_utxos` is only a lead to a transaction; each verdict
-/// rests on that transaction found on chain. Two ways, neither needing hsd's
-/// transaction index:
+/// name, until its file is imported) or without a lock outpoint. Every
+/// verdict rests on the purchase transaction found on chain and judged by
+/// [`sell::purchase_in`] against the listing's STORED lock outpoint (every
+/// lock coin of a name sits at the same lock address, ADR 0004, so the
+/// address alone does not say which listing was bought); the lock coin
+/// returned is the input `purchase_in` found. A coin of ours in
+/// `tracked_utxos` is only a lead to a transaction. Two ways, neither needing
+/// hsd's transaction index:
 ///
-/// - the owner: hsd moves it to the purchase's TRANSFER (its output 0) when
-///   its block is connected. A coin of ours of that transaction at the
-///   payment address, checked first, and that output a coin mined in a block
-///   that is a TRANSFER of the name at our lock (hsd keeps the address on a
-///   FINALIZE→TRANSFER, and only our signature over the lock outpoint lets
-///   the lock coin be spent into a TRANSFER) committing to an address not
-///   ours → Mined; committing to ours it is our cancel → no verdict (T5);
-/// - otherwise (the buyer finalized since, or the purchase is in the
-///   mempool) each transaction that paid our payment address, read by
-///   [`spend_view`], judged by [`sell::purchase_in`] against the listing's
-///   lock outpoint: in the mempool → Pending, in a block → Mined.
+/// - the owner first: hsd moves it to the purchase's TRANSFER (its output 0)
+///   when its block is connected. When the wallet has a coin of that
+///   transaction at the payment address and hsd shows the owner as a coin
+///   that is a TRANSFER of the name at our lock address: committing to an
+///   address of ours it is our cancel → no verdict (T5); in the mempool it
+///   is not a mined owner → no verdict; mined, its transaction is read
+///   (`GET /tx`, or the block at the owner coin's own height) and is Mined
+///   when `purchase_in` accepts it and it is in a block;
+/// - otherwise (the buyer finalized since, the purchase is in the mempool,
+///   or the owner is another lock coin's purchase) each transaction that
+///   paid our payment address, read the same way at the height our coin of
+///   it was seen mined: accepted in the mempool → Pending, in a block →
+///   Mined.
+///
+/// A lead (or the owner's transaction) that cannot be read is logged and
+/// skipped: skipping can only withhold a verdict, never make one, since any
+/// verdict still needs its own transaction found and accepted, so one
+/// unreadable transaction does not hold the listing for ever.
 async fn find_sale(
     conn: &rusqlite::Connection,
     client: &dyn NodeRpc,
@@ -1435,6 +1464,20 @@ async fn find_sale(
     let own: HashSet<String> = queries::get_profile_addresses(conn, profile)?
         .into_iter()
         .collect();
+    let p = sell::PurchaseOf {
+        network,
+        lock: Some((lock_txid, lock_vout)),
+        lock_address: &lock_address,
+        name_hash: &name_hash,
+        payment_address: payment,
+        own: &own,
+    };
+    let unreadable = |txid: &str, e: AppError| {
+        eprintln!(
+            "shakedex listings: {} ({}): transaction {txid} could not be read, skipped: {e}",
+            l.id, l.name
+        );
+    };
     if queries::own_coin_in_tx(conn, profile, &owner.0, payment)? {
         if let Some(coin) = client.get_coin(&owner.0, owner.1).await? {
             let (Some(address), Some(cov)) = (coin.address.as_deref(), coin.covenant.as_ref())
@@ -1454,33 +1497,33 @@ async fn find_sale(
                 if sell::commitment_is_ours(&cov.items, network, &own)? {
                     return Ok(Sale::None);
                 }
-                if coin.mined_height()?.is_some() {
-                    return Ok(Sale::Mined {
-                        txid: owner.0.clone(),
-                        lock: (lock_txid.to_string(), lock_vout),
-                    });
+                // hsd names a coin the owner only once its block is
+                // connected: an owner coin shown in the mempool is not a
+                // mined purchase, so no verdict.
+                let Some(height) = coin.mined_height()? else {
+                    return Ok(Sale::None);
+                };
+                match purchase_found(client, &owner.0, Some(height), &p).await {
+                    Ok(Some((Some(_), spent))) => {
+                        return Ok(Sale::Mined {
+                            txid: owner.0.clone(),
+                            lock: spent,
+                        });
+                    }
+                    // Not a purchase of our lock coin (or a view that
+                    // disagrees with the mined owner): look at the leads.
+                    Ok(_) => {}
+                    Err(e) => unreadable(&owner.0, e),
                 }
-                return Ok(Sale::None);
             }
         }
     }
-    let p = sell::PurchaseOf {
-        network,
-        lock: Some((lock_txid, lock_vout)),
-        lock_address: &lock_address,
-        name_hash: &name_hash,
-        payment_address: payment,
-        own: &own,
-    };
     for (txid, seen_at) in queries::own_coins_at(conn, profile, payment)? {
-        let Some(tx) = spend_view(client, &txid, seen_at).await? else {
-            continue;
-        };
-        if let Some(spent) = sell::purchase_in(&tx, &p)? {
-            return Ok(match tx.height {
-                Some(_) => Sale::Mined { txid, lock: spent },
-                None => Sale::Pending { txid, lock: spent },
-            });
+        match purchase_found(client, &txid, seen_at, &p).await {
+            Ok(Some((Some(_), spent))) => return Ok(Sale::Mined { txid, lock: spent }),
+            Ok(Some((None, spent))) => return Ok(Sale::Pending { txid, lock: spent }),
+            Ok(None) => {}
+            Err(e) => unreadable(&txid, e),
         }
     }
     Ok(Sale::None)
