@@ -442,7 +442,19 @@ fn deleting_an_unsent_finalize_draft_returns_the_listing_to_ready() {
         .unwrap();
         insert_draft(&conn, "fin", sell::LOCK_FINALIZE_ACTION, status);
         assert_eq!(finalizing(&conn, "l1", "fin"), 1);
+        // Another listing with its own FINALIZE draft is out of scope.
+        queries::insert_shakedex_listing(
+            &conn,
+            &listing("l2", "other", ListingState::ReadyToFinalize),
+        )
+        .unwrap();
+        insert_draft(&conn, "fin2", sell::LOCK_FINALIZE_ACTION, "signed");
+        assert_eq!(finalizing(&conn, "l2", "fin2"), 1);
         queries::delete_tx_draft(&conn, "fin").unwrap();
+        let o = queries::get_shakedex_listing(&conn, "l2").unwrap().unwrap();
+        assert_eq!(o.state, ListingState::Finalizing, "{status}");
+        assert!(o.lock_txid.is_some() && o.steps_json.contains("5000000"));
+        assert_eq!(o.lock_finalize_draft_id.as_deref(), Some("fin2"));
         let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
         assert_eq!(l.state, ListingState::ReadyToFinalize, "{status}");
         assert_eq!(
@@ -539,15 +551,20 @@ fn listing_transitions_write_only_from_their_previous_state() {
 fn finalized_elsewhere_is_adopted_only_before_the_lock() {
     for state in ListingState::ALL {
         let conn = store_conn();
-        queries::insert_shakedex_listing(&conn, &listing("l1", "dexsale", state)).unwrap();
+        let mut l = listing("l1", "dexsale", state);
+        l.abort_draft_id = Some("cancel".into());
+        l.abort_txid = Some("cd".repeat(32));
+        queries::insert_shakedex_listing(&conn, &l).unwrap();
         let n = queries::adopt_lock_finalized_elsewhere(&conn, "l1", &"ab".repeat(32), 0).unwrap();
         let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
         if state.aborts_by_cancel_transfer() {
             assert_eq!((n, l.state), (1, ListingState::Restored));
             assert_eq!(l.lock_txid, Some("ab".repeat(32)));
             assert_eq!(l.lock_vout, Some(0));
+            assert_eq!((l.abort_draft_id, l.abort_txid), (None, None));
         } else {
             assert_eq!((n, l.state), (0, state), "{state:?}");
+            assert_eq!(l.abort_draft_id.as_deref(), Some("cancel"));
             assert_eq!(l.lock_txid, None);
         }
     }
