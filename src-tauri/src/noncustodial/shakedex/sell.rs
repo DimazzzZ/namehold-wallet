@@ -791,8 +791,9 @@ pub fn sale_out_of_restored_lock(
 /// R32's refusals, in the backend's words (T7's UI shows them as sent).
 pub const RESTORE_NOT_AT_OUR_LOCK: &str =
     "the name is not in this wallet's lock for it: its owner coin is elsewhere";
-pub const RESTORE_STILL_LOCKING: &str = "the name is still on its way into the lock: the \
-     TRANSFER toward it is mined but the FINALIZE into it is not; its way out is Cancel transfer";
+pub const RESTORE_STILL_LOCKING: &str = "the name is still on its way into the lock: a \
+     TRANSFER committing to it is mined but the FINALIZE into it is not; the way out is Cancel \
+     transfer, from the wallet that holds the name";
 pub const RESTORE_ALREADY_TRANSFER: &str = "the coin in the lock is already a TRANSFER, not a \
      FINALIZE: a cancel awaiting its finalize, or a mined purchase; there is no lock to restore";
 pub const RESTORE_LEFTOVER: &str = "the coin in the lock is left over from an earlier \
@@ -865,10 +866,11 @@ pub fn restore_owner(reply: &serde_json::Value, name: &str) -> Result<RestoreOwn
 
 /// R32: whether `coin` (hsd's `GET /coin` for `owner`) is our lock for
 /// `name`: a mined FINALIZE of the name at `lock_address` whose covenant
-/// commits to the owner's name height. A TRANSFER at our own address
-/// committing to the lock is still Locking, a TRANSFER at the lock is a
-/// cancel or a purchase, another height is a leftover, anything else is not
-/// our lock; each is refused with its reason. A coin missing a field, or one
+/// commits to the owner's name height. A TRANSFER elsewhere committing to
+/// the lock is still Locking (at whichever address sent it: this one is not
+/// compared with ours), a TRANSFER at the lock is a cancel or a purchase,
+/// another height is a leftover, anything else is not our lock; each is
+/// refused with its reason. A coin missing a field, or one
 /// that is not the outpoint or the name asked about, is "could not check".
 pub fn restore_verdict(
     network: Network,
