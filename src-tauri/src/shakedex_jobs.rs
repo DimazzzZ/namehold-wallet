@@ -45,7 +45,7 @@
 //! listing whose FINALIZE into the lock is built: Listed once it is mined,
 //! Finalizing again on a reorg, ReadyToFinalize again if it never landed,
 //! and settled as before the lock if it never landed and something else
-//! spent the lock TRANSFER ([`refresh_lock_finalize_with_client`]). Both
+//! spent the lock TRANSFER ([`refresh_listings_after_lock_with_client`]). Both
 //! only read the node, and never take the same listing.
 
 use crate::db::queries::{self, PurchaseProgress, PurchaseState, ShakedexPurchase, TxDraftRow};
@@ -85,6 +85,10 @@ pub(crate) const SEND_GRACE_SECS: i64 = 600;
 /// late mining: more than hsd's 72-hour mempool expiry, with room for a
 /// reorg.
 pub const REVIVE_WINDOW_DAYS: u32 = 7;
+
+/// How long a Sold listing is looked at again for a reorg that takes its
+/// purchase out of the chain, the same window as a lost purchase's revival.
+pub const SOLD_RECHECK_DAYS: u32 = REVIVE_WINDOW_DAYS;
 
 /// hsd's own JSON-RPC error to the broadcast. hsd 8.0.0 answers
 /// `sendrawtransaction` with the txid whatever its mempool does (it relays
@@ -1157,7 +1161,7 @@ fn relock(conn: &rusqlite::Connection, l: &queries::ShakedexListing) -> Result<(
 
 /// Best-effort sync step: follow each listing whose FINALIZE into the lock
 /// is built (Finalizing) or mined (Listed) (see
-/// [`refresh_lock_finalize_with_client`]). Like the other sync steps it
+/// [`refresh_listings_after_lock_with_client`]). Like the other sync steps it
 /// returns silently when the database or the profile's node client cannot
 /// be opened; a failed refresh is logged. It only reads the node, so it runs
 /// in the daemon as it does in the app; the caller runs it only when the node
@@ -1171,7 +1175,7 @@ pub async fn refresh_lock_finalize_step(db_path: &str, profile_id: &str) {
         Ok(c) => c,
         Err(_) => return,
     };
-    if let Err(e) = refresh_lock_finalize_with_client(&conn, &client, profile_id).await {
+    if let Err(e) = refresh_listings_after_lock_with_client(&conn, &client, profile_id).await {
         eprintln!("shakedex listings: finalize refresh failed for {profile_id}: {e}");
     }
 }
@@ -1194,25 +1198,25 @@ pub async fn refresh_lock_finalize_step(db_path: &str, profile_id: &str) {
 ///
 /// Sends nothing. A failure on one listing is logged and leaves it for the
 /// next sync.
-pub async fn refresh_lock_finalize_with_client(
+pub async fn refresh_listings_after_lock_with_client(
     conn: &rusqlite::Connection,
     client: &dyn NodeRpc,
     profile_id: &str,
 ) -> Result<(), AppError> {
-    let listings = queries::list_shakedex_listings_finalizing(conn, profile_id)?;
+    let listings = queries::list_shakedex_listings_after_lock(conn, profile_id, SOLD_RECHECK_DAYS)?;
     if listings.is_empty() {
         return Ok(());
     }
     let network = queries::profile_network(conn, profile_id)?;
     for l in listings {
-        if let Err(e) = refresh_lock_finalize(conn, client, network, &l).await {
+        if let Err(e) = refresh_after_lock(conn, client, network, &l).await {
             eprintln!("shakedex listings: {} ({}): {e}", l.id, l.name);
         }
     }
     Ok(())
 }
 
-async fn refresh_lock_finalize(
+async fn refresh_after_lock(
     conn: &rusqlite::Connection,
     client: &dyn NodeRpc,
     network: Network,

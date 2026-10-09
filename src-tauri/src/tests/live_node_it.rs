@@ -5966,7 +5966,8 @@ async fn listing_jobs(app: &tauri::App<tauri::test::MockRuntime>, cl: &NodeRpcCl
         &mut *app.state::<AppState>().db.lock().unwrap(),
         rusqlite::Connection::open_in_memory().unwrap(),
     );
-    let res = crate::shakedex_jobs::refresh_lock_finalize_with_client(&conn, cl, PROFILE).await;
+    let res =
+        crate::shakedex_jobs::refresh_listings_after_lock_with_client(&conn, cl, PROFILE).await;
     *app.state::<AppState>().db.lock().unwrap() = conn;
     res.expect("finalize job runs");
 }
