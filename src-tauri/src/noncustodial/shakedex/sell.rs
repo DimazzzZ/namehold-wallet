@@ -758,6 +758,36 @@ pub fn purchase_in(tx: &SpendView, p: &PurchaseOf) -> Result<Option<(String, u32
     Ok(None)
 }
 
+/// R22 for a lock restored by name (R32), which knows no payment address:
+/// whether `tx`, mined in a block, spends the lock coin `lock` at input `k`
+/// into output `k`, a TRANSFER of the listing's name at its lock address
+/// committing to an address not ours. A TRANSFER out of our lock coin needs
+/// the lock key's signature; one committing to an address not ours can only
+/// be a price step (`0x84`, SIGHASH_SINGLE | ANYONECANPAY), which commits to
+/// its payment output, so the sale was paid to that step's address even
+/// though this device does not know it. Committing to an address of ours it
+/// is our cancel (T5): `false`.
+pub fn sale_out_of_restored_lock(
+    tx: &SpendView,
+    k: u32,
+    lock: (&str, u32),
+    at: &ListingLock,
+    network: Network,
+    own: &HashSet<String>,
+) -> Result<bool, AppError> {
+    let k = k as usize;
+    let (Some(input), Some(out)) = (tx.inputs.get(k), tx.outputs.get(k)) else {
+        return Ok(false);
+    };
+    if tx.height.is_none()
+        || !(input.0 == lock.0 && input.1 == lock.1)
+        || !at.holds(CoinAt::of_output(out), COV_TRANSFER, None)
+    {
+        return Ok(false);
+    }
+    Ok(!commitment_is_ours(&out.items, network, own)?)
+}
+
 /// R32's refusals, in the backend's words (T7's UI shows them as sent).
 pub const RESTORE_NOT_AT_OUR_LOCK: &str =
     "the name is not in this wallet's lock for it: its owner coin is elsewhere";
@@ -1415,6 +1445,37 @@ mod tests {
             address: address.into(),
             name_hash: name_hash.into(),
         }
+    }
+
+    /// A lock restored by name is sold by a mined TRANSFER out of its lock
+    /// coin committing to an address not ours, linked input k → output k;
+    /// any one of those facts missing is no sale.
+    #[test]
+    fn sale_out_of_restored_lock_needs_every_link() {
+        let own: HashSet<String> = [p2wpkh(5)].into();
+        let at = lock_of(&lock_addr(), &nh());
+        let sold = |tx: &SpendView, k: u32, lock: (&str, u32)| {
+            sale_out_of_restored_lock(tx, k, lock, &at, Network::Regtest, &own).unwrap()
+        };
+        let mined = spend_view_from_rest(&rest(120, 9, &p2wpkh(6))).unwrap();
+        assert!(sold(&mined, 0, (LOCK, 0)));
+        let mempool = spend_view_from_rest(&rest(-1, 9, &p2wpkh(6))).unwrap();
+        assert!(!sold(&mempool, 0, (LOCK, 0)), "in the mempool");
+        let ours = spend_view_from_rest(&rest(120, 5, &p2wpkh(6))).unwrap();
+        assert!(!sold(&ours, 0, (LOCK, 0)), "committing to ours");
+        assert!(!sold(&mined, 0, (LOCK, 1)), "another lock coin");
+        assert!(!sold(&mined, 0, (BUY, 0)), "another lock txid");
+        assert!(!sold(&mined, 1, (LOCK, 0)), "output 1 is not the TRANSFER");
+        assert!(!sold(&mined, 5, (LOCK, 0)), "no such input");
+        let other = lock_of(
+            &lock_addr(),
+            &hex::encode(names::hash_name("other").unwrap()),
+        );
+        assert!(
+            !sale_out_of_restored_lock(&mined, 0, (LOCK, 0), &other, Network::Regtest, &own)
+                .unwrap(),
+            "another name"
+        );
     }
 
     #[test]

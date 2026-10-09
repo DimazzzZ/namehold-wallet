@@ -1643,6 +1643,15 @@ async fn lock_coin_spent(
     };
     let owner = owner_of(info)?;
     let owner_is_lock = owner.0 == lock.0 && owner.1 == lock.1;
+    if l.payment_address.is_none() {
+        // A lock restored by name: no payment address to find a purchase
+        // by, only the owner. While the owner is still the lock coin, hsd's
+        // `GET /coin` of it is the 404 that brought us here: no verdict.
+        if let Some(txid) = sale_of_restored_lock(conn, client, network, l, &owner, lock).await? {
+            queries::sell_shakedex_listing(conn, &l.id, &txid, lock)?;
+        }
+        return Ok(());
+    }
     // hsd moves the owner only when a block is connected: a purchase is
     // Pending while the owner is still the lock coin, and Mined only once it
     // is not. Two facts that disagree are no verdict.
@@ -1683,6 +1692,39 @@ async fn lock_coin_spent(
         _ => {}
     }
     Ok(())
+}
+
+/// R22 for a Restored lock without a payment address (restored by name,
+/// R32), the name's owner being `owner` and its lock coin `lock` spent: the
+/// owner coin's transaction, read with `GET /tx` or, without the index, in
+/// the block at the owner coin's height (`GET /coin`), is
+/// [`sell::sale_out_of_restored_lock`] at the owner's index: its txid then.
+/// Anything else is `None`, no verdict: the owner coin hsd's 404 (spent in
+/// the mempool; or the lock coin itself, still the owner while a purchase
+/// of it is in the mempool), its transaction not found or not in a block,
+/// or not a TRANSFER out of this lock coin committing to an address not ours
+/// (our cancel is T5's). Only the write's source states move
+/// ([`queries::ListingWrite::Sell`]).
+async fn sale_of_restored_lock(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+    owner: &(String, u32),
+    lock: (&str, u32),
+) -> Result<Option<String>, AppError> {
+    let Some(coin) = client.get_coin(&owner.0, owner.1).await? else {
+        return Ok(None);
+    };
+    let Some(tx) = spend_view(client, &owner.0, coin.mined_height()?).await? else {
+        return Ok(None);
+    };
+    let own: HashSet<String> = queries::get_profile_addresses(conn, &l.wallet_profile_id)?
+        .into_iter()
+        .collect();
+    let at = listing_lock(network, l)?;
+    let sold = sell::sale_out_of_restored_lock(&tx, owner.1, lock, &at, network, &own)?;
+    Ok(sold.then(|| owner.0.clone()))
 }
 
 /// What the chain shows about a purchase of a listing's lock coin (R22).

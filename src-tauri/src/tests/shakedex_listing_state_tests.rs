@@ -871,6 +871,117 @@ async fn run(f: &Fx, rpc: &MockNodeRpc) {
     );
 }
 
+/// A lock restored by name (R32): no payment address, no file, no lock
+/// TRANSFER of this device.
+fn restored_by_name(f: &Fx) {
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET lock_transfer_txid = NULL, payment_address = NULL,
+                 lock_finalize_draft_id = NULL, listing_file_json = NULL, steps_json = '[]'",
+            [],
+        )
+        .unwrap();
+}
+
+/// R22 for a lock restored by name, which knows no payment address: a
+/// TRANSFER out of our lock coin needs the lock key's signature, so one
+/// committing to an address not ours can only be a price step (`0x84`),
+/// which commits to its payment output. Mined, and linked from the stored
+/// lock outpoint (input k the lock coin, output k the TRANSFER of the name
+/// at our lock), it is Sold with that txid, found through the owner without
+/// the transaction index (the block at the owner coin's height). Committing
+/// to an address of ours (our cancel: T5), in the mempool, linked from
+/// another coin, or not readable: no verdict.
+#[tokio::test]
+async fn restored_lock_by_name_is_sold_by_a_mined_transfer_out_of_its_lock() {
+    let buy = txid("b1");
+    let stranger = address::encode_p2wpkh(NET, &[8; 20]).unwrap();
+    // Mined, read with `GET /tx`, and again from the block (no index).
+    for indexed in [true, false] {
+        let f = fx(ListingState::Restored);
+        restored_by_name(&f);
+        let rest = purchase_rest(&f, &buy, TIP, &stranger);
+        let tx = if indexed { rest.clone() } else { Value::Null };
+        let rpc = node(
+            info((&buy, 0)),
+            vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+            tx,
+        )
+        .with_block_hash("bb".repeat(32))
+        .with_block(block_with(&rest, TIP));
+        run(&f, &rpc).await;
+        let l = listing(&f);
+        assert_eq!(
+            (l.state, l.sold_txid.as_deref(), l.lock_txid.as_deref()),
+            (
+                ListingState::Sold,
+                Some(buy.as_str()),
+                Some(f.lock_txid.as_str())
+            ),
+            "indexed {indexed}"
+        );
+    }
+    // Committing to an address of ours: a cancel, T5's.
+    let f = fx(ListingState::Restored);
+    restored_by_name(&f);
+    let mut rest = purchase_rest(&f, &buy, TIP, &stranger);
+    let (_, ours) = address::decode(NET, &f.cancel).unwrap();
+    rest["outputs"][0]["covenant"]["items"][3] = hex::encode(ours).into();
+    run(
+        &f,
+        &node(
+            info((&buy, 0)),
+            vec![transfer_out_of_lock(&f, &buy, &f.cancel, TIP)],
+            rest,
+        ),
+    )
+    .await;
+    assert_eq!(listing(&f).state, ListingState::Restored, "our cancel");
+    // In the mempool: the owner is still the lock coin.
+    let f = fx(ListingState::Restored);
+    restored_by_name(&f);
+    run(
+        &f,
+        &node(
+            info((&f.lock_txid, f.lock_vout)),
+            vec![transfer_out_of_lock(&f, &buy, &f.buyer, -1)],
+            purchase_rest(&f, &buy, -1, &stranger),
+        ),
+    )
+    .await;
+    assert_eq!(listing(&f).state, ListingState::Restored, "mempool");
+    // Linked from another coin: input 0 is not our lock coin.
+    let f = fx(ListingState::Restored);
+    restored_by_name(&f);
+    let mut rest = purchase_rest(&f, &buy, TIP, &stranger);
+    rest["inputs"][0]["prevout"]["hash"] = txid("c1").into();
+    run(
+        &f,
+        &node(
+            info((&buy, 0)),
+            vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+            rest,
+        ),
+    )
+    .await;
+    assert_eq!(listing(&f).state, ListingState::Restored, "another coin");
+    // The TRANSFER's transaction not found anywhere: no verdict.
+    let f = fx(ListingState::Restored);
+    restored_by_name(&f);
+    run(
+        &f,
+        &node(
+            info((&buy, 0)),
+            vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+            Value::Null,
+        )
+        .with_block_hash("bb".repeat(32))
+        .with_block(json!({ "height": TIP, "tx": [] })),
+    )
+    .await;
+    assert_eq!(listing(&f).state, ListingState::Restored, "not found");
+}
+
 /// R22: the lock coin bought. hsd moves the name's owner to the purchase's
 /// TRANSFER (output 0) out of our lock, committing to an address not ours,
 /// and the wallet has a coin of that transaction at the payment address:
@@ -1617,9 +1728,8 @@ async fn expired_lock_is_expired_not_sold() {
 
 /// The Restored lock's follower (T3 carry): a reorg that takes away the
 /// FINALIZE it was adopted from (the lock TRANSFER a coin again) makes it
-/// Locking without the outpoint, for the before-lock job; a lock restored by
-/// name (no lock TRANSFER, no payment address) is never Sold, even with a
-/// purchase of its lock coin on chain (deviation 5).
+/// Locking without the outpoint, for the before-lock job (a lock restored by
+/// name, bought: `restored_lock_by_name_is_sold_by_a_mined_transfer_out_of_its_lock`).
 #[tokio::test]
 async fn restored_lock_follows_its_coin() {
     let f = fx(ListingState::Restored);
@@ -1639,26 +1749,9 @@ async fn restored_lock_follows_its_coin() {
     let l = listing(&f);
     assert_eq!((l.state, l.lock_txid), (ListingState::Locking, None));
 
-    let f = fx(ListingState::Restored);
-    f.conn
-        .execute(
-            "UPDATE shakedex_listings SET lock_transfer_txid = NULL, payment_address = NULL,
-                 lock_finalize_draft_id = NULL, listing_file_json = NULL",
-            [],
-        )
-        .unwrap();
+    // A lock restored by name (no payment address) and bought:
+    // `restored_lock_by_name_is_sold_by_a_mined_transfer_out_of_its_lock`.
     let buy = txid("b1");
-    paid(&f, &buy, 2, TIP, false);
-    run(
-        &f,
-        &node(
-            info((&buy, 0)),
-            vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
-            purchase_rest(&f, &buy, TIP, &f.payment),
-        ),
-    )
-    .await;
-    assert_eq!(listing(&f).state, ListingState::Restored);
 
     // A Restored lock adopted from another device's FINALIZE keeps this
     // device's payment address but has no listing file: Sold from a purchase
