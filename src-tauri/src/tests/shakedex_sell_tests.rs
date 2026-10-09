@@ -53,6 +53,10 @@ fn listing(id: &str, name: &str, state: ListingState) -> ShakedexListing {
         abort_txid: None,
         sold_txid: None,
         cancel_txid: None,
+        cancel_draft_id: None,
+        cancel_vout: None,
+        cancel_finalize_draft_id: None,
+        cancel_blocks_remaining: None,
         created_at: String::new(),
         updated_at: String::new(),
     }
@@ -704,6 +708,13 @@ fn job_listing_sets_are_disjoint() {
     for s in ListingState::CANCEL_ABORTABLE {
         assert!(before.contains(&s), "{s:?}");
     }
+    for s in ListingState::CANCEL_MINED {
+        assert!(
+            after.contains(&s),
+            "{s:?}: the cancel's way home is followed"
+        );
+    }
+    assert!(after.contains(&ListingState::Cancelling));
 
     let conn = store_conn();
     for (i, state) in ListingState::ALL.into_iter().enumerate() {
@@ -733,7 +744,7 @@ fn job_listing_sets_are_disjoint() {
     );
 }
 
-/// The after-lock source lists exactly its five states of a profile, in
+/// The after-lock source lists exactly its eight states of a profile, in
 /// creation order.
 #[test]
 fn after_lock_listings_are_listed() {
@@ -746,6 +757,10 @@ fn after_lock_listings_are_listed() {
         ("l5", "e", ListingState::Sold),
         ("l6", "f", ListingState::ReadyToFinalize),
         ("l7", "g", ListingState::Aborted),
+        ("l8", "h", ListingState::Cancelling),
+        ("l9", "i", ListingState::CancelAwaitingFinalize),
+        ("la", "j", ListingState::CancelFinalizing),
+        ("lb", "k", ListingState::Cancelled),
     ] {
         queries::insert_shakedex_listing(&conn, &listing(id, name, state)).unwrap();
     }
@@ -754,7 +769,7 @@ fn after_lock_listings_are_listed() {
         .into_iter()
         .map(|l| l.id)
         .collect();
-    assert_eq!(ids, ["l1", "l2", "l3", "l4", "l5"]);
+    assert_eq!(ids, ["l1", "l2", "l3", "l4", "l5", "l8", "l9", "la"]);
     assert!(
         queries::list_shakedex_listings_after_lock(&conn, "other", 7)
             .unwrap()

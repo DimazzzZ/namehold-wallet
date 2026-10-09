@@ -60,6 +60,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "035",
         include_str!("../sql/035_shakedex_listing_finalize.sql"),
     ),
+    ("036", include_str!("../sql/036_shakedex_cancel.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -101,7 +102,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 35, "expected 35 migrations, got {count}");
+        assert_eq!(count, 36, "expected 36 migrations, got {count}");
     }
 
     /// A database already at 033 (a real upgrade) takes 034 on top of its
@@ -193,7 +194,62 @@ mod tests {
         let top: String = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(top, "035");
+        assert_eq!(top, MIGRATIONS.last().unwrap().0);
+    }
+
+    /// A database already at 035 (the T3 schema) takes 036 on top: the four
+    /// cancel columns exist, empty, and the existing listing keeps its row.
+    #[test]
+    fn migration_036_applies_on_top_of_035() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v < "036") {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [version],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, watch_only)
+             VALUES ('p', 'P', 'mnemonic_hot', 'regtest', 'xpub', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO shakedex_listings (id, wallet_profile_id, name, mode, state, lock_pubkey_hex)
+             VALUES ('l1', 'p', 'dexsale', 'buy_now', 'listed', '02')",
+            [],
+        )
+        .unwrap();
+        run(&conn).unwrap();
+        let row: (
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Option<i64>,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT cancel_draft_id, cancel_vout, cancel_finalize_draft_id,
+                        cancel_blocks_remaining, state
+                 FROM shakedex_listings WHERE id = 'l1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (None, None, None, None, "listed".to_string()));
+        let top: String = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(top, "036");
     }
 
     #[test]
@@ -204,7 +260,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 35);
+        assert_eq!(count, 36);
     }
 
     #[test]
