@@ -3451,7 +3451,26 @@ fn coin_json_of(
     height: i64,
 ) -> Value {
     let nh = hex::encode(crate::noncustodial::names::hash_name(name).unwrap());
-    let items = [nh, hex::encode(NAME_HEIGHT.to_le_bytes())];
+    let h = hex::encode(NAME_HEIGHT.to_le_bytes());
+    // hsd's items per covenant (`rules.js`): REGISTER [hash, height, record,
+    // block hash], UPDATE [hash, height, record], TRANSFER [hash, height,
+    // address version, address hash], FINALIZE [hash, height, raw name,
+    // flags, claimed, renewals, block hash].
+    let items: Vec<String> = match cov_type {
+        COV_REGISTER => vec![nh, h, String::new(), "ab".repeat(32)],
+        COV_UPDATE => vec![nh, h, String::new()],
+        COV_TRANSFER => vec![nh, h, "00".into(), "09".repeat(20)],
+        COV_FINALIZE => vec![
+            nh,
+            h,
+            hex::encode(name.as_bytes()),
+            "00".into(),
+            "00000000".into(),
+            "00000000".into(),
+            "ab".repeat(32),
+        ],
+        other => panic!("no covenant items for type {other} in these tests"),
+    };
     json!({ "version": 0, "height": height, "value": NAME_VALUE, "address": address,
         "covenant": { "type": cov_type, "action": cov_action(cov_type), "items": items },
         "coinbase": false, "hash": txid, "index": vout })
