@@ -152,13 +152,7 @@ fn sale_writes_move_only_a_listing_in_our_lock() {
     };
     assert_eq!(
         set(&ListingState::SALE_FROM),
-        [
-            "finalizing",
-            "listed",
-            "ready_to_finalize",
-            "restored",
-            "sale_pending"
-        ]
+        ["finalizing", "listed", "restored", "sale_pending"]
     );
     assert_eq!(
         set(&ListingState::LOCKED_EXPIRABLE),
@@ -166,15 +160,15 @@ fn sale_writes_move_only_a_listing_in_our_lock() {
     );
     for state in ListingState::ALL {
         let f = fx(state);
-        let pending =
-            queries::mark_listing_sale_pending(&f.conn, &f.id, &txid("b1"), None).unwrap();
+        let own = (f.lock_txid.as_str(), f.lock_vout);
+        let pending = queries::mark_listing_sale_pending(&f.conn, &f.id, &txid("b1"), own).unwrap();
         assert_eq!(
             pending == 1,
             ListingState::SALE_FROM.contains(&state),
             "{state:?}: pending"
         );
         set_state(&f, state);
-        let sold = queries::sell_shakedex_listing(&f.conn, &f.id, &txid("b1"), None).unwrap();
+        let sold = queries::sell_shakedex_listing(&f.conn, &f.id, &txid("b1"), own).unwrap();
         assert_eq!(
             sold == 1,
             ListingState::SALE_FROM.contains(&state),
@@ -239,7 +233,7 @@ fn sale_writes_move_only_a_listing_in_our_lock() {
     // another outpoint is another lock's and changes nothing.
     let f = fx(ListingState::Listed);
     let other = (txid("c1"), 3);
-    let o = Some((other.0.as_str(), other.1));
+    let o = (other.0.as_str(), other.1);
     assert_eq!(
         queries::sell_shakedex_listing(&f.conn, &f.id, &txid("b1"), o).unwrap(),
         0
@@ -254,12 +248,12 @@ fn sale_writes_move_only_a_listing_in_our_lock() {
         (l.lock_txid.as_deref(), l.lock_vout),
         (Some(txid("f1").as_str()), Some(0))
     );
-    let vout = Some((f.lock_txid.as_str(), 1));
+    let vout = (f.lock_txid.as_str(), 1);
     assert_eq!(
         queries::sell_shakedex_listing(&f.conn, &f.id, &txid("b1"), vout).unwrap(),
         0
     );
-    let same = Some((f.lock_txid.as_str(), 0));
+    let same = (f.lock_txid.as_str(), 0);
     assert_eq!(
         queries::sell_shakedex_listing(&f.conn, &f.id, &txid("b1"), same).unwrap(),
         1
@@ -269,11 +263,11 @@ fn sale_writes_move_only_a_listing_in_our_lock() {
         (l.state, l.sold_txid.as_deref()),
         (ListingState::Sold, Some(txid("b1").as_str()))
     );
-    // A listing without an outpoint (a dead FINALIZE's) learns it from the
-    // purchase, both halves together; without one from either side no sale is
-    // written.
+    // A listing without a stored outpoint is never sold or pending through
+    // these writes, whatever outpoint the purchase names: only
+    // `sell_listing_through_proven_lock` gives a listing an outpoint on sale.
     for pending in [false, true] {
-        let f = fx(ListingState::ReadyToFinalize);
+        let f = fx(ListingState::Listed);
         f.conn
             .execute(
                 "UPDATE shakedex_listings SET lock_txid = NULL, lock_vout = NULL",
@@ -287,13 +281,16 @@ fn sale_writes_move_only_a_listing_in_our_lock() {
                 queries::sell_shakedex_listing(&f.conn, &f.id, &txid("b1"), lock).unwrap()
             }
         };
-        assert_eq!(write(None), 0, "no outpoint anywhere (pending {pending})");
-        assert_eq!(listing(&f).state, ListingState::ReadyToFinalize);
-        assert_eq!(write(o), 1, "pending {pending}");
+        assert_eq!(
+            write(o),
+            0,
+            "an outpoint only the purchase names (pending {pending})"
+        );
         let l = listing(&f);
         assert_eq!(
-            (l.lock_txid.as_deref(), l.lock_vout),
-            (Some(txid("c1").as_str()), Some(3))
+            (l.state, l.lock_txid, l.lock_vout),
+            (ListingState::Listed, None, None),
+            "pending {pending}"
         );
     }
     // A Restored lock taken back by a reorg is Locking without its outpoint;
