@@ -5845,7 +5845,7 @@ async fn shakedex_cancel_transfer_aborts_the_listing_on_chain() {
 /// Run the listing step (`shakedex_jobs::refresh_listings_with_client`, whose
 /// before-lock job is R19's abort) on the app's database against the live node, as `run_sync_steps` does. The
 /// connection is taken out of the app for the call, so no lock is held across
-/// an await (same pattern as `shakedex_sell_tests::run_abort_job`).
+/// an await (same pattern as `shakedex_sell_tests::run_listing_step`).
 async fn abort_job(app: &tauri::App<tauri::test::MockRuntime>, cl: &NodeRpcClient) {
     let conn = std::mem::replace(
         &mut *app.state::<AppState>().db.lock().unwrap(),
