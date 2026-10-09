@@ -1833,9 +1833,16 @@ async fn aborted_listing_relocks_when_the_lock_transfer_is_back() {
     let id = open_listing(&app).unwrap().id;
     let other = "ee".repeat(32);
     for (what, rpc) in [
+        // A reorg that undoes the abort puts the lock TRANSFER back in the
+        // mempool (hsd moves `owner` only when a block is connected), or
+        // makes it the owner again.
         (
-            "a coin again",
-            facts(info_with(&other, 0, 0), &[(&lock_txid, 0, COV_TRANSFER)]),
+            "a coin again, in the mempool",
+            chain_at(
+                info_with(&other, 0, 0),
+                QUIET_TIP,
+                vec![lock_transfer_at(&lock_txid, -1)],
+            ),
         ),
         ("the owner again", facts(info_with(&lock_txid, 0, 0), &[])),
     ] {
@@ -3132,12 +3139,43 @@ fn tip_info(tip: i64) -> crate::noncustodial::rpc::BlockchainInfo {
         .unwrap()
 }
 
-/// A coin as hsd's `GET /coin` sends it, with address, covenant type and
-/// height (-1 in the mempool).
+/// hsd's name for a covenant type (`covenant.js`, `typesByVal`).
+fn cov_action(cov_type: u8) -> &'static str {
+    match cov_type {
+        COV_REGISTER => "REGISTER",
+        COV_UPDATE => "UPDATE",
+        COV_TRANSFER => "TRANSFER",
+        COV_FINALIZE => "FINALIZE",
+        other => panic!("no action name for covenant type {other} in these tests"),
+    }
+}
+
+/// A coin as hsd's `GET /coin` sends it (`Coin.getJSON`: version, height,
+/// value, address, covenant with type, action and items, coinbase, hash,
+/// index), with address, covenant type and height (-1 in the mempool).
+fn coin_json(txid: &str, vout: u32, address: &str, cov_type: u8, height: i64) -> Value {
+    json!({ "version": 0, "height": height, "value": NAME_VALUE, "address": address,
+        "covenant": { "type": cov_type, "action": cov_action(cov_type), "items": [] },
+        "coinbase": false, "hash": txid, "index": vout })
+}
+
+/// [`coin_json`] as the client reads it.
 fn coin_at(txid: &str, vout: u32, address: &str, cov_type: u8, height: i64) -> NodeCoin {
-    serde_json::from_value(json!({ "hash": txid, "index": vout, "value": NAME_VALUE,
-        "address": address, "height": height, "covenant": { "type": cov_type, "items": [] } }))
-    .unwrap()
+    serde_json::from_value(coin_json(txid, vout, address, cov_type, height)).unwrap()
+}
+
+/// [`coin_json`] without `field`: not hsd's whole answer.
+fn coin_without(
+    txid: &str,
+    vout: u32,
+    address: &str,
+    cov_type: u8,
+    height: i64,
+    field: &str,
+) -> NodeCoin {
+    let mut v = coin_json(txid, vout, address, cov_type, height);
+    v.as_object_mut().unwrap().remove(field);
+    serde_json::from_value(v).unwrap()
 }
 
 /// A node answering `info` for NAME, `tip`, and `GET /coin` with `coins`
@@ -3586,13 +3624,7 @@ async fn finalize_facts_missing_change_nothing() {
     let (fin, vout) = finalized(&r).await;
     let lock = lock_address(Network::Regtest);
     let tip = ready_tip(Network::Regtest) + 2;
-    let strip = |field: &str| {
-        let mut v = serde_json::to_value(json!({ "hash": fin, "index": vout, "value": NAME_VALUE,
-            "address": lock, "height": tip, "covenant": { "type": COV_FINALIZE, "items": [] } }))
-        .unwrap();
-        v.as_object_mut().unwrap().remove(field);
-        serde_json::from_value::<NodeCoin>(v).unwrap()
-    };
+    let strip = |field: &str| coin_without(&fin, vout, &lock, COV_FINALIZE, tip, field);
     for (case, coin) in [
         ("lock coin without address", strip("address")),
         ("lock coin without covenant", strip("covenant")),
@@ -3681,12 +3713,8 @@ async fn finalize_facts_missing_change_nothing() {
     let r = ready_fixture("regtest").await;
     set_lock_draft_status(&r.app, &r.listing_id, "confirmed");
     let other = "0e".repeat(32);
-    let no_addr: NodeCoin = serde_json::from_value(json!({ "hash": other, "index": 0,
-        "value": NAME_VALUE, "height": tip, "covenant": { "type": COV_FINALIZE, "items": [] } }))
-    .unwrap();
-    let no_cov: NodeCoin = serde_json::from_value(json!({ "hash": other, "index": 0,
-        "value": NAME_VALUE, "height": tip, "address": lock }))
-    .unwrap();
+    let no_addr = coin_without(&other, 0, &lock, COV_FINALIZE, tip, "address");
+    let no_cov = coin_without(&other, 0, &lock, COV_FINALIZE, tip, "covenant");
     for (case, chain) in [
         (
             "owner coin without address",
@@ -3768,9 +3796,13 @@ async fn sync_lists_the_listing_in_the_app_and_the_daemon() {
             .mock("GET", format!("/coin/{fin}/{vout}").as_str())
             .with_header("content-type", "application/json")
             .with_body(
-                json!({ "hash": fin, "index": vout, "value": NAME_VALUE, "height": tip,
-                    "address": lock_address(Network::Regtest),
-                    "covenant": { "type": COV_FINALIZE, "action": "FINALIZE", "items": [] } })
+                coin_json(
+                    &fin,
+                    vout,
+                    &lock_address(Network::Regtest),
+                    COV_FINALIZE,
+                    tip,
+                )
                 .to_string(),
             )
             .create_async()
@@ -3792,5 +3824,62 @@ async fn sync_lists_the_listing_in_the_app_and_the_daemon() {
         assert_eq!(got.state, ListingState::Listed, "{caller:?}");
         drop(conn);
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// hsd's `info.owner` is the owner at the tip, and `GET /coin` answers 404
+/// for it only when a mempool transaction spends it (`fullnode.js`
+/// `getCoin`): that says nothing about where the name is, so it is no
+/// verdict — even with the lock TRANSFER gone and its draft confirmed.
+#[tokio::test]
+async fn owner_coin_spent_in_the_mempool_is_no_verdict() {
+    for state in [ListingState::Locking, ListingState::ReadyToFinalize] {
+        let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+        locked_on_chain(&app).await;
+        let id = open_listing(&app).unwrap().id;
+        set_state(&app, &id, state);
+        set_lock_draft_status(&app, &id, "confirmed");
+        let other = "0e".repeat(32);
+        let chain = chain_at(name_info(RENEWAL, 0, &other), QUIET_TIP, vec![]);
+        run_listing_jobs(&app, &chain).await;
+        assert_eq!(listing_state(&app, &id), state, "{state:?}");
+    }
+}
+
+/// A lock TRANSFER that is a coin mined in a block but not the name's owner
+/// is not a picture hsd draws (the owner moves when the block is
+/// connected): no verdict, in either direction.
+#[tokio::test]
+async fn mined_lock_transfer_that_is_not_the_owner_changes_nothing() {
+    for state in [
+        ListingState::Locking,
+        ListingState::ReadyToFinalize,
+        ListingState::Aborted,
+    ] {
+        let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+        let lock_txid = locked_on_chain(&app).await;
+        let id = open_listing(&app).unwrap().id;
+        set_state(&app, &id, state);
+        let chain = chain_at(
+            name_info(RENEWAL, 0, OWNER_TXID),
+            ready_tip(Network::Regtest),
+            vec![lock_transfer_at(&lock_txid, TRANSFER_HEIGHT)],
+        );
+        run_abort_job(&app, &chain).await;
+        assert_eq!(listing_state(&app, &id), state, "{state:?}: mined");
+        let no_height = chain_at(
+            name_info(RENEWAL, 0, OWNER_TXID),
+            ready_tip(Network::Regtest),
+            vec![coin_without(
+                &lock_txid,
+                0,
+                &addr00(Network::Regtest).0,
+                COV_TRANSFER,
+                -1,
+                "height",
+            )],
+        );
+        run_abort_job(&app, &no_height).await;
+        assert_eq!(listing_state(&app, &id), state, "{state:?}: no height");
     }
 }

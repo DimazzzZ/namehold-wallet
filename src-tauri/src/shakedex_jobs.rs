@@ -853,8 +853,8 @@ enum LockOnChain {
     /// `None` when the reply leaves it out or says 0 (no TRANSFER, which
     /// cannot be while our TRANSFER owns the name: not hsd's whole answer).
     Owner { transfer: Option<i64> },
-    /// The lock TRANSFER is a coin but not the owner yet: it is in the
-    /// mempool (hsd moves `owner` only when a block is connected).
+    /// The lock TRANSFER is a coin in the mempool (`height: -1`), not the
+    /// owner yet (hsd moves `owner` only when a block is connected).
     Pending,
     /// Neither: `owner` is another outpoint, or the name is revoked
     /// (a REVOKE leaves `owner` at the coin it spent and sets `revoked`,
@@ -894,8 +894,15 @@ async fn lock_on_chain(
         .filter(|t| *t > 0);
     if revoked == 0 && index == 0 && hash.eq_ignore_ascii_case(lock_transfer_txid) {
         Ok(LockOnChain::Owner { transfer })
-    } else if client.get_coin(lock_transfer_txid, 0).await?.is_some() {
-        Ok(LockOnChain::Pending)
+    } else if let Some(coin) = client.get_coin(lock_transfer_txid, 0).await? {
+        // Mined in a block, it would be the owner (or revoked): a node that
+        // says otherwise is not consistent, so no verdict.
+        match coin.mined_height()? {
+            None => Ok(LockOnChain::Pending),
+            Some(_) => Err(AppError::Rpc(format!(
+                "node reports lock TRANSFER {lock_transfer_txid}:0 mined but not the name's owner"
+            ))),
+        }
     } else {
         Ok(LockOnChain::Gone {
             owner: (hash.to_string(), index),
@@ -912,15 +919,20 @@ enum InOurLock {
     /// At the listing's lock address, but another covenant (a purchase's
     /// TRANSFER or a cancel already): the name went through our lock.
     Other,
-    /// Elsewhere, or a coin hsd answers 404 for.
+    /// Elsewhere.
     No,
+    /// hsd's 404: `info.owner` is the owner at the tip, so its coin is
+    /// missing only while a mempool transaction spends it (`fullnode.js`
+    /// `getCoin`). Where the name goes is not known yet: no verdict until
+    /// that spend is mined and the owner moves to a coin hsd can show.
+    SpentInMempool,
 }
 
 /// Where the name's owner coin `owner` sits: at this listing's lock address
-/// (as a FINALIZE, or another covenant) or elsewhere. A coin hsd answers 404
-/// for is [`InOurLock::No`] (T2's abort stands; the trace of a lock coin
-/// spent since is T4's). A coin without address or covenant is not hsd's
-/// whole answer: an error.
+/// (as a FINALIZE, or another covenant) or elsewhere; hsd's 404 is
+/// [`InOurLock::SpentInMempool`]. Only the coin's `address` and
+/// `covenant.type` are read; a coin without address or covenant is not
+/// hsd's whole answer: an error.
 async fn owner_in_our_lock(
     client: &dyn NodeRpc,
     network: Network,
@@ -928,7 +940,7 @@ async fn owner_in_our_lock(
     owner: &(String, u32),
 ) -> Result<InOurLock, AppError> {
     let Some(coin) = client.get_coin(&owner.0, owner.1).await? else {
-        return Ok(InOurLock::No);
+        return Ok(InOurLock::SpentInMempool);
     };
     let (Some(address), Some(covenant)) = (coin.address.as_deref(), coin.covenant.as_ref()) else {
         return Err(AppError::Rpc(format!(
@@ -996,10 +1008,13 @@ pub async fn refresh_listings_before_lock_step(db_path: &str, profile_id: &str) 
 /// - but the owner coin a FINALIZE at this listing's lock address (a
 ///   FINALIZE into our lock this device did not build) → Restored with that
 ///   outpoint, never Aborted; another covenant there → unchanged (T4's);
+///   the owner coin hsd's 404 (spent in the mempool) → unchanged until that
+///   spend is mined;
 /// - the lock TRANSFER the owner and `blocks_until_finalize` of hsd's
 ///   `info.transfer` 0 at the tip → ReadyToFinalize, not 0 → Locking; the
-///   lock TRANSFER a coin but not the owner (back in the mempool) →
-///   Locking.
+///   lock TRANSFER a coin in the mempool (`height: -1`), not the owner →
+///   Locking; a lock TRANSFER mined in a block but not the owner is not a
+///   consistent answer → unchanged.
 ///
 /// Locking again is refused while another listing of the name is open
 /// ([`queries::unabort_shakedex_listing`]). Anything the node does not
@@ -1075,6 +1090,9 @@ async fn refresh_before_lock(
                     // At our lock but not a FINALIZE: the name went through
                     // our lock; T4 decides.
                     InOurLock::Other => return Ok(()),
+                    // The owner coin is spent in the mempool: no verdict
+                    // until that spend is mined.
+                    InOurLock::SpentInMempool => return Ok(()),
                     InOurLock::No => {}
                 }
             }
