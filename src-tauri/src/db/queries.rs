@@ -2194,25 +2194,50 @@ pub fn list_shakedex_listings_after_lock(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// The lock outpoint rule of a sale write, over `?4` (txid) and `?5` (vout):
+/// the listing has an outpoint, or the purchase supplies one; a purchase that
+/// names an outpoint spends the listing's own, or fills one it lacks (both
+/// halves together). A different outpoint is another lock's purchase.
+const SALE_LOCK_GUARD: &str =
+    "AND ((lock_txid IS NOT NULL AND lock_vout IS NOT NULL) OR ?4 IS NOT NULL)
+         AND (?4 IS NULL OR (lock_txid IS NULL AND lock_vout IS NULL)
+              OR (lock_txid = ?4 AND lock_vout = ?5))";
+
 /// R22: a purchase of the lock coin `purchase_txid` is in the mempool.
-/// Only from [`ListingState::SALE_FROM`]. Returns how many rows changed.
+/// Only from [`ListingState::SALE_FROM`], and only when the listing has a
+/// lock outpoint or `lock` (the coin the purchase spends, when it was read
+/// from the purchase itself) supplies one; a `lock` that differs from the
+/// listing's outpoint changes nothing. Returns how many rows changed.
 pub fn mark_listing_sale_pending(
     conn: &rusqlite::Connection,
     id: &str,
     purchase_txid: &str,
+    lock: Option<(&str, u32)>,
 ) -> Result<usize, AppError> {
     let sql = format!(
-        "UPDATE shakedex_listings SET state = ?2, sold_txid = ?3, updated_at = datetime('now')
-         WHERE id = ?1 AND state IN {}",
+        "UPDATE shakedex_listings
+         SET state = ?2, sold_txid = ?3, lock_txid = COALESCE(lock_txid, ?4),
+             lock_vout = COALESCE(lock_vout, ?5), updated_at = datetime('now')
+         WHERE id = ?1 AND state IN {} {SALE_LOCK_GUARD}",
         sql_list(ListingState::SALE_FROM.iter().map(|s| s.as_str()))
     );
-    Ok(conn.execute(&sql, params![id, ListingState::SalePending, purchase_txid])?)
+    Ok(conn.execute(
+        &sql,
+        params![
+            id,
+            ListingState::SalePending,
+            purchase_txid,
+            lock.map(|l| l.0),
+            lock.map(|l| i64::from(l.1))
+        ],
+    )?)
 }
 
 /// R22: the lock coin was bought by the mined `purchase_txid`. Only from
-/// [`ListingState::SALE_FROM`]. `lock` is the lock coin the purchase spends
-/// when it was read from the purchase itself; it fills an outpoint the
-/// listing lacks and never replaces one it has. Returns how many rows changed.
+/// [`ListingState::SALE_FROM`], under the same lock outpoint rule as
+/// [`mark_listing_sale_pending`]: no Sold row without an outpoint, and a
+/// `lock` that differs from the listing's outpoint changes nothing. Returns
+/// how many rows changed.
 pub fn sell_shakedex_listing(
     conn: &rusqlite::Connection,
     id: &str,
@@ -2223,7 +2248,7 @@ pub fn sell_shakedex_listing(
         "UPDATE shakedex_listings
          SET state = ?2, sold_txid = ?3, lock_txid = COALESCE(lock_txid, ?4),
              lock_vout = COALESCE(lock_vout, ?5), updated_at = datetime('now')
-         WHERE id = ?1 AND state IN {}",
+         WHERE id = ?1 AND state IN {} {SALE_LOCK_GUARD}",
         sql_list(ListingState::SALE_FROM.iter().map(|s| s.as_str()))
     );
     Ok(conn.execute(
@@ -2242,7 +2267,10 @@ pub fn sell_shakedex_listing(
 /// Sold listing goes back to `to` (Listed, Finalizing or Restored) and
 /// forgets the purchase — unless another listing of the name is open by now
 /// (`idx_shakedex_listings_open_name` allows one), which stays the open one.
-/// Returns how many rows changed (0 or 1).
+/// Going back to Listed needs the listing file the steps are in. The
+/// re-check window is not applied here: the caller got the row from
+/// [`list_shakedex_listings_after_lock`], which applies it. Returns how many
+/// rows changed (0 or 1).
 pub fn unsell_shakedex_listing(
     conn: &rusqlite::Connection,
     id: &str,
@@ -2265,7 +2293,8 @@ pub fn unsell_shakedex_listing(
                SELECT 1 FROM shakedex_listings o
                WHERE o.wallet_profile_id = shakedex_listings.wallet_profile_id
                  AND o.name = shakedex_listings.name AND o.id <> shakedex_listings.id
-                 AND o.state NOT IN (?5, ?6, ?7, ?8))",
+                 AND o.state NOT IN (?5, ?6, ?7, ?8))
+           AND (?2 <> ?9 OR listing_file_json IS NOT NULL)",
         params![
             id,
             to,
@@ -2274,7 +2303,8 @@ pub fn unsell_shakedex_listing(
             t0,
             t1,
             t2,
-            t3
+            t3,
+            ListingState::Listed
         ],
     )?)
 }
@@ -2314,21 +2344,25 @@ pub struct UpgradedListing<'a> {
     pub expires_at: Option<i64>,
 }
 
-/// R32: a Restored lock tracking `(lock_txid, lock_vout)` becomes Listed
-/// with its file's details. Returns how many rows changed (0 when the
-/// listing is no longer that Restored lock).
+/// R32: a Restored lock tracking `(lock_txid, lock_vout)` with the lock key
+/// `lock_pubkey_hex` becomes Listed with its file's details. Returns how many
+/// rows changed (0 when the listing is no longer that Restored lock). The
+/// caller must also check that the file's payment address is one of our
+/// derived addresses: this write does not.
 pub fn upgrade_restored_lock(
     conn: &rusqlite::Connection,
     id: &str,
     lock_txid: &str,
     lock_vout: u32,
+    lock_pubkey_hex: &str,
     u: &UpgradedListing,
 ) -> Result<usize, AppError> {
     Ok(conn.execute(
         "UPDATE shakedex_listings
          SET state = ?2, mode = ?3, payment_address = ?4, steps_json = ?5,
              listing_file_json = ?6, expires_at = ?7, updated_at = datetime('now')
-         WHERE id = ?1 AND state = ?8 AND lock_txid = ?9 AND lock_vout = ?10",
+         WHERE id = ?1 AND state = ?8 AND lock_txid = ?9 AND lock_vout = ?10
+           AND lock_pubkey_hex = ?11",
         params![
             id,
             ListingState::Listed,
@@ -2339,7 +2373,8 @@ pub fn upgrade_restored_lock(
             u.expires_at,
             ListingState::Restored,
             lock_txid,
-            i64::from(lock_vout)
+            i64::from(lock_vout),
+            lock_pubkey_hex
         ],
     )?)
 }
@@ -2347,7 +2382,10 @@ pub fn upgrade_restored_lock(
 /// Every transaction with a coin of ours at `address` the wallet's sync has
 /// recorded, spent or not, with the height the coin was last seen at (-1 in
 /// the mempool), most recently mined first. R22 looks for the purchase among
-/// them: the purchase pays our listing's payment address.
+/// them: the purchase pays our listing's payment address. A row may come from
+/// a transaction no longer in any block or mempool (sync's `'spent'` sentinel,
+/// a stale height), so the caller must find the transaction on chain before
+/// it counts as payment.
 pub fn own_coins_at(
     conn: &rusqlite::Connection,
     profile_id: &str,
