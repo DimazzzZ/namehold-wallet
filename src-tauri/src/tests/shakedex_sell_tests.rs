@@ -5127,6 +5127,22 @@ async fn restore_lock_refused_for_ledger_and_watch_only() {
     }
 }
 
+/// R16/R29: a restore needs a node that can send (its only action on a
+/// Restored lock, Cancel, sends), with the sentence the UI shows; the name is
+/// not read.
+#[tokio::test]
+async fn restore_lock_refused_without_write_capability() {
+    let (_node, mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    with_db(&app, |c| set(c, "chain_source", "explorer"));
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(
+        e.contains(crate::commands::shakedex::NEEDS_SENDING_NODE),
+        "{e}"
+    );
+    assert!(!mocks[1].matched_async().await, "the name was not read");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
 // --- Upgrade a Restored lock from its own listing file (T4, R32) ------------
 
 use crate::commands::shakedex::shakedex_import_own_listing_file;
@@ -5387,6 +5403,11 @@ async fn own_listing_file_with_a_market_fee_is_refused() {
     restore(&app).await.expect("restored");
     let mut v: Value = serde_json::from_str(&good_file()).unwrap();
     v["feeAddr"] = addr00(Network::Regtest).0.into();
+    // A fee address beside zero fees is no fee to the parser, but this
+    // wallet writes `feeAddr: null`: not its own file.
+    let e = err_text(import(&app, v.to_string()).await.unwrap_err());
+    assert!(e.contains("market fee"), "fee address alone: {e}");
+    assert_still_restored(&app, "fee address");
     v["data"][0]["fee"] = 100_000.into();
     let e = err_text(import(&app, v.to_string()).await.unwrap_err());
     assert!(e.contains("market fee"), "{e}");

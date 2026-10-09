@@ -2031,9 +2031,11 @@ pub async fn shakedex_import_own_listing_file(
     let ctx = software_writer_ctx(&state)?;
     authorize_signer(&state, &ctx)?;
     let file = ListingFile::parse(&text, ctx.network)?;
-    if file.steps.iter().any(|s| s.fee != 0) {
+    // This wallet writes `feeAddr: null` and every `fee` 0
+    // (`listing_file::write_listing_file`).
+    if file.names_a_fee_address() || file.steps.iter().any(|s| s.fee != 0) {
         return Err(AppError::InvalidInput(
-            "this listing file charges a market fee, which this wallet never writes: it is not \
+            "this listing file names a market fee, which this wallet never writes: it is not \
              this wallet's own listing file"
                 .into(),
         ));

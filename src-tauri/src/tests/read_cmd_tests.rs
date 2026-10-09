@@ -3585,3 +3585,40 @@ async fn renewals_leave_out_a_locked_name() {
     let resp = crate::commands::read::compute_renewals(&conn, "W1", Some(2_000)).unwrap();
     assert!(resp.names.iter().all(|r| r.name != "bravo"));
 }
+
+/// R27: a name still at our address under a lock TRANSFER that is alive
+/// (Locking) is not offered for renewal; one whose lock TRANSFER draft is
+/// dead (dropped) holds nothing and is offered as any owned name.
+#[tokio::test]
+async fn renewals_leave_out_a_name_locking_at_our_address() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    add_owned_name(&conn, "W1", "alpha", "txA");
+    add_owned_name(&conn, "W1", "echo", "txE");
+    for (id, status) in [("lockA", "broadcasted"), ("lockE", "dropped")] {
+        db::queries::insert_tx_draft(&conn, id, "W1", "shakedex_lock", "00", "{}", "{}").unwrap();
+        conn.execute(
+            "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = ?2",
+            params![status, id],
+        )
+        .unwrap();
+    }
+    add_listing(
+        &conn,
+        "la",
+        "alpha",
+        db::queries::ListingState::Locking,
+        Some("lockA"),
+    );
+    add_listing(
+        &conn,
+        "le",
+        "echo",
+        db::queries::ListingState::Locking,
+        Some("lockE"),
+    );
+    let resp = crate::commands::read::compute_renewals(&conn, "W1", Some(2_000)).unwrap();
+    let names: Vec<&str> = resp.names.iter().map(|r| r.name.as_str()).collect();
+    assert!(!names.contains(&"alpha"), "{names:?}");
+    assert!(names.contains(&"echo"), "{names:?}");
+}

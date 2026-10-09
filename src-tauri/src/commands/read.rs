@@ -512,41 +512,39 @@ fn collect_read_names_data(
     // R19: each name's listing state; a name in our lock is no longer a coin
     // at our addresses, so it gets a row of its own at the lock address.
     let tip = crate::noncustodial::sync::get_sync_height(conn, id)?;
-    // A profile whose network cannot be read lists its names without listing
-    // states, as before; the listings belong to a network the profile names.
-    let network = queries::profile_network(conn, id).ok();
-    if let Some(network) = network {
-        let rows = queries::read_shakedex_listing_names(
-            conn,
-            id,
-            network.name_params(),
-            tip,
-            crate::shakedex_jobs::SOLD_RECHECK_DAYS,
-        )?;
-        for r in rows {
-            let listing = serde_json::to_value(&r.listing)?;
-            if let Some(v) = out
-                .iter_mut()
-                .find(|v| v.get("name").and_then(|n| n.as_str()) == Some(r.name.as_str()))
-            {
-                if let Some(obj) = v.as_object_mut() {
-                    obj.insert("listing".into(), listing);
-                }
-            } else {
-                // The lock address from the stored key; a key that does not
-                // decode leaves the address out rather than failing the list.
-                let lock_address = hex::decode(&r.lock_pubkey_hex)
-                    .ok()
-                    .and_then(|b| <[u8; 33]>::try_from(b).ok())
-                    .and_then(|pk| {
-                        crate::noncustodial::shakedex::script::lock_address(network, &pk).ok()
-                    });
-                out.push(serde_json::json!({
-                    "name": r.name, "state": null, "height": null, "renewal": null, "owner": null,
-                    "owner_address": lock_address, "registered": true, "expired": null,
-                    "stats": null, "listing": listing,
-                }));
+    // Returned, not hidden: `read_names` is user-triggered, and the
+    // listings' lock addresses belong to the profile's network.
+    let network = queries::profile_network(conn, id)?;
+    let rows = queries::read_shakedex_listing_names(
+        conn,
+        id,
+        network.name_params(),
+        tip,
+        crate::shakedex_jobs::SOLD_RECHECK_DAYS,
+    )?;
+    for r in rows {
+        let listing = serde_json::to_value(&r.listing)?;
+        if let Some(v) = out
+            .iter_mut()
+            .find(|v| v.get("name").and_then(|n| n.as_str()) == Some(r.name.as_str()))
+        {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("listing".into(), listing);
             }
+        } else {
+            // The lock address from the stored key; a key that does not
+            // decode leaves the address out rather than failing the list.
+            let lock_address = hex::decode(&r.lock_pubkey_hex)
+                .ok()
+                .and_then(|b| <[u8; 33]>::try_from(b).ok())
+                .and_then(|pk| {
+                    crate::noncustodial::shakedex::script::lock_address(network, &pk).ok()
+                });
+            out.push(serde_json::json!({
+                "name": r.name, "state": null, "height": null, "renewal": null, "owner": null,
+                "owner_address": lock_address, "registered": true, "expired": null,
+                "stats": null, "listing": listing,
+            }));
         }
     }
 

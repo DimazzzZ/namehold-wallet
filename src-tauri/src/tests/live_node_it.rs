@@ -6229,6 +6229,9 @@ async fn shakedex_listing_follows_reorg_of_its_lock_finalize() {
     assert_eq!(listing_state(&app, &id), ListingState::Finalizing);
 
     cl.generate_to_address(1, &addr).await.expect("mine");
+    // Only clears the invalid mark (hsd's `reconsiderblock` is
+    // `chain.removeInvalid`, no reorg): the chain stays on the block just
+    // mined, and the node keeps no invalid block for later tests.
     cl.reconsider_block(&block).await.expect("reconsider");
     let again = lock_coin(cl.clone()).await.expect("the lock coin");
     assert!(
@@ -6446,6 +6449,9 @@ async fn shakedex_namehold_listing_sold_to_the_cli_is_sold() {
     );
 
     cl.generate_to_address(1, &addr).await.expect("mine");
+    // Only clears the invalid mark (hsd's `reconsiderblock` is
+    // `chain.removeInvalid`, no reorg): the fill is mined again by the block
+    // just mined, and the node keeps no invalid block for later tests.
     cl.reconsider_block(&block).await.expect("reconsider");
     assert_eq!(name_owner(&cl, &name).await.0, fill_txid, "mined again");
     sync_wallet_state(app.state(), None).await.expect("sync");
@@ -6518,7 +6524,26 @@ async fn shakedex_listed_lock_expires_with_its_name() {
         "the lock coin is still a coin"
     );
     listing_jobs(&app, &cl).await;
-    assert_eq!(listing_state(&app, &id), ListingState::Expired);
+    let expired = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        db::queries::get_shakedex_listing(&conn, &id)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(
+        (
+            expired.state,
+            expired.lock_txid.as_deref(),
+            expired.lock_vout
+        ),
+        (
+            ListingState::Expired,
+            Some(lock_txid.as_str()),
+            Some(i64::from(lock_vout))
+        ),
+        "Expired, keeping its lock outpoint"
+    );
 
     rewind.rewind(&cl).await;
     assert_eq!(
@@ -6610,6 +6635,10 @@ async fn live_noindex_listing_sold_is_detected() {
     sync_wallet_state(app.state(), None).await.expect("sync");
     listing_jobs(&app, &cl).await;
     let l = get(&app);
+    // "Through the owner": the owner is the purchase's TRANSFER here, so
+    // `find_purchases` reads the purchase at the owner coin's height before
+    // any payment-coin lead (the copy below, synced after the buyer's
+    // FINALIZE, can only take the lead path).
     assert_eq!(
         (l.state, l.sold_txid.as_deref()),
         (ListingState::Sold, Some(buy.as_str())),
