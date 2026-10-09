@@ -7,6 +7,7 @@
 //! addresses, and transaction reads.
 
 use rusqlite::params;
+use serde_json::{json, Value};
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
@@ -3447,4 +3448,140 @@ async fn other_profiles_purchases_are_not_listed() {
     let app = app_with(conn);
     let val = read_names(app.state(), None).await.unwrap();
     assert_eq!(val, serde_json::json!([]));
+}
+
+fn add_listing(
+    conn: &rusqlite::Connection,
+    id: &str,
+    name: &str,
+    state: db::queries::ListingState,
+    lock_draft: Option<&str>,
+) {
+    let key = crate::noncustodial::shakedex::lock_key::derive_lock_key(
+        &crate::noncustodial::hd::ExtendedPrivKey::from_seed(&[7u8; 64]).unwrap(),
+        crate::noncustodial::network::Network::Regtest,
+        0,
+        name,
+    )
+    .unwrap();
+    db::queries::insert_shakedex_listing(
+        conn,
+        &db::queries::ShakedexListing {
+            id: id.into(),
+            wallet_profile_id: "W1".into(),
+            name: name.into(),
+            mode: db::queries::ListingMode::BuyNow,
+            state,
+            lock_pubkey_hex: hex::encode(key.pubkey),
+            lock_transfer_draft_id: lock_draft.map(Into::into),
+            lock_finalize_draft_id: None,
+            lock_transfer_txid: None,
+            lock_txid: None,
+            lock_vout: None,
+            payment_address: None,
+            cancel_address: None,
+            cancel_child_index: None,
+            steps_json: "[]".into(),
+            listing_file_json: None,
+            publish: false,
+            market_status: None,
+            market_retry_at: None,
+            expires_at: None,
+            abort_draft_id: None,
+            abort_txid: None,
+            sold_txid: None,
+            cancel_txid: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    )
+    .unwrap();
+}
+
+/// R19: a name's listing state is on its Owned Names row. alpha, still at
+/// our address while Locking, carries the blocks left in the lockup (its
+/// lock TRANSFER confirmed at 1995, sync height 2000: regtest lockup 10,
+/// judged at tip + 1 → 4); bravo, in our lock (no longer a coin at our
+/// address), gets a row of its own at the lock address; charlie, sold, shows
+/// Sold; delta (Aborted) and echo (Locking with a dead lock draft) show none.
+#[tokio::test]
+async fn locked_name_listed_with_its_listing_state() {
+    use db::queries::ListingState as S;
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    db::queries::set_active_profile(&conn, "W1").unwrap();
+    crate::noncustodial::sync::set_sync_cursor(&conn, "W1", 2_000).unwrap();
+    add_owned_name(&conn, "W1", "alpha", "txA");
+    add_owned_name(&conn, "W1", "echo", "txE");
+    for (id, status) in [("lockA", "confirmed"), ("lockE", "dropped")] {
+        db::queries::insert_tx_draft(&conn, id, "W1", "shakedex_lock", "00", "{}", "{}").unwrap();
+        conn.execute(
+            "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = ?2",
+            params![status, id],
+        )
+        .unwrap();
+    }
+    db::queries::update_tx_draft_confirmation(&conn, "lockA", 1_995, None).unwrap();
+    add_listing(&conn, "la", "alpha", S::Locking, Some("lockA"));
+    add_listing(&conn, "lb", "bravo", S::Listed, None);
+    add_listing(&conn, "lc", "charlie", S::Sold, None);
+    add_listing(&conn, "ld", "delta", S::Aborted, None);
+    add_listing(&conn, "le", "echo", S::Locking, Some("lockE"));
+    let bravo_lock = {
+        let pk: [u8; 33] = hex::decode(
+            db::queries::get_shakedex_listing(&conn, "lb")
+                .unwrap()
+                .unwrap()
+                .lock_pubkey_hex,
+        )
+        .unwrap()
+        .try_into()
+        .unwrap();
+        crate::noncustodial::shakedex::script::lock_address(
+            crate::noncustodial::network::Network::Regtest,
+            &pk,
+        )
+        .unwrap()
+    };
+    let app = app_with(conn);
+    let val = read_names(app.state(), None).await.unwrap();
+    let row = |n: &str| {
+        val.as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == n)
+            .cloned()
+    };
+    let alpha = row("alpha").expect("alpha");
+    assert_eq!(
+        alpha["listing"],
+        json!({ "listingId": "la", "state": "locking", "blocksUntilFinalize": 4 })
+    );
+    let bravo = row("bravo").expect("bravo, in our lock");
+    assert_eq!(bravo["listing"]["state"], "listed");
+    assert_eq!(bravo["listing"]["blocksUntilFinalize"], Value::Null);
+    assert_eq!(bravo["owner_address"], bravo_lock);
+    assert_eq!(row("charlie").expect("charlie")["listing"]["state"], "sold");
+    assert!(row("delta").is_none(), "an aborted listing adds no row");
+    assert!(
+        row("echo").expect("echo").get("listing").is_none(),
+        "a dead lock does not mark the name"
+    );
+}
+
+/// R27: a locked name is not renewed (the lock script allows only TRANSFER
+/// and FINALIZE): the Renewals screen leaves out every row with a listing.
+#[tokio::test]
+async fn renewals_leave_out_a_locked_name() {
+    let conn = empty_db();
+    add_profile(&conn, "W1", "regtest");
+    add_listing(
+        &conn,
+        "lb",
+        "bravo",
+        db::queries::ListingState::Listed,
+        None,
+    );
+    let resp = crate::commands::read::compute_renewals(&conn, "W1", Some(2_000)).unwrap();
+    assert!(resp.names.iter().all(|r| r.name != "bravo"));
 }
