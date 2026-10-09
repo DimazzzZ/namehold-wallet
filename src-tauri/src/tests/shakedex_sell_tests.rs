@@ -130,6 +130,44 @@ fn the_state_and_mode_checks_list_exactly_the_enum_spellings() {
     }
 }
 
+/// R19: the lock TRANSFER is output 0 of its transaction, so only a cancel
+/// spending `(lock_transfer_txid, 0)` is the listing's abort; one spending
+/// another output of the same transaction links nothing.
+#[test]
+fn a_cancel_of_another_output_of_the_lock_tx_links_nothing() {
+    let conn = store_conn();
+    let lock_txid = "ab".repeat(32);
+    let mut l = listing("l1", "dexsale", ListingState::Locking);
+    l.lock_transfer_txid = Some(lock_txid.clone());
+    queries::insert_shakedex_listing(&conn, &l).unwrap();
+
+    let n = queries::link_shakedex_listing_abort(
+        &conn,
+        STORE_PROFILE,
+        "dexsale",
+        &lock_txid,
+        1,
+        "c1",
+        &"c1".repeat(32),
+    )
+    .unwrap();
+    assert_eq!(n, 0, "output 1 is not the lock TRANSFER");
+    let got = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+    assert_eq!((got.abort_draft_id, got.abort_txid), (None, None));
+
+    let n = queries::link_shakedex_listing_abort(
+        &conn,
+        STORE_PROFILE,
+        "dexsale",
+        &lock_txid,
+        0,
+        "c0",
+        &"c0".repeat(32),
+    )
+    .unwrap();
+    assert_eq!(n, 1, "output 0 is");
+}
+
 /// The SQL that picks the listings a Cancel transfer aborts is generated from
 /// `ListingState::CANCEL_ABORTABLE`, so the two cannot drift apart.
 #[test]
