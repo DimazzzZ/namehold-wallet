@@ -1358,6 +1358,18 @@ pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result
             params![id, ListingState::Locking],
         )?;
     }
+    // An unsent FINALIZE into the lock takes its steps with it: they were
+    // signed over a coin that never existed. A sent one (`dropped`, `failed`)
+    // may still land, so its listing keeps everything for the chain to judge.
+    if never_sent(&status) {
+        tx.execute(
+            &format!(
+                "UPDATE shakedex_listings SET {REVERT_TO_READY_SET}
+                 WHERE lock_finalize_draft_id = ?1 AND state = ?2"
+            ),
+            params![id, ListingState::Finalizing],
+        )?;
+    }
     tx.execute(
         "UPDATE shakedex_purchases SET finalize_draft_id = NULL, updated_at = datetime('now')
          WHERE finalize_draft_id = ?1",
@@ -1601,6 +1613,8 @@ pub struct ShakedexListing {
     pub state: ListingState,
     pub lock_pubkey_hex: String,
     pub lock_transfer_draft_id: Option<String>,
+    /// The FINALIZE into the lock (T3); its txid is `lock_txid`.
+    pub lock_finalize_draft_id: Option<String>,
     pub lock_transfer_txid: Option<String>,
     pub lock_txid: Option<String>,
     pub lock_vout: Option<i64>,
@@ -1625,8 +1639,8 @@ pub struct ShakedexListing {
 }
 
 const SHAKEDEX_LISTING_COLS: &str = "id, wallet_profile_id, name, mode, state, lock_pubkey_hex, \
-    lock_transfer_draft_id, lock_transfer_txid, lock_txid, lock_vout, payment_address, \
-    cancel_address, cancel_child_index, steps_json, listing_file_json, publish, market_status, \
+    lock_transfer_draft_id, lock_finalize_draft_id, lock_transfer_txid, lock_txid, lock_vout, \
+    payment_address, cancel_address, cancel_child_index, steps_json, listing_file_json, publish, market_status, \
     market_retry_at, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, created_at, \
     updated_at";
 
@@ -1639,6 +1653,7 @@ fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<Shakedex
         state: row.get("state")?,
         lock_pubkey_hex: row.get("lock_pubkey_hex")?,
         lock_transfer_draft_id: row.get("lock_transfer_draft_id")?,
+        lock_finalize_draft_id: row.get("lock_finalize_draft_id")?,
         lock_transfer_txid: row.get("lock_transfer_txid")?,
         lock_txid: row.get("lock_txid")?,
         lock_vout: row.get("lock_vout")?,
@@ -1669,11 +1684,12 @@ pub fn insert_shakedex_listing(
     conn.execute(
         "INSERT INTO shakedex_listings
             (id, wallet_profile_id, name, mode, state, lock_pubkey_hex, lock_transfer_draft_id,
-             lock_transfer_txid, lock_txid, lock_vout, payment_address, cancel_address,
-             cancel_child_index, steps_json, listing_file_json, publish, market_status,
-             market_retry_at, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid)
+             lock_finalize_draft_id, lock_transfer_txid, lock_txid, lock_vout, payment_address,
+             cancel_address, cancel_child_index, steps_json, listing_file_json, publish,
+             market_status, market_retry_at, expires_at, abort_draft_id, abort_txid, sold_txid,
+             cancel_txid)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?21, ?22, ?23)",
+                 ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
         params![
             l.id,
             l.wallet_profile_id,
@@ -1682,6 +1698,7 @@ pub fn insert_shakedex_listing(
             l.state,
             l.lock_pubkey_hex,
             l.lock_transfer_draft_id,
+            l.lock_finalize_draft_id,
             l.lock_transfer_txid,
             l.lock_txid,
             l.lock_vout,
@@ -1892,6 +1909,174 @@ pub fn unabort_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result
             t3
         ],
     )?)
+}
+
+/// The columns a Finalizing listing loses when its FINALIZE never landed:
+/// the lock outpoint, the steps and the file were signed over a coin that
+/// does not exist. Shared by [`revert_listing_to_ready`] and the deletion of
+/// an unsent FINALIZE draft, so the two cannot drift.
+const REVERT_TO_READY_SET: &str = "state = 'ready_to_finalize', lock_finalize_draft_id = NULL, \
+    lock_txid = NULL, lock_vout = NULL, steps_json = '[]', listing_file_json = NULL, \
+    expires_at = NULL, updated_at = datetime('now')";
+
+/// What Finalize & sign writes on its listing (R19, R23).
+pub struct FinalizingListing<'a> {
+    pub finalize_draft_id: &'a str,
+    /// The FINALIZE's txid; the lock coin is its output 0.
+    pub lock_txid: &'a str,
+    pub steps_json: &'a str,
+    pub listing_file_json: &'a str,
+    pub expires_at: u64,
+}
+
+/// R19: a listing ReadyToFinalize becomes Finalizing with its FINALIZE
+/// draft, lock outpoint, steps and listing file, inside the caller's
+/// transaction (the one that inserts the draft), so it leaves
+/// `CANCEL_ABORTABLE` together with the draft. Returns 0 when the listing is
+/// not ReadyToFinalize (changed meanwhile): the caller rolls back.
+pub fn mark_listing_finalizing_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    f: &FinalizingListing,
+) -> Result<usize, AppError> {
+    let expires_at = i64::try_from(f.expires_at)
+        .map_err(|_| AppError::Other("listing expiry out of range".into()))?;
+    Ok(tx.execute(
+        "UPDATE shakedex_listings
+         SET state = ?2, lock_finalize_draft_id = ?3, lock_txid = ?4, lock_vout = 0,
+             steps_json = ?5, listing_file_json = ?6, expires_at = ?7,
+             updated_at = datetime('now')
+         WHERE id = ?1 AND state = ?8",
+        params![
+            id,
+            ListingState::Finalizing,
+            f.finalize_draft_id,
+            f.lock_txid,
+            f.steps_json,
+            f.listing_file_json,
+            expires_at,
+            ListingState::ReadyToFinalize
+        ],
+    )?)
+}
+
+/// A Finalizing listing whose FINALIZE never landed goes back to
+/// ReadyToFinalize, losing its lock outpoint, steps and file. Returns how
+/// many rows changed (0 or 1).
+pub fn revert_listing_to_ready(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
+    Ok(conn.execute(
+        &format!("UPDATE shakedex_listings SET {REVERT_TO_READY_SET} WHERE id = ?1 AND state = ?2"),
+        params![id, ListingState::Finalizing],
+    )?)
+}
+
+/// `from` to `to` for listing `id`, only while it is in `from`. Returns how
+/// many rows changed (0 or 1).
+fn move_listing(
+    conn: &rusqlite::Connection,
+    id: &str,
+    from: ListingState,
+    to: ListingState,
+) -> Result<usize, AppError> {
+    Ok(conn.execute(
+        "UPDATE shakedex_listings SET state = ?3, updated_at = datetime('now')
+         WHERE id = ?1 AND state = ?2",
+        params![id, from, to],
+    )?)
+}
+
+/// The lockup is over (R19): Locking to ReadyToFinalize.
+pub fn mark_listing_ready(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
+    move_listing(
+        conn,
+        id,
+        ListingState::Locking,
+        ListingState::ReadyToFinalize,
+    )
+}
+
+/// A reorg undid the lock TRANSFER's lockup: ReadyToFinalize to Locking.
+pub fn mark_listing_locking_again(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<usize, AppError> {
+    move_listing(
+        conn,
+        id,
+        ListingState::ReadyToFinalize,
+        ListingState::Locking,
+    )
+}
+
+/// The FINALIZE into the lock is mined: Finalizing to Listed.
+pub fn mark_listing_listed(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
+    move_listing(conn, id, ListingState::Finalizing, ListingState::Listed)
+}
+
+/// A reorg took the FINALIZE out of the chain: Listed to Finalizing.
+pub fn mark_listing_finalizing_again(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<usize, AppError> {
+    move_listing(conn, id, ListingState::Listed, ListingState::Finalizing)
+}
+
+/// R19 (coordinator (b)): the name was finalized into this listing's lock by
+/// a FINALIZE this device did not build (another device with the same seed):
+/// the listing tracks that lock coin as a Restored lock, never Aborted. Only
+/// from `CANCEL_ABORTABLE`. Returns how many rows changed (0 or 1).
+pub fn adopt_lock_finalized_elsewhere(
+    conn: &rusqlite::Connection,
+    id: &str,
+    lock_txid: &str,
+    lock_vout: u32,
+) -> Result<usize, AppError> {
+    let sql = format!(
+        "UPDATE shakedex_listings
+         SET state = ?2, lock_txid = ?3, lock_vout = ?4, updated_at = datetime('now')
+         WHERE id = ?1 AND state IN {}",
+        ListingState::cancel_abortable_sql()
+    );
+    Ok(conn.execute(
+        &sql,
+        params![id, ListingState::Restored, lock_txid, lock_vout],
+    )?)
+}
+
+/// Listings whose FINALIZE into the lock is built (Finalizing) or mined
+/// (Listed): the chain decides between the two, or sends a Finalizing one
+/// back to ReadyToFinalize.
+pub fn list_shakedex_listings_finalizing(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<ShakedexListing>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
+         WHERE wallet_profile_id = ?1 AND state IN (?2, ?3)
+         ORDER BY created_at, id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params![profile_id, ListingState::Finalizing, ListingState::Listed],
+        row_to_shakedex_listing,
+    )?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// `(profile, name, lock transfer txid)` of every ReadyToFinalize listing,
+/// across profiles (the `listing_ready` reminder).
+pub fn list_listings_ready_to_finalize(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<(String, String, String)>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT wallet_profile_id, name, lock_transfer_txid FROM shakedex_listings
+         WHERE state = ?1 AND lock_transfer_txid IS NOT NULL
+         ORDER BY wallet_profile_id, name",
+    )?;
+    let rows = stmt.query_map(params![ListingState::ReadyToFinalize], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 /// A purchase's state with the chain facts tracked alongside it; written

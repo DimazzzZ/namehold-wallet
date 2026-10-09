@@ -614,6 +614,7 @@ pub(crate) fn build_lock_draft_inner(
             state: ListingState::Locking,
             lock_pubkey_hex: hex::encode(i.key.pubkey),
             lock_transfer_draft_id: Some(draft_id.clone()),
+            lock_finalize_draft_id: None,
             lock_transfer_txid: Some(res.txid.clone()),
             lock_txid: None,
             lock_vout: None,

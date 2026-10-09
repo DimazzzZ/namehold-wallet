@@ -72,7 +72,7 @@ fn test_schema_version_tracking() {
     //      outranked the network default on every other network).
     // 033 (shakedex_purchases: buyer-side Shakedex purchase tracking).
     // 034 (shakedex_listings: seller-side Shakedex listing tracking).
-    assert_eq!(count, 34);
+    assert_eq!(count, 35);
 }
 
 #[test]
