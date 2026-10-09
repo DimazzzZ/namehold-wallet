@@ -1930,8 +1930,10 @@ fn revert_to_ready_set() -> String {
 /// What Finalize & sign writes on its listing (R19, R23).
 pub struct FinalizingListing<'a> {
     pub finalize_draft_id: &'a str,
-    /// The FINALIZE's txid; the lock coin is its output 0.
+    /// The FINALIZE's txid and the index of its FINALIZE output: the lock
+    /// coin.
     pub lock_txid: &'a str,
+    pub lock_vout: u32,
     pub steps_json: &'a str,
     pub listing_file_json: &'a str,
     pub expires_at: u64,
@@ -1951,7 +1953,7 @@ pub fn mark_listing_finalizing_in_tx(
         .map_err(|_| AppError::Other("listing expiry out of range".into()))?;
     Ok(tx.execute(
         "UPDATE shakedex_listings
-         SET state = ?2, lock_finalize_draft_id = ?3, lock_txid = ?4, lock_vout = 0,
+         SET state = ?2, lock_finalize_draft_id = ?3, lock_txid = ?4, lock_vout = ?9,
              steps_json = ?5, listing_file_json = ?6, expires_at = ?7,
              updated_at = datetime('now')
          WHERE id = ?1 AND state = ?8",
@@ -1963,7 +1965,8 @@ pub fn mark_listing_finalizing_in_tx(
             f.steps_json,
             f.listing_file_json,
             expires_at,
-            ListingState::ReadyToFinalize
+            ListingState::ReadyToFinalize,
+            i64::from(f.lock_vout)
         ],
     )?)
 }

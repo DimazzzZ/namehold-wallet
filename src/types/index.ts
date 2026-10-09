@@ -878,6 +878,30 @@ export interface MarketPage {
   pageCount: number;
 }
 
+/** One signed price step of our listing (`sell::StoredStep`). */
+export interface ShakedexStoredStep {
+  price: number;
+  lockTime: number;
+  /** 65 bytes, hex: the low-S signature and the 0x84 sighash byte. */
+  signature: string;
+}
+
+/** One of our listings (`commands/shakedex.rs::ListingSummary`). */
+export interface ShakedexListingSummary {
+  id: string;
+  name: string;
+  mode: "buyNow" | "reverseAuction";
+  /** `ListingState` in camelCase ("locking", "readyToFinalize", "finalizing", "listed", ...). */
+  state: string;
+  lockTxid: string | null;
+  lockVout: number | null;
+  paymentAddress: string | null;
+  steps: ShakedexStoredStep[];
+  expiresAt: number | null;
+  /** The signed FINALIZE into the lock; `broadcast_tx_draft` sends it. */
+  finalizeDraftId: string | null;
+}
+
 export type ImportSource =
   { kind: "file"; path: string } | { kind: "text"; json: string } | { kind: "link"; url: string };
 

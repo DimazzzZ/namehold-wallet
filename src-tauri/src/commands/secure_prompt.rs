@@ -107,6 +107,21 @@ pub(crate) fn push_test_answer(result: SecurePromptResult) {
     TEST_ANSWERS.with(|q| q.borrow_mut().push_back(result));
 }
 
+// Test-only record of every request `prompt_secure` answered from the
+// queue, so a test can read the rows the window would have shown.
+#[cfg(test)]
+thread_local! {
+    static TEST_REQUESTS: std::cell::RefCell<Vec<SecurePromptRequest>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Drain the requests `prompt_secure` answered from the test queue, oldest
+/// first.
+#[cfg(test)]
+pub(crate) fn take_test_requests() -> Vec<SecurePromptRequest> {
+    TEST_REQUESTS.with(|r| std::mem::take(&mut *r.borrow_mut()))
+}
+
 /// Open a secure window for `request` and block until the user answers (or
 /// closes the window, which resolves to a non-confirmed result).
 ///
@@ -122,7 +137,8 @@ pub async fn prompt_secure<R: Runtime>(
     #[cfg(test)]
     {
         if let Some(answer) = TEST_ANSWERS.with(|q| q.borrow_mut().pop_front()) {
-            let _ = (app, &request);
+            let _ = app;
+            TEST_REQUESTS.with(|r| r.borrow_mut().push(request));
             return Ok(answer);
         }
     }

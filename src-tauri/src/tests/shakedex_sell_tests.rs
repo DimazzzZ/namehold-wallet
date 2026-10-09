@@ -384,6 +384,7 @@ fn finalizing(conn: &Connection, id: &str, draft_id: &str) -> usize {
         &queries::FinalizingListing {
             finalize_draft_id: draft_id,
             lock_txid: &"f1".repeat(32),
+            lock_vout: 0,
             steps_json: r#"[{"price":5000000,"lockTime":1,"signature":"ab"}]"#,
             listing_file_json: "{}",
             expires_at: 1_731_536_000,
@@ -2144,7 +2145,10 @@ async fn prepare_lock_finalize_builds_the_finalize_into_the_lock() {
     let key = r.key();
     assert_eq!(p.key.pubkey, key.pubkey);
     assert_eq!(p.prices, vec![5_000_000]);
-    assert_eq!(p.lock_value, NAME_VALUE);
+    assert_eq!(
+        sell::lock_output(&p.plan.plan, &key.address).unwrap(),
+        (0, NAME_VALUE)
+    );
     assert_eq!(p.mtp, SIGN_MTP);
     assert_eq!(p.lock_time, sell::buy_now_lock_time(SIGN_MTP));
     assert_eq!(p.listing.id, r.listing_id);
@@ -2663,4 +2667,403 @@ async fn finalize_and_sign_refused_for_a_reverse_auction_until_t8() {
     });
     let e = err_text(prepare(&r, &price("5")).await.err().expect("refused"));
     assert!(e.contains("reverse auctions are not supported yet"), "{e}");
+}
+
+// --- Finalize & sign: confirm, sign, store; export (T3) ---------------------
+
+use crate::commands::secure_prompt::{push_test_answer, take_test_requests, SecurePromptResult};
+use crate::commands::shakedex::{
+    export_listing_file_from_conn, finalize_and_sign_confirmed, ListingSummary,
+};
+use crate::noncustodial::shakedex::listing_file::ListingFile;
+use crate::noncustodial::shakedex::template::{
+    encode_lock_time, is_valid_at, secs_until_valid, verify_step_signature, StepTemplate,
+};
+use crate::noncustodial::sync::COV_FINALIZE;
+
+/// Clear the request record and queue the answer to the next prompt.
+fn answer(confirmed: bool) {
+    let _ = take_test_requests();
+    push_test_answer(SecurePromptResult {
+        value: None,
+        confirmed,
+    });
+}
+
+async fn finalize_and_sign(
+    r: &Ready,
+    prices: &[StepInput],
+) -> Result<ListingSummary, crate::error::AppError> {
+    finalize_and_sign_confirmed(&r.app.state(), r.app.handle(), &r.listing_id, prices, None).await
+}
+
+/// A node mock that fails the test if anything is sent.
+async fn no_broadcast(r: &mut Ready) -> Mock {
+    r.node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::PartialJson(
+            json!({ "method": "sendrawtransaction" }),
+        ))
+        .with_header("content-type", "application/json")
+        .with_body(rpc_ok(json!("00")))
+        .expect(0)
+        .create_async()
+        .await
+}
+
+/// R19 day 2 end to end: one confirmation, then the FINALIZE into the lock
+/// is a signed draft spending our lock TRANSFER into a FINALIZE at the lock
+/// address, the listing is Finalizing with the lock outpoint (the
+/// FINALIZE's txid and the index of its FINALIZE output), and its one step
+/// and its listing file are signed over that outpoint, with that output's
+/// value, by the lock key, and verify. Nothing is sent.
+#[tokio::test]
+async fn lock_then_finalize_and_sign() {
+    let mut r = ready_fixture("regtest").await;
+    let net = Network::Regtest;
+    let key = derive_lock_key(&master(), net, 0, NAME).unwrap();
+    let sent = no_broadcast(&mut r).await;
+    answer(true);
+    let s = finalize_and_sign(&r, &price("5"))
+        .await
+        .expect("finalize & sign");
+    assert_eq!(s.state, ListingState::Finalizing);
+    assert_eq!(
+        (s.id.as_str(), s.name.as_str()),
+        (r.listing_id.as_str(), NAME)
+    );
+
+    let draft_id = s.finalize_draft_id.clone().expect("the FINALIZE draft");
+    let row = with_db(&r.app, |c| {
+        queries::get_tx_draft(c, &draft_id).unwrap().unwrap()
+    });
+    assert_eq!(row.action, sell::LOCK_FINALIZE_ACTION);
+    assert_eq!(row.status, "signed", "sent next by broadcast_tx_draft");
+    assert!(row.signed_tx_hex.is_some());
+    sent.assert_async().await;
+    let plan: DraftPlan = serde_json::from_str(&row.signing_inputs_json).unwrap();
+    assert_eq!(
+        (plan.inputs[0].txid.as_str(), plan.inputs[0].vout),
+        (r.lock_txid.as_str(), 0)
+    );
+    let lock_outputs: Vec<usize> = plan
+        .outputs
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.covenant_type == COV_FINALIZE)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(lock_outputs.len(), 1, "one FINALIZE output");
+    let lock_vout = lock_outputs[0];
+    let lock_out = &plan.outputs[lock_vout];
+    assert_eq!(lock_out.address, key.address);
+    assert_eq!(lock_out.value, NAME_VALUE);
+    let finalize_txid: String = serde_json::from_str::<Value>(&row.summary_json).unwrap()["txid"]
+        .as_str()
+        .unwrap()
+        .into();
+
+    let l = r.listing();
+    assert_eq!(l.lock_finalize_draft_id.as_deref(), Some(draft_id.as_str()));
+    assert_eq!(
+        (l.lock_txid.as_deref(), l.lock_vout),
+        (Some(finalize_txid.as_str()), Some(lock_vout as i64)),
+        "the lock outpoint is the FINALIZE output of the plan"
+    );
+    assert_eq!(
+        (s.lock_txid.clone(), s.lock_vout),
+        (l.lock_txid.clone(), l.lock_vout)
+    );
+    assert_eq!(s.steps.len(), 1);
+    let step = &s.steps[0];
+    assert_eq!(step.price, 5_000_000);
+    let mut outpoint = [0u8; 32];
+    hex::decode_to_slice(&finalize_txid, &mut outpoint).unwrap();
+    let sig: [u8; 65] = hex::decode(&step.signature).unwrap().try_into().unwrap();
+    let pubkey: [u8; 33] = hex::decode(&l.lock_pubkey_hex).unwrap().try_into().unwrap();
+    assert_eq!(pubkey, key.pubkey, "the stored pubkey is the lock key's");
+    verify_step_signature(
+        &StepTemplate {
+            lock_outpoint: (outpoint, lock_vout as u32),
+            lock_value: lock_out.value,
+            lock_pubkey: &pubkey,
+            payment: crate::noncustodial::tx::output_address_from_string(
+                net,
+                l.payment_address.as_deref().unwrap(),
+            )
+            .unwrap(),
+            price: 5_000_000,
+            lock_time_secs: step.lock_time,
+        },
+        &sig,
+    )
+    .expect("the step verifies over the FINALIZE's lock outpoint");
+
+    let file =
+        ListingFile::parse(l.listing_file_json.as_deref().expect("file saved"), net).unwrap();
+    assert_eq!(
+        (file.lock_txid, file.lock_vout),
+        (outpoint, lock_vout as u32)
+    );
+    assert_eq!(file.public_key, key.pubkey);
+    assert_eq!(file.payment_addr, l.payment_address.clone().unwrap());
+    assert_eq!(file.steps.len(), 1);
+    assert_eq!(file.steps[0].signature, sig);
+    assert_eq!(
+        (file.steps[0].price, file.steps[0].lock_time),
+        (step.price, step.lock_time)
+    );
+    assert_eq!(
+        file.expires_at,
+        Some(SIGN_MTP + sell::LISTING_LIFETIME_SECS)
+    );
+    assert_eq!(
+        l.expires_at,
+        Some((SIGN_MTP + sell::LISTING_LIFETIME_SECS) as i64)
+    );
+    assert_eq!(s.expires_at, l.expires_at);
+    let stored: Vec<sell::StoredStep> = serde_json::from_str(&l.steps_json).unwrap();
+    assert_eq!(stored, s.steps);
+
+    // Once is enough: the listing is no longer ReadyToFinalize.
+    answer(true);
+    let e = err_text(
+        finalize_and_sign(&r, &price("5"))
+            .await
+            .expect_err("second run"),
+    );
+    assert!(e.contains("already finalized into its lock"), "{e}");
+}
+
+/// R19: a Buy Now is valid in the next block at the MTP it was signed at,
+/// also at an MTP on a 512-second boundary, where a lock time equal to the
+/// MTP would not be.
+#[tokio::test]
+async fn buy_now_valid_immediately() {
+    let r = ready_fixture("regtest").await;
+    answer(true);
+    let s = finalize_and_sign(&r, &price("5")).await.unwrap();
+    let lt = s.steps[0].lock_time;
+    assert!(is_valid_at(encode_lock_time(lt).unwrap(), SIGN_MTP));
+    assert_eq!(secs_until_valid(lt, SIGN_MTP), 0);
+
+    let mut r = ready_fixture("regtest").await;
+    let aligned = SIGN_MTP / 512 * 512;
+    assert!(!is_valid_at(encode_lock_time(aligned).unwrap(), aligned));
+    let (info, coin) = (r.info(), r.coin());
+    r.node(ready_tip(r.net), Some(aligned), info, Some(coin))
+        .await;
+    answer(true);
+    let s = finalize_and_sign(&r, &price("5")).await.unwrap();
+    let lt = s.steps[0].lock_time;
+    assert!(is_valid_at(encode_lock_time(lt).unwrap(), aligned));
+    assert_eq!(secs_until_valid(lt, aligned), 0);
+}
+
+/// R19 (review focus 2): the lock time is the MTP at signing minus 512 s,
+/// not anything from the day the name was locked; the app may have been
+/// closed through the lockup. The listing's expiry counts from that same
+/// MTP.
+#[tokio::test]
+async fn buy_now_lock_time_is_taken_at_signing() {
+    let mut r = ready_fixture("regtest").await;
+    let net = Network::Regtest;
+    let days_later = SIGN_MTP + 9 * 86_400;
+    let (info, coin) = (r.info(), r.coin());
+    r.node(ready_tip(net) + 1_000, Some(days_later), info, Some(coin))
+        .await;
+    answer(true);
+    let s = finalize_and_sign(&r, &price("5")).await.unwrap();
+    assert_eq!(s.steps[0].lock_time, days_later - 512);
+    assert_eq!(s.steps[0].lock_time, sell::buy_now_lock_time(days_later));
+    assert_eq!(
+        s.expires_at,
+        Some((days_later + sell::LISTING_LIFETIME_SECS) as i64)
+    );
+}
+
+/// R19: without the node's median time nothing is asked, signed or written.
+#[tokio::test]
+async fn finalize_and_sign_without_the_median_time_asks_and_writes_nothing() {
+    let mut r = ready_fixture("regtest").await;
+    let net = Network::Regtest;
+    let (info, coin) = (r.info(), r.coin());
+    r.node(ready_tip(net), None, info, Some(coin)).await;
+    answer(true);
+    let e = finalize_and_sign(&r, &price("5"))
+        .await
+        .expect_err("refused");
+    assert!(
+        matches!(&e, crate::error::AppError::Rpc(m) if m.contains("median time")),
+        "{e:?}"
+    );
+    assert!(take_test_requests().is_empty(), "nothing asked");
+    assert_nothing_finalized(&r, 1);
+}
+
+/// R20: the confirmation is its own prompt, not the transaction one, and
+/// lists the FINALIZE's fee, every step with its price and when it is
+/// valid, and the permanence warning — before anything is signed.
+#[tokio::test]
+async fn confirmation_lists_every_step() {
+    let r = ready_fixture("regtest").await;
+    answer(true);
+    let s = finalize_and_sign(&r, &price("5")).await.unwrap();
+    let reqs = take_test_requests();
+    assert_eq!(
+        reqs.len(),
+        1,
+        "one confirmation for the FINALIZE and every step"
+    );
+    let req = &reqs[0];
+    assert_eq!(req.mode, "confirm");
+    assert_eq!(
+        req.title,
+        crate::commands::shakedex::FINALIZE_AND_SIGN_TITLE
+    );
+    assert_ne!(req.title, "Confirm transaction");
+    let rows = req.details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let value = |label: &str| {
+        rows.iter()
+            .find(|r| r["label"] == label)
+            .map(|r| r["value"].as_str().unwrap().to_string())
+    };
+    let fee = with_db(&r.app, |c| {
+        let d = queries::get_tx_draft(c, s.finalize_draft_id.as_deref().unwrap())
+            .unwrap()
+            .unwrap();
+        serde_json::from_str::<Value>(&d.summary_json).unwrap()["feeDoos"]
+            .as_i64()
+            .unwrap()
+    });
+    assert!(fee > 0);
+    assert_eq!(
+        value("Network fee (finalize into the lock)"),
+        Some(crate::noncustodial::types::doos_to_hns_string(fee))
+    );
+    assert_eq!(
+        value("Price step 1").as_deref(),
+        Some("5.000000 HNS, valid at once")
+    );
+    assert_eq!(
+        value("Paid to"),
+        r.listing().payment_address,
+        "the reserved payment address"
+    );
+    assert_eq!(value("Lock address"), Some(r.key().address));
+    assert_eq!(
+        value("Warning").as_deref(),
+        Some(sell::STEP_SIGNATURE_PERMANENCE)
+    );
+}
+
+/// R20: cancelling the confirmation signs and writes nothing.
+#[tokio::test]
+async fn cancelled_confirmation_writes_nothing() {
+    let r = ready_fixture("regtest").await;
+    answer(false);
+    let e = finalize_and_sign(&r, &price("5"))
+        .await
+        .expect_err("rejected");
+    assert!(matches!(e, crate::error::AppError::UserRejected), "{e:?}");
+    assert_eq!(take_test_requests().len(), 1, "it was asked");
+    let l = r.listing();
+    assert_eq!(l.state, ListingState::ReadyToFinalize);
+    assert_eq!((l.steps_json.as_str(), l.listing_file_json), ("[]", None));
+    assert_eq!((l.lock_txid, l.lock_vout, l.expires_at), (None, None, None));
+    assert_eq!(count(&r.app, "wallet_tx_drafts"), 1, "only the lock draft");
+}
+
+/// R19, coordinator (a): the FINALIZE draft and the Finalizing listing
+/// commit together. When the listing cannot move (it changed while the
+/// prompt was open), the draft is rolled back with it.
+#[tokio::test]
+async fn finalize_and_sign_writes_all_or_nothing() {
+    let r = ready_fixture("regtest").await;
+    // The listing leaves ReadyToFinalize as soon as the FINALIZE draft is
+    // inserted, inside the same transaction.
+    with_db(&r.app, |c| {
+        c.execute_batch(
+            "CREATE TRIGGER move_away AFTER INSERT ON wallet_tx_drafts
+             BEGIN UPDATE shakedex_listings SET state = 'locking'; END;",
+        )
+        .unwrap();
+    });
+    answer(true);
+    let e = err_text(
+        finalize_and_sign(&r, &price("5"))
+            .await
+            .expect_err("refused"),
+    );
+    assert!(e.contains("this listing changed meanwhile"), "{e}");
+    with_db(&r.app, |c| {
+        c.execute_batch("DROP TRIGGER move_away").unwrap();
+    });
+    assert_nothing_finalized(&r, 1);
+    assert_eq!(r.listing().listing_file_json, None);
+}
+
+/// R27: from Finalizing on, Cancel transfer is no longer the abort and is
+/// refused.
+#[tokio::test]
+async fn cancel_transfer_refused_once_finalize_and_sign_ran() {
+    let r = ready_fixture("regtest").await;
+    answer(true);
+    finalize_and_sign(&r, &price("5")).await.unwrap();
+    let e = err_text(
+        build_cancel_draft(r.app.state(), NAME.into(), None)
+            .await
+            .expect_err("refused"),
+    );
+    assert!(
+        e.contains(crate::noncustodial::shakedex::NAME_LOCKED_FOR_SALE),
+        "{e}"
+    );
+}
+
+/// R23, deviation 3: the saved file leaves the wallet only once its
+/// FINALIZE is mined (Listed and after); before that it would carry steps
+/// over a coin that may never exist.
+#[tokio::test]
+async fn listing_file_is_exported_only_once_the_finalize_is_mined() {
+    let r = ready_fixture("regtest").await;
+    let export = || {
+        with_db(&r.app, |c| {
+            export_listing_file_from_conn(c, PROFILE, &r.listing_id)
+        })
+    };
+    let set_state = |s: ListingState| {
+        with_db(&r.app, |c| {
+            c.execute(
+                "UPDATE shakedex_listings SET state = ?1 WHERE id = ?2",
+                params![s.as_str(), r.listing_id],
+            )
+            .unwrap();
+        })
+    };
+    let refused = |what: &str| {
+        let e = err_text(export().expect_err(what));
+        assert!(
+            e.contains("once the finalize into the lock is mined"),
+            "{what}: {e}"
+        );
+    };
+    refused("ReadyToFinalize");
+    answer(true);
+    finalize_and_sign(&r, &price("5")).await.unwrap();
+    refused("Finalizing");
+    set_state(ListingState::Locking);
+    refused("Locking");
+    set_state(ListingState::Listed);
+    let file = export().expect("Listed");
+    let saved = r.listing().listing_file_json;
+    assert_eq!(Some(file), saved);
+    let e = with_db(&r.app, |c| {
+        export_listing_file_from_conn(c, "another-profile", &r.listing_id)
+    })
+    .expect_err("not ours");
+    assert!(matches!(e, crate::error::AppError::NotFound(_)), "{e:?}");
 }

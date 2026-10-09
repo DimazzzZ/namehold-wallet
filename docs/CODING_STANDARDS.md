@@ -29,7 +29,7 @@ Locally `cargo test` is enough; CI uses nextest for its two-lane split (see
   Existing imports of `commands::read` (profile resolution, node readiness),
   `commands::sync::open_conn`, `commands::namebase` and
   `commands::secure_prompt` are legacy shared layers — do not add to them.
-- Where the shared pieces live instead: a background job opens its connection with `db::connection::open_migrated` (the body behind the legacy `open_conn`); the context a draft-building command starts from (`Ctx`, `load_ctx`, `fee_rate`, `fetch_name_state`, `renewal_block`) is `commands::draft_ctx`; send policy that needs only a node client (`broadcast_network_guard_with_client`) is `noncustodial::rpc`. `tests/shakedex_layering_tests.rs` reads the Shakedex sources and fails on a sibling-command import; add a new module's source to its list.
+- Where the shared pieces live instead: a background job opens its connection with `db::connection::open_migrated` (the body behind the legacy `open_conn`); the context a draft-building command starts from (`Ctx`, `load_ctx`, `fee_rate`, `fetch_name_state`, `renewal_block`) is `commands::draft_ctx`; send policy that needs only a node client (`broadcast_network_guard_with_client`) is `noncustodial::rpc`; a secure-window confirmation of rows (`confirm_rows`, on the legacy `secure_prompt`) is `commands::secure_confirm`. `tests/shakedex_layering_tests.rs` reads the Shakedex sources and fails on a sibling-command import; add a new module's source to its list.
 - **Pure logic is split from IO** so it can be unit-tested without a live node
   or a Tauri `State`: the `*_with_client(&dyn NodeRpc, ...)` pattern for RPC
   code, `*_from_conn(&Connection)` for DB code, `*_pure.rs` modules for
