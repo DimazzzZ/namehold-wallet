@@ -1755,18 +1755,27 @@ pub fn listing_blocking_owner_actions(
     if listing.state != ListingState::Locking {
         return Ok(Some(listing));
     }
-    let status: Option<String> = match listing.lock_transfer_draft_id.as_deref() {
-        Some(id) => conn
-            .query_row(
-                "SELECT status FROM wallet_tx_drafts WHERE id = ?1 AND wallet_profile_id = ?2",
-                params![id, profile_id],
-                |r| r.get(0),
-            )
-            .optional()?,
-        None => None,
-    };
+    let status = lock_draft_status(conn, &listing)?;
     let alive = status.is_some_and(|s| lock_draft_holds_name(&s));
     Ok(alive.then_some(listing))
+}
+
+/// The status of the listing's lock TRANSFER draft, `None` when the listing
+/// has none or the draft row is gone.
+pub fn lock_draft_status(
+    conn: &rusqlite::Connection,
+    listing: &ShakedexListing,
+) -> Result<Option<String>, AppError> {
+    let Some(id) = listing.lock_transfer_draft_id.as_deref() else {
+        return Ok(None);
+    };
+    Ok(conn
+        .query_row(
+            "SELECT status FROM wallet_tx_drafts WHERE id = ?1 AND wallet_profile_id = ?2",
+            params![id, listing.wallet_profile_id],
+            |r| r.get(0),
+        )
+        .optional()?)
 }
 
 /// R19: link a Cancel transfer draft to the listing it aborts: the open
@@ -1800,18 +1809,18 @@ pub fn link_shakedex_listing_abort(
     )?)
 }
 
-/// The listings whose abort the chain may still move (R19): those with a
-/// linked Cancel transfer that are still Locking or ReadyToFinalize, and
-/// those Aborted within the last `recheck_days`, which a reorg could still
-/// make Locking again.
-pub fn list_shakedex_listings_with_abort(
+/// The listings the chain may still move before the FINALIZE into the lock
+/// (R19): those whose abort is still the Cancel transfer
+/// ([`ListingState::CANCEL_ABORTABLE`]), and those Aborted within the last
+/// `recheck_days`, which a reorg could still make Locking again.
+pub fn list_shakedex_listings_before_lock(
     conn: &rusqlite::Connection,
     profile_id: &str,
     recheck_days: u32,
 ) -> Result<Vec<ShakedexListing>, AppError> {
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
-         WHERE wallet_profile_id = ?1 AND abort_txid IS NOT NULL
+         WHERE wallet_profile_id = ?1
            AND (state IN {}
                 OR (state = ?2 AND updated_at >= datetime('now', ?3)))
          ORDER BY created_at",
@@ -1829,20 +1838,37 @@ pub fn list_shakedex_listings_with_abort(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-/// R19: the listing's Cancel transfer is mined, so the listing is Aborted.
-/// Only a listing whose abort is still the Cancel transfer moves. Returns how
-/// many rows changed (0 or 1).
+/// R19: the name left the lock TRANSFER before the FINALIZE into the lock
+/// (a mined Cancel transfer, a REVOKE, or a lock TRANSFER that never
+/// landed), so the listing is Aborted. Only a listing whose abort is still
+/// the Cancel transfer moves. Returns how many rows changed (0 or 1).
 pub fn abort_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
-    let sql = format!(
-        "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
-         WHERE id = ?1 AND abort_txid IS NOT NULL AND state IN {}",
-        ListingState::cancel_abortable_sql()
-    );
-    Ok(conn.execute(&sql, params![id, ListingState::Aborted])?)
+    end_listing_before_lock(conn, id, ListingState::Aborted)
 }
 
-/// R19: a reorg took an Aborted listing's Cancel transfer out of the chain,
-/// so the listing is Locking again — unless another listing of the name is
+/// hsd reports no live state for the name (`getnameinfo` with `info: null`)
+/// before the FINALIZE into the lock, so the listing is Expired. Only a
+/// listing whose abort is still the Cancel transfer moves. Returns how many
+/// rows changed (0 or 1).
+pub fn expire_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
+    end_listing_before_lock(conn, id, ListingState::Expired)
+}
+
+fn end_listing_before_lock(
+    conn: &rusqlite::Connection,
+    id: &str,
+    to: ListingState,
+) -> Result<usize, AppError> {
+    let sql = format!(
+        "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
+         WHERE id = ?1 AND state IN {}",
+        ListingState::cancel_abortable_sql()
+    );
+    Ok(conn.execute(&sql, params![id, to])?)
+}
+
+/// R19: a reorg took an Aborted listing's abort out of the chain (its lock
+/// TRANSFER is a coin or the owner again), so the listing is Locking again — unless another listing of the name is
 /// open by now (`idx_shakedex_listings_open_name` allows one): that newer
 /// listing stays the open one, and this one stays Aborted. Returns how many
 /// rows changed (0 or 1).
@@ -1850,7 +1876,7 @@ pub fn unabort_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result
     let [t0, t1, t2, t3] = ListingState::TERMINAL;
     Ok(conn.execute(
         "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
-         WHERE id = ?1 AND abort_txid IS NOT NULL AND state = ?3
+         WHERE id = ?1 AND state = ?3
            AND NOT EXISTS (
                SELECT 1 FROM shakedex_listings o
                WHERE o.wallet_profile_id = shakedex_listings.wallet_profile_id
