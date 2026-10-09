@@ -127,6 +127,12 @@ export interface HsdName {
    * in the transfer lockup, null until known.
    */
   shakedex?: ShakedexNameState;
+  /**
+   * Present on a name with a listing of ours (`db::queries::ListingNameState`):
+   * open, or sold within the re-check window. `blocksUntilFinalize` is the
+   * lockup left while Locking, null otherwise or until known.
+   */
+  listing?: ShakedexNameListing;
 }
 
 export interface ShakedexNameState {
@@ -903,10 +909,20 @@ export type ShakedexListingState =
   | "restored"
   | "expired";
 
+/** Rust's `ListingMode`, camelCase. */
+export type ShakedexListingMode = "buyNow" | "reverseAuction";
+
+/** The `listing` object on an Owned Names row (`db::queries::ListingNameState`). */
+export interface ShakedexNameListing {
+  listingId: string;
+  state: ShakedexListingState;
+  blocksUntilFinalize: number | null;
+}
+
 export interface ShakedexListingSummary {
   id: string;
   name: string;
-  mode: "buyNow" | "reverseAuction";
+  mode: ShakedexListingMode;
   /** Rust's `ListingState`, in camelCase. */
   state: ShakedexListingState;
   lockTxid: string | null;

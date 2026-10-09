@@ -562,10 +562,20 @@ pub(crate) fn build_lock_draft_inner(
         )));
     }
     if queries::open_shakedex_listing_for_name(conn, &ctx.profile_id, i.name)?.is_some() {
-        return Err(AppError::InvalidInput(format!(
-            "'{}' is already locked for sale",
-            i.name
-        )));
+        // A Locking listing whose lock draft is dead holds the name's one
+        // open listing until the next sync ends it from the chain (R19); no
+        // state is written here without that evidence.
+        let dead =
+            queries::listing_blocking_owner_actions(conn, &ctx.profile_id, i.name)?.is_none();
+        return Err(AppError::InvalidInput(if dead {
+            format!(
+                "an earlier lock of '{}' did not go through: the next sync ends it, then the \
+                 name can be locked again",
+                i.name
+            )
+        } else {
+            format!("'{}' is already locked for sale", i.name)
+        }));
     }
     sell::lock_self_check(i.key, ctx.network)?;
 
@@ -777,7 +787,7 @@ pub(crate) async fn prepare_lock_finalize(
         .ok_or_else(|| corrupted("payment address"))?;
     let owner = owner
         .filter(|o| {
-            o.txid.eq_ignore_ascii_case(&lock_transfer_txid)
+            o.txid == lock_transfer_txid
                 && o.vout == 0
                 && o.covenant_type == i64::from(COV_TRANSFER)
         })
@@ -1121,8 +1131,8 @@ fn listing_over(state: ListingState) -> Option<&'static str> {
         }
         ListingState::Sold => Some("this name is sold: the listing is over"),
         ListingState::Restored => Some(
-            "this lock was finalized by another wallet with the same recovery phrase: it has \
-             no signed prices or listing file here; import its saved file",
+            "this lock was restored by name, or finalized by another wallet with the same \
+             recovery phrase: it has no signed prices or listing file here; import its saved file",
         ),
         _ => None,
     }
@@ -1151,6 +1161,244 @@ pub(crate) fn export_listing_file_from_conn(
     l.listing_file_json.ok_or_else(|| {
         AppError::InvalidInput("this lock has no listing file here: import its saved file".into())
     })
+}
+
+/// What a restore by name (R32) decides from: every node read, and the lock
+/// key already in hand.
+pub(crate) struct RestoreInput<'a> {
+    pub(crate) profile_id: &'a str,
+    pub(crate) network: Network,
+    pub(crate) name: &'a str,
+    pub(crate) key: &'a LockKey,
+    pub(crate) owner: &'a sell::RestoreOwner,
+    pub(crate) coin: &'a rpc::NodeCoin,
+}
+
+/// R32: adopt the name's owner coin as a Restored lock when it is our lock
+/// ([`sell::restore_verdict`]), keyed by name and that outpoint, with the
+/// key's public key and no listing details (its mode is recorded as Buy Now
+/// until its file is imported). Refused while a listing of the name is open,
+/// or when a listing of the profile already holds that lock coin. Writes the
+/// listing only.
+pub(crate) fn restore_lock_inner(
+    conn: &rusqlite::Connection,
+    i: &RestoreInput,
+) -> Result<ListingSummary, AppError> {
+    if queries::open_shakedex_listing_for_name(conn, i.profile_id, i.name)?.is_some() {
+        return Err(AppError::InvalidInput(format!(
+            "'{}' is already tracked by one of this wallet's listings",
+            i.name
+        )));
+    }
+    if queries::shakedex_listing_holds_lock_coin(conn, i.profile_id, &i.owner.txid, i.owner.vout)? {
+        return Err(AppError::InvalidInput(
+            "this lock coin is already tracked by one of this wallet's listings".into(),
+        ));
+    }
+    sell::restore_verdict(i.network, i.name, &i.key.address, i.owner, i.coin)?;
+    let l = ShakedexListing {
+        id: random_id(),
+        wallet_profile_id: i.profile_id.into(),
+        name: i.name.into(),
+        mode: ListingMode::BuyNow,
+        state: ListingState::Restored,
+        lock_pubkey_hex: hex::encode(i.key.pubkey),
+        lock_transfer_draft_id: None,
+        lock_finalize_draft_id: None,
+        lock_transfer_txid: None,
+        lock_txid: Some(i.owner.txid.clone()),
+        lock_vout: Some(i64::from(i.owner.vout)),
+        payment_address: None,
+        cancel_address: None,
+        cancel_child_index: None,
+        steps_json: "[]".into(),
+        listing_file_json: None,
+        publish: false,
+        market_status: None,
+        market_retry_at: None,
+        expires_at: None,
+        abort_draft_id: None,
+        abort_txid: None,
+        sold_txid: None,
+        cancel_txid: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    queries::insert_shakedex_listing(conn, &l)?;
+    let l = queries::get_shakedex_listing(conn, &l.id)?
+        .ok_or_else(|| AppError::Other("listing vanished after the restore".into()))?;
+    ListingSummary::of(&l)
+}
+
+/// R32: the active profile's Restored lock that `file` (our own listing
+/// file, already parsed) is for: a Restored lock of the file's name (a
+/// listing of it in any other state, or none, is refused) whose lock key and
+/// lock outpoint the file carries, and a file paying one of this profile's
+/// derived addresses (the parser has checked its network). Reads the
+/// database only.
+pub(crate) fn restored_lock_for_file(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    file: &ListingFile,
+) -> Result<ShakedexListing, AppError> {
+    let listing = queries::open_shakedex_listing_for_name(conn, profile_id, &file.name)?
+        .filter(|l| l.state == ListingState::Restored)
+        .ok_or_else(|| {
+            AppError::InvalidInput(format!(
+                "there is no Restored lock of '{}' here: restore it by name first",
+                file.name
+            ))
+        })?;
+    if hex::encode(file.public_key) != listing.lock_pubkey_hex {
+        return Err(AppError::InvalidInput(
+            "this listing file is for another lock key".into(),
+        ));
+    }
+    let lock_txid = hex::encode(file.lock_txid);
+    if listing.lock_txid.as_deref() != Some(lock_txid.as_str())
+        || listing.lock_vout != Some(i64::from(file.lock_vout))
+    {
+        return Err(AppError::InvalidInput(
+            "this listing file is for another lock coin".into(),
+        ));
+    }
+    if !queries::get_profile_addresses(conn, profile_id)?.contains(&file.payment_addr) {
+        return Err(AppError::InvalidInput(
+            "this listing file's payment address is not one of this wallet's addresses".into(),
+        ));
+    }
+    Ok(listing)
+}
+
+/// The value of the lock coin hsd reports for `file`'s lock outpoint, read
+/// field by field: a coin of another outpoint, without its address, at
+/// another address than `lock_address`, or with a negative value, is "could
+/// not check".
+fn lock_coin_value(
+    coin: &rpc::NodeCoin,
+    file: &ListingFile,
+    lock_address: &str,
+) -> Result<u64, AppError> {
+    let lock_txid = hex::encode(file.lock_txid);
+    if !(coin.txid == lock_txid && coin.vout == file.lock_vout) {
+        return Err(AppError::Rpc(format!(
+            "node answered coin {}:{} for the lock coin {lock_txid}:{}",
+            coin.txid, coin.vout, file.lock_vout
+        )));
+    }
+    let Some(address) = coin.address.as_deref() else {
+        return Err(AppError::Rpc(
+            "node did not report the lock coin's address".into(),
+        ));
+    };
+    if address != lock_address {
+        return Err(AppError::Rpc(format!(
+            "node reported the lock coin at {address}, not at this lock's address"
+        )));
+    }
+    u64::try_from(coin.value).map_err(|_| {
+        AppError::Rpc(format!(
+            "node reported a lock coin value of {} doos",
+            coin.value
+        ))
+    })
+}
+
+/// What the upgrade of a Restored lock decides from: the listing and the
+/// file already matched ([`restored_lock_for_file`]), the lock coin as hsd
+/// reports it (`None`: its 404, spent), and the lock key derived from the
+/// seed after the node read.
+pub(crate) struct OwnFileInput<'a> {
+    pub(crate) network: Network,
+    pub(crate) listing: &'a ShakedexListing,
+    pub(crate) file: &'a ListingFile,
+    pub(crate) key: &'a LockKey,
+    pub(crate) coin: Option<&'a rpc::NodeCoin>,
+}
+
+/// R32: upgrade a Restored lock with its own listing file. The file's public
+/// key must be the lock key this wallet derives for the name; while the lock
+/// coin is a coin, every step must also be signed by that key over it
+/// (`template::verify_step_signature`, at the coin's value as hsd reports
+/// it). A spent lock coin leaves the outpoint and key to check: the chain
+/// then judges the sale (R22) by the file's payment address. The listing
+/// becomes Listed with the file's payment address, steps, expiry and mode;
+/// the file is kept as parsed (`ListingFile::to_json`, unknown fields
+/// included). Writes nothing on a refusal.
+pub(crate) fn upgrade_restored_lock_inner(
+    conn: &rusqlite::Connection,
+    i: &OwnFileInput,
+) -> Result<ListingSummary, AppError> {
+    let file = i.file;
+    if file.public_key != i.key.pubkey {
+        return Err(AppError::InvalidInput(format!(
+            "this listing file's public key is not the lock key this wallet derives for '{}'",
+            file.name
+        )));
+    }
+    if let Some(coin) = i.coin {
+        let lock_value = lock_coin_value(coin, file, &i.key.address)?;
+        let payment = output_address_from_string(i.network, &file.payment_addr)?;
+        for step in &file.steps {
+            template::verify_step_signature(
+                &template::StepTemplate {
+                    lock_outpoint: (file.lock_txid, file.lock_vout),
+                    lock_value,
+                    lock_pubkey: &file.public_key,
+                    payment: payment.clone(),
+                    price: step.price,
+                    lock_time_secs: step.lock_time,
+                },
+                &step.signature,
+            )
+            .map_err(|_| {
+                AppError::InvalidInput(
+                    "a price in this listing file is not signed by this lock".into(),
+                )
+            })?;
+        }
+    }
+    let steps: Vec<sell::StoredStep> = file
+        .steps
+        .iter()
+        .map(|s| sell::StoredStep {
+            price: s.price,
+            lock_time: s.lock_time,
+            signature: hex::encode(s.signature),
+        })
+        .collect();
+    let mode = if file.steps.len() == 1 {
+        ListingMode::BuyNow
+    } else {
+        ListingMode::ReverseAuction
+    };
+    let expires_at = file
+        .expires_at
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| AppError::InvalidInput("the listing file's expiry is out of range".into()))?;
+    let n = queries::upgrade_restored_lock(
+        conn,
+        &i.listing.id,
+        &hex::encode(file.lock_txid),
+        file.lock_vout,
+        &hex::encode(file.public_key),
+        &queries::UpgradedListing {
+            mode,
+            payment_address: &file.payment_addr,
+            steps_json: &serde_json::to_string(&steps)?,
+            listing_file_json: &file.to_json()?,
+            expires_at,
+        },
+    )?;
+    if n != 1 {
+        return Err(AppError::InvalidInput(
+            "this lock changed meanwhile: nothing was saved; try again".into(),
+        ));
+    }
+    let l = queries::get_shakedex_listing(conn, &i.listing.id)?
+        .ok_or_else(|| AppError::Other("listing vanished after the import".into()))?;
+    ListingSummary::of(&l)
 }
 
 // --- commands ---------------------------------------------------------------
@@ -1726,6 +1974,92 @@ pub async fn shakedex_export_listing_file(
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let profile = draft_ctx::active_profile(&conn)?;
     export_listing_file_from_conn(&conn, &profile.id, &listing_id)
+}
+
+/// Restore a lock by name (R32): the name's owner coin is read on the node
+/// (`getnameinfo`, then `GET /coin`), the lock key of `name` is derived from
+/// the seed of the unlocked session after those reads (for its public key
+/// and lock address only; nothing is signed), and the coin is adopted as a
+/// Restored lock when it is a FINALIZE at that key's lock address
+/// ([`restore_lock_inner`]). Acts on the active profile, which must be
+/// seed-backed (R16: Ledger and watch-only profiles cannot derive the
+/// hardened lock key); no experimental flag (the lock exists already, R15).
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_restore_lock(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<ListingSummary, AppError> {
+    let ctx = software_writer_ctx(&state)?;
+    authorize_signer(&state, &ctx)?;
+    let reply = ctx.node.get_name_info(&name).await?;
+    let owner = sell::restore_owner(&reply, &name)?;
+    let coin = ctx
+        .node
+        .get_coin(&owner.txid, owner.vout)
+        .await?
+        .ok_or_else(|| AppError::InvalidInput(sell::RESTORE_SPENT_IN_MEMPOOL.into()))?;
+    let key = derive_listing_key(&state, &ctx, &name)?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    restore_lock_inner(
+        &conn,
+        &RestoreInput {
+            profile_id: &ctx.profile_id,
+            network: ctx.network,
+            name: &name,
+            key: &key,
+            owner: &owner,
+            coin: &coin,
+        },
+    )
+}
+
+/// Import our own saved listing file for a Restored lock (R32): the file is
+/// read by the strict parser (size limit first), a file charging a market
+/// fee is refused (we never write one), the Restored lock it is for is found
+/// ([`restored_lock_for_file`]), the lock coin is read with `GET /coin`, the
+/// lock key of the name is derived from the seed of the unlocked session
+/// after that read (to compare its public key; nothing is signed), and the
+/// lock is upgraded ([`upgrade_restored_lock_inner`]). Acts on the active
+/// profile, which must be seed-backed (R16); no experimental flag (R15).
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_import_own_listing_file(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<ListingSummary, AppError> {
+    let ctx = software_writer_ctx(&state)?;
+    authorize_signer(&state, &ctx)?;
+    let file = ListingFile::parse(&text, ctx.network)?;
+    // This wallet writes `feeAddr: null` and every `fee` 0
+    // (`listing_file::write_listing_file`).
+    if file.names_a_fee_address() || file.steps.iter().any(|s| s.fee != 0) {
+        return Err(AppError::InvalidInput(
+            "this listing file names a market fee, which this wallet never writes: it is not \
+             this wallet's own listing file"
+                .into(),
+        ));
+    }
+    let listing = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        restored_lock_for_file(&conn, &ctx.profile_id, &file)?
+    };
+    let coin = ctx
+        .node
+        .get_coin(&hex::encode(file.lock_txid), file.lock_vout)
+        .await?;
+    let key = derive_listing_key(&state, &ctx, &file.name)?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    upgrade_restored_lock_inner(
+        &conn,
+        &OwnFileInput {
+            network: ctx.network,
+            listing: &listing,
+            file: &file,
+            key: &key,
+            coin: coin.as_ref(),
+        },
+    )
 }
 
 #[cfg(test)]
