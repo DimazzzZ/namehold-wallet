@@ -304,11 +304,16 @@ pub struct NewListingFile<'a> {
 }
 
 /// R23: our listing as Shakedex v2 JSON, with the keys the CLI writes and
-/// LearnHNS serves, no market fee (`feeAddr: null`, every `fee` 0 unless a
-/// step carries one) and `expiresAt` in seconds. The file is read back by
+/// LearnHNS serves, no market fee (`feeAddr: null`, every `fee` 0; a step
+/// carrying one is refused) and `expiresAt` in seconds. The file is read back by
 /// [`ListingFile::parse`] before it is returned: a file our own strict
 /// reader refuses is never handed out.
 pub fn write_listing_file(l: &NewListingFile, network: Network) -> Result<String, AppError> {
+    if l.steps.iter().any(|s| s.fee != 0) {
+        return Err(bad(
+            "we never write a market fee: every step's fee must be 0",
+        ));
+    }
     let file = serde_json::json!({
         "data": l.steps.iter().map(|s| serde_json::json!({
             "fee": s.fee,

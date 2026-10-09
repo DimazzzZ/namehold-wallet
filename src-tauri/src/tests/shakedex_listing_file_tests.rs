@@ -356,6 +356,7 @@ fn written(
     String,
     crate::noncustodial::shakedex::lock_key::LockKey,
     String,
+    PriceStep,
 ) {
     let master = ExtendedPrivKey::from_seed(&[7u8; 64]).unwrap();
     let key = derive_lock_key(&master, network, 0, W_NAME).unwrap();
@@ -389,7 +390,7 @@ fn written(
         network,
     )
     .unwrap();
-    (json, key, pay)
+    (json, key, pay, steps[0].clone())
 }
 
 /// R23 and R2: what we write is read back by our own strict parser, field
@@ -398,7 +399,7 @@ fn written(
 #[tokio::test]
 async fn written_listing_file_round_trips_through_the_strict_parser() {
     for network in [Network::Main, Network::Regtest] {
-        let (json, key, pay) = written(network);
+        let (json, key, pay, step) = written(network);
         let l = ListingFile::parse(&json, network).expect("our own file parses");
         assert_eq!(l.name, W_NAME);
         assert_eq!((l.lock_txid, l.lock_vout), (W_LOCK_TXID, 0));
@@ -406,9 +407,11 @@ async fn written_listing_file_round_trips_through_the_strict_parser() {
         assert_eq!(l.payment_addr, pay);
         assert_eq!(l.fee_addr, None);
         assert_eq!(l.expires_at, Some(W_MTP + 365 * 86_400));
-        assert_eq!(l.steps.len(), 1);
+        // The parsed steps are the signed input, byte for byte: price, lock
+        // time, fee and signature.
+        assert_eq!(l.steps, vec![step.clone()]);
+        assert_eq!(l.steps[0].lock_time, buy_now_lock_time(W_MTP));
         assert_eq!(l.steps[0].signature[64], 0x84);
-        assert_eq!(v(&l.to_json().unwrap()), v(&json), "round-trips unchanged");
 
         let txid = hex::encode(W_LOCK_TXID);
         let nh = hex::encode(crate::noncustodial::names::hash_name(W_NAME).unwrap());
@@ -440,15 +443,83 @@ async fn written_listing_file_round_trips_through_the_strict_parser() {
 }
 
 /// The file carries exactly the keys the CLI writes and LearnHNS serves
-/// (the live dexreviews proof), so every Shakedex wallet reads it.
+/// (the live dexreviews proof), so every Shakedex wallet reads it. This pins
+/// the key set, not their order (`serde_json` sorts keys; readers do not
+/// depend on order).
 #[test]
 fn written_listing_file_has_the_cli_field_set() {
     let keys = |j: &Value| -> Vec<String> { j.as_object().unwrap().keys().cloned().collect() };
-    let (json, _, _) = written(Network::Main);
+    let (json, _, _, _) = written(Network::Main);
     let ours = v(&json);
     assert_eq!(keys(&ours), keys(&v(DEX)));
     assert_eq!(keys(&ours["data"][0]), keys(&v(DEX)["data"][0]));
     assert_eq!(ours["version"], 2);
     assert_eq!(ours["feeAddr"], Value::Null);
     assert!(ours["expiresAt"].is_u64(), "seconds, as the CLI writes it");
+}
+
+/// We never write a market fee: a step with one is refused, not written.
+#[test]
+fn a_step_with_a_fee_is_not_written() {
+    let (_, key, pay, mut step) = written(Network::Main);
+    step.fee = 1;
+    let steps = [step];
+    let e = write_listing_file(
+        &NewListingFile {
+            name: W_NAME,
+            lock_txid: W_LOCK_TXID,
+            lock_vout: 0,
+            public_key: key.pubkey,
+            payment_addr: &pay,
+            steps: &steps,
+            expires_at: W_MTP + 365 * 86_400,
+        },
+        Network::Main,
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("fee"), "{e}");
+}
+
+/// A long schedule (1000 steps, falling price, rising lock time) round-trips
+/// and fits the size limit the parser enforces.
+#[test]
+fn a_thousand_step_schedule_round_trips_under_the_size_limit() {
+    let network = Network::Main;
+    let (_, key, pay, _) = written(network);
+    let base = buy_now_lock_time(W_MTP);
+    let steps: Vec<PriceStep> = (0..1000u64)
+        .map(|i| {
+            let (price, lock_time) = (2_000_000_000 - i * 1_000_000, base + i * 3_600);
+            let t = StepTemplate {
+                lock_outpoint: (W_LOCK_TXID, 0),
+                lock_value: W_LOCK_VALUE,
+                lock_pubkey: &key.pubkey,
+                payment: output_address_from_string(network, &pay).unwrap(),
+                price,
+                lock_time_secs: lock_time,
+            };
+            PriceStep {
+                price,
+                lock_time,
+                signature: sign_step(&key, &t).unwrap(),
+                fee: 0,
+            }
+        })
+        .collect();
+    let json = write_listing_file(
+        &NewListingFile {
+            name: W_NAME,
+            lock_txid: W_LOCK_TXID,
+            lock_vout: 0,
+            public_key: key.pubkey,
+            payment_addr: &pay,
+            steps: &steps,
+            expires_at: W_MTP + 365 * 86_400,
+        },
+        network,
+    )
+    .unwrap();
+    eprintln!("1000-step listing file: {} bytes", json.len());
+    assert!(json.len() <= MAX_LISTING_FILE_BYTES, "{} bytes", json.len());
+    assert_eq!(ListingFile::parse(&json, network).unwrap().steps, steps);
 }
