@@ -211,7 +211,7 @@ fn apply(f: &Fx, w: ListingWrite, to: ListingState) -> Result<usize, crate::erro
         ListingWrite::CancelMined => {
             queries::mark_listing_cancel_mined(c, id, (&txid("c1"), 0), own)
         }
-        ListingWrite::CancelUnmined => queries::mark_listing_cancel_unmined(c, id),
+        ListingWrite::CancelUnmined => queries::mark_listing_cancel_unmined(c, id, &txid("c1")),
         ListingWrite::FinalizeCancel => {
             let tx = c.unchecked_transaction().unwrap();
             let n =
@@ -219,7 +219,9 @@ fn apply(f: &Fx, w: ListingWrite, to: ListingState) -> Result<usize, crate::erro
             tx.commit().unwrap();
             n
         }
-        ListingWrite::RevertCancelFinalize => queries::revert_listing_cancel_finalize(c, id),
+        ListingWrite::RevertCancelFinalize => {
+            queries::revert_listing_cancel_finalize(c, id, "cfin")
+        }
         ListingWrite::CancelDone => queries::mark_listing_cancelled(c, id, (&txid("c1"), 0)),
         ListingWrite::LowerPrice => queries::lower_listing_price(
             c,
@@ -303,7 +305,16 @@ fn each_listing_write_moves_exactly_its_transitions() {
     }
     // R28: a purchase mined before our cancel is a sale all the same.
     expected.push((ListingWrite::Sell, S::Cancelling, S::Sold));
-    for from in [S::Listed, S::SalePending, S::Restored, S::Cancelling] {
+    // A FINALIZE mined and a cancel or purchase of it before this device
+    // syncs; a Sold listing whose purchase a reorg replaced with our cancel.
+    for from in [
+        S::Finalizing,
+        S::Listed,
+        S::SalePending,
+        S::Sold,
+        S::Restored,
+        S::Cancelling,
+    ] {
         expected.push((ListingWrite::CancelMined, from, S::CancelAwaitingFinalize));
     }
     for from in [S::CancelAwaitingFinalize, S::CancelFinalizing] {
@@ -361,6 +372,7 @@ fn each_listing_write_moves_exactly_its_transitions() {
                     lock_vout: base.lock_vout.filter(|_| !proven),
                     cancel_txid: Some(txid("c1")),
                     cancel_vout: Some(0),
+                    cancel_finalize_draft_id: Some("cfin".to_string()),
                     ..base.clone()
                 };
                 f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
@@ -535,9 +547,15 @@ fn cancel_writes_take_only_their_own_coin() {
         listing(&f).cancel_finalize_draft_id.as_deref(),
         Some("cfin")
     );
+    // A reorg of the cancel is read for that cancel only.
+    assert_eq!(
+        queries::mark_listing_cancel_unmined(&f.conn, &f.id, &txid("c9")).unwrap(),
+        0
+    );
+    assert_eq!(listing(&f).state, S::CancelFinalizing);
     // A reorg of the cancel forgets its output, its count and its FINALIZE.
     assert_eq!(
-        queries::mark_listing_cancel_unmined(&f.conn, &f.id).unwrap(),
+        queries::mark_listing_cancel_unmined(&f.conn, &f.id, &txid("c2")).unwrap(),
         1
     );
     let l = listing(&f);
@@ -568,7 +586,12 @@ fn cancel_writes_take_only_their_own_coin() {
     queries::mark_listing_cancel_finalizing_in_tx(&tx, &f.id, "cfin", (&txid("c1"), 0)).unwrap();
     tx.commit().unwrap();
     assert_eq!(
-        queries::revert_listing_cancel_finalize(&f.conn, &f.id).unwrap(),
+        queries::revert_listing_cancel_finalize(&f.conn, &f.id, "other").unwrap(),
+        0
+    );
+    assert_eq!(listing(&f).state, S::CancelFinalizing);
+    assert_eq!(
+        queries::revert_listing_cancel_finalize(&f.conn, &f.id, "cfin").unwrap(),
         1
     );
     let l = listing(&f);
@@ -588,6 +611,37 @@ fn cancel_writes_take_only_their_own_coin() {
     );
     let l = listing(&f);
     assert_eq!((l.state, l.cancel_blocks_remaining), (S::Cancelled, None));
+
+    // A Sold listing whose purchase a reorg replaced with a mined cancel of
+    // ours, and a Finalizing one a cancel was mined over: only for the
+    // lock outpoint the listing stores.
+    for from in [S::Sold, S::Finalizing] {
+        let f = fx(from);
+        let (t, v) = (f.lock_txid.clone(), f.lock_vout);
+        f.conn
+            .execute("UPDATE shakedex_listings SET sold_txid = ?1", [txid("b1")])
+            .unwrap();
+        assert_eq!(
+            queries::mark_listing_cancel_mined(&f.conn, &f.id, (&txid("c2"), 3), (&txid("f2"), v))
+                .unwrap(),
+            0,
+            "{from:?}: another lock txid"
+        );
+        assert_eq!(
+            queries::mark_listing_cancel_mined(&f.conn, &f.id, (&txid("c2"), 3), (&t, v + 1))
+                .unwrap(),
+            0,
+            "{from:?}: another lock vout"
+        );
+        assert_eq!(listing(&f).state, from);
+        assert_eq!(
+            queries::mark_listing_cancel_mined(&f.conn, &f.id, (&txid("c2"), 3), (&t, v)).unwrap(),
+            1,
+            "{from:?}"
+        );
+        let l = listing(&f);
+        assert_eq!((l.state, l.sold_txid), (S::CancelAwaitingFinalize, None));
+    }
 
     // LowerPrice: the stored lock outpoint and the steps it was read with.
     let f = fx(S::Listed);
@@ -621,6 +675,14 @@ fn cancel_writes_take_only_their_own_coin() {
         ),
         (S::Listed, new.to_string(), Some(r#"{"x":1}"#), Some(7))
     );
+}
+
+/// A cancelled listing goes back to Listed with its listing file, and to
+/// Restored without one (a lock restored by name).
+#[test]
+fn uncancel_target_follows_the_listing_file() {
+    assert_eq!(ListingState::uncancel_target(true), ListingState::Listed);
+    assert_eq!(ListingState::uncancel_target(false), ListingState::Restored);
 }
 
 /// A stored lock output index that is not a `u32` is a corrupted row: the
