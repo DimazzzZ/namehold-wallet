@@ -84,6 +84,31 @@ fn every_listing_state_round_trips_through_the_table() {
     );
 }
 
+/// The TS mirror `ShakedexListingState` (`src/types/index.ts`) lists
+/// exactly the spellings serde sends for `ListingState`.
+#[test]
+fn ts_listing_state_union_lists_every_state() {
+    let ts = include_str!("../../../src/types/index.ts");
+    let start = ts
+        .find("export type ShakedexListingState =")
+        .expect("the TS union");
+    let block = &ts[start..start + ts[start..].find(';').expect("end of the union")];
+    let mut in_ts: Vec<&str> = block.split('"').skip(1).step_by(2).collect();
+    in_ts.sort_unstable();
+    let mut in_rust: Vec<String> = ListingState::ALL
+        .iter()
+        .map(|s| {
+            serde_json::to_value(s)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    in_rust.sort_unstable();
+    assert_eq!(in_ts, in_rust);
+}
+
 #[test]
 fn an_unknown_listing_state_is_refused_when_read() {
     assert!("owned".parse::<ListingState>().is_err());
