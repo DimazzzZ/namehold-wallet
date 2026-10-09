@@ -4278,6 +4278,13 @@ enum FinalizeSeen {
     /// Our FINALIZE, but `GET /tx` shows it in the mempool: not hsd's
     /// picture of a coin a mined purchase spent.
     InMempool,
+    /// Our FINALIZE, and before it (a later coin of ours at the payment
+    /// address) a purchase out of our lock address of a FINALIZE that spends
+    /// another lock TRANSFER: that lead is not proven, the next one is.
+    WrongLeadFirst,
+    /// [`Self::WrongLeadFirst`], but that lead's FINALIZE cannot be read: it
+    /// is skipped, not the end of the search.
+    UnreadableLeadFirst,
 }
 
 /// T3 carry: our FINALIZE was dropped (the listing back at ReadyToFinalize
@@ -4288,26 +4295,34 @@ enum FinalizeSeen {
 /// outpoint — read with the index (`GET /tx`) or without it (the FINALIZE's
 /// block at `info.renewal`, the purchase's at our coin's height). With the
 /// purchase's TRANSFER still the owner or the buyer's FINALIZE the owner;
-/// never Aborted. A purchase whose spent coin hsd cannot show (the buyer
-/// finalized, no index), or shows as anything else, leaves the listing as
-/// it is.
+/// never Aborted. Also for a listing still Locking (this device was offline
+/// through the lockup; the lock was finalized elsewhere and bought). Every
+/// mined lead is tried until one is proven. A purchase whose spent coin hsd
+/// cannot show (the buyer finalized, no index), or shows as anything else,
+/// leaves the listing as it is.
 #[tokio::test]
 async fn dropped_finalize_mined_and_bought_before_a_sync_is_sold() {
     use FinalizeSeen::*;
+    use ListingState::{Locking, ReadyToFinalize};
     let cases = [
-        // (buyer finalized, index, how the FINALIZE is shown, Sold)
-        (false, true, Ours, true),
-        (true, true, Ours, true),
-        (false, false, Ours, true),
-        (true, false, Ours, false),
-        (false, true, OtherTransfer, false),
-        (true, true, NotFinalize, false),
-        (false, true, InMempool, false),
-        (false, true, OtherName, false),
-        (false, true, OtherAddress, false),
+        // (buyer finalized, index, how the FINALIZE is shown, from, Sold)
+        (false, true, Ours, ReadyToFinalize, true),
+        (true, true, Ours, ReadyToFinalize, true),
+        (false, false, Ours, ReadyToFinalize, true),
+        (true, false, Ours, ReadyToFinalize, false),
+        (false, true, OtherTransfer, ReadyToFinalize, false),
+        (true, true, NotFinalize, ReadyToFinalize, false),
+        (false, true, InMempool, ReadyToFinalize, false),
+        (false, true, OtherName, ReadyToFinalize, false),
+        (false, true, OtherAddress, ReadyToFinalize, false),
+        (false, true, Ours, Locking, true),
+        (true, true, Ours, Locking, true),
+        (true, true, WrongLeadFirst, ReadyToFinalize, true),
+        (true, true, UnreadableLeadFirst, ReadyToFinalize, true),
     ];
-    for (buyer_finalized, index, seen, sold) in cases {
-        let what = format!("buyer finalized {buyer_finalized}, index {index}, {seen:?}");
+    for (buyer_finalized, index, seen, from, sold) in cases {
+        let what =
+            format!("buyer finalized {buyer_finalized}, index {index}, {seen:?}, from {from:?}");
         let r = ready_fixture("regtest").await;
         let (fin, vout) = finalized(&r).await;
         set_lock_draft_status(&r.app, &r.listing_id, "confirmed");
@@ -4334,6 +4349,7 @@ async fn dropped_finalize_mined_and_bought_before_a_sync_is_sold() {
             None,
             "the outpoint went with the FINALIZE"
         );
+        set_state(&r.app, &r.listing_id, from);
 
         let payment = r.listing().payment_address.unwrap();
         let lock = lock_address(Network::Regtest);
@@ -4418,13 +4434,41 @@ async fn dropped_finalize_mined_and_bought_before_a_sync_is_sold() {
         if !buyer_finalized {
             info["info"]["renewal"] = tip.into();
         }
-        let txs = [(buy.clone(), rest.clone()), (fin.clone(), fin_rest.clone())];
+        let mut txs = vec![(buy.clone(), rest.clone()), (fin.clone(), fin_rest.clone())];
+        if matches!(seen, WrongLeadFirst | UnreadableLeadFirst) {
+            // A later coin of ours at the payment address: a purchase out
+            // of our lock address of `f9…:0`, a FINALIZE at the lock that
+            // spends another lock TRANSFER.
+            let (wrong, wrong_fin) = ("c3".repeat(32), "f9".repeat(32));
+            with_db(&r.app, |c| {
+                c.execute(
+                    "INSERT INTO tracked_utxos (txid, vout, wallet_profile_id, address,
+                         script_pubkey_hex, value_doos, height, covenant_type, spend_class,
+                         spent_by_txid)
+                     VALUES (?1, 2, ?2, ?3, '00', 5000000, ?4, 0, 'liquid_hns', NULL)",
+                    params![wrong, PROFILE, payment, tip + 2],
+                )
+                .unwrap();
+            });
+            let mut wrong_rest = rest.clone();
+            wrong_rest["hash"] = wrong.clone().into();
+            wrong_rest["height"] = (tip + 2).into();
+            wrong_rest["inputs"][0]["prevout"] = json!({ "hash": wrong_fin, "index": 0 });
+            let mut wrong_fin_rest = fin_rest.clone();
+            wrong_fin_rest["hash"] = wrong_fin.clone().into();
+            wrong_fin_rest["inputs"][vout as usize]["prevout"]["hash"] = "e9".repeat(32).into();
+            txs.push((wrong, wrong_rest));
+            txs.push((wrong_fin, wrong_fin_rest));
+        }
         let blocks = [
             (format!("{:064x}", tip + 1), block_holding(&rest, tip + 1)),
             (format!("{tip:064x}"), block_holding(&fin_rest, tip)),
         ];
         let chain = chain_at(info, tip + 13, coins)
             .with_tx_by_hash_fn(move |h| {
+                if seen == UnreadableLeadFirst && h == "f9".repeat(32) {
+                    return Err(crate::error::AppError::Rpc("connection reset".into()));
+                }
                 Ok(match txs.iter().find(|(t, _)| *t == h) {
                     Some((_, v)) if index => v.clone(),
                     _ => Value::Null,
@@ -4449,7 +4493,7 @@ async fn dropped_finalize_mined_and_bought_before_a_sync_is_sold() {
                 "{what}"
             );
         } else {
-            assert_eq!(l.state, ListingState::ReadyToFinalize, "{what}");
+            assert_eq!(l.state, from, "{what}");
             assert_eq!((l.sold_txid, l.lock_txid), (None, None), "{what}");
         }
     }
@@ -4471,7 +4515,7 @@ async fn lock_refused_while_a_dead_lock_waits_for_the_sync() {
     });
     let e = err_text(build(&app).await.unwrap_err());
     assert!(
-        e.contains("was never mined") && e.contains("next sync"),
+        e.contains("did not go through") && e.contains("next sync"),
         "{e}"
     );
     run_abort_job(

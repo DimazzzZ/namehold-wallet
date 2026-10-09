@@ -1588,6 +1588,16 @@ impl ListingState {
         Self::Restored,
     ];
 
+    /// The states a purchase moves to Sold through a lock coin the job proved
+    /// to be the listing's from hsd's view of it
+    /// ([`sell_listing_through_proven_lock`]): a listing before the lock,
+    /// without a lock outpoint, whose lock TRANSFER was finalized into the
+    /// lock (by a dropped FINALIZE of ours mined after all, or elsewhere
+    /// while this device was offline) and bought before a sync saw it. Kept
+    /// apart from [`Self::SALE_FROM`], so Locking is a source for this write
+    /// only.
+    pub const PROVEN_LOCK_SALE_FROM: [ListingState; 2] = [Self::Locking, Self::ReadyToFinalize];
+
     /// The states whose lock coin's name can expire under it and end the
     /// listing as Expired ([`expire_locked_listing`]).
     pub const LOCKED_EXPIRABLE: [ListingState; 3] =
@@ -2259,6 +2269,41 @@ pub fn sell_shakedex_listing(
             purchase_txid,
             lock.map(|l| l.0),
             lock.map(|l| i64::from(l.1))
+        ],
+    )?)
+}
+
+/// R22: the lock coin `lock`, which the job proved to be this listing's
+/// (a FINALIZE of the name at its lock address spending its lock TRANSFER,
+/// `shakedex_jobs::finalize_into_lock`), was bought by the mined
+/// `purchase_txid`. Only from [`ListingState::PROVEN_LOCK_SALE_FROM`] and
+/// only while the listing has no lock outpoint; `lock` becomes it. Returns
+/// how many rows changed.
+pub fn sell_listing_through_proven_lock(
+    conn: &rusqlite::Connection,
+    id: &str,
+    purchase_txid: &str,
+    lock: (&str, u32),
+) -> Result<usize, AppError> {
+    let sql = format!(
+        "UPDATE shakedex_listings
+         SET state = ?2, sold_txid = ?3, lock_txid = ?4, lock_vout = ?5,
+             updated_at = datetime('now')
+         WHERE id = ?1 AND state IN {} AND lock_txid IS NULL AND lock_vout IS NULL",
+        sql_list(
+            ListingState::PROVEN_LOCK_SALE_FROM
+                .iter()
+                .map(|s| s.as_str())
+        )
+    );
+    Ok(conn.execute(
+        &sql,
+        params![
+            id,
+            ListingState::Sold,
+            purchase_txid,
+            lock.0,
+            i64::from(lock.1)
         ],
     )?)
 }

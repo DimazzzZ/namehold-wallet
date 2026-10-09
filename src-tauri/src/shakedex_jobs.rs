@@ -1161,13 +1161,24 @@ async fn settle_left_lock(
                 // R22: the name may have left through our lock — a FINALIZE
                 // of ours mined after all, its lock coin bought.
                 match sale_of_left_lock(conn, client, network, l, &owner, renewal).await? {
-                    LeftSale::Sold { txid, lock } => {
-                        queries::sell_shakedex_listing(
-                            conn,
-                            &l.id,
-                            &txid,
-                            Some((lock.0.as_str(), lock.1)),
-                        )?;
+                    LeftSale::Sold { txid, lock, proven } => {
+                        let lock = (lock.0.as_str(), lock.1);
+                        let n = if proven {
+                            queries::sell_listing_through_proven_lock(conn, &l.id, &txid, lock)?
+                        } else {
+                            queries::sell_shakedex_listing(conn, &l.id, &txid, Some(lock))?
+                        };
+                        if n == 0 {
+                            eprintln!(
+                                "shakedex listings: {} ({}): purchase {txid} of lock coin {}:{} \
+                                 found, but the listing was not moved to sold from {}",
+                                l.id,
+                                l.name,
+                                lock.0,
+                                lock.1,
+                                l.state.as_str()
+                            );
+                        }
                         return Ok(());
                     }
                     LeftSale::Unproven => return Ok(()),
@@ -1187,8 +1198,15 @@ async fn settle_left_lock(
 /// What [`sale_of_left_lock`] found.
 #[derive(Debug, PartialEq, Eq)]
 enum LeftSale {
-    /// A mined purchase of this listing's lock coin `lock`.
-    Sold { txid: String, lock: (String, u32) },
+    /// A mined purchase of this listing's lock coin `lock`; `proven` when
+    /// the listing had no lock outpoint and `lock` was tied to it by
+    /// [`finalize_into_lock`] (written by
+    /// [`queries::sell_listing_through_proven_lock`]).
+    Sold {
+        txid: String,
+        lock: (String, u32),
+        proven: bool,
+    },
     /// A mined purchase paying the payment address out of our lock address,
     /// but hsd does not show the coin it spends as this listing's lock coin
     /// (not readable, or not a FINALIZE spending its lock TRANSFER): no
@@ -1203,8 +1221,9 @@ enum LeftSale {
 /// stored lock outpoint is judged by [`find_sale`]. One without (a dead
 /// FINALIZE's listing back at ReadyToFinalize, or still Locking) has no
 /// outpoint for [`find_sale`] to tie a purchase to: a purchase found out of
-/// our lock address with any input ([`find_purchase`]) is only a lead to
-/// the coin it spends, which is the lock only when hsd shows it as a
+/// our lock address with any input ([`find_purchases`], every mined one) is
+/// only a lead to the coin it spends, tried in turn: it is the lock only
+/// when hsd shows it as a
 /// FINALIZE at this listing's lock address spending this listing's lock
 /// TRANSFER ([`finalize_into_lock`]); [`find_sale`] then judges the
 /// listing with that outpoint.
@@ -1218,33 +1237,55 @@ async fn sale_of_left_lock(
 ) -> Result<LeftSale, AppError> {
     if l.lock_txid.is_some() && l.lock_vout.is_some() {
         return Ok(match find_sale(conn, client, network, l, owner).await? {
-            Sale::Mined { txid, lock } => LeftSale::Sold { txid, lock },
+            Sale::Mined { txid, lock } => LeftSale::Sold {
+                txid,
+                lock,
+                proven: false,
+            },
             _ => LeftSale::None,
         });
     }
-    let Sale::Mined { lock, .. } = find_purchase(conn, client, network, l, owner, None).await?
-    else {
+    let leads = find_purchases(conn, client, network, l, owner, None).await?;
+    if leads.is_empty() {
         return Ok(LeftSale::None);
-    };
-    if !finalize_into_lock(client, network, l, &lock, renewal).await? {
-        eprintln!(
-            "shakedex listings: {} ({}): a purchase out of our lock spends {}:{}, which the \
-             node does not show as this listing's FINALIZE: left as it is",
-            l.id, l.name, lock.0, lock.1
-        );
-        return Ok(LeftSale::Unproven);
     }
-    let tied = queries::ShakedexListing {
-        lock_txid: Some(lock.0),
-        lock_vout: Some(i64::from(lock.1)),
-        ..l.clone()
-    };
-    Ok(
-        match find_sale(conn, client, network, &tied, owner).await? {
-            Sale::Mined { txid, lock } => LeftSale::Sold { txid, lock },
-            _ => LeftSale::Unproven,
-        },
-    )
+    for lead in leads {
+        let Sale::Mined { lock, .. } = lead else {
+            continue;
+        };
+        let proven = match finalize_into_lock(client, network, l, &lock, renewal).await {
+            Ok(p) => p,
+            // Skipping withholds a verdict, never makes one.
+            Err(e) => {
+                eprintln!(
+                    "shakedex listings: {} ({}): transaction {} could not be read, skipped: {e}",
+                    l.id, l.name, lock.0
+                );
+                continue;
+            }
+        };
+        if !proven {
+            eprintln!(
+                "shakedex listings: {} ({}): a purchase out of our lock spends {}:{}, which the \
+                 node does not show as this listing's FINALIZE: not this listing's sale",
+                l.id, l.name, lock.0, lock.1
+            );
+            continue;
+        }
+        let tied = queries::ShakedexListing {
+            lock_txid: Some(lock.0),
+            lock_vout: Some(i64::from(lock.1)),
+            ..l.clone()
+        };
+        if let Sale::Mined { txid, lock } = find_sale(conn, client, network, &tied, owner).await? {
+            return Ok(LeftSale::Sold {
+                txid,
+                lock,
+                proven: true,
+            });
+        }
+    }
+    Ok(LeftSale::Unproven)
 }
 
 /// Whether hsd shows `lock` as listing `l`'s lock coin: its transaction,
@@ -1743,32 +1784,36 @@ async fn find_sale(
     };
     let lock_vout = u32::try_from(lock_vout)
         .map_err(|_| AppError::Other(format!("corrupted listing {}: bad lock output", l.id)))?;
-    find_purchase(
+    let found = find_purchases(
         conn,
         client,
         network,
         l,
         owner,
         Some((lock_txid, lock_vout)),
-    )
-    .await
+    );
+    Ok(found.await?.into_iter().next().unwrap_or(Sale::None))
 }
 
-/// [`find_sale`]'s search with the lock coin `lock` the purchase must spend.
-/// `None` accepts a purchase of any coin at the listing's lock address: the
-/// coin it returns is only a lead, never a listing's lock outpoint until
+/// [`find_sale`]'s search with the lock coin `lock` the purchase must spend:
+/// the first purchase found, mined or in the mempool. `None` accepts a
+/// purchase of any coin at the listing's lock address and returns every
+/// mined one found (in the mempool they are skipped); the coin each spends
+/// is only a lead, never a listing's lock outpoint until
 /// [`finalize_into_lock`] ties it to the listing ([`sale_of_left_lock`]).
-async fn find_purchase(
+async fn find_purchases(
     conn: &rusqlite::Connection,
     client: &dyn NodeRpc,
     network: Network,
     l: &queries::ShakedexListing,
     owner: &(String, u32),
     lock: Option<(&str, u32)>,
-) -> Result<Sale, AppError> {
+) -> Result<Vec<Sale>, AppError> {
     let Some(payment) = l.payment_address.as_deref() else {
-        return Ok(Sale::None);
+        return Ok(vec![]);
     };
+    let first_only = lock.is_some();
+    let mut found: Vec<Sale> = Vec::new();
     let profile = &l.wallet_profile_id;
     let lock_address = listing_lock_address(network, l)?;
     let name_hash = hex::encode(crate::noncustodial::names::hash_name(&l.name)?);
@@ -1806,20 +1851,23 @@ async fn find_purchase(
                     .is_some_and(|h| h.eq_ignore_ascii_case(&name_hash))
             {
                 if sell::commitment_is_ours(&cov.items, network, &own)? {
-                    return Ok(Sale::None);
+                    return Ok(vec![]);
                 }
                 // hsd names a coin the owner only once its block is
                 // connected: an owner coin shown in the mempool is not a
                 // mined purchase, so no verdict.
                 let Some(height) = coin.mined_height()? else {
-                    return Ok(Sale::None);
+                    return Ok(vec![]);
                 };
                 match purchase_found(client, &owner.0, Some(height), &p).await {
                     Ok(Some((Some(_), spent))) => {
-                        return Ok(Sale::Mined {
+                        found.push(Sale::Mined {
                             txid: owner.0.clone(),
                             lock: spent,
                         });
+                        if first_only {
+                            return Ok(found);
+                        }
                     }
                     // Not a purchase of our lock coin (or a view that
                     // disagrees with the mined owner): look at the leads.
@@ -1830,14 +1878,23 @@ async fn find_purchase(
         }
     }
     for (txid, seen_at) in queries::own_coins_at(conn, profile, payment)? {
-        match purchase_found(client, &txid, seen_at, &p).await {
-            Ok(Some((Some(_), spent))) => return Ok(Sale::Mined { txid, lock: spent }),
-            Ok(Some((None, spent))) => return Ok(Sale::Pending { txid, lock: spent }),
-            Ok(None) => {}
-            Err(e) => unreadable(&txid, e),
+        let sale = match purchase_found(client, &txid, seen_at, &p).await {
+            Ok(Some((Some(_), spent))) => Sale::Mined { txid, lock: spent },
+            Ok(Some((None, spent))) if first_only => Sale::Pending { txid, lock: spent },
+            Ok(_) => continue,
+            Err(e) => {
+                unreadable(&txid, e);
+                continue;
+            }
+        };
+        if first_only {
+            return Ok(vec![sale]);
+        }
+        if !found.contains(&sale) {
+            found.push(sale);
         }
     }
-    Ok(Sale::None)
+    Ok(found)
 }
 
 /// Whether a Finalizing listing's FINALIZE draft is dead: it can no longer

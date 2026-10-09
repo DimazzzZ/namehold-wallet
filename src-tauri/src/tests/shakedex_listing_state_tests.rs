@@ -345,6 +345,61 @@ fn sale_writes_move_only_a_listing_in_our_lock() {
     assert_eq!(listing(&f).state, ListingState::Listed);
 }
 
+/// The Sold write through a lock coin the job proved to be the listing's
+/// (`shakedex_jobs::finalize_into_lock`): only from Locking or
+/// ReadyToFinalize (pinned as a literal; `SALE_FROM` keeps Locking out),
+/// only while the listing has no lock outpoint, and the proven coin becomes
+/// it.
+#[test]
+fn proven_lock_sale_moves_only_a_listing_before_the_lock_without_an_outpoint() {
+    let mut set: Vec<&str> = ListingState::PROVEN_LOCK_SALE_FROM
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    set.sort_unstable();
+    assert_eq!(set, ["locking", "ready_to_finalize"]);
+    assert!(!ListingState::SALE_FROM.contains(&ListingState::Locking));
+    let proven = (txid("f2"), 1);
+    for state in ListingState::ALL {
+        let f = fx(state);
+        // With its own outpoint: never.
+        let n = queries::sell_listing_through_proven_lock(
+            &f.conn,
+            &f.id,
+            &txid("b1"),
+            (&proven.0, proven.1),
+        )
+        .unwrap();
+        assert_eq!(n, 0, "{state:?}: with an outpoint");
+        f.conn
+            .execute(
+                "UPDATE shakedex_listings SET lock_txid = NULL, lock_vout = NULL WHERE id = ?1",
+                [&f.id],
+            )
+            .unwrap();
+        let n = queries::sell_listing_through_proven_lock(
+            &f.conn,
+            &f.id,
+            &txid("b1"),
+            (&proven.0, proven.1),
+        )
+        .unwrap();
+        let moves = ListingState::PROVEN_LOCK_SALE_FROM.contains(&state);
+        assert_eq!(n == 1, moves, "{state:?}: without an outpoint");
+        let l = listing(&f);
+        if moves {
+            assert_eq!(l.state, ListingState::Sold);
+            assert_eq!(l.sold_txid.as_deref(), Some(txid("b1").as_str()));
+            assert_eq!(
+                (l.lock_txid.as_deref(), l.lock_vout),
+                (Some(proven.0.as_str()), Some(1))
+            );
+        } else {
+            assert_eq!((l.state, l.lock_txid), (state, None), "{state:?}");
+        }
+    }
+}
+
 #[test]
 fn a_sold_listing_goes_back_only_while_no_other_listing_of_the_name_is_open() {
     let f = fx(ListingState::Sold);
