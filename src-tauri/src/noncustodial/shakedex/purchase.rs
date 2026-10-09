@@ -309,7 +309,12 @@ pub fn transfer_commits_to(
 /// little-endian bytes in hex. `None` for anything else, which is not hsd's
 /// reply and proves nothing.
 pub fn covenant_name_height(cov: &NodeCovenant) -> Option<u32> {
-    cov.items
+    items_name_height(&cov.items)
+}
+
+/// [`covenant_name_height`] of a covenant's items.
+pub fn items_name_height(items: &[String]) -> Option<u32> {
+    items
         .get(1)
         .and_then(|h| hex::decode(h).ok())
         .and_then(|b| <[u8; 4]>::try_from(b).ok())
