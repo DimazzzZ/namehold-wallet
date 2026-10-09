@@ -2369,8 +2369,9 @@ async fn prepare_lock_finalize_builds_the_finalize_into_the_lock() {
 /// other program (another key's lock, another address) is refused before
 /// anything is built, asked or written, also when the database's copy of
 /// the public key says the other key (the key is re-derived, never read
-/// back); so is one the node reports without a readable covenant (could not
-/// check).
+/// back); a stored public key that is not the re-derived one is refused even
+/// when the coin commits to the derived lock; so is a coin the node reports
+/// without a readable covenant (could not check).
 #[tokio::test]
 async fn refuses_finalize_on_commitment_mismatch() {
     let mut r = ready_fixture("regtest").await;
@@ -2400,6 +2401,17 @@ async fn refuses_finalize_on_commitment_mismatch() {
     });
     let err = prepare(&r, &price("5")).await.err().expect("refused");
     assert!(err_text(err).contains(sell::LOCK_COMMITMENT_MISMATCH));
+
+    // The coin commits to the re-derived key's lock, but the stored public
+    // key is another key's: the listing is not the lock this wallet derives
+    // (its lock address, which the jobs read, would be the other one).
+    r.node(ready_tip(net), Some(SIGN_MTP), info.clone(), Some(r.coin()))
+        .await;
+    let err = prepare(&r, &price("5"))
+        .await
+        .err()
+        .expect("stored key differs");
+    assert!(err_text(err).contains(sell::LOCK_COMMITMENT_MISMATCH));
     with_db(&r.app, |c| {
         c.execute(
             "UPDATE shakedex_listings SET lock_pubkey_hex = ?1 WHERE id = ?2",
@@ -2407,6 +2419,9 @@ async fn refuses_finalize_on_commitment_mismatch() {
         )
         .unwrap();
     });
+    prepare(&r, &price("5"))
+        .await
+        .expect("the stored key and the coin agree with the derived key");
 
     let good = r.coin();
     let mut no_cov = good.clone();
@@ -3062,6 +3077,20 @@ async fn lock_then_finalize_and_sign() {
     assert_eq!(
         (file.lock_txid, file.lock_vout),
         (outpoint, lock_vout as u32)
+    );
+    // The transaction that will be sent is the one the steps are over: the
+    // signed FINALIZE's own txid, decoded from its bytes, is the listing's
+    // lock txid and the file's `lockingTxHash`.
+    let signed = crate::noncustodial::tx::Transaction::decode(
+        &hex::decode(row.signed_tx_hex.as_deref().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(Some(signed.txid()), l.lock_txid);
+    assert_eq!(signed.txid(), hex::encode(file.lock_txid));
+    let raw_file: Value = serde_json::from_str(l.listing_file_json.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        raw_file["lockingTxHash"].as_str(),
+        Some(signed.txid().as_str())
     );
     assert_eq!(file.public_key, key.pubkey);
     assert_eq!(file.payment_addr, l.payment_address.clone().unwrap());
