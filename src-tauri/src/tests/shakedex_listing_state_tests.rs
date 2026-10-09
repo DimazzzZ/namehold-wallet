@@ -874,6 +874,12 @@ async fn daemon_refresh_makes_no_send_and_no_market_call() {
             .with_status(404)
             .create_async()
             .await;
+        // The lock TRANSFER the FINALIZE into the lock spent: hsd's 404.
+        let _lock_transfer = node
+            .mock("GET", format!("/coin/{}/0", f.transfer_txid).as_str())
+            .with_status(404)
+            .create_async()
+            .await;
         let transfer = transfer_out_of_lock(&f, &buy, &f.buyer, TIP);
         let _transfer = node
             .mock("GET", format!("/coin/{buy}/0").as_str())
@@ -1035,5 +1041,310 @@ async fn an_unreadable_transaction_is_skipped() {
     assert_eq!(
         (l.state, l.sold_txid.as_deref()),
         (ListingState::Sold, Some(buy.as_str()))
+    );
+}
+
+/// Review Focus 3: a reorg takes the FINALIZE into the lock away after the
+/// steps are signed. Back in the mempool (the lock coin at -1) the listing is
+/// Finalizing; in no block and no mempool (hsd's 404 for the lock coin, and
+/// the lock TRANSFER it spent a coin again) Finalizing too; mined again,
+/// Listed. A coin at the payment address from an unrelated transaction never
+/// makes it SalePending or Sold meanwhile; a Sold listing whose FINALIZE is
+/// taken away goes back to Finalizing as well.
+#[tokio::test]
+async fn listing_follows_a_reorg_of_its_lock_finalize() {
+    let f = fx(ListingState::Listed);
+    let other = txid("d1");
+    paid(&f, &other, 0, TIP, false);
+    let gift = json!({ "hash": other, "height": TIP, "hex": "00",
+        "inputs": [ { "prevout": { "hash": "aa".repeat(32), "index": 0 } } ],
+        "outputs": [ { "value": PRICE, "address": f.payment,
+                       "covenant": { "type": 0, "action": "NONE", "items": [] } } ] });
+    let transfer_back = coin(
+        &f.transfer_txid,
+        0,
+        &f.payment,
+        COV_TRANSFER,
+        vec![],
+        TIP - 40,
+    );
+    let lock_owner = info((&f.lock_txid, 0));
+    let transfer_owner = info((&f.transfer_txid, 0));
+    for (case, reply, coins, want) in [
+        (
+            "in the mempool",
+            lock_owner.clone(),
+            vec![lock_coin(&f, -1)],
+            ListingState::Finalizing,
+        ),
+        (
+            "mined",
+            lock_owner.clone(),
+            vec![lock_coin(&f, TIP)],
+            ListingState::Listed,
+        ),
+        (
+            "nowhere",
+            transfer_owner.clone(),
+            vec![transfer_back.clone()],
+            ListingState::Finalizing,
+        ),
+        (
+            "still nowhere",
+            transfer_owner,
+            vec![transfer_back.clone()],
+            ListingState::Finalizing,
+        ),
+        (
+            "mined again",
+            lock_owner,
+            vec![lock_coin(&f, TIP + 1)],
+            ListingState::Listed,
+        ),
+    ] {
+        run(&f, &node(reply, coins, gift.clone())).await;
+        let l = listing(&f);
+        assert_eq!(l.state, want, "{case}");
+        assert_eq!(l.sold_txid, None, "{case}");
+    }
+    // Sold, and the FINALIZE into the lock reorged out with the purchase.
+    set_state(&f, ListingState::Sold);
+    run(
+        &f,
+        &node(info((&f.transfer_txid, 0)), vec![transfer_back], gift),
+    )
+    .await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::Finalizing,
+        "sold, FINALIZE nowhere"
+    );
+}
+
+/// R22, a reorg of the purchase. Its block taken away and the purchase in no
+/// mempool: hsd shows the lock coin as a coin again (it answers 404 for a
+/// coin any mempool transaction spends) → Listed, the purchase forgotten.
+/// Back in the mempool → SalePending; mined again → Sold. A Sold listing
+/// whose name has another open listing by now stays Sold.
+#[tokio::test]
+async fn sold_reverts_on_a_reorg_of_the_purchase() {
+    let f = fx(ListingState::Listed);
+    let buy = txid("b1");
+    paid(&f, &buy, 2, TIP, false);
+    let sold = node(
+        info((&buy, 0)),
+        vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+        purchase_rest(&f, &buy, TIP, &f.payment),
+    );
+    run(&f, &sold).await;
+    assert_eq!(listing(&f).state, ListingState::Sold);
+
+    run(
+        &f,
+        &node(
+            info((&f.lock_txid, 0)),
+            vec![lock_coin(&f, TIP - 20)],
+            Value::Null,
+        ),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.sold_txid),
+        (ListingState::Listed, None),
+        "purchase nowhere"
+    );
+
+    paid(&f, &buy, 2, -1, false);
+    run(
+        &f,
+        &node(
+            info((&f.lock_txid, 0)),
+            vec![],
+            purchase_rest(&f, &buy, -1, &f.payment),
+        ),
+    )
+    .await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::SalePending,
+        "back in the mempool"
+    );
+
+    paid(&f, &buy, 2, TIP + 2, false);
+    let again = node(
+        info((&buy, 0)),
+        vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP + 2)],
+        purchase_rest(&f, &buy, TIP + 2, &f.payment),
+    );
+    run(&f, &again).await;
+    assert_eq!(listing(&f).state, ListingState::Sold, "mined again");
+
+    // A newer listing of the name is open: the old sale stays Sold.
+    let mut newer = listing(&f);
+    newer.id = "l2".into();
+    newer.state = ListingState::Locking;
+    newer.lock_txid = None;
+    newer.lock_vout = None;
+    queries::insert_shakedex_listing(&f.conn, &newer).unwrap();
+    run(
+        &f,
+        &node(
+            info((&f.lock_txid, 0)),
+            vec![lock_coin(&f, TIP - 20)],
+            Value::Null,
+        ),
+    )
+    .await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::Sold,
+        "another listing is open"
+    );
+}
+
+/// R22, R31: a name that expired while locked ends the listing as Expired,
+/// never Sold, whatever arrived at the payment address: hsd reports no live
+/// state (`info: null`), or the name was opened again (hsd's name height is
+/// not the lock coin's). From Listed and from a Restored lock, with the lock
+/// coin unspent; and from Listed with the lock coin spent.
+#[tokio::test]
+async fn expired_lock_is_expired_not_sold() {
+    let other = txid("d1");
+    let mut reopened = info((&"00".repeat(32), u32::MAX));
+    reopened["info"]["height"] = 7_000.into();
+    for state in [ListingState::Listed, ListingState::Restored] {
+        for (case, reply) in [
+            ("info null", json!({ "info": null, "start": null })),
+            ("reopened", reopened.clone()),
+        ] {
+            let f = fx(state);
+            paid(&f, &other, 0, TIP, false);
+            run(&f, &node(reply, vec![lock_coin(&f, TIP - 20)], Value::Null)).await;
+            let l = listing(&f);
+            assert_eq!(
+                (l.state, l.sold_txid),
+                (ListingState::Expired, None),
+                "{state:?} {case}"
+            );
+            assert_eq!(
+                l.lock_txid.as_deref(),
+                Some(f.lock_txid.as_str()),
+                "{state:?} {case}"
+            );
+        }
+    }
+    let f = fx(ListingState::Listed);
+    let buy = txid("b1");
+    paid(&f, &buy, 2, TIP, false);
+    run(
+        &f,
+        &node(
+            json!({ "info": null, "start": null }),
+            vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+            purchase_rest(&f, &buy, TIP, &f.payment),
+        ),
+    )
+    .await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::Expired,
+        "lock coin spent, name expired"
+    );
+    // A live name whose height is the lock coin's: Listed as before.
+    let f = fx(ListingState::Listed);
+    run(
+        &f,
+        &node(
+            info((&f.lock_txid, 0)),
+            vec![lock_coin(&f, TIP - 20)],
+            Value::Null,
+        ),
+    )
+    .await;
+    assert_eq!(listing(&f).state, ListingState::Listed);
+}
+
+/// The Restored lock's follower (T3 carry): a reorg that takes away the
+/// FINALIZE it was adopted from (the lock TRANSFER a coin again) makes it
+/// Locking without the outpoint, for the before-lock job; a lock restored by
+/// name (no lock TRANSFER, no payment address) is never Sold, even with a
+/// purchase of its lock coin on chain (deviation 5).
+#[tokio::test]
+async fn restored_lock_follows_its_coin() {
+    let f = fx(ListingState::Restored);
+    let back = coin(
+        &f.transfer_txid,
+        0,
+        &f.payment,
+        COV_TRANSFER,
+        vec![],
+        TIP - 40,
+    );
+    run(
+        &f,
+        &node(info((&f.transfer_txid, 0)), vec![back], Value::Null),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!((l.state, l.lock_txid), (ListingState::Locking, None));
+
+    let f = fx(ListingState::Restored);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET lock_transfer_txid = NULL, payment_address = NULL,
+                 lock_finalize_draft_id = NULL, listing_file_json = NULL",
+            [],
+        )
+        .unwrap();
+    let buy = txid("b1");
+    paid(&f, &buy, 2, TIP, false);
+    run(
+        &f,
+        &node(
+            info((&buy, 0)),
+            vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+            purchase_rest(&f, &buy, TIP, &f.payment),
+        ),
+    )
+    .await;
+    assert_eq!(listing(&f).state, ListingState::Restored);
+
+    // A Restored lock adopted from another device's FINALIZE keeps this
+    // device's payment address but has no listing file: Sold from a purchase
+    // paying it, and back to Restored (not Listed) when a reorg makes the
+    // lock coin a coin again.
+    let f = fx(ListingState::Restored);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET lock_finalize_draft_id = NULL, listing_file_json = NULL",
+            [],
+        )
+        .unwrap();
+    paid(&f, &buy, 2, TIP, false);
+    run(
+        &f,
+        &node(
+            info((&buy, 0)),
+            vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+            purchase_rest(&f, &buy, TIP, &f.payment),
+        ),
+    )
+    .await;
+    assert_eq!(listing(&f).state, ListingState::Sold, "adopted lock bought");
+    run(
+        &f,
+        &node(
+            info((&f.lock_txid, 0)),
+            vec![lock_coin(&f, TIP - 20)],
+            Value::Null,
+        ),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.sold_txid),
+        (ListingState::Restored, None),
+        "adopted lock, purchase nowhere"
     );
 }
