@@ -1166,7 +1166,7 @@ async fn settle_left_lock(
                         let n = if proven {
                             queries::sell_listing_through_proven_lock(conn, &l.id, &txid, lock)?
                         } else {
-                            queries::sell_shakedex_listing(conn, &l.id, &txid, Some(lock))?
+                            queries::sell_shakedex_listing(conn, &l.id, &txid, lock)?
                         };
                         if n == 0 {
                             eprintln!(
@@ -1658,15 +1658,10 @@ async fn lock_coin_spent(
             queries::resell_sold_listing(conn, &l.id, to, &txid, (lock.0.as_str(), lock.1))?;
         }
         (Sale::Pending { txid, lock }, true) => {
-            queries::mark_listing_sale_pending(
-                conn,
-                &l.id,
-                &txid,
-                Some((lock.0.as_str(), lock.1)),
-            )?;
+            queries::mark_listing_sale_pending(conn, &l.id, &txid, (lock.0.as_str(), lock.1))?;
         }
         (Sale::Mined { txid, lock }, false) => {
-            queries::sell_shakedex_listing(conn, &l.id, &txid, Some((lock.0.as_str(), lock.1)))?;
+            queries::sell_shakedex_listing(conn, &l.id, &txid, (lock.0.as_str(), lock.1))?;
         }
         _ => {}
     }

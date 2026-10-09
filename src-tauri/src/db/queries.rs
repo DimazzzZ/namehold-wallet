@@ -1578,10 +1578,10 @@ impl ListingState {
 
     /// The states a purchase of the lock coin moves to SalePending or Sold
     /// (R22, [`mark_listing_sale_pending`], [`sell_shakedex_listing`]): the
-    /// name is in our lock, or a listing back at ReadyToFinalize whose dropped
-    /// FINALIZE was mined after all and bought before a sync saw it.
-    pub const SALE_FROM: [ListingState; 5] = [
-        Self::ReadyToFinalize,
+    /// name is in our lock, under the listing's stored lock outpoint. A
+    /// ReadyToFinalize listing never has one (going back to it drops the
+    /// outpoint), so its sale is [`Self::PROVEN_LOCK_SALE_FROM`]'s.
+    pub const SALE_FROM: [ListingState; 4] = [
         Self::Finalizing,
         Self::Listed,
         Self::SalePending,
@@ -2315,72 +2315,49 @@ pub fn list_shakedex_listings_after_lock(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-/// The lock outpoint rule of a sale write, over `?4` (txid) and `?5` (vout):
-/// the listing has an outpoint, or the purchase supplies one; a purchase that
-/// names an outpoint spends the listing's own, or fills one it lacks (both
-/// halves together). A different outpoint is another lock's purchase.
-const SALE_LOCK_GUARD: &str =
-    "AND ((lock_txid IS NOT NULL AND lock_vout IS NOT NULL) OR ?4 IS NOT NULL)
-         AND (?4 IS NULL OR (lock_txid IS NULL AND lock_vout IS NULL)
-              OR (lock_txid = ?4 AND lock_vout = ?5))";
-
-/// R22: a purchase of the lock coin `purchase_txid` is in the mempool.
-/// Only from [`ListingState::SALE_FROM`], and only when the listing has a
-/// lock outpoint or `lock` (the coin the purchase spends, when it was read
-/// from the purchase itself) supplies one; a `lock` that differs from the
-/// listing's outpoint changes nothing. Returns how many rows changed.
+/// R22: a purchase of the lock coin `lock` is in the mempool as
+/// `purchase_txid`. Only from [`ListingState::SALE_FROM`], and only when
+/// `lock` is the listing's stored lock outpoint: a listing without one is
+/// never moved (only [`sell_listing_through_proven_lock`] gives a listing an
+/// outpoint on sale), and a `lock` that differs from it is another lock's
+/// purchase. Returns how many rows changed.
 pub fn mark_listing_sale_pending(
     conn: &rusqlite::Connection,
     id: &str,
     purchase_txid: &str,
-    lock: Option<(&str, u32)>,
+    lock: (&str, u32),
 ) -> Result<usize, AppError> {
-    let sql = format!(
-        "UPDATE shakedex_listings
-         SET state = ?2, sold_txid = ?3, lock_txid = COALESCE(lock_txid, ?4),
-             lock_vout = COALESCE(lock_vout, ?5), updated_at = datetime('now')
-         WHERE id = ?1 AND state IN {} {SALE_LOCK_GUARD}",
-        sql_list(ListingState::SALE_FROM.iter().map(|s| s.as_str()))
-    );
-    Ok(conn.execute(
-        &sql,
-        params![
-            id,
-            ListingState::SalePending,
-            purchase_txid,
-            lock.map(|l| l.0),
-            lock.map(|l| i64::from(l.1))
-        ],
-    )?)
+    sale_write(conn, id, ListingState::SalePending, purchase_txid, lock)
 }
 
-/// R22: the lock coin was bought by the mined `purchase_txid`. Only from
-/// [`ListingState::SALE_FROM`], under the same lock outpoint rule as
-/// [`mark_listing_sale_pending`]: no Sold row without an outpoint, and a
-/// `lock` that differs from the listing's outpoint changes nothing. Returns
-/// how many rows changed.
+/// R22: the lock coin `lock` was bought by the mined `purchase_txid`. Only
+/// from [`ListingState::SALE_FROM`], under the same stored-outpoint rule as
+/// [`mark_listing_sale_pending`]. Returns how many rows changed.
 pub fn sell_shakedex_listing(
     conn: &rusqlite::Connection,
     id: &str,
     purchase_txid: &str,
-    lock: Option<(&str, u32)>,
+    lock: (&str, u32),
+) -> Result<usize, AppError> {
+    sale_write(conn, id, ListingState::Sold, purchase_txid, lock)
+}
+
+fn sale_write(
+    conn: &rusqlite::Connection,
+    id: &str,
+    to: ListingState,
+    purchase_txid: &str,
+    lock: (&str, u32),
 ) -> Result<usize, AppError> {
     let sql = format!(
         "UPDATE shakedex_listings
-         SET state = ?2, sold_txid = ?3, lock_txid = COALESCE(lock_txid, ?4),
-             lock_vout = COALESCE(lock_vout, ?5), updated_at = datetime('now')
-         WHERE id = ?1 AND state IN {} {SALE_LOCK_GUARD}",
+         SET state = ?2, sold_txid = ?3, updated_at = datetime('now')
+         WHERE id = ?1 AND state IN {} AND lock_txid = ?4 AND lock_vout = ?5",
         sql_list(ListingState::SALE_FROM.iter().map(|s| s.as_str()))
     );
     Ok(conn.execute(
         &sql,
-        params![
-            id,
-            ListingState::Sold,
-            purchase_txid,
-            lock.map(|l| l.0),
-            lock.map(|l| i64::from(l.1))
-        ],
+        params![id, to, purchase_txid, lock.0, i64::from(lock.1)],
     )?)
 }
 

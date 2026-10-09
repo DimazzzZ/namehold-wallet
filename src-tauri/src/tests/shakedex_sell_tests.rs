@@ -698,10 +698,7 @@ fn job_listing_sets_are_disjoint() {
     assert!(!before.contains(&ListingState::Restored));
     assert!(after.contains(&ListingState::Restored));
     for s in ListingState::SALE_FROM {
-        assert!(
-            after.contains(&s) || s == ListingState::ReadyToFinalize,
-            "{s:?}: a sale from it is followed"
-        );
+        assert!(after.contains(&s), "{s:?}: a sale from it is followed");
     }
     for s in ListingState::CANCEL_ABORTABLE {
         assert!(before.contains(&s), "{s:?}");
