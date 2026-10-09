@@ -9,7 +9,7 @@
 //! (which deadlines were newly notified) and the persisted state, not on any
 //! real system notification.
 
-use crate::commands::deadlines::scan_deadline_notifications;
+use crate::commands::deadlines::{scan_deadline_notifications, scan_deadline_notifications_on_day};
 use crate::db;
 use crate::tests::names_cmd_tests::{create_full_test_state, insert_valid_profile, mock_app_with};
 use tauri::Manager;
@@ -523,4 +523,89 @@ async fn purchase_ready_to_finalize_respects_disabled_setting() {
         .unwrap();
     assert!(!outcome.enabled);
     assert!(outcome.notified.is_empty());
+}
+
+// --- Shakedex listing ready to finalize (R19) ---
+
+fn seed_listing(conn: &rusqlite::Connection, profile_id: &str, id: &str, name: &str, state: &str) {
+    db::queries::insert_shakedex_listing(
+        conn,
+        &db::queries::ShakedexListing {
+            id: id.into(),
+            wallet_profile_id: profile_id.into(),
+            name: name.into(),
+            mode: db::queries::ListingMode::BuyNow,
+            state: state.parse().unwrap(),
+            lock_pubkey_hex: "02".repeat(33),
+            lock_transfer_draft_id: None,
+            lock_finalize_draft_id: None,
+            lock_transfer_txid: Some(format!("{id}-tx")),
+            lock_txid: None,
+            lock_vout: None,
+            payment_address: None,
+            cancel_address: None,
+            cancel_child_index: None,
+            steps_json: "[]".into(),
+            listing_file_json: None,
+            publish: false,
+            market_status: None,
+            market_retry_at: None,
+            expires_at: None,
+            abort_draft_id: None,
+            abort_txid: None,
+            sold_txid: None,
+            cancel_txid: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    )
+    .unwrap();
+}
+
+/// R19: the reminder appears once the lockup is over (ReadyToFinalize, not
+/// Locking), comes once a day until Finalize & sign runs, and is gone from
+/// then on (Finalizing).
+#[tokio::test]
+async fn listing_ready_repeats() {
+    let state = create_full_test_state();
+    let profile_id = {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "mainnet");
+        enable_notifications(&conn, "144", "30");
+        seed_listing(&conn, &id, "l1", "forsale", "ready_to_finalize");
+        seed_listing(&conn, &id, "l2", "stilllocking", "locking");
+        id
+    };
+    let app = mock_app_with(state);
+    let scan = |day| scan_deadline_notifications_on_day(app.handle().clone(), app.state(), day);
+    let d1 = scan(20_000).await.unwrap();
+    assert_eq!(d1.notified.len(), 1, "{:?}", d1.notified);
+    assert_eq!(
+        d1.notified[0].key,
+        format!("listing_ready:{profile_id}:forsale:l1-tx:20000")
+    );
+    assert!(
+        scan(20_000).await.unwrap().notified.is_empty(),
+        "once a day"
+    );
+    let d2 = scan(20_001).await.unwrap();
+    assert_eq!(d2.notified.len(), 1, "again the next day");
+
+    {
+        let s: tauri::State<crate::AppState> = app.state();
+        let conn = s.db.lock().unwrap();
+        conn.execute(
+            "UPDATE shakedex_listings SET state = 'finalizing' WHERE id = 'l1'",
+            [],
+        )
+        .unwrap();
+    }
+    assert!(
+        scan(20_002).await.unwrap().notified.is_empty(),
+        "gone once Finalize & sign ran"
+    );
+    let s: tauri::State<crate::AppState> = app.state();
+    let conn = s.db.lock().unwrap();
+    let raw = db::queries::get_settings(&conn).unwrap()["deadline_notify_state"].clone();
+    assert!(!raw.contains("listing_ready:"), "{raw}");
 }
