@@ -947,10 +947,13 @@ async fn lock_on_chain(
 /// Where a name's owner coin sits, from hsd's `GET /coin`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InOurLock {
-    /// A FINALIZE at the listing's lock address: the name is in our lock.
+    /// A FINALIZE of the name at the listing's lock address: the name is in
+    /// our lock.
     Finalize,
-    /// At the listing's lock address, but another covenant (a purchase's
-    /// TRANSFER or a cancel already): the name went through our lock.
+    /// At the listing's lock address, but not a FINALIZE of the name (a
+    /// purchase's TRANSFER, a cancel already, or a covenant of another
+    /// name, which hsd should never show as this name's owner): never
+    /// adopted.
     Other,
     /// Elsewhere.
     No,
@@ -962,10 +965,9 @@ enum InOurLock {
 }
 
 /// Where the name's owner coin `owner` sits: at this listing's lock address
-/// (as a FINALIZE, or another covenant) or elsewhere; hsd's 404 is
-/// [`InOurLock::SpentInMempool`]. Only the coin's `address` and
-/// `covenant.type` are read; a coin without address or covenant is not
-/// hsd's whole answer: an error.
+/// (as a FINALIZE of the name, [`sell::ListingLock::holds`], or anything
+/// else) or elsewhere; hsd's 404 is [`InOurLock::SpentInMempool`]. A coin
+/// without address or covenant is not hsd's whole answer: an error.
 async fn owner_in_our_lock(
     client: &dyn NodeRpc,
     network: Network,
@@ -975,31 +977,33 @@ async fn owner_in_our_lock(
     let Some(coin) = client.get_coin(&owner.0, owner.1).await? else {
         return Ok(InOurLock::SpentInMempool);
     };
-    let (Some(address), Some(covenant)) = (coin.address.as_deref(), coin.covenant.as_ref()) else {
+    let Some(at) = sell::CoinAt::of_coin(&coin) else {
         return Err(AppError::Rpc(format!(
             "node did not report the address or covenant of coin {}:{}",
             owner.0, owner.1
         )));
     };
-    if address != listing_lock_address(network, l)? {
-        Ok(InOurLock::No)
-    } else if covenant.kind == COV_FINALIZE {
+    let lock = listing_lock(network, l)?;
+    if lock.holds(at, COV_FINALIZE, None) {
         Ok(InOurLock::Finalize)
-    } else {
+    } else if lock.is_at(at) {
         Ok(InOurLock::Other)
+    } else {
+        Ok(InOurLock::No)
     }
 }
 
-/// The lock address of listing `l`, from its stored lock public key.
-fn listing_lock_address(
+/// Listing `l`'s lock: the lock address of its stored lock public key, and
+/// its name.
+fn listing_lock(
     network: Network,
     l: &queries::ShakedexListing,
-) -> Result<String, AppError> {
+) -> Result<sell::ListingLock, AppError> {
     let pubkey: [u8; 33] = hex::decode(&l.lock_pubkey_hex)
         .ok()
         .and_then(|b| b.try_into().ok())
         .ok_or_else(|| AppError::Other(format!("corrupted listing {}: bad lock key", l.id)))?;
-    script::lock_address(network, &pubkey)
+    sell::ListingLock::new(script::lock_address(network, &pubkey)?, &l.name)
 }
 
 /// R19, for each listing still Locking or ReadyToFinalize, or Aborted within
@@ -1308,19 +1312,15 @@ async fn finalize_into_lock(
         return Ok(false);
     };
     let k = lock.1 as usize;
-    let lock_address = listing_lock_address(network, l)?;
-    let name_hash = hex::encode(crate::noncustodial::names::hash_name(&l.name)?);
+    let at = listing_lock(network, l)?;
     let spends_our_transfer = tx
         .inputs
         .get(k)
         .is_some_and(|(t, v)| t.eq_ignore_ascii_case(lock_transfer_txid) && *v == 0);
-    let is_our_lock = tx.outputs.get(k).is_some_and(|o| {
-        o.covenant_type == COV_FINALIZE
-            && o.address == lock_address
-            && o.items
-                .first()
-                .is_some_and(|h| h.eq_ignore_ascii_case(&name_hash))
-    });
+    let is_our_lock = tx
+        .outputs
+        .get(k)
+        .is_some_and(|o| at.holds(sell::CoinAt::of_output(o), COV_FINALIZE, None));
     Ok(tx.height.is_some() && spends_our_transfer && is_our_lock)
 }
 
@@ -1505,15 +1505,15 @@ async fn lock_coin_held(
     coin: &crate::noncustodial::rpc::NodeCoin,
     lock: (&str, u32),
 ) -> Result<(), AppError> {
-    let (Some(address), Some(covenant)) = (coin.address.as_deref(), coin.covenant.as_ref()) else {
+    let (Some(at), Some(covenant)) = (sell::CoinAt::of_coin(coin), coin.covenant.as_ref()) else {
         return Err(AppError::Rpc(format!(
             "node did not report the address or covenant of lock coin {}:{}",
             lock.0, lock.1
         )));
     };
-    if address != listing_lock_address(network, l)? || covenant.kind != COV_FINALIZE {
+    if !listing_lock(network, l)?.holds(at, COV_FINALIZE, None) {
         return Err(AppError::Other(format!(
-            "lock coin {}:{} is not a FINALIZE at the listing's lock address",
+            "lock coin {}:{} is not a FINALIZE of the name at the listing's lock address",
             lock.0, lock.1
         )));
     }
@@ -1829,16 +1829,14 @@ async fn find_purchases(
     let first_only = lock.is_some();
     let mut found: Vec<Sale> = Vec::new();
     let profile = &l.wallet_profile_id;
-    let lock_address = listing_lock_address(network, l)?;
-    let name_hash = hex::encode(crate::noncustodial::names::hash_name(&l.name)?);
+    let at = listing_lock(network, l)?;
     let own: HashSet<String> = queries::get_profile_addresses(conn, profile)?
         .into_iter()
         .collect();
     let p = sell::PurchaseOf {
         network,
         lock,
-        lock_address: &lock_address,
-        name_hash: &name_hash,
+        at: &at,
         payment_address: payment,
         own: &own,
     };
@@ -1850,21 +1848,14 @@ async fn find_purchases(
     };
     if queries::own_coin_in_tx(conn, profile, &owner.0, payment)? {
         if let Some(coin) = client.get_coin(&owner.0, owner.1).await? {
-            let (Some(address), Some(cov)) = (coin.address.as_deref(), coin.covenant.as_ref())
-            else {
+            let Some(owner_at) = sell::CoinAt::of_coin(&coin) else {
                 return Err(AppError::Rpc(format!(
                     "node did not report the address or covenant of coin {}:{}",
                     owner.0, owner.1
                 )));
             };
-            if address == lock_address
-                && cov.kind == COV_TRANSFER
-                && cov
-                    .items
-                    .first()
-                    .is_some_and(|h| h.eq_ignore_ascii_case(&name_hash))
-            {
-                if sell::commitment_is_ours(&cov.items, network, &own)? {
+            if at.holds(owner_at, COV_TRANSFER, None) {
+                if sell::commitment_is_ours(owner_at.items, network, &own)? {
                     return Ok(vec![]);
                 }
                 // hsd names a coin the owner only once its block is

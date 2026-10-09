@@ -3458,10 +3458,26 @@ fn cov_action(cov_type: u8) -> &'static str {
 
 /// A coin as hsd's `GET /coin` sends it (`Coin.getJSON`: version, height,
 /// value, address, covenant with type, action and items, coinbase, hash,
-/// index), with address, covenant type and height (-1 in the mempool).
+/// index), with address, covenant type and height (-1 in the mempool); its
+/// covenant's first items are NAME's hash and name height, as every name
+/// covenant's are.
 fn coin_json(txid: &str, vout: u32, address: &str, cov_type: u8, height: i64) -> Value {
+    coin_json_of(NAME, txid, vout, address, cov_type, height)
+}
+
+/// [`coin_json`] for a covenant of `name`.
+fn coin_json_of(
+    name: &str,
+    txid: &str,
+    vout: u32,
+    address: &str,
+    cov_type: u8,
+    height: i64,
+) -> Value {
+    let nh = hex::encode(crate::noncustodial::names::hash_name(name).unwrap());
+    let items = [nh, hex::encode(NAME_HEIGHT.to_le_bytes())];
     json!({ "version": 0, "height": height, "value": NAME_VALUE, "address": address,
-        "covenant": { "type": cov_type, "action": cov_action(cov_type), "items": [] },
+        "covenant": { "type": cov_type, "action": cov_action(cov_type), "items": items },
         "coinbase": false, "hash": txid, "index": vout })
 }
 
@@ -3704,6 +3720,51 @@ async fn finalize_into_our_lock_from_another_device_is_a_restored_lock() {
             );
         }
     }
+}
+
+/// A coin at our lock address that is a covenant of another name (every
+/// lock coin of a key sits at one address, ADR 0004) is never this
+/// listing's: a FINALIZE of another name as the owner coin does not make a
+/// Restored lock, and as the lock coin it does not make a Finalizing listing
+/// Listed.
+#[tokio::test]
+async fn a_coin_of_another_name_at_our_lock_is_never_adopted_or_listed() {
+    let tip = ready_tip(Network::Regtest) + 1;
+    let at_lock = lock_address(Network::Regtest);
+    let other_name = |txid: &str, vout: u32| -> NodeCoin {
+        serde_json::from_value(coin_json_of(
+            "othername",
+            txid,
+            vout,
+            &at_lock,
+            COV_FINALIZE,
+            tip,
+        ))
+        .unwrap()
+    };
+    // Before the lock: the owner coin.
+    let r = ready_fixture("regtest").await;
+    set_lock_draft_status(&r.app, &r.listing_id, "confirmed");
+    let other = "0e".repeat(32);
+    let chain = chain_at(
+        name_info(RENEWAL, 0, &other),
+        tip,
+        vec![other_name(&other, 0)],
+    );
+    run_listing_jobs(&r.app, &chain).await;
+    let l = r.listing();
+    assert_eq!(
+        (l.state, l.lock_txid),
+        (ListingState::ReadyToFinalize, None),
+        "not adopted"
+    );
+    // After the lock: the lock coin.
+    let r = ready_fixture("regtest").await;
+    let (fin, vout) = finalized(&r).await;
+    let mut info = name_info(RENEWAL, 0, &fin);
+    info["info"]["owner"]["index"] = vout.into();
+    run_finalize_job(&r.app, &chain_at(info, tip, vec![other_name(&fin, vout)])).await;
+    assert_eq!(r.listing().state, ListingState::Finalizing, "not listed");
 }
 
 /// Deviation 3 with the jobs in sync order: a FINALIZE that was dropped

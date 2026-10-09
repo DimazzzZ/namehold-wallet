@@ -606,6 +606,79 @@ pub fn spend_view_from_block(
     }))
 }
 
+/// A coin's address and covenant as hsd reports them, from either of its
+/// shapes: `GET /coin` ([`CoinAt::of_coin`]) or a transaction's output
+/// ([`CoinAt::of_output`]).
+#[derive(Debug, Clone, Copy)]
+pub struct CoinAt<'a> {
+    pub address: &'a str,
+    pub covenant_type: u8,
+    /// The covenant's items, hex as hsd sends them.
+    pub items: &'a [String],
+}
+
+impl<'a> CoinAt<'a> {
+    pub fn of_output(o: &'a SpendOutput) -> Self {
+        Self {
+            address: &o.address,
+            covenant_type: o.covenant_type,
+            items: &o.items,
+        }
+    }
+
+    /// `None` for a coin without its address or covenant: not hsd's whole
+    /// answer, which the caller reports as such.
+    pub fn of_coin(c: &'a rpc::NodeCoin) -> Option<Self> {
+        let (address, cov) = (c.address.as_deref()?, c.covenant.as_ref()?);
+        Some(Self {
+            address,
+            covenant_type: cov.kind,
+            items: &cov.items,
+        })
+    }
+}
+
+/// One listing's lock: the lock address its key derives, and its name's
+/// hash. Every lock coin of a key sits at that one address (ADR 0004), so
+/// the address alone does not say whose a coin there is: the covenant's
+/// name hash does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingLock {
+    pub address: String,
+    /// SHA3-256 of the listing's name, hex.
+    pub name_hash: String,
+}
+
+impl ListingLock {
+    pub fn new(address: String, name: &str) -> Result<Self, AppError> {
+        Ok(Self {
+            address,
+            name_hash: hex::encode(names::hash_name(name)?),
+        })
+    }
+
+    /// Whether `coin` sits at this lock address.
+    pub fn is_at(&self, coin: CoinAt) -> bool {
+        coin.address == self.address
+    }
+
+    /// Whether `coin` is a `covenant_type` covenant of this name at this
+    /// lock address, and, with `name_height`, commits to that name height
+    /// (item 1, [`purchase::items_name_height`]). The one rule every
+    /// verdict on "the name is in (or left through) this lock" reads.
+    pub fn holds(&self, coin: CoinAt, covenant_type: u8, name_height: Option<u32>) -> bool {
+        self.is_at(coin)
+            && coin.covenant_type == covenant_type
+            && coin
+                .items
+                .first()
+                .is_some_and(|h| h.eq_ignore_ascii_case(&self.name_hash))
+            && name_height.is_none_or(|h| {
+                crate::noncustodial::shakedex::purchase::items_name_height(coin.items) == Some(h)
+            })
+    }
+}
+
 /// Whether a TRANSFER covenant's commitment (items 2–3: address version and
 /// hash) is an address of ours. Ours are P2WPKH (version 0, 20 bytes); any
 /// other commitment is not ours. Items hsd did not send whole are an error,
@@ -642,9 +715,8 @@ pub struct PurchaseOf<'a> {
     /// The listing's lock coin, when it knows it (a dead FINALIZE's listing
     /// back at ReadyToFinalize does not).
     pub lock: Option<(&'a str, u32)>,
-    pub lock_address: &'a str,
-    /// SHA3-256 of the listing's name, hex.
-    pub name_hash: &'a str,
+    /// The listing's lock address and name.
+    pub at: &'a ListingLock,
     pub payment_address: &'a str,
     /// Every derived address of the profile.
     pub own: &'a HashSet<String>,
@@ -670,13 +742,7 @@ pub fn purchase_in(tx: &SpendView, p: &PurchaseOf) -> Result<Option<(String, u32
         let Some(out) = tx.outputs.get(k) else {
             continue;
         };
-        if out.covenant_type != COV_TRANSFER
-            || out.address != p.lock_address
-            || !out
-                .items
-                .first()
-                .is_some_and(|h| h.eq_ignore_ascii_case(p.name_hash))
-        {
+        if !p.at.holds(CoinAt::of_output(out), COV_TRANSFER, None) {
             continue;
         }
         if let Some((txid, vout)) = p.lock {
@@ -787,7 +853,7 @@ pub fn restore_verdict(
             coin.txid, coin.vout, owner.txid, owner.vout
         )));
     }
-    let (Some(address), Some(cov)) = (coin.address.as_deref(), coin.covenant.as_ref()) else {
+    let Some(at) = CoinAt::of_coin(coin) else {
         return Err(AppError::Rpc(
             "node did not report the owner coin's address or covenant".into(),
         ));
@@ -797,18 +863,22 @@ pub fn restore_verdict(
             "node reported the name's owner coin in the mempool".into(),
         ));
     }
-    let nh = hex::encode(names::hash_name(name)?);
-    if !cov
+    let lock = ListingLock::new(lock_address.to_string(), name)?;
+    if !at
         .items
         .first()
-        .is_some_and(|h| h.eq_ignore_ascii_case(&nh))
+        .is_some_and(|h| h.eq_ignore_ascii_case(&lock.name_hash))
     {
         return Err(AppError::Rpc(format!(
             "node reported an owner coin of '{name}' whose covenant is not of that name"
         )));
     }
-    if address != lock_address {
-        if cov.kind == COV_TRANSFER
+    if lock.holds(at, COV_FINALIZE, Some(owner.name_height)) {
+        return Ok(());
+    }
+    // Not our lock: say why.
+    if !lock.is_at(at) {
+        if at.covenant_type == COV_TRANSFER
             && crate::noncustodial::shakedex::purchase::transfer_commits_to(
                 coin,
                 network,
@@ -819,19 +889,17 @@ pub fn restore_verdict(
         }
         return Err(AppError::InvalidInput(RESTORE_NOT_AT_OUR_LOCK.into()));
     }
-    match cov.kind {
+    match at.covenant_type {
         COV_FINALIZE => {}
         COV_TRANSFER => return Err(AppError::InvalidInput(RESTORE_ALREADY_TRANSFER.into())),
         _ => return Err(AppError::InvalidInput(RESTORE_NOT_AT_OUR_LOCK.into())),
     }
-    let height =
-        crate::noncustodial::shakedex::purchase::covenant_name_height(cov).ok_or_else(|| {
-            AppError::Rpc("node did not report a readable name height in the lock coin".into())
-        })?;
-    if height != owner.name_height {
-        return Err(AppError::InvalidInput(RESTORE_LEFTOVER.into()));
+    match crate::noncustodial::shakedex::purchase::items_name_height(at.items) {
+        None => Err(AppError::Rpc(
+            "node did not report a readable name height in the lock coin".into(),
+        )),
+        Some(_) => Err(AppError::InvalidInput(RESTORE_LEFTOVER.into())),
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1331,16 +1399,21 @@ mod tests {
         own: &'a HashSet<String>,
         lock: Option<(&'a str, u32)>,
         pay: &'a str,
-        lock_address: &'a str,
-        name_hash: &'a str,
+        at: &'a ListingLock,
     ) -> PurchaseOf<'a> {
         PurchaseOf {
             network: Network::Regtest,
             lock,
-            lock_address,
-            name_hash,
+            at,
             payment_address: pay,
             own,
+        }
+    }
+
+    fn lock_of(address: &str, name_hash: &str) -> ListingLock {
+        ListingLock {
+            address: address.into(),
+            name_hash: name_hash.into(),
         }
     }
 
@@ -1349,11 +1422,13 @@ mod tests {
         let (pay, la, n) = (p2wpkh(5), lock_addr(), nh());
         let own: HashSet<String> = [pay.clone()].into();
         let tx = spend_view_from_rest(&rest(120, 9, &pay)).unwrap();
-        let p = purchase_of(&own, Some((LOCK, 0)), &pay, &la, &n);
+        let at = lock_of(&la, &n);
+        let p = purchase_of(&own, Some((LOCK, 0)), &pay, &at);
         assert_eq!(purchase_in(&tx, &p).unwrap(), Some((LOCK.to_string(), 0)));
         // A listing that lost its outpoint (a dead FINALIZE mined after all)
         // learns it from the purchase.
-        let p = purchase_of(&own, None, &pay, &la, &n);
+        let at = lock_of(&la, &n);
+        let p = purchase_of(&own, None, &pay, &at);
         assert_eq!(purchase_in(&tx, &p).unwrap(), Some((LOCK.to_string(), 0)));
     }
 
@@ -1368,7 +1443,8 @@ mod tests {
         v["inputs"] = serde_json::json!([inputs[1], inputs[0]]);
         v["outputs"] = serde_json::json!([outputs[1], outputs[0], outputs[2]]);
         let tx = spend_view_from_rest(&v).unwrap();
-        let p = purchase_of(&own, Some((LOCK, 0)), &pay, &la, &n);
+        let at = lock_of(&la, &n);
+        let p = purchase_of(&own, Some((LOCK, 0)), &pay, &at);
         assert_eq!(purchase_in(&tx, &p).unwrap(), Some((LOCK.to_string(), 0)));
     }
 
@@ -1380,7 +1456,11 @@ mod tests {
         // Commits to an address of ours: a cancel, not a purchase.
         let tx = spend_view_from_rest(&rest(120, 9, &pay)).unwrap();
         assert_eq!(
-            purchase_in(&tx, &purchase_of(&own, Some((LOCK, 0)), &pay, &la, &n)).unwrap(),
+            purchase_in(
+                &tx,
+                &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
+            )
+            .unwrap(),
             None
         );
         let own: HashSet<String> = [pay.clone()].into();
@@ -1388,13 +1468,21 @@ mod tests {
         let other_pay = p2wpkh(6);
         let tx = spend_view_from_rest(&rest(120, 9, &other_pay)).unwrap();
         assert_eq!(
-            purchase_in(&tx, &purchase_of(&own, Some((LOCK, 0)), &pay, &la, &n)).unwrap(),
+            purchase_in(
+                &tx,
+                &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
+            )
+            .unwrap(),
             None
         );
         // Spends another lock coin.
         let tx = spend_view_from_rest(&rest(120, 9, &pay)).unwrap();
         assert_eq!(
-            purchase_in(&tx, &purchase_of(&own, Some((LOCK, 1)), &pay, &la, &n)).unwrap(),
+            purchase_in(
+                &tx,
+                &purchase_of(&own, Some((LOCK, 1)), &pay, &lock_of(&la, &n))
+            )
+            .unwrap(),
             None
         );
         // A TRANSFER of another name, or at another lock.
@@ -1402,7 +1490,7 @@ mod tests {
         assert_eq!(
             purchase_in(
                 &tx,
-                &purchase_of(&own, Some((LOCK, 0)), &pay, &la, &other_name)
+                &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &other_name))
             )
             .unwrap(),
             None
@@ -1411,7 +1499,7 @@ mod tests {
         assert_eq!(
             purchase_in(
                 &tx,
-                &purchase_of(&own, Some((LOCK, 0)), &pay, &other_lock, &n)
+                &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&other_lock, &n))
             )
             .unwrap(),
             None
@@ -1421,7 +1509,11 @@ mod tests {
         v["outputs"][2]["covenant"]["type"] = serde_json::json!(2);
         let tx = spend_view_from_rest(&v).unwrap();
         assert_eq!(
-            purchase_in(&tx, &purchase_of(&own, Some((LOCK, 0)), &pay, &la, &n)).unwrap(),
+            purchase_in(
+                &tx,
+                &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
+            )
+            .unwrap(),
             None
         );
         // Output 0 is not a TRANSFER (a FINALIZE of the same name at the lock).
@@ -1429,7 +1521,11 @@ mod tests {
         v["outputs"][0]["covenant"]["type"] = serde_json::json!(10);
         let tx = spend_view_from_rest(&v).unwrap();
         assert_eq!(
-            purchase_in(&tx, &purchase_of(&own, Some((LOCK, 0)), &pay, &la, &n)).unwrap(),
+            purchase_in(
+                &tx,
+                &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
+            )
+            .unwrap(),
             None
         );
         // A commitment hsd sent unreadable (not hex, or a version of two bytes).
@@ -1443,7 +1539,11 @@ mod tests {
                 serde_json::json!([nh(), "32000000", version, hash]);
             let tx = spend_view_from_rest(&v).unwrap();
             assert!(
-                purchase_in(&tx, &purchase_of(&own, Some((LOCK, 0)), &pay, &la, &n)).is_err(),
+                purchase_in(
+                    &tx,
+                    &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
+                )
+                .is_err(),
                 "{version} {hash}"
             );
         }
@@ -1451,6 +1551,10 @@ mod tests {
         let mut v = rest(120, 9, &pay);
         v["outputs"][0]["covenant"]["items"] = serde_json::json!([nh(), "32000000"]);
         let tx = spend_view_from_rest(&v).unwrap();
-        assert!(purchase_in(&tx, &purchase_of(&own, Some((LOCK, 0)), &pay, &la, &n)).is_err());
+        assert!(purchase_in(
+            &tx,
+            &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
+        )
+        .is_err());
     }
 }
