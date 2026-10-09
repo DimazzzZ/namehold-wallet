@@ -787,7 +787,7 @@ pub(crate) async fn prepare_lock_finalize(
         .ok_or_else(|| corrupted("payment address"))?;
     let owner = owner
         .filter(|o| {
-            o.txid.eq_ignore_ascii_case(&lock_transfer_txid)
+            o.txid == lock_transfer_txid
                 && o.vout == 0
                 && o.covenant_type == i64::from(COV_TRANSFER)
         })
@@ -1280,7 +1280,7 @@ fn lock_coin_value(
     lock_address: &str,
 ) -> Result<u64, AppError> {
     let lock_txid = hex::encode(file.lock_txid);
-    if !(coin.txid.eq_ignore_ascii_case(&lock_txid) && coin.vout == file.lock_vout) {
+    if !(coin.txid == lock_txid && coin.vout == file.lock_vout) {
         return Err(AppError::Rpc(format!(
             "node answered coin {}:{} for the lock coin {lock_txid}:{}",
             coin.txid, coin.vout, file.lock_vout

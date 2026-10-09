@@ -323,6 +323,137 @@ fn each_listing_write_moves_exactly_its_transitions() {
     }
 }
 
+/// One txid case policy: every txid a listing write stores is lowercase,
+/// however the caller spelled it, and the writes and lookups compare stored
+/// txids exactly with a lowercased argument.
+#[test]
+fn listing_txids_are_stored_lowercase() {
+    let upper = |t: &str| t.to_ascii_uppercase();
+    let lc = |l: &ShakedexListing| {
+        [
+            l.lock_transfer_txid.clone(),
+            l.lock_txid.clone(),
+            l.abort_txid.clone(),
+            l.sold_txid.clone(),
+            l.cancel_txid.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .all(|t| t == t.to_ascii_lowercase())
+    };
+    // Inserted.
+    let f = fx(ListingState::Listed);
+    let mut row = listing(&f);
+    row.id = "l2".into();
+    row.name = "othername".into();
+    row.lock_transfer_txid = Some(upper(&txid("a1")));
+    row.lock_txid = Some(upper(&txid("a2")));
+    row.abort_txid = Some(upper(&txid("a3")));
+    row.sold_txid = Some(upper(&txid("a4")));
+    row.cancel_txid = Some(upper(&txid("a5")));
+    queries::insert_shakedex_listing(&f.conn, &row).unwrap();
+    let got = queries::get_shakedex_listing(&f.conn, "l2")
+        .unwrap()
+        .unwrap();
+    assert!(lc(&got), "{got:?}");
+    assert!(
+        queries::shakedex_listing_holds_lock_coin(&f.conn, PROFILE, &upper(&txid("a2")), 0)
+            .unwrap()
+    );
+    // A sale named in upper case: found by the stored outpoint, stored lower.
+    let lock = upper(&f.lock_txid);
+    assert_eq!(
+        queries::sell_shakedex_listing(&f.conn, &f.id, &upper(&txid("b1")), (&lock, 0)).unwrap(),
+        1
+    );
+    assert_eq!(listing(&f).sold_txid.as_deref(), Some(txid("b1").as_str()));
+    assert_eq!(
+        queries::resell_sold_listing(
+            &f.conn,
+            &f.id,
+            ListingState::Sold,
+            &upper(&txid("b2")),
+            (&lock, 0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(listing(&f).sold_txid.as_deref(), Some(txid("b2").as_str()));
+    // Adopted, and sold through a proven lock.
+    let f = fx(ListingState::ReadyToFinalize);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET lock_txid = NULL, lock_vout = NULL",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        queries::adopt_lock_finalized_elsewhere(&f.conn, &f.id, &upper(&txid("c1")), 0).unwrap(),
+        1
+    );
+    assert_eq!(listing(&f).lock_txid.as_deref(), Some(txid("c1").as_str()));
+    let f = fx(ListingState::Locking);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET lock_txid = NULL, lock_vout = NULL",
+            [],
+        )
+        .unwrap();
+    let proven = upper(&txid("c2"));
+    queries::sell_listing_through_proven_lock(&f.conn, &f.id, &upper(&txid("b3")), (&proven, 1))
+        .unwrap();
+    assert!(lc(&listing(&f)), "{:?}", listing(&f));
+    // A Cancel transfer linked by its lock TRANSFER named in upper case.
+    let f = fx(ListingState::Locking);
+    let n = queries::link_shakedex_listing_abort(
+        &f.conn,
+        PROFILE,
+        NAME,
+        &upper(&f.transfer_txid),
+        0,
+        "fin",
+        &upper(&txid("d1")),
+    )
+    .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(listing(&f).abort_txid.as_deref(), Some(txid("d1").as_str()));
+    // Finalize & sign's lock outpoint, and a file upgrading a Restored lock
+    // named in upper case.
+    let f = fx(ListingState::ReadyToFinalize);
+    let tx = f.conn.unchecked_transaction().unwrap();
+    let fin = queries::FinalizingListing {
+        finalize_draft_id: "fin",
+        lock_txid: &upper(&txid("e2")),
+        lock_vout: 0,
+        steps_json: "[]",
+        listing_file_json: "{}",
+        expires_at: 1,
+    };
+    assert_eq!(
+        queries::mark_listing_finalizing_in_tx(&tx, &f.id, &fin).unwrap(),
+        1
+    );
+    tx.commit().unwrap();
+    assert_eq!(listing(&f).lock_txid.as_deref(), Some(txid("e2").as_str()));
+    let f = fx(ListingState::Restored);
+    let n = queries::upgrade_restored_lock(
+        &f.conn,
+        &f.id,
+        &upper(&f.lock_txid),
+        f.lock_vout,
+        &listing(&f).lock_pubkey_hex,
+        &queries::UpgradedListing {
+            mode: ListingMode::BuyNow,
+            payment_address: &f.payment,
+            steps_json: "[]",
+            listing_file_json: "{}",
+            expires_at: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(n, 1);
+}
+
 /// The guards of the sale, resell, unadopt and upgrade writes beside the
 /// state: the listing's own lock outpoint, its lock TRANSFER, its key.
 #[test]

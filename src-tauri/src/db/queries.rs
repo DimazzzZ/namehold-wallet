@@ -1899,6 +1899,13 @@ fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<Shakedex
     })
 }
 
+/// A txid as `shakedex_listings` stores it: lowercase hex, as hsd writes
+/// hashes. Every listing write normalises the txids it stores or compares
+/// with this, so the queries and the jobs compare stored txids exactly.
+fn listing_txid(txid: &str) -> String {
+    txid.to_ascii_lowercase()
+}
+
 /// Insert a listing. The indexes refuse a second open listing of the name
 /// and a lock outpoint another listing already tracks.
 pub fn insert_shakedex_listing(
@@ -1923,8 +1930,8 @@ pub fn insert_shakedex_listing(
             l.lock_pubkey_hex,
             l.lock_transfer_draft_id,
             l.lock_finalize_draft_id,
-            l.lock_transfer_txid,
-            l.lock_txid,
+            l.lock_transfer_txid.as_deref().map(listing_txid),
+            l.lock_txid.as_deref().map(listing_txid),
             l.lock_vout,
             l.payment_address,
             l.cancel_address,
@@ -1936,9 +1943,9 @@ pub fn insert_shakedex_listing(
             l.market_retry_at,
             l.expires_at,
             l.abort_draft_id,
-            l.abort_txid,
-            l.sold_txid,
-            l.cancel_txid
+            l.abort_txid.as_deref().map(listing_txid),
+            l.sold_txid.as_deref().map(listing_txid),
+            l.cancel_txid.as_deref().map(listing_txid)
         ],
     )?;
     Ok(())
@@ -1991,9 +1998,9 @@ pub fn shakedex_listing_holds_lock_coin(
     let found = conn
         .query_row(
             "SELECT 1 FROM shakedex_listings
-             WHERE wallet_profile_id = ?1 AND lower(lock_txid) = lower(?2) AND lock_vout = ?3
+             WHERE wallet_profile_id = ?1 AND lock_txid = ?2 AND lock_vout = ?3
              LIMIT 1",
-            params![profile_id, txid, i64::from(vout)],
+            params![profile_id, listing_txid(txid), i64::from(vout)],
             |_| Ok(()),
         )
         .optional()?;
@@ -2157,7 +2164,13 @@ pub fn link_shakedex_listing_abort(
     );
     Ok(conn.execute(
         &sql,
-        params![draft_id, profile_id, name, transfer_txid, cancel_txid],
+        params![
+            draft_id,
+            profile_id,
+            name,
+            listing_txid(transfer_txid),
+            listing_txid(cancel_txid)
+        ],
     )?)
 }
 
@@ -2324,7 +2337,7 @@ pub fn mark_listing_finalizing_in_tx(
             id,
             w.target(),
             f.finalize_draft_id,
-            f.lock_txid,
+            listing_txid(f.lock_txid),
             f.steps_json,
             f.listing_file_json,
             expires_at,
@@ -2409,7 +2422,7 @@ pub fn adopt_lock_finalized_elsewhere(
         params![
             id,
             ListingWrite::AdoptElsewhere.target(),
-            lock_txid,
+            listing_txid(lock_txid),
             lock_vout
         ],
     )?)
@@ -2489,7 +2502,13 @@ fn sale_write(
     );
     Ok(conn.execute(
         &sql,
-        params![id, w.target(), purchase_txid, lock.0, i64::from(lock.1)],
+        params![
+            id,
+            w.target(),
+            listing_txid(purchase_txid),
+            listing_txid(lock.0),
+            i64::from(lock.1)
+        ],
     )?)
 }
 
@@ -2517,8 +2536,8 @@ pub fn sell_listing_through_proven_lock(
         params![
             id,
             ListingWrite::ProvenLockSale.target(),
-            purchase_txid,
-            lock.0,
+            listing_txid(purchase_txid),
+            listing_txid(lock.0),
             i64::from(lock.1)
         ],
     )?)
@@ -2551,7 +2570,13 @@ pub fn resell_sold_listing(
     );
     Ok(conn.execute(
         &sql,
-        params![id, to, purchase_txid, lock.0, i64::from(lock.1)],
+        params![
+            id,
+            to,
+            listing_txid(purchase_txid),
+            listing_txid(lock.0),
+            i64::from(lock.1)
+        ],
     )?)
 }
 
@@ -2644,7 +2669,7 @@ pub fn upgrade_restored_lock(
             u.steps_json,
             u.listing_file_json,
             u.expires_at,
-            lock_txid,
+            listing_txid(lock_txid),
             i64::from(lock_vout),
             lock_pubkey_hex
         ],

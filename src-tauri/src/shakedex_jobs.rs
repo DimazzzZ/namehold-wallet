@@ -1316,7 +1316,7 @@ async fn finalize_into_lock(
     let spends_our_transfer = tx
         .inputs
         .get(k)
-        .is_some_and(|(t, v)| t.eq_ignore_ascii_case(lock_transfer_txid) && *v == 0);
+        .is_some_and(|(t, v)| t == lock_transfer_txid && *v == 0);
     let is_our_lock = tx
         .outputs
         .get(k)
@@ -1642,7 +1642,7 @@ async fn lock_coin_spent(
         return Ok(());
     };
     let owner = owner_of(info)?;
-    let owner_is_lock = owner.0.eq_ignore_ascii_case(lock.0) && owner.1 == lock.1;
+    let owner_is_lock = owner.0 == lock.0 && owner.1 == lock.1;
     // hsd moves the owner only when a block is connected: a purchase is
     // Pending while the owner is still the lock coin, and Mined only once it
     // is not. Two facts that disagree are no verdict.
@@ -1669,9 +1669,7 @@ async fn lock_coin_spent(
         // close).
         (Sale::Mined { txid, .. }, false)
             if l.state == queries::ListingState::Sold
-                && l.sold_txid
-                    .as_deref()
-                    .is_some_and(|s| s.eq_ignore_ascii_case(&txid)) => {}
+                && l.sold_txid.as_deref().is_some_and(|s| s == txid) => {}
         (Sale::Mined { txid, lock }, false) if l.state == queries::ListingState::Sold => {
             let to = queries::ListingState::Sold;
             queries::resell_sold_listing(conn, &l.id, to, &txid, (lock.0.as_str(), lock.1))?;
