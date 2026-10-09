@@ -4678,3 +4678,416 @@ async fn reorged_abort_of_a_dead_finalize_relocks_without_its_steps() {
     assert_eq!(l.state, ListingState::Locking);
     assert_eq!((l.lock_txid, l.steps_json.as_str()), (None, "[]"));
 }
+
+// --- Restore a lock by name (T4, R32) ----------------------------------------
+
+use crate::commands::shakedex::shakedex_restore_lock;
+
+const RESTORED_TXID: &str = "7777777777777777777777777777777777777777777777777777777777777777";
+
+/// The owner coin hsd reports for NAME at `(RESTORED_TXID, 1)`: `cov` at
+/// `address`, committing (TRANSFER) to `committed`, or carrying the FINALIZE
+/// items with name height `height`.
+fn restored_coin(address: &str, cov: u8, height: u32, committed: Option<&[u8]>) -> Value {
+    let nh = hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap());
+    let items: Vec<String> = match committed {
+        Some(program) => vec![
+            nh,
+            hex::encode(height.to_le_bytes()),
+            "00".into(),
+            hex::encode(program),
+        ],
+        None => vec![
+            nh,
+            hex::encode(height.to_le_bytes()),
+            hex::encode(NAME),
+            "00".into(),
+            "00000000".into(),
+            "00000000".into(),
+            RENEWAL_BLOCK.into(),
+        ],
+    };
+    json!({ "hash": RESTORED_TXID, "index": 1, "value": NAME_VALUE, "address": address,
+            "height": QUIET_TIP - 5, "coinbase": false, "version": 0,
+            "covenant": { "type": cov, "action": cov_action(cov), "items": items } })
+}
+
+/// The FINALIZE at our lock that a restore adopts.
+fn our_lock_coin() -> Value {
+    restored_coin(
+        &lock_address(Network::Regtest),
+        COV_FINALIZE,
+        NAME_HEIGHT,
+        None,
+    )
+}
+
+/// A fresh profile from the same phrase (no listing, no owned name) of
+/// `kind`, unlocked, and a node answering its tip (`mocks[0]`), `info` for
+/// NAME (`mocks[1]`) and `coin` for `(RESTORED_TXID, 1)` (`mocks[2]`;
+/// `None`: hsd's 404).
+async fn restore_fixture_of(
+    kind: &str,
+    info: Value,
+    coin: Option<Value>,
+) -> (ServerGuard, Vec<Mock>, App) {
+    let mut node = mockito::Server::new_async().await;
+    let mut mocks = vec![
+        mock_blockchain_info(&mut node, QUIET_TIP, Some(1_700_000_000)).await,
+        mock_name_info(&mut node, info).await,
+    ];
+    let path = format!("/coin/{RESTORED_TXID}/1");
+    mocks.push(match coin {
+        Some(c) => {
+            node.mock("GET", path.as_str())
+                .with_header("content-type", "application/json")
+                .with_body(c.to_string())
+                .create_async()
+                .await
+        }
+        None => {
+            node.mock("GET", path.as_str())
+                .with_status(404)
+                .create_async()
+                .await
+        }
+    });
+    let app = app_with(seeded("regtest", kind, &node.url()));
+    unlock(&app, Network::Regtest);
+    (node, mocks, app)
+}
+
+async fn restore_fixture(info: Value, coin: Option<Value>) -> (ServerGuard, Vec<Mock>, App) {
+    restore_fixture_of("mnemonic_hot", info, coin).await
+}
+
+/// `getnameinfo` naming `(RESTORED_TXID, 1)` the owner of NAME.
+fn restored_info() -> Value {
+    let mut v = name_info(RENEWAL, 0, RESTORED_TXID);
+    v["info"]["owner"]["index"] = 1.into();
+    v
+}
+
+async fn restore(
+    app: &App,
+) -> Result<crate::commands::shakedex::ListingSummary, crate::error::AppError> {
+    shakedex_restore_lock(app.state(), NAME.into()).await
+}
+
+/// R32: the owner coin `getnameinfo` names, read with `GET /coin`, is a
+/// FINALIZE at the lock address of the key derived from the seed for this
+/// name, at the name's height: adopted as a Restored lock keyed by name and
+/// that outpoint, with the derived public key and no listing details; a
+/// second restore is refused, and the export says to import its file.
+#[tokio::test]
+async fn restore_lock_by_name_adopts_a_lock_at_the_derived_address() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    let s = restore(&app).await.expect("restored");
+    assert_eq!(s.state, ListingState::Restored);
+    assert_eq!(
+        (s.lock_txid.as_deref(), s.lock_vout),
+        (Some(RESTORED_TXID), Some(1))
+    );
+    assert_eq!(
+        (
+            s.payment_address.as_ref(),
+            s.steps.len(),
+            s.finalize_draft_id.as_ref()
+        ),
+        (None, 0, None)
+    );
+    let l = open_listing(&app).expect("the open listing");
+    assert_eq!(l.id, s.id);
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    assert_eq!(l.lock_pubkey_hex, hex::encode(key.pubkey));
+    assert_eq!(
+        (l.lock_transfer_txid, l.lock_transfer_draft_id),
+        (None, None)
+    );
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("already tracked"), "{e}");
+    let e = with_db(&app, |c| {
+        crate::commands::shakedex::export_listing_file_from_conn(c, PROFILE, &s.id).unwrap_err()
+    });
+    assert!(err_text(e).contains("import its saved file"));
+    assert_eq!(
+        count(&app, "wallet_tx_drafts"),
+        0,
+        "a restore writes no draft"
+    );
+    assert_eq!(count(&app, "shakedex_listings"), 1);
+}
+
+/// Nothing is adopted when the owner coin is not in our lock: at our own
+/// address, at the lock address of another key, a coin at our lock that is
+/// neither FINALIZE nor TRANSFER, or hsd's null owner (a name without one,
+/// no coin read); nothing is written.
+#[tokio::test]
+async fn restore_lock_refuses_a_name_not_at_our_lock() {
+    let other_lock = derive_lock_key(&master(), Network::Regtest, 0, "othername")
+        .unwrap()
+        .address;
+    for (case, address, cov) in [
+        ("our address", addr00(Network::Regtest).0, COV_FINALIZE),
+        ("another lock", other_lock, COV_FINALIZE),
+        (
+            "an UPDATE at our lock",
+            lock_address(Network::Regtest),
+            COV_UPDATE,
+        ),
+    ] {
+        let coin = restored_coin(&address, cov, NAME_HEIGHT, None);
+        let (_node, _m, app) = restore_fixture(restored_info(), Some(coin)).await;
+        let e = err_text(restore(&app).await.unwrap_err());
+        assert!(e.contains("not in this wallet's lock"), "{case}: {e}");
+        assert_eq!(count(&app, "shakedex_listings"), 0, "{case}");
+    }
+    let mut info = restored_info();
+    info["info"]["owner"] = json!({ "hash": "00".repeat(32), "index": u32::MAX });
+    let (_node, mocks, app) = restore_fixture(info, Some(our_lock_coin())).await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("not in this wallet's lock"), "null owner: {e}");
+    assert!(!mocks[2].matched_async().await, "null owner: no coin read");
+    assert_eq!(count(&app, "shakedex_listings"), 0, "null owner");
+}
+
+/// A FINALIZE at our lock whose covenant commits to another name height
+/// than hsd's is left over from an earlier registration: refused.
+#[tokio::test]
+async fn restore_lock_refuses_a_leftover_lock_coin() {
+    let coin = restored_coin(
+        &lock_address(Network::Regtest),
+        COV_FINALIZE,
+        NAME_HEIGHT - 1,
+        None,
+    );
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(coin)).await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("left over from an earlier registration"), "{e}");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// `getnameinfo` with no `info`: an expired name has no lock to restore; no
+/// coin is read.
+#[tokio::test]
+async fn restore_lock_refuses_an_expired_name() {
+    let (_node, mocks, app) = restore_fixture(
+        json!({ "info": null, "start": null }),
+        Some(our_lock_coin()),
+    )
+    .await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("expired"), "{e}");
+    assert!(!mocks[2].matched_async().await, "no coin read");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// A revoked name (`info.revoked` not 0) has no lock to restore, whatever
+/// its owner coin; no coin is read.
+#[tokio::test]
+async fn restore_lock_refuses_a_revoked_name() {
+    let mut info = restored_info();
+    info["info"]["revoked"] = 1_990.into();
+    let (_node, mocks, app) = restore_fixture(info, Some(our_lock_coin())).await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("revoked"), "{e}");
+    assert!(!mocks[2].matched_async().await, "no coin read");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// The TRANSFER toward our lock is mined but the FINALIZE into it is not:
+/// the owner coin is that TRANSFER, at our own address, committing to the
+/// lock. Refused, pointing at Cancel transfer.
+#[tokio::test]
+async fn restore_lock_refuses_a_name_still_locking() {
+    let program = derive_lock_key(&master(), Network::Regtest, 0, NAME)
+        .unwrap()
+        .program;
+    let coin = restored_coin(
+        &addr00(Network::Regtest).0,
+        COV_TRANSFER,
+        NAME_HEIGHT,
+        Some(&program),
+    );
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(coin)).await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(
+        e.contains("still on its way into the lock") && e.contains("Cancel transfer"),
+        "{e}"
+    );
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// The owner coin at our lock is a TRANSFER, not a FINALIZE: a cancel
+/// awaiting its finalize, or a mined purchase. Refused, so no listing and no
+/// FINALIZE exist for it (spec §5).
+#[tokio::test]
+async fn restore_lock_refuses_a_lock_coin_already_a_transfer() {
+    for (case, committed) in [("a cancel", [3u8; 20]), ("a purchase", [9u8; 20])] {
+        let coin = restored_coin(
+            &lock_address(Network::Regtest),
+            COV_TRANSFER,
+            NAME_HEIGHT,
+            Some(&committed),
+        );
+        let (_node, _m, app) = restore_fixture(restored_info(), Some(coin)).await;
+        let e = err_text(restore(&app).await.unwrap_err());
+        assert!(e.contains("already a TRANSFER"), "{case}: {e}");
+        assert_eq!(count(&app, "shakedex_listings"), 0, "{case}");
+    }
+}
+
+/// hsd's 404 for the owner coin (spent in its mempool) is no verdict: the
+/// restore is refused until that is mined, and nothing is written.
+#[tokio::test]
+async fn restore_lock_refuses_an_owner_coin_spent_in_the_mempool() {
+    let (_node, mocks, app) = restore_fixture(restored_info(), None).await;
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("being spent in the node's mempool"), "{e}");
+    assert!(mocks[2].matched_async().await, "the coin was read");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// A listing of this profile that already holds the lock coin (here a
+/// cancelled one, so no listing of the name is open) is refused: a lock
+/// coin is tracked by one listing.
+#[tokio::test]
+async fn restore_lock_refuses_a_lock_coin_a_listing_already_has() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    with_db(&app, |c| {
+        let mut l = listing("old", NAME, ListingState::Cancelled);
+        l.wallet_profile_id = PROFILE.into();
+        l.lock_txid = Some(RESTORED_TXID.into());
+        l.lock_vout = Some(1);
+        queries::insert_shakedex_listing(c, &l).unwrap();
+    });
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains("lock coin is already tracked"), "{e}");
+    assert_eq!(count(&app, "shakedex_listings"), 1);
+}
+
+/// A name with an open listing of this profile (here still Locking, so it
+/// holds no lock coin yet) is refused: one open listing per name.
+#[tokio::test]
+async fn restore_lock_refuses_a_name_with_an_open_listing() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    with_db(&app, |c| {
+        let mut l = listing("open", NAME, ListingState::Locking);
+        l.wallet_profile_id = PROFILE.into();
+        queries::insert_shakedex_listing(c, &l).unwrap();
+    });
+    let e = err_text(restore(&app).await.unwrap_err());
+    assert!(e.contains(&format!("'{NAME}' is already tracked")), "{e}");
+    assert_eq!(count(&app, "shakedex_listings"), 1);
+}
+
+/// Every field of hsd's replies the restore reads fails closed: a reply
+/// without it, or one that disagrees with what was asked, is "could not
+/// check" (`AppError::Rpc`), and nothing is written.
+#[tokio::test]
+async fn restore_lock_with_a_node_reply_missing_a_field_writes_nothing() {
+    let without_info = |field: &str| {
+        let mut v = restored_info();
+        v["info"].as_object_mut().unwrap().remove(field);
+        v
+    };
+    let without_coin = |field: &str| {
+        let mut v = our_lock_coin();
+        v.as_object_mut().unwrap().remove(field);
+        v
+    };
+    let coin_with = |key: &str, value: Value| {
+        let mut v = our_lock_coin();
+        v[key] = value;
+        v
+    };
+    let mut other_name = our_lock_coin();
+    other_name["covenant"]["items"][0] =
+        hex::encode(crate::noncustodial::names::hash_name("othername").unwrap()).into();
+    let mut no_height_item = our_lock_coin();
+    no_height_item["covenant"]["items"][1] = "zz".into();
+    let mut info_null_owner = restored_info();
+    info_null_owner["info"]["owner"] = Value::Null;
+    let cases: Vec<(&str, Value, Value)> = vec![
+        ("no info", json!({ "start": null }), our_lock_coin()),
+        ("no owner", without_info("owner"), our_lock_coin()),
+        ("null owner", info_null_owner, our_lock_coin()),
+        ("no height", without_info("height"), our_lock_coin()),
+        ("no revoked", without_info("revoked"), our_lock_coin()),
+        (
+            "coin without address",
+            restored_info(),
+            without_coin("address"),
+        ),
+        (
+            "coin without covenant",
+            restored_info(),
+            without_coin("covenant"),
+        ),
+        (
+            "coin without height",
+            restored_info(),
+            without_coin("height"),
+        ),
+        (
+            "coin in the mempool",
+            restored_info(),
+            coin_with("height", (-1).into()),
+        ),
+        (
+            "coin of another txid",
+            restored_info(),
+            coin_with("hash", "66".repeat(32).into()),
+        ),
+        (
+            "coin of another index",
+            restored_info(),
+            coin_with("index", 0.into()),
+        ),
+        ("coin of another name", restored_info(), other_name),
+        ("unreadable name height", restored_info(), no_height_item),
+    ];
+    for (case, info, coin) in cases {
+        let (_node, _m, app) = restore_fixture(info, Some(coin)).await;
+        let e = restore(&app).await.unwrap_err();
+        assert!(
+            matches!(e, crate::error::AppError::Rpc(_)),
+            "{case}: {}",
+            err_text(e)
+        );
+        assert_eq!(count(&app, "shakedex_listings"), 0, "{case}");
+    }
+}
+
+/// R32: the recovery phrase is needed (a hardened key cannot come from the
+/// xpub): a locked wallet is refused before the node is read.
+#[tokio::test]
+async fn restore_lock_needs_the_unlocked_signer() {
+    let (_node, mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    *app.state::<AppState>().signer.lock().unwrap() = None;
+    assert!(matches!(
+        restore(&app).await.unwrap_err(),
+        crate::error::AppError::WalletLocked
+    ));
+    assert!(!mocks[1].matched_async().await, "the name was not read");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+}
+
+/// R16/R32: Ledger, watch-only and extended-private-key profiles cannot
+/// derive the lock key (no seed for the hardened path): refused with the
+/// sentence the UI shows, before the node is read.
+#[tokio::test]
+async fn restore_lock_refused_for_ledger_and_watch_only() {
+    let sentence = crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY;
+    for kind in ["ledger_hardware", "xpriv_hot", "watch_only_xpub"] {
+        let (_node, mocks, app) =
+            restore_fixture_of(kind, restored_info(), Some(our_lock_coin())).await;
+        let e = err_text(restore(&app).await.unwrap_err());
+        assert!(e.contains(sentence), "{kind}: {e}");
+        assert!(
+            !mocks[1].matched_async().await,
+            "{kind}: the name was not read"
+        );
+        assert_eq!(count(&app, "shakedex_listings"), 0, "{kind}");
+    }
+}

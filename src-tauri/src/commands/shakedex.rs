@@ -1131,8 +1131,8 @@ fn listing_over(state: ListingState) -> Option<&'static str> {
         }
         ListingState::Sold => Some("this name is sold: the listing is over"),
         ListingState::Restored => Some(
-            "this lock was finalized by another wallet with the same recovery phrase: it has \
-             no signed prices or listing file here; import its saved file",
+            "this lock was restored by name, or finalized by another wallet with the same \
+             recovery phrase: it has no signed prices or listing file here; import its saved file",
         ),
         _ => None,
     }
@@ -1161,6 +1161,73 @@ pub(crate) fn export_listing_file_from_conn(
     l.listing_file_json.ok_or_else(|| {
         AppError::InvalidInput("this lock has no listing file here: import its saved file".into())
     })
+}
+
+/// What a restore by name (R32) decides from: every node read, and the lock
+/// key already in hand.
+pub(crate) struct RestoreInput<'a> {
+    pub(crate) profile_id: &'a str,
+    pub(crate) network: Network,
+    pub(crate) name: &'a str,
+    pub(crate) key: &'a LockKey,
+    pub(crate) owner: &'a sell::RestoreOwner,
+    pub(crate) coin: &'a rpc::NodeCoin,
+}
+
+/// R32: adopt the name's owner coin as a Restored lock when it is our lock
+/// ([`sell::restore_verdict`]), keyed by name and that outpoint, with the
+/// key's public key and no listing details (its mode is recorded as Buy Now
+/// until its file is imported). Refused while a listing of the name is open,
+/// or when a listing of the profile already holds that lock coin. Writes the
+/// listing only.
+pub(crate) fn restore_lock_inner(
+    conn: &rusqlite::Connection,
+    i: &RestoreInput,
+) -> Result<ListingSummary, AppError> {
+    if queries::open_shakedex_listing_for_name(conn, i.profile_id, i.name)?.is_some() {
+        return Err(AppError::InvalidInput(format!(
+            "'{}' is already tracked by one of this wallet's listings",
+            i.name
+        )));
+    }
+    if queries::shakedex_listing_holds_lock_coin(conn, i.profile_id, &i.owner.txid, i.owner.vout)? {
+        return Err(AppError::InvalidInput(
+            "this lock coin is already tracked by one of this wallet's listings".into(),
+        ));
+    }
+    sell::restore_verdict(i.network, i.name, &i.key.address, i.owner, i.coin)?;
+    let l = ShakedexListing {
+        id: random_id(),
+        wallet_profile_id: i.profile_id.into(),
+        name: i.name.into(),
+        mode: ListingMode::BuyNow,
+        state: ListingState::Restored,
+        lock_pubkey_hex: hex::encode(i.key.pubkey),
+        lock_transfer_draft_id: None,
+        lock_finalize_draft_id: None,
+        lock_transfer_txid: None,
+        lock_txid: Some(i.owner.txid.clone()),
+        lock_vout: Some(i64::from(i.owner.vout)),
+        payment_address: None,
+        cancel_address: None,
+        cancel_child_index: None,
+        steps_json: "[]".into(),
+        listing_file_json: None,
+        publish: false,
+        market_status: None,
+        market_retry_at: None,
+        expires_at: None,
+        abort_draft_id: None,
+        abort_txid: None,
+        sold_txid: None,
+        cancel_txid: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    queries::insert_shakedex_listing(conn, &l)?;
+    let l = queries::get_shakedex_listing(conn, &l.id)?
+        .ok_or_else(|| AppError::Other("listing vanished after the restore".into()))?;
+    ListingSummary::of(&l)
 }
 
 // --- commands ---------------------------------------------------------------
@@ -1736,6 +1803,44 @@ pub async fn shakedex_export_listing_file(
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let profile = draft_ctx::active_profile(&conn)?;
     export_listing_file_from_conn(&conn, &profile.id, &listing_id)
+}
+
+/// Restore a lock by name (R32): the name's owner coin is read on the node
+/// (`getnameinfo`, then `GET /coin`), the lock key of `name` is derived from
+/// the seed of the unlocked session after those reads (for its public key
+/// and lock address only; nothing is signed), and the coin is adopted as a
+/// Restored lock when it is a FINALIZE at that key's lock address
+/// ([`restore_lock_inner`]). Acts on the active profile, which must be
+/// seed-backed (R16: Ledger and watch-only profiles cannot derive the
+/// hardened lock key); no experimental flag (the lock exists already, R15).
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_restore_lock(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<ListingSummary, AppError> {
+    let ctx = software_writer_ctx(&state)?;
+    authorize_signer(&state, &ctx)?;
+    let reply = ctx.node.get_name_info(&name).await?;
+    let owner = sell::restore_owner(&reply, &name)?;
+    let coin = ctx
+        .node
+        .get_coin(&owner.txid, owner.vout)
+        .await?
+        .ok_or_else(|| AppError::InvalidInput(sell::RESTORE_SPENT_IN_MEMPOOL.into()))?;
+    let key = derive_listing_key(&state, &ctx, &name)?;
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    restore_lock_inner(
+        &conn,
+        &RestoreInput {
+            profile_id: &ctx.profile_id,
+            network: ctx.network,
+            name: &name,
+            key: &key,
+            owner: &owner,
+            coin: &coin,
+        },
+    )
 }
 
 #[cfg(test)]

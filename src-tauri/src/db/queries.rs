@@ -1841,6 +1841,27 @@ pub fn open_shakedex_listing_for_name(
     Ok(row)
 }
 
+/// Whether any listing of the profile, in any state, holds the lock coin
+/// `(txid, vout)`: a lock coin is tracked by one listing
+/// (`idx_shakedex_listings_lock_outpoint`).
+pub fn shakedex_listing_holds_lock_coin(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    txid: &str,
+    vout: u32,
+) -> Result<bool, AppError> {
+    let found = conn
+        .query_row(
+            "SELECT 1 FROM shakedex_listings
+             WHERE wallet_profile_id = ?1 AND lower(lock_txid) = lower(?2) AND lock_vout = ?3
+             LIMIT 1",
+            params![profile_id, txid, i64::from(vout)],
+            |_| Ok(()),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
 /// The open listing that keeps `name`'s owner actions away (R27), if any.
 /// A listing past Locking always does. A Locking one does only while its
 /// lock TRANSFER draft is alive ([`draft_alive`]): a dropped,

@@ -692,6 +692,148 @@ pub fn purchase_in(tx: &SpendView, p: &PurchaseOf) -> Result<Option<(String, u32
     Ok(None)
 }
 
+/// R32's refusals, in the backend's words (T7's UI shows them as sent).
+pub const RESTORE_NOT_AT_OUR_LOCK: &str =
+    "the name is not in this wallet's lock for it: its owner coin is elsewhere";
+pub const RESTORE_STILL_LOCKING: &str = "the name is still on its way into the lock: the \
+     TRANSFER toward it is mined but the FINALIZE into it is not; its way out is Cancel transfer";
+pub const RESTORE_ALREADY_TRANSFER: &str = "the coin in the lock is already a TRANSFER, not a \
+     FINALIZE: a cancel awaiting its finalize, or a mined purchase; there is no lock to restore";
+pub const RESTORE_LEFTOVER: &str = "the coin in the lock is left over from an earlier \
+     registration of the name: there is no lock to restore";
+pub const RESTORE_REVOKED: &str = "the name was revoked: there is no lock to restore";
+pub const RESTORE_SPENT_IN_MEMPOOL: &str =
+    "the name's owner coin is being spent in the node's mempool: restore it once that is mined";
+
+/// The name's owner outpoint and name height, as hsd's `getnameinfo` reports
+/// them, that a restore by name (R32) judges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreOwner {
+    pub txid: String,
+    pub vout: u32,
+    pub name_height: u32,
+}
+
+/// R32: the owner outpoint and name height of `name` from `getnameinfo`.
+/// `info: null` is an expired name and a non-zero `info.revoked` a revoked
+/// one (both refused); a reply without the owner, the height or `revoked`,
+/// or with an owner hash that is not a txid, is "could not check"; hsd's null
+/// owner (all zeros) is not in our lock.
+pub fn restore_owner(reply: &serde_json::Value, name: &str) -> Result<RestoreOwner, AppError> {
+    let missing = |what: &str| {
+        AppError::Rpc(format!(
+            "node did not report {what}: could not check '{name}'"
+        ))
+    };
+    let info = match reply.get("info") {
+        None => return Err(missing("the name's info")),
+        Some(serde_json::Value::Null) => {
+            return Err(AppError::InvalidInput(format!(
+                "'{name}' has no on-chain state or has expired: there is no lock to restore"
+            )))
+        }
+        Some(i) => i,
+    };
+    let owner = info.get("owner");
+    let txid = owner
+        .and_then(|o| o.get("hash"))
+        .and_then(|h| h.as_str())
+        .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| missing("the name's owner"))?;
+    let vout = owner
+        .and_then(|o| o.get("index"))
+        .and_then(|i| i.as_u64())
+        .and_then(|i| u32::try_from(i).ok())
+        .ok_or_else(|| missing("the name's owner output"))?;
+    let name_height = info
+        .get("height")
+        .and_then(|h| h.as_u64())
+        .and_then(|h| u32::try_from(h).ok())
+        .ok_or_else(|| missing("the name's height"))?;
+    let revoked = info
+        .get("revoked")
+        .and_then(|r| r.as_u64())
+        .ok_or_else(|| missing("whether the name was revoked"))?;
+    if revoked != 0 {
+        return Err(AppError::InvalidInput(RESTORE_REVOKED.into()));
+    }
+    if txid.bytes().all(|b| b == b'0') {
+        return Err(AppError::InvalidInput(RESTORE_NOT_AT_OUR_LOCK.into()));
+    }
+    Ok(RestoreOwner {
+        txid: txid.to_ascii_lowercase(),
+        vout,
+        name_height,
+    })
+}
+
+/// R32: whether `coin` (hsd's `GET /coin` for `owner`) is our lock for
+/// `name`: a mined FINALIZE of the name at `lock_address` whose covenant
+/// commits to the owner's name height. A TRANSFER at our own address
+/// committing to the lock is still Locking, a TRANSFER at the lock is a
+/// cancel or a purchase, another height is a leftover, anything else is not
+/// our lock; each is refused with its reason. A coin missing a field, or one
+/// that is not the outpoint or the name asked about, is "could not check".
+pub fn restore_verdict(
+    network: Network,
+    name: &str,
+    lock_address: &str,
+    owner: &RestoreOwner,
+    coin: &rpc::NodeCoin,
+) -> Result<(), AppError> {
+    if !(coin.txid.eq_ignore_ascii_case(&owner.txid) && coin.vout == owner.vout) {
+        return Err(AppError::Rpc(format!(
+            "node answered coin {}:{} for the owner coin {}:{}",
+            coin.txid, coin.vout, owner.txid, owner.vout
+        )));
+    }
+    let (Some(address), Some(cov)) = (coin.address.as_deref(), coin.covenant.as_ref()) else {
+        return Err(AppError::Rpc(
+            "node did not report the owner coin's address or covenant".into(),
+        ));
+    };
+    if coin.mined_height()?.is_none() {
+        return Err(AppError::Rpc(
+            "node reported the name's owner coin in the mempool".into(),
+        ));
+    }
+    let nh = hex::encode(names::hash_name(name)?);
+    if !cov
+        .items
+        .first()
+        .is_some_and(|h| h.eq_ignore_ascii_case(&nh))
+    {
+        return Err(AppError::Rpc(format!(
+            "node reported an owner coin of '{name}' whose covenant is not of that name"
+        )));
+    }
+    if address != lock_address {
+        if cov.kind == COV_TRANSFER
+            && crate::noncustodial::shakedex::purchase::transfer_commits_to(
+                coin,
+                network,
+                lock_address,
+            )?
+        {
+            return Err(AppError::InvalidInput(RESTORE_STILL_LOCKING.into()));
+        }
+        return Err(AppError::InvalidInput(RESTORE_NOT_AT_OUR_LOCK.into()));
+    }
+    match cov.kind {
+        COV_FINALIZE => {}
+        COV_TRANSFER => return Err(AppError::InvalidInput(RESTORE_ALREADY_TRANSFER.into())),
+        _ => return Err(AppError::InvalidInput(RESTORE_NOT_AT_OUR_LOCK.into())),
+    }
+    let height =
+        crate::noncustodial::shakedex::purchase::covenant_name_height(cov).ok_or_else(|| {
+            AppError::Rpc("node did not report a readable name height in the lock coin".into())
+        })?;
+    if height != owner.name_height {
+        return Err(AppError::InvalidInput(RESTORE_LEFTOVER.into()));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
