@@ -4584,15 +4584,7 @@ async fn live_scanner_pairs_each_reveal_with_its_own_bid() {
 /// script's `hsd-rpc` reaches, is a mistake in the setup and fails the test
 /// rather than skipping it.
 fn shakedex_env(test: &str) -> Option<(String, String, ShakedexCli)> {
-    match std::env::var("HNS_IT_SHAKEDEX").ok().as_deref() {
-        None | Some("") => {
-            eprintln!("skip {test}: set HNS_IT_SHAKEDEX=1 and HNS_IT_NODE_URL");
-            return None;
-        }
-        Some("1") => {}
-        Some(other) => panic!("HNS_IT_SHAKEDEX must be 1, not {other:?}"),
-    }
-    let (url, key) = it_env().expect("HNS_IT_SHAKEDEX=1 needs HNS_IT_NODE_URL");
+    let (url, key) = shakedex_node_env(test)?;
     // The CLI and the script's hsd-rpc/hsw-rpc reach regtest's default ports.
     let port = Network::Regtest.default_rpc_port();
     assert!(
@@ -4601,6 +4593,21 @@ fn shakedex_env(test: &str) -> Option<(String, String, ShakedexCli)> {
     );
     let cli = shakedex_cli(&key);
     Some((url, key, cli))
+}
+
+/// The node for a Shakedex live test that needs no CLI, or `None` (the test
+/// skips, and says so) when `HNS_IT_SHAKEDEX` is unset. Anything but `1`
+/// there, or `1` without a node, fails the test rather than skipping it.
+fn shakedex_node_env(test: &str) -> Option<(String, String)> {
+    match std::env::var("HNS_IT_SHAKEDEX").ok().as_deref() {
+        None | Some("") => {
+            eprintln!("skip {test}: set HNS_IT_SHAKEDEX=1 and HNS_IT_NODE_URL");
+            return None;
+        }
+        Some("1") => {}
+        Some(other) => panic!("HNS_IT_SHAKEDEX must be 1, not {other:?}"),
+    }
+    Some(it_env().expect("HNS_IT_SHAKEDEX=1 needs HNS_IT_NODE_URL"))
 }
 
 /// The shakedex CLI, driven through `scripts/shakedex-cli-sell.sh`.
@@ -5610,6 +5617,61 @@ fn burn_addr() -> String {
     crate::noncustodial::address::encode_p2wpkh(NET, &[0x5a; 20]).unwrap()
 }
 
+/// The name's height as hsd reports it (`getnameinfo.info.height`), the
+/// value a TRANSFER's covenant carries as items[1] (u32 little-endian).
+async fn info_height(cl: &NodeRpcClient, name: &str) -> u32 {
+    let info = cl.get_name_info(name).await.expect("name info");
+    let h = info["info"]["height"].as_u64().expect("name height");
+    u32::try_from(h).unwrap()
+}
+
+/// Takes the chain back to `height` when dropped, unless [`Self::rewind`]
+/// already did: a test that mines a long stretch leaves the chain as it found
+/// it even when it panics before its own rewind.
+struct RewindOnDrop {
+    /// The node's URL and key: the rewind on drop builds a client of its own,
+    /// since a client's connections belong to the runtime that made them.
+    node: Option<(String, String)>,
+    height: i64,
+}
+
+impl RewindOnDrop {
+    fn new(url: &str, key: &str, height: i64) -> Self {
+        Self {
+            node: Some((url.to_string(), key.to_string())),
+            height,
+        }
+    }
+
+    async fn rewind(mut self, cl: &NodeRpcClient) {
+        self.node = None;
+        rewind_to(cl, self.height).await;
+    }
+}
+
+impl Drop for RewindOnDrop {
+    fn drop(&mut self) {
+        let Some((url, key)) = self.node.take() else {
+            return;
+        };
+        let height = self.height;
+        // Drop cannot await, and the test's runtime may be the one panicking:
+        // the rewind runs on a runtime of its own, on its own thread.
+        let done = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(rewind_to(&client(&url, &key), height));
+        })
+        .join();
+        match done {
+            Ok(()) => eprintln!("RewindOnDrop: the chain is back at {height}"),
+            Err(_) => eprintln!("RewindOnDrop: could not rewind to {height}"),
+        }
+    }
+}
+
 /// A funded profile owning a fresh name, unlocked. `(app, client, our
 /// address, name)`.
 async fn own_a_name(
@@ -5670,8 +5732,8 @@ async fn lock_on_chain(
 /// at our address and hsd records the transfer.
 #[tokio::test]
 async fn shakedex_lock_transfer_commits_to_the_lock_address() {
-    let Some((url, key)) = it_env() else {
-        eprintln!("skip shakedex_lock_transfer_commits_to_the_lock_address: set HNS_IT_NODE_URL");
+    let Some((url, key)) = shakedex_node_env("shakedex_lock_transfer_commits_to_the_lock_address")
+    else {
         return;
     };
     let (app, cl, addr, name) = own_a_name(&url, &key, "lockto").await;
@@ -5700,6 +5762,12 @@ async fn shakedex_lock_transfer_commits_to_the_lock_address() {
         items[0],
         hex::encode(crate::noncustodial::names::hash_name(&name).unwrap())
     );
+    let name_height = info_height(&cl, &name).await;
+    assert_eq!(
+        items[1],
+        hex::encode(name_height.to_le_bytes()),
+        "items[1] is the name's height"
+    );
     assert_eq!(items[2], "00");
     assert_eq!(items[3], hex::encode(lock.program));
     assert_eq!(
@@ -5723,8 +5791,9 @@ async fn shakedex_lock_transfer_commits_to_the_lock_address() {
 /// listing Aborted.
 #[tokio::test]
 async fn shakedex_cancel_transfer_aborts_the_listing_on_chain() {
-    let Some((url, key)) = it_env() else {
-        eprintln!("skip shakedex_cancel_transfer_aborts_the_listing_on_chain: set HNS_IT_NODE_URL");
+    let Some((url, key)) =
+        shakedex_node_env("shakedex_cancel_transfer_aborts_the_listing_on_chain")
+    else {
         return;
     };
     let (app, cl, addr, name) = own_a_name(&url, &key, "lockabort").await;
@@ -5800,11 +5869,11 @@ fn listing_state(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> Listin
 /// R31 on hsd: the lock is refused once the name's expiry (hsd's own
 /// `renewalPeriodEnd`) is at or before tip + 1 + transferLockup + day, and
 /// one block earlier it builds, with the near-expiry warning. The blocks are
-/// mined to an address of nobody's and taken back before asserting.
+/// mined to an address of nobody's and taken back before asserting, and by a
+/// [`RewindOnDrop`] guard if the test panics first.
 #[tokio::test]
 async fn shakedex_lock_refused_near_expiry() {
-    let Some((url, key)) = it_env() else {
-        eprintln!("skip shakedex_lock_refused_near_expiry: set HNS_IT_NODE_URL");
+    let Some((url, key)) = shakedex_node_env("shakedex_lock_refused_near_expiry") else {
         return;
     };
     let (app, cl, _addr, name) = own_a_name(&url, &key, "lockexp").await;
@@ -5822,6 +5891,7 @@ async fn shakedex_lock_refused_near_expiry() {
         "tip {tip} already past {last_lockable}"
     );
     let first_mined = tip + 1;
+    let rewind = RewindOnDrop::new(&url, &key, first_mined - 1);
     mine_to(&cl, &burn_addr(), last_lockable).await;
     let at_last = shakedex_build_lock_draft(
         app.state(),
@@ -5846,7 +5916,7 @@ async fn shakedex_lock_refused_near_expiry() {
     )
     .await;
 
-    rewind_to(&cl, first_mined - 1).await;
+    rewind.rewind(&cl).await;
 
     let d = at_last.expect("the last lockable block locks");
     let warnings = d.summary["warnings"].as_array().expect("warnings");
