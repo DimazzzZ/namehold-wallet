@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime, State};
 
 use crate::commands::draft_ctx::active_profile;
+use crate::commands::draft_ctx::LockSend;
 use crate::commands::secure_prompt::{prompt_secure, SecurePromptRequest};
 use crate::db;
 use crate::error::AppError;
@@ -37,7 +38,7 @@ use crate::noncustodial::session::session_ttl_ms;
 use crate::noncustodial::shakedex::purchase::{
     PurchaseFinalizeSummary, PurchaseSummary, PURCHASE_ACTION, PURCHASE_FINALIZE_ACTION,
 };
-use crate::noncustodial::shakedex::sell::LOCK_ACTION;
+use crate::noncustodial::shakedex::sell::{LOCK_ACTION, LOCK_FINALIZE_ACTION};
 use crate::noncustodial::tx_evidence::{
     chain_evidence_with_client, node_has_tx_index_with_client, taken_by_node_with_client,
     ChainEvidence, Taken, NOT_TAKEN,
@@ -1689,17 +1690,25 @@ pub async fn broadcast_tx_draft(
         };
         refuse_unless_sendable(&draft.status)?;
         let maybe_sent = db::queries::may_have_reached_chain(&draft.status);
-        // A lock TRANSFER is judged by R31 again before it is sent.
-        let lock_name = if draft.action == LOCK_ACTION {
-            let summary: serde_json::Value = serde_json::from_str(&draft.summary_json)?;
-            Some(
-                summary["name"]
-                    .as_str()
-                    .ok_or_else(|| AppError::Other("lock draft without its name".into()))?
-                    .to_string(),
-            )
-        } else {
-            None
+        // A lock TRANSFER, and the FINALIZE into the lock, are judged by R31
+        // again before they are sent.
+        let lock_send = match draft.action.as_str() {
+            LOCK_ACTION => Some(LockSend::Transfer),
+            LOCK_FINALIZE_ACTION => Some(LockSend::Finalize),
+            _ => None,
+        };
+        let lock_name = match lock_send {
+            Some(send) => {
+                let summary: serde_json::Value = serde_json::from_str(&draft.summary_json)?;
+                Some((
+                    summary["name"]
+                        .as_str()
+                        .ok_or_else(|| AppError::Other("lock draft without its name".into()))?
+                        .to_string(),
+                    send,
+                ))
+            }
+            None => None,
         };
         // An unsent purchase draft past its coin reservation is discarded
         // with its purchase, as the sync would: its coins may fund another
@@ -1759,18 +1768,21 @@ pub async fn broadcast_tx_draft(
         }
     }
 
-    // R31 at send time (the lock may be sent days after it was built). A
-    // refusal discards an unsent draft with its Locking listing, so the name
-    // is free to renew; a node that cannot say leaves both, and sends nothing.
-    if let Some(name) = lock_name {
+    // R31 at send time (the lock, or its FINALIZE, may be sent days after
+    // it was built). A refused lock TRANSFER discards an unsent draft with
+    // its Locking listing, so the name is free to renew; a refused FINALIZE
+    // keeps its signed draft and its Finalizing listing (deleting it would
+    // drop the signed steps). A node that cannot say leaves everything, and
+    // nothing is sent.
+    if let Some((name, send)) = lock_name {
         let network =
             derivation::network_from_profile(expected_network.as_deref().ok_or_else(|| {
                 AppError::InvalidInput("the lock's wallet profile is gone; nothing was sent".into())
             })?)?;
         if let Some(refusal) =
-            crate::commands::draft_ctx::recheck_lock_expiry(&client, network, &name).await?
+            crate::commands::draft_ctx::recheck_lock_expiry(&client, network, &name, send).await?
         {
-            if !maybe_sent {
+            if send == LockSend::Transfer && !maybe_sent {
                 let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
                 db::queries::delete_tx_draft(&conn, &draft_id)?;
             }

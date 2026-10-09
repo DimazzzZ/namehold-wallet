@@ -563,8 +563,9 @@ fn seed_listing(conn: &rusqlite::Connection, profile_id: &str, id: &str, name: &
 }
 
 /// R19: the reminder appears once the lockup is over (ReadyToFinalize, not
-/// Locking), comes once a day until Finalize & sign runs, and is gone from
-/// then on (Finalizing).
+/// Locking), comes once a day until Finalize & sign runs and its FINALIZE
+/// is sent (a signed FINALIZE not sent yet locks nothing in), and is gone
+/// from then on.
 #[tokio::test]
 async fn listing_ready_repeats() {
     let state = create_full_test_state();
@@ -591,21 +592,67 @@ async fn listing_ready_repeats() {
     let d2 = scan(20_001).await.unwrap();
     assert_eq!(d2.notified.len(), 1, "again the next day");
 
-    {
+    let set_finalize = |status: &str| {
         let s: tauri::State<crate::AppState> = app.state();
         let conn = s.db.lock().unwrap();
         conn.execute(
-            "UPDATE shakedex_listings SET state = 'finalizing' WHERE id = 'l1'",
+            "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = 'fin'",
+            [status],
+        )
+        .unwrap();
+    };
+    {
+        let s: tauri::State<crate::AppState> = app.state();
+        let conn = s.db.lock().unwrap();
+        db::queries::insert_tx_draft(
+            &conn,
+            "fin",
+            &profile_id,
+            "shakedex_lock_finalize",
+            "00",
+            "{}",
+            "{}",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE shakedex_listings SET state = 'finalizing', lock_finalize_draft_id = 'fin' \
+             WHERE id = 'l1'",
             [],
         )
         .unwrap();
     }
+    set_finalize("signed");
+    let d3 = scan(20_002).await.unwrap();
+    assert_eq!(d3.notified.len(), 1, "signed, not sent yet: still reminded");
+    assert_eq!(
+        d3.notified[0].key,
+        format!("listing_ready:{profile_id}:forsale:l1-tx:20002")
+    );
+    set_finalize("broadcasted");
     assert!(
-        scan(20_002).await.unwrap().notified.is_empty(),
-        "gone once Finalize & sign ran"
+        scan(20_003).await.unwrap().notified.is_empty(),
+        "gone once the FINALIZE is sent"
     );
     let s: tauri::State<crate::AppState> = app.state();
     let conn = s.db.lock().unwrap();
     let raw = db::queries::get_settings(&conn).unwrap()["deadline_notify_state"].clone();
     assert!(!raw.contains("listing_ready:"), "{raw}");
+}
+
+/// The listing reminder follows the setting like every other kind: off, a
+/// ready listing notifies nothing and the scan says it is disabled.
+#[tokio::test]
+async fn listing_ready_respects_disabled_setting() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "mainnet");
+        seed_listing(&conn, &id, "l1", "forsale", "ready_to_finalize");
+    }
+    let app = mock_app_with(state);
+    let outcome = scan_deadline_notifications_on_day(app.handle().clone(), app.state(), 20_000)
+        .await
+        .unwrap();
+    assert!(!outcome.enabled);
+    assert!(outcome.notified.is_empty());
 }
