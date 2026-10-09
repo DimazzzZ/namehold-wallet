@@ -130,6 +130,51 @@ fn the_state_and_mode_checks_list_exactly_the_enum_spellings() {
     }
 }
 
+/// The SQL that picks the listings a Cancel transfer aborts is generated from
+/// `ListingState::CANCEL_ABORTABLE`, so the two cannot drift apart.
+#[test]
+fn cancel_abortable_sql_lists_the_rust_states() {
+    assert_eq!(
+        ListingState::cancel_abortable_sql(),
+        "('locking', 'ready_to_finalize')"
+    );
+    for state in ListingState::ALL {
+        assert_eq!(
+            state.aborts_by_cancel_transfer(),
+            ListingState::cancel_abortable_sql().contains(&format!("'{}'", state.as_str())),
+            "{state:?}"
+        );
+    }
+}
+
+/// The draft-status sets the listings read: a lock draft holds its name
+/// while it is unsent or may have reached the chain, and may still land
+/// until it is mined; `dropped` and `failed` do neither.
+#[test]
+fn draft_status_sets_partition_the_statuses() {
+    for (status, unsent, holds, may_land) in [
+        ("draft", true, true, true),
+        ("signed", true, true, true),
+        ("broadcast_pending", false, true, true),
+        ("broadcasted", false, true, true),
+        ("confirmed", false, true, false),
+        ("dropped", false, false, false),
+        ("failed", false, false, false),
+    ] {
+        assert_eq!(queries::never_sent(status), unsent, "{status}");
+        assert_eq!(queries::lock_draft_holds_name(status), holds, "{status}");
+        assert_eq!(
+            queries::lock_draft_may_still_land(status),
+            may_land,
+            "{status}"
+        );
+        assert!(
+            !(unsent && queries::may_have_reached_chain(status)),
+            "{status}"
+        );
+    }
+}
+
 /// The table's "one open listing per name" index, `is_terminal` and
 /// `open_shakedex_listing_for_name` agree on which states are open.
 #[test]

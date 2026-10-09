@@ -32,7 +32,7 @@ use crate::noncustodial::shakedex::purchase::{
     PURCHASE_ACTION, PURCHASE_FINALIZE_ACTION,
 };
 use crate::noncustodial::shakedex::script::lock_address;
-use crate::noncustodial::shakedex::sell::{self, LockSummary, LOCK_ACTION, LOCK_COSTS};
+use crate::noncustodial::shakedex::sell::{self, LOCK_ACTION, LOCK_COSTS};
 use crate::noncustodial::shakedex::template;
 use crate::noncustodial::shakedex::verify::{self, Buyable, Hidden, Verdict};
 use crate::noncustodial::sync::{COV_FINALIZE, COV_REGISTER, COV_RENEW, COV_TRANSFER, COV_UPDATE};
@@ -662,40 +662,21 @@ pub(crate) fn build_lock_draft_inner(
     if let ExpiryNotice::Warn { blocks_left } = i.notice {
         warnings.push(sell::near_expiry_warning(blocks_left));
     }
-    let summary = LockSummary {
-        action: LOCK_ACTION.into(),
-        name: i.name.into(),
-        // Every output but change, as the other name actions report it.
-        send_total_doos: res
-            .plan
-            .outputs
-            .iter()
-            .enumerate()
-            .filter(|(n, _)| Some(*n) != res.plan.change_output_index)
-            .map(|(_, o)| o.value as i64)
-            .sum(),
-        fee_doos: res.fee as i64,
-        change_doos: res.change as i64,
-        input_total_doos: res.input_total as i64,
-        num_inputs: res.plan.inputs.len() as i64,
-        recipient_address: Some(i.key.address.clone()),
-        txid: Some(res.txid.clone()),
-        warnings,
-    };
-    let draft_id = random_id();
     // The draft, the two reserved addresses and the listing commit together:
     // a lock TRANSFER without its listing could never be followed, and a
     // listing without its draft locks nothing.
     let tx = conn.unchecked_transaction()?;
-    queries::insert_tx_draft_reserving_coins_in_tx(
+    let draft_id = draft_ctx::persist_in_tx(
         &tx,
-        &draft_id,
         &ctx.profile_id,
-        LOCK_ACTION,
-        &res.unsigned_tx_hex,
-        &serde_json::to_string(&res.plan)?,
-        &serde_json::to_string(&summary)?,
-        &res.plan.own_inputs(),
+        &draft_ctx::DraftLabel {
+            action: LOCK_ACTION,
+            name: i.name,
+            recipient: Some(&i.key.address),
+            name_list: None,
+            warnings: &warnings,
+        },
+        &res,
     )?;
     // Both on the receive branch (R21); the cancel's index rides on its lock
     // input in T5.
@@ -732,9 +713,7 @@ pub(crate) fn build_lock_draft_inner(
         },
     )?;
     tx.commit()?;
-    queries::get_tx_draft(conn, &draft_id)?
-        .map(|d| d.to_summary())
-        .ok_or_else(|| AppError::Other("draft vanished after insert".into()))
+    draft_ctx::draft_summary(conn, &draft_id)
 }
 
 // --- commands ---------------------------------------------------------------
@@ -1241,15 +1220,16 @@ pub async fn shakedex_build_lock_draft(
     if publish && ctx.network != Network::Main {
         return Err(AppError::InvalidInput(MARKET_MAINNET_ONLY.into()));
     }
-    let key = {
+    // The signer is checked before anything else is read; the key itself is
+    // derived only once every read is done, just before it is used.
+    {
         let mut slot = state
             .signer
             .lock()
             .map_err(|e| AppError::Lock(e.to_string()))?;
         let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
         session.authorize(&ctx.profile_id, session_ttl_ms(&ctx.settings))?;
-        derive_lock_key(session.master()?, ctx.network, ctx.account, &name)?
-    };
+    }
     let owner = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         queries::get_name_coin(&conn, &ctx.profile_id, &name)?
@@ -1272,6 +1252,15 @@ pub async fn shakedex_build_lock_draft(
     let notice = lock_expiry_guard(&params, &reply, tip, i64::from(params.transfer_lockup))?;
     let ns = draft_ctx::name_state_strict(&reply, &name)?;
     let rate = draft_ctx::fee_rate(&ctx, fee_rate);
+    let key = {
+        let mut slot = state
+            .signer
+            .lock()
+            .map_err(|e| AppError::Lock(e.to_string()))?;
+        let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
+        session.authorize(&ctx.profile_id, session_ttl_ms(&ctx.settings))?;
+        derive_lock_key(session.master()?, ctx.network, ctx.account, &name)?
+    };
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_lock_draft_inner(
         &conn,

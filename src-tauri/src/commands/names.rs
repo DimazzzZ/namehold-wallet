@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::db::{self, queries};
+use crate::db::queries;
 use crate::error::AppError;
 use crate::noncustodial::actions::{self, PrimaryOutput};
 use crate::noncustodial::network::Network;
@@ -24,34 +24,18 @@ use crate::noncustodial::types::TxDraftSummary;
 use crate::noncustodial::{address, bids, covenants, names, resource};
 use crate::AppState;
 
-use super::draft_ctx::{ensure_finalize_matured, ensure_renew_not_premature, exclude_owner_reveal};
+use super::draft_ctx::{
+    draft_summary, ensure_finalize_matured, ensure_renew_not_premature, exclude_owner_reveal,
+    persist_in_tx, DraftLabel,
+};
 // Re-exported: the `*_inner` builders take these, and their tests name them
 // through this module.
+#[cfg(test)]
+pub(crate) use super::draft_ctx::random_id;
 pub(crate) use super::draft_ctx::{
-    fee_rate, fetch_name_state, load_ctx, name_input_from, random_id, renewal_block, Ctx, NameState,
+    fee_rate, fetch_name_state, load_ctx, name_input_from, renewal_block, Ctx, NameState,
 };
 use super::names_pure;
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ActionSummary<'a> {
-    action: &'a str,
-    name: &'a str,
-    send_total_doos: i64,
-    fee_doos: i64,
-    change_doos: i64,
-    input_total_doos: i64,
-    num_inputs: i64,
-    recipient_address: Option<&'a str>,
-    txid: Option<&'a str>,
-    /// Full list of names when this draft covers more than one (batch-bid,
-    /// batch-renew, etc.). Serialized as `nameList` in JSON so
-    /// `has_pending_*_draft_for_name` queries can enumerate the batch's
-    /// members and match any of them. `None` for single-name drafts keeps
-    /// their `summary_json` byte-identical to pre-batch-bid history.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name_list: Option<&'a [&'a str]>,
-}
 
 /// Persist a planned covenant draft and return its summary.
 fn persist(
@@ -82,77 +66,16 @@ fn persist_with_conn(
     res: &actions::PlanResult,
 ) -> Result<TxDraftSummary, AppError> {
     let tx = conn.unchecked_transaction()?;
-    let id = persist_in_tx(&tx, profile_id, action, name, recipient, name_list, res)?;
-    tx.commit()?;
-    draft_summary(conn, &id)
-}
-
-/// The summary of the draft [`persist_in_tx`] just inserted.
-fn draft_summary(conn: &rusqlite::Connection, id: &str) -> Result<TxDraftSummary, AppError> {
-    db::queries::get_tx_draft(conn, id)?
-        .map(|d| d.to_summary())
-        .ok_or_else(|| AppError::Other("draft vanished after insert".into()))
-}
-
-/// [`persist_with_conn`] inside the caller's transaction, for a draft that
-/// commits together with other writes; returns the new draft's id. An error
-/// leaves the caller's transaction to roll back on drop.
-fn persist_in_tx(
-    tx: &rusqlite::Transaction<'_>,
-    profile_id: &str,
-    action: &str,
-    name: &str,
-    recipient: Option<&str>,
-    name_list: Option<&[&str]>,
-    res: &actions::PlanResult,
-) -> Result<String, AppError> {
-    let summary = ActionSummary {
+    let label = DraftLabel {
         action,
         name,
-        // Every output the action carries, change excluded — not the first
-        // one. A name action can have several: revealing a name you bid on
-        // more than once emits one REVEAL per bid, and redeeming reclaims one
-        // per losing reveal. Reporting `outputs[0]` made the confirm dialog
-        // offer to reclaim 28 HNS and print 12, which is the one figure a user
-        // checks before signing.
-        send_total_doos: res
-            .plan
-            .outputs
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| Some(*i) != res.plan.change_output_index)
-            .map(|(_, o)| o.value as i64)
-            .sum(),
-        fee_doos: res.fee as i64,
-        change_doos: res.change as i64,
-        input_total_doos: res.input_total as i64,
-        num_inputs: res.plan.inputs.len() as i64,
-        recipient_address: recipient,
-        txid: Some(&res.txid),
+        recipient,
         name_list,
+        warnings: &[],
     };
-    let id = random_id();
-    // Reserve every input the plan spends (I3): the funding coins AND, when
-    // present, the name UTXO itself — two covenant drafts must not be able to
-    // grab the same name coin (e.g. two REVEALs) any more than two plain
-    // sends can grab the same liquid coin.
-    let reserved_inputs: Vec<(String, u32)> = res
-        .plan
-        .inputs
-        .iter()
-        .map(|i| (i.txid.clone(), i.vout))
-        .collect();
-    db::queries::insert_tx_draft_reserving_coins_in_tx(
-        tx,
-        &id,
-        profile_id,
-        action,
-        &res.unsigned_tx_hex,
-        &serde_json::to_string(&res.plan)?,
-        &serde_json::to_string(&summary)?,
-        &reserved_inputs,
-    )?;
-    Ok(id)
+    let id = persist_in_tx(&tx, profile_id, &label, res)?;
+    tx.commit()?;
+    draft_summary(conn, &id)
 }
 
 // ============================================================================
@@ -2718,7 +2641,14 @@ pub async fn build_cancel_draft(
     // The link commits with the draft; the listing becomes Aborted only once
     // this cancel is mined (`shakedex_jobs::refresh_listing_aborts_with_client`).
     let tx = conn.unchecked_transaction()?;
-    let id = persist_in_tx(&tx, &ctx.profile_id, "cancel", &name, None, None, &res)?;
+    let label = DraftLabel {
+        action: "cancel",
+        name: &name,
+        recipient: None,
+        name_list: None,
+        warnings: &[],
+    };
+    let id = persist_in_tx(&tx, &ctx.profile_id, &label, &res)?;
     // `res.txid` is the txid of the unsigned tx the draft stores (the
     // no-witness hash, the same once signed).
     queries::link_shakedex_listing_abort(

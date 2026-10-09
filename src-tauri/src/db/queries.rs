@@ -1264,10 +1264,40 @@ pub const REACHED_CHAIN_STATUSES: [&str; 3] = ["broadcasted", "confirmed", "broa
 /// [`REACHED_CHAIN_STATUSES`] as an SQL list, for `status IN {..}` in the
 /// queries that ask the same question of the database.
 pub fn reached_chain_sql() -> String {
-    let quoted: Vec<String> = REACHED_CHAIN_STATUSES
-        .iter()
-        .map(|s| format!("'{s}'"))
-        .collect();
+    sql_list(REACHED_CHAIN_STATUSES.iter().copied())
+}
+
+/// The draft statuses of a draft never sent: discarding it changes nothing
+/// on chain. Disjoint from [`REACHED_CHAIN_STATUSES`].
+pub const UNSENT_STATUSES: [&str; 2] = ["draft", "signed"];
+
+/// Whether a draft in `status` was never sent ([`UNSENT_STATUSES`]).
+pub fn never_sent(status: &str) -> bool {
+    UNSENT_STATUSES.contains(&status)
+}
+
+/// The status of a draft the chain has mined.
+const CONFIRMED_STATUS: &str = "confirmed";
+
+/// Whether a lock TRANSFER draft in `status` still holds its name for a
+/// Locking listing (R27): it may yet be sent ([`never_sent`]), or it was
+/// sent and not given up ([`may_have_reached_chain`]). A dropped, failed or
+/// deleted lock draft does not.
+pub fn lock_draft_holds_name(status: &str) -> bool {
+    never_sent(status) || may_have_reached_chain(status)
+}
+
+/// Whether a lock TRANSFER draft in `status` may still land on chain: it
+/// holds the name ([`lock_draft_holds_name`]) and is not mined yet. Until it
+/// is mined or given up, a missing lock coin proves nothing (R19).
+pub fn lock_draft_may_still_land(status: &str) -> bool {
+    lock_draft_holds_name(status) && status != CONFIRMED_STATUS
+}
+
+/// `items` quoted as an SQL list, `('a', 'b')`. Only for the fixed spellings
+/// of this module's constants, never for user input.
+fn sql_list<'a>(items: impl Iterator<Item = &'a str>) -> String {
+    let quoted: Vec<String> = items.map(|s| format!("'{s}'")).collect();
     format!("({})", quoted.join(", "))
 }
 
@@ -1322,7 +1352,7 @@ pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result
     // draft was never sent (`draft`, `signed`): the name never left; its
     // reserved addresses stay used. A `dropped` or `failed` draft was
     // broadcast and may still be mined, so its listing stays.
-    if matches!(status.as_str(), "draft" | "signed") {
+    if never_sent(&status) {
         tx.execute(
             "DELETE FROM shakedex_listings WHERE lock_transfer_draft_id = ?1 AND state = ?2",
             params![id, ListingState::Locking],
@@ -1337,7 +1367,7 @@ pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result
     // listing loses the link and the cancel's txid (R19). A `dropped` or
     // `failed` one was broadcast and may still be mined: its listing keeps
     // both, and the abort job reads the txid from the listing, not the draft.
-    if matches!(status.as_str(), "draft" | "signed") {
+    if never_sent(&status) {
         tx.execute(
             "UPDATE shakedex_listings
              SET abort_draft_id = NULL, abort_txid = NULL, updated_at = datetime('now')
@@ -1472,11 +1502,20 @@ impl ListingState {
         Self::TERMINAL.contains(&self)
     }
 
-    /// Whether the name's own Cancel transfer is still this listing's abort
-    /// (R19): from day 0 until the FINALIZE into the lock is built, the owner
-    /// coin is our TRANSFER to the lock and nothing else spends it.
+    /// The states in which the name's own Cancel transfer is still the
+    /// listing's abort (R19): from day 0 until the FINALIZE into the lock is
+    /// built, the owner coin is our TRANSFER to the lock and nothing else
+    /// spends it.
+    pub const CANCEL_ABORTABLE: [ListingState; 2] = [Self::Locking, Self::ReadyToFinalize];
+
+    /// Whether this state is one of [`Self::CANCEL_ABORTABLE`].
     pub fn aborts_by_cancel_transfer(self) -> bool {
-        matches!(self, Self::Locking | Self::ReadyToFinalize)
+        Self::CANCEL_ABORTABLE.contains(&self)
+    }
+
+    /// [`Self::CANCEL_ABORTABLE`] as an SQL list, for `state IN {..}`.
+    pub fn cancel_abortable_sql() -> String {
+        sql_list(Self::CANCEL_ABORTABLE.iter().map(|s| s.as_str()))
     }
 }
 
@@ -1699,19 +1738,9 @@ pub fn open_shakedex_listing_for_name(
     Ok(row)
 }
 
-/// The lock TRANSFER draft statuses under which a Locking listing still
-/// holds its name: the draft may yet be sent, or was sent and not given up.
-const LIVE_LOCK_DRAFT_STATUSES: [&str; 5] = [
-    "draft",
-    "signed",
-    "broadcast_pending",
-    "broadcasted",
-    "confirmed",
-];
-
 /// The open listing that keeps `name`'s owner actions away (R27), if any.
 /// A listing past Locking always does. A Locking one does only while its
-/// lock TRANSFER draft is alive ([`LIVE_LOCK_DRAFT_STATUSES`]): a dropped,
+/// lock TRANSFER draft is alive ([`lock_draft_holds_name`]): a dropped,
 /// failed or deleted lock draft does not freeze the name; the chain refresh
 /// (T4) resolves the row, and a TRANSFER mined after all shows as a pending
 /// transfer that Cancel transfer handles.
@@ -1736,7 +1765,7 @@ pub fn listing_blocking_owner_actions(
             .optional()?,
         None => None,
     };
-    let alive = status.is_some_and(|s| LIVE_LOCK_DRAFT_STATUSES.contains(&s.as_str()));
+    let alive = status.is_some_and(|s| lock_draft_holds_name(&s));
     Ok(alive.then_some(listing))
 }
 
@@ -1758,20 +1787,16 @@ pub fn link_shakedex_listing_abort(
     if transfer_vout != 0 {
         return Ok(0);
     }
-    Ok(conn.execute(
+    let sql = format!(
         "UPDATE shakedex_listings
-         SET abort_draft_id = ?1, abort_txid = ?7, updated_at = datetime('now')
+         SET abort_draft_id = ?1, abort_txid = ?5, updated_at = datetime('now')
          WHERE wallet_profile_id = ?2 AND name = ?3 AND lock_transfer_txid = ?4
-           AND state IN (?5, ?6)",
-        params![
-            draft_id,
-            profile_id,
-            name,
-            transfer_txid,
-            ListingState::Locking,
-            ListingState::ReadyToFinalize,
-            cancel_txid
-        ],
+           AND state IN {}",
+        ListingState::cancel_abortable_sql()
+    );
+    Ok(conn.execute(
+        &sql,
+        params![draft_id, profile_id, name, transfer_txid, cancel_txid],
     )?)
 }
 
@@ -1787,16 +1812,15 @@ pub fn list_shakedex_listings_with_abort(
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
          WHERE wallet_profile_id = ?1 AND abort_txid IS NOT NULL
-           AND (state IN (?2, ?3)
-                OR (state = ?4 AND updated_at >= datetime('now', ?5)))
-         ORDER BY created_at"
+           AND (state IN {}
+                OR (state = ?2 AND updated_at >= datetime('now', ?3)))
+         ORDER BY created_at",
+        ListingState::cancel_abortable_sql()
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
         params![
             profile_id,
-            ListingState::Locking,
-            ListingState::ReadyToFinalize,
             ListingState::Aborted,
             format!("-{recheck_days} days")
         ],
@@ -1809,16 +1833,12 @@ pub fn list_shakedex_listings_with_abort(
 /// Only a listing whose abort is still the Cancel transfer moves. Returns how
 /// many rows changed (0 or 1).
 pub fn abort_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
-    Ok(conn.execute(
+    let sql = format!(
         "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
-         WHERE id = ?1 AND abort_txid IS NOT NULL AND state IN (?3, ?4)",
-        params![
-            id,
-            ListingState::Aborted,
-            ListingState::Locking,
-            ListingState::ReadyToFinalize
-        ],
-    )?)
+         WHERE id = ?1 AND abort_txid IS NOT NULL AND state IN {}",
+        ListingState::cancel_abortable_sql()
+    );
+    Ok(conn.execute(&sql, params![id, ListingState::Aborted])?)
 }
 
 /// R19: a reorg took an Aborted listing's Cancel transfer out of the chain,
