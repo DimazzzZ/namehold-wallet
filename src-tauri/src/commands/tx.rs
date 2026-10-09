@@ -37,6 +37,7 @@ use crate::noncustodial::session::session_ttl_ms;
 use crate::noncustodial::shakedex::purchase::{
     PurchaseFinalizeSummary, PurchaseSummary, PURCHASE_ACTION, PURCHASE_FINALIZE_ACTION,
 };
+use crate::noncustodial::shakedex::sell::LOCK_ACTION;
 use crate::noncustodial::tx_evidence::{
     chain_evidence_with_client, node_has_tx_index_with_client, taken_by_node_with_client,
     ChainEvidence, Taken, NOT_TAKEN,
@@ -1673,7 +1674,7 @@ pub async fn broadcast_tx_draft(
     state: State<'_, AppState>,
     draft_id: String,
 ) -> Result<BroadcastResult, AppError> {
-    let (signed_hex, expected_network, settings, client, purchase, maybe_sent) = {
+    let (signed_hex, expected_network, settings, client, purchase, maybe_sent, lock_name) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let draft = db::queries::get_tx_draft(&conn, &draft_id)?
             .ok_or_else(|| AppError::NotFound(format!("draft {draft_id}")))?;
@@ -1688,6 +1689,18 @@ pub async fn broadcast_tx_draft(
         };
         refuse_unless_sendable(&draft.status)?;
         let maybe_sent = db::queries::may_have_reached_chain(&draft.status);
+        // A lock TRANSFER is judged by R31 again before it is sent.
+        let lock_name = if draft.action == LOCK_ACTION {
+            let summary: serde_json::Value = serde_json::from_str(&draft.summary_json)?;
+            Some(
+                summary["name"]
+                    .as_str()
+                    .ok_or_else(|| AppError::Other("lock draft without its name".into()))?
+                    .to_string(),
+            )
+        } else {
+            None
+        };
         // An unsent purchase draft past its coin reservation is discarded
         // with its purchase, as the sync would: its coins may fund another
         // draft by now. Refused here, at the TTL, a send always starts well
@@ -1716,7 +1729,9 @@ pub async fn broadcast_tx_draft(
         // `remote_broadcast_allowed` is a user-wide opt-in — it stays on the
         // global settings map by design.
         let client = NodeRpcClient::for_profile(&conn, &draft.wallet_profile_id)?;
-        (signed, network, settings, client, purchase, maybe_sent)
+        (
+            signed, network, settings, client, purchase, maybe_sent, lock_name,
+        )
     };
 
     // Refused up-front (read-only source, remote node without the opt-in,
@@ -1741,6 +1756,25 @@ pub async fn broadcast_tx_draft(
                 db::queries::delete_tx_draft(&conn, &draft_id)?;
             }
             return Err(e);
+        }
+    }
+
+    // R31 at send time (the lock may be sent days after it was built). A
+    // refusal discards an unsent draft with its Locking listing, so the name
+    // is free to renew; a node that cannot say leaves both, and sends nothing.
+    if let Some(name) = lock_name {
+        let network =
+            derivation::network_from_profile(expected_network.as_deref().ok_or_else(|| {
+                AppError::InvalidInput("the lock's wallet profile is gone; nothing was sent".into())
+            })?)?;
+        if let Some(refusal) =
+            crate::commands::draft_ctx::recheck_lock_expiry(&client, network, &name).await?
+        {
+            if !maybe_sent {
+                let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+                db::queries::delete_tx_draft(&conn, &draft_id)?;
+            }
+            return Err(refusal);
         }
     }
 

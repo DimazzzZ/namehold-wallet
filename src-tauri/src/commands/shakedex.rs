@@ -21,7 +21,7 @@ use crate::market::learnhns::{
 use crate::models::settings::SettingsMap;
 use crate::noncustodial::actions::{self, PrimaryOutput};
 use crate::noncustodial::derivation;
-use crate::noncustodial::network::{NameParams, Network};
+use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::{self, ChainSource, NodeRpcClient};
 use crate::noncustodial::send::{self, DUST_THRESHOLD};
 use crate::noncustodial::session::session_ttl_ms;
@@ -32,7 +32,8 @@ use crate::noncustodial::shakedex::purchase::{
     PURCHASE_ACTION, PURCHASE_FINALIZE_ACTION,
 };
 use crate::noncustodial::shakedex::script::lock_address;
-use crate::noncustodial::shakedex::sell::{self, LOCK_ACTION, LOCK_COSTS};
+use crate::noncustodial::shakedex::sell::{self, expires_before_the_lock, LOCK_ACTION, LOCK_COSTS};
+pub(crate) use crate::noncustodial::shakedex::sell::{lock_expiry_guard, ExpiryNotice};
 use crate::noncustodial::shakedex::template;
 use crate::noncustodial::shakedex::verify::{self, Buyable, Hidden, Verdict};
 use crate::noncustodial::sync::{COV_FINALIZE, COV_REGISTER, COV_RENEW, COV_TRANSFER, COV_UPDATE};
@@ -512,78 +513,6 @@ fn expiry_warning() -> String {
     "This name expires soon after the purchase: finalize it in time or it is lost.".into()
 }
 
-/// R31's verdict on locking a name now, or (T3) on finalizing it into the
-/// lock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExpiryNotice {
-    Ok,
-    /// Allowed, with R31's warning: the name expires less than 180 R9 days
-    /// after the tip.
-    Warn {
-        blocks_left: i64,
-    },
-    /// The name expires at or before `tip + 1 + remaining lockup + day`: it
-    /// would expire on a TRANSFER coin before its FINALIZE into the lock, or
-    /// within a day of it.
-    Refuse {
-        expiry_end: i64,
-    },
-}
-
-/// Six months, in R9 days (R31's warning).
-const LOCK_WARN_DAYS: i64 = 180;
-
-/// R31. `name_info` is hsd's `getnameinfo` reply; its renewal height and
-/// claimed count are read field by field, and a reply without either is "could
-/// not check" (fail closed). `remaining_lockup` is the full transfer lockup at
-/// Lock and `NameParams::blocks_until_finalize` of the lock TRANSFER at
-/// Finalize & sign.
-pub(crate) fn lock_expiry_guard(
-    params: &NameParams,
-    name_info: &serde_json::Value,
-    tip: i64,
-    remaining_lockup: i64,
-) -> Result<ExpiryNotice, AppError> {
-    let info = match name_info.get("info") {
-        None => {
-            return Err(AppError::Rpc(
-                "node did not report the name's info: could not check when it expires".into(),
-            ))
-        }
-        Some(serde_json::Value::Null) => {
-            return Err(AppError::InvalidInput(
-                "the name has no on-chain state or has expired".into(),
-            ))
-        }
-        Some(i) => i,
-    };
-    let Some(renewal) = info
-        .get("renewal")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|r| u32::try_from(r).ok())
-    else {
-        return Err(AppError::Rpc(
-            "node did not report the name's renewal height: could not check when it expires".into(),
-        ));
-    };
-    let Some(claimed) = info.get("claimed").and_then(serde_json::Value::as_u64) else {
-        return Err(AppError::Rpc(
-            "node did not report whether the name was claimed: could not check when it expires"
-                .into(),
-        ));
-    };
-    let end = params.expiry_end(i64::from(renewal), claimed > 0);
-    if end <= params.finalize_margin(tip, remaining_lockup) {
-        return Ok(ExpiryNotice::Refuse { expiry_end: end });
-    }
-    let blocks_left = end - tip;
-    if blocks_left < LOCK_WARN_DAYS * i64::from(params.margin_day()) {
-        Ok(ExpiryNotice::Warn { blocks_left })
-    } else {
-        Ok(ExpiryNotice::Ok)
-    }
-}
-
 /// What the day-0 lock draft is built from, every node read and the lock key
 /// already in hand.
 pub(crate) struct LockDraftInput<'a> {
@@ -598,13 +527,6 @@ pub(crate) struct LockDraftInput<'a> {
     /// R31's verdict at the node's tip.
     pub(crate) notice: ExpiryNotice,
     pub(crate) rate: u64,
-}
-
-fn expires_before_the_lock(name: &str, expiry_end: i64) -> AppError {
-    AppError::InvalidInput(format!(
-        "'{name}' expires at block {expiry_end}, before its transfer into the lock could be \
-         finalized: renew it first"
-    ))
 }
 
 /// Day 0 (R18, R19, R21, R31): check the lock key, build the TRANSFER that

@@ -1619,3 +1619,81 @@ async fn missing_chain_facts_change_nothing() {
         }
     }
 }
+
+// --- R31 again at broadcast ---------------------------------------------------
+
+/// A regtest node at `tip` that answers NAME's `getnameinfo` and counts
+/// `sendrawtransaction` (expected `sends` times).
+async fn broadcast_node(tip: i64, sends: usize) -> (ServerGuard, Vec<Mock>) {
+    let mut node = mockito::Server::new_async().await;
+    let info = node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::PartialJson(
+            json!({ "method": "getblockchaininfo" }),
+        ))
+        .with_header("content-type", "application/json")
+        .with_body(rpc_ok(json!({
+            "chain": "regtest", "blocks": tip, "headers": tip,
+            "verificationprogress": 1.0, "mediantime": 1_700_000_000u64
+        })))
+        .create_async()
+        .await;
+    let name = mock_name_info(&mut node, name_info(RENEWAL, 0, OWNER_TXID)).await;
+    let send = node
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::PartialJson(
+            json!({ "method": "sendrawtransaction" }),
+        ))
+        .with_header("content-type", "application/json")
+        .with_body(rpc_ok(json!("ab".repeat(32))))
+        .expect(sends)
+        .create_async()
+        .await;
+    (node, vec![info, name, send])
+}
+
+/// Build the lock far from expiry and mark it signed; then point the profile
+/// at `node`.
+async fn signed_lock_sent_through(node: &ServerGuard) -> (App, String) {
+    let (_build_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let draft = build(&app).await.expect("lock builds far from expiry");
+    with_db(&app, |c| {
+        queries::update_tx_draft_signed(c, &draft.id, "00", &draft.summary.to_string()).unwrap();
+        set(c, "node_rpc_url", &node.url());
+    });
+    (app, draft.id)
+}
+
+/// R31 is judged again when the lock is sent: it may be broadcast days after
+/// it was built. Refused with the build's own sentence, nothing reaches the
+/// node, and the unsent draft goes with its listing, freeing the name. One
+/// block earlier the lock is sent.
+#[tokio::test]
+async fn lock_broadcast_refused_when_the_name_would_expire_during_the_lockup() {
+    let (node, m) = broadcast_node(REGTEST_END - 21, 0).await;
+    let (app, id) = signed_lock_sent_through(&node).await;
+    let err = err_text(
+        crate::commands::tx::broadcast_tx_draft(app.state(), id.clone())
+            .await
+            .unwrap_err(),
+    );
+    assert!(
+        err.contains("before its transfer into the lock could be finalized"),
+        "R31 refusal: {err}"
+    );
+    m[2].assert_async().await;
+    with_db(&app, |c| {
+        assert!(
+            queries::get_tx_draft(c, &id).unwrap().is_none(),
+            "draft discarded"
+        );
+    });
+    assert!(open_listing(&app).is_none(), "the name is free again");
+
+    let (node, m) = broadcast_node(REGTEST_END - 22, 1).await;
+    let (app, id) = signed_lock_sent_through(&node).await;
+    crate::commands::tx::broadcast_tx_draft(app.state(), id)
+        .await
+        .expect("one block earlier the lock is sent");
+    m[2].assert_async().await;
+}
