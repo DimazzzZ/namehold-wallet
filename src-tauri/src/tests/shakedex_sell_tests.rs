@@ -684,18 +684,25 @@ fn insert_draft_status(conn: &Connection, id: &str, status: &str) {
     .unwrap();
 }
 
-/// The two listing jobs never take the same listing, and neither takes a
-/// Restored one: the named sets are disjoint, and each job's query returns
-/// exactly its set when every state is in the table.
+/// The two listing jobs never take the same listing; the after-lock job takes
+/// Restored and Sold, the before-lock job neither: the named sets are
+/// disjoint, and each job's query returns exactly its set when every state is
+/// in the table.
 #[test]
 fn job_listing_sets_are_disjoint() {
     let before = ListingState::BEFORE_LOCK_JOB;
-    let fin = ListingState::FINALIZE_JOB;
+    let after = ListingState::AFTER_LOCK_JOB;
     for s in before {
-        assert!(!fin.contains(&s), "{s:?} in both jobs");
+        assert!(!after.contains(&s), "{s:?} in both jobs");
     }
     assert!(!before.contains(&ListingState::Restored));
-    assert!(!fin.contains(&ListingState::Restored));
+    assert!(after.contains(&ListingState::Restored));
+    for s in ListingState::SALE_FROM {
+        assert!(
+            after.contains(&s) || s == ListingState::ReadyToFinalize,
+            "{s:?}: a sale from it is followed"
+        );
+    }
     for s in ListingState::CANCEL_ABORTABLE {
         assert!(before.contains(&s), "{s:?}");
     }
@@ -723,32 +730,38 @@ fn job_listing_sets_are_disjoint() {
         sorted(&before)
     );
     assert_eq!(
-        states(queries::list_shakedex_listings_finalizing(&conn, STORE_PROFILE).unwrap()),
-        sorted(&fin)
+        states(queries::list_shakedex_listings_after_lock(&conn, STORE_PROFILE, 7).unwrap()),
+        sorted(&after)
     );
 }
 
-/// The Finalizing/Listed source lists exactly those two states of a profile.
+/// The after-lock source lists exactly its five states of a profile, in
+/// creation order.
 #[test]
-fn finalizing_and_listed_listings_are_listed() {
+fn after_lock_listings_are_listed() {
     let conn = store_conn();
     for (id, name, state) in [
         ("l1", "a", ListingState::Finalizing),
         ("l2", "b", ListingState::Listed),
-        ("l3", "c", ListingState::ReadyToFinalize),
-        ("l4", "d", ListingState::Sold),
+        ("l3", "c", ListingState::SalePending),
+        ("l4", "d", ListingState::Restored),
+        ("l5", "e", ListingState::Sold),
+        ("l6", "f", ListingState::ReadyToFinalize),
+        ("l7", "g", ListingState::Aborted),
     ] {
         queries::insert_shakedex_listing(&conn, &listing(id, name, state)).unwrap();
     }
-    let ids: Vec<String> = queries::list_shakedex_listings_finalizing(&conn, STORE_PROFILE)
+    let ids: Vec<String> = queries::list_shakedex_listings_after_lock(&conn, STORE_PROFILE, 7)
         .unwrap()
         .into_iter()
         .map(|l| l.id)
         .collect();
-    assert_eq!(ids, ["l1", "l2"]);
-    assert!(queries::list_shakedex_listings_finalizing(&conn, "other")
-        .unwrap()
-        .is_empty());
+    assert_eq!(ids, ["l1", "l2", "l3", "l4", "l5"]);
+    assert!(
+        queries::list_shakedex_listings_after_lock(&conn, "other", 7)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// The deadline scan's source: ReadyToFinalize listings, and Finalizing ones
@@ -3405,7 +3418,7 @@ async fn listing_file_is_exported_only_once_the_finalize_is_mined() {
 
 // --- The listing's states from the chain (T3, R19) --------------------------
 
-use crate::shakedex_jobs::refresh_lock_finalize_with_client;
+use crate::shakedex_jobs::refresh_listings_after_lock_with_client;
 
 /// Run the finalize job on the app's database, as the sync step does.
 async fn run_finalize_job(app: &App, rpc: &MockNodeRpc) {
@@ -3413,7 +3426,7 @@ async fn run_finalize_job(app: &App, rpc: &MockNodeRpc) {
         &mut *app.state::<AppState>().db.lock().unwrap(),
         Connection::open_in_memory().unwrap(),
     );
-    let res = refresh_lock_finalize_with_client(&conn, rpc, PROFILE).await;
+    let res = refresh_listings_after_lock_with_client(&conn, rpc, PROFILE).await;
     *app.state::<AppState>().db.lock().unwrap() = conn;
     res.expect("finalize job runs");
     assert_eq!(

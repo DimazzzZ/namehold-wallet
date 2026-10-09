@@ -1563,11 +1563,35 @@ impl ListingState {
     pub const BEFORE_LOCK_JOB: [ListingState; 3] =
         [Self::Locking, Self::ReadyToFinalize, Self::Aborted];
 
-    /// The states the finalize job reads
-    /// ([`list_shakedex_listings_finalizing`]). Disjoint from
-    /// [`Self::BEFORE_LOCK_JOB`], and neither holds Restored: no listing is
-    /// moved by both jobs in one sync.
-    pub const FINALIZE_JOB: [ListingState; 2] = [Self::Finalizing, Self::Listed];
+    /// The states the after-lock job reads ([`list_shakedex_listings_after_lock`]):
+    /// the FINALIZE into the lock built or mined (Finalizing, Listed), a
+    /// purchase of the lock coin in the mempool (SalePending), a Restored
+    /// lock, and Sold within the re-check window, which a reorg may undo.
+    /// Disjoint from [`Self::BEFORE_LOCK_JOB`].
+    pub const AFTER_LOCK_JOB: [ListingState; 5] = [
+        Self::Finalizing,
+        Self::Listed,
+        Self::SalePending,
+        Self::Restored,
+        Self::Sold,
+    ];
+
+    /// The states a purchase of the lock coin moves to SalePending or Sold
+    /// (R22, [`mark_listing_sale_pending`], [`sell_shakedex_listing`]): the
+    /// name is in our lock, or a listing back at ReadyToFinalize whose dropped
+    /// FINALIZE was mined after all and bought before a sync saw it.
+    pub const SALE_FROM: [ListingState; 5] = [
+        Self::ReadyToFinalize,
+        Self::Finalizing,
+        Self::Listed,
+        Self::SalePending,
+        Self::Restored,
+    ];
+
+    /// The states whose lock coin's name can expire under it and end the
+    /// listing as Expired ([`expire_locked_listing`]).
+    pub const LOCKED_EXPIRABLE: [ListingState; 3] =
+        [Self::Listed, Self::SalePending, Self::Restored];
 
     /// The states whose listing file may leave the wallet (R23): its
     /// FINALIZE into the lock is mined and the listing is not over. Before
@@ -2138,22 +2162,220 @@ pub fn adopt_lock_finalized_elsewhere(
     )?)
 }
 
-/// Listings whose FINALIZE into the lock is built (Finalizing) or mined
-/// (Listed): the chain decides between the two, or sends a Finalizing one
-/// back to ReadyToFinalize.
-pub fn list_shakedex_listings_finalizing(
+/// The listings the after-lock job reads (R19, R22):
+/// [`ListingState::AFTER_LOCK_JOB`], Sold only within the last
+/// `sold_recheck_days` (a reorg can still take the purchase away).
+pub fn list_shakedex_listings_after_lock(
     conn: &rusqlite::Connection,
     profile_id: &str,
+    sold_recheck_days: u32,
 ) -> Result<Vec<ShakedexListing>, AppError> {
+    let open = sql_list(
+        ListingState::AFTER_LOCK_JOB
+            .iter()
+            .filter(|s| **s != ListingState::Sold)
+            .map(|s| s.as_str()),
+    );
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
-         WHERE wallet_profile_id = ?1 AND state IN {}
-         ORDER BY created_at, id",
-        sql_list(ListingState::FINALIZE_JOB.iter().map(|s| s.as_str()))
+         WHERE wallet_profile_id = ?1
+           AND (state IN {open} OR (state = ?2 AND updated_at >= datetime('now', ?3)))
+         ORDER BY created_at, id"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![profile_id], row_to_shakedex_listing)?;
+    let rows = stmt.query_map(
+        params![
+            profile_id,
+            ListingState::Sold,
+            format!("-{sold_recheck_days} days")
+        ],
+        row_to_shakedex_listing,
+    )?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// R22: a purchase of the lock coin `purchase_txid` is in the mempool.
+/// Only from [`ListingState::SALE_FROM`]. Returns how many rows changed.
+pub fn mark_listing_sale_pending(
+    conn: &rusqlite::Connection,
+    id: &str,
+    purchase_txid: &str,
+) -> Result<usize, AppError> {
+    let sql = format!(
+        "UPDATE shakedex_listings SET state = ?2, sold_txid = ?3, updated_at = datetime('now')
+         WHERE id = ?1 AND state IN {}",
+        sql_list(ListingState::SALE_FROM.iter().map(|s| s.as_str()))
+    );
+    Ok(conn.execute(&sql, params![id, ListingState::SalePending, purchase_txid])?)
+}
+
+/// R22: the lock coin was bought by the mined `purchase_txid`. Only from
+/// [`ListingState::SALE_FROM`]. `lock` is the lock coin the purchase spends
+/// when it was read from the purchase itself; it fills an outpoint the
+/// listing lacks and never replaces one it has. Returns how many rows changed.
+pub fn sell_shakedex_listing(
+    conn: &rusqlite::Connection,
+    id: &str,
+    purchase_txid: &str,
+    lock: Option<(&str, u32)>,
+) -> Result<usize, AppError> {
+    let sql = format!(
+        "UPDATE shakedex_listings
+         SET state = ?2, sold_txid = ?3, lock_txid = COALESCE(lock_txid, ?4),
+             lock_vout = COALESCE(lock_vout, ?5), updated_at = datetime('now')
+         WHERE id = ?1 AND state IN {}",
+        sql_list(ListingState::SALE_FROM.iter().map(|s| s.as_str()))
+    );
+    Ok(conn.execute(
+        &sql,
+        params![
+            id,
+            ListingState::Sold,
+            purchase_txid,
+            lock.map(|l| l.0),
+            lock.map(|l| i64::from(l.1))
+        ],
+    )?)
+}
+
+/// R22, a reorg: the purchase is no longer in the chain, so a SalePending or
+/// Sold listing goes back to `to` (Listed, Finalizing or Restored) and
+/// forgets the purchase — unless another listing of the name is open by now
+/// (`idx_shakedex_listings_open_name` allows one), which stays the open one.
+/// Returns how many rows changed (0 or 1).
+pub fn unsell_shakedex_listing(
+    conn: &rusqlite::Connection,
+    id: &str,
+    to: ListingState,
+) -> Result<usize, AppError> {
+    if ![
+        ListingState::Listed,
+        ListingState::Finalizing,
+        ListingState::Restored,
+    ]
+    .contains(&to)
+    {
+        return Err(AppError::Other(format!("a sale cannot go back to {to:?}")));
+    }
+    let [t0, t1, t2, t3] = ListingState::TERMINAL;
+    Ok(conn.execute(
+        "UPDATE shakedex_listings SET state = ?2, sold_txid = NULL, updated_at = datetime('now')
+         WHERE id = ?1 AND state IN (?3, ?4)
+           AND NOT EXISTS (
+               SELECT 1 FROM shakedex_listings o
+               WHERE o.wallet_profile_id = shakedex_listings.wallet_profile_id
+                 AND o.name = shakedex_listings.name AND o.id <> shakedex_listings.id
+                 AND o.state NOT IN (?5, ?6, ?7, ?8))",
+        params![
+            id,
+            to,
+            ListingState::SalePending,
+            ListingState::Sold,
+            t0,
+            t1,
+            t2,
+            t3
+        ],
+    )?)
+}
+
+/// The name expired, or expired and was opened again, under a locked
+/// listing ([`ListingState::LOCKED_EXPIRABLE`]): Expired, keeping its lock
+/// outpoint. Returns how many rows changed.
+pub fn expire_locked_listing(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
+    let sql = format!(
+        "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
+         WHERE id = ?1 AND state IN {}",
+        sql_list(ListingState::LOCKED_EXPIRABLE.iter().map(|s| s.as_str()))
+    );
+    Ok(conn.execute(&sql, params![id, ListingState::Expired])?)
+}
+
+/// A reorg took the FINALIZE a Restored lock was adopted from out of every
+/// block and mempool (its lock TRANSFER is a coin again): Locking, without
+/// the outpoint; the before-lock job takes it from there. Only a Restored
+/// lock whose lock TRANSFER is known (one adopted from this device's
+/// listing); a lock restored by name has none. Returns how many rows changed.
+pub fn unadopt_restored_lock(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
+    Ok(conn.execute(
+        "UPDATE shakedex_listings
+         SET state = ?2, lock_txid = NULL, lock_vout = NULL, updated_at = datetime('now')
+         WHERE id = ?1 AND state = ?3 AND lock_transfer_txid IS NOT NULL",
+        params![id, ListingState::Locking, ListingState::Restored],
+    )?)
+}
+
+/// What a Restored lock gains from its own listing file (R32).
+pub struct UpgradedListing<'a> {
+    pub mode: ListingMode,
+    pub payment_address: &'a str,
+    pub steps_json: &'a str,
+    pub listing_file_json: &'a str,
+    pub expires_at: Option<i64>,
+}
+
+/// R32: a Restored lock tracking `(lock_txid, lock_vout)` becomes Listed
+/// with its file's details. Returns how many rows changed (0 when the
+/// listing is no longer that Restored lock).
+pub fn upgrade_restored_lock(
+    conn: &rusqlite::Connection,
+    id: &str,
+    lock_txid: &str,
+    lock_vout: u32,
+    u: &UpgradedListing,
+) -> Result<usize, AppError> {
+    Ok(conn.execute(
+        "UPDATE shakedex_listings
+         SET state = ?2, mode = ?3, payment_address = ?4, steps_json = ?5,
+             listing_file_json = ?6, expires_at = ?7, updated_at = datetime('now')
+         WHERE id = ?1 AND state = ?8 AND lock_txid = ?9 AND lock_vout = ?10",
+        params![
+            id,
+            ListingState::Listed,
+            u.mode,
+            u.payment_address,
+            u.steps_json,
+            u.listing_file_json,
+            u.expires_at,
+            ListingState::Restored,
+            lock_txid,
+            i64::from(lock_vout)
+        ],
+    )?)
+}
+
+/// Every transaction with a coin of ours at `address` the wallet's sync has
+/// recorded, spent or not, with the height the coin was last seen at (-1 in
+/// the mempool), most recently mined first. R22 looks for the purchase among
+/// them: the purchase pays our listing's payment address.
+pub fn own_coins_at(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    address: &str,
+) -> Result<Vec<(String, Option<i64>)>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT txid, MAX(height) FROM tracked_utxos
+         WHERE wallet_profile_id = ?1 AND address = ?2
+         GROUP BY txid ORDER BY MAX(height) DESC, txid",
+    )?;
+    let rows = stmt.query_map(params![profile_id, address], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Whether the wallet has recorded a coin of ours at `address` in
+/// transaction `txid`, spent or not.
+pub fn own_coin_in_tx(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    txid: &str,
+    address: &str,
+) -> Result<bool, AppError> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tracked_utxos
+                       WHERE wallet_profile_id = ?1 AND txid = ?2 AND address = ?3)",
+        params![profile_id, txid, address],
+        |r| r.get(0),
+    )?)
 }
 
 /// `(profile, name, lock transfer txid)` of every listing that waits for
