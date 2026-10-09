@@ -1204,8 +1204,10 @@ pub async fn refresh_listings_with_client(
 /// - a FINALIZE at the listing's lock address mined in a block → a
 ///   Finalizing listing Listed; in the mempool (`height: -1`) → a Listed one
 ///   Finalizing (a reorg took it back); a coin at all → a SalePending or
-///   Sold listing Listed (Restored without a listing file), its purchase
-///   forgotten, unless another listing of the name is open by then; mined,
+///   Sold listing Listed (Finalizing while that coin is in the mempool and
+///   our FINALIZE draft exists; Restored without a listing file), its
+///   purchase forgotten, unless another listing of the name is open by then;
+///   mined,
 ///   with the name's live state gone or its height not the lock coin's → a
 ///   Listed or Restored listing Expired ([`registration_ended`]);
 /// - hsd's 404 for the lock coin while the lock TRANSFER
@@ -1214,8 +1216,9 @@ pub async fn refresh_listings_with_client(
 ///   is `failed`, `dropped` or gone ([`finalize_dead`]) → ReadyToFinalize,
 ///   its lock outpoint, steps and file dropped (they were signed over a
 ///   coin that does not exist); a Listed one, and a SalePending or Sold one
-///   with our FINALIZE draft → Finalizing; a Restored one → Locking without
-///   its outpoint ([`queries::unadopt_restored_lock`]);
+///   with our FINALIZE draft → Finalizing; a SalePending or Sold one without
+///   it (adopted from another device's FINALIZE) → Restored; a Restored one
+///   → Locking without its outpoint ([`queries::unadopt_restored_lock`]);
 /// - hsd's 404 for both, for a Finalizing listing whose FINALIZE is dead:
 ///   something else spent the lock TRANSFER → settled from the name as
 ///   before the lock ([`settle_left_lock`]: Expired, Aborted, Restored, or
@@ -1225,6 +1228,9 @@ pub async fn refresh_listings_with_client(
 ///   SalePending or Restored listing Expired; otherwise a purchase is looked
 ///   for ([`find_sale`]); one in the mempool while the owner is still the
 ///   lock coin → SalePending, one mined while the owner has moved → Sold;
+///   a Sold listing moves only by [`queries::resell_sold_listing`]: back to
+///   SalePending when its purchase is in the mempool again, or to the txid
+///   of another purchase of its lock coin mined instead;
 /// - a coin at another address or of another covenant, a reply missing the
 ///   coin's address, covenant or height, a name reply missing `info` or the
 ///   owner, or a read error → unchanged.
@@ -1324,11 +1330,15 @@ async fn lock_coin_held(
         (queries::ListingState::Listed, None) => {
             queries::mark_listing_finalizing_again(conn, &l.id)?;
         }
-        (queries::ListingState::SalePending | queries::ListingState::Sold, _) => {
-            let to = if l.listing_file_json.is_some() {
-                queries::ListingState::Listed
-            } else {
-                queries::ListingState::Restored
+        (queries::ListingState::SalePending | queries::ListingState::Sold, mined) => {
+            // The FINALIZE into the lock back in the mempool goes straight to
+            // Finalizing: the file is not exported over an unmined FINALIZE.
+            let to = match (l.listing_file_json.is_some(), mined) {
+                (false, _) => queries::ListingState::Restored,
+                (true, None) if l.lock_finalize_draft_id.is_some() => {
+                    queries::ListingState::Finalizing
+                }
+                (true, _) => queries::ListingState::Listed,
             };
             if queries::unsell_shakedex_listing(conn, &l.id, to)? == 0 {
                 eprintln!(
@@ -1371,10 +1381,15 @@ async fn lock_coin_spent(
                 queries::ListingState::Listed => {
                     queries::mark_listing_finalizing_again(conn, &l.id)?;
                 }
-                queries::ListingState::SalePending | queries::ListingState::Sold
-                    if l.lock_finalize_draft_id.is_some() =>
-                {
-                    let to = queries::ListingState::Finalizing;
+                // With our FINALIZE draft → Finalizing; adopted from another
+                // device's FINALIZE (no draft here) → Restored, and the next
+                // sync takes that to Locking.
+                queries::ListingState::SalePending | queries::ListingState::Sold => {
+                    let to = if l.lock_finalize_draft_id.is_some() {
+                        queries::ListingState::Finalizing
+                    } else {
+                        queries::ListingState::Restored
+                    };
                     if queries::unsell_shakedex_listing(conn, &l.id, to)? == 0 {
                         eprintln!(
                             "shakedex listings: {} ({}): its FINALIZE is no longer on chain, \
@@ -1420,6 +1435,24 @@ async fn lock_coin_spent(
         find_sale(conn, client, network, l, &owner).await?,
         owner_is_lock,
     ) {
+        // A Sold listing whose purchase is back in the mempool (a reorg),
+        // or whose lock coin another purchase bought instead: only Sold's
+        // own guarded write moves it.
+        (Sale::Pending { txid, lock }, true) if l.state == queries::ListingState::Sold => {
+            let to = queries::ListingState::SalePending;
+            let lock = (lock.0.as_str(), lock.1);
+            if queries::resell_sold_listing(conn, &l.id, to, &txid, lock)? == 0 {
+                eprintln!(
+                    "shakedex listings: {} ({}): its purchase is back in the mempool, but it \
+                     stays sold: another listing of the name is open",
+                    l.id, l.name
+                );
+            }
+        }
+        (Sale::Mined { txid, lock }, false) if l.state == queries::ListingState::Sold => {
+            let to = queries::ListingState::Sold;
+            queries::resell_sold_listing(conn, &l.id, to, &txid, (lock.0.as_str(), lock.1))?;
+        }
         (Sale::Pending { txid, lock }, true) => {
             queries::mark_listing_sale_pending(
                 conn,

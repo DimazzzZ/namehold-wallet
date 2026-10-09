@@ -194,7 +194,47 @@ fn sale_writes_move_only_a_listing_in_our_lock() {
             state == ListingState::Restored,
             "{state:?}: unadopt"
         );
+        // Sold's own way back to SalePending, or to a new purchase txid:
+        // from Sold only.
+        for to in [ListingState::SalePending, ListingState::Sold] {
+            set_state(&f, state);
+            let resold =
+                queries::resell_sold_listing(&f.conn, &f.id, to, &txid("b2"), (&f.lock_txid, 0))
+                    .unwrap();
+            assert_eq!(
+                resold == 1,
+                state == ListingState::Sold,
+                "{state:?}: resell to {to:?}"
+            );
+        }
     }
+    // Sold is moved only to SalePending or Sold, and only for its own lock
+    // outpoint.
+    let f = fx(ListingState::Sold);
+    let b2 = txid("b2");
+    assert!(queries::resell_sold_listing(
+        &f.conn,
+        &f.id,
+        ListingState::Listed,
+        &b2,
+        (&f.lock_txid, 0)
+    )
+    .is_err());
+    for (to, other) in [
+        (ListingState::SalePending, (txid("c1"), 0)),
+        (ListingState::Sold, (txid("c1"), 0)),
+        (ListingState::Sold, (txid("f1"), 1)),
+    ] {
+        assert_eq!(
+            queries::resell_sold_listing(&f.conn, &f.id, to, &b2, (&other.0, other.1)).unwrap(),
+            0,
+            "{to:?} {other:?}"
+        );
+    }
+    assert_eq!(
+        (listing(&f).state, listing(&f).sold_txid),
+        (ListingState::Sold, None)
+    );
     // A sale of the outpoint the listing has is written; a purchase of
     // another outpoint is another lock's and changes nothing.
     let f = fx(ListingState::Listed);
@@ -1346,5 +1386,136 @@ async fn restored_lock_follows_its_coin() {
         (l.state, l.sold_txid),
         (ListingState::Restored, None),
         "adopted lock, purchase nowhere"
+    );
+
+    // Sold from that adopted lock, and a reorg takes both the FINALIZE it
+    // was adopted from and the purchase away: the lock TRANSFER is a coin
+    // again → Restored, the purchase forgotten (the next sync takes it to
+    // Locking).
+    let f = fx(ListingState::Restored);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET state = 'sold', sold_txid = ?1,
+                 lock_finalize_draft_id = NULL, listing_file_json = NULL",
+            [&buy],
+        )
+        .unwrap();
+    let back = coin(
+        &f.transfer_txid,
+        0,
+        &f.payment,
+        COV_TRANSFER,
+        vec![],
+        TIP - 40,
+    );
+    run(
+        &f,
+        &node(info((&f.transfer_txid, 0)), vec![back], Value::Null),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.sold_txid),
+        (ListingState::Restored, None),
+        "adopted lock, FINALIZE and purchase nowhere"
+    );
+}
+
+/// R22, a real reorg of the purchase's block: hsd puts the purchase back in
+/// its mempool (`mempool._removeBlock`), so the lock coin is hsd's 404, the
+/// name's owner is the lock coin again and the purchase is at -1: a Sold
+/// listing is SalePending again — unless another listing of the name is open
+/// by now. A different purchase of the same lock coin mined instead replaces
+/// the sale's txid. Its FINALIZE taken back to the mempool with the purchase
+/// gone, a Sold listing is Finalizing at once (its file is not exported over
+/// an unmined FINALIZE).
+#[tokio::test]
+async fn sold_follows_its_purchase_back_to_the_mempool_and_a_competing_purchase() {
+    let buy = txid("b1");
+    let sold = |f: &Fx| {
+        f.conn
+            .execute(
+                "UPDATE shakedex_listings SET state = 'sold', sold_txid = ?1",
+                [&buy],
+            )
+            .unwrap();
+    };
+    let f = fx(ListingState::Listed);
+    sold(&f);
+    paid(&f, &buy, 2, -1, false);
+    let back = node(
+        info((&f.lock_txid, 0)),
+        vec![],
+        purchase_rest(&f, &buy, -1, &f.payment),
+    );
+    run(&f, &back).await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::SalePending, Some(buy.as_str())),
+        "purchase back in the mempool"
+    );
+
+    // Another listing of the name open by now: stays Sold.
+    let f = fx(ListingState::Listed);
+    sold(&f);
+    paid(&f, &buy, 2, -1, false);
+    let mut newer = listing(&f);
+    newer.id = "l2".into();
+    newer.state = ListingState::Locking;
+    newer.lock_txid = None;
+    newer.lock_vout = None;
+    newer.lock_transfer_txid = Some(txid("e2"));
+    queries::insert_shakedex_listing(&f.conn, &newer).unwrap();
+    // The write itself refuses it (0 rows), before the one-open-listing
+    // index would turn it into an error.
+    let pending = ListingState::SalePending;
+    let lock = (f.lock_txid.as_str(), 0);
+    assert_eq!(
+        queries::resell_sold_listing(&f.conn, &f.id, pending, &buy, lock).unwrap(),
+        0
+    );
+    run(&f, &back).await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::Sold,
+        "another listing is open"
+    );
+
+    // A competing purchase of the same lock coin mined instead.
+    let f = fx(ListingState::Listed);
+    sold(&f);
+    let rival = txid("c7");
+    paid(&f, &rival, 2, TIP + 3, false);
+    let won = node(
+        info((&rival, 0)),
+        vec![transfer_out_of_lock(&f, &rival, &f.buyer, TIP + 3)],
+        purchase_rest(&f, &rival, TIP + 3, &f.payment),
+    );
+    run(&f, &won).await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::Sold, Some(rival.as_str())),
+        "a competing purchase mined"
+    );
+
+    // The FINALIZE back in the mempool, the purchase gone.
+    let f = fx(ListingState::Listed);
+    sold(&f);
+    run(
+        &f,
+        &node(
+            info((&f.lock_txid, 0)),
+            vec![lock_coin(&f, -1)],
+            Value::Null,
+        ),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.sold_txid),
+        (ListingState::Finalizing, None),
+        "FINALIZE in the mempool"
     );
 }
