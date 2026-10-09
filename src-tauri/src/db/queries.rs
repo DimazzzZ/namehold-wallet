@@ -2263,6 +2263,49 @@ pub fn sell_shakedex_listing(
     )?)
 }
 
+/// R22, a reorg under a Sold listing: its purchase `purchase_txid` is back in
+/// the mempool (`to` SalePending, hsd's `mempool._removeBlock`), or another
+/// purchase of the same lock coin was mined instead (`to` Sold, the sale's
+/// txid replaced). Only from Sold — kept apart from
+/// [`ListingState::SALE_FROM`], so Sold is a source for nothing else — and
+/// only for the listing's own lock outpoint `lock` (a Sold row always has
+/// one). SalePending is an open listing again, so it is refused while
+/// another listing of the name is open (`idx_shakedex_listings_open_name`
+/// allows one). Returns how many rows changed (0 or 1).
+pub fn resell_sold_listing(
+    conn: &rusqlite::Connection,
+    id: &str,
+    to: ListingState,
+    purchase_txid: &str,
+    lock: (&str, u32),
+) -> Result<usize, AppError> {
+    if ![ListingState::SalePending, ListingState::Sold].contains(&to) {
+        return Err(AppError::Other(format!("a sale cannot move to {to:?}")));
+    }
+    let [t0, t1, t2, t3] = ListingState::TERMINAL;
+    Ok(conn.execute(
+        "UPDATE shakedex_listings SET state = ?2, sold_txid = ?3, updated_at = datetime('now')
+         WHERE id = ?1 AND state = ?6 AND lock_txid = ?4 AND lock_vout = ?5
+           AND (?2 = ?6 OR NOT EXISTS (
+               SELECT 1 FROM shakedex_listings o
+               WHERE o.wallet_profile_id = shakedex_listings.wallet_profile_id
+                 AND o.name = shakedex_listings.name AND o.id <> shakedex_listings.id
+                 AND o.state NOT IN (?7, ?8, ?9, ?10)))",
+        params![
+            id,
+            to,
+            purchase_txid,
+            lock.0,
+            i64::from(lock.1),
+            ListingState::Sold,
+            t0,
+            t1,
+            t2,
+            t3
+        ],
+    )?)
+}
+
 /// R22, a reorg: the purchase is no longer in the chain, so a SalePending or
 /// Sold listing goes back to `to` (Listed, Finalizing or Restored) and
 /// forgets the purchase — unless another listing of the name is open by now
