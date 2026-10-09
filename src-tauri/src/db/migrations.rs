@@ -56,6 +56,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
     ("033", include_str!("../sql/033_shakedex.sql")),
     ("034", include_str!("../sql/034_shakedex_listings.sql")),
+    (
+        "035",
+        include_str!("../sql/035_shakedex_listing_finalize.sql"),
+    ),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -97,7 +101,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 34, "expected 34 migrations, got {count}");
+        assert_eq!(count, 35, "expected 35 migrations, got {count}");
     }
 
     /// A database already at 033 (a real upgrade) takes 034 on top of its
@@ -112,7 +116,7 @@ mod tests {
             );",
         )
         .unwrap();
-        for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v != "034") {
+        for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v < "034") {
             conn.execute_batch(sql).unwrap();
             conn.execute(
                 "INSERT INTO schema_version (version) VALUES (?1)",
@@ -142,7 +146,54 @@ mod tests {
         let top: String = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(top, "034");
+        assert_eq!(top, MIGRATIONS.last().unwrap().0);
+    }
+
+    /// A database already at 034 (the T2 schema, with listings) takes 035 on
+    /// top: the new column exists and the existing listing keeps its row.
+    #[test]
+    fn migration_035_applies_on_top_of_034() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v < "035") {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [version],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, watch_only)
+             VALUES ('p', 'P', 'mnemonic_hot', 'regtest', 'xpub', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO shakedex_listings (id, wallet_profile_id, name, mode, lock_pubkey_hex)
+             VALUES ('l1', 'p', 'dexsale', 'buy_now', '02')",
+            [],
+        )
+        .unwrap();
+        run(&conn).unwrap();
+        let draft: Option<String> = conn
+            .query_row(
+                "SELECT lock_finalize_draft_id FROM shakedex_listings WHERE id = 'l1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(draft, None);
+        let top: String = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(top, "035");
     }
 
     #[test]
@@ -153,7 +204,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 34);
+        assert_eq!(count, 35);
     }
 
     #[test]

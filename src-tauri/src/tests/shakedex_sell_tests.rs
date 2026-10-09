@@ -36,6 +36,7 @@ fn listing(id: &str, name: &str, state: ListingState) -> ShakedexListing {
         state,
         lock_pubkey_hex: "02".repeat(33),
         lock_transfer_draft_id: None,
+        lock_finalize_draft_id: None,
         lock_transfer_txid: None,
         lock_txid: None,
         lock_vout: None,
@@ -363,6 +364,239 @@ fn deleting_another_draft_keeps_a_locking_listing() {
     assert!(queries::get_shakedex_listing(&conn, "l1")
         .unwrap()
         .is_some());
+}
+
+fn insert_draft(conn: &Connection, id: &str, action: &str, status: &str) {
+    queries::insert_tx_draft(conn, id, STORE_PROFILE, action, "00", "{}", "{}").unwrap();
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = ?2",
+        params![status, id],
+    )
+    .unwrap();
+}
+
+fn finalizing(conn: &Connection, id: &str, draft_id: &str) -> usize {
+    let tx = conn.unchecked_transaction().unwrap();
+    let n = queries::mark_listing_finalizing_in_tx(
+        &tx,
+        id,
+        &queries::FinalizingListing {
+            finalize_draft_id: draft_id,
+            lock_txid: &"f1".repeat(32),
+            steps_json: r#"[{"price":5000000,"lockTime":1,"signature":"ab"}]"#,
+            listing_file_json: "{}",
+            expires_at: 1_731_536_000,
+        },
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    n
+}
+
+/// R19: only a listing ReadyToFinalize becomes Finalizing, and it then
+/// carries its FINALIZE draft, the lock outpoint (output 0 of the FINALIZE),
+/// the steps, the listing file and its expiry.
+#[test]
+fn finalizing_is_written_only_from_ready_to_finalize() {
+    for state in ListingState::ALL {
+        let conn = store_conn();
+        queries::insert_shakedex_listing(&conn, &listing("l1", "dexsale", state)).unwrap();
+        insert_draft(&conn, "fin", sell::LOCK_FINALIZE_ACTION, "signed");
+        let n = finalizing(&conn, "l1", "fin");
+        let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+        if state == ListingState::ReadyToFinalize {
+            assert_eq!(n, 1);
+            assert_eq!(l.state, ListingState::Finalizing);
+            assert!(
+                !l.state.aborts_by_cancel_transfer(),
+                "out of CANCEL_ABORTABLE"
+            );
+            assert_eq!(l.lock_finalize_draft_id.as_deref(), Some("fin"));
+            assert_eq!(
+                (l.lock_txid.as_deref(), l.lock_vout),
+                (Some("f1".repeat(32).as_str()), Some(0))
+            );
+            assert!(l.steps_json.contains("5000000"));
+            assert_eq!(l.listing_file_json.as_deref(), Some("{}"));
+            assert_eq!(l.expires_at, Some(1_731_536_000));
+        } else {
+            assert_eq!(n, 0, "{state:?}");
+            assert_eq!(l.state, state);
+            assert_eq!(l.lock_finalize_draft_id, None);
+            assert_eq!(l.lock_txid, None);
+            assert_eq!(l.steps_json, "[]");
+        }
+    }
+}
+
+/// Deviation 3: an unsent FINALIZE (draft or signed) deleted takes its lock
+/// outpoint, steps and file with it; the listing is ReadyToFinalize again.
+#[test]
+fn deleting_an_unsent_finalize_draft_returns_the_listing_to_ready() {
+    for status in ["draft", "signed"] {
+        let conn = store_conn();
+        queries::insert_shakedex_listing(
+            &conn,
+            &listing("l1", "dexsale", ListingState::ReadyToFinalize),
+        )
+        .unwrap();
+        insert_draft(&conn, "fin", sell::LOCK_FINALIZE_ACTION, status);
+        assert_eq!(finalizing(&conn, "l1", "fin"), 1);
+        queries::delete_tx_draft(&conn, "fin").unwrap();
+        let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+        assert_eq!(l.state, ListingState::ReadyToFinalize, "{status}");
+        assert_eq!(
+            (l.lock_txid, l.lock_vout, l.lock_finalize_draft_id),
+            (None, None, None)
+        );
+        assert_eq!(l.steps_json, "[]");
+        assert_eq!((l.listing_file_json, l.expires_at), (None, None));
+    }
+}
+
+/// A FINALIZE that was sent (`failed`, `dropped`) may be deleted, but its
+/// listing keeps its outpoint and steps: whether it landed is the chain's to
+/// say (Step 6).
+#[test]
+fn deleting_a_failed_finalize_draft_keeps_its_steps_until_the_chain_says() {
+    for status in ["failed", "dropped"] {
+        let conn = store_conn();
+        queries::insert_shakedex_listing(
+            &conn,
+            &listing("l1", "dexsale", ListingState::ReadyToFinalize),
+        )
+        .unwrap();
+        insert_draft(&conn, "fin", sell::LOCK_FINALIZE_ACTION, "signed");
+        assert_eq!(finalizing(&conn, "l1", "fin"), 1);
+        conn.execute(
+            "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = 'fin'",
+            [status],
+        )
+        .unwrap();
+        queries::delete_tx_draft(&conn, "fin").unwrap();
+        let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+        assert_eq!(l.state, ListingState::Finalizing, "{status}");
+        assert!(l.lock_txid.is_some());
+        assert!(l.steps_json.contains("5000000"));
+    }
+}
+
+/// Every other transition writes only from its expected previous state and
+/// reports 0 rows otherwise.
+#[test]
+fn listing_transitions_write_only_from_their_previous_state() {
+    type Transition = fn(&Connection, &str) -> Result<usize, crate::error::AppError>;
+    let cases: [(&str, Transition, ListingState, ListingState); 5] = [
+        (
+            "ready",
+            queries::mark_listing_ready,
+            ListingState::Locking,
+            ListingState::ReadyToFinalize,
+        ),
+        (
+            "again",
+            queries::mark_listing_locking_again,
+            ListingState::ReadyToFinalize,
+            ListingState::Locking,
+        ),
+        (
+            "listed",
+            queries::mark_listing_listed,
+            ListingState::Finalizing,
+            ListingState::Listed,
+        ),
+        (
+            "fin again",
+            queries::mark_listing_finalizing_again,
+            ListingState::Listed,
+            ListingState::Finalizing,
+        ),
+        (
+            "revert",
+            queries::revert_listing_to_ready,
+            ListingState::Finalizing,
+            ListingState::ReadyToFinalize,
+        ),
+    ];
+    for (label, f, from, to) in cases {
+        for state in ListingState::ALL {
+            let conn = store_conn();
+            queries::insert_shakedex_listing(&conn, &listing("l1", "dexsale", state)).unwrap();
+            let n = f(&conn, "l1").unwrap();
+            let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+            if state == from {
+                assert_eq!((n, l.state), (1, to), "{label}");
+            } else {
+                assert_eq!((n, l.state), (0, state), "{label} from {state:?}");
+            }
+        }
+    }
+}
+
+/// A FINALIZE into our lock from another device: only a listing whose abort
+/// is still the Cancel transfer adopts the coin, as Restored.
+#[test]
+fn finalized_elsewhere_is_adopted_only_before_the_lock() {
+    for state in ListingState::ALL {
+        let conn = store_conn();
+        queries::insert_shakedex_listing(&conn, &listing("l1", "dexsale", state)).unwrap();
+        let n = queries::adopt_lock_finalized_elsewhere(&conn, "l1", &"ab".repeat(32), 0).unwrap();
+        let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+        if state.aborts_by_cancel_transfer() {
+            assert_eq!((n, l.state), (1, ListingState::Restored));
+            assert_eq!(l.lock_txid, Some("ab".repeat(32)));
+            assert_eq!(l.lock_vout, Some(0));
+        } else {
+            assert_eq!((n, l.state), (0, state), "{state:?}");
+            assert_eq!(l.lock_txid, None);
+        }
+    }
+}
+
+/// The Finalizing/Listed source lists exactly those two states of a profile.
+#[test]
+fn finalizing_and_listed_listings_are_listed() {
+    let conn = store_conn();
+    for (id, name, state) in [
+        ("l1", "a", ListingState::Finalizing),
+        ("l2", "b", ListingState::Listed),
+        ("l3", "c", ListingState::ReadyToFinalize),
+        ("l4", "d", ListingState::Sold),
+    ] {
+        queries::insert_shakedex_listing(&conn, &listing(id, name, state)).unwrap();
+    }
+    let ids: Vec<String> = queries::list_shakedex_listings_finalizing(&conn, STORE_PROFILE)
+        .unwrap()
+        .into_iter()
+        .map(|l| l.id)
+        .collect();
+    assert_eq!(ids, ["l1", "l2"]);
+    assert!(queries::list_shakedex_listings_finalizing(&conn, "other")
+        .unwrap()
+        .is_empty());
+}
+
+/// The deadline scan's source: ReadyToFinalize listings only.
+#[test]
+fn listings_ready_to_finalize_are_listed_for_the_reminder() {
+    let conn = store_conn();
+    for (id, name, state) in [
+        ("l1", "ready", ListingState::ReadyToFinalize),
+        ("l2", "locking", ListingState::Locking),
+        ("l3", "fin", ListingState::Finalizing),
+    ] {
+        let mut l = listing(id, name, state);
+        l.lock_transfer_txid = Some(format!("{id}-tx"));
+        queries::insert_shakedex_listing(&conn, &l).unwrap();
+    }
+    assert_eq!(
+        queries::list_listings_ready_to_finalize(&conn).unwrap(),
+        vec![(
+            STORE_PROFILE.to_string(),
+            "ready".to_string(),
+            "l1-tx".to_string()
+        )]
+    );
 }
 
 // --- the lock command -------------------------------------------------------
