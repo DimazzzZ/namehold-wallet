@@ -99,26 +99,6 @@ pub fn near_expiry_warning(blocks_left: i64) -> String {
     )
 }
 
-/// The summary a lock TRANSFER draft stores. It reads as a plain `TxSummary`
-/// (the secure window's generic rows, `warnings` as Warning rows), and its
-/// `name` ties the draft to the name (`pending_broadcast_actions_for_name`).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LockSummary {
-    pub action: String,
-    pub name: String,
-    pub send_total_doos: i64,
-    pub fee_doos: i64,
-    pub change_doos: i64,
-    pub input_total_doos: i64,
-    pub num_inputs: i64,
-    /// The lock address the TRANSFER commits the name to.
-    pub recipient_address: Option<String>,
-    pub txid: Option<String>,
-    #[serde(default)]
-    pub warnings: Vec<String>,
-}
-
 /// `wallet_tx_drafts.action` of a draft finalizing our name into its lock.
 pub const LOCK_FINALIZE_ACTION: &str = "shakedex_lock_finalize";
 
