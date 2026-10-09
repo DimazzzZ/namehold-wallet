@@ -11,7 +11,10 @@
 //!
 //! A third kind is not a deadline but a reminder: a name bought through
 //! Shakedex whose transfer lockup is over and that can be finalized now
-//! ([`scan_purchase_deadlines`], R14).
+//! ([`scan_purchase_deadlines`], R14). A fourth is the same kind of reminder
+//! for a Shakedex listing whose transfer lockup is over and that waits for
+//! Finalize & sign ([`scan_listing_ready_deadlines`], R19); unlike the
+//! purchase one it repeats daily until Finalize & sign has run.
 //!
 //! The scanner core ([`scan_deadlines`]) is a PURE function: deadlines +
 //! config + previously-notified state → notifications to emit + new state.
@@ -265,6 +268,45 @@ pub fn scan_purchase_deadlines(
     dedup_imminent(ready, config, previously_notified)
 }
 
+/// A Shakedex listing whose transfer lockup is over: Finalize & sign can run
+/// (R19). A reminder, repeated daily until it runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListingReadyDeadline {
+    pub wallet_profile_id: String,
+    pub name: String,
+    /// Part of the key, so locking the name again later is a new episode.
+    pub lock_transfer_txid: String,
+}
+
+/// Day-scoped: a new key every unix day, so the dedup lets one notification
+/// through per day while the listing waits.
+fn listing_ready_key(d: &ListingReadyDeadline, day: i64) -> String {
+    format!(
+        "listing_ready:{}:{}:{}:{day}",
+        d.wallet_profile_id, d.name, d.lock_transfer_txid
+    )
+}
+
+/// Pure scanner for listings ready to finalize (R19): one notification per
+/// listing per `day` (days since the Unix epoch, UTC), deduplicated and gated
+/// like [`scan_deadlines`].
+pub fn scan_listing_ready_deadlines(
+    ready: &[ListingReadyDeadline],
+    config: &DeadlineNotifyConfig,
+    previously_notified: &BTreeSet<String>,
+    day: i64,
+) -> ScanResult {
+    let ready = ready.iter().map(|d| PendingNotification {
+        key: listing_ready_key(d, day),
+        title: "Ready to list".into(),
+        body: format!(
+            "{}: the transfer lockup is over — Finalize & sign its price to list it",
+            d.name
+        ),
+    });
+    dedup_imminent(ready, config, previously_notified)
+}
+
 // ---------------------------------------------------------------------------
 // IO shell
 // ---------------------------------------------------------------------------
@@ -413,6 +455,17 @@ pub async fn scan_deadline_notifications<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
 ) -> Result<ScanOutcome, AppError> {
+    let day = chrono::Utc::now().timestamp().div_euclid(86_400);
+    scan_deadline_notifications_on_day(app, state, day).await
+}
+
+/// [`scan_deadline_notifications`] with the unix day given, so a test can
+/// scan two days without a clock.
+pub(crate) async fn scan_deadline_notifications_on_day<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    day: i64,
+) -> Result<ScanOutcome, AppError> {
     // Finding 3: load config FIRST and bail out immediately when disabled —
     // BEFORE probing the node, collecting deadlines (a per-profile
     // `compute_renewals` walk plus the reveal-deadline query), or touching
@@ -438,7 +491,7 @@ pub async fn scan_deadline_notifications<R: tauri::Runtime>(
     // same discipline as `read_renewals`).
     let live_height = crate::commands::node_readiness::node_tip_height_if_synced(&state).await;
 
-    let (previously_notified, reveal, renewal, ready) = {
+    let (previously_notified, reveal, renewal, ready, listings) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let previously_notified = load_state(&queries::get_settings(&conn)?);
         let (reveal, renewal) = collect_deadlines(&conn, live_height)?;
@@ -453,14 +506,27 @@ pub async fn scan_deadline_notifications<R: tauri::Runtime>(
                     },
                 )
                 .collect();
-        (previously_notified, reveal, renewal, ready)
+        let listings: Vec<ListingReadyDeadline> = queries::list_listings_ready_to_finalize(&conn)?
+            .into_iter()
+            .map(
+                |(wallet_profile_id, name, lock_transfer_txid)| ListingReadyDeadline {
+                    wallet_profile_id,
+                    name,
+                    lock_transfer_txid,
+                },
+            )
+            .collect();
+        (previously_notified, reveal, renewal, ready, listings)
     };
 
-    // The two scans own disjoint key spaces, so their results merge by union.
+    // The scans own disjoint key spaces, so their results merge by union.
     let mut result = scan_deadlines(&reveal, &renewal, &config, &previously_notified);
     let purchases = scan_purchase_deadlines(&ready, &config, &previously_notified);
     result.notifications.extend(purchases.notifications);
     result.active_episodes.extend(purchases.active_episodes);
+    let listings = scan_listing_ready_deadlines(&listings, &config, &previously_notified, day);
+    result.notifications.extend(listings.notifications);
+    result.active_episodes.extend(listings.active_episodes);
 
     #[cfg_attr(test, allow(unused_mut))]
     let mut delivery_error = None;
@@ -958,5 +1024,46 @@ mod tests {
             &Default::default(),
         );
         assert_eq!(result.notifications.len(), 2);
+    }
+
+    // --- listing ready to finalize (R19) -----------------------------------
+
+    fn listing(profile: &str, name: &str, txid: &str) -> ListingReadyDeadline {
+        ListingReadyDeadline {
+            wallet_profile_id: profile.into(),
+            name: name.into(),
+            lock_transfer_txid: txid.into(),
+        }
+    }
+
+    /// R19: once a day while the listing waits for Finalize & sign; not twice
+    /// on one day; never while notifications are off.
+    #[test]
+    fn listing_ready_notifies_once_a_day() {
+        let ready = [listing("p1", "dexsale", "aa")];
+        let d1 = scan_listing_ready_deadlines(&ready, &cfg(true), &Default::default(), 20_000);
+        assert_eq!(d1.notifications.len(), 1);
+        assert_eq!(d1.notifications[0].key, "listing_ready:p1:dexsale:aa:20000");
+        assert_eq!(d1.notifications[0].title, "Ready to list");
+        assert_eq!(
+            d1.notifications[0].body,
+            "dexsale: the transfer lockup is over \u{2014} Finalize & sign its price to list it"
+        );
+        let same_day =
+            scan_listing_ready_deadlines(&ready, &cfg(true), &d1.active_episodes, 20_000);
+        assert!(same_day.notifications.is_empty());
+        let next_day =
+            scan_listing_ready_deadlines(&ready, &cfg(true), &d1.active_episodes, 20_001);
+        assert_eq!(next_day.notifications.len(), 1);
+        assert!(
+            !next_day
+                .active_episodes
+                .contains("listing_ready:p1:dexsale:aa:20000"),
+            "yesterday's key is dropped"
+        );
+        let off = scan_listing_ready_deadlines(&ready, &cfg(false), &d1.active_episodes, 20_001);
+        assert!(off.notifications.is_empty());
+        let done = scan_listing_ready_deadlines(&[], &cfg(true), &next_day.active_episodes, 20_001);
+        assert!(done.active_episodes.is_empty());
     }
 }
