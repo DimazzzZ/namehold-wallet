@@ -17,7 +17,7 @@ use crate::noncustodial::shakedex::lock_key::LockKey;
 use crate::noncustodial::shakedex::purchase::MAX_MONEY;
 use crate::noncustodial::shakedex::script;
 use crate::noncustodial::shakedex::template::{
-    secs_until_valid, valid_from_mtp, verify_step_signature, StepTemplate,
+    secs_until_valid, valid_from_mtp, verify_step_signature, StepTemplate, STEP_SIGHASH,
 };
 use crate::noncustodial::sync::{COV_FINALIZE, COV_NONE, COV_TRANSFER};
 use crate::noncustodial::tx::{Covenant, OutputAddress};
@@ -450,6 +450,11 @@ pub struct SpendView {
     pub height: Option<i64>,
     /// Each input's prevout `(txid, index)`.
     pub inputs: Vec<(String, u32)>,
+    /// Each input's witness items, hex as hsd sends them (`Witness.getJSON`:
+    /// REST `inputs[].witness`, `getblock` `vin[].txinwitness`); `None` when
+    /// the reply leaves the field out, which only a verdict that reads it
+    /// refuses.
+    pub witnesses: Vec<Option<Vec<String>>>,
     pub outputs: Vec<SpendOutput>,
 }
 
@@ -496,6 +501,27 @@ fn output_of(
     })
 }
 
+/// An input's witness as hsd sends it: an array of hex items; absent (or
+/// null) is `None`; anything else is not hsd's answer.
+fn witness_of(w: Option<&serde_json::Value>) -> Result<Option<Vec<String>>, AppError> {
+    let Some(w) = w.filter(|w| !w.is_null()) else {
+        return Ok(None);
+    };
+    let items = w
+        .as_array()
+        .ok_or_else(|| not_hsds("a readable input witness"))?;
+    items
+        .iter()
+        .map(|i| {
+            i.as_str()
+                .filter(|h| h.len() % 2 == 0 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                .map(str::to_string)
+                .ok_or_else(|| not_hsds("a readable input witness item"))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
 fn prevout_of(
     hash: Option<&serde_json::Value>,
     index: Option<&serde_json::Value>,
@@ -518,10 +544,11 @@ pub fn spend_view_from_rest(tx: &serde_json::Value) -> Result<SpendView, AppErro
     let height = rpc::mined_height(tx.get("height").and_then(|h| h.as_i64()), || {
         "the transaction's height".into()
     })?;
-    let inputs = tx
+    let raw_inputs = tx
         .get("inputs")
         .and_then(|i| i.as_array())
-        .ok_or_else(|| not_hsds("its inputs"))?
+        .ok_or_else(|| not_hsds("its inputs"))?;
+    let inputs = raw_inputs
         .iter()
         .map(|i| {
             let p = i.get("prevout");
@@ -530,6 +557,10 @@ pub fn spend_view_from_rest(tx: &serde_json::Value) -> Result<SpendView, AppErro
                 p.and_then(|p| p.get("index")),
             )
         })
+        .collect::<Result<Vec<_>, _>>()?;
+    let witnesses = raw_inputs
+        .iter()
+        .map(|i| witness_of(i.get("witness")))
         .collect::<Result<Vec<_>, _>>()?;
     let outputs = tx
         .get("outputs")
@@ -541,6 +572,7 @@ pub fn spend_view_from_rest(tx: &serde_json::Value) -> Result<SpendView, AppErro
     Ok(SpendView {
         height,
         inputs,
+        witnesses,
         outputs,
     })
 }
@@ -578,12 +610,17 @@ pub fn spend_view_from_block(
     let Some(tx) = found else {
         return Ok(None);
     };
-    let inputs = tx
+    let vin = tx
         .get("vin")
         .and_then(|i| i.as_array())
-        .ok_or_else(|| not_hsds("its inputs"))?
+        .ok_or_else(|| not_hsds("its inputs"))?;
+    let inputs = vin
         .iter()
         .map(|i| prevout_of(i.get("txid"), i.get("vout")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let witnesses = vin
+        .iter()
+        .map(|i| witness_of(i.get("txinwitness")))
         .collect::<Result<Vec<_>, _>>()?;
     let outputs = tx
         .get("vout")
@@ -602,6 +639,7 @@ pub fn spend_view_from_block(
     Ok(Some(SpendView {
         height: Some(height),
         inputs,
+        witnesses,
         outputs,
     }))
 }
@@ -759,14 +797,17 @@ pub fn purchase_in(tx: &SpendView, p: &PurchaseOf) -> Result<Option<(String, u32
 }
 
 /// R22 for a lock restored by name (R32), which knows no payment address:
-/// whether `tx`, mined in a block, spends the lock coin `lock` at input `k`
-/// into output `k`, a TRANSFER of the listing's name at its lock address
-/// committing to an address not ours. A TRANSFER out of our lock coin needs
-/// the lock key's signature; one committing to an address not ours can only
-/// be a price step (`0x84`, SIGHASH_SINGLE | ANYONECANPAY), which commits to
-/// its payment output, so the sale was paid to that step's address even
-/// though this device does not know it. Committing to an address of ours it
-/// is our cancel (T5): `false`.
+/// whether `tx`, mined in a block, is a price step's purchase of the lock
+/// coin `lock`: input `k` spends it with the witness `[signature, lock
+/// script]` whose signature's last byte, the sighash type, is `0x84`
+/// (`ANYONECANPAY | SINGLEREVERSE`, [`STEP_SIGHASH`]: only a price step is
+/// signed so; our cancel is `0x83`), output `k` is a TRANSFER of the
+/// listing's name at its lock address committing to an address not ours
+/// (a cheap extra check: the derived addresses after a restore are not
+/// complete, spec §5), and output `len - 1 - k`, the output `0x84` commits
+/// to, is a plain payment (covenant NONE). The sale was paid to that step's
+/// address, which this device does not know. A lock input whose witness the
+/// reply leaves out is an error: no verdict either way.
 pub fn sale_out_of_restored_lock(
     tx: &SpendView,
     k: u32,
@@ -783,6 +824,31 @@ pub fn sale_out_of_restored_lock(
         || !(input.0 == lock.0 && input.1 == lock.1)
         || !at.holds(CoinAt::of_output(out), COV_TRANSFER, None)
     {
+        return Ok(false);
+    }
+    let witness = tx
+        .witnesses
+        .get(k)
+        .cloned()
+        .flatten()
+        .ok_or_else(|| not_hsds("the lock input's witness"))?;
+    let [signature, _lock_script] = witness.as_slice() else {
+        return Ok(false);
+    };
+    let sighash = hex::decode(signature)
+        .ok()
+        .and_then(|b| b.last().copied())
+        .ok_or_else(|| not_hsds("a readable lock input signature"))?;
+    if u32::from(sighash) != STEP_SIGHASH {
+        return Ok(false);
+    }
+    let paid = tx
+        .outputs
+        .len()
+        .checked_sub(1 + k)
+        .and_then(|p| tx.outputs.get(p))
+        .is_some_and(|p| p.covenant_type == COV_NONE);
+    if !paid {
         return Ok(false);
     }
     Ok(!commitment_is_ours(&out.items, network, own)?)
@@ -1261,8 +1327,10 @@ mod tests {
         let none = serde_json::json!({ "type": 0, "action": "NONE", "items": [] });
         serde_json::json!({
             "hash": BUY, "height": height,
-            "inputs": [ { "prevout": { "hash": LOCK, "index": 0 } },
-                        { "prevout": { "hash": "aa".repeat(32), "index": 1 } } ],
+            "inputs": [ { "prevout": { "hash": LOCK, "index": 0 },
+                          "witness": [format!("{}84", "aa".repeat(64)), "76".repeat(40)] },
+                        { "prevout": { "hash": "aa".repeat(32), "index": 1 },
+                          "witness": [format!("{}01", "bb".repeat(64)), "02".repeat(33)] } ],
             "outputs": [
                 { "value": 1_000_000, "address": lock_addr(),
                   "covenant": { "type": 9, "action": "TRANSFER",
@@ -1284,7 +1352,7 @@ mod tests {
             .iter()
             .map(|i| {
                 serde_json::json!({ "coinbase": false, "txid": i["prevout"]["hash"],
-                    "vout": i["prevout"]["index"], "txinwitness": [],
+                    "vout": i["prevout"]["index"], "txinwitness": i["witness"],
                     "sequence": 4294967295u64, "link": 4294967295u64 })
             })
             .collect();
@@ -1478,6 +1546,69 @@ mod tests {
                 .unwrap(),
             "another name"
         );
+        // The same from the block hsd's `getblock` sends.
+        let in_block = spend_view_from_block(&block(120, &p2wpkh(6)), BUY)
+            .unwrap()
+            .unwrap();
+        assert!(sold(&in_block, 0, (LOCK, 0)), "from the block");
+        // The positive evidence: input 0's sighash type is a price step's.
+        let with_lock_witness = |w: serde_json::Value| {
+            let mut v = rest(120, 9, &p2wpkh(6));
+            v["inputs"][0]["witness"] = w;
+            spend_view_from_rest(&v).unwrap()
+        };
+        let sig = |h: &str| format!("{}{h}", "aa".repeat(64));
+        let cancel = with_lock_witness(serde_json::json!([sig("83"), "76".repeat(40)]));
+        assert!(!sold(&cancel, 0, (LOCK, 0)), "0x83: a cancel, not a sale");
+        let one_item = with_lock_witness(serde_json::json!([sig("84")]));
+        assert!(!sold(&one_item, 0, (LOCK, 0)), "not [signature, script]");
+        let no_witness = with_lock_witness(serde_json::Value::Null);
+        assert!(
+            sale_out_of_restored_lock(&no_witness, 0, (LOCK, 0), &at, Network::Regtest, &own)
+                .is_err(),
+            "no witness: no verdict"
+        );
+        let empty_sig = with_lock_witness(serde_json::json!(["", "76".repeat(40)]));
+        assert!(
+            sale_out_of_restored_lock(&empty_sig, 0, (LOCK, 0), &at, Network::Regtest, &own)
+                .is_err(),
+            "no sighash byte: no verdict"
+        );
+        // Output len - 1 - k, the one 0x84 commits to, must be a payment.
+        let mut v = rest(120, 9, &p2wpkh(6));
+        v["outputs"][2]["covenant"] =
+            serde_json::json!({ "type": 2, "action": "OPEN", "items": [] });
+        let not_paid = spend_view_from_rest(&v).unwrap();
+        assert!(!sold(&not_paid, 0, (LOCK, 0)), "no payment output");
+        let mut v = rest(120, 9, &p2wpkh(6));
+        v["outputs"].as_array_mut().unwrap().truncate(1);
+        let lone = spend_view_from_rest(&v).unwrap();
+        assert!(
+            !sold(&lone, 0, (LOCK, 0)),
+            "the TRANSFER is the only output"
+        );
+    }
+
+    /// Witnesses are read from both of hsd's shapes; one that is not an
+    /// array of hex items is not hsd's answer.
+    #[test]
+    fn spend_view_reads_input_witnesses_from_both_shapes() {
+        let want = Some(vec![format!("{}84", "aa".repeat(64)), "76".repeat(40)]);
+        let r = spend_view_from_rest(&rest(120, 9, &p2wpkh(6))).unwrap();
+        assert_eq!(r.witnesses[0], want);
+        let b = spend_view_from_block(&block(120, &p2wpkh(6)), BUY)
+            .unwrap()
+            .unwrap();
+        assert_eq!(b.witnesses[0], want);
+        for bad in [
+            serde_json::json!("aa"),
+            serde_json::json!([1]),
+            serde_json::json!(["zz"]),
+        ] {
+            let mut v = rest(120, 9, &p2wpkh(6));
+            v["inputs"][0]["witness"] = bad.clone();
+            assert!(spend_view_from_rest(&v).is_err(), "{bad}");
+        }
     }
 
     #[test]

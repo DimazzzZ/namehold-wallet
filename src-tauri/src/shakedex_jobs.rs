@@ -1406,9 +1406,8 @@ pub async fn refresh_listings_with_client(
 ///   SalePending or Restored listing Expired; otherwise a purchase is looked
 ///   for ([`find_sale`]); one in the mempool while the owner is still the
 ///   lock coin → SalePending, one mined while the owner has moved → Sold; a
-///   lock restored by name (no payment address) → Sold only by a mined
-///   TRANSFER out of its lock coin to an address not ours
-///   ([`sale_of_restored_lock`]);
+///   lock restored by name (no payment address) → Sold only by a mined price
+///   step (sighash `0x84`) out of its lock coin ([`sale_of_restored_lock`]);
 ///   a Sold listing moves only by [`queries::resell_sold_listing`]: back to
 ///   SalePending when its purchase is in the mempool again, or to the txid
 ///   of another purchase of its lock coin mined instead;
@@ -1667,8 +1666,10 @@ async fn lock_coin_spent(
 /// Anything else is `None`, no verdict: the owner coin hsd's 404 (spent in
 /// the mempool; or the lock coin itself, still the owner while a purchase
 /// of it is in the mempool), its transaction not found or not in a block,
-/// or not a TRANSFER out of this lock coin committing to an address not ours
-/// (our cancel is T5's). Only the write's source states move
+/// or not a price step's purchase of this lock coin (our cancel, `0x83`, is
+/// T5's). A lock input without its witness is an error. When the buyer's
+/// FINALIZE is mined before a sync sees the TRANSFER as the owner, the
+/// owner's transaction is that FINALIZE: not followed back, no verdict. Only the write's source states move
 /// ([`queries::ListingWrite::Sell`]).
 async fn sale_of_restored_lock(
     conn: &rusqlite::Connection,
