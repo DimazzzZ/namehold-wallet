@@ -1884,6 +1884,96 @@ pub fn listing_blocking_owner_actions(
     Ok(alive.then_some(listing))
 }
 
+/// The `listing` object on an Owned Names row (`ShakedexNameListing` in the UI).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListingNameState {
+    pub listing_id: String,
+    pub state: ListingState,
+    /// Blocks left in the transfer lockup while Locking, from the lock
+    /// TRANSFER's confirmation height and the wallet's sync height (hsd
+    /// judges the FINALIZE at tip + 1); `None` before the TRANSFER is seen
+    /// mined and in every other state.
+    pub blocks_until_finalize: Option<i64>,
+}
+
+/// One listing an Owned Names row shows.
+pub struct ListingNameRow {
+    pub name: String,
+    pub lock_pubkey_hex: String,
+    pub listing: ListingNameState,
+}
+
+/// The listing each of the profile's names shows on its Owned Names row: its
+/// open listing (a Locking one only while its lock TRANSFER draft is alive,
+/// as [`listing_blocking_owner_actions`]), else a Sold one within the last
+/// `sold_days`; newest first per name.
+pub fn read_shakedex_listing_names(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    params_net: crate::noncustodial::network::NameParams,
+    tip: i64,
+    sold_days: u32,
+) -> Result<Vec<ListingNameRow>, AppError> {
+    let [t0, t1, t2, t3] = ListingState::TERMINAL;
+    let mut stmt = conn.prepare(
+        "SELECT l.id, l.name, l.state, l.lock_pubkey_hex, d.status, d.confirmation_height
+         FROM shakedex_listings l
+         LEFT JOIN wallet_tx_drafts d ON d.id = l.lock_transfer_draft_id
+         WHERE l.wallet_profile_id = ?1
+           AND (l.state NOT IN (?2, ?3, ?4, ?5)
+                OR (l.state = ?6 AND l.updated_at >= datetime('now', ?7)))
+         ORDER BY l.name, l.created_at DESC, l.id",
+    )?;
+    let rows = stmt.query_map(
+        params![
+            profile_id,
+            t0,
+            t1,
+            t2,
+            t3,
+            ListingState::Sold,
+            format!("-{sold_days} days")
+        ],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, ListingState>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+            ))
+        },
+    )?;
+    let mut out: Vec<ListingNameRow> = Vec::new();
+    for row in rows {
+        let (id, name, state, pubkey, status, confirmed) = row?;
+        if out.iter().any(|r| r.name == name) {
+            continue;
+        }
+        if state == ListingState::Locking && !status.as_deref().is_some_and(draft_alive) {
+            continue;
+        }
+        let blocks_until_finalize = match (state, status.as_deref(), confirmed) {
+            (ListingState::Locking, Some(CONFIRMED_STATUS), Some(h)) => {
+                Some(params_net.blocks_until_finalize(h, tip))
+            }
+            _ => None,
+        };
+        out.push(ListingNameRow {
+            name,
+            lock_pubkey_hex: pubkey,
+            listing: ListingNameState {
+                listing_id: id,
+                state,
+                blocks_until_finalize,
+            },
+        });
+    }
+    Ok(out)
+}
+
 /// The status of the listing's lock TRANSFER draft, `None` when the listing
 /// has none or the draft row is gone.
 pub fn lock_draft_status(
