@@ -1910,15 +1910,17 @@ pub fn list_shakedex_listings_before_lock(
 /// R19: the name left the lock TRANSFER before the FINALIZE into the lock
 /// (a mined Cancel transfer, a REVOKE, or a lock TRANSFER that never
 /// landed), so the listing is Aborted. Only a listing whose abort is still
-/// the Cancel transfer moves. Returns how many rows changed (0 or 1).
+/// the Cancel transfer, or a Finalizing one whose FINALIZE is dead, moves
+/// ([`ends_before_lock_sql`]). Returns how many rows changed (0 or 1).
 pub fn abort_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
     end_listing_before_lock(conn, id, ListingState::Aborted)
 }
 
 /// hsd reports no live state for the name (`getnameinfo` with `info: null`)
 /// before the FINALIZE into the lock, so the listing is Expired. Only a
-/// listing whose abort is still the Cancel transfer moves. Returns how many
-/// rows changed (0 or 1).
+/// listing whose abort is still the Cancel transfer, or a Finalizing one
+/// whose FINALIZE is dead, moves ([`ends_before_lock_sql`]). Returns how
+/// many rows changed (0 or 1).
 pub fn expire_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
     end_listing_before_lock(conn, id, ListingState::Expired)
 }
@@ -1929,12 +1931,38 @@ fn end_listing_before_lock(
     to: ListingState,
 ) -> Result<usize, AppError> {
     let sql = format!(
-        "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
-         WHERE id = ?1 AND state IN {}",
-        ListingState::cancel_abortable_sql()
+        "UPDATE shakedex_listings
+         SET state = ?2, lock_txid = NULL, lock_vout = NULL, {}, updated_at = datetime('now')
+         WHERE id = ?1 AND {}",
+        DROP_DEAD_FINALIZE_SET,
+        ends_before_lock_sql()
     );
     Ok(conn.execute(&sql, params![id, to])?)
 }
+
+/// The listings the chain may still end as before the FINALIZE into the
+/// lock (R19, [`abort_shakedex_listing`], [`expire_shakedex_listing`],
+/// [`adopt_lock_finalized_elsewhere`]): those whose abort is still the
+/// Cancel transfer ([`ListingState::CANCEL_ABORTABLE`]), and a Finalizing one
+/// whose FINALIZE draft is dead (not [`draft_alive`], or its row gone): that
+/// FINALIZE can no longer be mined, so whatever spent the lock TRANSFER was
+/// something else. An SQL condition on `shakedex_listings`.
+fn ends_before_lock_sql() -> String {
+    format!(
+        "(state IN {} OR (state = '{}' AND NOT EXISTS (
+             SELECT 1 FROM wallet_tx_drafts d
+             WHERE d.id = shakedex_listings.lock_finalize_draft_id AND d.status IN {})))",
+        ListingState::cancel_abortable_sql(),
+        ListingState::Finalizing.as_str(),
+        alive_sql()
+    )
+}
+
+/// What a listing ended from Finalizing loses of its dead FINALIZE: the
+/// draft link, the steps and file signed over a lock coin that never
+/// existed, and their expiry. Already so for a listing before the lock.
+const DROP_DEAD_FINALIZE_SET: &str = "lock_finalize_draft_id = NULL, steps_json = '[]', \
+     listing_file_json = NULL, expires_at = NULL";
 
 /// R19: a reorg took an Aborted listing's abort out of the chain (its lock
 /// TRANSFER is a coin or the owner again), so the listing is Locking again — unless another listing of the name is
@@ -2087,7 +2115,9 @@ pub fn mark_listing_finalizing_again(
 /// R19 (coordinator (b)): the name was finalized into this listing's lock by
 /// a FINALIZE this device did not build (another device with the same seed):
 /// the listing tracks that lock coin as a Restored lock, never Aborted. Only
-/// from `CANCEL_ABORTABLE`. Returns how many rows changed (0 or 1).
+/// from `CANCEL_ABORTABLE`, or from Finalizing once its own FINALIZE is dead
+/// ([`ends_before_lock_sql`]), whose outpoint, steps and file it drops.
+/// Returns how many rows changed (0 or 1).
 pub fn adopt_lock_finalized_elsewhere(
     conn: &rusqlite::Connection,
     id: &str,
@@ -2097,9 +2127,10 @@ pub fn adopt_lock_finalized_elsewhere(
     let sql = format!(
         "UPDATE shakedex_listings
          SET state = ?2, lock_txid = ?3, lock_vout = ?4, abort_draft_id = NULL,
-             abort_txid = NULL, updated_at = datetime('now')
-         WHERE id = ?1 AND state IN {}",
-        ListingState::cancel_abortable_sql()
+             abort_txid = NULL, {}, updated_at = datetime('now')
+         WHERE id = ?1 AND {}",
+        DROP_DEAD_FINALIZE_SET,
+        ends_before_lock_sql()
     );
     Ok(conn.execute(
         &sql,

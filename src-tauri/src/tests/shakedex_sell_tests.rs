@@ -548,7 +548,9 @@ fn listing_transitions_write_only_from_their_previous_state() {
 }
 
 /// A FINALIZE into our lock from another device: only a listing whose abort
-/// is still the Cancel transfer adopts the coin, as Restored.
+/// is still the Cancel transfer adopts the coin, as Restored (a Finalizing
+/// one only once its own FINALIZE is dead,
+/// `a_dead_finalize_ends_its_listing_like_before_the_lock`).
 #[test]
 fn finalized_elsewhere_is_adopted_only_before_the_lock() {
     for state in ListingState::ALL {
@@ -556,6 +558,9 @@ fn finalized_elsewhere_is_adopted_only_before_the_lock() {
         let mut l = listing("l1", "dexsale", state);
         l.abort_draft_id = Some("cancel".into());
         l.abort_txid = Some("cd".repeat(32));
+        // A Finalizing listing's own FINALIZE, still in flight.
+        insert_draft(&conn, "fin", sell::LOCK_FINALIZE_ACTION, "broadcasted");
+        l.lock_finalize_draft_id = Some("fin".into());
         queries::insert_shakedex_listing(&conn, &l).unwrap();
         let n = queries::adopt_lock_finalized_elsewhere(&conn, "l1", &"ab".repeat(32), 0).unwrap();
         let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
@@ -570,6 +575,88 @@ fn finalized_elsewhere_is_adopted_only_before_the_lock() {
             assert_eq!(l.lock_txid, None);
         }
     }
+}
+
+/// R19, coordinator ruling: a Finalizing listing whose FINALIZE draft is
+/// dead (`failed`, `dropped`, or gone) ends like a listing before the lock —
+/// Aborted, Expired, or a Restored lock — and loses its dead FINALIZE's
+/// outpoint, steps and file. While that draft is alive (unsent, sent, or
+/// mined) none of the three writes it.
+#[test]
+fn a_dead_finalize_ends_its_listing_like_before_the_lock() {
+    type End = fn(&Connection, &str) -> Result<usize, crate::error::AppError>;
+    let adopt: End = |c, id| queries::adopt_lock_finalized_elsewhere(c, id, &"ad".repeat(32), 2);
+    let ends: [(&str, End, ListingState); 3] = [
+        (
+            "abort",
+            queries::abort_shakedex_listing,
+            ListingState::Aborted,
+        ),
+        (
+            "expire",
+            queries::expire_shakedex_listing,
+            ListingState::Expired,
+        ),
+        ("adopt", adopt, ListingState::Restored),
+    ];
+    for (label, end, to) in ends {
+        for (status, dead) in [
+            (None, true),
+            (Some("failed"), true),
+            (Some("dropped"), true),
+            (Some("draft"), false),
+            (Some("signed"), false),
+            (Some("broadcast_pending"), false),
+            (Some("broadcasted"), false),
+            (Some("confirmed"), false),
+        ] {
+            let case = format!("{label}, FINALIZE {status:?}");
+            let conn = store_conn();
+            queries::insert_shakedex_listing(
+                &conn,
+                &listing("l1", "dexsale", ListingState::ReadyToFinalize),
+            )
+            .unwrap();
+            insert_draft(&conn, "fin", sell::LOCK_FINALIZE_ACTION, "signed");
+            assert_eq!(finalizing(&conn, "l1", "fin"), 1);
+            match status {
+                Some(st) => insert_draft_status(&conn, "fin", st),
+                None => {
+                    conn.execute("DELETE FROM wallet_tx_drafts WHERE id = 'fin'", [])
+                        .unwrap();
+                }
+            }
+            let n = end(&conn, "l1").unwrap();
+            let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+            if dead {
+                assert_eq!((n, l.state), (1, to), "{case}");
+                assert_eq!(l.lock_finalize_draft_id, None, "{case}");
+                assert_eq!(
+                    (l.steps_json.as_str(), l.listing_file_json, l.expires_at),
+                    ("[]", None, None),
+                    "{case}"
+                );
+                let want = (to == ListingState::Restored).then(|| ("ad".repeat(32), 2));
+                assert_eq!(
+                    l.lock_txid.zip(l.lock_vout),
+                    want,
+                    "{case}: only the adopted outpoint"
+                );
+            } else {
+                assert_eq!((n, l.state), (0, ListingState::Finalizing), "{case}");
+                assert_eq!(l.lock_txid, Some("f1".repeat(32)), "{case}");
+                assert_ne!(l.steps_json, "[]", "{case}");
+            }
+        }
+    }
+}
+
+fn insert_draft_status(conn: &Connection, id: &str, status: &str) {
+    conn.execute(
+        "UPDATE wallet_tx_drafts SET status = ?1 WHERE id = ?2",
+        params![status, id],
+    )
+    .unwrap();
 }
 
 /// The two listing jobs never take the same listing, and neither takes a
@@ -3974,4 +4061,154 @@ async fn mined_lock_transfer_that_is_not_the_owner_changes_nothing() {
         run_abort_job(&app, &no_height).await;
         assert_eq!(listing_state(&app, &id), state, "{state:?}: no height");
     }
+}
+
+/// The chain once something other than our FINALIZE spent the lock
+/// TRANSFER: `info` as hsd answers, the lock TRANSFER and our lock coin
+/// hsd's 404, and `owner` (when given) a coin mined at `address` with
+/// covenant `cov`.
+fn left_the_lock(info: Value, owner: Option<(&str, u32, &str, u8)>) -> MockNodeRpc {
+    let coins = owner
+        .map(|(txid, vout, address, cov)| coin_at(txid, vout, address, cov, QUIET_TIP - 1))
+        .into_iter()
+        .collect();
+    chain_at(info, ready_tip(Network::Regtest) + 5, coins)
+}
+
+/// A Finalizing listing whose FINALIZE draft has status `status` (`gone`:
+/// deleted), its lock TRANSFER mined and its draft confirmed.
+async fn finalizing_with(status: &str) -> Ready {
+    let r = ready_fixture("regtest").await;
+    let (fin, _) = finalized(&r).await;
+    set_lock_draft_status(&r.app, &r.listing_id, "confirmed");
+    let fin_draft = r.listing().lock_finalize_draft_id.unwrap();
+    with_db(&r.app, |c| {
+        let s = if status == "gone" { "failed" } else { status };
+        if s != "signed" {
+            queries::update_tx_draft_status(c, &fin_draft, s, None, Some(&fin)).unwrap();
+        }
+        if status == "gone" {
+            queries::delete_tx_draft(c, &fin_draft).unwrap();
+        }
+    });
+    r
+}
+
+/// R19, coordinator ruling: our FINALIZE is dead (`failed`, `dropped` or
+/// gone) and the lock TRANSFER is hsd's 404 — something else spent it. The
+/// listing is resolved as before the lock: an older Cancel transfer mined
+/// later, or a REVOKE → Aborted; another device's FINALIZE into our lock →
+/// Restored with that outpoint; `info: null` → Expired; the owner coin hsd's
+/// 404 → no verdict. A FINALIZE still in flight changes nothing.
+#[tokio::test]
+async fn dead_finalize_with_its_lock_transfer_spent_elsewhere_is_resolved_from_the_name() {
+    let net = Network::Regtest;
+    let (ours, lock) = (addr00(net).0, lock_address(net));
+    let cancel = "ce".repeat(32);
+    let other_fin = "0f".repeat(32);
+    for status in ["failed", "dropped", "gone"] {
+        // An older Cancel transfer mined after all: the owner is its UPDATE.
+        let r = finalizing_with(status).await;
+        let chain = left_the_lock(
+            info_with(&cancel, 0, 0),
+            Some((&cancel, 0, &ours, COV_UPDATE)),
+        );
+        run_listing_jobs(&r.app, &chain).await;
+        let l = r.listing();
+        assert_eq!(l.state, ListingState::Aborted, "cancel mined, {status}");
+        assert_eq!(
+            (l.lock_txid, l.lock_finalize_draft_id, l.steps_json.as_str()),
+            (None, None, "[]"),
+            "cancel mined, {status}: the dead FINALIZE's outpoint and steps go"
+        );
+    }
+
+    // Another device's FINALIZE into our lock.
+    let r = finalizing_with("dropped").await;
+    let chain = left_the_lock(
+        info_with(&other_fin, 0, 0),
+        Some((&other_fin, 0, &lock, COV_FINALIZE)),
+    );
+    run_listing_jobs(&r.app, &chain).await;
+    let l = r.listing();
+    assert_eq!(l.state, ListingState::Restored);
+    assert_eq!(
+        (l.lock_txid.as_deref(), l.lock_vout),
+        (Some(other_fin.as_str()), Some(0))
+    );
+    assert_eq!(
+        (
+            l.lock_finalize_draft_id,
+            l.steps_json.as_str(),
+            l.listing_file_json
+        ),
+        (None, "[]", None)
+    );
+
+    // A REVOKE: `owner` stays at the lock TRANSFER, `revoked` is set.
+    let r = finalizing_with("failed").await;
+    let chain = left_the_lock(info_with(&r.lock_txid, 0, QUIET_TIP as u64), None);
+    run_listing_jobs(&r.app, &chain).await;
+    assert_eq!(r.listing().state, ListingState::Aborted, "revoked");
+
+    // The name expired.
+    let r = finalizing_with("failed").await;
+    run_listing_jobs(&r.app, &left_the_lock(json!({ "info": null }), None)).await;
+    assert_eq!(r.listing().state, ListingState::Expired, "info null");
+
+    // No verdict: the owner coin is spent in the mempool (404), our
+    // FINALIZE still in flight, or the lock TRANSFER still the owner (its
+    // coin spent in the mempool).
+    for (case, status, info, owner) in [
+        ("owner coin 404", "failed", info_with(&cancel, 0, 0), None),
+        (
+            "FINALIZE broadcasted",
+            "broadcasted",
+            info_with(&cancel, 0, 0),
+            Some((cancel.as_str(), 0, ours.as_str(), COV_UPDATE)),
+        ),
+        (
+            "FINALIZE not sent",
+            "signed",
+            info_with(&cancel, 0, 0),
+            Some((cancel.as_str(), 0, ours.as_str(), COV_UPDATE)),
+        ),
+    ] {
+        let r = finalizing_with(status).await;
+        run_listing_jobs(&r.app, &left_the_lock(info, owner)).await;
+        let l = r.listing();
+        assert_eq!(l.state, ListingState::Finalizing, "{case}");
+        assert_ne!(l.steps_json, "[]", "{case}");
+    }
+    let r = finalizing_with("failed").await;
+    run_listing_jobs(&r.app, &left_the_lock(r.info(), None)).await;
+    assert_eq!(
+        r.listing().state,
+        ListingState::Finalizing,
+        "lock TRANSFER still the owner"
+    );
+}
+
+/// An abort from Finalizing that a reorg undoes: the lock TRANSFER is the
+/// owner again, the listing is Locking, with nothing of the dead FINALIZE.
+#[tokio::test]
+async fn reorged_abort_of_a_dead_finalize_relocks_without_its_steps() {
+    let net = Network::Regtest;
+    let cancel = "ce".repeat(32);
+    let r = finalizing_with("failed").await;
+    let chain = left_the_lock(
+        info_with(&cancel, 0, 0),
+        Some((&cancel, 0, &addr00(net).0, COV_UPDATE)),
+    );
+    run_listing_jobs(&r.app, &chain).await;
+    assert_eq!(r.listing().state, ListingState::Aborted);
+    let back = chain_at(
+        r.info(),
+        ready_tip(net) + 5,
+        vec![lock_transfer_at(&r.lock_txid, TRANSFER_HEIGHT)],
+    );
+    run_listing_jobs(&r.app, &back).await;
+    let l = r.listing();
+    assert_eq!(l.state, ListingState::Locking);
+    assert_eq!((l.lock_txid, l.steps_json.as_str()), (None, "[]"));
 }
