@@ -824,6 +824,372 @@ fn listings_ready_to_finalize_are_listed_for_the_reminder() {
     );
 }
 
+/// A listing that has cancelled: Cancelling with the cancel draft `draft`
+/// (its txid `c1…`), its lock coin `(f1…, 0)`, a listing file unless `file`
+/// is false (a stand-in for a lock restored by name).
+fn cancelling(conn: &Connection, id: &str, name: &str, draft: &str, file: bool) {
+    let mut l = listing(id, name, ListingState::Listed);
+    l.lock_txid = Some("f1".repeat(32));
+    l.lock_vout = Some(0);
+    l.listing_file_json = file.then(|| "{}".to_string());
+    queries::insert_shakedex_listing(conn, &l).unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
+    let n = queries::mark_listing_cancelling_in_tx(
+        &tx,
+        id,
+        &queries::CancellingListing {
+            cancel_draft_id: draft,
+            cancel_txid: &"c1".repeat(32),
+            lock: (&"f1".repeat(32), 0),
+            cancel_address: "rs1qcancel",
+            cancel_child_index: 2,
+        },
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(n, 1);
+}
+
+/// R28: an unsent cancel (draft or signed) deleted takes nothing out of the
+/// lock, so its listing is Listed again, Restored without a file, and
+/// forgets that cancel. A cancel that was sent (`failed`, `dropped`) may be
+/// deleted, but its listing stays Cancelling: whether it landed is the
+/// chain's to say. Another listing's draft frees nothing.
+#[test]
+fn deleting_an_unsent_cancel_draft_returns_the_listing() {
+    use crate::noncustodial::shakedex::cancel::CANCEL_ACTION;
+    for (status, file, back) in [
+        ("draft", true, ListingState::Listed),
+        ("signed", true, ListingState::Listed),
+        ("signed", false, ListingState::Restored),
+        ("failed", true, ListingState::Cancelling),
+        ("dropped", true, ListingState::Cancelling),
+    ] {
+        let conn = store_conn();
+        insert_draft(&conn, "cx", CANCEL_ACTION, "signed");
+        insert_draft(&conn, "cy", CANCEL_ACTION, "signed");
+        cancelling(&conn, "l2", "other", "cy", true);
+        cancelling(&conn, "l1", "dexsale", "cx", file);
+        insert_draft_status(&conn, "cx", status);
+        queries::delete_tx_draft(&conn, "cx").unwrap();
+        let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+        assert_eq!(l.state, back, "{status}, file {file}");
+        if back == ListingState::Cancelling {
+            assert_eq!(l.cancel_txid, Some("c1".repeat(32)), "{status}");
+            assert_eq!(l.cancel_draft_id.as_deref(), Some("cx"), "{status}");
+        } else {
+            assert_eq!(
+                (l.cancel_draft_id, l.cancel_txid, l.cancel_vout),
+                (None, None, None),
+                "{status}"
+            );
+        }
+        let other = queries::get_shakedex_listing(&conn, "l2").unwrap().unwrap();
+        assert_eq!(
+            other.state,
+            ListingState::Cancelling,
+            "{status}: not its draft"
+        );
+        assert_eq!(other.cancel_draft_id.as_deref(), Some("cy"), "{status}");
+    }
+    // A sent one cannot be deleted at all.
+    let conn = store_conn();
+    insert_draft(&conn, "cx", CANCEL_ACTION, "signed");
+    cancelling(&conn, "l1", "dexsale", "cx", true);
+    insert_draft_status(&conn, "cx", "broadcasted");
+    assert!(queries::delete_tx_draft(&conn, "cx").is_err());
+}
+
+/// R28: an unsent FINALIZE of a mined cancel deleted: the listing awaits its
+/// finalize again, the draft link gone; a sent one keeps it; another
+/// listing's draft frees nothing.
+#[test]
+fn deleting_an_unsent_cancel_finalize_draft_returns_the_listing_to_awaiting() {
+    use crate::noncustodial::shakedex::cancel::{CANCEL_ACTION, CANCEL_FINALIZE_ACTION};
+    for (status, back) in [
+        ("draft", ListingState::CancelAwaitingFinalize),
+        ("signed", ListingState::CancelAwaitingFinalize),
+        ("failed", ListingState::CancelFinalizing),
+        ("dropped", ListingState::CancelFinalizing),
+    ] {
+        let conn = store_conn();
+        for (id, name) in [("l1", "dexsale"), ("l2", "other")] {
+            let cx = format!("{id}-cx");
+            let fin = format!("{id}-fin");
+            insert_draft(&conn, &cx, CANCEL_ACTION, "confirmed");
+            cancelling(&conn, id, name, &cx, true);
+            assert_eq!(
+                queries::mark_listing_cancel_mined(
+                    &conn,
+                    id,
+                    (&"c1".repeat(32), 0),
+                    (&"f1".repeat(32), 0)
+                )
+                .unwrap(),
+                1
+            );
+            insert_draft(&conn, &fin, CANCEL_FINALIZE_ACTION, "signed");
+            let tx = conn.unchecked_transaction().unwrap();
+            assert_eq!(
+                queries::mark_listing_cancel_finalizing_in_tx(&tx, id, &fin, (&"c1".repeat(32), 0))
+                    .unwrap(),
+                1
+            );
+            tx.commit().unwrap();
+        }
+        insert_draft_status(&conn, "l1-fin", status);
+        queries::delete_tx_draft(&conn, "l1-fin").unwrap();
+        let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+        assert_eq!(l.state, back, "{status}");
+        assert_eq!(
+            l.cancel_finalize_draft_id.is_some(),
+            back == ListingState::CancelFinalizing,
+            "{status}"
+        );
+        let other = queries::get_shakedex_listing(&conn, "l2").unwrap().unwrap();
+        assert_eq!(
+            other.state,
+            ListingState::CancelFinalizing,
+            "{status}: not its draft"
+        );
+        assert_eq!(
+            other.cancel_finalize_draft_id.as_deref(),
+            Some("l2-fin"),
+            "{status}"
+        );
+    }
+}
+
+/// R28: a cancel that lost (a purchase, or another cancel, mined first)
+/// frees the coins it reserved, and is marked dropped with the reason (never
+/// sent again); a failed one keeps its status; a mined one, or a listing
+/// without a cancel draft, is left alone.
+#[test]
+fn a_losing_cancel_releases_its_coins() {
+    let reserved = |conn: &Connection| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = 'cx'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    for (status, after, released) in [
+        ("signed", "dropped", true),
+        ("broadcast_pending", "dropped", true),
+        ("broadcasted", "dropped", true),
+        ("failed", "failed", true),
+        ("confirmed", "confirmed", false),
+    ] {
+        let conn = store_conn();
+        insert_draft(
+            &conn,
+            "cx",
+            crate::noncustodial::shakedex::cancel::CANCEL_ACTION,
+            "signed",
+        );
+        cancelling(&conn, "l1", "dexsale", "cx", true);
+        conn.execute(
+            "INSERT INTO tracked_utxos
+                (txid, vout, wallet_profile_id, address, script_pubkey_hex, value_doos,
+                 covenant_type, spend_class, spent_by_txid, reserved_by_draft_id)
+             VALUES (?1, 0, ?2, 'rs1qfund', '00', 1000, 0, 'liquid_hns', NULL, 'cx')",
+            params!["aa".repeat(32), STORE_PROFILE],
+        )
+        .unwrap();
+        insert_draft_status(&conn, "cx", status);
+        let did =
+            queries::release_losing_cancel(&conn, "l1", "a purchase was mined first").unwrap();
+        assert_eq!(did, released, "{status}");
+        assert_eq!(reserved(&conn), i64::from(!released), "{status}");
+        let d = queries::get_tx_draft(&conn, "cx").unwrap().unwrap();
+        assert_eq!(d.status, after, "{status}");
+        if after == "dropped" {
+            assert_eq!(
+                d.error_message.as_deref(),
+                Some("a purchase was mined first")
+            );
+        }
+    }
+    let conn = store_conn();
+    queries::insert_shakedex_listing(&conn, &listing("l1", "dexsale", ListingState::Sold)).unwrap();
+    assert!(
+        !queries::release_losing_cancel(&conn, "l1", "x").unwrap(),
+        "no cancel draft"
+    );
+}
+
+/// R28, the T6 hook: the market jobs (R24, R25) keep a published Listed
+/// listing, and a Cancelling one only until its cancel is sent; an
+/// unpublished listing, and every other state, is never kept.
+#[test]
+fn listings_kept_on_market_stop_once_the_cancel_is_sent() {
+    let conn = store_conn();
+    let publish = |id: &str| {
+        conn.execute(
+            "UPDATE shakedex_listings SET publish = 1 WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+    };
+    queries::insert_shakedex_listing(&conn, &listing("l1", "listed", ListingState::Listed))
+        .unwrap();
+    publish("l1");
+    queries::insert_shakedex_listing(&conn, &listing("l2", "quiet", ListingState::Listed)).unwrap();
+    insert_draft(
+        &conn,
+        "cx",
+        crate::noncustodial::shakedex::cancel::CANCEL_ACTION,
+        "signed",
+    );
+    cancelling(&conn, "l3", "cancelling", "cx", true);
+    publish("l3");
+    for (i, state) in ListingState::ALL.into_iter().enumerate() {
+        if matches!(state, ListingState::Listed | ListingState::Cancelling) {
+            continue;
+        }
+        let id = format!("o{i}");
+        queries::insert_shakedex_listing(&conn, &listing(&id, &format!("n{i}"), state)).unwrap();
+        publish(&id);
+    }
+    let kept = |conn: &Connection| -> Vec<String> {
+        queries::list_listings_kept_on_market(conn, STORE_PROFILE)
+            .unwrap()
+            .into_iter()
+            .map(|l| l.id)
+            .collect()
+    };
+    assert_eq!(kept(&conn), ["l1", "l3"], "the cancel is not sent yet");
+    for status in [
+        "broadcast_pending",
+        "broadcasted",
+        "confirmed",
+        "dropped",
+        "failed",
+    ] {
+        insert_draft_status(&conn, "cx", status);
+        assert_eq!(kept(&conn), ["l1"], "{status}");
+    }
+}
+
+/// R28's reminder source (R14's pattern): a mined cancel whose lockup is over
+/// (0 blocks left at the last sync) and whose FINALIZE has not been sent,
+/// across profiles; not while blocks are left, not once its FINALIZE draft
+/// may have reached the chain.
+#[test]
+fn cancels_ready_to_finalize_are_listed_for_the_reminder() {
+    use crate::noncustodial::shakedex::cancel::{CANCEL_ACTION, CANCEL_FINALIZE_ACTION};
+    let conn = store_conn();
+    for (id, name, blocks, finalize) in [
+        ("l1", "ready", Some(0), None),
+        ("l2", "waiting", Some(3), None),
+        ("l3", "unknown", None, None),
+        ("l4", "unsent", Some(0), Some("signed")),
+        ("l5", "sent", Some(0), Some("broadcasted")),
+        ("l6", "failed", Some(0), Some("failed")),
+    ] {
+        let draft = format!("{id}-cx");
+        insert_draft(&conn, &draft, CANCEL_ACTION, "confirmed");
+        cancelling(&conn, id, name, &draft, true);
+        assert_eq!(
+            queries::mark_listing_cancel_mined(
+                &conn,
+                id,
+                (&"c1".repeat(32), 0),
+                (&"f1".repeat(32), 0)
+            )
+            .unwrap(),
+            1
+        );
+        if let Some(b) = blocks {
+            assert_eq!(
+                queries::set_cancel_blocks_remaining(&conn, id, b).unwrap(),
+                1
+            );
+        }
+        if let Some(status) = finalize {
+            let fin = format!("{id}-fin");
+            insert_draft(&conn, &fin, CANCEL_FINALIZE_ACTION, status);
+            let tx = conn.unchecked_transaction().unwrap();
+            queries::mark_listing_cancel_finalizing_in_tx(&tx, id, &fin, (&"c1".repeat(32), 0))
+                .unwrap();
+            tx.commit().unwrap();
+        }
+    }
+    let row = |name: &str| (STORE_PROFILE.to_string(), name.to_string(), "c1".repeat(32));
+    assert_eq!(
+        queries::list_cancels_ready_to_finalize(&conn).unwrap(),
+        vec![row("failed"), row("ready"), row("unsent")]
+    );
+    // An unchanged count is not written again.
+    assert_eq!(
+        queries::set_cancel_blocks_remaining(&conn, "l1", 0).unwrap(),
+        0
+    );
+}
+
+/// T1b carry: the receive-branch address of the profile at an index, under
+/// its account, as `derived_addresses` holds it; another branch, account or
+/// index is not it.
+#[test]
+fn receive_address_at_reads_the_receive_branch_of_the_account() {
+    let conn = store_conn();
+    for (account, branch, child, addr) in [
+        (0, 0, 2, "rs1qcancel"),
+        (0, 1, 3, "rs1qchange"),
+        (1, 0, 4, "rs1qother"),
+    ] {
+        conn.execute(
+            "INSERT INTO derived_addresses
+                (wallet_profile_id, account_index, branch, child_index, address,
+                 script_pubkey_hex, public_key_hex)
+             VALUES (?1, ?2, ?3, ?4, ?5, '00', '02')",
+            params![STORE_PROFILE, account, branch, child, addr],
+        )
+        .unwrap();
+    }
+    let at =
+        |account, child| queries::receive_address_at(&conn, STORE_PROFILE, account, child).unwrap();
+    assert_eq!(at(0, 2).as_deref(), Some("rs1qcancel"));
+    assert_eq!(at(0, 3), None, "the change branch");
+    assert_eq!(at(0, 4), None, "another account's index");
+    assert_eq!(at(1, 4).as_deref(), Some("rs1qother"));
+}
+
+/// R21/R28: a lock restored by name gets its cancel address when it is
+/// cancelled, only while Restored and without one.
+#[test]
+fn a_restored_lock_gets_its_cancel_address_once() {
+    let conn = store_conn();
+    let mut l = listing("l1", "restored", ListingState::Restored);
+    l.cancel_address = None;
+    l.cancel_child_index = None;
+    queries::insert_shakedex_listing(&conn, &l).unwrap();
+    let mut other = listing("l2", "listed", ListingState::Listed);
+    other.cancel_address = None;
+    other.cancel_child_index = None;
+    queries::insert_shakedex_listing(&conn, &other).unwrap();
+    assert_eq!(
+        queries::set_restored_lock_cancel_address(&conn, "l1", "rs1qc", 7).unwrap(),
+        1
+    );
+    assert_eq!(
+        queries::set_restored_lock_cancel_address(&conn, "l1", "rs1qd", 8).unwrap(),
+        0,
+        "has one"
+    );
+    assert_eq!(
+        queries::set_restored_lock_cancel_address(&conn, "l2", "rs1qc", 7).unwrap(),
+        0,
+        "not Restored"
+    );
+    let l = queries::get_shakedex_listing(&conn, "l1").unwrap().unwrap();
+    assert_eq!(
+        (l.cancel_address.as_deref(), l.cancel_child_index),
+        (Some("rs1qc"), Some(7))
+    );
+}
+
 // --- the lock command -------------------------------------------------------
 
 use mockito::{Mock, ServerGuard};
