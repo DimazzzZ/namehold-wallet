@@ -887,6 +887,60 @@ async fn run(f: &Fx, rpc: &MockNodeRpc) {
     );
 }
 
+/// `rest` with input witnesses as hsd sends them (hex items): input 0, the
+/// lock coin, signed with sighash type `lock_sighash` (`[signature,
+/// lock script]`), input 1 a P2WPKH spend.
+fn witnessed(rest: &Value, lock_sighash: u8) -> Value {
+    let mut v = rest.clone();
+    v["inputs"][0]["witness"] = json!([
+        format!("{}{:02x}", "aa".repeat(64), lock_sighash),
+        "76".repeat(40)
+    ]);
+    v["inputs"][1]["witness"] = json!([format!("{}01", "bb".repeat(64)), "02".repeat(33)]);
+    v
+}
+
+/// R22 for a lock restored by name rests on positive evidence in the
+/// spending transaction: a cancel of the same seed (sighash `0x83`) to an
+/// address this device has not derived (past its restore window, spec §5)
+/// commits to an address "not ours" here, yet is no sale; nor is a
+/// transaction whose lock input carries no witness. Only a price step's
+/// `0x84` is. Read with `GET /tx` and from the block (no index).
+#[tokio::test]
+async fn a_restored_lock_is_sold_only_by_a_price_step_signature() {
+    let buy = txid("b1");
+    let stranger = address::encode_p2wpkh(NET, &[8; 20]).unwrap();
+    for indexed in [true, false] {
+        for (case, sighash, want) in [
+            ("0x84 price step", Some(0x84u8), ListingState::Sold),
+            (
+                "0x83 cancel past our window",
+                Some(0x83),
+                ListingState::Restored,
+            ),
+            ("no witness", None, ListingState::Restored),
+        ] {
+            let f = fx(ListingState::Restored);
+            restored_by_name(&f);
+            let plain = purchase_rest(&f, &buy, TIP, &stranger);
+            let rest = match sighash {
+                Some(h) => witnessed(&plain, h),
+                None => plain,
+            };
+            let tx = if indexed { rest.clone() } else { Value::Null };
+            let rpc = node(
+                info((&buy, 0)),
+                vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+                tx,
+            )
+            .with_block_hash("bb".repeat(32))
+            .with_block(block_with(&rest, TIP));
+            run(&f, &rpc).await;
+            assert_eq!(listing(&f).state, want, "{case}, indexed {indexed}");
+        }
+    }
+}
+
 /// A lock restored by name (R32): no payment address, no file, no lock
 /// TRANSFER of this device.
 fn restored_by_name(f: &Fx) {
@@ -916,7 +970,7 @@ async fn restored_lock_by_name_is_sold_by_a_mined_transfer_out_of_its_lock() {
     for indexed in [true, false] {
         let f = fx(ListingState::Restored);
         restored_by_name(&f);
-        let rest = purchase_rest(&f, &buy, TIP, &stranger);
+        let rest = witnessed(&purchase_rest(&f, &buy, TIP, &stranger), 0x84);
         let tx = if indexed { rest.clone() } else { Value::Null };
         let rpc = node(
             info((&buy, 0)),
@@ -940,7 +994,8 @@ async fn restored_lock_by_name_is_sold_by_a_mined_transfer_out_of_its_lock() {
     // Committing to an address of ours: a cancel, T5's.
     let f = fx(ListingState::Restored);
     restored_by_name(&f);
-    let mut rest = purchase_rest(&f, &buy, TIP, &stranger);
+    // (Witnessed as a price step, so only the commitment says no.)
+    let mut rest = witnessed(&purchase_rest(&f, &buy, TIP, &stranger), 0x84);
     let (_, ours) = address::decode(NET, &f.cancel).unwrap();
     rest["outputs"][0]["covenant"]["items"][3] = hex::encode(ours).into();
     run(
@@ -969,7 +1024,7 @@ async fn restored_lock_by_name_is_sold_by_a_mined_transfer_out_of_its_lock() {
     // Linked from another coin: input 0 is not our lock coin.
     let f = fx(ListingState::Restored);
     restored_by_name(&f);
-    let mut rest = purchase_rest(&f, &buy, TIP, &stranger);
+    let mut rest = witnessed(&purchase_rest(&f, &buy, TIP, &stranger), 0x84);
     rest["inputs"][0]["prevout"]["hash"] = txid("c1").into();
     run(
         &f,
@@ -1158,7 +1213,13 @@ fn block_with(rest: &Value, height: i64) -> Value {
         .as_array()
         .unwrap()
         .iter()
-        .map(|i| json!({ "txid": i["prevout"]["hash"], "vout": i["prevout"]["index"] }))
+        .map(|i| {
+            let mut v = json!({ "txid": i["prevout"]["hash"], "vout": i["prevout"]["index"] });
+            if let Some(w) = i.get("witness") {
+                v["txinwitness"] = w.clone();
+            }
+            v
+        })
         .collect();
     let vout: Vec<_> = rest["outputs"]
         .as_array()
