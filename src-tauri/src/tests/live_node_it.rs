@@ -5601,6 +5601,272 @@ async fn shakedex_listing_expiring_before_finalize_is_not_offered() {
     );
 }
 
+use crate::commands::shakedex::shakedex_build_lock_draft;
+use crate::db::queries::{ListingMode, ListingState};
+
+/// An address no profile of the suite derives: blocks mined to it fund
+/// nobody, so a test that mines a long stretch leaves no coins to sync.
+fn burn_addr() -> String {
+    crate::noncustodial::address::encode_p2wpkh(NET, &[0x5a; 20]).unwrap()
+}
+
+/// A funded profile owning a fresh name, unlocked. `(app, client, our
+/// address, name)`.
+async fn own_a_name(
+    url: &str,
+    key: &str,
+    prefix: &str,
+) -> (
+    tauri::App<tauri::test::MockRuntime>,
+    NodeRpcClient,
+    String,
+    String,
+) {
+    let app = app_with(seeded_conn_regtest(url, key));
+    let cl = client(url, key);
+    let (addr, _, _) = leaf00();
+    cl.generate_to_address(101, &addr).await.expect("fund");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let name = format!("{prefix}{tip}");
+    acquire_name(&app, &cl, &addr, &name).await;
+    unlock(&app);
+    (app, cl, addr, name)
+}
+
+fn open_listing(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    name: &str,
+) -> Option<db::queries::ShakedexListing> {
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    db::queries::open_shakedex_listing_for_name(&c, PROFILE, name).unwrap()
+}
+
+/// Lock `name`, broadcast the TRANSFER and mine it; the draft.
+async fn lock_on_chain(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    cl: &NodeRpcClient,
+    addr: &str,
+    name: &str,
+) -> crate::noncustodial::types::TxDraftSummary {
+    let draft = shakedex_build_lock_draft(
+        app.state(),
+        name.to_string(),
+        ListingMode::BuyNow,
+        false,
+        Some(1),
+    )
+    .await
+    .expect("lock builds");
+    broadcast_only(app, &draft.id).await;
+    settle(app, cl, addr, &draft.id).await;
+    draft
+}
+
+/// R19 day 0 and R18 on hsd: the mined TRANSFER of our name commits, in
+/// covenant items 2-3, to version 0 and SHA3-256 of the lock script of the
+/// key derived here from the seed for this name and account; the name stays
+/// at our address and hsd records the transfer.
+#[tokio::test]
+async fn shakedex_lock_transfer_commits_to_the_lock_address() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip shakedex_lock_transfer_commits_to_the_lock_address: set HNS_IT_NODE_URL");
+        return;
+    };
+    let (app, cl, addr, name) = own_a_name(&url, &key, "lockto").await;
+    let home = owner_coin_address(&cl, &name).await.expect("owner address");
+    let draft = lock_on_chain(&app, &cl, &addr, &name).await;
+
+    let lock = crate::noncustodial::shakedex::lock_key::derive_lock_key(
+        &master(),
+        NET,
+        test_acct(),
+        &name,
+    )
+    .unwrap();
+    let txid = draft_status(&app, &draft.id).txid.expect("sent");
+    let tx = cl.get_tx_by_hash(&txid).await.expect("tx");
+    let height = tx["height"].as_i64().expect("height");
+    assert!(height > 0, "mined: {tx}");
+    let out = &tx["outputs"][0];
+    assert_eq!(
+        out["covenant"]["type"],
+        u64::from(crate::noncustodial::sync::COV_TRANSFER),
+        "{tx}"
+    );
+    let items = out["covenant"]["items"].as_array().expect("items");
+    assert_eq!(
+        items[0],
+        hex::encode(crate::noncustodial::names::hash_name(&name).unwrap())
+    );
+    assert_eq!(items[2], "00");
+    assert_eq!(items[3], hex::encode(lock.program));
+    assert_eq!(
+        out["address"], home,
+        "the name stays at our address until finalized"
+    );
+
+    let info = cl.get_name_info(&name).await.expect("name info");
+    assert_eq!(info["info"]["transfer"].as_i64(), Some(height), "{info}");
+    let (owner_hash, owner_index) = name_owner(&cl, &name).await;
+    assert_eq!((owner_hash.as_str(), owner_index), (txid.as_str(), 0));
+
+    let l = open_listing(&app, &name).expect("listing");
+    assert_eq!(l.state, ListingState::Locking);
+    assert_eq!(l.lock_pubkey_hex, hex::encode(lock.pubkey));
+    assert_eq!(l.lock_transfer_txid.as_deref(), Some(txid.as_str()));
+}
+
+/// R19's abort on hsd: Cancel transfer of a name still locking is mined as
+/// an UPDATE, hsd drops the transfer, and the abort job then marks the
+/// listing Aborted.
+#[tokio::test]
+async fn shakedex_cancel_transfer_aborts_the_listing_on_chain() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip shakedex_cancel_transfer_aborts_the_listing_on_chain: set HNS_IT_NODE_URL");
+        return;
+    };
+    let (app, cl, addr, name) = own_a_name(&url, &key, "lockabort").await;
+    lock_on_chain(&app, &cl, &addr, &name).await;
+    let listing_id = open_listing(&app, &name).expect("listing").id;
+
+    let cancel = crate::commands::names::build_cancel_draft(app.state(), name.clone(), Some(1))
+        .await
+        .expect("cancel builds");
+    broadcast_only(&app, &cancel.id).await;
+    let cancel_txid = draft_status(&app, &cancel.id).txid.expect("sent");
+    wait_until_node_has(&cl, &cancel_txid).await;
+    // The abort job before the cancel is mined: sent is not aborted.
+    abort_job(&app, &cl).await;
+    assert_eq!(
+        listing_state(&app, &listing_id),
+        ListingState::Locking,
+        "sent, not mined"
+    );
+    // `settle` only mines the cancel and syncs the wallet; it does not abort.
+    settle(&app, &cl, &addr, &cancel.id).await;
+
+    let tx = cl.get_tx_by_hash(&cancel_txid).await.expect("tx");
+    assert!(tx["height"].as_i64().expect("height") > 0, "mined: {tx}");
+    assert_eq!(
+        tx["outputs"][0]["covenant"]["type"],
+        u64::from(crate::noncustodial::sync::COV_UPDATE),
+        "{tx}"
+    );
+    let info = cl.get_name_info(&name).await.expect("name info");
+    assert_eq!(
+        info["info"]["transfer"], 0,
+        "hsd dropped the transfer: {info}"
+    );
+    let (owner_hash, owner_index) = name_owner(&cl, &name).await;
+    assert_eq!(
+        (owner_hash.as_str(), owner_index),
+        (cancel_txid.as_str(), 0)
+    );
+    assert_eq!(
+        listing_state(&app, &listing_id),
+        ListingState::Locking,
+        "nothing aborts but the job"
+    );
+    abort_job(&app, &cl).await;
+    assert_eq!(listing_state(&app, &listing_id), ListingState::Aborted);
+}
+
+/// Run the R19 abort step (`shakedex_jobs::refresh_listing_aborts_with_client`)
+/// on the app's database against the live node, as `run_sync_steps` does. The
+/// connection is taken out of the app for the call, so no lock is held across
+/// an await (same pattern as `shakedex_sell_tests::run_abort_job`).
+async fn abort_job(app: &tauri::App<tauri::test::MockRuntime>, cl: &NodeRpcClient) {
+    let conn = std::mem::replace(
+        &mut *app.state::<AppState>().db.lock().unwrap(),
+        rusqlite::Connection::open_in_memory().unwrap(),
+    );
+    let res = crate::shakedex_jobs::refresh_listing_aborts_with_client(&conn, cl, PROFILE).await;
+    *app.state::<AppState>().db.lock().unwrap() = conn;
+    res.expect("abort job runs");
+}
+
+fn listing_state(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> ListingState {
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    db::queries::get_shakedex_listing(&conn, id)
+        .unwrap()
+        .unwrap()
+        .state
+}
+
+/// R31 on hsd: the lock is refused once the name's expiry (hsd's own
+/// `renewalPeriodEnd`) is at or before tip + 1 + transferLockup + day, and
+/// one block earlier it builds, with the near-expiry warning. The blocks are
+/// mined to an address of nobody's and taken back before asserting.
+#[tokio::test]
+async fn shakedex_lock_refused_near_expiry() {
+    let Some((url, key)) = it_env() else {
+        eprintln!("skip shakedex_lock_refused_near_expiry: set HNS_IT_NODE_URL");
+        return;
+    };
+    let (app, cl, _addr, name) = own_a_name(&url, &key, "lockexp").await;
+    let info = cl.get_name_info(&name).await.expect("name info");
+    assert_eq!(info["info"]["claimed"], 0, "{info}");
+    let end = info["info"]["stats"]["renewalPeriodEnd"]
+        .as_i64()
+        .expect("hsd's renewalPeriodEnd");
+    let p = NET.name_params();
+    // Refused while end <= tip + 1 + lockup + day: the last tip that locks.
+    let last_lockable = end - 2 - i64::from(p.transfer_lockup) - i64::from(p.margin_day());
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    assert!(
+        tip < last_lockable,
+        "tip {tip} already past {last_lockable}"
+    );
+    let first_mined = tip + 1;
+    mine_to(&cl, &burn_addr(), last_lockable).await;
+    let at_last = shakedex_build_lock_draft(
+        app.state(),
+        name.clone(),
+        ListingMode::BuyNow,
+        false,
+        Some(1),
+    )
+    .await;
+    if let Ok(d) = &at_last {
+        // Free the owner coin for the next build: an unsent draft goes with its listing.
+        let state = app.state::<AppState>();
+        db::queries::delete_tx_draft(&state.db.lock().unwrap(), &d.id).expect("delete");
+    }
+    cl.generate_to_address(1, &burn_addr()).await.expect("mine");
+    let too_late = shakedex_build_lock_draft(
+        app.state(),
+        name.clone(),
+        ListingMode::BuyNow,
+        false,
+        Some(1),
+    )
+    .await;
+
+    rewind_to(&cl, first_mined - 1).await;
+
+    let d = at_last.expect("the last lockable block locks");
+    let warnings = d.summary["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or("").contains("The name expires in")),
+        "{warnings:?}"
+    );
+    let err = too_late.expect_err("one block later the lock is refused");
+    assert!(
+        err.to_string()
+            .contains("before its transfer into the lock could be finalized"),
+        "{err}"
+    );
+    assert!(
+        open_listing(&app, &name).is_none(),
+        "the refusal wrote nothing"
+    );
+}
+
 /// #65 on a live node: a transaction pays the fee rate asked for on hsd's
 /// virtual size, not on its raw size. hsd's `GET /tx/:hash` reports the fee
 /// and the rate it works out on `getVirtualSize()`; the raw-size bug paid
