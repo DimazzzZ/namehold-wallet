@@ -2021,12 +2021,17 @@ pub fn listing_blocking_owner_actions(
     let Some(listing) = open_shakedex_listing_for_name(conn, profile_id, name)? else {
         return Ok(None);
     };
-    if listing.state != ListingState::Locking {
-        return Ok(Some(listing));
-    }
     let status = lock_draft_status(conn, &listing)?;
-    let alive = status.is_some_and(|s| draft_alive(&s));
-    Ok(alive.then_some(listing))
+    let blocks = listing_holds_the_name(listing.state, status.as_deref());
+    Ok(blocks.then_some(listing))
+}
+
+/// R27: whether an open listing in `state`, its lock TRANSFER draft in
+/// `lock_draft_status` (`None`: no draft, or its row gone), keeps the name's
+/// owner actions away and shows on the name's row: past Locking always;
+/// Locking only while that draft is alive ([`draft_alive`]).
+pub fn listing_holds_the_name(state: ListingState, lock_draft_status: Option<&str>) -> bool {
+    state != ListingState::Locking || lock_draft_status.is_some_and(draft_alive)
 }
 
 /// The `listing` object on an Owned Names row (`ShakedexNameListing` in the UI).
@@ -2097,9 +2102,13 @@ pub fn read_shakedex_listing_names(
         if out.iter().any(|r| r.name == name) {
             continue;
         }
-        if state == ListingState::Locking && !status.as_deref().is_some_and(draft_alive) {
+        if !listing_holds_the_name(state, status.as_deref()) {
             continue;
         }
+        // A display estimate: the lock TRANSFER draft's confirmation height
+        // as the wallet's sync recorded it and the wallet's sync height. The
+        // listing's state itself moves on hsd's `info.transfer` (the
+        // before-lock job), which a reorg can change before the sync does.
         let blocks_until_finalize = match (state, status.as_deref(), confirmed) {
             (ListingState::Locking, Some(CONFIRMED_STATUS), Some(h)) => {
                 Some(params_net.blocks_until_finalize(h, tip))

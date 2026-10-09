@@ -42,14 +42,14 @@
 //! once the transfer lockup is over (and Locking again if a reorg moves the
 //! lock TRANSFER back), and a Restored lock when the name's owner coin is a
 //! FINALIZE at the listing's own lock address, sent from elsewhere — never
-//! Aborted ([`refresh_listings_before_lock_with_client`]). The after-lock job
+//! Aborted ([`refresh_before_lock`]). The after-lock job
 //! follows each listing whose FINALIZE into the lock is built: Listed once it
 //! is mined, Finalizing again on a reorg, ReadyToFinalize again if it never
 //! landed, settled as before the lock if it never landed and something else
 //! spent the lock TRANSFER, and, once the lock coin is spent, SalePending or
 //! Sold when a purchase of it is found on chain (R22: a TRANSFER out of our
 //! lock committing to an address not ours, in a transaction that pays the
-//! listing's payment address) ([`refresh_listings_after_lock_with_client`]).
+//! listing's payment address) ([`refresh_after_lock`]).
 //! Both only read the node, and never take the same listing.
 
 use std::collections::HashSet;
@@ -1006,7 +1006,8 @@ fn listing_lock(
     sell::ListingLock::new(script::lock_address(network, &pubkey)?, &l.name)
 }
 
-/// R19, for each listing still Locking or ReadyToFinalize, or Aborted within
+/// The before-lock job of [`refresh_listings_with_client`] (R19), for one
+/// listing still Locking or ReadyToFinalize, or Aborted within
 /// [`ABORT_RECHECK_DAYS`]. Every verdict rests on a found fact, never on the
 /// broadcast (hsd answers `sendrawtransaction` with the txid even when it
 /// refuses):
@@ -1037,27 +1038,8 @@ fn listing_lock(
 ///
 /// Locking again is refused while another listing of the name is open
 /// ([`queries::unabort_shakedex_listing`]). Anything the node does not
-/// answer leaves the listing as it is. Sends nothing. A failure on one
-/// listing is logged and leaves it for the next sync.
-pub async fn refresh_listings_before_lock_with_client(
-    conn: &rusqlite::Connection,
-    client: &dyn NodeRpc,
-    profile_id: &str,
-) -> Result<(), AppError> {
-    let listings =
-        queries::list_shakedex_listings_before_lock(conn, profile_id, ABORT_RECHECK_DAYS)?;
-    if listings.is_empty() {
-        return Ok(());
-    }
-    let network = queries::profile_network(conn, profile_id)?;
-    for l in listings {
-        if let Err(e) = refresh_before_lock(conn, client, network, &l).await {
-            eprintln!("shakedex listings: {} ({}): {e}", l.id, l.name);
-        }
-    }
-    Ok(())
-}
-
+/// answer leaves the listing as it is. Sends nothing. An error leaves the
+/// listing for the next sync (the caller logs it).
 async fn refresh_before_lock(
     conn: &rusqlite::Connection,
     client: &dyn NodeRpc,
@@ -1362,10 +1344,9 @@ pub async fn refresh_listings_step(db_path: &str, profile_id: &str) {
 }
 
 /// Both listing jobs, each on the set it takes
-/// ([`queries::ListingState::BEFORE_LOCK_JOB`] for
-/// [`refresh_listings_before_lock_with_client`]'s rules,
-/// [`queries::ListingState::AFTER_LOCK_JOB`] for
-/// [`refresh_listings_after_lock_with_client`]'s), both sets read first: a
+/// ([`queries::ListingState::BEFORE_LOCK_JOB`] for [`refresh_before_lock`]'s
+/// rules, [`queries::ListingState::AFTER_LOCK_JOB`] for
+/// [`refresh_after_lock`]'s), both sets read first: a
 /// listing one job moves into the other's set is judged once per sync. Sends
 /// nothing. A failure on one listing is logged and leaves it for the next
 /// sync.
@@ -1393,11 +1374,12 @@ pub async fn refresh_listings_with_client(
     Ok(())
 }
 
-/// R19 and R22, for every Finalizing, Listed, SalePending and Restored
-/// listing, and every Sold one within [`SOLD_RECHECK_DAYS`], from hsd's
-/// `GET /coin` of its lock outpoint `(lock_txid, lock_vout)`:
+/// The after-lock job of [`refresh_listings_with_client`] (R19, R22), for
+/// one Finalizing, Listed, SalePending or Restored listing, or a Sold one
+/// within [`SOLD_RECHECK_DAYS`], from hsd's `GET /coin` of its lock outpoint
+/// `(lock_txid, lock_vout)`:
 ///
-/// - a FINALIZE at the listing's lock address mined in a block → a
+/// - a FINALIZE of the name at the listing's lock address mined in a block → a
 ///   Finalizing listing Listed; in the mempool (`height: -1`) → a Listed one
 ///   Finalizing (a reorg took it back); a coin at all → a SalePending or
 ///   Sold listing Listed (Finalizing while that coin is in the mempool and
@@ -1423,7 +1405,10 @@ pub async fn refresh_listings_with_client(
 ///   verdict alone: the name's owner is read; no live name → a Listed,
 ///   SalePending or Restored listing Expired; otherwise a purchase is looked
 ///   for ([`find_sale`]); one in the mempool while the owner is still the
-///   lock coin → SalePending, one mined while the owner has moved → Sold;
+///   lock coin → SalePending, one mined while the owner has moved → Sold; a
+///   lock restored by name (no payment address) → Sold only by a mined
+///   TRANSFER out of its lock coin to an address not ours
+///   ([`sale_of_restored_lock`]);
 ///   a Sold listing moves only by [`queries::resell_sold_listing`]: back to
 ///   SalePending when its purchase is in the mempool again, or to the txid
 ///   of another purchase of its lock coin mined instead;
@@ -1431,37 +1416,17 @@ pub async fn refresh_listings_with_client(
 ///   coin's address, covenant or height, a name reply missing `info` or the
 ///   owner, or a read error → unchanged.
 ///
-/// Sends nothing. A failure on one listing is logged and leaves it for the
-/// next sync.
-pub async fn refresh_listings_after_lock_with_client(
-    conn: &rusqlite::Connection,
-    client: &dyn NodeRpc,
-    profile_id: &str,
-) -> Result<(), AppError> {
-    let listings = queries::list_shakedex_listings_after_lock(conn, profile_id, SOLD_RECHECK_DAYS)?;
-    if listings.is_empty() {
-        return Ok(());
-    }
-    let network = queries::profile_network(conn, profile_id)?;
-    for l in listings {
-        if let Err(e) = refresh_after_lock(conn, client, network, &l).await {
-            eprintln!("shakedex listings: {} ({}): {e}", l.id, l.name);
-        }
-    }
-    Ok(())
-}
-
+/// Sends nothing. An error leaves the listing for the next sync (the caller
+/// logs it).
 async fn refresh_after_lock(
     conn: &rusqlite::Connection,
     client: &dyn NodeRpc,
     network: Network,
     l: &queries::ShakedexListing,
 ) -> Result<(), AppError> {
-    let (Some(lock_txid), Some(lock_vout)) = (l.lock_txid.as_deref(), l.lock_vout) else {
+    let Some((lock_txid, lock_vout)) = stored_lock(l)? else {
         return Ok(());
     };
-    let lock_vout = u32::try_from(lock_vout)
-        .map_err(|_| AppError::Other(format!("corrupted listing {}: bad lock output", l.id)))?;
     match client.get_coin(lock_txid, lock_vout).await? {
         Some(coin) => lock_coin_held(conn, client, network, l, &coin, (lock_txid, lock_vout)).await,
         None => lock_coin_spent(conn, client, network, l, (lock_txid, lock_vout)).await,
@@ -1833,20 +1798,24 @@ async fn find_sale(
     l: &queries::ShakedexListing,
     owner: &(String, u32),
 ) -> Result<Sale, AppError> {
-    let (Some(lock_txid), Some(lock_vout)) = (l.lock_txid.as_deref(), l.lock_vout) else {
+    let Some(lock) = stored_lock(l)? else {
         return Ok(Sale::None);
     };
-    let lock_vout = u32::try_from(lock_vout)
+    let found = find_purchases(conn, client, network, l, owner, Some(lock)).await?;
+    // `find_purchases` with a lock returns at most the first purchase found;
+    // none found is no verdict, as `Sale::None` says.
+    Ok(found.into_iter().next().unwrap_or(Sale::None))
+}
+
+/// Listing `l`'s stored lock outpoint, `None` while it has none; a stored
+/// output index that is not a `u32` is a corrupted row.
+fn stored_lock(l: &queries::ShakedexListing) -> Result<Option<(&str, u32)>, AppError> {
+    let (Some(txid), Some(vout)) = (l.lock_txid.as_deref(), l.lock_vout) else {
+        return Ok(None);
+    };
+    let vout = u32::try_from(vout)
         .map_err(|_| AppError::Other(format!("corrupted listing {}: bad lock output", l.id)))?;
-    let found = find_purchases(
-        conn,
-        client,
-        network,
-        l,
-        owner,
-        Some((lock_txid, lock_vout)),
-    );
-    Ok(found.await?.into_iter().next().unwrap_or(Sale::None))
+    Ok(Some((txid, vout)))
 }
 
 /// [`find_sale`]'s search with the lock coin `lock` the purchase must spend:
