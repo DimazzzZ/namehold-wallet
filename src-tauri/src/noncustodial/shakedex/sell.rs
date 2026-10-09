@@ -3,7 +3,7 @@
 //! Now lock time (R19) and the FINALIZE into the lock.
 
 use crate::error::AppError;
-use crate::noncustodial::actions::PlanResult;
+use crate::noncustodial::actions::{DraftPlan, PlanResult};
 use crate::noncustodial::covenants;
 use crate::noncustodial::names;
 use crate::noncustodial::network::{NameParams, Network};
@@ -15,6 +15,7 @@ use crate::noncustodial::shakedex::script;
 use crate::noncustodial::shakedex::template::{
     secs_until_valid, valid_from_mtp, verify_step_signature, StepTemplate,
 };
+use crate::noncustodial::sync::COV_FINALIZE;
 use crate::noncustodial::tx::{Covenant, OutputAddress};
 use crate::noncustodial::types::doos_to_hns_string;
 
@@ -250,6 +251,28 @@ pub fn build_lock_finalize_plan(i: &LockFinalizeInput) -> Result<PlanResult, App
     )
 }
 
+/// The lock coin a FINALIZE into the lock creates: `(index, value)` of the
+/// plan's one FINALIZE output paying `lock_address`. The price steps are
+/// signed over that output and the listing records its index; a plan with
+/// none, or more than one, is refused.
+pub fn lock_output(plan: &DraftPlan, lock_address: &str) -> Result<(u32, u64), AppError> {
+    let mut found = plan
+        .outputs
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.covenant_type == COV_FINALIZE && o.address == lock_address);
+    match (found.next(), found.next()) {
+        (Some((i, o)), None) => {
+            let i = u32::try_from(i)
+                .map_err(|_| AppError::Other("FINALIZE output index out of range".into()))?;
+            Ok((i, o.value))
+        }
+        _ => Err(AppError::Other(
+            "the FINALIZE plan does not pay exactly one FINALIZE into the lock".into(),
+        )),
+    }
+}
+
 /// R23: a listing file's `expiresAt` is the MTP at signing plus 365 days.
 pub const LISTING_LIFETIME_SECS: u64 = 365 * 86_400;
 
@@ -394,7 +417,6 @@ mod tests {
     use crate::noncustodial::shakedex::template::{
         encode_lock_time, is_valid_at, low_s_signature, verify_step_signature,
     };
-    use crate::noncustodial::sync::COV_FINALIZE;
     use crate::noncustodial::tx::{sighash, Transaction};
 
     fn key(name: &str) -> LockKey {
@@ -545,6 +567,47 @@ mod tests {
         assert_eq!(res.fee, signed.vsize() * 7);
         let out: u64 = res.plan.outputs.iter().map(|o| o.value).sum();
         assert_eq!(res.input_total, out + res.fee);
+    }
+
+    /// The lock coin is the plan's one FINALIZE output to the lock address,
+    /// wherever it sits: its index and value are read from the plan.
+    #[test]
+    fn lock_output_is_the_plans_finalize_into_the_lock() {
+        let k = key("dexreviews");
+        let transfer = coin(0x31, 1_000_000, 7);
+        let funding = [coin(1, 2_000_000, 8)];
+        let res = build_lock_finalize_plan(&LockFinalizeInput {
+            network: Network::Main,
+            account: 0,
+            transfer: &transfer,
+            lock_pubkey: k.pubkey,
+            name: "dexreviews",
+            name_height: 120,
+            weak: false,
+            claimed: 0,
+            renewals: 0,
+            renewal_block: [0x77; 32],
+            funding: &funding,
+            change_address: CHANGE,
+            rate: 7,
+            fixed_fee: None,
+        })
+        .unwrap();
+        assert_eq!(lock_output(&res.plan, &k.address).unwrap(), (0, 1_000_000));
+        let mut swapped = res.plan.clone();
+        swapped.outputs.swap(0, 1);
+        assert_eq!(lock_output(&swapped, &k.address).unwrap(), (1, 1_000_000));
+        let other = key("othername");
+        assert!(
+            lock_output(&res.plan, &other.address).is_err(),
+            "another lock"
+        );
+        let mut none = res.plan.clone();
+        none.outputs[0].covenant_type = 0;
+        assert!(lock_output(&none, &k.address).is_err(), "no FINALIZE");
+        let mut two = res.plan.clone();
+        two.outputs.push(two.outputs[0].clone());
+        assert!(lock_output(&two, &k.address).is_err(), "two FINALIZEs");
     }
 
     /// R19: a price is HNS with at most 6 decimals, at least the dust limit
