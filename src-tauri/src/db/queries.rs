@@ -1348,38 +1348,33 @@ pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result
          WHERE purchase_draft_id = ?1 AND state = ?2",
         params![id, PurchaseState::PendingSend],
     )?;
-    // A listing still Locking goes with its lock TRANSFER draft only when the
-    // draft was never sent (`draft`, `signed`): the name never left; its
-    // reserved addresses stay used. A `dropped` or `failed` draft was
-    // broadcast and may still be mined, so its listing stays.
-    if never_sent(&status) {
-        tx.execute(
-            "DELETE FROM shakedex_listings WHERE lock_transfer_draft_id = ?1 AND state = ?2",
-            params![id, ListingState::Locking],
-        )?;
-    }
-    // An unsent FINALIZE into the lock takes its steps with it: they were
-    // signed over a coin that never existed. A sent one (`dropped`, `failed`)
-    // may still land, so its listing keeps everything for the chain to judge.
-    if never_sent(&status) {
-        tx.execute(
-            &format!(
-                "UPDATE shakedex_listings SET {REVERT_TO_READY_SET}
-                 WHERE lock_finalize_draft_id = ?1 AND state = ?2"
-            ),
-            params![id, ListingState::Finalizing],
-        )?;
-    }
     tx.execute(
         "UPDATE shakedex_purchases SET finalize_draft_id = NULL, updated_at = datetime('now')
          WHERE finalize_draft_id = ?1",
         params![id],
     )?;
-    // A Cancel transfer never sent (`draft`, `signed`) aborts nothing, so its
-    // listing loses the link and the cancel's txid (R19). A `dropped` or
-    // `failed` one was broadcast and may still be mined: its listing keeps
-    // both, and the abort job reads the txid from the listing, not the draft.
+    // A draft never sent (`draft`, `signed`) leaves the chain untouched; a
+    // `dropped` or `failed` one was broadcast and may still be mined, so the
+    // listings below keep their state and the chain judges them.
     if never_sent(&status) {
+        // A listing still Locking goes with its lock TRANSFER draft: the name
+        // never left; its reserved addresses stay used.
+        tx.execute(
+            "DELETE FROM shakedex_listings WHERE lock_transfer_draft_id = ?1 AND state = ?2",
+            params![id, ListingState::Locking],
+        )?;
+        // An unsent FINALIZE into the lock takes its steps with it: they were
+        // signed over a coin that never existed.
+        tx.execute(
+            &format!(
+                "UPDATE shakedex_listings SET {}
+                 WHERE lock_finalize_draft_id = ?1 AND state = ?2",
+                revert_to_ready_set()
+            ),
+            params![id, ListingState::Finalizing],
+        )?;
+        // A Cancel transfer aborts nothing, so its listing loses the link and
+        // the cancel's txid (R19).
         tx.execute(
             "UPDATE shakedex_listings
              SET abort_draft_id = NULL, abort_txid = NULL, updated_at = datetime('now')
@@ -1915,9 +1910,14 @@ pub fn unabort_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result
 /// the lock outpoint, the steps and the file were signed over a coin that
 /// does not exist. Shared by [`revert_listing_to_ready`] and the deletion of
 /// an unsent FINALIZE draft, so the two cannot drift.
-const REVERT_TO_READY_SET: &str = "state = 'ready_to_finalize', lock_finalize_draft_id = NULL, \
-    lock_txid = NULL, lock_vout = NULL, steps_json = '[]', listing_file_json = NULL, \
-    expires_at = NULL, updated_at = datetime('now')";
+fn revert_to_ready_set() -> String {
+    format!(
+        "state = '{}', lock_finalize_draft_id = NULL, lock_txid = NULL, lock_vout = NULL, \
+         steps_json = '[]', listing_file_json = NULL, expires_at = NULL, \
+         updated_at = datetime('now')",
+        ListingState::ReadyToFinalize.as_str()
+    )
+}
 
 /// What Finalize & sign writes on its listing (R19, R23).
 pub struct FinalizingListing<'a> {
@@ -1965,7 +1965,10 @@ pub fn mark_listing_finalizing_in_tx(
 /// many rows changed (0 or 1).
 pub fn revert_listing_to_ready(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
     Ok(conn.execute(
-        &format!("UPDATE shakedex_listings SET {REVERT_TO_READY_SET} WHERE id = ?1 AND state = ?2"),
+        &format!(
+            "UPDATE shakedex_listings SET {} WHERE id = ?1 AND state = ?2",
+            revert_to_ready_set()
+        ),
         params![id, ListingState::Finalizing],
     )?)
 }
@@ -2033,7 +2036,8 @@ pub fn adopt_lock_finalized_elsewhere(
 ) -> Result<usize, AppError> {
     let sql = format!(
         "UPDATE shakedex_listings
-         SET state = ?2, lock_txid = ?3, lock_vout = ?4, updated_at = datetime('now')
+         SET state = ?2, lock_txid = ?3, lock_vout = ?4, abort_draft_id = NULL,
+             abort_txid = NULL, updated_at = datetime('now')
          WHERE id = ?1 AND state IN {}",
         ListingState::cancel_abortable_sql()
     );
