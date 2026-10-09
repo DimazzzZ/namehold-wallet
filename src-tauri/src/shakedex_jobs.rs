@@ -857,7 +857,10 @@ async fn cancel_on_chain(
 #[derive(Debug, PartialEq, Eq)]
 enum LockOnChain {
     /// hsd reports no live state for the name (`info: null`): it never
-    /// existed or has expired.
+    /// existed or has expired; or the lock TRANSFER belongs to a
+    /// registration that is gone: mined but not the owner, its covenant's
+    /// name height is not hsd's `info.height` (the name expired and was
+    /// opened again, `ns.reset`).
     NoName,
     /// The lock TRANSFER owns a name that is not revoked
     /// ([`sell::lock_transfer_owns_name`]). `transfer` is
@@ -870,8 +873,15 @@ enum LockOnChain {
     /// Neither: `owner` is another outpoint, or the name is revoked
     /// (a REVOKE leaves `owner` at the coin it spent and sets `revoked`,
     /// hsd `chain.js`), and `GET /coin` is hsd's empty 404 (spent in a block
-    /// or in the mempool, or never mined).
-    Gone { owner: (String, u32), revoked: bool },
+    /// or in the mempool, or never mined). `renewal` is hsd's
+    /// `info.renewal`, the block of the name's last FINALIZE or renewal (a
+    /// TRANSFER leaves it, `chain.js`): only a hint where to read a
+    /// FINALIZE without the transaction index ([`spend_view`]).
+    Gone {
+        owner: (String, u32),
+        revoked: bool,
+        renewal: Option<i64>,
+    },
 }
 
 /// Read [`LockOnChain`]. Any read error, and a reply without `info`, the
@@ -904,23 +914,38 @@ async fn lock_on_chain(
         })
     } else if let Some(coin) = client.get_coin(lock_transfer_txid, 0).await? {
         // Mined in a block, it would be the owner (or revoked): a node that
-        // says otherwise is not consistent, so no verdict.
+        // says otherwise is not consistent, so no verdict — unless the
+        // registration it belongs to is gone: the name expired and was
+        // opened again, so hsd's name height is not the one the TRANSFER
+        // commits to.
         match coin.mined_height()? {
             None => Ok(LockOnChain::Pending),
-            Some(_) => Err(AppError::Rpc(format!(
-                "node reports lock TRANSFER {lock_transfer_txid}:0 mined but not the name's owner"
-            ))),
+            Some(_) => {
+                let ours = coin
+                    .covenant
+                    .as_ref()
+                    .and_then(purchase::covenant_name_height);
+                let theirs = info.get("height").and_then(|h| h.as_u64());
+                match (ours, theirs) {
+                    (Some(o), Some(t)) if u64::from(o) != t => Ok(LockOnChain::NoName),
+                    _ => Err(AppError::Rpc(format!(
+                        "node reports lock TRANSFER {lock_transfer_txid}:0 mined but not the \
+                         name's owner"
+                    ))),
+                }
+            }
         }
     } else {
         Ok(LockOnChain::Gone {
             owner: (hash.to_string(), index),
             revoked: revoked != 0,
+            renewal: info.get("renewal").and_then(|r| r.as_i64()),
         })
     }
 }
 
 /// Where a name's owner coin sits, from hsd's `GET /coin`.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InOurLock {
     /// A FINALIZE at the listing's lock address: the name is in our lock.
     Finalize,
@@ -993,14 +1018,18 @@ fn listing_lock_address(
 ///   again → Locking;
 /// - but the owner coin a FINALIZE at this listing's lock address (a
 ///   FINALIZE into our lock this device did not build) → Restored with that
-///   outpoint, never Aborted; another covenant there → unchanged (T4's);
-///   the owner coin hsd's 404 (spent in the mempool) → unchanged until that
+///   outpoint, never Aborted; another covenant there → unchanged; the
+///   owner coin hsd's 404 (spent in the mempool) → unchanged until that
 ///   spend is mined;
+/// - and before either of those last two, a mined purchase of a FINALIZE of
+///   this listing into the lock paying its payment address → Sold (R22,
+///   [`sale_of_left_lock`]);
 /// - the lock TRANSFER the owner and `blocks_until_finalize` of hsd's
 ///   `info.transfer` 0 at the tip → ReadyToFinalize, not 0 → Locking; the
 ///   lock TRANSFER a coin in the mempool (`height: -1`), not the owner →
 ///   Locking; a lock TRANSFER mined in a block but not the owner is not a
-///   consistent answer → unchanged.
+///   consistent answer → unchanged, unless its covenant's name height is not
+///   hsd's (the name expired and was opened again) → Expired.
 ///
 /// Locking again is refused while another listing of the name is open
 /// ([`queries::unabort_shakedex_listing`]). Anything the node does not
@@ -1088,14 +1117,19 @@ async fn refresh_before_lock(
 /// for a Finalizing one whose FINALIZE is dead (the SQL writes accept no
 /// other source, [`queries::abort_shakedex_listing`]):
 ///
-/// - hsd reports no live name → Expired;
+/// - hsd reports no live name, or the lock TRANSFER belongs to a
+///   registration that is gone → Expired;
 /// - the name revoked, or its owner coin readable elsewhere while the lock
 ///   draft can no longer land → Aborted;
 /// - the owner coin a FINALIZE at this listing's lock address → Restored
 ///   with that outpoint, never Aborted (coordinator (b): only that positive
 ///   evidence says the name is in our lock, whoever sent the FINALIZE);
-/// - the owner coin at our lock under another covenant (T4 decides), or
-///   hsd's 404 for it (spent in the mempool) → unchanged.
+/// - but a mined purchase of a FINALIZE of this listing into the lock
+///   paying its payment address (R22, [`sale_of_left_lock`]) → Sold, never
+///   Aborted; a purchase found whose lock coin hsd does not show to be this
+///   listing's → unchanged;
+/// - the owner coin at our lock under another covenant, or hsd's 404 for
+///   it (spent in the mempool) → unchanged.
 async fn settle_left_lock(
     conn: &rusqlite::Connection,
     client: &dyn NodeRpc,
@@ -1103,22 +1137,44 @@ async fn settle_left_lock(
     l: &queries::ShakedexListing,
     lock: LockOnChain,
 ) -> Result<(), AppError> {
-    let (owner, revoked) = match lock {
+    let (owner, revoked, renewal) = match lock {
         LockOnChain::NoName => {
             queries::expire_shakedex_listing(conn, &l.id)?;
             return Ok(());
         }
-        LockOnChain::Gone { owner, revoked } => (owner, revoked),
+        LockOnChain::Gone {
+            owner,
+            revoked,
+            renewal,
+        } => (owner, revoked, renewal),
         LockOnChain::Owner { .. } | LockOnChain::Pending => return Ok(()),
     };
     if !revoked {
-        match owner_in_our_lock(client, network, l, &owner).await? {
+        let where_ = owner_in_our_lock(client, network, l, &owner).await?;
+        match where_ {
             InOurLock::Finalize => {
                 queries::adopt_lock_finalized_elsewhere(conn, &l.id, &owner.0, owner.1)?;
                 return Ok(());
             }
-            InOurLock::Other | InOurLock::SpentInMempool => return Ok(()),
-            InOurLock::No => {}
+            InOurLock::SpentInMempool => return Ok(()),
+            InOurLock::Other | InOurLock::No => {
+                // R22: the name may have left through our lock — a FINALIZE
+                // of ours mined after all, its lock coin bought.
+                match sale_of_left_lock(conn, client, network, l, &owner, renewal).await? {
+                    LeftSale::Sold { txid, lock } => {
+                        queries::sell_shakedex_listing(
+                            conn,
+                            &l.id,
+                            &txid,
+                            Some((lock.0.as_str(), lock.1)),
+                        )?;
+                        return Ok(());
+                    }
+                    LeftSale::Unproven => return Ok(()),
+                    LeftSale::None if where_ == InOurLock::Other => return Ok(()),
+                    LeftSale::None => {}
+                }
+            }
         }
     }
     let status = queries::lock_draft_status(conn, l)?;
@@ -1126,6 +1182,105 @@ async fn settle_left_lock(
         queries::abort_shakedex_listing(conn, &l.id)?;
     }
     Ok(())
+}
+
+/// What [`sale_of_left_lock`] found.
+#[derive(Debug, PartialEq, Eq)]
+enum LeftSale {
+    /// A mined purchase of this listing's lock coin `lock`.
+    Sold { txid: String, lock: (String, u32) },
+    /// A mined purchase paying the payment address out of our lock address,
+    /// but hsd does not show the coin it spends as this listing's lock coin
+    /// (not readable, or not a FINALIZE spending its lock TRANSFER): no
+    /// verdict either way.
+    Unproven,
+    /// No mined purchase.
+    None,
+}
+
+/// R22 for a listing whose name left the lock TRANSFER
+/// ([`settle_left_lock`]), the name's owner being `owner`. A listing with a
+/// stored lock outpoint is judged by [`find_sale`]. One without (a dead
+/// FINALIZE's listing back at ReadyToFinalize, or still Locking) has no
+/// outpoint for [`find_sale`] to tie a purchase to: a purchase found out of
+/// our lock address with any input ([`find_purchase`]) is only a lead to
+/// the coin it spends, which is the lock only when hsd shows it as a
+/// FINALIZE at this listing's lock address spending this listing's lock
+/// TRANSFER ([`finalize_into_lock`]); [`find_sale`] then judges the
+/// listing with that outpoint.
+async fn sale_of_left_lock(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+    owner: &(String, u32),
+    renewal: Option<i64>,
+) -> Result<LeftSale, AppError> {
+    if l.lock_txid.is_some() && l.lock_vout.is_some() {
+        return Ok(match find_sale(conn, client, network, l, owner).await? {
+            Sale::Mined { txid, lock } => LeftSale::Sold { txid, lock },
+            _ => LeftSale::None,
+        });
+    }
+    let Sale::Mined { lock, .. } = find_purchase(conn, client, network, l, owner, None).await?
+    else {
+        return Ok(LeftSale::None);
+    };
+    if !finalize_into_lock(client, network, l, &lock, renewal).await? {
+        eprintln!(
+            "shakedex listings: {} ({}): a purchase out of our lock spends {}:{}, which the \
+             node does not show as this listing's FINALIZE: left as it is",
+            l.id, l.name, lock.0, lock.1
+        );
+        return Ok(LeftSale::Unproven);
+    }
+    let tied = queries::ShakedexListing {
+        lock_txid: Some(lock.0),
+        lock_vout: Some(i64::from(lock.1)),
+        ..l.clone()
+    };
+    Ok(
+        match find_sale(conn, client, network, &tied, owner).await? {
+            Sale::Mined { txid, lock } => LeftSale::Sold { txid, lock },
+            _ => LeftSale::Unproven,
+        },
+    )
+}
+
+/// Whether hsd shows `lock` as listing `l`'s lock coin: its transaction,
+/// read with [`spend_view`] (`renewal` the block to read it at without the
+/// index), is in a block, output `lock.1` is a FINALIZE of the name at the
+/// listing's lock address, and input `lock.1` (hsd links a FINALIZE to the
+/// input at its index) spends the listing's lock TRANSFER. Not found, or
+/// anything else: `false`.
+async fn finalize_into_lock(
+    client: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+    lock: &(String, u32),
+    renewal: Option<i64>,
+) -> Result<bool, AppError> {
+    let Some(lock_transfer_txid) = l.lock_transfer_txid.as_deref() else {
+        return Ok(false);
+    };
+    let Some(tx) = spend_view(client, &lock.0, renewal).await? else {
+        return Ok(false);
+    };
+    let k = lock.1 as usize;
+    let lock_address = listing_lock_address(network, l)?;
+    let name_hash = hex::encode(crate::noncustodial::names::hash_name(&l.name)?);
+    let spends_our_transfer = tx
+        .inputs
+        .get(k)
+        .is_some_and(|(t, v)| t.eq_ignore_ascii_case(lock_transfer_txid) && *v == 0);
+    let is_our_lock = tx.outputs.get(k).is_some_and(|o| {
+        o.covenant_type == COV_FINALIZE
+            && o.address == lock_address
+            && o.items
+                .first()
+                .is_some_and(|h| h.eq_ignore_ascii_case(&name_hash))
+    });
+    Ok(tx.height.is_some() && spends_our_transfer && is_our_lock)
 }
 
 fn relock(conn: &rusqlite::Connection, l: &queries::ShakedexListing) -> Result<(), AppError> {
@@ -1449,6 +1604,14 @@ async fn lock_coin_spent(
                 );
             }
         }
+        // The purchase the listing was sold by: nothing to write (a write
+        // would move `updated_at`, and the re-check window would never
+        // close).
+        (Sale::Mined { txid, .. }, false)
+            if l.state == queries::ListingState::Sold
+                && l.sold_txid
+                    .as_deref()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(&txid)) => {}
         (Sale::Mined { txid, lock }, false) if l.state == queries::ListingState::Sold => {
             let to = queries::ListingState::Sold;
             queries::resell_sold_listing(conn, &l.id, to, &txid, (lock.0.as_str(), lock.1))?;
@@ -1575,14 +1738,37 @@ async fn find_sale(
     l: &queries::ShakedexListing,
     owner: &(String, u32),
 ) -> Result<Sale, AppError> {
-    let Some(payment) = l.payment_address.as_deref() else {
-        return Ok(Sale::None);
-    };
     let (Some(lock_txid), Some(lock_vout)) = (l.lock_txid.as_deref(), l.lock_vout) else {
         return Ok(Sale::None);
     };
     let lock_vout = u32::try_from(lock_vout)
         .map_err(|_| AppError::Other(format!("corrupted listing {}: bad lock output", l.id)))?;
+    find_purchase(
+        conn,
+        client,
+        network,
+        l,
+        owner,
+        Some((lock_txid, lock_vout)),
+    )
+    .await
+}
+
+/// [`find_sale`]'s search with the lock coin `lock` the purchase must spend.
+/// `None` accepts a purchase of any coin at the listing's lock address: the
+/// coin it returns is only a lead, never a listing's lock outpoint until
+/// [`finalize_into_lock`] ties it to the listing ([`sale_of_left_lock`]).
+async fn find_purchase(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+    owner: &(String, u32),
+    lock: Option<(&str, u32)>,
+) -> Result<Sale, AppError> {
+    let Some(payment) = l.payment_address.as_deref() else {
+        return Ok(Sale::None);
+    };
     let profile = &l.wallet_profile_id;
     let lock_address = listing_lock_address(network, l)?;
     let name_hash = hex::encode(crate::noncustodial::names::hash_name(&l.name)?);
@@ -1591,7 +1777,7 @@ async fn find_sale(
         .collect();
     let p = sell::PurchaseOf {
         network,
-        lock: Some((lock_txid, lock_vout)),
+        lock,
         lock_address: &lock_address,
         name_hash: &name_hash,
         payment_address: payment,
