@@ -2719,7 +2719,17 @@ pub async fn build_cancel_draft(
     // this cancel is mined (`shakedex_jobs::refresh_listing_aborts_with_client`).
     let tx = conn.unchecked_transaction()?;
     let id = persist_in_tx(&tx, &ctx.profile_id, "cancel", &name, None, None, &res)?;
-    queries::link_shakedex_listing_abort(&tx, &ctx.profile_id, &name, &coin.txid, coin.vout, &id)?;
+    // `res.txid` is the txid of the unsigned tx the draft stores (the
+    // no-witness hash, the same once signed).
+    queries::link_shakedex_listing_abort(
+        &tx,
+        &ctx.profile_id,
+        &name,
+        &coin.txid,
+        coin.vout,
+        &id,
+        &res.txid,
+    )?;
     tx.commit()?;
     draft_summary(&conn, &id)
 }

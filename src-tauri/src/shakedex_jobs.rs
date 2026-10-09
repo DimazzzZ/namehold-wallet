@@ -875,21 +875,14 @@ async fn refresh_abort(
     client: &dyn NodeRpc,
     l: &queries::ShakedexListing,
 ) -> Result<(), AppError> {
-    let (Some(draft_id), Some(lock_transfer_txid)) =
-        (l.abort_draft_id.as_deref(), l.lock_transfer_txid.as_deref())
+    // The cancel's txid is kept on the listing, not read from its draft: a
+    // cancel broadcast, dropped and deleted may still be mined.
+    let (Some(cancel_txid), Some(lock_transfer_txid)) =
+        (l.abort_txid.as_deref(), l.lock_transfer_txid.as_deref())
     else {
         return Ok(());
     };
-    // The link is cleared when an unsent cancel is deleted; a draft that is
-    // gone anyway has nothing to look up.
-    let Some(draft) = queries::get_tx_draft(conn, draft_id)? else {
-        return Ok(());
-    };
-    // The txid is the no-witness hash: the same before and after signing.
-    let raw = hex::decode(&draft.unsigned_tx_hex)
-        .map_err(|e| AppError::Other(format!("cancel draft {draft_id} is not hex: {e}")))?;
-    let cancel_txid = crate::noncustodial::tx::Transaction::decode(&raw)?.txid();
-    match cancel_on_chain(client, &cancel_txid, lock_transfer_txid).await {
+    match cancel_on_chain(client, cancel_txid, lock_transfer_txid).await {
         CancelOnChain::Mined if l.state.aborts_by_cancel_transfer() => {
             queries::abort_shakedex_listing(conn, &l.id)?;
         }

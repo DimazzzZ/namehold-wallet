@@ -49,6 +49,7 @@ fn listing(id: &str, name: &str, state: ListingState) -> ShakedexListing {
         market_retry_at: None,
         expires_at: None,
         abort_draft_id: None,
+        abort_txid: None,
         sold_txid: None,
         cancel_txid: None,
         created_at: String::new(),
@@ -991,6 +992,11 @@ async fn cancel_transfer_aborts_the_listing() {
     assert_eq!(l.abort_draft_id.as_deref(), Some(cancel.id.as_str()));
     assert_eq!(l.state, ListingState::Locking, "built, not sent");
     let ctxid = cancel.summary["txid"].as_str().unwrap().to_string();
+    assert_eq!(
+        l.abort_txid.as_deref(),
+        Some(ctxid.as_str()),
+        "the cancel's txid"
+    );
     with_db(&app, |c| {
         queries::update_tx_draft_status(c, &cancel.id, "broadcasted", None, Some(&ctxid)).unwrap();
     });
@@ -1126,13 +1132,39 @@ async fn deleting_an_unsent_cancel_unlinks_it() {
             }
             queries::delete_tx_draft(c, &cancel.id).unwrap();
         });
+        let after = open_listing(&app).unwrap();
         let expected = keeps_link.then(|| cancel.id.clone());
-        assert_eq!(
-            open_listing(&app).unwrap().abort_draft_id,
-            expected,
-            "{status}"
-        );
+        assert_eq!(after.abort_draft_id, expected, "{status}");
+        let expected_txid =
+            keeps_link.then(|| cancel.summary["txid"].as_str().unwrap().to_string());
+        assert_eq!(after.abort_txid, expected_txid, "{status}");
     }
+}
+
+/// A cancel that was broadcast, then dropped and its draft deleted, may
+/// still be mined (another node held it): the listing keeps the cancel's
+/// txid, so the job still finds the mined UPDATE and the listing is Aborted.
+#[tokio::test]
+async fn deleted_dropped_cancel_mined_later_still_aborts() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let lock_txid = locked_on_chain(&app).await;
+    let cancel = build_cancel_draft(app.state(), NAME.into(), None)
+        .await
+        .unwrap();
+    let ctxid = cancel.summary["txid"].as_str().unwrap().to_string();
+    let id = open_listing(&app).unwrap().id;
+    with_db(&app, |c| {
+        queries::update_tx_draft_status(c, &cancel.id, "dropped", None, Some(&ctxid)).unwrap();
+        queries::delete_tx_draft(c, &cancel.id).unwrap();
+        assert!(queries::get_tx_draft(c, &cancel.id).unwrap().is_none());
+    });
+
+    run_abort_job(
+        &app,
+        &chain(&ctxid, Some(Some(QUIET_TIP)), &lock_txid, false),
+    )
+    .await;
+    assert_eq!(listing_state(&app, &id), ListingState::Aborted);
 }
 
 /// A reorg that takes the abort out after the name was locked again: the new
