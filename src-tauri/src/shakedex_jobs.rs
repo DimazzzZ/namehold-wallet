@@ -1203,18 +1203,28 @@ pub async fn refresh_listings_with_client(
 ///
 /// - a FINALIZE at the listing's lock address mined in a block → a
 ///   Finalizing listing Listed; in the mempool (`height: -1`) → a Listed one
-///   Finalizing (a reorg took it back);
-/// - hsd's 404 for a Finalizing listing whose FINALIZE draft is `failed`,
-///   `dropped` or gone ([`finalize_dead`]): the lock TRANSFER
-///   `(lock_transfer_txid, 0)` a coin again → ReadyToFinalize, its lock
-///   outpoint, steps and file dropped (they were signed over a coin that
-///   does not exist); the lock TRANSFER hsd's 404 too, so something else
-///   spent it → settled from the name as before the lock
-///   ([`settle_left_lock`]: Expired, Aborted, Restored, or unchanged);
+///   Finalizing (a reorg took it back); a coin at all → a SalePending or
+///   Sold listing Listed (Restored without a listing file), its purchase
+///   forgotten, unless another listing of the name is open by then; mined,
+///   with the name's live state gone or its height not the lock coin's → a
+///   Listed or Restored listing Expired ([`registration_ended`]);
+/// - hsd's 404 for the lock coin while the lock TRANSFER
+///   `(lock_transfer_txid, 0)` is a coin again (the FINALIZE into the lock
+///   in no block and no mempool): a Finalizing listing whose FINALIZE draft
+///   is `failed`, `dropped` or gone ([`finalize_dead`]) → ReadyToFinalize,
+///   its lock outpoint, steps and file dropped (they were signed over a
+///   coin that does not exist); a Listed one, and a SalePending or Sold one
+///   with our FINALIZE draft → Finalizing; a Restored one → Locking without
+///   its outpoint ([`queries::unadopt_restored_lock`]);
+/// - hsd's 404 for both, for a Finalizing listing whose FINALIZE is dead:
+///   something else spent the lock TRANSFER → settled from the name as
+///   before the lock ([`settle_left_lock`]: Expired, Aborted, Restored, or
+///   unchanged);
 /// - any other 404 (the lock coin spent in a block or in the mempool) is no
-///   verdict alone: the name's owner is read and a purchase looked for
-///   ([`find_sale`]); one in the mempool while the owner is still the lock
-///   coin → SalePending, one mined while the owner has moved → Sold;
+///   verdict alone: the name's owner is read; no live name → a Listed,
+///   SalePending or Restored listing Expired; otherwise a purchase is looked
+///   for ([`find_sale`]); one in the mempool while the owner is still the
+///   lock coin → SalePending, one mined while the owner has moved → Sold;
 /// - a coin at another address or of another covenant, a reply missing the
 ///   coin's address, covenant or height, a name reply missing `info` or the
 ///   owner, or a read error → unchanged.
@@ -1251,16 +1261,43 @@ async fn refresh_after_lock(
     let lock_vout = u32::try_from(lock_vout)
         .map_err(|_| AppError::Other(format!("corrupted listing {}: bad lock output", l.id)))?;
     match client.get_coin(lock_txid, lock_vout).await? {
-        Some(coin) => lock_coin_held(conn, network, l, &coin, (lock_txid, lock_vout)),
+        Some(coin) => lock_coin_held(conn, client, network, l, &coin, (lock_txid, lock_vout)).await,
         None => lock_coin_spent(conn, client, network, l, (lock_txid, lock_vout)).await,
     }
 }
 
-/// The lock coin is a coin: a FINALIZE at the listing's lock address, mined
-/// (Finalizing → Listed) or in the mempool (Listed → Finalizing). Anything
-/// else at that outpoint is an error, and the listing stays as it is.
-fn lock_coin_held(
+/// Whether the registration a locked listing's lock coin belongs to is gone:
+/// hsd reports no live state for the name (`info: null`), or the name's
+/// height is not the one the lock coin's covenant commits to (it expired and
+/// was opened again, `ns.reset`). `lock_height` `None` (a covenant without a
+/// readable height item) decides only the first. A live name without its
+/// height is not hsd's whole answer: an error.
+fn registration_ended(
+    reply: &serde_json::Value,
+    lock_height: Option<u32>,
+) -> Result<bool, AppError> {
+    let Some(info) = name_info(reply)? else {
+        return Ok(true);
+    };
+    let height = info
+        .get("height")
+        .and_then(|h| h.as_u64())
+        .ok_or_else(|| AppError::Rpc("node did not report the name's height".into()))?;
+    Ok(lock_height.is_some_and(|h| u64::from(h) != height))
+}
+
+/// The lock coin is a coin: a FINALIZE at the listing's lock address. Mined,
+/// a Finalizing listing is Listed; in the mempool (`height: -1`), a Listed
+/// one is Finalizing (a reorg took it back). A SalePending or Sold listing
+/// goes back to Listed (Restored without a listing file): hsd answers 404 for
+/// a coin any mempool transaction spends, so its purchase is in no block and
+/// no mempool of this node. A Listed or Restored listing whose name has no
+/// live state, or whose name height is not the lock coin's, is Expired
+/// ([`registration_ended`]). Anything else at that outpoint is an error, and
+/// the listing stays as it is.
+async fn lock_coin_held(
     conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
     network: Network,
     l: &queries::ShakedexListing,
     coin: &crate::noncustodial::rpc::NodeCoin,
@@ -1278,12 +1315,36 @@ fn lock_coin_held(
             lock.0, lock.1
         )));
     }
-    // Each write moves only the state it names (Finalizing → Listed, Listed
-    // → Finalizing); any other state is left as it is.
-    if coin.mined_height()?.is_some() {
-        queries::mark_listing_listed(conn, &l.id)?;
-    } else {
-        queries::mark_listing_finalizing_again(conn, &l.id)?;
+    // Each write moves only the state it names; any other state is left as
+    // it is.
+    match (l.state, coin.mined_height()?) {
+        (queries::ListingState::Finalizing, Some(_)) => {
+            queries::mark_listing_listed(conn, &l.id)?;
+        }
+        (queries::ListingState::Listed, None) => {
+            queries::mark_listing_finalizing_again(conn, &l.id)?;
+        }
+        (queries::ListingState::SalePending | queries::ListingState::Sold, _) => {
+            let to = if l.listing_file_json.is_some() {
+                queries::ListingState::Listed
+            } else {
+                queries::ListingState::Restored
+            };
+            if queries::unsell_shakedex_listing(conn, &l.id, to)? == 0 {
+                eprintln!(
+                    "shakedex listings: {} ({}): its purchase is no longer on chain, but it \
+                     stays sold: another listing of the name is open",
+                    l.id, l.name
+                );
+            }
+        }
+        (queries::ListingState::Listed | queries::ListingState::Restored, Some(_)) => {
+            let reply = client.get_name_info(&l.name).await?;
+            if registration_ended(&reply, purchase::covenant_name_height(covenant))? {
+                queries::expire_locked_listing(conn, &l.id)?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1297,26 +1358,57 @@ async fn lock_coin_spent(
     l: &queries::ShakedexListing,
     lock: (&str, u32),
 ) -> Result<(), AppError> {
+    // The lock TRANSFER a coin again: hsd answers 404 for a coin any mempool
+    // transaction spends, so the FINALIZE into the lock is in no block and
+    // no mempool of this node (plan deviation 4).
+    if let Some(lock_transfer_txid) = l.lock_transfer_txid.as_deref() {
+        if client.get_coin(lock_transfer_txid, 0).await?.is_some() {
+            match l.state {
+                // Our FINALIZE never landed: Finalize & sign may run again.
+                queries::ListingState::Finalizing if finalize_dead(conn, l)? => {
+                    queries::revert_listing_to_ready(conn, &l.id)?;
+                }
+                queries::ListingState::Listed => {
+                    queries::mark_listing_finalizing_again(conn, &l.id)?;
+                }
+                queries::ListingState::SalePending | queries::ListingState::Sold
+                    if l.lock_finalize_draft_id.is_some() =>
+                {
+                    let to = queries::ListingState::Finalizing;
+                    if queries::unsell_shakedex_listing(conn, &l.id, to)? == 0 {
+                        eprintln!(
+                            "shakedex listings: {} ({}): its FINALIZE is no longer on chain, \
+                             but it stays sold: another listing of the name is open",
+                            l.id, l.name
+                        );
+                    }
+                }
+                queries::ListingState::Restored => {
+                    queries::unadopt_restored_lock(conn, &l.id)?;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+    }
     if l.state == queries::ListingState::Finalizing && finalize_dead(conn, l)? {
+        // Something else spent the lock TRANSFER (an older cancel mined
+        // later, another device's FINALIZE, a REVOKE): settle it as before
+        // the lock. A 404 that only means "spent in the mempool" leaves it,
+        // as there.
         let Some(lock_transfer_txid) = l.lock_transfer_txid.as_deref() else {
             return Ok(());
         };
-        if client.get_coin(lock_transfer_txid, 0).await?.is_some() {
-            // Our FINALIZE never landed and the lock TRANSFER is a coin
-            // again: Finalize & sign may run again.
-            queries::revert_listing_to_ready(conn, &l.id)?;
-        } else {
-            // Something else spent the lock TRANSFER (an older cancel
-            // mined later, another device's FINALIZE, a REVOKE): settle
-            // it as before the lock. A 404 that only means "spent in
-            // the mempool" leaves it, as there.
-            let gone = lock_on_chain(client, &l.name, lock_transfer_txid).await?;
-            settle_left_lock(conn, client, network, l, gone).await?;
-        }
+        let gone = lock_on_chain(client, &l.name, lock_transfer_txid).await?;
+        settle_left_lock(conn, client, network, l, gone).await?;
         return Ok(());
     }
     let reply = client.get_name_info(&l.name).await?;
     let Some(info) = name_info(&reply)? else {
+        // No live name: the listing ended with it (R31's lockup risk, or a
+        // listing left to expire). Sold stays Sold, and a Finalizing
+        // listing is not moved ([`queries::expire_locked_listing`]).
+        queries::expire_locked_listing(conn, &l.id)?;
         return Ok(());
     };
     let owner = owner_of(info)?;

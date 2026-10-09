@@ -6162,10 +6162,11 @@ async fn shakedex_namehold_buy_now_is_bought_by_the_cli() {
 
 /// R19 on hsd: a reorg takes the FINALIZE into the lock out of its block,
 /// and the listing follows it. hsd's `invalidateblock` empties the mempool
-/// (`reset`), so while the FINALIZE is nowhere the listing stays Listed (no
-/// verdict from a 404); handed back to the node, as a real reorg's mempool
-/// would hold it, it is a coin in the mempool and the listing is Finalizing;
-/// mined again, Listed. Every step is read from hsd before the jobs run.
+/// (`reset`), so while the FINALIZE is nowhere the lock TRANSFER it spent is
+/// a coin again and the listing is Finalizing (the 404 for the lock coin is
+/// not alone); handed back to the node, as a real reorg's mempool would hold
+/// it, it is a coin in the mempool and the listing stays Finalizing; mined
+/// again, Listed. Every step is read from hsd before the jobs run.
 #[tokio::test]
 async fn shakedex_listing_follows_reorg_of_its_lock_finalize() {
     let Some((url, key)) = shakedex_node_env("shakedex_listing_follows_reorg_of_its_lock_finalize")
@@ -6195,11 +6196,27 @@ async fn shakedex_listing_follows_reorg_of_its_lock_finalize() {
         lock_coin(cl.clone()).await.is_none(),
         "invalidateblock leaves the FINALIZE nowhere"
     );
+    let transfer = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::get_shakedex_listing(&c, &id)
+            .unwrap()
+            .unwrap()
+            .lock_transfer_txid
+            .unwrap()
+    };
+    assert!(
+        cl.get_coin(&transfer, 0)
+            .await
+            .expect("coin lookup")
+            .is_some(),
+        "the lock TRANSFER is a coin again: the FINALIZE is in no block and no mempool"
+    );
     listing_jobs(&app, &cl).await;
     assert_eq!(
         listing_state(&app, &id),
-        ListingState::Listed,
-        "a 404 alone is no verdict"
+        ListingState::Finalizing,
+        "the FINALIZE into the lock is nowhere"
     );
 
     let fin = draft_status(&app, s.finalize_draft_id.as_deref().expect("draft"));
