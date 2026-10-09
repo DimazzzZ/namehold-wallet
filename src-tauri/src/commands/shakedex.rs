@@ -24,7 +24,7 @@ use crate::noncustodial::derivation;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::{self, ChainSource, NodeRpcClient};
 use crate::noncustodial::send::{self, SpendableCoin, DUST_THRESHOLD};
-use crate::noncustodial::session::session_ttl_ms;
+use crate::noncustodial::session::{session_ttl_ms, SignerSession};
 use crate::noncustodial::shakedex::listing_file::{
     write_listing_file, ListingFile, NewListingFile, PriceStep, MAX_LISTING_FILE_BYTES,
 };
@@ -641,15 +641,27 @@ pub(crate) fn build_lock_draft_inner(
     draft_ctx::draft_summary(conn, &draft_id)
 }
 
-/// The unlocked signer session of the active profile, or `WalletLocked`.
-/// Checked before a selling command reads anything else.
-fn authorize_signer(state: &State<'_, AppState>, ctx: &Ctx) -> Result<(), AppError> {
+/// Run `f` on the unlocked signer session of the active profile, authorized
+/// again for it: `WalletLocked` when no session is open. The one place the
+/// selling commands take the signer, so every use checks it the same way.
+fn with_signer<T>(
+    state: &State<'_, AppState>,
+    ctx: &Ctx,
+    f: impl FnOnce(&mut SignerSession) -> Result<T, AppError>,
+) -> Result<T, AppError> {
     let mut slot = state
         .signer
         .lock()
         .map_err(|e| AppError::Lock(e.to_string()))?;
     let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
-    session.authorize(&ctx.profile_id, session_ttl_ms(&ctx.settings))
+    session.authorize(&ctx.profile_id, session_ttl_ms(&ctx.settings))?;
+    f(session)
+}
+
+/// The unlocked signer session of the active profile, or `WalletLocked`.
+/// Checked before a selling command reads anything else.
+fn authorize_signer(state: &State<'_, AppState>, ctx: &Ctx) -> Result<(), AppError> {
+    with_signer(state, ctx, |_| Ok(()))
 }
 
 /// The lock key of `name` (ADR 0004), derived from the seed of the unlocked
@@ -660,13 +672,9 @@ fn derive_listing_key(
     ctx: &Ctx,
     name: &str,
 ) -> Result<LockKey, AppError> {
-    let mut slot = state
-        .signer
-        .lock()
-        .map_err(|e| AppError::Lock(e.to_string()))?;
-    let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
-    session.authorize(&ctx.profile_id, session_ttl_ms(&ctx.settings))?;
-    derive_lock_key(session.master()?, ctx.network, ctx.account, name)
+    with_signer(state, ctx, |session| {
+        derive_lock_key(session.master()?, ctx.network, ctx.account, name)
+    })
 }
 
 /// One price step the seller typed (R19): HNS as text, so the backend can
@@ -725,9 +733,11 @@ pub(crate) async fn prepare_lock_finalize(
                     "Finalize & sign opens after the transfer lockup".into(),
                 ))
             }
-            _ => {
+            other => {
                 return Err(AppError::InvalidInput(
-                    "this listing is already finalized into its lock".into(),
+                    listing_over(other)
+                        .unwrap_or("this listing is already finalized into its lock")
+                        .into(),
                 ))
             }
         }
@@ -817,7 +827,7 @@ pub(crate) async fn prepare_lock_finalize(
     let Some(revoked) = info.get("revoked").and_then(|r| r.as_u64()) else {
         return Err(could_not_check("whether the name was revoked", &name));
     };
-    if revoked != 0 || owner_index != 0 || !owner_hash.eq_ignore_ascii_case(&lock_transfer_txid) {
+    if !sell::lock_transfer_owns_name(owner_hash, owner_index, revoked, &lock_transfer_txid) {
         return Err(AppError::InvalidInput(format!(
             "'{name}' is no longer held by its lock transfer: there is nothing to finalize"
         )));
@@ -831,10 +841,10 @@ pub(crate) async fn prepare_lock_finalize(
                 "the lock transfer is no longer unspent: the name may already be finalized".into(),
             )
         })?;
-    let transfer_height = coin
-        .mined_height()
-        .map_err(|_| could_not_check("the lock transfer's height", &name))?
-        .ok_or_else(|| AppError::InvalidInput("the lock transfer is not mined yet".into()))?;
+    // The lockup counts from hsd's `info.transfer`, the fact hsd's FINALIZE
+    // rule reads, as the sync job does (`sell::transfer_height`).
+    let transfer_height = sell::transfer_height(info)
+        .ok_or_else(|| could_not_check("the TRANSFER's block", &name))?;
     let params = ctx.network.name_params();
     let remaining = params.blocks_until_finalize(transfer_height, tip);
     if remaining > 0 {
@@ -999,13 +1009,7 @@ pub(crate) async fn finalize_and_sign_confirmed<R: tauri::Runtime>(
     let payment = output_address_from_string(net, &p.payment_address)?;
     // One unlock (R19): the session is authorized once for the FINALIZE and
     // every step; the confirmation may have outlasted the earlier check.
-    let (signed_hex, signed) = {
-        let mut slot = state
-            .signer
-            .lock()
-            .map_err(|e| AppError::Lock(e.to_string()))?;
-        let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
-        session.authorize(&p.ctx.profile_id, session_ttl_ms(&p.ctx.settings))?;
+    let (signed_hex, signed) = with_signer(state, &p.ctx, |session| {
         let (hex, txid) = actions::sign_plan(session, &p.plan.plan)?;
         if txid != p.plan.txid {
             return Err(AppError::Other(
@@ -1034,8 +1038,8 @@ pub(crate) async fn finalize_and_sign_confirmed<R: tauri::Runtime>(
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        (hex, signed)
-    };
+        Ok((hex, signed))
+    })?;
     let expires_at = p.mtp + sell::LISTING_LIFETIME_SECS;
     let file = write_listing_file(
         &NewListingFile {
@@ -1102,6 +1106,28 @@ pub(crate) async fn finalize_and_sign_confirmed<R: tauri::Runtime>(
     ListingSummary::of(&l)
 }
 
+/// Why Finalize & sign and the export refuse a listing that is over or was
+/// finalized elsewhere, by its state; `None` for every other state.
+fn listing_over(state: ListingState) -> Option<&'static str> {
+    match state {
+        ListingState::Aborted => Some(
+            "this listing was aborted: the name left its lock transfer before the finalize \
+             into the lock, so there is nothing to finalize, sign or export; lock the name \
+             again to sell it",
+        ),
+        ListingState::Expired => Some("the name expired while it was locked: this listing is over"),
+        ListingState::Cancelled => {
+            Some("this listing is cancelled: its signed prices can no longer be used")
+        }
+        ListingState::Sold => Some("this name is sold: the listing is over"),
+        ListingState::Restored => Some(
+            "this lock was finalized by another wallet with the same recovery phrase: it has \
+             no signed prices or listing file here; import its saved file",
+        ),
+        _ => None,
+    }
+}
+
 /// R23: the saved listing file of one of the profile's listings, once its
 /// FINALIZE into the lock is mined (Listed or later): before that its steps
 /// are over a coin that may never exist.
@@ -1113,12 +1139,13 @@ pub(crate) fn export_listing_file_from_conn(
     let l = queries::get_shakedex_listing(conn, listing_id)?
         .filter(|l| l.wallet_profile_id == profile_id)
         .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
-    if matches!(
-        l.state,
-        ListingState::Locking | ListingState::ReadyToFinalize | ListingState::Finalizing
-    ) {
+    if !ListingState::EXPORT_ALLOWED.contains(&l.state) {
         return Err(AppError::InvalidInput(
-            "the listing file can be exported once the finalize into the lock is mined".into(),
+            listing_over(l.state)
+                .unwrap_or(
+                    "the listing file can be exported once the finalize into the lock is mined",
+                )
+                .into(),
         ));
     }
     l.listing_file_json.ok_or_else(|| {

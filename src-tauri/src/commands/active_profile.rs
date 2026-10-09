@@ -4,7 +4,6 @@
 //! `commands/namebase.rs`.
 
 use crate::db;
-use crate::error::AppError;
 use crate::noncustodial::network::Network;
 use crate::AppState;
 
@@ -50,20 +49,10 @@ pub(crate) fn active_profile_network_opt(state: &AppState) -> Option<Network> {
     active_profile_network_opt_from_conn(&conn)
 }
 
-/// The `Network` of one *named* profile, or an error when the profile is
-/// missing or its stored string does not parse. For user-triggered commands
-/// and read models, where guessing mainnet would compute the wrong answer
-/// (a balance with the wrong coinbase maturity, a renewal window aged by a
-/// wall clock regtest does not keep) and CODING_STANDARDS says a DB failure
-/// is returned, not swallowed.
-pub(crate) fn profile_network_from_conn(
-    conn: &rusqlite::Connection,
-    profile_id: &str,
-) -> Result<Network, AppError> {
-    let profile = db::queries::get_wallet_profile(conn, profile_id)?
-        .ok_or_else(|| AppError::NotFound(format!("wallet profile {profile_id}")))?;
-    crate::noncustodial::derivation::network_from_profile(&profile.network)
-}
+/// The `Network` of one *named* profile, or an error (missing profile,
+/// unparseable network): [`db::queries::profile_network`], re-exported under
+/// the name the commands use.
+pub(crate) use db::queries::profile_network as profile_network_from_conn;
 
 /// The `Network` of one *named* profile, or `None` when the profile is
 /// missing, the DB errors, or the stored string does not parse.

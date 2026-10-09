@@ -186,12 +186,12 @@ fn cancel_abortable_sql_lists_the_rust_states() {
     }
 }
 
-/// The draft-status sets the listings read: a lock draft holds its name
-/// while it is unsent or may have reached the chain, and may still land
-/// until it is mined; `dropped` and `failed` do neither.
+/// The two draft-status rules the listings read: a draft is alive while it
+/// is unsent or may have reached the chain, and may still land until it is
+/// mined; `dropped` and `failed` are neither. The SQL list is the Rust rule.
 #[test]
 fn draft_status_sets_partition_the_statuses() {
-    for (status, unsent, holds, may_land) in [
+    for (status, unsent, alive, may_land) in [
         ("draft", true, true, true),
         ("signed", true, true, true),
         ("broadcast_pending", false, true, true),
@@ -201,10 +201,10 @@ fn draft_status_sets_partition_the_statuses() {
         ("failed", false, false, false),
     ] {
         assert_eq!(queries::never_sent(status), unsent, "{status}");
-        assert_eq!(queries::lock_draft_holds_name(status), holds, "{status}");
+        assert_eq!(queries::draft_alive(status), alive, "{status}");
         assert_eq!(
-            queries::lock_draft_may_still_land(status),
-            may_land,
+            queries::alive_sql().contains(&format!("'{status}'")),
+            alive,
             "{status}"
         );
         assert_eq!(queries::draft_may_still_land(status), may_land, "{status}");
@@ -570,6 +570,50 @@ fn finalized_elsewhere_is_adopted_only_before_the_lock() {
             assert_eq!(l.lock_txid, None);
         }
     }
+}
+
+/// The two listing jobs never take the same listing, and neither takes a
+/// Restored one: the named sets are disjoint, and each job's query returns
+/// exactly its set when every state is in the table.
+#[test]
+fn job_listing_sets_are_disjoint() {
+    let before = ListingState::BEFORE_LOCK_JOB;
+    let fin = ListingState::FINALIZE_JOB;
+    for s in before {
+        assert!(!fin.contains(&s), "{s:?} in both jobs");
+    }
+    assert!(!before.contains(&ListingState::Restored));
+    assert!(!fin.contains(&ListingState::Restored));
+    for s in ListingState::CANCEL_ABORTABLE {
+        assert!(before.contains(&s), "{s:?}");
+    }
+
+    let conn = store_conn();
+    for (i, state) in ListingState::ALL.into_iter().enumerate() {
+        queries::insert_shakedex_listing(
+            &conn,
+            &listing(&format!("l{i}"), &format!("n{i}"), state),
+        )
+        .unwrap();
+    }
+    let states = |ls: Vec<ShakedexListing>| {
+        let mut v: Vec<&str> = ls.into_iter().map(|l| l.state.as_str()).collect();
+        v.sort_unstable();
+        v
+    };
+    let sorted = |set: &[ListingState]| {
+        let mut v: Vec<&str> = set.iter().map(|s| s.as_str()).collect();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(
+        states(queries::list_shakedex_listings_before_lock(&conn, STORE_PROFILE, 7).unwrap()),
+        sorted(&before)
+    );
+    assert_eq!(
+        states(queries::list_shakedex_listings_finalizing(&conn, STORE_PROFILE).unwrap()),
+        sorted(&fin)
+    );
 }
 
 /// The Finalizing/Listed source lists exactly those two states of a profile.
@@ -2283,13 +2327,13 @@ async fn refuses_finalize_on_commitment_mismatch() {
 }
 
 /// R19/R18: the name must still be held by our lock TRANSFER (the owner,
-/// output 0, of an unrevoked name), and the TRANSFER must be mined and
-/// unspent; each missing field is "could not check".
+/// output 0, of an unrevoked name), unspent, with hsd's TRANSFER block
+/// (`info.transfer`, the lockup's start); each missing field is "could not
+/// check".
 #[tokio::test]
 async fn finalize_and_sign_refused_when_the_name_left_its_lock_transfer() {
     let mut r = ready_fixture("regtest").await;
     let net = Network::Regtest;
-    let lock_txid = r.lock_txid.clone();
     let coin = r.coin();
     let mut moved = locked_name_info(RENEWAL, &"77".repeat(32));
     moved["info"]["transfer"] = 0.into();
@@ -2311,9 +2355,15 @@ async fn finalize_and_sign_refused_when_the_name_left_its_lock_transfer() {
         .remove("revoked");
     let mut no_info = r.info();
     no_info.as_object_mut().unwrap().remove("info");
-    let mut no_height = coin.clone();
-    no_height.as_object_mut().unwrap().remove("height");
-    let mempool = lock_transfer_coin(net, &lock_txid, &r.key().program, -1);
+    let mut no_transfer = r.info();
+    no_transfer["info"]
+        .as_object_mut()
+        .unwrap()
+        .remove("transfer");
+    let mut zero_transfer = r.info();
+    zero_transfer["info"]["transfer"] = 0.into();
+    let mut huge_transfer = r.info();
+    huge_transfer["info"]["transfer"] = u64::MAX.into();
     for (case, info, coin, needle) in [
         (
             "owner moved",
@@ -2348,11 +2398,22 @@ async fn finalize_and_sign_refused_when_the_name_left_its_lock_transfer() {
         ),
         ("no info", no_info, Some(coin.clone()), "could not check"),
         ("coin spent", r.info(), None, "no longer unspent"),
-        ("in the mempool", r.info(), Some(mempool), "not mined"),
         (
-            "coin without a height",
-            r.info(),
-            Some(no_height),
+            "no TRANSFER block",
+            no_transfer,
+            Some(coin.clone()),
+            "could not check",
+        ),
+        (
+            "TRANSFER block 0",
+            zero_transfer,
+            Some(coin.clone()),
+            "could not check",
+        ),
+        (
+            "TRANSFER block out of range",
+            huge_transfer,
+            Some(coin.clone()),
             "could not check",
         ),
     ] {
@@ -2428,7 +2489,8 @@ async fn finalize_and_sign_refused_when_the_name_left_its_lock_transfer() {
 
 /// R19: Finalize & sign opens once the transfer lockup is over at the next
 /// block (blocks_until_finalize == 0), and a listing still Locking is
-/// refused whatever the node says.
+/// refused whatever the node says; one already past it, or over, is refused
+/// with its state's own reason.
 #[tokio::test]
 async fn finalize_and_sign_refused_before_the_lockup() {
     let mut r = ready_fixture("regtest").await;
@@ -2450,6 +2512,13 @@ async fn finalize_and_sign_refused_before_the_lockup() {
         ("locking", "after the transfer lockup"),
         ("finalizing", "already finalized into its lock"),
         ("listed", "already finalized into its lock"),
+        ("sale_pending", "already finalized into its lock"),
+        ("cancelling", "already finalized into its lock"),
+        ("aborted", "this listing was aborted"),
+        ("expired", "the name expired while it was locked"),
+        ("cancelled", "this listing is cancelled"),
+        ("sold", "this name is sold"),
+        ("restored", "finalized by another wallet"),
     ] {
         with_db(&r.app, |c| {
             c.execute(
@@ -3100,7 +3169,30 @@ async fn listing_file_is_exported_only_once_the_finalize_is_mined() {
     set_state(ListingState::Listed);
     let file = export().expect("Listed");
     let saved = r.listing().listing_file_json;
-    assert_eq!(Some(file), saved);
+    assert_eq!(Some(file.clone()), saved);
+    // Every state: the file once the FINALIZE is mined and the listing is
+    // not over; each ended state with its own reason.
+    for state in ListingState::ALL {
+        set_state(state);
+        let want = match state {
+            ListingState::Aborted => Some("this listing was aborted"),
+            ListingState::Expired => Some("the name expired while it was locked"),
+            ListingState::Cancelled => Some("this listing is cancelled"),
+            ListingState::Sold => Some("this name is sold"),
+            ListingState::Restored => Some("finalized by another wallet"),
+            ListingState::Locking | ListingState::ReadyToFinalize | ListingState::Finalizing => {
+                Some("once the finalize into the lock is mined")
+            }
+            _ => None,
+        };
+        match want {
+            None => assert_eq!(export().expect("exported"), file, "{state:?}"),
+            Some(needle) => {
+                let e = err_text(export().expect_err("refused"));
+                assert!(e.contains(needle), "{state:?}: {e}");
+            }
+        }
+    }
     let e = with_db(&r.app, |c| {
         export_listing_file_from_conn(c, "another-profile", &r.listing_id)
     })
