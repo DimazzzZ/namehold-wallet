@@ -44,7 +44,7 @@ const COOLJOBS_TXID: &str = "b0fdf437d88f96cc7ff13082e4f7e536f3d6c6be053b76dbb29
 
 // --- wallet fixtures --------------------------------------------------------
 
-fn seed() -> [u8; 64] {
+pub(crate) fn seed() -> [u8; 64] {
     hd::seed_from_mnemonic(MNEMONIC, "").unwrap()
 }
 

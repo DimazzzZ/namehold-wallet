@@ -1,4 +1,4 @@
-//! Background jobs for Shakedex purchases (R13).
+//! Background jobs for Shakedex purchases (R13) and listings (R19).
 //!
 //! Every sync derives each open purchase's state from the chain — from what
 //! the node knows about the purchase transaction, the seller's lock coin and
@@ -32,6 +32,13 @@
 //! that draft. The job runs from `commands::sync::run_sync_steps` when the
 //! profile's node is authoritative, so both the app and the background daemon
 //! execute it.
+//!
+//! A second step resolves each listing before the FINALIZE into the lock
+//! from chain facts (R19): Aborted once the name has left the lock TRANSFER
+//! (its Cancel transfer mined, a REVOKE, a lock TRANSFER that never landed),
+//! Expired when hsd reports no live name, Locking again if a reorg undoes the
+//! abort ([`refresh_listings_before_lock_with_client`]). It only reads the
+//! node.
 
 use crate::db::queries::{self, PurchaseProgress, PurchaseState, ShakedexPurchase, TxDraftRow};
 use crate::error::AppError;
@@ -774,4 +781,205 @@ impl Job<'_> {
     fn save(&self, p: &ShakedexPurchase, progress: PurchaseProgress) -> Result<(), AppError> {
         queries::update_shakedex_purchase_state(self.conn, &p.id, &progress)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Listings before the FINALIZE into the lock (R19)
+// ---------------------------------------------------------------------------
+
+/// How long an Aborted listing is looked at again for a reorg that takes its
+/// Cancel transfer out of the chain, the same window as a lost purchase's
+/// revival.
+pub const ABORT_RECHECK_DAYS: u32 = REVIVE_WINDOW_DAYS;
+
+/// What the chain shows about a listing's Cancel transfer. Every coin lookup
+/// is hsd's `GET /coin/:hash/:index`, which needs no transaction index and
+/// answers 404 for a coin spent in a block or in the mempool
+/// (`node.getCoin`).
+#[derive(Debug, PartialEq, Eq)]
+enum CancelOnChain {
+    /// The cancel's UPDATE is a coin mined in a block.
+    Mined,
+    /// The cancel is in no block: its UPDATE is a coin only in the mempool,
+    /// or the lock TRANSFER it spends is still a coin.
+    NotMined,
+    /// No answer that decides it: a transport error, a coin without hsd's
+    /// height, or both coins gone (the cancel mined and its UPDATE spent
+    /// since, or the lock TRANSFER spent by another transaction).
+    Unknown,
+}
+
+/// Read [`CancelOnChain`] for the cancel `cancel_txid`, which spends the
+/// lock TRANSFER at `lock_transfer_txid:0`. The cancel's UPDATE is its
+/// output 0 (`actions::build_plan` puts the covenant output first).
+async fn cancel_on_chain(
+    client: &dyn NodeRpc,
+    cancel_txid: &str,
+    lock_transfer_txid: &str,
+) -> CancelOnChain {
+    match client.get_coin(cancel_txid, 0).await {
+        Ok(Some(update)) => match update.mined_height() {
+            Ok(Some(_)) => CancelOnChain::Mined,
+            Ok(None) => CancelOnChain::NotMined,
+            Err(_) => CancelOnChain::Unknown,
+        },
+        Ok(None) => match client.get_coin(lock_transfer_txid, 0).await {
+            Ok(Some(_)) => CancelOnChain::NotMined,
+            Ok(None) | Err(_) => CancelOnChain::Unknown,
+        },
+        Err(_) => CancelOnChain::Unknown,
+    }
+}
+
+/// What the chain shows about a listing's lock TRANSFER at
+/// `lock_transfer_txid:0`, from hsd's `getnameinfo` and `GET /coin` alone.
+#[derive(Debug, PartialEq, Eq)]
+enum LockOnChain {
+    /// hsd reports no live state for the name (`info: null`): it never
+    /// existed or has expired.
+    NoName,
+    /// The lock TRANSFER is a coin (mined or in the mempool), or the owner
+    /// of a name that is not revoked.
+    Held,
+    /// Neither: the owner is another outpoint, or the name is revoked
+    /// (a REVOKE leaves `owner` at the coin it spent and sets `revoked`,
+    /// hsd `chain.js`), and `GET /coin` is hsd's empty 404 (spent in a block
+    /// or in the mempool, or never mined).
+    Gone,
+}
+
+/// Read [`LockOnChain`]. Any read error, and a reply without `info`, the
+/// owner's `hash` and `index`, or `revoked`, is an error: not hsd's whole
+/// answer, so no verdict.
+async fn lock_on_chain(
+    client: &dyn NodeRpc,
+    name: &str,
+    lock_transfer_txid: &str,
+) -> Result<LockOnChain, AppError> {
+    let reply = client.get_name_info(name).await?;
+    let Some(info) = name_info(&reply)? else {
+        return Ok(LockOnChain::NoName);
+    };
+    let owner = info.get("owner");
+    let hash = owner.and_then(|o| o.get("hash")).and_then(|h| h.as_str());
+    let index = owner.and_then(|o| o.get("index")).and_then(|i| i.as_u64());
+    let revoked = info.get("revoked").and_then(|r| r.as_u64());
+    let (Some(hash), Some(index), Some(revoked)) = (hash, index, revoked) else {
+        return Err(AppError::Rpc(
+            "node did not report the name's owner or whether it was revoked".into(),
+        ));
+    };
+    let lock_owns = revoked == 0 && index == 0 && hash.eq_ignore_ascii_case(lock_transfer_txid);
+    if lock_owns || client.get_coin(lock_transfer_txid, 0).await?.is_some() {
+        Ok(LockOnChain::Held)
+    } else {
+        Ok(LockOnChain::Gone)
+    }
+}
+
+/// Best-effort sync step: resolve each listing before the FINALIZE into the
+/// lock from what the chain shows (see
+/// [`refresh_listings_before_lock_with_client`]). Like the other sync steps
+/// it returns silently when the database or the profile's node client cannot
+/// be opened; a failed refresh is logged. It only reads the node, so it runs
+/// in the daemon as it does in the app; the caller runs it only when the node
+/// is authoritative, since a node that is behind would show a mined cancel's
+/// lock TRANSFER as unspent.
+pub async fn refresh_listings_before_lock_step(db_path: &str, profile_id: &str) {
+    let conn = match crate::db::connection::open_migrated(db_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let client = match NodeRpcClient::for_profile(&conn, profile_id) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if let Err(e) = refresh_listings_before_lock_with_client(&conn, &client, profile_id).await {
+        eprintln!("shakedex listings: lock refresh failed for {profile_id}: {e}");
+    }
+}
+
+/// R19, for each listing still Locking or ReadyToFinalize, or Aborted within
+/// [`ABORT_RECHECK_DAYS`]. Every verdict rests on a found fact, never on the
+/// broadcast (hsd answers `sendrawtransaction` with the txid even when it
+/// refuses):
+///
+/// - the linked Cancel transfer's UPDATE mined in a block → Aborted; back in
+///   the mempool, or the lock TRANSFER a coin again → Locking;
+/// - otherwise, from the name and the lock TRANSFER alone ([`LockOnChain`]):
+///   hsd reports no live name → Expired; the lock TRANSFER neither the owner
+///   nor a coin while its draft can no longer land (mined, dropped, failed,
+///   or deleted) → Aborted — a Cancel transfer sent from anywhere, a REVOKE,
+///   a replaced cancel whose older one was mined, a lock TRANSFER that never
+///   landed; an Aborted listing whose lock TRANSFER is a coin or the owner
+///   again → Locking.
+///
+/// Locking again is refused while another listing of the name is open
+/// ([`queries::unabort_shakedex_listing`]). Anything the node does not
+/// answer leaves the listing as it is. Sends nothing. A failure on one
+/// listing is logged and leaves it for the next sync.
+pub async fn refresh_listings_before_lock_with_client(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    profile_id: &str,
+) -> Result<(), AppError> {
+    for l in queries::list_shakedex_listings_before_lock(conn, profile_id, ABORT_RECHECK_DAYS)? {
+        if let Err(e) = refresh_before_lock(conn, client, &l).await {
+            eprintln!("shakedex listings: {} ({}): {e}", l.id, l.name);
+        }
+    }
+    Ok(())
+}
+
+async fn refresh_before_lock(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    l: &queries::ShakedexListing,
+) -> Result<(), AppError> {
+    let Some(lock_transfer_txid) = l.lock_transfer_txid.as_deref() else {
+        return Ok(());
+    };
+    let abortable = l.state.aborts_by_cancel_transfer();
+    let aborted = l.state == queries::ListingState::Aborted;
+    // The linked cancel first. Its txid is kept on the listing, not read
+    // from its draft: a cancel broadcast, dropped and deleted may still be
+    // mined.
+    if let Some(cancel_txid) = l.abort_txid.as_deref() {
+        match cancel_on_chain(client, cancel_txid, lock_transfer_txid).await {
+            CancelOnChain::Mined if abortable => {
+                queries::abort_shakedex_listing(conn, &l.id)?;
+                return Ok(());
+            }
+            CancelOnChain::NotMined if aborted => {
+                relock(conn, l)?;
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+    match lock_on_chain(client, &l.name, lock_transfer_txid).await? {
+        LockOnChain::NoName if abortable => {
+            queries::expire_shakedex_listing(conn, &l.id)?;
+        }
+        LockOnChain::Gone if abortable => {
+            let status = queries::lock_draft_status(conn, l)?;
+            if !status.is_some_and(|s| queries::lock_draft_may_still_land(&s)) {
+                queries::abort_shakedex_listing(conn, &l.id)?;
+            }
+        }
+        LockOnChain::Held if aborted => relock(conn, l)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn relock(conn: &rusqlite::Connection, l: &queries::ShakedexListing) -> Result<(), AppError> {
+    if queries::unabort_shakedex_listing(conn, &l.id)? == 0 {
+        eprintln!(
+            "shakedex listings: {} ({}): its abort is no longer on chain, but it stays \
+             aborted: another listing of the name is open",
+            l.id, l.name
+        );
+    }
+    Ok(())
 }

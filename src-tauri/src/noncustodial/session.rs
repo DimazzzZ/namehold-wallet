@@ -14,6 +14,23 @@
 use crate::error::AppError;
 use crate::noncustodial::hd::ExtendedPrivKey;
 use crate::noncustodial::network::Network;
+use std::collections::HashMap;
+
+/// Unlock lifetime when `signer_session_timeout_seconds` is unset, empty,
+/// zero or unreadable: 15 minutes.
+const DEFAULT_SESSION_SECS: u64 = 900;
+
+/// How long an unlock lasts, in milliseconds, read from the
+/// `signer_session_timeout_seconds` setting. A zero, empty or unreadable value
+/// gets the default rather than a session that is over at once.
+pub fn session_ttl_ms(settings: &HashMap<String, String>) -> u128 {
+    let secs = settings
+        .get("signer_session_timeout_seconds")
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_SESSION_SECS);
+    u128::from(secs) * 1000
+}
 
 /// Current wall-clock time in milliseconds since the Unix epoch.
 fn now_ms() -> u128 {
@@ -95,6 +112,22 @@ impl SignerSession {
         }
     }
 
+    /// The gate every use of the unlocked key passes: the session is
+    /// unlocked and not expired, it is `profile_id`'s (one wallet's unlocked
+    /// signer never acts for another), and its expiry moves `ttl_ms` ahead.
+    pub fn authorize(&mut self, profile_id: &str, ttl_ms: u128) -> Result<(), AppError> {
+        if !self.is_unlocked() {
+            return Err(AppError::WalletLocked);
+        }
+        if self.wallet_profile_id != profile_id {
+            return Err(AppError::InvalidInput(
+                "the unlocked signer is for a different wallet profile".to_string(),
+            ));
+        }
+        self.touch(ttl_ms);
+        Ok(())
+    }
+
     /// Lock the session, dropping (and thereby zeroizing) the key material.
     pub fn lock(&mut self) {
         // Dropping the ExtendedPrivKey zeroizes secret + chain code.
@@ -113,6 +146,7 @@ impl Drop for SignerSession {
 mod tests {
     use super::*;
     use crate::noncustodial::hd::ExtendedPrivKey;
+    use std::collections::HashMap;
 
     fn test_master() -> ExtendedPrivKey {
         // BIP32 vector-1 seed.
@@ -164,5 +198,82 @@ mod tests {
         // Expiry should remain 0 (locked).
         assert_eq!(s.unlocked_until_ms(), expiry_before);
         assert_eq!(s.unlocked_until_ms(), 0);
+    }
+
+    #[test]
+    fn authorize_refuses_a_locked_session() {
+        let mut s = SignerSession::unlock("p1".to_string(), Network::Main, test_master(), 60_000);
+        s.lock();
+        assert!(matches!(
+            s.authorize("p1", 60_000),
+            Err(AppError::WalletLocked)
+        ));
+    }
+
+    #[test]
+    fn authorize_refuses_another_profiles_session() {
+        let mut s = SignerSession::unlock("p1".to_string(), Network::Main, test_master(), 60_000);
+        match s.authorize("p2", 60_000) {
+            Err(AppError::InvalidInput(m)) => {
+                assert!(m.contains("different wallet profile"), "{m}")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn authorize_moves_the_expiry_ahead() {
+        let mut s = SignerSession::unlock("p1".to_string(), Network::Main, test_master(), 1_000);
+        let before = s.unlocked_until_ms();
+        s.authorize("p1", 600_000).unwrap();
+        assert!(s.unlocked_until_ms() >= before + 590_000);
+    }
+
+    // ---------- session_ttl_ms --------------------------------------------
+
+    #[test]
+    fn session_ttl_ms_default_when_setting_absent() {
+        let settings: HashMap<String, String> = HashMap::new();
+        // Default 900 seconds → 900_000 ms.
+        assert_eq!(session_ttl_ms(&settings), 900_000u128);
+    }
+
+    #[test]
+    fn session_ttl_ms_reads_valid_numeric_setting() {
+        let mut settings = HashMap::new();
+        settings.insert(
+            "signer_session_timeout_seconds".to_string(),
+            "60".to_string(),
+        );
+        assert_eq!(session_ttl_ms(&settings), 60_000u128);
+    }
+
+    #[test]
+    fn session_ttl_ms_falls_back_when_setting_is_non_numeric() {
+        let mut settings = HashMap::new();
+        settings.insert(
+            "signer_session_timeout_seconds".to_string(),
+            "not-a-number".to_string(),
+        );
+        assert_eq!(session_ttl_ms(&settings), 900_000u128);
+    }
+
+    #[test]
+    fn session_ttl_ms_falls_back_when_setting_is_empty_string() {
+        let mut settings = HashMap::new();
+        settings.insert("signer_session_timeout_seconds".to_string(), String::new());
+        assert_eq!(session_ttl_ms(&settings), 900_000u128);
+    }
+
+    #[test]
+    fn session_ttl_ms_falls_back_when_setting_is_zero() {
+        // Zero is filtered out (`filter(|n| *n > 0)`), so we still get the
+        // default rather than a 0-ms TTL that would time out immediately.
+        let mut settings = HashMap::new();
+        settings.insert(
+            "signer_session_timeout_seconds".to_string(),
+            "0".to_string(),
+        );
+        assert_eq!(session_ttl_ms(&settings), 900_000u128);
     }
 }

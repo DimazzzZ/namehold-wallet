@@ -71,7 +71,8 @@ fn test_schema_version_tracking() {
     // 032 (clear_seeded_mainnet_explorer: 009 seeded a mainnet URL that
     //      outranked the network default on every other network).
     // 033 (shakedex_purchases: buyer-side Shakedex purchase tracking).
-    assert_eq!(count, 33);
+    // 034 (shakedex_listings: seller-side Shakedex listing tracking).
+    assert_eq!(count, 34);
 }
 
 #[test]
