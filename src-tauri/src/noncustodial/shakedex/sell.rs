@@ -264,6 +264,11 @@ pub const STEP_SIGNATURE_PERMANENCE: &str = "Each signature lets anyone buy the 
 pub const LOCK_COMMITMENT_MISMATCH: &str = "the lock transfer does not commit to this \
      wallet's lock for the name: nothing was finalized or signed";
 
+/// Finalize & sign is refused while the listing's Cancel transfer may still
+/// be mined: both spend the lock TRANSFER coin.
+pub const CANCEL_TRANSFER_PENDING: &str = "a Cancel transfer of this listing is pending and \
+     spends the same coin: Finalize & sign waits until it is dropped, failed or deleted";
+
 /// R19: the price a person typed, in HNS, as doos. Refused, with the reason:
 /// not a plain decimal, more than 6 decimals, 0, below the dust limit, above
 /// the money supply. Never rounds.

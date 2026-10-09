@@ -1291,7 +1291,15 @@ pub fn lock_draft_holds_name(status: &str) -> bool {
 /// holds the name ([`lock_draft_holds_name`]) and is not mined yet. Until it
 /// is mined or given up, a missing lock coin proves nothing (R19).
 pub fn lock_draft_may_still_land(status: &str) -> bool {
-    lock_draft_holds_name(status) && status != CONFIRMED_STATUS
+    draft_may_still_land(status)
+}
+
+/// Whether a draft in `status` may still be mined: unsent ([`never_sent`]),
+/// or sent and neither mined nor given up (`dropped`, `failed`). A Cancel
+/// transfer in such a status holds back the FINALIZE into the lock, which
+/// spends the same coin.
+pub fn draft_may_still_land(status: &str) -> bool {
+    (never_sent(status) || may_have_reached_chain(status)) && status != CONFIRMED_STATUS
 }
 
 /// `items` quoted as an SQL list, `('a', 'b')`. Only for the fixed spellings
