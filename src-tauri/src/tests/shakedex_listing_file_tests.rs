@@ -328,3 +328,127 @@ fn unreadable_expiry_refused() {
         );
     }
 }
+
+use crate::noncustodial::hd::ExtendedPrivKey;
+use crate::noncustodial::rpc::{BlockchainInfo, NodeCoin};
+use crate::noncustodial::shakedex::listing_file::{write_listing_file, NewListingFile, PriceStep};
+use crate::noncustodial::shakedex::lock_key::derive_lock_key;
+use crate::noncustodial::shakedex::sell::{buy_now_lock_time, sign_step};
+use crate::noncustodial::shakedex::template::StepTemplate;
+use crate::noncustodial::shakedex::verify::{verify_listing, Verdict};
+use crate::noncustodial::tx::output_address_from_string;
+use crate::tests::mock_node_rpc::MockNodeRpc;
+
+const W_NAME: &str = "dexsale";
+const W_LOCK_TXID: [u8; 32] = [
+    0x6c, 0x01, 0x6c, 0x02, 0x6c, 0x03, 0x6c, 0x04, 0x6c, 0x05, 0x6c, 0x06, 0x6c, 0x07, 0x6c, 0x08,
+    0x6c, 0x09, 0x6c, 0x0a, 0x6c, 0x0b, 0x6c, 0x0c, 0x6c, 0x0d, 0x6c, 0x0e, 0x6c, 0x0f, 0x6c, 0x10,
+];
+const W_LOCK_VALUE: u64 = 1_000_000;
+const W_MTP: u64 = 1_700_000_000;
+const W_TIP: i64 = 2_000;
+const W_NAME_HEIGHT: u32 = 50;
+
+/// A Buy Now signed by a lock key derived here, as Finalize & sign signs it.
+fn written(
+    network: Network,
+) -> (
+    String,
+    crate::noncustodial::shakedex::lock_key::LockKey,
+    String,
+) {
+    let master = ExtendedPrivKey::from_seed(&[7u8; 64]).unwrap();
+    let key = derive_lock_key(&master, network, 0, W_NAME).unwrap();
+    let pay = crate::noncustodial::address::encode_p2wpkh(network, &[9; 20]).unwrap();
+    let lock_time = buy_now_lock_time(W_MTP);
+    let t = StepTemplate {
+        lock_outpoint: (W_LOCK_TXID, 0),
+        lock_value: W_LOCK_VALUE,
+        lock_pubkey: &key.pubkey,
+        payment: output_address_from_string(network, &pay).unwrap(),
+        price: 5_000_000,
+        lock_time_secs: lock_time,
+    };
+    let sig = sign_step(&key, &t).unwrap();
+    let steps = [PriceStep {
+        price: 5_000_000,
+        lock_time,
+        signature: sig,
+        fee: 0,
+    }];
+    let json = write_listing_file(
+        &NewListingFile {
+            name: W_NAME,
+            lock_txid: W_LOCK_TXID,
+            lock_vout: 0,
+            public_key: key.pubkey,
+            payment_addr: &pay,
+            steps: &steps,
+            expires_at: W_MTP + 365 * 86_400,
+        },
+        network,
+    )
+    .unwrap();
+    (json, key, pay)
+}
+
+/// R23 and R2: what we write is read back by our own strict parser, field
+/// for field, and comes back unchanged; R7: on a node where its lock coin is
+/// our FINALIZE at the lock address and the name's owner, it is buyable.
+#[tokio::test]
+async fn written_listing_file_round_trips_through_the_strict_parser() {
+    for network in [Network::Main, Network::Regtest] {
+        let (json, key, pay) = written(network);
+        let l = ListingFile::parse(&json, network).expect("our own file parses");
+        assert_eq!(l.name, W_NAME);
+        assert_eq!((l.lock_txid, l.lock_vout), (W_LOCK_TXID, 0));
+        assert_eq!(l.public_key, key.pubkey);
+        assert_eq!(l.payment_addr, pay);
+        assert_eq!(l.fee_addr, None);
+        assert_eq!(l.expires_at, Some(W_MTP + 365 * 86_400));
+        assert_eq!(l.steps.len(), 1);
+        assert_eq!(l.steps[0].signature[64], 0x84);
+        assert_eq!(v(&l.to_json().unwrap()), v(&json), "round-trips unchanged");
+
+        let txid = hex::encode(W_LOCK_TXID);
+        let nh = hex::encode(crate::noncustodial::names::hash_name(W_NAME).unwrap());
+        let coin: NodeCoin = serde_json::from_value(serde_json::json!({
+            "hash": txid, "index": 0, "value": W_LOCK_VALUE, "address": key.address,
+            "height": W_TIP - 5, "coinbase": false, "version": 0,
+            "covenant": { "type": 10, "action": "FINALIZE", "items": [
+                nh, hex::encode(W_NAME_HEIGHT.to_le_bytes()), hex::encode(W_NAME),
+                "00", "00000000", "01000000", "00".repeat(32) ] }
+        }))
+        .unwrap();
+        let name_info = serde_json::json!({ "info": {
+            "name": W_NAME, "height": W_NAME_HEIGHT, "renewal": W_TIP - 5, "claimed": 0,
+            "renewals": 1, "weak": false, "transfer": 0, "revoked": 0,
+            "owner": { "hash": txid, "index": 0 }, "value": W_LOCK_VALUE } });
+        let mut info: BlockchainInfo =
+            serde_json::from_value(serde_json::json!({ "blocks": W_TIP, "headers": W_TIP }))
+                .unwrap();
+        info.mediantime = Some(W_MTP);
+        let node = MockNodeRpc::new()
+            .with_blockchain_info(info)
+            .with_name_info(name_info)
+            .with_get_coin(move |_, _| Ok(Some(coin.clone())));
+        match verify_listing(&node, network, &l).await {
+            Verdict::Buyable(b) => assert_eq!(b.current_step, 0, "{network:?}"),
+            Verdict::Hidden(h) => panic!("{network:?}: hidden {h:?}"),
+        }
+    }
+}
+
+/// The file carries exactly the keys the CLI writes and LearnHNS serves
+/// (the live dexreviews proof), so every Shakedex wallet reads it.
+#[test]
+fn written_listing_file_has_the_cli_field_set() {
+    let keys = |j: &Value| -> Vec<String> { j.as_object().unwrap().keys().cloned().collect() };
+    let (json, _, _) = written(Network::Main);
+    let ours = v(&json);
+    assert_eq!(keys(&ours), keys(&v(DEX)));
+    assert_eq!(keys(&ours["data"][0]), keys(&v(DEX)["data"][0]));
+    assert_eq!(ours["version"], 2);
+    assert_eq!(ours["feeAddr"], Value::Null);
+    assert!(ours["expiresAt"].is_u64(), "seconds, as the CLI writes it");
+}
