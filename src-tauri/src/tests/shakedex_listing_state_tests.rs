@@ -323,6 +323,22 @@ fn each_listing_write_moves_exactly_its_transitions() {
     }
 }
 
+/// A stored lock output index that is not a `u32` is a corrupted row: the
+/// after-lock job reads no coin for it and leaves the listing as it is.
+#[tokio::test]
+async fn a_listing_with_a_corrupted_lock_output_is_left_as_it_is() {
+    let f = fx(ListingState::Finalizing);
+    f.conn
+        .execute("UPDATE shakedex_listings SET lock_vout = -1", [])
+        .unwrap();
+    let mined = lock_coin(&f, TIP - 20);
+    let rpc = MockNodeRpc::new()
+        .with_name_info(info((&f.lock_txid, 0)))
+        .with_get_coin(move |_, _| Ok(Some(mined.clone())));
+    run(&f, &rpc).await;
+    assert_eq!(listing(&f).state, ListingState::Finalizing);
+}
+
 /// One txid case policy: every txid a listing write stores is lowercase,
 /// however the caller spelled it, and the writes and lookups compare stored
 /// txids exactly with a lowercased argument.
@@ -1711,6 +1727,28 @@ async fn expired_lock_is_expired_not_sold() {
         listing(&f).state,
         ListingState::Expired,
         "lock coin spent, name expired"
+    );
+    // A purchase pending when the name expired under it: SalePending is
+    // Expired too, keeping its lock outpoint (R22, `ListingWrite::ExpireLocked`).
+    let f = fx(ListingState::SalePending);
+    f.conn
+        .execute("UPDATE shakedex_listings SET sold_txid = ?1", [&buy])
+        .unwrap();
+    paid(&f, &buy, 2, -1, false);
+    run(
+        &f,
+        &node(
+            json!({ "info": null, "start": null }),
+            vec![transfer_out_of_lock(&f, &buy, &f.buyer, -1)],
+            purchase_rest(&f, &buy, -1, &f.payment),
+        ),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.lock_txid.as_deref(), l.lock_vout),
+        (ListingState::Expired, Some(f.lock_txid.as_str()), Some(0)),
+        "sale pending, name expired"
     );
     // A live name whose height is the lock coin's: Listed as before.
     let f = fx(ListingState::Listed);

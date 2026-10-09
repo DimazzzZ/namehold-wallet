@@ -2639,7 +2639,8 @@ pub async fn build_cancel_draft(
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     // R19: a Cancel transfer of a name still locking is its listing's abort.
     // The link commits with the draft; the listing becomes Aborted only once
-    // this cancel is mined (`shakedex_jobs::refresh_listings_before_lock_with_client`).
+    // this cancel is mined (the before-lock job of
+    // `shakedex_jobs::refresh_listings_with_client`).
     let tx = conn.unchecked_transaction()?;
     let label = DraftLabel {
         action: "cancel",

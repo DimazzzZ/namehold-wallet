@@ -1413,7 +1413,7 @@ async fn lock_confirmation_shows_what_locking_costs() {
 
 use crate::commands::names::build_cancel_draft;
 use crate::noncustodial::rpc::NodeCoin;
-use crate::shakedex_jobs::refresh_listings_before_lock_with_client;
+use crate::shakedex_jobs::refresh_listings_with_client;
 use crate::tests::mock_node_rpc::{MockNodeRpc, RpcCall};
 
 /// Lock NAME, then make the wallet's records what a sync leaves after the
@@ -1479,17 +1479,17 @@ fn chain(
     })
 }
 
-/// Run the abort job on the app's database, as the sync step does. The
-/// connection is taken out of the app for the call, so no lock is held
-/// across an await.
-async fn run_abort_job(app: &App, rpc: &MockNodeRpc) {
+/// Run the listing step (both listing jobs, as one sync runs them) on the
+/// app's database. The connection is taken out of the app for the call, so
+/// no lock is held across an await.
+async fn run_listing_step(app: &App, rpc: &MockNodeRpc) {
     let conn = std::mem::replace(
         &mut *app.state::<AppState>().db.lock().unwrap(),
         Connection::open_in_memory().unwrap(),
     );
-    let res = refresh_listings_before_lock_with_client(&conn, rpc, PROFILE).await;
+    let res = refresh_listings_with_client(&conn, rpc, PROFILE).await;
     *app.state::<AppState>().db.lock().unwrap() = conn;
-    res.expect("abort job runs");
+    res.expect("listing step runs");
     assert_eq!(
         rpc.count_matching(|c| matches!(c, RpcCall::SendRawTransaction(_))),
         0,
@@ -1534,20 +1534,20 @@ async fn cancel_transfer_aborts_the_listing() {
     });
 
     // Sent, nothing on chain yet: the lock TRANSFER is still unspent.
-    run_abort_job(&app, &chain(&ctxid, None, &lock_txid, true)).await;
+    run_listing_step(&app, &chain(&ctxid, None, &lock_txid, true)).await;
     assert_eq!(
         listing_state(&app, &l.id),
         ListingState::Locking,
         "not taken"
     );
-    run_abort_job(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
+    run_listing_step(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
     assert_eq!(
         listing_state(&app, &l.id),
         ListingState::Locking,
         "in the mempool"
     );
 
-    run_abort_job(
+    run_listing_step(
         &app,
         &chain(&ctxid, Some(Some(QUIET_TIP)), &lock_txid, false),
     )
@@ -1555,14 +1555,14 @@ async fn cancel_transfer_aborts_the_listing() {
     assert_eq!(listing_state(&app, &l.id), ListingState::Aborted);
     assert!(open_listing(&app).is_none(), "the name is free again");
 
-    run_abort_job(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
+    run_listing_step(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
     assert_eq!(
         listing_state(&app, &l.id),
         ListingState::Locking,
         "a reorg took the cancel back to the mempool"
     );
 
-    run_abort_job(
+    run_listing_step(
         &app,
         &chain(&ctxid, Some(Some(QUIET_TIP)), &lock_txid, false),
     )
@@ -1572,7 +1572,7 @@ async fn cancel_transfer_aborts_the_listing() {
         ListingState::Aborted,
         "mined again"
     );
-    run_abort_job(&app, &chain(&ctxid, None, &lock_txid, true)).await;
+    run_listing_step(&app, &chain(&ctxid, None, &lock_txid, true)).await;
     assert_eq!(
         listing_state(&app, &l.id),
         ListingState::Locking,
@@ -1606,7 +1606,7 @@ async fn abort_needs_the_nodes_word() {
             ("both spent", chain(&ctxid, None, &lock_txid, false)),
             ("no answer", MockNodeRpc::new()),
         ] {
-            run_abort_job(&app, &rpc).await;
+            run_listing_step(&app, &rpc).await;
             assert_eq!(listing_state(&app, &id), state, "{what}");
         }
     }
@@ -1691,7 +1691,7 @@ async fn deleted_dropped_cancel_mined_later_still_aborts() {
         assert!(queries::get_tx_draft(c, &cancel.id).unwrap().is_none());
     });
 
-    run_abort_job(
+    run_listing_step(
         &app,
         &chain(&ctxid, Some(Some(QUIET_TIP)), &lock_txid, false),
     )
@@ -1713,7 +1713,7 @@ async fn reorged_abort_leaves_a_newer_listing_open() {
         .unwrap();
     let ctxid = cancel.summary["txid"].as_str().unwrap().to_string();
     let old = open_listing(&app).unwrap().id;
-    run_abort_job(
+    run_listing_step(
         &app,
         &chain(&ctxid, Some(Some(QUIET_TIP)), &lock_txid, false),
     )
@@ -1726,7 +1726,7 @@ async fn reorged_abort_leaves_a_newer_listing_open() {
         queries::insert_shakedex_listing(c, &newer).unwrap()
     });
 
-    run_abort_job(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
+    run_listing_step(&app, &chain(&ctxid, Some(Some(-1)), &lock_txid, false)).await;
     assert_eq!(listing_state(&app, &old), ListingState::Aborted);
     assert_eq!(open_listing(&app).unwrap().id, "newer");
     // Refused by the guard, not by the index: no error for the job to log.
@@ -1868,7 +1868,7 @@ async fn external_cancel_aborts_the_listing() {
     let id = open_listing(&app).unwrap().id;
     assert_eq!(open_listing(&app).unwrap().abort_txid, None);
 
-    run_abort_job(
+    run_listing_step(
         &app,
         &facts(
             info_with(&lock_txid, 0, 0),
@@ -1879,7 +1879,7 @@ async fn external_cancel_aborts_the_listing() {
     assert_eq!(listing_state(&app, &id), ListingState::Locking);
 
     let other_cancel = "ee".repeat(32);
-    run_abort_job(
+    run_listing_step(
         &app,
         &facts(
             info_with(&other_cancel, 0, 0),
@@ -1899,9 +1899,9 @@ async fn revoked_name_aborts_the_listing() {
     let lock_txid = locked_on_chain(&app).await;
     let id = open_listing(&app).unwrap().id;
     let revoked = facts(info_with(&lock_txid, 0, QUIET_TIP as u64), &[]);
-    run_abort_job(&app, &revoked).await;
+    run_listing_step(&app, &revoked).await;
     assert_eq!(listing_state(&app, &id), ListingState::Aborted);
-    run_abort_job(&app, &revoked).await;
+    run_listing_step(&app, &revoked).await;
     assert_eq!(listing_state(&app, &id), ListingState::Aborted, "stays");
 }
 
@@ -1922,7 +1922,7 @@ async fn dead_lock_draft_aborts_and_the_name_can_be_locked_again() {
                 queries::delete_tx_draft(c, &lock.id).unwrap();
             }
         });
-        run_abort_job(
+        run_listing_step(
             &app,
             &facts(
                 info_with(OWNER_TXID, 0, 0),
@@ -1956,7 +1956,7 @@ async fn replaced_cancel_aborts_the_listing() {
     assert_eq!(l.abort_draft_id.as_deref(), Some(b.id.as_str()));
     assert_ne!(l.abort_txid.as_deref(), Some(a_txid.as_str()));
 
-    run_abort_job(
+    run_listing_step(
         &app,
         &facts(info_with(&a_txid, 0, 0), &[(&a_txid, 0, COV_UPDATE)]),
     )
@@ -1977,7 +1977,7 @@ async fn lock_draft_in_flight_without_its_coin_changes_nothing() {
                 queries::update_tx_draft_status(c, &lock.id, status, None, None).unwrap();
             });
         }
-        run_abort_job(
+        run_listing_step(
             &app,
             &facts(
                 info_with(OWNER_TXID, 0, 0),
@@ -2001,7 +2001,7 @@ async fn name_without_live_state_expires_the_listing() {
         &[(&lock_txid, 0, COV_TRANSFER)],
     );
     set_state(&app, &id, ListingState::Aborted);
-    run_abort_job(&app, &gone).await;
+    run_listing_step(&app, &gone).await;
     assert_eq!(listing_state(&app, &id), ListingState::Aborted);
     with_db(&app, |c| {
         assert_eq!(
@@ -2011,7 +2011,7 @@ async fn name_without_live_state_expires_the_listing() {
         );
     });
     set_state(&app, &id, ListingState::Locking);
-    run_abort_job(&app, &gone).await;
+    run_listing_step(&app, &gone).await;
     assert_eq!(listing_state(&app, &id), ListingState::Expired);
 }
 
@@ -2038,13 +2038,13 @@ async fn aborted_listing_relocks_when_the_lock_transfer_is_back() {
         ("the owner again", facts(info_with(&lock_txid, 0, 0), &[])),
     ] {
         set_state(&app, &id, ListingState::Aborted);
-        run_abort_job(&app, &rpc).await;
+        run_listing_step(&app, &rpc).await;
         assert_eq!(listing_state(&app, &id), ListingState::Locking, "{what}");
     }
     // The lock TRANSFER is output 0: another output of its transaction is
     // not it.
     set_state(&app, &id, ListingState::Aborted);
-    run_abort_job(&app, &facts(info_with(&lock_txid, 1, 0), &[])).await;
+    run_listing_step(&app, &facts(info_with(&lock_txid, 1, 0), &[])).await;
     assert_eq!(listing_state(&app, &id), ListingState::Aborted, "output 1");
 }
 
@@ -2103,7 +2103,7 @@ async fn missing_chain_facts_change_nothing() {
         ));
         for (what, rpc) in cases {
             set_state(&app, &id, state);
-            run_abort_job(&app, &rpc).await;
+            run_listing_step(&app, &rpc).await;
             assert_eq!(listing_state(&app, &id), state, "{state:?}: {what}");
         }
     }
@@ -3416,30 +3416,6 @@ async fn listing_file_is_exported_only_once_the_finalize_is_mined() {
 
 // --- The listing's states from the chain (T3, R19) --------------------------
 
-use crate::shakedex_jobs::refresh_listings_after_lock_with_client;
-
-/// Run the finalize job on the app's database, as the sync step does.
-async fn run_finalize_job(app: &App, rpc: &MockNodeRpc) {
-    let conn = std::mem::replace(
-        &mut *app.state::<AppState>().db.lock().unwrap(),
-        Connection::open_in_memory().unwrap(),
-    );
-    let res = refresh_listings_after_lock_with_client(&conn, rpc, PROFILE).await;
-    *app.state::<AppState>().db.lock().unwrap() = conn;
-    res.expect("finalize job runs");
-    assert_eq!(
-        rpc.count_matching(|c| matches!(c, RpcCall::SendRawTransaction(_))),
-        0,
-        "the job sends nothing (it runs in the daemon too)"
-    );
-}
-
-/// Run both listing jobs in the order `run_sync_steps` runs them.
-async fn run_listing_jobs(app: &App, rpc: &MockNodeRpc) {
-    run_abort_job(app, rpc).await;
-    run_finalize_job(app, rpc).await;
-}
-
 fn tip_info(tip: i64) -> crate::noncustodial::rpc::BlockchainInfo {
     serde_json::from_value(json!({ "blocks": tip, "headers": tip, "mediantime": SIGN_MTP }))
         .unwrap()
@@ -3568,13 +3544,13 @@ async fn lockup_over_makes_the_listing_ready_to_finalize() {
     let coin = vec![lock_transfer_at(&lock_txid, TRANSFER_HEIGHT)];
     let tip = ready_tip(Network::Regtest);
 
-    run_abort_job(&app, &chain_at(info.clone(), tip - 1, coin.clone())).await;
+    run_listing_step(&app, &chain_at(info.clone(), tip - 1, coin.clone())).await;
     assert_eq!(
         listing_state(&app, &id),
         ListingState::Locking,
         "one block early"
     );
-    run_abort_job(&app, &chain_at(info, tip, coin)).await;
+    run_listing_step(&app, &chain_at(info, tip, coin)).await;
     assert_eq!(listing_state(&app, &id), ListingState::ReadyToFinalize);
 }
 
@@ -3619,14 +3595,14 @@ async fn ready_listing_goes_back_to_locking_on_a_reorg() {
             ListingState::ReadyToFinalize,
             "{case}: before"
         );
-        run_abort_job(&app, &chain).await;
+        run_listing_step(&app, &chain).await;
         assert_eq!(listing_state(&app, &id), want, "{case}");
     }
 }
 
 /// Coordinator (a)+(b): once Finalize & sign ran, the FINALIZE mined into
 /// our lock (owner the lock coin, lock TRANSFER 404, lock draft confirmed —
-/// T2's abort picture) is Listed by the finalize job and never Aborted by
+/// T2's abort picture) is Listed by the after-lock job and never Aborted by
 /// the before-lock job, which runs first in the same sync.
 #[tokio::test]
 async fn finalize_into_our_lock_is_never_an_abort() {
@@ -3647,15 +3623,15 @@ async fn finalize_into_our_lock_is_never_an_abort() {
             tip,
         )],
     );
-    run_abort_job(&r.app, &chain).await;
+    // The before-lock job runs first in the sync and leaves it to the
+    // after-lock job, which lists it.
+    run_listing_step(&r.app, &chain).await;
     assert_eq!(
         listing_state(&r.app, &r.listing_id),
-        ListingState::Finalizing,
+        ListingState::Listed,
         "not Aborted"
     );
-    run_finalize_job(&r.app, &chain).await;
-    assert_eq!(listing_state(&r.app, &r.listing_id), ListingState::Listed);
-    run_listing_jobs(&r.app, &chain).await;
+    run_listing_step(&r.app, &chain).await;
     assert_eq!(
         listing_state(&r.app, &r.listing_id),
         ListingState::Listed,
@@ -3709,7 +3685,7 @@ async fn finalize_into_our_lock_from_another_device_is_a_restored_lock() {
             ListingState::ReadyToFinalize,
             "{case}: before"
         );
-        run_listing_jobs(&r.app, &chain).await;
+        run_listing_step(&r.app, &chain).await;
         let l = r.listing();
         assert_eq!(l.state, want, "{case}");
         if want == ListingState::Restored {
@@ -3751,7 +3727,7 @@ async fn a_coin_of_another_name_at_our_lock_is_never_adopted_or_listed() {
         tip,
         vec![other_name(&other, 0)],
     );
-    run_listing_jobs(&r.app, &chain).await;
+    run_listing_step(&r.app, &chain).await;
     let l = r.listing();
     assert_eq!(
         (l.state, l.lock_txid),
@@ -3763,7 +3739,7 @@ async fn a_coin_of_another_name_at_our_lock_is_never_adopted_or_listed() {
     let (fin, vout) = finalized(&r).await;
     let mut info = name_info(RENEWAL, 0, &fin);
     info["info"]["owner"]["index"] = vout.into();
-    run_finalize_job(&r.app, &chain_at(info, tip, vec![other_name(&fin, vout)])).await;
+    run_listing_step(&r.app, &chain_at(info, tip, vec![other_name(&fin, vout)])).await;
     assert_eq!(r.listing().state, ListingState::Finalizing, "not listed");
 }
 
@@ -3786,7 +3762,7 @@ async fn dropped_finalize_mined_after_all_is_a_restored_lock() {
         tip,
         vec![lock_transfer_at(&r.lock_txid, TRANSFER_HEIGHT)],
     );
-    run_listing_jobs(&r.app, &dropped).await;
+    run_listing_step(&r.app, &dropped).await;
     assert_eq!(
         listing_state(&r.app, &r.listing_id),
         ListingState::ReadyToFinalize
@@ -3805,7 +3781,7 @@ async fn dropped_finalize_mined_after_all_is_a_restored_lock() {
             tip + 1,
         )],
     );
-    run_listing_jobs(&r.app, &mined).await;
+    run_listing_step(&r.app, &mined).await;
     let l = r.listing();
     assert_eq!(l.state, ListingState::Restored);
     assert_eq!(
@@ -3889,7 +3865,7 @@ async fn mined_finalize_lists_the_listing_and_a_reorg_takes_it_back() {
             mined + 2,
             vec![coin_at(&fin, vout, addr, cov, height)],
         );
-        run_listing_jobs(&r.app, &chain).await;
+        run_listing_step(&r.app, &chain).await;
         assert_eq!(listing_state(&r.app, &r.listing_id), want, "{case}");
     }
 }
@@ -3953,7 +3929,7 @@ async fn refused_finalize_returns_the_listing_to_ready() {
         } else {
             vec![]
         };
-        run_finalize_job(
+        run_listing_step(
             &r.app,
             &chain_at(r.info(), ready_tip(Network::Regtest) + 1, coins),
         )
@@ -3997,7 +3973,7 @@ async fn finalize_facts_missing_change_nothing() {
         ("lock coin without covenant", strip("covenant")),
         ("lock coin without height", strip("height")),
     ] {
-        run_listing_jobs(&r.app, &chain_at(r.info(), tip, vec![coin])).await;
+        run_listing_step(&r.app, &chain_at(r.info(), tip, vec![coin])).await;
         assert_eq!(
             listing_state(&r.app, &r.listing_id),
             ListingState::Finalizing,
@@ -4008,7 +3984,7 @@ async fn finalize_facts_missing_change_nothing() {
         .with_name_info(r.info())
         .with_blockchain_info(tip_info(tip))
         .with_get_coin(|_, _| Err(AppError::Rpc("down".into())));
-    run_listing_jobs(&r.app, &coin_err).await;
+    run_listing_step(&r.app, &coin_err).await;
     assert_eq!(
         listing_state(&r.app, &r.listing_id),
         ListingState::Finalizing,
@@ -4027,7 +4003,7 @@ async fn finalize_facts_missing_change_nothing() {
             Err(AppError::Rpc("down".into()))
         }
     });
-    run_finalize_job(&r.app, &transfer_err).await;
+    run_listing_step(&r.app, &transfer_err).await;
     assert_eq!(
         listing_state(&r.app, &r.listing_id),
         ListingState::Finalizing,
@@ -4070,7 +4046,7 @@ async fn finalize_facts_missing_change_nothing() {
                 }),
         ),
     ] {
-        run_abort_job(&app, &chain).await;
+        run_listing_step(&app, &chain).await;
         assert_eq!(listing_state(&app, &id), ListingState::Locking, "{case}");
     }
 
@@ -4108,7 +4084,7 @@ async fn finalize_facts_missing_change_nothing() {
                 }),
         ),
     ] {
-        run_listing_jobs(&r.app, &chain).await;
+        run_listing_step(&r.app, &chain).await;
         assert_eq!(
             listing_state(&r.app, &r.listing_id),
             ListingState::ReadyToFinalize,
@@ -4208,7 +4184,7 @@ async fn owner_coin_spent_in_the_mempool_is_no_verdict() {
         set_lock_draft_status(&app, &id, "confirmed");
         let other = "0e".repeat(32);
         let chain = chain_at(name_info(RENEWAL, 0, &other), QUIET_TIP, vec![]);
-        run_listing_jobs(&app, &chain).await;
+        run_listing_step(&app, &chain).await;
         assert_eq!(listing_state(&app, &id), state, "{state:?}");
     }
 }
@@ -4232,7 +4208,7 @@ async fn mined_lock_transfer_that_is_not_the_owner_changes_nothing() {
             ready_tip(Network::Regtest),
             vec![lock_transfer_at(&lock_txid, TRANSFER_HEIGHT)],
         );
-        run_abort_job(&app, &chain).await;
+        run_listing_step(&app, &chain).await;
         assert_eq!(listing_state(&app, &id), state, "{state:?}: mined");
         let no_height = chain_at(
             name_info(RENEWAL, 0, OWNER_TXID),
@@ -4246,7 +4222,7 @@ async fn mined_lock_transfer_that_is_not_the_owner_changes_nothing() {
                 "height",
             )],
         );
-        run_abort_job(&app, &no_height).await;
+        run_listing_step(&app, &no_height).await;
         assert_eq!(listing_state(&app, &id), state, "{state:?}: no height");
     }
 }
@@ -4276,7 +4252,7 @@ async fn reopened_name_expires_a_listing_before_the_lock() {
         ))
         .unwrap();
         let mut same = name_info(RENEWAL, 0, &"0e".repeat(32));
-        run_abort_job(
+        run_listing_step(
             &app,
             &chain_at(same.clone(), QUIET_TIP, vec![transfer.clone()]),
         )
@@ -4287,7 +4263,7 @@ async fn reopened_name_expires_a_listing_before_the_lock() {
             "{state:?}: same registration"
         );
         same["info"]["height"] = 7_000.into();
-        run_abort_job(&app, &chain_at(same, QUIET_TIP, vec![transfer])).await;
+        run_listing_step(&app, &chain_at(same, QUIET_TIP, vec![transfer])).await;
         assert_eq!(
             listing_state(&app, &id),
             ListingState::Expired,
@@ -4390,7 +4366,7 @@ async fn dropped_finalize_mined_and_bought_before_a_sync_is_sold() {
             queries::update_tx_draft_status(c, &fin_draft, "dropped", None, Some(&fin)).unwrap();
         });
         let tip = ready_tip(Network::Regtest) + 1;
-        run_listing_jobs(
+        run_listing_step(
             &r.app,
             &chain_at(
                 r.info(),
@@ -4541,7 +4517,7 @@ async fn dropped_finalize_mined_and_bought_before_a_sync_is_sold() {
                     .map(|(_, v)| v.clone())
                     .unwrap_or_else(|| json!({ "height": 1, "tx": [] })))
             });
-        run_listing_jobs(&r.app, &chain).await;
+        run_listing_step(&r.app, &chain).await;
         let l = r.listing();
         if sold {
             assert_eq!(l.state, ListingState::Sold, "{what}");
@@ -4577,7 +4553,7 @@ async fn lock_refused_while_a_dead_lock_waits_for_the_sync() {
         e.contains("did not go through") && e.contains("next sync"),
         "{e}"
     );
-    run_abort_job(
+    run_listing_step(
         &app,
         &facts(
             info_with(OWNER_TXID, 0, 0),
@@ -4638,7 +4614,7 @@ async fn dead_finalize_with_its_lock_transfer_spent_elsewhere_is_resolved_from_t
             info_with(&cancel, 0, 0),
             Some((&cancel, 0, &ours, COV_UPDATE)),
         );
-        run_listing_jobs(&r.app, &chain).await;
+        run_listing_step(&r.app, &chain).await;
         let l = r.listing();
         assert_eq!(l.state, ListingState::Aborted, "cancel mined, {status}");
         assert_eq!(
@@ -4654,7 +4630,7 @@ async fn dead_finalize_with_its_lock_transfer_spent_elsewhere_is_resolved_from_t
         info_with(&other_fin, 0, 0),
         Some((&other_fin, 0, &lock, COV_FINALIZE)),
     );
-    run_listing_jobs(&r.app, &chain).await;
+    run_listing_step(&r.app, &chain).await;
     let l = r.listing();
     assert_eq!(l.state, ListingState::Restored);
     assert_eq!(
@@ -4673,12 +4649,12 @@ async fn dead_finalize_with_its_lock_transfer_spent_elsewhere_is_resolved_from_t
     // A REVOKE: `owner` stays at the lock TRANSFER, `revoked` is set.
     let r = finalizing_with("failed").await;
     let chain = left_the_lock(info_with(&r.lock_txid, 0, QUIET_TIP as u64), None);
-    run_listing_jobs(&r.app, &chain).await;
+    run_listing_step(&r.app, &chain).await;
     assert_eq!(r.listing().state, ListingState::Aborted, "revoked");
 
     // The name expired.
     let r = finalizing_with("failed").await;
-    run_listing_jobs(&r.app, &left_the_lock(json!({ "info": null }), None)).await;
+    run_listing_step(&r.app, &left_the_lock(json!({ "info": null }), None)).await;
     assert_eq!(r.listing().state, ListingState::Expired, "info null");
 
     // No verdict: the owner coin is spent in the mempool (404), our
@@ -4700,13 +4676,13 @@ async fn dead_finalize_with_its_lock_transfer_spent_elsewhere_is_resolved_from_t
         ),
     ] {
         let r = finalizing_with(status).await;
-        run_listing_jobs(&r.app, &left_the_lock(info, owner)).await;
+        run_listing_step(&r.app, &left_the_lock(info, owner)).await;
         let l = r.listing();
         assert_eq!(l.state, ListingState::Finalizing, "{case}");
         assert_ne!(l.steps_json, "[]", "{case}");
     }
     let r = finalizing_with("failed").await;
-    run_listing_jobs(&r.app, &left_the_lock(r.info(), None)).await;
+    run_listing_step(&r.app, &left_the_lock(r.info(), None)).await;
     assert_eq!(
         r.listing().state,
         ListingState::Finalizing,
@@ -4725,14 +4701,14 @@ async fn reorged_abort_of_a_dead_finalize_relocks_without_its_steps() {
         info_with(&cancel, 0, 0),
         Some((&cancel, 0, &addr00(net).0, COV_UPDATE)),
     );
-    run_listing_jobs(&r.app, &chain).await;
+    run_listing_step(&r.app, &chain).await;
     assert_eq!(r.listing().state, ListingState::Aborted);
     let back = chain_at(
         r.info(),
         ready_tip(net) + 5,
         vec![lock_transfer_at(&r.lock_txid, TRANSFER_HEIGHT)],
     );
-    run_listing_jobs(&r.app, &back).await;
+    run_listing_step(&r.app, &back).await;
     let l = r.listing();
     assert_eq!(l.state, ListingState::Locking);
     assert_eq!((l.lock_txid, l.steps_json.as_str()), (None, "[]"));
