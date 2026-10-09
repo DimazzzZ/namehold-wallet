@@ -458,7 +458,7 @@ fn name_info(renewal: u64, claimed: u64, owner_txid: &str) -> Value {
     json!({
         "info": {
             "name": NAME, "state": "CLOSED", "height": NAME_HEIGHT, "renewal": renewal,
-            "renewals": 0, "claimed": claimed, "weak": false, "transfer": 0,
+            "renewals": 0, "claimed": claimed, "weak": false, "transfer": 0, "revoked": 0,
             "owner": { "hash": owner_txid, "index": 0 }, "value": NAME_VALUE
         },
         "start": null
@@ -969,7 +969,7 @@ async fn lock_confirmation_shows_what_locking_costs() {
 
 use crate::commands::names::build_cancel_draft;
 use crate::noncustodial::rpc::NodeCoin;
-use crate::shakedex_jobs::refresh_listing_aborts_with_client;
+use crate::shakedex_jobs::refresh_listings_before_lock_with_client;
 use crate::tests::mock_node_rpc::{MockNodeRpc, RpcCall};
 
 /// Lock NAME, then make the wallet's records what a sync leaves after the
@@ -1038,7 +1038,7 @@ async fn run_abort_job(app: &App, rpc: &MockNodeRpc) {
         &mut *app.state::<AppState>().db.lock().unwrap(),
         Connection::open_in_memory().unwrap(),
     );
-    let res = refresh_listing_aborts_with_client(&conn, rpc, PROFILE).await;
+    let res = refresh_listings_before_lock_with_client(&conn, rpc, PROFILE).await;
     *app.state::<AppState>().db.lock().unwrap() = conn;
     res.expect("abort job runs");
     assert_eq!(
@@ -1355,5 +1355,267 @@ async fn sync_aborts_the_listing_in_the_app_and_the_daemon() {
         assert_eq!(got.state, ListingState::Aborted, "{caller:?}");
         drop(conn);
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+// --- the lock resolved from chain facts -------------------------------------
+
+/// hsd's `getnameinfo` for NAME with its owner outpoint and `revoked` height
+/// (`NameState.getJSON`; a REVOKE sets `revoked` and leaves `owner` as it
+/// was, `chain.js`).
+fn info_with(owner_txid: &str, owner_index: u32, revoked: u64) -> Value {
+    let mut v = name_info(RENEWAL, 0, owner_txid);
+    v["info"]["owner"]["index"] = owner_index.into();
+    v["info"]["revoked"] = revoked.into();
+    v
+}
+
+/// A node answering `info` for NAME, and `GET /coin` with a mined coin for
+/// each outpoint in `coins` and hsd's empty 404 for any other.
+fn facts(info: Value, coins: &[(&str, u32)]) -> MockNodeRpc {
+    let coins: Vec<(String, u32)> = coins.iter().map(|(t, v)| (t.to_string(), *v)).collect();
+    MockNodeRpc::new()
+        .with_name_info(info)
+        .with_get_coin(move |txid, vout| {
+            Ok(coins
+                .iter()
+                .any(|(t, v)| t == txid && *v == vout)
+                .then(|| node_coin(txid, vout, Some(QUIET_TIP - 100))))
+        })
+}
+
+fn set_state(app: &App, id: &str, state: ListingState) {
+    with_db(app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET state = ?1 WHERE id = ?2",
+            params![state, id],
+        )
+        .unwrap();
+    });
+}
+
+/// R19 from chain facts: a Cancel transfer this wallet never linked (sent
+/// from another device) is mined: the owner is its UPDATE, the lock TRANSFER
+/// coin is gone and the lock draft is confirmed, so the listing is Aborted.
+/// While the lock TRANSFER is still the owner and a coin it stays Locking.
+#[tokio::test]
+async fn external_cancel_aborts_the_listing() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let lock_txid = locked_on_chain(&app).await;
+    let id = open_listing(&app).unwrap().id;
+    assert_eq!(open_listing(&app).unwrap().abort_txid, None);
+
+    run_abort_job(
+        &app,
+        &facts(info_with(&lock_txid, 0, 0), &[(&lock_txid, 0)]),
+    )
+    .await;
+    assert_eq!(listing_state(&app, &id), ListingState::Locking);
+
+    let other_cancel = "ee".repeat(32);
+    run_abort_job(
+        &app,
+        &facts(info_with(&other_cancel, 0, 0), &[(&other_cancel, 0)]),
+    )
+    .await;
+    assert_eq!(listing_state(&app, &id), ListingState::Aborted);
+}
+
+/// A REVOKE of the name leaves hsd's `owner` at the coin it spent (the lock
+/// TRANSFER) and sets `revoked`: with the lock coin spent, the listing is
+/// Aborted, and a revoked owner never makes it Locking again.
+#[tokio::test]
+async fn revoked_name_aborts_the_listing() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let lock_txid = locked_on_chain(&app).await;
+    let id = open_listing(&app).unwrap().id;
+    let revoked = facts(info_with(&lock_txid, 0, QUIET_TIP as u64), &[]);
+    run_abort_job(&app, &revoked).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Aborted);
+    run_abort_job(&app, &revoked).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Aborted, "stays");
+}
+
+/// A lock TRANSFER that never landed: its draft dropped, failed or deleted,
+/// its coin hsd's 404 and the owner still the coin it would have spent. The
+/// listing is Aborted, and the name can be locked again at once.
+#[tokio::test]
+async fn dead_lock_draft_aborts_and_the_name_can_be_locked_again() {
+    for end in ["dropped", "failed", "deleted"] {
+        let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+        let lock = build(&app).await.expect("lock builds");
+        let l = open_listing(&app).unwrap();
+        with_db(&app, |c| {
+            let status = if end == "deleted" { "dropped" } else { end };
+            queries::update_tx_draft_status(c, &lock.id, status, None, None).unwrap();
+            queries::release_reserved_utxos_for_draft(c, &lock.id).unwrap();
+            if end == "deleted" {
+                queries::delete_tx_draft(c, &lock.id).unwrap();
+            }
+        });
+        run_abort_job(
+            &app,
+            &facts(info_with(OWNER_TXID, 0, 0), &[(OWNER_TXID, 0)]),
+        )
+        .await;
+        assert_eq!(listing_state(&app, &l.id), ListingState::Aborted, "{end}");
+        build(&app).await.expect("a new lock of the name");
+        assert_ne!(open_listing(&app).unwrap().id, l.id, "{end}");
+    }
+}
+
+/// A Cancel transfer replaced before it was sent may still be the one that is
+/// mined (another device sent it): the listing links the newer cancel, whose
+/// UPDATE never appears, and is Aborted from the chain facts all the same.
+#[tokio::test]
+async fn replaced_cancel_aborts_the_listing() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    locked_on_chain(&app).await;
+    let a = build_cancel_draft(app.state(), NAME.into(), None)
+        .await
+        .unwrap();
+    let a_txid = a.summary["txid"].as_str().unwrap().to_string();
+    with_db(&app, |c| queries::delete_tx_draft(c, &a.id).unwrap());
+    // Another fee rate, so another transaction.
+    let b = build_cancel_draft(app.state(), NAME.into(), Some(7_777))
+        .await
+        .unwrap();
+    let l = open_listing(&app).unwrap();
+    assert_eq!(l.abort_draft_id.as_deref(), Some(b.id.as_str()));
+    assert_ne!(l.abort_txid.as_deref(), Some(a_txid.as_str()));
+
+    run_abort_job(&app, &facts(info_with(&a_txid, 0, 0), &[(&a_txid, 0)])).await;
+    assert_eq!(listing_state(&app, &l.id), ListingState::Aborted);
+}
+
+/// A lock draft that may still land (unsent, sent, or sent with no word
+/// back) proves nothing by a missing coin: the listing stays Locking.
+#[tokio::test]
+async fn lock_draft_in_flight_without_its_coin_changes_nothing() {
+    for status in ["draft", "signed", "broadcast_pending", "broadcasted"] {
+        let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+        let lock = build(&app).await.expect("lock builds");
+        let id = open_listing(&app).unwrap().id;
+        if status != "draft" {
+            with_db(&app, |c| {
+                queries::update_tx_draft_status(c, &lock.id, status, None, None).unwrap();
+            });
+        }
+        run_abort_job(
+            &app,
+            &facts(info_with(OWNER_TXID, 0, 0), &[(OWNER_TXID, 0)]),
+        )
+        .await;
+        assert_eq!(listing_state(&app, &id), ListingState::Locking, "{status}");
+    }
+}
+
+/// hsd says the name has no live state (`info: null`, expired): the listing
+/// is Expired. An Aborted listing stays Aborted.
+#[tokio::test]
+async fn name_without_live_state_expires_the_listing() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let lock_txid = locked_on_chain(&app).await;
+    let id = open_listing(&app).unwrap().id;
+    let gone = facts(json!({ "info": null, "start": null }), &[(&lock_txid, 0)]);
+    set_state(&app, &id, ListingState::Aborted);
+    run_abort_job(&app, &gone).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Aborted);
+    with_db(&app, |c| {
+        assert_eq!(
+            queries::expire_shakedex_listing(c, &id).unwrap(),
+            0,
+            "only before the lock"
+        );
+    });
+    set_state(&app, &id, ListingState::Locking);
+    run_abort_job(&app, &gone).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Expired);
+}
+
+/// An Aborted listing is Locking again once its lock TRANSFER is a coin
+/// again, or is the owner of a name that is not revoked.
+#[tokio::test]
+async fn aborted_listing_relocks_when_the_lock_transfer_is_back() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let lock_txid = locked_on_chain(&app).await;
+    let id = open_listing(&app).unwrap().id;
+    let other = "ee".repeat(32);
+    for (what, rpc) in [
+        (
+            "a coin again",
+            facts(info_with(&other, 0, 0), &[(&lock_txid, 0)]),
+        ),
+        ("the owner again", facts(info_with(&lock_txid, 0, 0), &[])),
+    ] {
+        set_state(&app, &id, ListingState::Aborted);
+        run_abort_job(&app, &rpc).await;
+        assert_eq!(listing_state(&app, &id), ListingState::Locking, "{what}");
+    }
+    // The lock TRANSFER is output 0: another output of its transaction is
+    // not it.
+    set_state(&app, &id, ListingState::Aborted);
+    run_abort_job(&app, &facts(info_with(&lock_txid, 1, 0), &[])).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Aborted, "output 1");
+}
+
+/// Any reply that is not hsd's whole answer leaves the listing as it is: a
+/// read error, a `getnameinfo` without `info`, `owner`, its `hash` or
+/// `index`, or `revoked`, and a `GET /coin` that errs (as a 404 with a body
+/// does, `rpc::hsd_not_found`).
+#[tokio::test]
+async fn missing_chain_facts_change_nothing() {
+    let (_node, _m, app) = lock_fixture("regtest", "mnemonic_hot", QUIET_TIP).await;
+    let lock_txid = locked_on_chain(&app).await;
+    let id = open_listing(&app).unwrap().id;
+    let other = "ee".repeat(32);
+    // Facts that would abort a Locking listing, and relock an Aborted one.
+    let abort = info_with(&other, 0, 0);
+    let relock = info_with(&lock_txid, 0, 0);
+    let strip = |mut v: Value, path: &[&str]| {
+        let (last, parents) = path.split_last().unwrap();
+        let mut at = &mut v;
+        for p in parents {
+            at = &mut at[*p];
+        }
+        at.as_object_mut().unwrap().remove(*last);
+        v
+    };
+    for (state, base) in [
+        (ListingState::Locking, abort),
+        (ListingState::Aborted, relock),
+    ] {
+        let mut cases: Vec<(String, MockNodeRpc)> = [
+            vec!["info"],
+            vec!["info", "owner"],
+            vec!["info", "owner", "hash"],
+            vec!["info", "owner", "index"],
+            vec!["info", "revoked"],
+        ]
+        .into_iter()
+        .map(|path| (path.join("."), facts(strip(base.clone(), &path), &[])))
+        .collect();
+        cases.push((
+            "no name info".into(),
+            MockNodeRpc::new()
+                .with_name_info_err("down")
+                .with_get_coin(|_, _| Ok(None)),
+        ));
+        // The owner is another outpoint, so only the coin decides.
+        cases.push((
+            "coin lookup error".into(),
+            MockNodeRpc::new()
+                .with_name_info(info_with(&other, 0, 0))
+                .with_get_coin(|_, _| {
+                    Err(crate::error::AppError::Rpc(
+                        "coin lookup got a 404 that is not hsd's (it has a body)".into(),
+                    ))
+                }),
+        ));
+        for (what, rpc) in cases {
+            set_state(&app, &id, state);
+            run_abort_job(&app, &rpc).await;
+            assert_eq!(listing_state(&app, &id), state, "{state:?}: {what}");
+        }
     }
 }

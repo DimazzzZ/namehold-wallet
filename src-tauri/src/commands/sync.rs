@@ -552,9 +552,10 @@ pub async fn run_sync_steps(
     if node_authoritative {
         crate::shakedex_jobs::refresh_purchases_step(db_path, profile_id, caller.rebroadcast())
             .await;
-        // R19: a listing whose Cancel transfer is mined is Aborted. Reads the
-        // node only, so the daemon runs it as the app does.
-        crate::shakedex_jobs::refresh_listing_aborts_step(db_path, profile_id).await;
+        // R19: a listing before the FINALIZE into the lock is Aborted or
+        // Expired from chain facts. Reads the node only, so the daemon runs it
+        // as the app does.
+        crate::shakedex_jobs::refresh_listings_before_lock_step(db_path, profile_id).await;
     }
 }
 
