@@ -290,3 +290,52 @@ impl ListingFile {
         }
     }
 }
+
+/// What [`write_listing_file`] writes: one of our own listings.
+pub struct NewListingFile<'a> {
+    pub name: &'a str,
+    pub lock_txid: [u8; 32],
+    pub lock_vout: u32,
+    pub public_key: [u8; 33],
+    pub payment_addr: &'a str,
+    pub steps: &'a [PriceStep],
+    /// Unix seconds (R23: the MTP at signing plus 365 days).
+    pub expires_at: u64,
+}
+
+/// R23: our listing as Shakedex v2 JSON, with the keys the CLI writes and
+/// LearnHNS serves, no market fee (`feeAddr: null`, every `fee` 0; a step
+/// carrying one is refused) and `expiresAt` in seconds. The file is read back by
+/// [`ListingFile::parse`] before it is returned: a file our own strict
+/// reader refuses is never handed out.
+pub fn write_listing_file(l: &NewListingFile, network: Network) -> Result<String, AppError> {
+    if l.steps.iter().any(|s| s.fee != 0) {
+        return Err(bad(
+            "we never write a market fee: every step's fee must be 0",
+        ));
+    }
+    let file = serde_json::json!({
+        "data": l.steps.iter().map(|s| serde_json::json!({
+            "fee": s.fee,
+            "lockTime": s.lock_time,
+            "price": s.price,
+            "signature": hex::encode(s.signature),
+        })).collect::<Vec<_>>(),
+        "expiresAt": l.expires_at,
+        "feeAddr": Value::Null,
+        "lockingOutputIdx": l.lock_vout,
+        "lockingTxHash": hex::encode(l.lock_txid),
+        "name": l.name,
+        "paymentAddr": l.payment_addr,
+        "publicKey": hex::encode(l.public_key),
+        "version": VERSION,
+    });
+    let json = serde_json::to_string(&file)?;
+    let back = ListingFile::parse(&json, network)?;
+    if serde_json::from_str::<Value>(&back.to_json()?)? != file {
+        return Err(AppError::Other(
+            "the listing file did not read back as written".into(),
+        ));
+    }
+    Ok(json)
+}

@@ -702,6 +702,8 @@ pub fn run() {
             commands::shakedex::shakedex_build_purchase_draft,
             commands::shakedex::shakedex_build_purchase_finalize_draft,
             commands::shakedex::shakedex_build_lock_draft,
+            commands::shakedex::shakedex_finalize_and_sign,
+            commands::shakedex::shakedex_export_listing_file,
             commands::names::get_name_action_capabilities,
             commands::names::get_names_action_capabilities,
             commands::bids::recover_bid_commitment,

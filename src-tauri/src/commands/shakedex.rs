@@ -23,9 +23,11 @@ use crate::noncustodial::actions::{self, PrimaryOutput};
 use crate::noncustodial::derivation;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::rpc::{self, ChainSource, NodeRpcClient};
-use crate::noncustodial::send::{self, DUST_THRESHOLD};
-use crate::noncustodial::session::session_ttl_ms;
-use crate::noncustodial::shakedex::listing_file::{ListingFile, MAX_LISTING_FILE_BYTES};
+use crate::noncustodial::send::{self, SpendableCoin, DUST_THRESHOLD};
+use crate::noncustodial::session::{session_ttl_ms, SignerSession};
+use crate::noncustodial::shakedex::listing_file::{
+    write_listing_file, ListingFile, NewListingFile, PriceStep, MAX_LISTING_FILE_BYTES,
+};
 use crate::noncustodial::shakedex::lock_key::{derive_lock_key, LockKey};
 use crate::noncustodial::shakedex::purchase::{
     self, FinalizeInput, MarketFee, PurchaseFinalizeSummary, PurchaseInput, PurchaseSummary,
@@ -614,6 +616,7 @@ pub(crate) fn build_lock_draft_inner(
             state: ListingState::Locking,
             lock_pubkey_hex: hex::encode(i.key.pubkey),
             lock_transfer_draft_id: Some(draft_id.clone()),
+            lock_finalize_draft_id: None,
             lock_transfer_txid: Some(res.txid.clone()),
             lock_txid: None,
             lock_vout: None,
@@ -636,6 +639,518 @@ pub(crate) fn build_lock_draft_inner(
     )?;
     tx.commit()?;
     draft_ctx::draft_summary(conn, &draft_id)
+}
+
+/// Run `f` on the unlocked signer session of the active profile, authorized
+/// again for it: `WalletLocked` when no session is open. The one place the
+/// selling commands take the signer, so every use checks it the same way.
+fn with_signer<T>(
+    state: &State<'_, AppState>,
+    ctx: &Ctx,
+    f: impl FnOnce(&mut SignerSession) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let mut slot = state
+        .signer
+        .lock()
+        .map_err(|e| AppError::Lock(e.to_string()))?;
+    let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
+    session.authorize(&ctx.profile_id, session_ttl_ms(&ctx.settings))?;
+    f(session)
+}
+
+/// The unlocked signer session of the active profile, or `WalletLocked`.
+/// Checked before a selling command reads anything else.
+fn authorize_signer(state: &State<'_, AppState>, ctx: &Ctx) -> Result<(), AppError> {
+    with_signer(state, ctx, |_| Ok(()))
+}
+
+/// The lock key of `name` (ADR 0004), derived from the seed of the unlocked
+/// session, which is authorized again. Called once every node read is done,
+/// just before the key is used; it is never stored.
+fn derive_listing_key(
+    state: &State<'_, AppState>,
+    ctx: &Ctx,
+    name: &str,
+) -> Result<LockKey, AppError> {
+    with_signer(state, ctx, |session| {
+        derive_lock_key(session.master()?, ctx.network, ctx.account, name)
+    })
+}
+
+/// One price step the seller typed (R19): HNS as text, so the backend can
+/// refuse what it cannot represent. T8 adds a schedule.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepInput {
+    pub price: String,
+}
+
+/// Everything Finalize & sign has checked and built before it asks (R20).
+pub(crate) struct PreparedLockFinalize {
+    pub(crate) ctx: Ctx,
+    pub(crate) listing: ShakedexListing,
+    pub(crate) key: LockKey,
+    /// The FINALIZE into the lock; the lock coin is its FINALIZE output
+    /// (`sell::lock_output`).
+    pub(crate) plan: actions::PlanResult,
+    pub(crate) prices: Vec<u64>,
+    /// R19: the Buy Now lock time, from the MTP at signing.
+    pub(crate) lock_time: u64,
+    pub(crate) mtp: u64,
+    pub(crate) payment_address: String,
+}
+
+/// "could not check" for a field of the node's reply that Finalize & sign
+/// reads.
+fn could_not_check(what: &str, name: &str) -> AppError {
+    AppError::Rpc(format!(
+        "node did not report {what}: could not check '{name}' before Finalize & sign"
+    ))
+}
+
+/// R18, R19, R31 at Finalize & sign: every gate and node read, then the lock
+/// key (after the reads) and the FINALIZE plan. Writes nothing and asks
+/// nothing; a refusal leaves the listing ReadyToFinalize. Every node field
+/// it reads is matched on its own: a missing one is "could not check".
+pub(crate) async fn prepare_lock_finalize(
+    state: &State<'_, AppState>,
+    listing_id: &str,
+    prices: &[StepInput],
+    fee_rate: Option<u64>,
+) -> Result<PreparedLockFinalize, AppError> {
+    // R16, R6. No experimental flag: this acts on an existing listing (R15).
+    let ctx = software_writer_ctx(state)?;
+    authorize_signer(state, &ctx)?;
+    let (listing, owner) = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let listing = queries::get_shakedex_listing(&conn, listing_id)?
+            .filter(|l| l.wallet_profile_id == ctx.profile_id)
+            .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
+        match listing.state {
+            ListingState::ReadyToFinalize => {}
+            ListingState::Locking => {
+                return Err(AppError::InvalidInput(
+                    "Finalize & sign opens after the transfer lockup".into(),
+                ))
+            }
+            other => {
+                return Err(AppError::InvalidInput(
+                    listing_over(other)
+                        .unwrap_or("this listing is already finalized into its lock")
+                        .into(),
+                ))
+            }
+        }
+        if listing.mode != ListingMode::BuyNow {
+            return Err(AppError::InvalidInput(
+                "reverse auctions are not supported yet".into(),
+            ));
+        }
+        // The Cancel transfer and the FINALIZE spend the same TRANSFER coin.
+        if let Some(cancel_id) = &listing.abort_draft_id {
+            if let Some(cancel) = queries::get_tx_draft(&conn, cancel_id)? {
+                if queries::draft_may_still_land(&cancel.status) {
+                    return Err(AppError::InvalidInput(sell::CANCEL_TRANSFER_PENDING.into()));
+                }
+            }
+        }
+        let owner = queries::get_name_coin(&conn, &ctx.profile_id, &listing.name)?;
+        (listing, owner)
+    };
+    if prices.len() != 1 {
+        return Err(AppError::InvalidInput(
+            "a Buy Now listing has exactly one price".into(),
+        ));
+    }
+    let prices = prices
+        .iter()
+        .map(|p| sell::parse_step_price(&p.price))
+        .collect::<Result<Vec<_>, _>>()?;
+    let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
+    let lock_transfer_txid = listing
+        .lock_transfer_txid
+        .clone()
+        .ok_or_else(|| corrupted("lock transfer"))?;
+    let payment_address = listing
+        .payment_address
+        .clone()
+        .ok_or_else(|| corrupted("payment address"))?;
+    let owner = owner
+        .filter(|o| {
+            o.txid.eq_ignore_ascii_case(&lock_transfer_txid)
+                && o.vout == 0
+                && o.covenant_type == i64::from(COV_TRANSFER)
+        })
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "the wallet has not seen the lock transfer as the name's coin yet (sync?)".into(),
+            )
+        })?;
+
+    // One getnameinfo reply and one tip for every check.
+    let name = listing.name.clone();
+    let reply = ctx.node.get_name_info(&name).await?;
+    let chain = ctx
+        .node
+        .get_blockchain_info()
+        .await
+        .map_err(|e| could_not_check(&format!("its tip ({e})"), &name))?;
+    let tip = chain.blocks;
+    let Some(mtp) = chain.mediantime else {
+        return Err(AppError::Rpc(
+            "node did not report its median time: the price could not be signed".into(),
+        ));
+    };
+    let info = match reply.get("info") {
+        None => return Err(could_not_check("the name's info", &name)),
+        Some(serde_json::Value::Null) => {
+            return Err(AppError::InvalidInput(format!(
+                "'{name}' has no on-chain state or has expired"
+            )))
+        }
+        Some(i) => i,
+    };
+    let Some(owner_hash) = info
+        .get("owner")
+        .and_then(|o| o.get("hash"))
+        .and_then(|h| h.as_str())
+    else {
+        return Err(could_not_check("the name's owner", &name));
+    };
+    let Some(owner_index) = info
+        .get("owner")
+        .and_then(|o| o.get("index"))
+        .and_then(|i| i.as_u64())
+    else {
+        return Err(could_not_check("the name's owner output", &name));
+    };
+    let Some(revoked) = info.get("revoked").and_then(|r| r.as_u64()) else {
+        return Err(could_not_check("whether the name was revoked", &name));
+    };
+    if !sell::lock_transfer_owns_name(owner_hash, owner_index, revoked, &lock_transfer_txid) {
+        return Err(AppError::InvalidInput(format!(
+            "'{name}' is no longer held by its lock transfer: there is nothing to finalize"
+        )));
+    }
+    let coin = ctx
+        .node
+        .get_coin(&lock_transfer_txid, 0)
+        .await?
+        .ok_or_else(|| {
+            AppError::InvalidInput(
+                "the lock transfer is no longer unspent: the name may already be finalized".into(),
+            )
+        })?;
+    // The lockup counts from hsd's `info.transfer`, the fact hsd's FINALIZE
+    // rule reads, as the sync job does (`sell::transfer_height`).
+    let transfer_height = sell::transfer_height(info)
+        .ok_or_else(|| could_not_check("the TRANSFER's block", &name))?;
+    let params = ctx.network.name_params();
+    let remaining = params.blocks_until_finalize(transfer_height, tip);
+    if remaining > 0 {
+        return Err(AppError::InvalidInput(format!(
+            "the transfer lockup ends in {remaining} block{}",
+            if remaining == 1 { "" } else { "s" }
+        )));
+    }
+    // R31 with what is left of the lockup (0 here): the FINALIZE renews the
+    // name.
+    if let ExpiryNotice::Refuse { expiry_end } = lock_expiry_guard(&params, &reply, tip, remaining)?
+    {
+        return Err(sell::expires_before_finalize(&name, expiry_end));
+    }
+    let ns = draft_ctx::name_state_strict(&reply, &name)?;
+    let cov_height = coin
+        .covenant
+        .as_ref()
+        .and_then(purchase::covenant_name_height)
+        .ok_or_else(|| could_not_check("a readable name height in the lock transfer", &name))?;
+    if cov_height != ns.height {
+        return Err(AppError::InvalidInput(
+            "the name expired and was registered again since the lock: it cannot be finalized"
+                .into(),
+        ));
+    }
+    let lock_value = u64::try_from(coin.value)
+        .map_err(|_| AppError::Rpc(format!("bad coin value {}", coin.value)))?;
+    if lock_value != owner.value || coin.address.as_deref() != Some(owner.address.as_str()) {
+        return Err(AppError::Rpc(
+            "the node and the wallet disagree on the lock transfer coin (sync?)".into(),
+        ));
+    }
+    let renewal_block = draft_ctx::renewal_block(&ctx.node, ctx.network).await?;
+    let rate = draft_ctx::fee_rate(&ctx, fee_rate);
+
+    // R18: re-derive the key now, after every read, and check the node's
+    // confirmed TRANSFER commits to SHA3-256 of its lock script.
+    let key = derive_listing_key(state, &ctx, &name)?;
+    sell::lock_self_check(&key, ctx.network)?;
+    if hex::encode(key.pubkey) != listing.lock_pubkey_hex
+        || !purchase::transfer_commits_to(&coin, ctx.network, &key.address)?
+    {
+        return Err(AppError::InvalidInput(
+            sell::LOCK_COMMITMENT_MISMATCH.into(),
+        ));
+    }
+    let plan = sell::build_lock_finalize_plan(&sell::LockFinalizeInput {
+        network: ctx.network,
+        account: ctx.account,
+        transfer: &SpendableCoin {
+            txid: owner.txid.clone(),
+            vout: owner.vout,
+            value: owner.value,
+            branch: owner.branch,
+            child_index: owner.child_index,
+        },
+        lock_pubkey: key.pubkey,
+        name: &name,
+        name_height: ns.height,
+        weak: ns.weak,
+        claimed: ns.claimed,
+        renewals: ns.renewals,
+        renewal_block,
+        funding: &ctx.funding,
+        change_address: &ctx.change_address,
+        rate,
+        #[cfg(test)]
+        fixed_fee: None,
+    })?;
+    Ok(PreparedLockFinalize {
+        ctx,
+        listing,
+        key,
+        plan,
+        prices,
+        lock_time: sell::buy_now_lock_time(mtp),
+        mtp,
+        payment_address,
+    })
+}
+
+/// R20: the Finalize & sign confirmation's own title, never the
+/// transaction prompt's.
+pub const FINALIZE_AND_SIGN_TITLE: &str = "Confirm Finalize & sign";
+const FINALIZE_AND_SIGN_MESSAGE: &str = "Review these details. This signs the finalize of \
+     the name into its lock and every price below with the lock key.";
+
+/// A listing as the UI reads it (T7's "My listings").
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListingSummary {
+    pub id: String,
+    pub name: String,
+    pub mode: ListingMode,
+    pub state: ListingState,
+    pub lock_txid: Option<String>,
+    pub lock_vout: Option<i64>,
+    pub payment_address: Option<String>,
+    pub steps: Vec<sell::StoredStep>,
+    pub expires_at: Option<i64>,
+    /// The FINALIZE into the lock, signed; `broadcast_tx_draft` sends it.
+    pub finalize_draft_id: Option<String>,
+}
+
+impl ListingSummary {
+    fn of(l: &ShakedexListing) -> Result<Self, AppError> {
+        let steps = serde_json::from_str(&l.steps_json)
+            .map_err(|e| AppError::Other(format!("corrupted listing: unreadable steps: {e}")))?;
+        Ok(Self {
+            id: l.id.clone(),
+            name: l.name.clone(),
+            mode: l.mode,
+            state: l.state,
+            lock_txid: l.lock_txid.clone(),
+            lock_vout: l.lock_vout,
+            payment_address: l.payment_address.clone(),
+            steps,
+            expires_at: l.expires_at,
+            finalize_draft_id: l.lock_finalize_draft_id.clone(),
+        })
+    }
+}
+
+/// R19 day 2, generic over the runtime so tests drive it: check
+/// ([`prepare_lock_finalize`]), confirm (R20), then in one hold of the
+/// unlocked session sign the FINALIZE and every step over the lock coin it
+/// creates, write the listing file, and store the signed FINALIZE draft with
+/// the listing — now Finalizing — in one database transaction. Sends
+/// nothing: `commands::tx::broadcast_tx_draft` sends the draft, and the
+/// steps leave the wallet only once that FINALIZE is mined
+/// ([`export_listing_file_from_conn`]).
+pub(crate) async fn finalize_and_sign_confirmed<R: tauri::Runtime>(
+    state: &State<'_, AppState>,
+    app: &tauri::AppHandle<R>,
+    listing_id: &str,
+    prices: &[StepInput],
+    fee_rate: Option<u64>,
+) -> Result<ListingSummary, AppError> {
+    let p = prepare_lock_finalize(state, listing_id, prices, fee_rate).await?;
+    let net = p.ctx.network;
+    let (lock_vout, lock_value) = sell::lock_output(&p.plan.plan, &p.key.address)?;
+    let steps: Vec<(u64, u64)> = p.prices.iter().map(|&price| (price, p.lock_time)).collect();
+    crate::commands::secure_confirm::confirm_rows(
+        app,
+        FINALIZE_AND_SIGN_TITLE,
+        FINALIZE_AND_SIGN_MESSAGE,
+        sell::finalize_and_sign_rows(&sell::FinalizeAndSignRows {
+            name: &p.listing.name,
+            finalize_fee: p.plan.fee,
+            lock_address: &p.key.address,
+            payment_address: &p.payment_address,
+            steps: &steps,
+            mtp: p.mtp,
+        }),
+    )
+    .await?;
+
+    let mut lock_txid = [0u8; 32];
+    hex::decode_to_slice(&p.plan.txid, &mut lock_txid)
+        .map_err(|e| AppError::Other(format!("FINALIZE txid is not hex: {e}")))?;
+    let payment = output_address_from_string(net, &p.payment_address)?;
+    // One unlock (R19): the session is authorized once for the FINALIZE and
+    // every step; the confirmation may have outlasted the earlier check.
+    let (signed_hex, signed) = with_signer(state, &p.ctx, |session| {
+        let (hex, txid) = actions::sign_plan(session, &p.plan.plan)?;
+        if txid != p.plan.txid {
+            return Err(AppError::Other(
+                "the signed FINALIZE's txid is not the plan's".into(),
+            ));
+        }
+        let signed = steps
+            .iter()
+            .map(|&(price, lock_time)| {
+                sell::sign_step(
+                    &p.key,
+                    &template::StepTemplate {
+                        lock_outpoint: (lock_txid, lock_vout),
+                        lock_value,
+                        lock_pubkey: &p.key.pubkey,
+                        payment: payment.clone(),
+                        price,
+                        lock_time_secs: lock_time,
+                    },
+                )
+                .map(|signature| PriceStep {
+                    price,
+                    lock_time,
+                    signature,
+                    fee: 0,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((hex, signed))
+    })?;
+    let expires_at = p.mtp + sell::LISTING_LIFETIME_SECS;
+    let file = write_listing_file(
+        &NewListingFile {
+            name: &p.listing.name,
+            lock_txid,
+            lock_vout,
+            public_key: p.key.pubkey,
+            payment_addr: &p.payment_address,
+            steps: &signed,
+            expires_at,
+        },
+        net,
+    )?;
+    let stored: Vec<sell::StoredStep> = signed
+        .iter()
+        .map(|s| sell::StoredStep {
+            price: s.price,
+            lock_time: s.lock_time,
+            signature: hex::encode(s.signature),
+        })
+        .collect();
+
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    // The signed FINALIZE and the Finalizing listing commit together: the
+    // listing leaves CANCEL_ABORTABLE in the same transaction, so the
+    // before-lock job never reads its FINALIZE as an abort.
+    let tx = conn.unchecked_transaction()?;
+    let draft_id = draft_ctx::persist_in_tx(
+        &tx,
+        &p.ctx.profile_id,
+        &draft_ctx::DraftLabel {
+            action: sell::LOCK_FINALIZE_ACTION,
+            name: &p.listing.name,
+            recipient: Some(&p.key.address),
+            name_list: None,
+            warnings: &[sell::STEP_SIGNATURE_PERMANENCE.to_string()],
+        },
+        &p.plan,
+    )?;
+    let summary = queries::get_tx_draft(&tx, &draft_id)?
+        .ok_or_else(|| AppError::Other("draft vanished after insert".into()))?
+        .summary_json;
+    queries::update_tx_draft_signed(&tx, &draft_id, &signed_hex, &summary)?;
+    let n = queries::mark_listing_finalizing_in_tx(
+        &tx,
+        &p.listing.id,
+        &queries::FinalizingListing {
+            finalize_draft_id: &draft_id,
+            lock_txid: &p.plan.txid,
+            lock_vout,
+            steps_json: &serde_json::to_string(&stored)?,
+            listing_file_json: &file,
+            expires_at,
+        },
+    )?;
+    if n != 1 {
+        return Err(AppError::InvalidInput(
+            "this listing changed meanwhile: nothing was saved; try again".into(),
+        ));
+    }
+    tx.commit()?;
+    let l = queries::get_shakedex_listing(&conn, &p.listing.id)?
+        .ok_or_else(|| AppError::Other("listing vanished after Finalize & sign".into()))?;
+    ListingSummary::of(&l)
+}
+
+/// Why Finalize & sign and the export refuse a listing that is over or was
+/// finalized elsewhere, by its state; `None` for every other state.
+fn listing_over(state: ListingState) -> Option<&'static str> {
+    match state {
+        ListingState::Aborted => Some(
+            "this listing was aborted: the name left its lock transfer before the finalize \
+             into the lock, so there is nothing to finalize, sign or export; lock the name \
+             again to sell it",
+        ),
+        ListingState::Expired => Some("the name expired while it was locked: this listing is over"),
+        ListingState::Cancelled => {
+            Some("this listing is cancelled: its signed prices can no longer be used")
+        }
+        ListingState::Sold => Some("this name is sold: the listing is over"),
+        ListingState::Restored => Some(
+            "this lock was finalized by another wallet with the same recovery phrase: it has \
+             no signed prices or listing file here; import its saved file",
+        ),
+        _ => None,
+    }
+}
+
+/// R23: the saved listing file of one of the profile's listings, once its
+/// FINALIZE into the lock is mined (Listed or later): before that its steps
+/// are over a coin that may never exist.
+pub(crate) fn export_listing_file_from_conn(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+    listing_id: &str,
+) -> Result<String, AppError> {
+    let l = queries::get_shakedex_listing(conn, listing_id)?
+        .filter(|l| l.wallet_profile_id == profile_id)
+        .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
+    if !ListingState::EXPORT_ALLOWED.contains(&l.state) {
+        return Err(AppError::InvalidInput(
+            listing_over(l.state)
+                .unwrap_or(
+                    "the listing file can be exported once the finalize into the lock is mined",
+                )
+                .into(),
+        ));
+    }
+    l.listing_file_json.ok_or_else(|| {
+        AppError::InvalidInput("this lock has no listing file here: import its saved file".into())
+    })
 }
 
 // --- commands ---------------------------------------------------------------
@@ -1144,14 +1659,7 @@ pub async fn shakedex_build_lock_draft(
     }
     // The signer is checked before anything else is read; the key itself is
     // derived only once every read is done, just before it is used.
-    {
-        let mut slot = state
-            .signer
-            .lock()
-            .map_err(|e| AppError::Lock(e.to_string()))?;
-        let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
-        session.authorize(&ctx.profile_id, session_ttl_ms(&ctx.settings))?;
-    }
+    authorize_signer(&state, &ctx)?;
     let owner = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         queries::get_name_coin(&conn, &ctx.profile_id, &name)?
@@ -1174,15 +1682,7 @@ pub async fn shakedex_build_lock_draft(
     let notice = lock_expiry_guard(&params, &reply, tip, i64::from(params.transfer_lockup))?;
     let ns = draft_ctx::name_state_strict(&reply, &name)?;
     let rate = draft_ctx::fee_rate(&ctx, fee_rate);
-    let key = {
-        let mut slot = state
-            .signer
-            .lock()
-            .map_err(|e| AppError::Lock(e.to_string()))?;
-        let session = slot.as_mut().ok_or(AppError::WalletLocked)?;
-        session.authorize(&ctx.profile_id, session_ttl_ms(&ctx.settings))?;
-        derive_lock_key(session.master()?, ctx.network, ctx.account, &name)?
-    };
+    let key = derive_listing_key(&state, &ctx, &name)?;
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     build_lock_draft_inner(
         &conn,
@@ -1198,6 +1698,34 @@ pub async fn shakedex_build_lock_draft(
             rate,
         },
     )
+}
+
+/// Finalize & sign, day 2 (R19, R20): see [`finalize_and_sign_confirmed`].
+/// Returns the listing, now Finalizing; its `finalizeDraftId` is the signed
+/// FINALIZE, which `broadcast_tx_draft` sends.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_finalize_and_sign(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    listing_id: String,
+    prices: Vec<StepInput>,
+    fee_rate: Option<u64>,
+) -> Result<ListingSummary, AppError> {
+    finalize_and_sign_confirmed(&state, &app, &listing_id, &prices, fee_rate).await
+}
+
+/// R23: the saved listing file of one of the active profile's listings; see
+/// [`export_listing_file_from_conn`].
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_export_listing_file(
+    state: State<'_, AppState>,
+    listing_id: String,
+) -> Result<String, AppError> {
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let profile = draft_ctx::active_profile(&conn)?;
+    export_listing_file_from_conn(&conn, &profile.id, &listing_id)
 }
 
 #[cfg(test)]

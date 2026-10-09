@@ -37,8 +37,16 @@
 //! from chain facts (R19): Aborted once the name has left the lock TRANSFER
 //! (its Cancel transfer mined, a REVOKE, a lock TRANSFER that never landed),
 //! Expired when hsd reports no live name, Locking again if a reorg undoes the
-//! abort ([`refresh_listings_before_lock_with_client`]). It only reads the
-//! node.
+//! abort, ReadyToFinalize once the transfer lockup is over (and Locking again
+//! if a reorg moves the lock TRANSFER back), and a Restored lock when the
+//! name's owner coin is a FINALIZE at the listing's own lock address, sent
+//! from elsewhere — never Aborted
+//! ([`refresh_listings_before_lock_with_client`]). A third step follows each
+//! listing whose FINALIZE into the lock is built: Listed once it is mined,
+//! Finalizing again on a reorg, ReadyToFinalize again if it never landed,
+//! and settled as before the lock if it never landed and something else
+//! spent the lock TRANSFER ([`refresh_lock_finalize_with_client`]). Both
+//! only read the node, and never take the same listing.
 
 use crate::db::queries::{self, PurchaseProgress, PurchaseState, ShakedexPurchase, TxDraftRow};
 use crate::error::AppError;
@@ -47,7 +55,10 @@ use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::{self, NodeRpcClient};
 use crate::noncustodial::send::RESERVATION_TTL_SECS;
 use crate::noncustodial::shakedex::purchase::{self, transfer_commits_to};
+use crate::noncustodial::shakedex::script;
+use crate::noncustodial::shakedex::sell;
 use crate::noncustodial::shakedex::verify;
+use crate::noncustodial::sync::COV_FINALIZE;
 use crate::noncustodial::tx_evidence;
 
 /// Blocks a sent purchase may be absent from the node's mempool and chain
@@ -838,14 +849,19 @@ enum LockOnChain {
     /// hsd reports no live state for the name (`info: null`): it never
     /// existed or has expired.
     NoName,
-    /// The lock TRANSFER is a coin (mined or in the mempool), or the owner
-    /// of a name that is not revoked.
-    Held,
-    /// Neither: the owner is another outpoint, or the name is revoked
+    /// The lock TRANSFER owns a name that is not revoked
+    /// ([`sell::lock_transfer_owns_name`]). `transfer` is
+    /// [`sell::transfer_height`]: `None` when hsd's `info.transfer` is
+    /// missing, out of range or 0 (not hsd's whole answer).
+    Owner { transfer: Option<i64> },
+    /// The lock TRANSFER is a coin in the mempool (`height: -1`), not the
+    /// owner yet (hsd moves `owner` only when a block is connected).
+    Pending,
+    /// Neither: `owner` is another outpoint, or the name is revoked
     /// (a REVOKE leaves `owner` at the coin it spent and sets `revoked`,
     /// hsd `chain.js`), and `GET /coin` is hsd's empty 404 (spent in a block
     /// or in the mempool, or never mined).
-    Gone,
+    Gone { owner: (String, u32), revoked: bool },
 }
 
 /// Read [`LockOnChain`]. Any read error, and a reply without `info`, the
@@ -862,19 +878,93 @@ async fn lock_on_chain(
     };
     let owner = info.get("owner");
     let hash = owner.and_then(|o| o.get("hash")).and_then(|h| h.as_str());
-    let index = owner.and_then(|o| o.get("index")).and_then(|i| i.as_u64());
+    let index = owner
+        .and_then(|o| o.get("index"))
+        .and_then(|i| i.as_u64())
+        .and_then(|i| u32::try_from(i).ok());
     let revoked = info.get("revoked").and_then(|r| r.as_u64());
     let (Some(hash), Some(index), Some(revoked)) = (hash, index, revoked) else {
         return Err(AppError::Rpc(
             "node did not report the name's owner or whether it was revoked".into(),
         ));
     };
-    let lock_owns = revoked == 0 && index == 0 && hash.eq_ignore_ascii_case(lock_transfer_txid);
-    if lock_owns || client.get_coin(lock_transfer_txid, 0).await?.is_some() {
-        Ok(LockOnChain::Held)
+    if sell::lock_transfer_owns_name(hash, u64::from(index), revoked, lock_transfer_txid) {
+        Ok(LockOnChain::Owner {
+            transfer: sell::transfer_height(info),
+        })
+    } else if let Some(coin) = client.get_coin(lock_transfer_txid, 0).await? {
+        // Mined in a block, it would be the owner (or revoked): a node that
+        // says otherwise is not consistent, so no verdict.
+        match coin.mined_height()? {
+            None => Ok(LockOnChain::Pending),
+            Some(_) => Err(AppError::Rpc(format!(
+                "node reports lock TRANSFER {lock_transfer_txid}:0 mined but not the name's owner"
+            ))),
+        }
     } else {
-        Ok(LockOnChain::Gone)
+        Ok(LockOnChain::Gone {
+            owner: (hash.to_string(), index),
+            revoked: revoked != 0,
+        })
     }
+}
+
+/// Where a name's owner coin sits, from hsd's `GET /coin`.
+#[derive(Debug, PartialEq, Eq)]
+enum InOurLock {
+    /// A FINALIZE at the listing's lock address: the name is in our lock.
+    Finalize,
+    /// At the listing's lock address, but another covenant (a purchase's
+    /// TRANSFER or a cancel already): the name went through our lock.
+    Other,
+    /// Elsewhere.
+    No,
+    /// hsd's 404: `info.owner` is the owner at the tip, so its coin is
+    /// missing only while a mempool transaction spends it (`fullnode.js`
+    /// `getCoin`). Where the name goes is not known yet: no verdict until
+    /// that spend is mined and the owner moves to a coin hsd can show.
+    SpentInMempool,
+}
+
+/// Where the name's owner coin `owner` sits: at this listing's lock address
+/// (as a FINALIZE, or another covenant) or elsewhere; hsd's 404 is
+/// [`InOurLock::SpentInMempool`]. Only the coin's `address` and
+/// `covenant.type` are read; a coin without address or covenant is not
+/// hsd's whole answer: an error.
+async fn owner_in_our_lock(
+    client: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+    owner: &(String, u32),
+) -> Result<InOurLock, AppError> {
+    let Some(coin) = client.get_coin(&owner.0, owner.1).await? else {
+        return Ok(InOurLock::SpentInMempool);
+    };
+    let (Some(address), Some(covenant)) = (coin.address.as_deref(), coin.covenant.as_ref()) else {
+        return Err(AppError::Rpc(format!(
+            "node did not report the address or covenant of coin {}:{}",
+            owner.0, owner.1
+        )));
+    };
+    if address != listing_lock_address(network, l)? {
+        Ok(InOurLock::No)
+    } else if covenant.kind == COV_FINALIZE {
+        Ok(InOurLock::Finalize)
+    } else {
+        Ok(InOurLock::Other)
+    }
+}
+
+/// The lock address of listing `l`, from its stored lock public key.
+fn listing_lock_address(
+    network: Network,
+    l: &queries::ShakedexListing,
+) -> Result<String, AppError> {
+    let pubkey: [u8; 33] = hex::decode(&l.lock_pubkey_hex)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(|| AppError::Other(format!("corrupted listing {}: bad lock key", l.id)))?;
+    script::lock_address(network, &pubkey)
 }
 
 /// Best-effort sync step: resolve each listing before the FINALIZE into the
@@ -912,7 +1002,17 @@ pub async fn refresh_listings_before_lock_step(db_path: &str, profile_id: &str) 
 ///   or deleted) → Aborted — a Cancel transfer sent from anywhere, a REVOKE,
 ///   a replaced cancel whose older one was mined, a lock TRANSFER that never
 ///   landed; an Aborted listing whose lock TRANSFER is a coin or the owner
-///   again → Locking.
+///   again → Locking;
+/// - but the owner coin a FINALIZE at this listing's lock address (a
+///   FINALIZE into our lock this device did not build) → Restored with that
+///   outpoint, never Aborted; another covenant there → unchanged (T4's);
+///   the owner coin hsd's 404 (spent in the mempool) → unchanged until that
+///   spend is mined;
+/// - the lock TRANSFER the owner and `blocks_until_finalize` of hsd's
+///   `info.transfer` 0 at the tip → ReadyToFinalize, not 0 → Locking; the
+///   lock TRANSFER a coin in the mempool (`height: -1`), not the owner →
+///   Locking; a lock TRANSFER mined in a block but not the owner is not a
+///   consistent answer → unchanged.
 ///
 /// Locking again is refused while another listing of the name is open
 /// ([`queries::unabort_shakedex_listing`]). Anything the node does not
@@ -923,8 +1023,14 @@ pub async fn refresh_listings_before_lock_with_client(
     client: &dyn NodeRpc,
     profile_id: &str,
 ) -> Result<(), AppError> {
-    for l in queries::list_shakedex_listings_before_lock(conn, profile_id, ABORT_RECHECK_DAYS)? {
-        if let Err(e) = refresh_before_lock(conn, client, &l).await {
+    let listings =
+        queries::list_shakedex_listings_before_lock(conn, profile_id, ABORT_RECHECK_DAYS)?;
+    if listings.is_empty() {
+        return Ok(());
+    }
+    let network = queries::profile_network(conn, profile_id)?;
+    for l in listings {
+        if let Err(e) = refresh_before_lock(conn, client, network, &l).await {
             eprintln!("shakedex listings: {} ({}): {e}", l.id, l.name);
         }
     }
@@ -934,6 +1040,7 @@ pub async fn refresh_listings_before_lock_with_client(
 async fn refresh_before_lock(
     conn: &rusqlite::Connection,
     client: &dyn NodeRpc,
+    network: Network,
     l: &queries::ShakedexListing,
 ) -> Result<(), AppError> {
     let Some(lock_transfer_txid) = l.lock_transfer_txid.as_deref() else {
@@ -958,17 +1065,77 @@ async fn refresh_before_lock(
         }
     }
     match lock_on_chain(client, &l.name, lock_transfer_txid).await? {
-        LockOnChain::NoName if abortable => {
-            queries::expire_shakedex_listing(conn, &l.id)?;
+        lock @ (LockOnChain::NoName | LockOnChain::Gone { .. }) if abortable => {
+            settle_left_lock(conn, client, network, l, lock).await?;
         }
-        LockOnChain::Gone if abortable => {
-            let status = queries::lock_draft_status(conn, l)?;
-            if !status.is_some_and(|s| queries::lock_draft_may_still_land(&s)) {
-                queries::abort_shakedex_listing(conn, &l.id)?;
+        LockOnChain::Owner { .. } | LockOnChain::Pending if aborted => relock(conn, l)?,
+        LockOnChain::Owner {
+            transfer: Some(height),
+        } if abortable => {
+            // hsd judges the FINALIZE at tip + 1 (`chain.js`,
+            // `height < ns.transfer + transferLockup`).
+            let tip = client.get_blockchain_info().await?.blocks;
+            let ready = network.name_params().blocks_until_finalize(height, tip) == 0;
+            match (l.state, ready) {
+                (queries::ListingState::Locking, true) => {
+                    queries::mark_listing_ready(conn, &l.id)?;
+                }
+                (queries::ListingState::ReadyToFinalize, false) => {
+                    queries::mark_listing_locking_again(conn, &l.id)?;
+                }
+                _ => {}
             }
         }
-        LockOnChain::Held if aborted => relock(conn, l)?,
+        LockOnChain::Pending if l.state == queries::ListingState::ReadyToFinalize => {
+            queries::mark_listing_locking_again(conn, &l.id)?;
+        }
         _ => {}
+    }
+    Ok(())
+}
+
+/// R19: the name has left the lock TRANSFER (`lock` is
+/// [`LockOnChain::NoName`] or [`LockOnChain::Gone`]); settle listing `l`
+/// from where it went. The one resolution for a listing before the lock and
+/// for a Finalizing one whose FINALIZE is dead (the SQL writes accept no
+/// other source, [`queries::abort_shakedex_listing`]):
+///
+/// - hsd reports no live name → Expired;
+/// - the name revoked, or its owner coin readable elsewhere while the lock
+///   draft can no longer land → Aborted;
+/// - the owner coin a FINALIZE at this listing's lock address → Restored
+///   with that outpoint, never Aborted (coordinator (b): only that positive
+///   evidence says the name is in our lock, whoever sent the FINALIZE);
+/// - the owner coin at our lock under another covenant (T4 decides), or
+///   hsd's 404 for it (spent in the mempool) → unchanged.
+async fn settle_left_lock(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+    lock: LockOnChain,
+) -> Result<(), AppError> {
+    let (owner, revoked) = match lock {
+        LockOnChain::NoName => {
+            queries::expire_shakedex_listing(conn, &l.id)?;
+            return Ok(());
+        }
+        LockOnChain::Gone { owner, revoked } => (owner, revoked),
+        LockOnChain::Owner { .. } | LockOnChain::Pending => return Ok(()),
+    };
+    if !revoked {
+        match owner_in_our_lock(client, network, l, &owner).await? {
+            InOurLock::Finalize => {
+                queries::adopt_lock_finalized_elsewhere(conn, &l.id, &owner.0, owner.1)?;
+                return Ok(());
+            }
+            InOurLock::Other | InOurLock::SpentInMempool => return Ok(()),
+            InOurLock::No => {}
+        }
+    }
+    let status = queries::lock_draft_status(conn, l)?;
+    if !status.is_some_and(|s| queries::draft_may_still_land(&s)) {
+        queries::abort_shakedex_listing(conn, &l.id)?;
     }
     Ok(())
 }
@@ -982,4 +1149,129 @@ fn relock(conn: &rusqlite::Connection, l: &queries::ShakedexListing) -> Result<(
         );
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Listings after the FINALIZE into the lock is built (R19)
+// ---------------------------------------------------------------------------
+
+/// Best-effort sync step: follow each listing whose FINALIZE into the lock
+/// is built (Finalizing) or mined (Listed) (see
+/// [`refresh_lock_finalize_with_client`]). Like the other sync steps it
+/// returns silently when the database or the profile's node client cannot
+/// be opened; a failed refresh is logged. It only reads the node, so it runs
+/// in the daemon as it does in the app; the caller runs it only when the node
+/// is authoritative.
+pub async fn refresh_lock_finalize_step(db_path: &str, profile_id: &str) {
+    let conn = match crate::db::connection::open_migrated(db_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let client = match NodeRpcClient::for_profile(&conn, profile_id) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if let Err(e) = refresh_lock_finalize_with_client(&conn, &client, profile_id).await {
+        eprintln!("shakedex listings: finalize refresh failed for {profile_id}: {e}");
+    }
+}
+
+/// R19, for every Finalizing or Listed listing, from hsd's `GET /coin` of
+/// its lock outpoint `(lock_txid, lock_vout)`:
+///
+/// - a FINALIZE at the listing's lock address mined in a block → Listed; in
+///   the mempool (`height: -1`) → Finalizing (a reorg took it back);
+/// - hsd's 404 for a Finalizing listing whose FINALIZE draft is `failed`,
+///   `dropped` or gone ([`finalize_dead`]): the lock TRANSFER
+///   `(lock_transfer_txid, 0)` a coin again → ReadyToFinalize, its lock
+///   outpoint, steps and file dropped (they were signed over a coin that
+///   does not exist); the lock TRANSFER hsd's 404 too, so something else
+///   spent it → settled from the name as before the lock
+///   ([`settle_left_lock`]: Expired, Aborted, Restored, or unchanged);
+/// - anything else (a Listed lock coin spent: sold or cancelled, T4's), a
+///   coin at another address or of another covenant, a reply missing the
+///   coin's address, covenant or height, or a read error → unchanged.
+///
+/// Sends nothing. A failure on one listing is logged and leaves it for the
+/// next sync.
+pub async fn refresh_lock_finalize_with_client(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    profile_id: &str,
+) -> Result<(), AppError> {
+    let listings = queries::list_shakedex_listings_finalizing(conn, profile_id)?;
+    if listings.is_empty() {
+        return Ok(());
+    }
+    let network = queries::profile_network(conn, profile_id)?;
+    for l in listings {
+        if let Err(e) = refresh_lock_finalize(conn, client, network, &l).await {
+            eprintln!("shakedex listings: {} ({}): {e}", l.id, l.name);
+        }
+    }
+    Ok(())
+}
+
+async fn refresh_lock_finalize(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+) -> Result<(), AppError> {
+    let (Some(lock_txid), Some(lock_vout)) = (l.lock_txid.as_deref(), l.lock_vout) else {
+        return Ok(());
+    };
+    let lock_vout = u32::try_from(lock_vout)
+        .map_err(|_| AppError::Other(format!("corrupted listing {}: bad lock output", l.id)))?;
+    let Some(coin) = client.get_coin(lock_txid, lock_vout).await? else {
+        if l.state == queries::ListingState::Finalizing && finalize_dead(conn, l)? {
+            let Some(lock_transfer_txid) = l.lock_transfer_txid.as_deref() else {
+                return Ok(());
+            };
+            if client.get_coin(lock_transfer_txid, 0).await?.is_some() {
+                // Our FINALIZE never landed and the lock TRANSFER is a coin
+                // again: Finalize & sign may run again.
+                queries::revert_listing_to_ready(conn, &l.id)?;
+            } else {
+                // Something else spent the lock TRANSFER (an older cancel
+                // mined later, another device's FINALIZE, a REVOKE): settle
+                // it as before the lock. A 404 that only means "spent in
+                // the mempool" leaves it, as there.
+                let lock = lock_on_chain(client, &l.name, lock_transfer_txid).await?;
+                settle_left_lock(conn, client, network, l, lock).await?;
+            }
+        }
+        return Ok(());
+    };
+    let (Some(address), Some(covenant)) = (coin.address.as_deref(), coin.covenant.as_ref()) else {
+        return Err(AppError::Rpc(format!(
+            "node did not report the address or covenant of lock coin {lock_txid}:{lock_vout}"
+        )));
+    };
+    if address != listing_lock_address(network, l)? || covenant.kind != COV_FINALIZE {
+        return Err(AppError::Other(format!(
+            "lock coin {lock_txid}:{lock_vout} is not a FINALIZE at the listing's lock address"
+        )));
+    }
+    if coin.mined_height()?.is_some() {
+        queries::mark_listing_listed(conn, &l.id)?;
+    } else {
+        queries::mark_listing_finalizing_again(conn, &l.id)?;
+    }
+    Ok(())
+}
+
+/// Whether a Finalizing listing's FINALIZE draft is dead: it can no longer
+/// be mined (`failed`, `dropped`, or its row gone; not
+/// [`queries::draft_alive`]). The SQL writes ask the same of the database
+/// ([`queries::abort_shakedex_listing`]).
+fn finalize_dead(
+    conn: &rusqlite::Connection,
+    l: &queries::ShakedexListing,
+) -> Result<bool, AppError> {
+    let status = match l.lock_finalize_draft_id.as_deref() {
+        Some(id) => queries::get_tx_draft(conn, id)?.map(|d| d.status),
+        None => None,
+    };
+    Ok(!status.is_some_and(|s| queries::draft_alive(&s)))
 }
