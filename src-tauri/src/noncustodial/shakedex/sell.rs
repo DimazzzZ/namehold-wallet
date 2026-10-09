@@ -183,6 +183,36 @@ pub fn expires_before_the_lock(name: &str, expiry_end: i64) -> AppError {
     ))
 }
 
+/// R18/R19: whether the lock TRANSFER `(lock_transfer_txid, 0)` owns the
+/// name, from hsd's `getnameinfo`: `info.owner` is that outpoint and
+/// `info.revoked` is 0 (a REVOKE leaves `owner` at the coin it spent and
+/// sets `revoked`, hsd `chain.js`). Finalize & sign and the sync job ask it
+/// the same way.
+pub fn lock_transfer_owns_name(
+    owner_hash: &str,
+    owner_index: u64,
+    revoked: u64,
+    lock_transfer_txid: &str,
+) -> bool {
+    revoked == 0 && owner_index == 0 && owner_hash.eq_ignore_ascii_case(lock_transfer_txid)
+}
+
+/// The block of the name's TRANSFER, hsd's `info.transfer` in a
+/// `getnameinfo` reply's `info`. Finalize & sign and the sync job both take
+/// the lockup from this fact, not from the TRANSFER coin's height: it is the
+/// field hsd's FINALIZE rule reads (`chain.js`, `height < ns.transfer +
+/// transferLockup`), set when the block holding the TRANSFER is connected.
+/// `None` when the reply leaves it out, gives a number no block can have
+/// (above `i64::MAX`), or says 0, which in hsd means "no TRANSFER" (set on
+/// FINALIZE, UPDATE and REVOKE): with our TRANSFER the owner, not hsd's
+/// whole answer.
+pub fn transfer_height(info: &serde_json::Value) -> Option<i64> {
+    info.get("transfer")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|t| i64::try_from(t).ok())
+        .filter(|t| *t > 0)
+}
+
 /// `wallet_tx_drafts.action` of a draft finalizing our name into its lock.
 pub const LOCK_FINALIZE_ACTION: &str = "shakedex_lock_finalize";
 
@@ -301,6 +331,7 @@ pub fn parse_step_price(text: &str) -> Result<u64, AppError> {
     if t.is_empty() {
         return Err(bad("enter a price in HNS".into()));
     }
+    // No '.' is a whole number of HNS: no decimals, not an error.
     let (whole, frac) = t.split_once('.').unwrap_or((t, ""));
     let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
     if (whole.is_empty() && frac.is_empty()) || !digits(whole) || !digits(frac) {

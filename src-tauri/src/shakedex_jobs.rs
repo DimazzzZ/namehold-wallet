@@ -49,13 +49,13 @@
 
 use crate::db::queries::{self, PurchaseProgress, PurchaseState, ShakedexPurchase, TxDraftRow};
 use crate::error::AppError;
-use crate::noncustodial::derivation;
 use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::{self, NodeRpcClient};
 use crate::noncustodial::send::RESERVATION_TTL_SECS;
 use crate::noncustodial::shakedex::purchase::{self, transfer_commits_to};
 use crate::noncustodial::shakedex::script;
+use crate::noncustodial::shakedex::sell;
 use crate::noncustodial::shakedex::verify;
 use crate::noncustodial::sync::COV_FINALIZE;
 use crate::noncustodial::tx_evidence;
@@ -848,10 +848,10 @@ enum LockOnChain {
     /// hsd reports no live state for the name (`info: null`): it never
     /// existed or has expired.
     NoName,
-    /// The lock TRANSFER is the owner of a name that is not revoked.
-    /// `transfer` is hsd's `info.transfer`, the block of the TRANSFER;
-    /// `None` when the reply leaves it out or says 0 (no TRANSFER, which
-    /// cannot be while our TRANSFER owns the name: not hsd's whole answer).
+    /// The lock TRANSFER owns a name that is not revoked
+    /// ([`sell::lock_transfer_owns_name`]). `transfer` is
+    /// [`sell::transfer_height`]: `None` when hsd's `info.transfer` is
+    /// missing, out of range or 0 (not hsd's whole answer).
     Owner { transfer: Option<i64> },
     /// The lock TRANSFER is a coin in the mempool (`height: -1`), not the
     /// owner yet (hsd moves `owner` only when a block is connected).
@@ -887,13 +887,10 @@ async fn lock_on_chain(
             "node did not report the name's owner or whether it was revoked".into(),
         ));
     };
-    let transfer = info
-        .get("transfer")
-        .and_then(|t| t.as_u64())
-        .and_then(|t| i64::try_from(t).ok())
-        .filter(|t| *t > 0);
-    if revoked == 0 && index == 0 && hash.eq_ignore_ascii_case(lock_transfer_txid) {
-        Ok(LockOnChain::Owner { transfer })
+    if sell::lock_transfer_owns_name(hash, u64::from(index), revoked, lock_transfer_txid) {
+        Ok(LockOnChain::Owner {
+            transfer: sell::transfer_height(info),
+        })
     } else if let Some(coin) = client.get_coin(lock_transfer_txid, 0).await? {
         // Mined in a block, it would be the owner (or revoked): a node that
         // says otherwise is not consistent, so no verdict.
@@ -1030,20 +1027,13 @@ pub async fn refresh_listings_before_lock_with_client(
     if listings.is_empty() {
         return Ok(());
     }
-    let network = profile_network(conn, profile_id)?;
+    let network = queries::profile_network(conn, profile_id)?;
     for l in listings {
         if let Err(e) = refresh_before_lock(conn, client, network, &l).await {
             eprintln!("shakedex listings: {} ({}): {e}", l.id, l.name);
         }
     }
     Ok(())
-}
-
-/// The network of profile `profile_id`.
-fn profile_network(conn: &rusqlite::Connection, profile_id: &str) -> Result<Network, AppError> {
-    let profile = queries::get_wallet_profile(conn, profile_id)?
-        .ok_or_else(|| AppError::NotFound(format!("wallet profile {profile_id}")))?;
-    derivation::network_from_profile(&profile.network)
 }
 
 async fn refresh_before_lock(
@@ -1097,7 +1087,7 @@ async fn refresh_before_lock(
                 }
             }
             let status = queries::lock_draft_status(conn, l)?;
-            if !status.is_some_and(|s| queries::lock_draft_may_still_land(&s)) {
+            if !status.is_some_and(|s| queries::draft_may_still_land(&s)) {
                 queries::abort_shakedex_listing(conn, &l.id)?;
             }
         }
@@ -1187,7 +1177,7 @@ pub async fn refresh_lock_finalize_with_client(
     if listings.is_empty() {
         return Ok(());
     }
-    let network = profile_network(conn, profile_id)?;
+    let network = queries::profile_network(conn, profile_id)?;
     for l in listings {
         if let Err(e) = refresh_lock_finalize(conn, client, network, &l).await {
             eprintln!("shakedex listings: {} ({}): {e}", l.id, l.name);
@@ -1246,8 +1236,7 @@ async fn finalize_never_landed(
         Some(id) => queries::get_tx_draft(conn, id)?.map(|d| d.status),
         None => None,
     };
-    let dead =
-        status.is_none_or(|s| !(queries::never_sent(&s) || queries::may_have_reached_chain(&s)));
+    let dead = !status.is_some_and(|s| queries::draft_alive(&s));
     let Some(lock_transfer_txid) = l.lock_transfer_txid.as_deref() else {
         return Ok(false);
     };

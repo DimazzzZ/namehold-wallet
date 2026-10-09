@@ -19,10 +19,10 @@ const SOURCES: [(&str, &str); 3] = [
 
 /// The only command modules these sources may name: the shared draft
 /// context, and the secure window's confirm helper (`secure_confirm`, the
-/// one place that names `secure_prompt` for them). Everything else under `commands` is a sibling, and the legacy
-/// shared layers (`sync`, `read`, `namebase`, `secure_prompt`) are siblings
-/// too — refusing the whole class keeps a new sibling from slipping past a
-/// list of known ones.
+/// one place that names `secure_prompt` for them). Everything else under
+/// `commands` is a sibling, and the legacy shared layers (`sync`, `read`,
+/// `namebase`, `secure_prompt`) are siblings too — refusing the whole class
+/// keeps a new sibling from slipping past a list of known ones.
 const ALLOWED: [&str; 2] = ["draft_ctx", "secure_confirm"];
 
 /// Code only: a mention in a comment is not an import, and the unit tests at

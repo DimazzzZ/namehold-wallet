@@ -912,6 +912,24 @@ pub fn get_wallet_profile(
     Ok(profile)
 }
 
+/// The `Network` of one *named* profile, or an error when the profile is
+/// missing or its stored string does not parse. For user-triggered commands,
+/// read models and background jobs, where guessing mainnet would compute the
+/// wrong answer (a balance with the wrong coinbase maturity, a renewal window
+/// aged by a wall clock regtest does not keep, a listing judged on another
+/// chain's lockup) and CODING_STANDARDS says a DB failure is returned, not
+/// swallowed. Here, below `commands`, so the commands
+/// (`commands::active_profile::profile_network_from_conn`) and the sync jobs
+/// share one implementation.
+pub fn profile_network(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<crate::noncustodial::network::Network, AppError> {
+    let profile = get_wallet_profile(conn, profile_id)?
+        .ok_or_else(|| AppError::NotFound(format!("wallet profile {profile_id}")))?;
+    crate::noncustodial::derivation::network_from_profile(&profile.network)
+}
+
 /// List all wallet profiles, newest first.
 pub fn list_wallet_profiles(
     conn: &rusqlite::Connection,
@@ -1279,27 +1297,33 @@ pub fn never_sent(status: &str) -> bool {
 /// The status of a draft the chain has mined.
 const CONFIRMED_STATUS: &str = "confirmed";
 
-/// Whether a lock TRANSFER draft in `status` still holds its name for a
-/// Locking listing (R27): it may yet be sent ([`never_sent`]), or it was
-/// sent and not given up ([`may_have_reached_chain`]). A dropped, failed or
-/// deleted lock draft does not.
-pub fn lock_draft_holds_name(status: &str) -> bool {
+/// Rule one: whether a draft in `status` is alive — it may yet be sent
+/// ([`never_sent`]), or it was sent and not given up
+/// ([`may_have_reached_chain`]). A `dropped` or `failed` draft, or one whose
+/// row is gone, is dead: it holds nothing (a Locking listing's name, R27) and
+/// its transaction is read from the chain alone (R19).
+pub fn draft_alive(status: &str) -> bool {
     never_sent(status) || may_have_reached_chain(status)
 }
 
-/// Whether a lock TRANSFER draft in `status` may still land on chain: it
-/// holds the name ([`lock_draft_holds_name`]) and is not mined yet. Until it
-/// is mined or given up, a missing lock coin proves nothing (R19).
-pub fn lock_draft_may_still_land(status: &str) -> bool {
-    draft_may_still_land(status)
+/// The draft statuses [`draft_alive`] accepts, as an SQL list, for the
+/// queries that ask the same question of the database.
+pub fn alive_sql() -> String {
+    sql_list(
+        UNSENT_STATUSES
+            .iter()
+            .chain(REACHED_CHAIN_STATUSES.iter())
+            .copied(),
+    )
 }
 
-/// Whether a draft in `status` may still be mined: unsent ([`never_sent`]),
-/// or sent and neither mined nor given up (`dropped`, `failed`). A Cancel
-/// transfer in such a status holds back the FINALIZE into the lock, which
-/// spends the same coin.
+/// Rule two: whether a draft in `status` may still be mined — alive
+/// ([`draft_alive`]) and not mined yet. Until a lock TRANSFER is mined or
+/// given up, a missing lock coin proves nothing (R19); a Cancel transfer in
+/// such a status holds back the FINALIZE into the lock, which spends the
+/// same coin.
 pub fn draft_may_still_land(status: &str) -> bool {
-    (never_sent(status) || may_have_reached_chain(status)) && status != CONFIRMED_STATUS
+    draft_alive(status) && status != CONFIRMED_STATUS
 }
 
 /// `items` quoted as an SQL list, `('a', 'b')`. Only for the fixed spellings
@@ -1532,6 +1556,31 @@ impl ListingState {
     pub fn cancel_abortable_sql() -> String {
         sql_list(Self::CANCEL_ABORTABLE.iter().map(|s| s.as_str()))
     }
+
+    /// The states the before-lock job reads
+    /// ([`list_shakedex_listings_before_lock`]): [`Self::CANCEL_ABORTABLE`],
+    /// and Aborted within the re-check window.
+    pub const BEFORE_LOCK_JOB: [ListingState; 3] =
+        [Self::Locking, Self::ReadyToFinalize, Self::Aborted];
+
+    /// The states the finalize job reads
+    /// ([`list_shakedex_listings_finalizing`]). Disjoint from
+    /// [`Self::BEFORE_LOCK_JOB`], and neither holds Restored: no listing is
+    /// moved by both jobs in one sync.
+    pub const FINALIZE_JOB: [ListingState; 2] = [Self::Finalizing, Self::Listed];
+
+    /// The states whose listing file may leave the wallet (R23): its
+    /// FINALIZE into the lock is mined and the listing is not over. Before
+    /// that the steps are over a coin that may never exist; Sold, Cancelled,
+    /// Aborted, Expired and Restored listings are refused with their own
+    /// reason.
+    pub const EXPORT_ALLOWED: [ListingState; 5] = [
+        Self::Listed,
+        Self::SalePending,
+        Self::Cancelling,
+        Self::CancelAwaitingFinalize,
+        Self::CancelFinalizing,
+    ];
 }
 
 impl std::str::FromStr for ListingState {
@@ -1760,7 +1809,7 @@ pub fn open_shakedex_listing_for_name(
 
 /// The open listing that keeps `name`'s owner actions away (R27), if any.
 /// A listing past Locking always does. A Locking one does only while its
-/// lock TRANSFER draft is alive ([`lock_draft_holds_name`]): a dropped,
+/// lock TRANSFER draft is alive ([`draft_alive`]): a dropped,
 /// failed or deleted lock draft does not freeze the name; the chain refresh
 /// (T4) resolves the row, and a TRANSFER mined after all shows as a pending
 /// transfer that Cancel transfer handles.
@@ -1776,7 +1825,7 @@ pub fn listing_blocking_owner_actions(
         return Ok(Some(listing));
     }
     let status = lock_draft_status(conn, &listing)?;
-    let alive = status.is_some_and(|s| lock_draft_holds_name(&s));
+    let alive = status.is_some_and(|s| draft_alive(&s));
     Ok(alive.then_some(listing))
 }
 
@@ -2067,14 +2116,12 @@ pub fn list_shakedex_listings_finalizing(
 ) -> Result<Vec<ShakedexListing>, AppError> {
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
-         WHERE wallet_profile_id = ?1 AND state IN (?2, ?3)
-         ORDER BY created_at, id"
+         WHERE wallet_profile_id = ?1 AND state IN {}
+         ORDER BY created_at, id",
+        sql_list(ListingState::FINALIZE_JOB.iter().map(|s| s.as_str()))
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(
-        params![profile_id, ListingState::Finalizing, ListingState::Listed],
-        row_to_shakedex_listing,
-    )?;
+    let rows = stmt.query_map(params![profile_id], row_to_shakedex_listing)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
