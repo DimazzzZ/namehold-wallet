@@ -1334,12 +1334,13 @@ pub fn delete_tx_draft_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result
         params![id],
     )?;
     // A Cancel transfer never sent (`draft`, `signed`) aborts nothing, so its
-    // listing loses the link (R19). A `dropped` or `failed` one was broadcast
-    // and may still be mined: its listing keeps the link, so the abort job
-    // still finds it.
+    // listing loses the link and the cancel's txid (R19). A `dropped` or
+    // `failed` one was broadcast and may still be mined: its listing keeps
+    // both, and the abort job reads the txid from the listing, not the draft.
     if matches!(status.as_str(), "draft" | "signed") {
         tx.execute(
-            "UPDATE shakedex_listings SET abort_draft_id = NULL, updated_at = datetime('now')
+            "UPDATE shakedex_listings
+             SET abort_draft_id = NULL, abort_txid = NULL, updated_at = datetime('now')
              WHERE abort_draft_id = ?1",
             params![id],
         )?;
@@ -1575,6 +1576,9 @@ pub struct ShakedexListing {
     pub market_retry_at: Option<String>,
     pub expires_at: Option<i64>,
     pub abort_draft_id: Option<String>,
+    /// The txid of the Cancel transfer `abort_draft_id` holds; kept when that
+    /// draft is deleted after it was broadcast.
+    pub abort_txid: Option<String>,
     pub sold_txid: Option<String>,
     pub cancel_txid: Option<String>,
     pub created_at: String,
@@ -1584,7 +1588,8 @@ pub struct ShakedexListing {
 const SHAKEDEX_LISTING_COLS: &str = "id, wallet_profile_id, name, mode, state, lock_pubkey_hex, \
     lock_transfer_draft_id, lock_transfer_txid, lock_txid, lock_vout, payment_address, \
     cancel_address, cancel_child_index, steps_json, listing_file_json, publish, market_status, \
-    market_retry_at, expires_at, abort_draft_id, sold_txid, cancel_txid, created_at, updated_at";
+    market_retry_at, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, created_at, \
+    updated_at";
 
 fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShakedexListing> {
     Ok(ShakedexListing {
@@ -1608,6 +1613,7 @@ fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<Shakedex
         market_retry_at: row.get("market_retry_at")?,
         expires_at: row.get("expires_at")?,
         abort_draft_id: row.get("abort_draft_id")?,
+        abort_txid: row.get("abort_txid")?,
         sold_txid: row.get("sold_txid")?,
         cancel_txid: row.get("cancel_txid")?,
         created_at: row.get("created_at")?,
@@ -1626,9 +1632,9 @@ pub fn insert_shakedex_listing(
             (id, wallet_profile_id, name, mode, state, lock_pubkey_hex, lock_transfer_draft_id,
              lock_transfer_txid, lock_txid, lock_vout, payment_address, cancel_address,
              cancel_child_index, steps_json, listing_file_json, publish, market_status,
-             market_retry_at, expires_at, abort_draft_id, sold_txid, cancel_txid)
+             market_retry_at, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?21, ?22)",
+                 ?18, ?19, ?20, ?21, ?22, ?23)",
         params![
             l.id,
             l.wallet_profile_id,
@@ -1650,6 +1656,7 @@ pub fn insert_shakedex_listing(
             l.market_retry_at,
             l.expires_at,
             l.abort_draft_id,
+            l.abort_txid,
             l.sold_txid,
             l.cancel_txid
         ],
@@ -1745,13 +1752,15 @@ pub fn link_shakedex_listing_abort(
     transfer_txid: &str,
     transfer_vout: u32,
     draft_id: &str,
+    cancel_txid: &str,
 ) -> Result<usize, AppError> {
     // The lock TRANSFER is output 0 of its draft (the plan's covenant output).
     if transfer_vout != 0 {
         return Ok(0);
     }
     Ok(conn.execute(
-        "UPDATE shakedex_listings SET abort_draft_id = ?1, updated_at = datetime('now')
+        "UPDATE shakedex_listings
+         SET abort_draft_id = ?1, abort_txid = ?7, updated_at = datetime('now')
          WHERE wallet_profile_id = ?2 AND name = ?3 AND lock_transfer_txid = ?4
            AND state IN (?5, ?6)",
         params![
@@ -1760,7 +1769,8 @@ pub fn link_shakedex_listing_abort(
             name,
             transfer_txid,
             ListingState::Locking,
-            ListingState::ReadyToFinalize
+            ListingState::ReadyToFinalize,
+            cancel_txid
         ],
     )?)
 }
@@ -1776,7 +1786,7 @@ pub fn list_shakedex_listings_with_abort(
 ) -> Result<Vec<ShakedexListing>, AppError> {
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
-         WHERE wallet_profile_id = ?1 AND abort_draft_id IS NOT NULL
+         WHERE wallet_profile_id = ?1 AND abort_txid IS NOT NULL
            AND (state IN (?2, ?3)
                 OR (state = ?4 AND updated_at >= datetime('now', ?5)))
          ORDER BY created_at"
@@ -1801,7 +1811,7 @@ pub fn list_shakedex_listings_with_abort(
 pub fn abort_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result<usize, AppError> {
     Ok(conn.execute(
         "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
-         WHERE id = ?1 AND abort_draft_id IS NOT NULL AND state IN (?3, ?4)",
+         WHERE id = ?1 AND abort_txid IS NOT NULL AND state IN (?3, ?4)",
         params![
             id,
             ListingState::Aborted,
@@ -1820,7 +1830,7 @@ pub fn unabort_shakedex_listing(conn: &rusqlite::Connection, id: &str) -> Result
     let [t0, t1, t2, t3] = ListingState::TERMINAL;
     Ok(conn.execute(
         "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
-         WHERE id = ?1 AND abort_draft_id IS NOT NULL AND state = ?3
+         WHERE id = ?1 AND abort_txid IS NOT NULL AND state = ?3
            AND NOT EXISTS (
                SELECT 1 FROM shakedex_listings o
                WHERE o.wallet_profile_id = shakedex_listings.wallet_profile_id

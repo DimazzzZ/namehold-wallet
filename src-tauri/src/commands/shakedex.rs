@@ -724,6 +724,7 @@ pub(crate) fn build_lock_draft_inner(
             market_retry_at: None,
             expires_at: None,
             abort_draft_id: None,
+            abort_txid: None,
             sold_txid: None,
             cancel_txid: None,
             created_at: String::new(),

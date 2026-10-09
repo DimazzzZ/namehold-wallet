@@ -28,8 +28,10 @@ CREATE TABLE IF NOT EXISTS shakedex_listings (
     market_retry_at TEXT,
     -- Unix seconds: the listing file's expiresAt (spec R23, MTP + 365 days).
     expires_at INTEGER,
-    -- The Cancel transfer draft that withdraws a listing still locking.
+    -- The Cancel transfer draft that withdraws a listing still locking, and
+    -- its txid, which outlives the draft (a dropped cancel may still be mined).
     abort_draft_id TEXT,
+    abort_txid TEXT,
     sold_txid TEXT,
     cancel_txid TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
