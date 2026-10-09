@@ -569,8 +569,8 @@ pub(crate) fn build_lock_draft_inner(
             queries::listing_blocking_owner_actions(conn, &ctx.profile_id, i.name)?.is_none();
         return Err(AppError::InvalidInput(if dead {
             format!(
-                "an earlier lock of '{}' was never mined: the next sync ends it, then the name \
-                 can be locked again",
+                "an earlier lock of '{}' did not go through: the next sync ends it, then the \
+                 name can be locked again",
                 i.name
             )
         } else {
