@@ -726,26 +726,50 @@ fn finalizing_and_listed_listings_are_listed() {
         .is_empty());
 }
 
-/// The deadline scan's source: ReadyToFinalize listings only.
+/// The deadline scan's source: ReadyToFinalize listings, and Finalizing ones
+/// whose FINALIZE is signed but not sent yet (`draft`, `signed`): until it
+/// is sent nothing is locked in.
 #[test]
 fn listings_ready_to_finalize_are_listed_for_the_reminder() {
     let conn = store_conn();
-    for (id, name, state) in [
-        ("l1", "ready", ListingState::ReadyToFinalize),
-        ("l2", "locking", ListingState::Locking),
-        ("l3", "fin", ListingState::Finalizing),
+    for (id, name, state, finalize) in [
+        ("l1", "ready", ListingState::ReadyToFinalize, None),
+        ("l2", "locking", ListingState::Locking, None),
+        ("l3", "sent", ListingState::Finalizing, Some("broadcasted")),
+        ("l4", "unsent", ListingState::Finalizing, Some("signed")),
+        ("l5", "built", ListingState::Finalizing, Some("draft")),
+        (
+            "l6",
+            "pending",
+            ListingState::Finalizing,
+            Some("broadcast_pending"),
+        ),
+        ("l7", "failed", ListingState::Finalizing, Some("failed")),
+        ("l8", "nodraft", ListingState::Finalizing, None),
     ] {
         let mut l = listing(id, name, state);
         l.lock_transfer_txid = Some(format!("{id}-tx"));
+        if let Some(status) = finalize {
+            insert_draft(
+                &conn,
+                &format!("{id}-fin"),
+                sell::LOCK_FINALIZE_ACTION,
+                status,
+            );
+            l.lock_finalize_draft_id = Some(format!("{id}-fin"));
+        }
         queries::insert_shakedex_listing(&conn, &l).unwrap();
     }
+    let row = |name: &str, id: &str| {
+        (
+            STORE_PROFILE.to_string(),
+            name.to_string(),
+            format!("{id}-tx"),
+        )
+    };
     assert_eq!(
         queries::list_listings_ready_to_finalize(&conn).unwrap(),
-        vec![(
-            STORE_PROFILE.to_string(),
-            "ready".to_string(),
-            "l1-tx".to_string()
-        )]
+        vec![row("built", "l5"), row("ready", "l1"), row("unsent", "l4")]
     );
 }
 
@@ -2905,6 +2929,44 @@ async fn no_broadcast(r: &mut Ready) -> Mock {
         .expect(0)
         .create_async()
         .await
+}
+
+/// R31 again when the FINALIZE into the lock is sent, with 0 lockup left:
+/// it may be sent days after Finalize & sign. Refused with Finalize &
+/// sign's own sentence while the expiry end is at or below tip + 1 + day,
+/// nothing reaches the node, and the signed draft and the Finalizing listing
+/// stay; one block earlier it is sent.
+#[tokio::test]
+async fn finalize_broadcast_refused_when_the_name_would_expire_first() {
+    let day = i64::from(Network::Regtest.name_params().margin_day());
+    for (tip, sends) in [(REGTEST_END - 1 - day, 0), (REGTEST_END - 2 - day, 1)] {
+        let r = ready_fixture("regtest").await;
+        finalized(&r).await;
+        let fin_draft = r.listing().lock_finalize_draft_id.unwrap();
+        let (node, m) = broadcast_node(tip, sends).await;
+        with_db(&r.app, |c| set(c, "node_rpc_url", &node.url()));
+        let sent = crate::commands::tx::broadcast_tx_draft(r.app.state(), fin_draft.clone()).await;
+        m[2].assert_async().await;
+        if sends == 0 {
+            let err = err_text(sent.unwrap_err());
+            assert!(
+                err.contains("too soon to finalize it into the lock"),
+                "R31 refusal: {err}"
+            );
+            let l = r.listing();
+            assert_eq!(l.state, ListingState::Finalizing);
+            assert_eq!(
+                l.lock_finalize_draft_id.as_deref(),
+                Some(fin_draft.as_str())
+            );
+            let status = with_db(&r.app, |c| queries::get_tx_draft(c, &fin_draft).unwrap())
+                .expect("the signed draft is kept")
+                .status;
+            assert_eq!(status, "signed");
+        } else {
+            sent.expect("one block earlier the FINALIZE is sent");
+        }
+    }
 }
 
 /// R19 day 2 end to end: one confirmation, then the FINALIZE into the lock

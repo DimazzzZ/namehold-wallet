@@ -2156,19 +2156,29 @@ pub fn list_shakedex_listings_finalizing(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-/// `(profile, name, lock transfer txid)` of every ReadyToFinalize listing,
-/// across profiles (the `listing_ready` reminder).
+/// `(profile, name, lock transfer txid)` of every listing that waits for
+/// Finalize & sign, across profiles (the `listing_ready` reminder):
+/// ReadyToFinalize, or Finalizing with its FINALIZE draft not sent yet
+/// ([`UNSENT_STATUSES`]) — signed, it locks nothing in until it is sent.
 pub fn list_listings_ready_to_finalize(
     conn: &rusqlite::Connection,
 ) -> Result<Vec<(String, String, String)>, AppError> {
-    let mut stmt = conn.prepare(
+    let sql = format!(
         "SELECT wallet_profile_id, name, lock_transfer_txid FROM shakedex_listings
-         WHERE state = ?1 AND lock_transfer_txid IS NOT NULL
+         WHERE lock_transfer_txid IS NOT NULL
+           AND (state = ?1
+                OR (state = ?2 AND EXISTS (
+                    SELECT 1 FROM wallet_tx_drafts d
+                    WHERE d.id = shakedex_listings.lock_finalize_draft_id
+                      AND d.status IN {})))
          ORDER BY wallet_profile_id, name",
+        sql_list(UNSENT_STATUSES.iter().copied())
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params![ListingState::ReadyToFinalize, ListingState::Finalizing],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    let rows = stmt.query_map(params![ListingState::ReadyToFinalize], |r| {
-        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-    })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 

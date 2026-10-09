@@ -488,15 +488,26 @@ pub(crate) async fn exclude_owner_reveal(
     Ok(losing)
 }
 
-/// R31 again when a lock TRANSFER draft is sent: it may be broadcast days
-/// after it was built, and the guard then counts the full transfer lockup
-/// from the node's tip now. `Ok(Some(refusal))` when the guard refuses, with
-/// the build's own sentence; an error when the node's word is missing, so
-/// nothing could be checked.
+/// Which lock draft R31 is judged again for at send time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LockSend {
+    /// The lock TRANSFER: the whole transfer lockup is still ahead.
+    Transfer,
+    /// The FINALIZE into the lock: no lockup left, it renews the name.
+    Finalize,
+}
+
+/// R31 again when a lock draft is sent: it may be broadcast days after it
+/// was built. The guard then counts from the node's tip now, with the full
+/// transfer lockup still ahead for the lock TRANSFER and none for the
+/// FINALIZE into the lock (as Finalize & sign judged it). `Ok(Some(refusal))`
+/// when the guard refuses, with the build's own sentence; an error when the
+/// node's word is missing, so nothing could be checked.
 pub(crate) async fn recheck_lock_expiry(
     client: &dyn NodeRpc,
     network: Network,
     name: &str,
+    send: LockSend,
 ) -> Result<Option<AppError>, AppError> {
     let reply = client.get_name_info(name).await?;
     let tip = client
@@ -509,10 +520,15 @@ pub(crate) async fn recheck_lock_expiry(
         })?
         .blocks;
     let params = network.name_params();
-    match sell::lock_expiry_guard(&params, &reply, tip, i64::from(params.transfer_lockup))? {
-        sell::ExpiryNotice::Refuse { expiry_end } => {
-            Ok(Some(sell::expires_before_the_lock(name, expiry_end)))
-        }
+    let remaining = match send {
+        LockSend::Transfer => i64::from(params.transfer_lockup),
+        LockSend::Finalize => 0,
+    };
+    match sell::lock_expiry_guard(&params, &reply, tip, remaining)? {
+        sell::ExpiryNotice::Refuse { expiry_end } => Ok(Some(match send {
+            LockSend::Transfer => sell::expires_before_the_lock(name, expiry_end),
+            LockSend::Finalize => sell::expires_before_finalize(name, expiry_end),
+        })),
         sell::ExpiryNotice::Warn { .. } | sell::ExpiryNotice::Ok => Ok(None),
     }
 }

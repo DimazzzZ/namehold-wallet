@@ -14,7 +14,8 @@
 //! ([`scan_purchase_deadlines`], R14). A fourth is the same kind of reminder
 //! for a Shakedex listing whose transfer lockup is over and that waits for
 //! Finalize & sign ([`scan_listing_ready_deadlines`], R19); unlike the
-//! purchase one it repeats daily until Finalize & sign has run.
+//! purchase one it repeats daily until Finalize & sign has run and its
+//! FINALIZE is sent.
 //!
 //! The scanner core ([`scan_deadlines`]) is a PURE function: deadlines +
 //! config + previously-notified state → notifications to emit + new state.
@@ -269,7 +270,8 @@ pub fn scan_purchase_deadlines(
 }
 
 /// A Shakedex listing whose transfer lockup is over: Finalize & sign can run
-/// (R19). A reminder, repeated daily until it runs.
+/// (R19). A reminder, repeated daily until it runs and its FINALIZE is sent
+/// (`queries::list_listings_ready_to_finalize`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListingReadyDeadline {
     pub wallet_profile_id: String,
@@ -298,9 +300,9 @@ pub fn scan_listing_ready_deadlines(
 ) -> ScanResult {
     let ready = ready.iter().map(|d| PendingNotification {
         key: listing_ready_key(d, day),
-        title: "Ready to list".into(),
+        title: "Ready to finalize".into(),
         body: format!(
-            "{}: the transfer lockup is over — Finalize & sign its price to list it",
+            "{}: the transfer lockup is over — Finalize & sign to lock it in and set its price",
             d.name
         ),
     });
@@ -1044,10 +1046,11 @@ mod tests {
         let d1 = scan_listing_ready_deadlines(&ready, &cfg(true), &Default::default(), 20_000);
         assert_eq!(d1.notifications.len(), 1);
         assert_eq!(d1.notifications[0].key, "listing_ready:p1:dexsale:aa:20000");
-        assert_eq!(d1.notifications[0].title, "Ready to list");
+        assert_eq!(d1.notifications[0].title, "Ready to finalize");
         assert_eq!(
             d1.notifications[0].body,
-            "dexsale: the transfer lockup is over \u{2014} Finalize & sign its price to list it"
+            "dexsale: the transfer lockup is over \u{2014} Finalize & sign to lock it in and set \
+             its price"
         );
         let same_day =
             scan_listing_ready_deadlines(&ready, &cfg(true), &d1.active_episodes, 20_000);
