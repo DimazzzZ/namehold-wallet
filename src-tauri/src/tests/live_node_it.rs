@@ -6312,6 +6312,463 @@ async fn shakedex_finalize_from_another_device_is_a_restored_lock() {
     let _ = std::fs::remove_file(&copy);
 }
 
+/// R22 and R30 on hsd: the shakedex CLI buys our Buy Now (`fill` mines it).
+/// On hsd first: the name's owner is the fill's TRANSFER out of our lock,
+/// and the fill pays our payment address the price; after a sync the listing
+/// is Sold with the fill's txid. Then a reorg of the purchase: the fill's
+/// block invalidated (hsd empties its mempool) leaves the lock coin a coin
+/// again and the listing Listed; the fill handed back is in the mempool, the
+/// owner still the lock coin, and the listing SalePending; mined again, Sold.
+#[tokio::test]
+async fn shakedex_namehold_listing_sold_to_the_cli_is_sold() {
+    let Some((url, key, cli)) = shakedex_env("shakedex_namehold_listing_sold_to_the_cli_is_sold")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id) = ready_to_finalize_on_chain(&url, &key, "nhsold").await;
+    let s = finalize_and_sign_on_chain(&app, &cl, &addr, &id, "3", 1).await;
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+    let pay = s.payment_address.clone().expect("payment address");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+    let file = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        crate::commands::shakedex::export_listing_file_from_conn(&conn, PROFILE, &id)
+            .expect("export")
+    };
+    let cli_addr = hsw_rpc(&key, &["getnewaddress"]);
+    cl.generate_to_address(4, &cli_addr)
+        .await
+        .expect("fund the CLI wallet");
+    let maturity = u32::try_from(NET.coinbase_maturity()).unwrap();
+    cl.generate_to_address(maturity, &addr)
+        .await
+        .expect("mature its coinbases");
+    cli.fill(&CliListing::new(file));
+
+    let (fill_txid, fill_vout) = name_owner(&cl, &name).await;
+    assert_ne!(fill_txid, lock_txid, "the name moved out of the lock");
+    assert!(
+        cl.get_coin(&lock_txid, lock_vout)
+            .await
+            .expect("coin")
+            .is_none(),
+        "the lock coin is spent"
+    );
+    let lock = crate::noncustodial::shakedex::lock_key::derive_lock_key(
+        &master(),
+        NET,
+        test_acct(),
+        &name,
+    )
+    .unwrap();
+    let out = cl
+        .get_coin(&fill_txid, fill_vout)
+        .await
+        .expect("coin")
+        .expect("the fill's TRANSFER");
+    assert_eq!(out.address.as_deref(), Some(lock.address.as_str()));
+    assert_eq!(
+        out.covenant.as_ref().expect("covenant").kind,
+        crate::noncustodial::sync::COV_TRANSFER
+    );
+    let block_height = out.mined_height().unwrap().expect("mined");
+    assert_eq!(
+        paid_to(&cl, &fill_txid, &pay).await,
+        3_000_000,
+        "our payment address got the price"
+    );
+
+    let get = |app: &tauri::App<tauri::test::MockRuntime>| {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::get_shakedex_listing(&c, &id).unwrap().unwrap()
+    };
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = get(&app);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::Sold, Some(fill_txid.as_str()))
+    );
+
+    // The reorg of the purchase.
+    let fill_hex = cl.get_tx_by_hash(&fill_txid).await.expect("tx")["hex"]
+        .as_str()
+        .expect("hex")
+        .to_string();
+    let block = cl.get_block_hash(block_height).await.expect("blockhash");
+    cl.invalidate_block(&block).await.expect("invalidate");
+    assert!(
+        cl.get_coin(&lock_txid, lock_vout)
+            .await
+            .expect("coin")
+            .is_some(),
+        "the lock coin is a coin again"
+    );
+    assert_eq!(
+        name_owner(&cl, &name).await,
+        (lock_txid.clone(), lock_vout),
+        "the owner is the lock coin again"
+    );
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = get(&app);
+    assert_eq!(
+        (l.state, l.sold_txid),
+        (ListingState::Listed, None),
+        "the purchase is nowhere"
+    );
+
+    cl.send_raw_transaction(&fill_hex)
+        .await
+        .expect("hand the fill back");
+    wait_until_node_has(&cl, &fill_txid).await;
+    assert!(
+        cl.get_coin(&lock_txid, lock_vout)
+            .await
+            .expect("coin")
+            .is_none(),
+        "the lock coin is spent in the mempool"
+    );
+    assert_eq!(
+        name_owner(&cl, &name).await,
+        (lock_txid.clone(), lock_vout),
+        "the owner moves only on a block"
+    );
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = get(&app);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::SalePending, Some(fill_txid.as_str()))
+    );
+
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    cl.reconsider_block(&block).await.expect("reconsider");
+    assert_eq!(name_owner(&cl, &name).await.0, fill_txid, "mined again");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = get(&app);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::Sold, Some(fill_txid.as_str()))
+    );
+}
+
+/// A Listed lock ends with its name's registration. The FINALIZE into the
+/// lock renewed the name (hsd `ns.setRenewal`), so hsd's `renewalPeriodEnd`
+/// is that block plus the renewal window. One block before it the listing
+/// stays Listed; at it hsd reports no live state (`info: null`, `isExpired`
+/// at `height >= renewal + renewalWindow`) while the lock coin is still a
+/// coin, and the listing is Expired. The blocks are mined to an address of
+/// nobody's and taken back by a [`RewindOnDrop`] guard, even on a panic.
+#[tokio::test]
+async fn shakedex_listed_lock_expires_with_its_name() {
+    let Some((url, key)) = shakedex_node_env("shakedex_listed_lock_expires_with_its_name") else {
+        return;
+    };
+    let (app, cl, addr, name, id) = ready_to_finalize_on_chain(&url, &key, "nhexpire").await;
+    let s = finalize_and_sign_on_chain(&app, &cl, &addr, &id, "3", 1).await;
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+
+    let finalized_at = cl
+        .get_coin(&lock_txid, lock_vout)
+        .await
+        .expect("coin")
+        .expect("the lock coin")
+        .mined_height()
+        .unwrap()
+        .expect("mined");
+    let info = cl.get_name_info(&name).await.expect("name info");
+    assert_eq!(info["info"]["claimed"], 0, "{info}");
+    let end = info["info"]["stats"]["renewalPeriodEnd"]
+        .as_i64()
+        .expect("hsd's renewalPeriodEnd");
+    assert_eq!(
+        end,
+        finalized_at + i64::from(NET.name_params().renewal_window),
+        "the FINALIZE into the lock renewed the name"
+    );
+    let tip = cl.get_blockchain_info().await.expect("info").blocks;
+    let rewind = RewindOnDrop::new(&url, &key, tip);
+
+    mine_to(&cl, &burn_addr(), end - 1).await;
+    let before = cl.get_name_info(&name).await.expect("name info");
+    assert!(!before["info"].is_null(), "still live: {before}");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(
+        listing_state(&app, &id),
+        ListingState::Listed,
+        "one block before the end"
+    );
+
+    cl.generate_to_address(1, &burn_addr()).await.expect("mine");
+    let after = cl.get_name_info(&name).await.expect("name info");
+    assert!(after["info"].is_null(), "expired on hsd: {after}");
+    assert!(
+        cl.get_coin(&lock_txid, lock_vout)
+            .await
+            .expect("coin")
+            .is_some(),
+        "the lock coin is still a coin"
+    );
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Expired);
+
+    rewind.rewind(&cl).await;
+    assert_eq!(
+        cl.get_blockchain_info().await.expect("info").blocks,
+        tip,
+        "the chain is back"
+    );
+}
+
+/// R22 and Review Focus 4 on a node without `--index-tx`: Namehold sells, a
+/// second Namehold profile buys the exported file. On hsd: the mined
+/// purchase is not found by its txid (no index), the name's owner is its
+/// TRANSFER out of our lock, and our payment coin (found with `GET /coin`)
+/// is the price. After a sync the listing is Sold through the owner. A copy
+/// of the seller's database made while the listing was Listed (a second
+/// device) syncs only after the buyer has finalized: the owner is then the
+/// buyer's FINALIZE and the purchase's TRANSFER is spent, and the copy is
+/// Sold too, from the block its payment coin was mined in.
+#[tokio::test]
+async fn live_noindex_listing_sold_is_detected() {
+    let Some((url, key)) = noindex_env() else {
+        eprintln!("skip live_noindex_listing_sold_is_detected: set HNS_IT_NOINDEX_NODE_URL");
+        return;
+    };
+    let (app, cl, addr, name, id) = ready_to_finalize_on_chain(&url, &key, "nhnoidx").await;
+    let s = finalize_and_sign_on_chain(&app, &cl, &addr, &id, "3", 1).await;
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let pay = s.payment_address.clone().expect("payment address");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+    let e = cl
+        .get_raw_transaction(&lock_txid)
+        .await
+        .expect_err("no transaction index");
+    assert!(crate::noncustodial::rpc::is_tx_not_found(&e), "{e}");
+    let (file, copy) = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        let file = crate::commands::shakedex::export_listing_file_from_conn(&conn, PROFILE, &id)
+            .expect("export");
+        let copy = std::env::temp_dir().join(format!(
+            "namehold_live_noindex_other_{}_{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        conn.execute("VACUUM INTO ?1", [copy.to_str().unwrap()])
+            .expect("copy the database");
+        (file, copy)
+    };
+
+    let b = ShakedexBuyer::new(&url, &key).await;
+    let listing = CliListing::new(file);
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+    let draft = b.sign_purchase(&listing).await;
+    let bc = broadcast_tx_draft(b.app.state(), draft.id.clone())
+        .await
+        .expect("broadcast");
+    assert_eq!(bc.status, "broadcasted");
+    settle(&b.app, &b.cl, &b.addr, &draft.id).await;
+    let buy = bc.txid.clone();
+    assert!(crate::noncustodial::rpc::is_tx_not_found(
+        &cl.get_raw_transaction(&buy)
+            .await
+            .expect_err("mined, no index")
+    ));
+    assert_eq!(
+        name_owner(&cl, &name).await,
+        (buy.clone(), 0),
+        "the owner is the purchase's TRANSFER"
+    );
+    let mut ours = None;
+    for vout in 0..4 {
+        if let Some(c) = cl.get_coin(&buy, vout).await.expect("coin") {
+            if c.address.as_deref() == Some(pay.as_str()) {
+                ours = Some(c);
+            }
+        }
+    }
+    assert_eq!(ours.expect("our payment coin").value, 3_000_000);
+
+    let get = |app: &tauri::App<tauri::test::MockRuntime>| {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::get_shakedex_listing(&c, &id).unwrap().unwrap()
+    };
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = get(&app);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::Sold, Some(buy.as_str())),
+        "through the owner"
+    );
+
+    // The buyer finalizes; only then does the copy sync.
+    b.cl.generate_to_address(NET.name_params().transfer_lockup, &b.addr)
+        .await
+        .expect("mine the lockup");
+    b.refresh().await;
+    let p = b.purchase(&name);
+    let fin = crate::commands::shakedex::shakedex_build_purchase_finalize_draft(
+        b.app.state(),
+        p.id.clone(),
+        Some(1),
+    )
+    .await
+    .expect("build finalize draft");
+    broadcast_only(&b.app, &fin.id).await;
+    settle(&b.app, &b.cl, &b.addr, &fin.id).await;
+    assert_eq!(
+        owner_coin_address(&cl, &name).await.as_deref(),
+        Some(p.destination_address.as_str())
+    );
+    assert!(
+        cl.get_coin(&buy, 0).await.expect("coin").is_none(),
+        "the purchase's TRANSFER is spent"
+    );
+
+    let other_conn = rusqlite::Connection::open(&copy).unwrap();
+    other_conn
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .unwrap();
+    let other = app_with(other_conn);
+    assert_eq!(
+        get(&other).state,
+        ListingState::Listed,
+        "the copy never saw the sale"
+    );
+    sync_wallet_state(other.state(), None).await.expect("sync");
+    listing_jobs(&other, &cl).await;
+    let l = get(&other);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::Sold, Some(buy.as_str())),
+        "from the block"
+    );
+    drop(other);
+    let _ = std::fs::remove_file(&copy);
+}
+
+/// R32 on hsd: a fresh profile from the same recovery phrase and account
+/// (none of the first one's database) restores the Listed lock by name: a
+/// Restored lock with the outpoint hsd names as the owner, a FINALIZE at the
+/// lock address derived from the phrase; a second restore is refused; the
+/// first device's saved file, imported after a sync of the fresh profile,
+/// makes it Listed with that file's payment address, and the listing jobs
+/// keep it Listed.
+#[tokio::test]
+async fn shakedex_restore_lock_by_name_after_a_fresh_profile() {
+    let Some((url, key)) = shakedex_node_env("shakedex_restore_lock_by_name_after_a_fresh_profile")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id) = ready_to_finalize_on_chain(&url, &key, "nhrestore").await;
+    let s = finalize_and_sign_on_chain(&app, &cl, &addr, &id, "3", 1).await;
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+    let file = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        crate::commands::shakedex::export_listing_file_from_conn(&conn, PROFILE, &id)
+            .expect("export")
+    };
+
+    // The payment address's receive index on the first device: a restore
+    // derives `[0, gap)` per branch (`provision_addresses`, the default gap),
+    // and only an address in that window is one of the fresh profile's.
+    let pay_index: i64 = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.query_row(
+            "SELECT child_index FROM derived_addresses
+             WHERE wallet_profile_id = ?1 AND branch = 0 AND address = ?2",
+            params![
+                PROFILE,
+                s.payment_address.as_deref().expect("payment address")
+            ],
+            |r| r.get(0),
+        )
+        .expect("the payment address is a derived receive address")
+    };
+    let gap = crate::commands::secure_wallet::gap_limit(&std::collections::HashMap::new());
+    assert!(
+        pay_index < i64::from(gap),
+        "receive index {pay_index} lies past the restore window of {gap}"
+    );
+    let fresh_conn = seeded_conn_acct(&url, &key, test_acct());
+    crate::commands::secure_wallet::provision_addresses(
+        &fresh_conn,
+        PROFILE,
+        NET,
+        &account_xpub_at(test_acct()),
+        gap,
+    )
+    .expect("the restore's address window");
+    let fresh = app_with(fresh_conn);
+    sync_wallet_state(fresh.state(), None).await.expect("sync");
+    unlock(&fresh);
+    assert!(open_listing(&fresh, &name).is_none());
+    let r = crate::commands::shakedex::shakedex_restore_lock(fresh.state(), name.clone())
+        .await
+        .expect("restore");
+    assert_eq!(r.state, ListingState::Restored);
+    let owner = name_owner(&cl, &name).await;
+    assert_eq!(
+        (
+            r.lock_txid.clone().unwrap(),
+            u32::try_from(r.lock_vout.unwrap()).unwrap()
+        ),
+        owner
+    );
+    assert_eq!(r.lock_txid, s.lock_txid);
+    let lock = crate::noncustodial::shakedex::lock_key::derive_lock_key(
+        &master(),
+        NET,
+        test_acct(),
+        &name,
+    )
+    .unwrap();
+    let coin = cl
+        .get_coin(&owner.0, owner.1)
+        .await
+        .expect("coin")
+        .expect("lock coin");
+    assert_eq!(coin.address.as_deref(), Some(lock.address.as_str()));
+    assert_eq!(
+        coin.covenant.as_ref().expect("covenant").kind,
+        crate::noncustodial::sync::COV_FINALIZE
+    );
+    expect_err(
+        crate::commands::shakedex::shakedex_restore_lock(fresh.state(), name.clone()).await,
+        "already tracked",
+    );
+
+    let up = crate::commands::shakedex::shakedex_import_own_listing_file(fresh.state(), file)
+        .await
+        .expect("import");
+    assert_eq!(up.state, ListingState::Listed);
+    assert_eq!(up.payment_address, s.payment_address);
+    listing_jobs(&fresh, &cl).await;
+    assert_eq!(
+        open_listing(&fresh, &name).unwrap().state,
+        ListingState::Listed
+    );
+}
+
 /// R4 on hsd: the FINALIZE into the lock, built at 20 doos/vbyte (above the
 /// 5 doos/vbyte floor), pays the fee its summary shows at the rate hsd
 /// reports for it.
