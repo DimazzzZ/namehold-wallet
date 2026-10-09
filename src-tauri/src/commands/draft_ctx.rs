@@ -15,6 +15,7 @@ use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::NodeRpcClient;
 use crate::noncustodial::send::{self, SpendableCoin};
+use crate::noncustodial::shakedex::sell;
 use crate::noncustodial::tx::sighash;
 use crate::noncustodial::types::TxDraftSummary;
 use crate::AppState;
@@ -485,4 +486,33 @@ pub(crate) async fn exclude_owner_reveal(
         )));
     }
     Ok(losing)
+}
+
+/// R31 again when a lock TRANSFER draft is sent: it may be broadcast days
+/// after it was built, and the guard then counts the full transfer lockup
+/// from the node's tip now. `Ok(Some(refusal))` when the guard refuses, with
+/// the build's own sentence; an error when the node's word is missing, so
+/// nothing could be checked.
+pub(crate) async fn recheck_lock_expiry(
+    client: &dyn NodeRpc,
+    network: Network,
+    name: &str,
+) -> Result<Option<AppError>, AppError> {
+    let reply = client.get_name_info(name).await?;
+    let tip = client
+        .get_blockchain_info()
+        .await
+        .map_err(|e| {
+            AppError::Rpc(format!(
+                "node did not report its tip: could not check when '{name}' expires ({e})"
+            ))
+        })?
+        .blocks;
+    let params = network.name_params();
+    match sell::lock_expiry_guard(&params, &reply, tip, i64::from(params.transfer_lockup))? {
+        sell::ExpiryNotice::Refuse { expiry_end } => {
+            Ok(Some(sell::expires_before_the_lock(name, expiry_end)))
+        }
+        sell::ExpiryNotice::Warn { .. } | sell::ExpiryNotice::Ok => Ok(None),
+    }
 }
