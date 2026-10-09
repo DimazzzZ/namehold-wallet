@@ -556,6 +556,13 @@ pub async fn run_sync_steps(
         // Expired from chain facts. Reads the node only, so the daemon runs it
         // as the app does.
         crate::shakedex_jobs::refresh_listings_before_lock_step(db_path, profile_id).await;
+        // R19: a listing whose FINALIZE into the lock is built is Listed once
+        // it is mined, Finalizing again on a reorg, and ReadyToFinalize again
+        // if it never landed. Reads the node only. It runs after the step
+        // above, and the two never take the same listing: that one reads
+        // Locking, ReadyToFinalize and Aborted listings, this one Finalizing
+        // and Listed ones.
+        crate::shakedex_jobs::refresh_lock_finalize_step(db_path, profile_id).await;
     }
 }
 
