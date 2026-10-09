@@ -19,7 +19,7 @@ use crate::noncustodial::shakedex::script;
 use crate::noncustodial::shakedex::template::{
     secs_until_valid, valid_from_mtp, verify_step_signature, StepTemplate,
 };
-use crate::noncustodial::sync::{COV_FINALIZE, COV_TRANSFER};
+use crate::noncustodial::sync::{COV_FINALIZE, COV_NONE, COV_TRANSFER};
 use crate::noncustodial::tx::{Covenant, OutputAddress};
 use crate::noncustodial::types::doos_to_hns_string;
 
@@ -453,6 +453,8 @@ pub struct SpendView {
     pub outputs: Vec<SpendOutput>,
 }
 
+/// One output of a [`SpendView`]; `address` is the bech32 string, as both of
+/// hsd's shapes send it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpendOutput {
     pub address: String,
@@ -560,11 +562,20 @@ pub fn spend_view_from_block(
         .get("tx")
         .and_then(|t| t.as_array())
         .ok_or_else(|| not_hsds("a block's transactions"))?;
-    let Some(tx) = txs.iter().find(|t| {
-        t.get("txid")
+    // Every entry must carry its txid: `getblock` without details sends bare
+    // txid strings, and an entry skipped for lacking one would answer "not in
+    // this block" for a purchase that is.
+    let mut found = None;
+    for t in txs {
+        let id = t
+            .get("txid")
             .and_then(|h| h.as_str())
-            .is_some_and(|h| h.eq_ignore_ascii_case(txid))
-    }) else {
+            .ok_or_else(|| not_hsds("a block transaction's txid"))?;
+        if found.is_none() && id.eq_ignore_ascii_case(txid) {
+            found = Some(t);
+        }
+    }
+    let Some(tx) = found else {
         return Ok(None);
     };
     let inputs = tx
@@ -645,12 +656,13 @@ pub struct PurchaseOf<'a> {
 /// a TRANSFER to the input at its index, and keeps the lock address on a
 /// FINALIZE→TRANSFER) committing to an address not ours, that input spending
 /// the listing's lock coin when it is known. Returns the coin that input
-/// spends. A commitment to an address of ours is our cancel, not a sale.
+/// spends. A TRANSFER back to an address of ours (our cancel, or a gift back
+/// to us) is not a sale under R22.
 pub fn purchase_in(tx: &SpendView, p: &PurchaseOf) -> Result<Option<(String, u32)>, AppError> {
     if !tx
         .outputs
         .iter()
-        .any(|o| o.address == p.payment_address && o.covenant_type == 0)
+        .any(|o| o.address == p.payment_address && o.covenant_type == COV_NONE)
     {
         return Ok(None);
     }
@@ -1029,7 +1041,9 @@ mod tests {
             .unwrap()
             .iter()
             .map(|i| {
-                serde_json::json!({ "txid": i["prevout"]["hash"], "vout": i["prevout"]["index"], "sequence": 0 })
+                serde_json::json!({ "coinbase": false, "txid": i["prevout"]["hash"],
+                    "vout": i["prevout"]["index"], "txinwitness": [],
+                    "sequence": 4294967295u64, "link": 4294967295u64 })
             })
             .collect();
         let vout: Vec<_> = tx["outputs"]
@@ -1038,8 +1052,14 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(n, o)| {
+                let (version, program) = crate::noncustodial::address::decode(
+                    Network::Regtest,
+                    o["address"].as_str().unwrap(),
+                )
+                .unwrap();
                 serde_json::json!({ "value": 0.0, "n": n,
-                    "address": { "version": 0, "hash": "00", "string": o["address"] },
+                    "address": { "version": version, "hash": hex::encode(program),
+                                 "string": o["address"] },
                     "covenant": o["covenant"] })
             })
             .collect();
@@ -1125,6 +1145,24 @@ mod tests {
         let mut b = block(120, &pay);
         b.as_object_mut().unwrap().remove("height");
         assert!(spend_view_from_block(&b, BUY).is_err(), "block height");
+        // A transaction entry without a txid (or a bare txid string, as
+        // `getblock` sends them without details) cannot be searched: an error,
+        // never "not in this block".
+        let mut b = block(120, &pay);
+        b["tx"][0].as_object_mut().unwrap().remove("txid");
+        assert!(
+            spend_view_from_block(&b, BUY).is_err(),
+            "entry without txid"
+        );
+        let mut b = block(120, &pay);
+        b["tx"] = serde_json::json!(["cc".repeat(32), BUY]);
+        assert!(
+            spend_view_from_block(&b, BUY).is_err(),
+            "tx array of strings"
+        );
+        let mut b = block(120, &pay);
+        b["tx"][0]["txid"] = serde_json::json!(5);
+        assert!(spend_view_from_block(&b, BUY).is_err(), "txid not text");
         for (what, path) in [
             ("block transactions", "/tx"),
             ("vin", "/tx/1/vin"),
@@ -1174,6 +1212,21 @@ mod tests {
         // A listing that lost its outpoint (a dead FINALIZE mined after all)
         // learns it from the purchase.
         let p = purchase_of(&own, None, &pay, &la, &n);
+        assert_eq!(purchase_in(&tx, &p).unwrap(), Some((LOCK.to_string(), 0)));
+    }
+
+    #[test]
+    fn purchase_in_finds_the_lock_coin_at_a_later_input() {
+        let (pay, la, n) = (p2wpkh(5), lock_addr(), nh());
+        let own: HashSet<String> = [pay.clone()].into();
+        let mut v = rest(120, 9, &pay);
+        // Input 1 is the lock coin, so the TRANSFER is output 1; output 0 is
+        // another output (here a change output).
+        let (inputs, outputs) = (v["inputs"].clone(), v["outputs"].clone());
+        v["inputs"] = serde_json::json!([inputs[1], inputs[0]]);
+        v["outputs"] = serde_json::json!([outputs[1], outputs[0], outputs[2]]);
+        let tx = spend_view_from_rest(&v).unwrap();
+        let p = purchase_of(&own, Some((LOCK, 0)), &pay, &la, &n);
         assert_eq!(purchase_in(&tx, &p).unwrap(), Some((LOCK.to_string(), 0)));
     }
 
