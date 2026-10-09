@@ -887,12 +887,28 @@ export interface ShakedexStoredStep {
 }
 
 /** One of our listings (`commands/shakedex.rs::ListingSummary`). */
+/** Every spelling of Rust's `ListingState` (`db::queries::ListingState::ALL`), camelCase as serde sends it. */
+export type ShakedexListingState =
+  | "locking"
+  | "readyToFinalize"
+  | "finalizing"
+  | "listed"
+  | "salePending"
+  | "sold"
+  | "cancelling"
+  | "cancelAwaitingFinalize"
+  | "cancelFinalizing"
+  | "cancelled"
+  | "aborted"
+  | "restored"
+  | "expired";
+
 export interface ShakedexListingSummary {
   id: string;
   name: string;
   mode: "buyNow" | "reverseAuction";
-  /** `ListingState` in camelCase ("locking", "readyToFinalize", "finalizing", "listed", ...). */
-  state: string;
+  /** Rust's `ListingState`, in camelCase. */
+  state: ShakedexListingState;
   lockTxid: string | null;
   lockVout: number | null;
   paymentAddress: string | null;

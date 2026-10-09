@@ -61,8 +61,8 @@ pub fn lock_self_check(key: &LockKey, network: Network) -> Result<(), AppError> 
     Ok(())
 }
 
-/// R19: a Buy Now's lock time, taken from the MTP of the tip when the step is
-/// signed: one lock-time unit back, so its encoded value is below that MTP
+/// R19: a Buy Now's lock time, from the MTP the node reports at Finalize &
+/// sign (read just before its confirmation): one lock-time unit back, so its encoded value is below that MTP
 /// and the step is valid in the next block (`template::is_valid_at`).
 pub fn buy_now_lock_time(mtp: u64) -> u64 {
     mtp.saturating_sub(LOCK_TIME_UNIT_SECS)
