@@ -198,7 +198,7 @@ pub fn lock_transfer_owns_name(
     revoked: u64,
     lock_transfer_txid: &str,
 ) -> bool {
-    revoked == 0 && owner_index == 0 && owner_hash.eq_ignore_ascii_case(lock_transfer_txid)
+    revoked == 0 && owner_index == 0 && owner_hash == lock_transfer_txid
 }
 
 /// The block of the name's TRANSFER, hsd's `info.transfer` in a
@@ -571,7 +571,7 @@ pub fn spend_view_from_block(
             .get("txid")
             .and_then(|h| h.as_str())
             .ok_or_else(|| not_hsds("a block transaction's txid"))?;
-        if found.is_none() && id.eq_ignore_ascii_case(txid) {
+        if found.is_none() && id == txid {
             found = Some(t);
         }
     }
@@ -746,7 +746,7 @@ pub fn purchase_in(tx: &SpendView, p: &PurchaseOf) -> Result<Option<(String, u32
             continue;
         }
         if let Some((txid, vout)) = p.lock {
-            if !(prevout.0.eq_ignore_ascii_case(txid) && prevout.1 == vout) {
+            if !(prevout.0 == txid && prevout.1 == vout) {
                 continue;
             }
         }
@@ -847,7 +847,7 @@ pub fn restore_verdict(
     owner: &RestoreOwner,
     coin: &rpc::NodeCoin,
 ) -> Result<(), AppError> {
-    if !(coin.txid.eq_ignore_ascii_case(&owner.txid) && coin.vout == owner.vout) {
+    if !(coin.txid == owner.txid && coin.vout == owner.vout) {
         return Err(AppError::Rpc(format!(
             "node answered coin {}:{} for the owner coin {}:{}",
             coin.txid, coin.vout, owner.txid, owner.vout
