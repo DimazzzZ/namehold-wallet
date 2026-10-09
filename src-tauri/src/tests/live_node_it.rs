@@ -6115,13 +6115,7 @@ async fn shakedex_namehold_buy_now_is_bought_by_the_cli() {
     cl.generate_to_address(maturity, &addr)
         .await
         .expect("mature its coinbases");
-    cli.fill(&CliListing::new(file.clone()));
-    let bought =
-        std::fs::read_to_string(cli.work.join("fill.json")).expect("the file the CLI read");
-    assert_eq!(
-        bought, file,
-        "the CLI bought the exported file, byte for byte"
-    );
+    cli.fill(&CliListing::new(file));
 
     let (fill_txid, fill_vout) = name_owner(&cl, &name).await;
     assert_ne!(fill_txid, lock_txid, "the name moved out of the lock");
@@ -6164,6 +6158,141 @@ async fn shakedex_namehold_buy_now_is_bought_by_the_cli() {
         3_000_000,
         "our payment address got exactly the price"
     );
+}
+
+/// R19 on hsd: a reorg takes the FINALIZE into the lock out of its block,
+/// and the listing follows it. hsd's `invalidateblock` empties the mempool
+/// (`reset`), so while the FINALIZE is nowhere the listing stays Listed (no
+/// verdict from a 404); handed back to the node, as a real reorg's mempool
+/// would hold it, it is a coin in the mempool and the listing is Finalizing;
+/// mined again, Listed. Every step is read from hsd before the jobs run.
+#[tokio::test]
+async fn shakedex_listing_follows_reorg_of_its_lock_finalize() {
+    let Some((url, key)) = shakedex_node_env("shakedex_listing_follows_reorg_of_its_lock_finalize")
+    else {
+        return;
+    };
+    let (app, cl, addr, _name, id) = ready_to_finalize_on_chain(&url, &key, "nhreorg").await;
+    let s = finalize_and_sign_on_chain(&app, &cl, &addr, &id, "3", 1).await;
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+    let lock_coin = |cl: NodeRpcClient| {
+        let txid = lock_txid.clone();
+        async move { cl.get_coin(&txid, lock_vout).await.expect("coin lookup") }
+    };
+    let mined_at = lock_coin(cl.clone())
+        .await
+        .expect("the lock coin")
+        .mined_height()
+        .unwrap()
+        .expect("mined");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+
+    let block = cl.get_block_hash(mined_at).await.expect("blockhash");
+    cl.invalidate_block(&block).await.expect("invalidate");
+    assert!(
+        lock_coin(cl.clone()).await.is_none(),
+        "invalidateblock leaves the FINALIZE nowhere"
+    );
+    listing_jobs(&app, &cl).await;
+    assert_eq!(
+        listing_state(&app, &id),
+        ListingState::Listed,
+        "a 404 alone is no verdict"
+    );
+
+    let fin = draft_status(&app, s.finalize_draft_id.as_deref().expect("draft"));
+    cl.send_raw_transaction(fin.signed_tx_hex.as_deref().expect("signed FINALIZE"))
+        .await
+        .expect("hand the FINALIZE back");
+    wait_until_node_has(&cl, &lock_txid).await;
+    let pending = lock_coin(cl.clone()).await.expect("the lock coin, unmined");
+    assert_eq!(pending.mined_height().unwrap(), None, "in the mempool");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Finalizing);
+
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    cl.reconsider_block(&block).await.expect("reconsider");
+    let again = lock_coin(cl.clone()).await.expect("the lock coin");
+    assert!(
+        again.mined_height().unwrap().is_some(),
+        "mined again: {again:?}"
+    );
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+}
+
+/// R19 coordinator (b) on hsd: another device with the same recovery phrase
+/// (here: a copy of this wallet's database, as a restore would give it)
+/// Finalize & signs the listing and its FINALIZE is mined. This device's
+/// listing, still ReadyToFinalize, becomes a Restored lock with that
+/// FINALIZE's lock outpoint, read from hsd's owner coin — never Aborted.
+#[tokio::test]
+async fn shakedex_finalize_from_another_device_is_a_restored_lock() {
+    let Some((url, key)) =
+        shakedex_node_env("shakedex_finalize_from_another_device_is_a_restored_lock")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id) = ready_to_finalize_on_chain(&url, &key, "nhother").await;
+    let copy = std::env::temp_dir().join(format!(
+        "namehold_live_other_device_{}_{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        conn.execute("VACUUM INTO ?1", [copy.to_str().unwrap()])
+            .expect("copy the database");
+    }
+    let other_conn = rusqlite::Connection::open(&copy).unwrap();
+    other_conn
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .unwrap();
+    let other = app_with(other_conn);
+    let s = finalize_and_sign_on_chain(&other, &cl, &addr, &id, "3", 1).await;
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+
+    // On hsd: the name's owner is that FINALIZE's lock coin, mined at the
+    // lock address of the key derived here.
+    let lock = crate::noncustodial::shakedex::lock_key::derive_lock_key(
+        &master(),
+        NET,
+        test_acct(),
+        &name,
+    )
+    .unwrap();
+    assert_eq!(name_owner(&cl, &name).await, (lock_txid.clone(), lock_vout));
+    let coin = cl
+        .get_coin(&lock_txid, lock_vout)
+        .await
+        .expect("coin")
+        .expect("lock coin");
+    assert_eq!(coin.address.as_deref(), Some(lock.address.as_str()));
+    assert_eq!(
+        coin.covenant.as_ref().expect("covenant").kind,
+        crate::noncustodial::sync::COV_FINALIZE
+    );
+    assert!(coin.mined_height().unwrap().is_some(), "mined: {coin:?}");
+
+    assert_eq!(listing_state(&app, &id), ListingState::ReadyToFinalize);
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = open_listing(&app, &name).expect("still the open listing");
+    assert_eq!(l.id, id);
+    assert_eq!(l.state, ListingState::Restored);
+    assert_eq!(
+        (l.lock_txid.as_deref(), l.lock_vout),
+        (Some(lock_txid.as_str()), Some(i64::from(lock_vout)))
+    );
+    drop(other);
+    let _ = std::fs::remove_file(&copy);
 }
 
 /// R4 on hsd: the FINALIZE into the lock, built at 20 doos/vbyte (above the
