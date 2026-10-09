@@ -5091,3 +5091,401 @@ async fn restore_lock_refused_for_ledger_and_watch_only() {
         assert_eq!(count(&app, "shakedex_listings"), 0, "{kind}");
     }
 }
+
+// --- Upgrade a Restored lock from its own listing file (T4, R32) ------------
+
+use crate::commands::shakedex::shakedex_import_own_listing_file;
+use crate::noncustodial::shakedex::listing_file::{
+    write_listing_file, NewListingFile, PriceStep, MAX_LISTING_FILE_BYTES,
+};
+
+/// A listing file over `(RESTORED_TXID, vout)` with `pubkey`, one step at
+/// 5 HNS signed by `signer` (a lock key) over that coin's template.
+fn own_file(
+    vout: u32,
+    pubkey: [u8; 33],
+    signer: &crate::noncustodial::shakedex::lock_key::LockKey,
+    payment: &str,
+) -> String {
+    let mut lock_txid = [0u8; 32];
+    hex::decode_to_slice(RESTORED_TXID, &mut lock_txid).unwrap();
+    let signature = sell::sign_step(
+        signer,
+        &StepTemplate {
+            lock_outpoint: (lock_txid, vout),
+            lock_value: NAME_VALUE,
+            lock_pubkey: &signer.pubkey,
+            payment: crate::noncustodial::tx::output_address_from_string(Network::Regtest, payment)
+                .unwrap(),
+            price: 5_000_000,
+            lock_time_secs: 1_700_000_000,
+        },
+    )
+    .unwrap();
+    write_listing_file(
+        &NewListingFile {
+            name: NAME,
+            lock_txid,
+            lock_vout: vout,
+            public_key: pubkey,
+            payment_addr: payment,
+            steps: &[PriceStep {
+                price: 5_000_000,
+                lock_time: 1_700_000_000,
+                signature,
+                fee: 0,
+            }],
+            expires_at: 1_731_536_000,
+        },
+        Network::Regtest,
+    )
+    .unwrap()
+}
+
+/// Our own file for the restored lock: the derived key over `(RESTORED_TXID,
+/// 1)`, paying our address 0/0.
+fn good_file() -> String {
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    own_file(1, key.pubkey, &key, &addr00(Network::Regtest).0)
+}
+
+async fn import(
+    app: &App,
+    file: String,
+) -> Result<crate::commands::shakedex::ListingSummary, crate::error::AppError> {
+    shakedex_import_own_listing_file(app.state(), file).await
+}
+
+/// The listing is still the Restored lock as the restore wrote it: no
+/// payment address, steps or file.
+fn assert_still_restored(app: &App, case: &str) {
+    let l = open_listing(app).expect("the open listing");
+    assert_eq!(l.state, ListingState::Restored, "{case}");
+    assert_eq!(
+        (
+            l.payment_address.as_deref(),
+            l.steps_json.as_str(),
+            l.listing_file_json.as_deref(),
+            l.expires_at
+        ),
+        (None, "[]", None, None),
+        "{case}"
+    );
+}
+
+/// hsd answers `coin` (`None`: its 404) for `(RESTORED_TXID, 1)` from now on.
+async fn answer_coin(node: &mut ServerGuard, mocks: &mut Vec<Mock>, coin: Option<Value>) {
+    mocks.remove(2).remove_async().await;
+    let path = format!("/coin/{RESTORED_TXID}/1");
+    let m = node.mock("GET", path.as_str());
+    let m = match coin {
+        Some(c) => m
+            .with_header("content-type", "application/json")
+            .with_body(c.to_string()),
+        None => m.with_status(404),
+    };
+    mocks.insert(2, m.create_async().await);
+}
+
+/// R32: a Restored lock and its own file — same lock outpoint, same public
+/// key, every step signed by the lock over the lock coin — make a full
+/// listing: Listed, with the file's payment address, steps, expiry and mode,
+/// and the file exportable again.
+#[tokio::test]
+async fn own_listing_file_upgrades_a_restored_lock() {
+    let coin = restored_coin(
+        &lock_address(Network::Regtest),
+        COV_FINALIZE,
+        NAME_HEIGHT,
+        None,
+    );
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(coin.clone())).await;
+    let r = restore(&app).await.expect("restored");
+    answer_coin(&mut node, &mut mocks, Some(coin)).await;
+    let pay = addr00(Network::Regtest).0;
+    let file = good_file();
+    let s = import(&app, file.clone()).await.expect("imported");
+    assert!(mocks[2].matched_async().await, "the lock coin was read");
+    assert_eq!(s.id, r.id);
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!(s.mode, ListingMode::BuyNow);
+    assert_eq!(s.payment_address.as_deref(), Some(pay.as_str()));
+    assert_eq!((s.steps.len(), s.steps[0].price), (1, 5_000_000));
+    assert_eq!(s.expires_at, Some(1_731_536_000));
+    let exported = with_db(&app, |c| {
+        export_listing_file_from_conn(c, PROFILE, &s.id).unwrap()
+    });
+    let (a, b) = (
+        ListingFile::parse(&exported, Network::Regtest).unwrap(),
+        ListingFile::parse(&file, Network::Regtest).unwrap(),
+    );
+    assert_eq!(
+        (a.lock_txid, a.lock_vout, a.public_key, a.payment_addr),
+        (b.lock_txid, b.lock_vout, b.public_key, b.payment_addr)
+    );
+    assert_eq!(a.steps, b.steps);
+    // Once Listed it is no longer a Restored lock: a second import is refused.
+    let e = err_text(import(&app, file).await.unwrap_err());
+    assert!(e.contains("no Restored lock"), "{e}");
+    assert_eq!(count(&app, "shakedex_listings"), 1);
+}
+
+/// R32: a file for another key, or for another lock coin, is refused, and
+/// the Restored lock stays as it was.
+#[tokio::test]
+async fn own_listing_file_for_another_key_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    let pay = addr00(Network::Regtest).0;
+    for (case, file, needle) in [
+        (
+            "another key",
+            own_file(1, other.pubkey, &other, &pay),
+            "another lock key",
+        ),
+        (
+            "another lock coin",
+            own_file(2, key.pubkey, &key, &pay),
+            "another lock coin",
+        ),
+    ] {
+        let e = err_text(import(&app, file).await.unwrap_err());
+        assert!(e.contains(needle), "{case}: {e}");
+        assert_still_restored(&app, case);
+    }
+}
+
+/// Deviation 6: while the lock coin is a coin, every step of the file must
+/// be signed by the lock over it (at the coin's value as hsd reports it); a
+/// step signed by another key, or over another value, is refused.
+#[tokio::test]
+async fn own_listing_file_with_a_step_not_signed_by_the_lock_is_refused() {
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    let file = own_file(1, key.pubkey, &other, &addr00(Network::Regtest).0);
+    let e = err_text(import(&app, file).await.unwrap_err());
+    assert!(e.contains("not signed by this lock"), "another signer: {e}");
+    assert_still_restored(&app, "another signer");
+    // The lock signed over NAME_VALUE; hsd says the coin holds one doo more.
+    let mut coin = our_lock_coin();
+    coin["value"] = (NAME_VALUE + 1).into();
+    answer_coin(&mut node, &mut mocks, Some(coin)).await;
+    let e = err_text(import(&app, good_file()).await.unwrap_err());
+    assert!(e.contains("not signed by this lock"), "another value: {e}");
+    assert_still_restored(&app, "another value");
+}
+
+/// Deviation 6: once the lock coin is spent (hsd's 404), the file's lock
+/// outpoint and key are all that is checked: its steps are not verified, and
+/// the chain judges the sale (R22) by the payment address it supplies.
+#[tokio::test]
+async fn own_listing_file_for_a_spent_lock_coin_checks_only_the_outpoint_and_key() {
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    answer_coin(&mut node, &mut mocks, None).await;
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    let pay = addr00(Network::Regtest).0;
+    let s = import(&app, own_file(1, key.pubkey, &other, &pay))
+        .await
+        .expect("imported");
+    assert!(mocks[2].matched_async().await, "the lock coin was read");
+    assert_eq!(s.state, ListingState::Listed);
+    assert_eq!(s.payment_address.as_deref(), Some(pay.as_str()));
+}
+
+/// R32: the file's public key must be the lock key this wallet derives from
+/// its seed for the name, account and network, not only the key the
+/// Restored row holds; a row with a key the seed does not give is refused.
+#[tokio::test]
+async fn own_listing_file_with_a_key_this_wallet_does_not_derive_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    with_db(&app, |c| {
+        let mut l = listing("restored", NAME, ListingState::Restored);
+        l.wallet_profile_id = PROFILE.into();
+        l.lock_pubkey_hex = hex::encode(other.pubkey);
+        l.lock_txid = Some(RESTORED_TXID.into());
+        l.lock_vout = Some(1);
+        l.payment_address = None;
+        queries::insert_shakedex_listing(c, &l).unwrap();
+    });
+    let file = own_file(1, other.pubkey, &other, &addr00(Network::Regtest).0);
+    let e = err_text(import(&app, file).await.unwrap_err());
+    assert!(e.contains("not the lock key this wallet derives"), "{e}");
+    assert_still_restored(&app, "a key not derived");
+}
+
+/// R32, Step 1: the file's payment address must be one of this profile's
+/// derived addresses on this network: an address of our seed the wallet has
+/// not derived, or one of another network, is refused.
+#[tokio::test]
+async fn own_listing_file_paying_an_address_not_ours_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let (_sk, _pk, underived) = hd::derive_address(Network::Regtest, &seed(), 0, 0, 7).unwrap();
+    let e = err_text(
+        import(&app, own_file(1, key.pubkey, &key, &underived))
+            .await
+            .unwrap_err(),
+    );
+    assert!(e.contains("not one of this wallet's addresses"), "{e}");
+    assert_still_restored(&app, "underived");
+    // The same file paying our address 0/0 as mainnet spells it.
+    let mut v: Value = serde_json::from_str(&good_file()).unwrap();
+    v["paymentAddr"] = addr00(Network::Main).0.into();
+    let e = err_text(import(&app, v.to_string()).await.unwrap_err());
+    assert!(e.contains("this listing is for mainnet"), "{e}");
+    assert_still_restored(&app, "mainnet");
+}
+
+/// We never write a market fee (R23): a file of ours with one is not ours,
+/// even though the seller's signature does not cover the fee.
+#[tokio::test]
+async fn own_listing_file_with_a_market_fee_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let mut v: Value = serde_json::from_str(&good_file()).unwrap();
+    v["feeAddr"] = addr00(Network::Regtest).0.into();
+    v["data"][0]["fee"] = 100_000.into();
+    let e = err_text(import(&app, v.to_string()).await.unwrap_err());
+    assert!(e.contains("market fee"), "{e}");
+    assert_still_restored(&app, "fee");
+}
+
+/// The file is foreign input read by the strict parser, size limit first:
+/// an oversized file (here our own file padded with whitespace) is refused.
+#[tokio::test]
+async fn own_listing_file_over_the_size_limit_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let file = format!("{}{}", good_file(), " ".repeat(MAX_LISTING_FILE_BYTES));
+    let e = err_text(import(&app, file).await.unwrap_err());
+    assert!(e.contains("larger than"), "{e}");
+    assert_still_restored(&app, "size");
+}
+
+/// Only a Restored lock is upgraded: no listing of the name, or a listing in
+/// another state (here Locking), is refused.
+#[tokio::test]
+async fn own_listing_file_without_a_restored_lock_is_refused() {
+    let (_node, _m, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    let e = err_text(import(&app, good_file()).await.unwrap_err());
+    assert!(e.contains("no Restored lock"), "no listing: {e}");
+    assert_eq!(count(&app, "shakedex_listings"), 0);
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    with_db(&app, |c| {
+        let mut l = listing("locking", NAME, ListingState::Locking);
+        l.wallet_profile_id = PROFILE.into();
+        l.lock_pubkey_hex = hex::encode(key.pubkey);
+        l.lock_txid = Some(RESTORED_TXID.into());
+        l.lock_vout = Some(1);
+        l.payment_address = None;
+        queries::insert_shakedex_listing(c, &l).unwrap();
+    });
+    let e = err_text(import(&app, good_file()).await.unwrap_err());
+    assert!(e.contains("no Restored lock"), "Locking: {e}");
+    let l = open_listing(&app).unwrap();
+    assert_eq!(
+        (l.state, l.payment_address, l.listing_file_json),
+        (ListingState::Locking, None, None)
+    );
+}
+
+/// Every field of hsd's lock coin reply the import reads fails closed: a
+/// coin of another outpoint, without its address or at another address, or
+/// with a value no coin has, is "could not check" (`AppError::Rpc`), and
+/// nothing is written.
+#[tokio::test]
+async fn own_listing_file_with_a_node_reply_missing_a_field_writes_nothing() {
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    let coin_with = |key: &str, value: Option<Value>| {
+        let mut v = our_lock_coin();
+        match value {
+            Some(x) => v[key] = x,
+            None => {
+                v.as_object_mut().unwrap().remove(key);
+            }
+        }
+        v
+    };
+    let cases = [
+        (
+            "another txid",
+            coin_with("hash", Some("66".repeat(32).into())),
+        ),
+        ("another index", coin_with("index", Some(0.into()))),
+        ("no address", coin_with("address", None)),
+        (
+            "another address",
+            coin_with("address", Some(addr00(Network::Regtest).0.into())),
+        ),
+        ("a negative value", coin_with("value", Some((-1).into()))),
+        ("no value", coin_with("value", None)),
+    ];
+    for (case, coin) in cases {
+        answer_coin(&mut node, &mut mocks, Some(coin)).await;
+        let e = import(&app, good_file()).await.unwrap_err();
+        assert!(
+            matches!(e, crate::error::AppError::Rpc(_)),
+            "{case}: {}",
+            err_text(e)
+        );
+        assert_still_restored(&app, case);
+    }
+}
+
+/// R32: the lock key is re-derived from the seed, so the unlocked signer is
+/// needed: a locked wallet is refused before the lock coin is read, and
+/// nothing is written.
+#[tokio::test]
+async fn own_listing_file_needs_the_unlocked_signer() {
+    let (mut node, mut mocks, app) = restore_fixture(restored_info(), Some(our_lock_coin())).await;
+    restore(&app).await.expect("restored");
+    answer_coin(&mut node, &mut mocks, Some(our_lock_coin())).await;
+    *app.state::<AppState>().signer.lock().unwrap() = None;
+    assert!(matches!(
+        import(&app, good_file()).await.unwrap_err(),
+        crate::error::AppError::WalletLocked
+    ));
+    assert!(
+        !mocks[2].matched_async().await,
+        "the lock coin was not read"
+    );
+    assert_still_restored(&app, "locked");
+}
+
+/// R16/R32: Ledger, watch-only and extended-private-key profiles cannot
+/// derive the lock key: refused with the sentence the UI shows, before the
+/// lock coin is read, and nothing is written.
+#[tokio::test]
+async fn own_listing_file_refused_for_ledger_and_watch_only() {
+    let sentence = crate::noncustodial::shakedex::RECOVERY_PHRASE_ONLY;
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    for kind in ["ledger_hardware", "xpriv_hot", "watch_only_xpub"] {
+        let (_node, mocks, app) =
+            restore_fixture_of(kind, restored_info(), Some(our_lock_coin())).await;
+        with_db(&app, |c| {
+            let mut l = listing("restored", NAME, ListingState::Restored);
+            l.wallet_profile_id = PROFILE.into();
+            l.lock_pubkey_hex = hex::encode(key.pubkey);
+            l.lock_txid = Some(RESTORED_TXID.into());
+            l.lock_vout = Some(1);
+            l.payment_address = None;
+            queries::insert_shakedex_listing(c, &l).unwrap();
+        });
+        let e = err_text(import(&app, good_file()).await.unwrap_err());
+        assert!(e.contains(sentence), "{kind}: {e}");
+        assert!(
+            !mocks[2].matched_async().await,
+            "{kind}: the lock coin was not read"
+        );
+        assert_still_restored(&app, kind);
+    }
+}
