@@ -538,11 +538,15 @@ async fn sold_on_purchase() {
         let f = fx(from);
         let buy = txid("b1");
         paid(&f, &buy, 2, TIP, false);
+        // No transaction index: the owner's transaction is read from the
+        // block at the owner coin's height.
         let chain = node(
             info((&buy, 0)),
             vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
             Value::Null,
-        );
+        )
+        .with_block_hash("ab".repeat(32))
+        .with_block(block_with(&purchase_rest(&f, &buy, TIP, &f.payment), TIP));
         run(&f, &chain).await;
         let l = listing(&f);
         assert_eq!(l.state, ListingState::Sold, "{from:?}");
@@ -641,6 +645,56 @@ async fn payment_alone_is_not_sold() {
         run(&f, &chain).await;
         assert_eq!(listing(&f).state, ListingState::Listed, "{case}");
     }
+    // (e) the owner a mined TRANSFER at our lock committing to the buyer, in
+    // a transaction that pays our payment address, but spending another lock
+    // coin of the name (same seed, same lock address: a re-listing elsewhere).
+    // The owner's transaction is read from its block and judged against our
+    // lock outpoint: not this listing's sale.
+    let f = fx(ListingState::Listed);
+    let x = txid("e8");
+    paid(&f, &x, 2, TIP, false);
+    let mut relisted = purchase_rest(&f, &x, TIP, &f.payment);
+    relisted["inputs"][0]["prevout"] = json!({ "hash": txid("c2"), "index": 0 });
+    let chain = node(
+        info((&x, 0)),
+        vec![transfer_out_of_lock(&f, &x, &f.buyer, TIP)],
+        Value::Null,
+    )
+    .with_block_hash("ab".repeat(32))
+    .with_block(block_with(&relisted, TIP));
+    run(&f, &chain).await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::Listed,
+        "another lock coin bought"
+    );
+    assert!(
+        chain.count_matching(|c| matches!(c, RpcCall::BlockHash(h) if *h == TIP)) > 0,
+        "the owner's transaction was read from its block"
+    );
+}
+
+/// hsd's `getblock <hash> true true` holding the one transaction `rest`
+/// (hsd's `GET /tx` shape), at `height`.
+fn block_with(rest: &Value, height: i64) -> Value {
+    let vin: Vec<_> = rest["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| json!({ "txid": i["prevout"]["hash"], "vout": i["prevout"]["index"] }))
+        .collect();
+    let vout: Vec<_> = rest["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(n, o)| {
+            json!({ "n": n, "value": 0.0,
+                "address": { "version": 0, "hash": "00", "string": o["address"] },
+                "covenant": o["covenant"] })
+        })
+        .collect();
+    json!({ "height": height, "tx": [ { "txid": rest["hash"], "vin": vin, "vout": vout } ] })
 }
 
 /// A transaction that pays the payment address and buys nothing.
@@ -836,6 +890,24 @@ async fn daemon_refresh_makes_no_send_and_no_market_call() {
             )
             .create_async()
             .await;
+        // No transaction index: hsd's empty 404 for the purchase, and its
+        // block at the owner coin's height.
+        let _no_tx = node
+            .mock("GET", format!("/tx/{buy}").as_str())
+            .with_status(404)
+            .create_async()
+            .await;
+        let block_hash = "ab".repeat(32);
+        let _hash = rpc(&mut node, "getblockhash", json!(block_hash))
+            .create_async()
+            .await;
+        let _block = rpc(
+            &mut node,
+            "getblock",
+            block_with(&purchase_rest(&f, &buy, TIP, &f.payment), TIP),
+        )
+        .create_async()
+        .await;
         let no_market = market
             .mock("GET", mockito::Matcher::Any)
             .expect(0)
@@ -883,27 +955,8 @@ async fn daemon_refresh_makes_no_send_and_no_market_call() {
 async fn sold_after_the_buyer_finalized_is_found_from_the_purchase() {
     let buy = txid("b1");
     let fin = txid("a9");
-    let block_of = |f: &Fx, height: i64| {
-        let rest = purchase_rest(f, &buy, height, &f.payment);
-        let vin: Vec<_> = rest["inputs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|i| json!({ "txid": i["prevout"]["hash"], "vout": i["prevout"]["index"] }))
-            .collect();
-        let vout: Vec<_> = rest["outputs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .enumerate()
-            .map(|(n, o)| {
-                json!({ "n": n, "value": 0.0,
-                    "address": { "version": 0, "hash": "00", "string": o["address"] },
-                    "covenant": o["covenant"] })
-            })
-            .collect();
-        json!({ "height": height, "tx": [ { "txid": buy, "vin": vin, "vout": vout } ] })
-    };
+    let block_of =
+        |f: &Fx, height: i64| block_with(&purchase_rest(f, &buy, height, &f.payment), height);
     let finalized = info((&fin, 0));
     let buyer_coin = |f: &Fx| coin(&fin, 0, &f.buyer, COV_FINALIZE, vec![name_hash()], TIP + 12);
 
@@ -954,4 +1007,33 @@ async fn sold_after_the_buyer_finalized_is_found_from_the_purchase() {
         .with_block(json!({ "height": TIP, "tx": [] }));
     run(&f, &chain).await;
     assert_eq!(listing(&f).state, ListingState::Listed, "not in that block");
+}
+
+/// A transaction that cannot be read does not hold the listing for ever:
+/// the owner's transaction and an earlier lead whose block entry is not
+/// hsd's whole answer are skipped (skipping only withholds a verdict), and
+/// the purchase found from the next lead decides.
+#[tokio::test]
+async fn an_unreadable_transaction_is_skipped() {
+    let f = fx(ListingState::Listed);
+    let bad = txid("a0");
+    let buy = txid("b1");
+    paid(&f, &bad, 2, TIP, false);
+    paid(&f, &buy, 2, TIP, false);
+    let mut block = block_with(&purchase_rest(&f, &buy, TIP, &f.payment), TIP);
+    let good = block["tx"][0].clone();
+    block["tx"] = json!([{ "txid": bad, "vin": [] }, good]);
+    let chain = node(
+        info((&bad, 0)),
+        vec![transfer_out_of_lock(&f, &bad, &f.buyer, TIP)],
+        Value::Null,
+    )
+    .with_block_hash("ab".repeat(32))
+    .with_block(block);
+    run(&f, &chain).await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::Sold, Some(buy.as_str()))
+    );
 }
