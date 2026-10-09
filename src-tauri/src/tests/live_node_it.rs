@@ -6797,6 +6797,96 @@ async fn shakedex_restore_lock_by_name_after_a_fresh_profile() {
     );
 }
 
+/// R22 for a lock restored by name (R32), which knows no payment address: a
+/// fresh profile from the same phrase restores the Listed lock by name, and
+/// a Namehold buyer buys the first device's file. While the purchase is in
+/// the mempool the lock coin is hsd's 404 and the owner is still the lock
+/// coin: no verdict. Once it is mined, the owner is its TRANSFER out of the
+/// lock, linked from the stored lock outpoint, committing to the buyer's
+/// address: Sold with the purchase's txid, with no payment address known.
+#[tokio::test]
+async fn shakedex_restored_lock_by_name_bought_is_sold() {
+    let Some((url, key)) = shakedex_node_env("shakedex_restored_lock_by_name_bought_is_sold")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id) = ready_to_finalize_on_chain(&url, &key, "nhrsold").await;
+    let s = finalize_and_sign_on_chain(&app, &cl, &addr, &id, "3", 1).await;
+    let lock = (
+        s.lock_txid.clone().expect("lock txid"),
+        u32::try_from(s.lock_vout.expect("lock vout")).unwrap(),
+    );
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+    let file = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        crate::commands::shakedex::export_listing_file_from_conn(&conn, PROFILE, &id)
+            .expect("export")
+    };
+
+    let fresh = app_with(seeded_conn_acct(&url, &key, test_acct()));
+    sync_wallet_state(fresh.state(), None).await.expect("sync");
+    unlock(&fresh);
+    let r = crate::commands::shakedex::shakedex_restore_lock(fresh.state(), name.clone())
+        .await
+        .expect("restore");
+    assert_eq!(
+        (r.state, r.payment_address.as_deref()),
+        (ListingState::Restored, None)
+    );
+    let restored = |app: &tauri::App<tauri::test::MockRuntime>| {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        db::queries::get_shakedex_listing(&c, &r.id)
+            .unwrap()
+            .unwrap()
+    };
+
+    let b = ShakedexBuyer::new(&url, &key).await;
+    sync_wallet_state(b.app.state(), None).await.expect("sync");
+    let draft = b.sign_purchase(&CliListing::new(file)).await;
+    let bc = broadcast_tx_draft(b.app.state(), draft.id.clone())
+        .await
+        .expect("broadcast");
+    assert_eq!(bc.status, "broadcasted");
+    let buy = bc.txid.clone();
+    wait_until_node_has(&cl, &buy).await;
+    assert!(
+        cl.get_coin(&lock.0, lock.1).await.expect("coin").is_none(),
+        "the lock coin is spent in the mempool"
+    );
+    assert_eq!(
+        name_owner(&cl, &name).await,
+        lock,
+        "the owner moves only on a block"
+    );
+    listing_jobs(&fresh, &cl).await;
+    let l = restored(&fresh);
+    assert_eq!(
+        (l.state, l.sold_txid),
+        (ListingState::Restored, None),
+        "mempool"
+    );
+
+    settle(&b.app, &b.cl, &b.addr, &draft.id).await;
+    assert_eq!(
+        name_owner(&cl, &name).await,
+        (buy.clone(), 0),
+        "the owner is the purchase's TRANSFER"
+    );
+    listing_jobs(&fresh, &cl).await;
+    let l = restored(&fresh);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref(), l.payment_address),
+        (ListingState::Sold, Some(buy.as_str()), None)
+    );
+    assert_eq!(
+        (l.lock_txid.as_deref(), l.lock_vout),
+        (Some(lock.0.as_str()), Some(i64::from(lock.1)))
+    );
+}
+
 /// R4 on hsd: the FINALIZE into the lock, built at 20 doos/vbyte (above the
 /// 5 doos/vbyte floor), pays the fee its summary shows at the rate hsd
 /// reports for it.
