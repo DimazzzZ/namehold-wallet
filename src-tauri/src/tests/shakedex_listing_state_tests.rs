@@ -6,7 +6,7 @@
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
-use crate::db::queries::{self, ListingMode, ListingState, ShakedexListing};
+use crate::db::queries::{self, ListingMode, ListingState, ListingWrite, ShakedexListing};
 use crate::noncustodial::address;
 use crate::noncustodial::derivation;
 use crate::noncustodial::hd::ExtendedPrivKey;
@@ -141,67 +141,192 @@ fn paid(fx: &Fx, txid: &str, vout: u32, height: i64, spent: bool) {
         .unwrap();
 }
 
-#[test]
-fn sale_writes_move_only_a_listing_in_our_lock() {
-    // The sets are pinned as literals: no terminal or cancel state is ever
-    // moved by a sale or an expiry.
-    let set = |a: &[ListingState]| {
-        let mut v: Vec<&str> = a.iter().map(|s| s.as_str()).collect();
-        v.sort_unstable();
-        v
-    };
-    assert_eq!(
-        set(&ListingState::SALE_FROM),
-        ["finalizing", "listed", "restored", "sale_pending"]
-    );
-    assert_eq!(
-        set(&ListingState::LOCKED_EXPIRABLE),
-        ["listed", "restored", "sale_pending"]
-    );
-    for state in ListingState::ALL {
-        let f = fx(state);
-        let own = (f.lock_txid.as_str(), f.lock_vout);
-        let pending = queries::mark_listing_sale_pending(&f.conn, &f.id, &txid("b1"), own).unwrap();
-        assert_eq!(
-            pending == 1,
-            ListingState::SALE_FROM.contains(&state),
-            "{state:?}: pending"
-        );
-        set_state(&f, state);
-        let sold = queries::sell_shakedex_listing(&f.conn, &f.id, &txid("b1"), own).unwrap();
-        assert_eq!(
-            sold == 1,
-            ListingState::SALE_FROM.contains(&state),
-            "{state:?}: sold"
-        );
-        set_state(&f, state);
-        let expired = queries::expire_locked_listing(&f.conn, &f.id).unwrap();
-        assert_eq!(
-            expired == 1,
-            ListingState::LOCKED_EXPIRABLE.contains(&state),
-            "{state:?}: expired"
-        );
-        set_state(&f, state);
-        let unadopted = queries::unadopt_restored_lock(&f.conn, &f.id).unwrap();
-        assert_eq!(
-            unadopted == 1,
-            state == ListingState::Restored,
-            "{state:?}: unadopt"
-        );
-        // Sold's own way back to SalePending, or to a new purchase txid:
-        // from Sold only.
-        for to in [ListingState::SalePending, ListingState::Sold] {
-            set_state(&f, state);
-            let resold =
-                queries::resell_sold_listing(&f.conn, &f.id, to, &txid("b2"), (&f.lock_txid, 0))
-                    .unwrap();
-            assert_eq!(
-                resold == 1,
-                state == ListingState::Sold,
-                "{state:?}: resell to {to:?}"
+/// Write `w` on the fixture's listing with arguments that satisfy every
+/// guard but the state one: its own lock outpoint and key, a file, a lock
+/// TRANSFER, and `to` where the write takes a target. `Err` is a target the
+/// write refuses.
+fn apply(f: &Fx, w: ListingWrite, to: ListingState) -> Result<usize, crate::error::AppError> {
+    let (c, id, b1) = (&f.conn, f.id.as_str(), txid("b1"));
+    let own = (f.lock_txid.as_str(), f.lock_vout);
+    match w {
+        ListingWrite::Ready => queries::mark_listing_ready(c, id),
+        ListingWrite::LockingAgain => queries::mark_listing_locking_again(c, id),
+        ListingWrite::Finalize => {
+            let tx = c.unchecked_transaction().unwrap();
+            let n = queries::mark_listing_finalizing_in_tx(
+                &tx,
+                id,
+                &queries::FinalizingListing {
+                    finalize_draft_id: "fin",
+                    lock_txid: &f.lock_txid,
+                    lock_vout: f.lock_vout,
+                    steps_json: "[]",
+                    listing_file_json: "{}",
+                    expires_at: 1,
+                },
             );
+            tx.commit().unwrap();
+            n
+        }
+        ListingWrite::RevertToReady => queries::revert_listing_to_ready(c, id),
+        ListingWrite::Listed => queries::mark_listing_listed(c, id),
+        ListingWrite::FinalizingAgain => queries::mark_listing_finalizing_again(c, id),
+        ListingWrite::Abort => queries::abort_shakedex_listing(c, id),
+        ListingWrite::ExpireBeforeLock => queries::expire_shakedex_listing(c, id),
+        ListingWrite::AdoptElsewhere => {
+            queries::adopt_lock_finalized_elsewhere(c, id, own.0, own.1)
+        }
+        ListingWrite::Unabort => queries::unabort_shakedex_listing(c, id),
+        ListingWrite::SalePending => queries::mark_listing_sale_pending(c, id, &b1, own),
+        ListingWrite::Sell => queries::sell_shakedex_listing(c, id, &b1, own),
+        ListingWrite::ProvenLockSale => {
+            queries::sell_listing_through_proven_lock(c, id, &b1, (&txid("f2"), 1))
+        }
+        ListingWrite::Resell => queries::resell_sold_listing(c, id, to, &b1, own),
+        ListingWrite::Unsell => queries::unsell_shakedex_listing(c, id, to),
+        ListingWrite::ExpireLocked => queries::expire_locked_listing(c, id),
+        ListingWrite::Unadopt => queries::unadopt_restored_lock(c, id),
+        ListingWrite::Upgrade => queries::upgrade_restored_lock(
+            c,
+            id,
+            own.0,
+            own.1,
+            &listing(f).lock_pubkey_hex,
+            &queries::UpgradedListing {
+                mode: ListingMode::BuyNow,
+                payment_address: &f.payment,
+                steps_json: "[]",
+                listing_file_json: "{}",
+                expires_at: None,
+            },
+        ),
+    }
+}
+
+/// Every write that moves a listing's state moves exactly the (from, to)
+/// pairs below, pinned as literals: the table ([`ListingWrite::transition`])
+/// is checked against them, and each write is run on a listing in every
+/// state, toward every state, with every other guard satisfied.
+#[test]
+fn each_listing_write_moves_exactly_its_transitions() {
+    use ListingState as S;
+    let before_lock_end = [S::Locking, S::ReadyToFinalize, S::Finalizing];
+    let in_lock = [S::Finalizing, S::Listed, S::SalePending, S::Restored];
+    let mut expected: Vec<(ListingWrite, S, S)> = vec![
+        (ListingWrite::Ready, S::Locking, S::ReadyToFinalize),
+        (ListingWrite::LockingAgain, S::ReadyToFinalize, S::Locking),
+        (ListingWrite::Finalize, S::ReadyToFinalize, S::Finalizing),
+        (
+            ListingWrite::RevertToReady,
+            S::Finalizing,
+            S::ReadyToFinalize,
+        ),
+        (ListingWrite::Listed, S::Finalizing, S::Listed),
+        (ListingWrite::FinalizingAgain, S::Listed, S::Finalizing),
+        (ListingWrite::Unabort, S::Aborted, S::Locking),
+        (ListingWrite::ProvenLockSale, S::Locking, S::Sold),
+        (ListingWrite::ProvenLockSale, S::ReadyToFinalize, S::Sold),
+        (ListingWrite::Resell, S::Sold, S::SalePending),
+        (ListingWrite::Resell, S::Sold, S::Sold),
+        (ListingWrite::Unadopt, S::Restored, S::Locking),
+        (ListingWrite::Upgrade, S::Restored, S::Listed),
+    ];
+    for from in before_lock_end {
+        expected.push((ListingWrite::Abort, from, S::Aborted));
+        expected.push((ListingWrite::ExpireBeforeLock, from, S::Expired));
+        expected.push((ListingWrite::AdoptElsewhere, from, S::Restored));
+    }
+    for from in in_lock {
+        expected.push((ListingWrite::SalePending, from, S::SalePending));
+        expected.push((ListingWrite::Sell, from, S::Sold));
+    }
+    for from in [S::SalePending, S::Sold] {
+        for to in [S::Listed, S::Finalizing, S::Restored] {
+            expected.push((ListingWrite::Unsell, from, to));
         }
     }
+    for from in [S::Listed, S::SalePending, S::Restored] {
+        expected.push((ListingWrite::ExpireLocked, from, S::Expired));
+    }
+    let mut table: Vec<(ListingWrite, S, S)> = Vec::new();
+    for w in ListingWrite::ALL {
+        for from in w.from() {
+            for to in w.to() {
+                table.push((w, *from, *to));
+            }
+        }
+    }
+    let key = |t: &(ListingWrite, S, S)| format!("{:?} {:?} {:?}", t.0, t.1, t.2);
+    let mut a: Vec<String> = table.iter().map(key).collect();
+    let mut b: Vec<String> = expected.iter().map(key).collect();
+    a.sort_unstable();
+    b.sort_unstable();
+    assert_eq!(a, b, "the transition table");
+
+    // One fixture; each case starts from its listing re-inserted in `from`.
+    let f = fx(S::Listed);
+    let base = listing(&f);
+    for w in ListingWrite::ALL {
+        let targets: Vec<S> = if w.to().len() > 1 {
+            S::ALL.to_vec()
+        } else {
+            w.to().to_vec()
+        };
+        for from in S::ALL {
+            for to in &targets {
+                // A Finalizing listing ends before the lock only once its
+                // FINALIZE draft is dead (checked below); the proven-lock
+                // sale needs a listing without an outpoint.
+                let proven = w == ListingWrite::ProvenLockSale;
+                let row = ShakedexListing {
+                    state: from,
+                    lock_txid: base.lock_txid.clone().filter(|_| !proven),
+                    lock_vout: base.lock_vout.filter(|_| !proven),
+                    ..base.clone()
+                };
+                f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
+                queries::insert_shakedex_listing(&f.conn, &row).unwrap();
+                f.conn
+                    .execute(
+                        "UPDATE wallet_tx_drafts SET status = 'failed' WHERE id = 'fin'",
+                        [],
+                    )
+                    .unwrap();
+                let allowed = expected.contains(&(w, from, *to));
+                let n = match apply(&f, w, *to) {
+                    Ok(n) => n,
+                    Err(_) => {
+                        assert!(!w.to().contains(to), "{w:?} {from:?} -> {to:?}: refused");
+                        0
+                    }
+                };
+                assert_eq!(n == 1, allowed, "{w:?} {from:?} -> {to:?}");
+                let state = listing(&f).state;
+                assert_eq!(
+                    state,
+                    if allowed { *to } else { from },
+                    "{w:?} {from:?} -> {to:?}"
+                );
+            }
+        }
+    }
+    // Ending a listing before the lock takes a Finalizing one only while its
+    // FINALIZE draft is dead.
+    for w in [
+        ListingWrite::Abort,
+        ListingWrite::ExpireBeforeLock,
+        ListingWrite::AdoptElsewhere,
+    ] {
+        let f = fx(S::Finalizing);
+        assert_eq!(apply(&f, w, S::Aborted).unwrap(), 0, "{w:?}: live FINALIZE");
+        assert_eq!(listing(&f).state, S::Finalizing);
+    }
+}
+
+/// The guards of the sale, resell, unadopt and upgrade writes beside the
+/// state: the listing's own lock outpoint, its lock TRANSFER, its key.
+#[test]
+fn sale_writes_move_only_a_listing_in_our_lock() {
     // Sold is moved only to SalePending or Sold, and only for its own lock
     // outpoint.
     let f = fx(ListingState::Sold);
@@ -344,18 +469,20 @@ fn sale_writes_move_only_a_listing_in_our_lock() {
 
 /// The Sold write through a lock coin the job proved to be the listing's
 /// (`shakedex_jobs::finalize_into_lock`): only from Locking or
-/// ReadyToFinalize (pinned as a literal; `SALE_FROM` keeps Locking out),
+/// ReadyToFinalize (pinned as a literal; the stored-outpoint sale keeps
+/// Locking out),
 /// only while the listing has no lock outpoint, and the proven coin becomes
 /// it.
 #[test]
 fn proven_lock_sale_moves_only_a_listing_before_the_lock_without_an_outpoint() {
-    let mut set: Vec<&str> = ListingState::PROVEN_LOCK_SALE_FROM
+    let mut set: Vec<&str> = ListingWrite::ProvenLockSale
+        .from()
         .iter()
         .map(|s| s.as_str())
         .collect();
     set.sort_unstable();
     assert_eq!(set, ["locking", "ready_to_finalize"]);
-    assert!(!ListingState::SALE_FROM.contains(&ListingState::Locking));
+    assert!(!ListingWrite::Sell.from().contains(&ListingState::Locking));
     let proven = (txid("f2"), 1);
     for state in ListingState::ALL {
         let f = fx(state);
@@ -381,7 +508,7 @@ fn proven_lock_sale_moves_only_a_listing_before_the_lock_without_an_outpoint() {
             (&proven.0, proven.1),
         )
         .unwrap();
-        let moves = ListingState::PROVEN_LOCK_SALE_FROM.contains(&state);
+        let moves = ListingWrite::ProvenLockSale.from().contains(&state);
         assert_eq!(n == 1, moves, "{state:?}: without an outpoint");
         let l = listing(&f);
         if moves {
