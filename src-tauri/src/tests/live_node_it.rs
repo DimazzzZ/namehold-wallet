@@ -6916,6 +6916,450 @@ async fn shakedex_lock_finalize_pays_its_fee_rate_on_vsize() {
     );
 }
 
+/// The listing row of `id`.
+fn listing_row(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    id: &str,
+) -> db::queries::ShakedexListing {
+    let state = app.state::<AppState>();
+    let c = state.db.lock().unwrap();
+    db::queries::get_shakedex_listing(&c, id).unwrap().unwrap()
+}
+
+/// A fresh name locked, finalized into its lock at `price` HNS and Listed
+/// by the job. `(app, client, our address, name, listing id, the Finalize &
+/// sign summary)`.
+async fn listed_on_chain(
+    url: &str,
+    key: &str,
+    prefix: &str,
+    price: &str,
+) -> (
+    tauri::App<tauri::test::MockRuntime>,
+    NodeRpcClient,
+    String,
+    String,
+    String,
+    crate::commands::shakedex::ListingSummary,
+) {
+    let (app, cl, addr, name, id) = ready_to_finalize_on_chain(url, key, prefix).await;
+    let s = finalize_and_sign_on_chain(&app, &cl, &addr, &id, price, 1).await;
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+    (app, cl, addr, name, id, s)
+}
+
+/// Cancel listing `id` at `per_byte` doos/byte, R28's prompt confirmed
+/// through the test queue: the signed draft, not sent.
+async fn cancel_signed(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    id: &str,
+    per_byte: u64,
+) -> crate::noncustodial::types::TxDraftSummary {
+    unlock(app);
+    crate::commands::secure_prompt::push_test_answer(
+        crate::commands::secure_prompt::SecurePromptResult {
+            value: None,
+            confirmed: true,
+        },
+    );
+    let d = crate::commands::shakedex::cancel_listing_confirmed(
+        &app.state(),
+        app.handle(),
+        id,
+        Some(per_byte),
+    )
+    .await
+    .expect("cancel");
+    assert_eq!(d.status, "signed");
+    assert_eq!(listing_state(app, id), ListingState::Cancelling);
+    d
+}
+
+/// The exported listing file of `id`.
+fn exported_file(app: &tauri::App<tauri::test::MockRuntime>, id: &str) -> String {
+    let state = app.state::<AppState>();
+    let conn = state.db.lock().unwrap();
+    crate::commands::shakedex::export_listing_file_from_conn(&conn, PROFILE, id).expect("export")
+}
+
+/// Fund the CLI's hsd wallet (four coinbases, matured by mining to `addr`).
+async fn fund_the_cli_wallet(cl: &NodeRpcClient, key: &str, addr: &str) {
+    let cli_addr = hsw_rpc(key, &["getnewaddress"]);
+    cl.generate_to_address(4, &cli_addr)
+        .await
+        .expect("fund the CLI wallet");
+    let maturity = u32::try_from(NET.coinbase_maturity()).unwrap();
+    cl.generate_to_address(maturity, addr)
+        .await
+        .expect("mature its coinbases");
+}
+
+/// R28 on hsd: Namehold cancels its Listed listing. Mined, the name's owner
+/// is the cancel's TRANSFER at the lock address committing to our reserved
+/// cancel address, and the listing awaits its finalize with the lockup
+/// counted down; the FINALIZE is refused one block before the lockup ends
+/// and built at it. Mined, hsd shows the name's owner a FINALIZE at our
+/// cancel address with no transfer in progress, and the listing is
+/// Cancelled.
+#[tokio::test]
+async fn shakedex_cancel_mined_brings_the_name_home() {
+    let Some((url, key)) = shakedex_node_env("shakedex_cancel_mined_brings_the_name_home") else {
+        return;
+    };
+    let (app, cl, addr, name, id, s) = listed_on_chain(&url, &key, "nhcancel", "3").await;
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+    let cancel = cancel_signed(&app, &id, 1).await;
+    let bc = broadcast_tx_draft(app.state(), cancel.id.clone())
+        .await
+        .expect("broadcast");
+    assert_eq!(bc.status, "broadcasted");
+    assert_eq!(listing_state(&app, &id), ListingState::Cancelling);
+    settle(&app, &cl, &addr, &cancel.id).await;
+    listing_jobs(&app, &cl).await;
+    let l = listing_row(&app, &id);
+    assert_eq!(l.state, ListingState::CancelAwaitingFinalize);
+    assert_eq!(
+        (l.cancel_txid.as_deref(), l.cancel_vout),
+        (Some(bc.txid.as_str()), Some(0))
+    );
+    assert!(
+        cl.get_coin(&lock_txid, lock_vout)
+            .await
+            .expect("coin")
+            .is_none(),
+        "the lock coin is spent"
+    );
+    let ctx = cl.get_tx_by_hash(&bc.txid).await.expect("tx");
+    assert!(
+        ctx["height"].as_i64().unwrap_or(-1) > 0,
+        "the cancel is mined: {ctx}"
+    );
+    assert_eq!(
+        (
+            ctx["inputs"][0]["prevout"]["hash"].as_str(),
+            ctx["inputs"][0]["prevout"]["index"].as_u64()
+        ),
+        (Some(lock_txid.as_str()), Some(u64::from(lock_vout))),
+        "the cancel spends the lock coin: {ctx}"
+    );
+    assert_eq!(
+        name_owner(&cl, &name).await,
+        (bc.txid.clone(), 0),
+        "the cancel owns the name"
+    );
+    let lock = crate::noncustodial::shakedex::lock_key::derive_lock_key(
+        &master(),
+        NET,
+        test_acct(),
+        &name,
+    )
+    .unwrap();
+    let t = cl
+        .get_coin(&bc.txid, 0)
+        .await
+        .expect("coin")
+        .expect("the cancel's TRANSFER");
+    assert_eq!(
+        t.address.as_deref(),
+        Some(lock.address.as_str()),
+        "it stays at the lock"
+    );
+    let cov = t.covenant.as_ref().expect("covenant");
+    assert_eq!(cov.kind, crate::noncustodial::sync::COV_TRANSFER);
+    let cancel_addr = l.cancel_address.clone().expect("reserved");
+    let (v, h) = crate::noncustodial::address::decode(NET, &cancel_addr).unwrap();
+    assert_eq!(
+        cov.items[2..4],
+        [hex::encode([v]), hex::encode(h)],
+        "it commits to our cancel address"
+    );
+
+    // Mined at the tip; the FINALIZE is valid once tip + 1 >= its block +
+    // lockup, i.e. after lockup - 1 more blocks.
+    let lockup = i64::from(NET.name_params().transfer_lockup);
+    cl.generate_to_address(u32::try_from(lockup - 2).unwrap(), &addr)
+        .await
+        .expect("mine");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_row(&app, &id).cancel_blocks_remaining, Some(1));
+    let e = crate::commands::shakedex::finalize_cancel(&app.state(), &id, Some(1))
+        .await
+        .expect_err("one block early");
+    assert!(e.to_string().contains("in 1 block"), "{e}");
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_row(&app, &id).cancel_blocks_remaining, Some(0));
+    let fin = crate::commands::shakedex::finalize_cancel(&app.state(), &id, Some(1))
+        .await
+        .expect("finalize");
+    assert_eq!(listing_state(&app, &id), ListingState::CancelFinalizing);
+    broadcast_only(&app, &fin.id).await;
+    settle(&app, &cl, &addr, &fin.id).await;
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Cancelled);
+    let (otx, ovout) = name_owner(&cl, &name).await;
+    assert_eq!(
+        Some(otx.as_str()),
+        draft_status(&app, &fin.id).txid.as_deref(),
+        "our FINALIZE owns the name"
+    );
+    let ftx = cl.get_tx_by_hash(&otx).await.expect("tx");
+    assert_eq!(
+        (
+            ftx["inputs"][0]["prevout"]["hash"].as_str(),
+            ftx["inputs"][0]["prevout"]["index"].as_u64()
+        ),
+        (Some(bc.txid.as_str()), Some(0)),
+        "the FINALIZE spends the cancel's TRANSFER: {ftx}"
+    );
+    let home = cl
+        .get_coin(&otx, ovout)
+        .await
+        .expect("coin")
+        .expect("the owner coin");
+    assert_eq!(
+        home.address.as_deref(),
+        Some(cancel_addr.as_str()),
+        "home at our cancel address"
+    );
+    assert_eq!(
+        home.covenant.as_ref().expect("covenant").kind,
+        crate::noncustodial::sync::COV_FINALIZE
+    );
+    let info = cl.get_name_info(&name).await.expect("info");
+    assert_eq!(info["info"]["transfer"], 0, "no transfer in progress");
+}
+
+/// R28 on hsd, the shakedex CLI the buyer: our cancel is signed while the
+/// listing is Listed, but the CLI's purchase reaches the node's mempool
+/// first. The node does not take our cancel (the broadcast says so, and
+/// hsd's `sendrawtransaction` still answers it with its txid); the purchase
+/// is mined and the cancel never is; the next sync makes the listing Sold
+/// by the purchase, which paid our payment address the price, and the
+/// cancel's coins are free again.
+#[tokio::test]
+async fn shakedex_cli_purchase_beats_our_cancel() {
+    let Some((url, key, cli)) = shakedex_env("shakedex_cli_purchase_beats_our_cancel") else {
+        return;
+    };
+    let (app, cl, addr, name, id, s) = listed_on_chain(&url, &key, "nhbeat", "3").await;
+    let pay = s.payment_address.clone().expect("payment address");
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+    let file = exported_file(&app, &id);
+    let cancel = cancel_signed(&app, &id, 1).await;
+    let cancel_txid = listing_row(&app, &id)
+        .cancel_txid
+        .expect("the cancel's txid");
+
+    fund_the_cli_wallet(&cl, &key, &addr).await;
+    cli.fill(&CliListing::new(file));
+    let (fill_txid, fill_vout) = name_owner(&cl, &name).await;
+    assert_ne!(fill_txid, lock_txid, "the name moved out of the lock");
+    let fill_hex = cl.get_tx_by_hash(&fill_txid).await.expect("tx")["hex"]
+        .as_str()
+        .expect("hex")
+        .to_string();
+    let height = cl
+        .get_coin(&fill_txid, fill_vout)
+        .await
+        .expect("coin")
+        .expect("the fill's TRANSFER")
+        .mined_height()
+        .unwrap()
+        .expect("mined");
+    // Back to the moment the fill is only in the mempool: its block taken
+    // out (hsd's invalidateblock empties the mempool), the fill sent again.
+    let block = cl.get_block_hash(height).await.expect("blockhash");
+    cl.invalidate_block(&block).await.expect("invalidate");
+    assert!(
+        cl.get_coin(&lock_txid, lock_vout)
+            .await
+            .expect("coin")
+            .is_some(),
+        "the lock coin is back"
+    );
+    cl.send_raw_transaction(&fill_hex)
+        .await
+        .expect("hand the fill back");
+    wait_until_node_has(&cl, &fill_txid).await;
+
+    let e = broadcast_tx_draft(app.state(), cancel.id.clone())
+        .await
+        .expect_err("the node does not take the cancel");
+    assert!(e.to_string().contains("did not take"), "{e}");
+    let signed = draft_status(&app, &cancel.id)
+        .signed_tx_hex
+        .expect("signed");
+    assert_eq!(
+        cl.send_raw_transaction(&signed).await.expect("hsd answers"),
+        cancel_txid,
+        "hsd answers the refused cancel with its txid"
+    );
+
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    // Only clears the invalid mark (`chain.removeInvalid`, no reorg).
+    cl.reconsider_block(&block).await.expect("reconsider");
+    assert_eq!(
+        name_owner(&cl, &name).await.0,
+        fill_txid,
+        "the purchase is mined"
+    );
+    let ftx = cl.get_tx_by_hash(&fill_txid).await.expect("tx");
+    assert!(
+        ftx["inputs"]
+            .as_array()
+            .expect("inputs")
+            .iter()
+            .any(
+                |i| i["prevout"]["hash"].as_str() == Some(lock_txid.as_str())
+                    && i["prevout"]["index"].as_u64() == Some(u64::from(lock_vout))
+            ),
+        "the purchase spends the lock coin: {ftx}"
+    );
+    assert!(
+        cl.get_tx_by_hash(&cancel_txid)
+            .await
+            .expect("lookup")
+            .is_null(),
+        "the cancel is in no block and no mempool"
+    );
+    assert_eq!(
+        paid_to(&cl, &fill_txid, &pay).await,
+        3_000_000,
+        "the price was paid to us"
+    );
+
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = listing_row(&app, &id);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::Sold, Some(fill_txid.as_str()))
+    );
+    let held: i64 = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.query_row(
+            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = ?1",
+            [&cancel.id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(held, 0, "the cancel's coins are free again");
+    let d = draft_status(&app, &cancel.id);
+    assert!(
+        !db::queries::draft_alive(&d.status),
+        "the cancel can never land: {}",
+        d.status
+    );
+    assert_eq!(
+        d.error_message.as_deref(),
+        Some(crate::noncustodial::shakedex::cancel::CANCEL_LOST_TO_PURCHASE),
+        "the listing job, not the generic sync, released the losing cancel"
+    );
+}
+
+/// R26 on hsd, the shakedex CLI the buyer: a Listed Buy Now at 5 HNS is
+/// lowered to 3 HNS; the exported listing file carries both steps, the CLI
+/// fills the cheapest step valid at the MTP (R3's current step, its
+/// `bestBidAt`), and the mined purchase pays our payment address exactly 3
+/// HNS; the next sync makes the listing Sold by it.
+#[tokio::test]
+async fn shakedex_lowered_price_is_bought_by_the_cli_at_the_lower_price() {
+    let Some((url, key, cli)) =
+        shakedex_env("shakedex_lowered_price_is_bought_by_the_cli_at_the_lower_price")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id, s) = listed_on_chain(&url, &key, "nhlower", "5").await;
+    let pay = s.payment_address.clone().expect("payment address");
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+    unlock(&app);
+    crate::commands::secure_prompt::push_test_answer(
+        crate::commands::secure_prompt::SecurePromptResult {
+            value: None,
+            confirmed: true,
+        },
+    );
+    let lowered =
+        crate::commands::shakedex::lower_price_confirmed(&app.state(), app.handle(), &id, "3")
+            .await
+            .expect("lower");
+    assert_eq!(lowered.steps.len(), 2);
+    assert_eq!(lowered.state, ListingState::Listed);
+    let listing = CliListing::new(exported_file(&app, &id));
+    assert_eq!(listing.steps.len(), 2, "the file carries both steps");
+    assert_eq!((listing.price(0), listing.price(1)), (5_000_000, 3_000_000));
+    assert!(
+        node_mtp(&cl).await >= listing.lock_time(1),
+        "the lowered step is valid now"
+    );
+    fund_the_cli_wallet(&cl, &key, &addr).await;
+    cli.fill(&listing);
+    let (fill_txid, _) = name_owner(&cl, &name).await;
+    assert_ne!(fill_txid, lock_txid, "the name moved out of the lock");
+    let ftx = cl.get_tx_by_hash(&fill_txid).await.expect("tx");
+    assert!(
+        ftx["inputs"]
+            .as_array()
+            .expect("inputs")
+            .iter()
+            .any(
+                |i| i["prevout"]["hash"].as_str() == Some(lock_txid.as_str())
+                    && i["prevout"]["index"].as_u64() == Some(u64::from(lock_vout))
+            ),
+        "the purchase spends the lock coin: {ftx}"
+    );
+    assert_eq!(
+        paid_to(&cl, &fill_txid, &pay).await,
+        3_000_000,
+        "paid the lowered price"
+    );
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = listing_row(&app, &id);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::Sold, Some(fill_txid.as_str()))
+    );
+}
+
+/// R4 on hsd: the cancel pays the fee rate asked for on its virtual size,
+/// with the lock witness `[sig65, lockScript]` counted: hsd's `GET /tx`
+/// reports the fee the draft recorded and a rate within 2% above the one
+/// asked.
+#[tokio::test]
+async fn shakedex_cancel_pays_its_fee_rate_on_vsize() {
+    let Some((url, key)) = shakedex_node_env("shakedex_cancel_pays_its_fee_rate_on_vsize") else {
+        return;
+    };
+    let per_byte = 20;
+    let (app, cl, addr, _name, id, _s) = listed_on_chain(&url, &key, "nhcrate", "3").await;
+    let cancel = cancel_signed(&app, &id, per_byte).await;
+    let bc = broadcast_tx_draft(app.state(), cancel.id.clone())
+        .await
+        .expect("broadcast");
+    assert_eq!(bc.status, "broadcasted");
+    settle(&app, &cl, &addr, &cancel.id).await;
+    let draft = draft_status(&app, &cancel.id);
+    let fee =
+        serde_json::from_str::<serde_json::Value>(&draft.summary_json).unwrap()["feeDoos"].clone();
+    let tx = cl.get_tx_by_hash(&bc.txid).await.expect("tx");
+    assert!(tx["height"].as_i64().unwrap_or(-1) > 0, "mined: {tx}");
+    assert_eq!(tx["fee"], fee, "{tx}");
+    let rate = tx["rate"].as_u64().expect("rate");
+    let asked = per_byte * 1000;
+    assert!(
+        (asked..=asked * 102 / 100).contains(&rate),
+        "asked {asked} doos/kvB, hsd reports {rate}: {tx}"
+    );
+}
+
 /// #65 on a live node: a transaction pays the fee rate asked for on hsd's
 /// virtual size, not on its raw size. hsd's `GET /tx/:hash` reports the fee
 /// and the rate it works out on `getVirtualSize()`; the raw-size bug paid
