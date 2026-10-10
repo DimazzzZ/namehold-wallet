@@ -833,7 +833,7 @@ pub(crate) async fn prepare_lock_finalize(
     }
     let coin = ctx
         .node
-        .get_coin(&lock_transfer_txid, 0)
+        .get_coin(&lock_transfer_txid, sell::LOCK_TRANSFER_NAME_VOUT)
         .await?
         .ok_or_else(|| {
             AppError::InvalidInput(
