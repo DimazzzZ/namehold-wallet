@@ -1077,6 +1077,30 @@ async fn refused_listing_near_expiry_is_refreshed_without_a_market_call() {
     post.assert_async().await;
     assert_eq!(n.call_count(), 0);
     assert_eq!(listing(&g).market_status, Some(MarketStatus::Refused));
+
+    // A Refused Cancelling listing (cancel unsent) near its expiry: its
+    // expiry is never refreshed (a Listed-only write), so the node is not
+    // read either.
+    let h = listed_on_market(MarketStatus::Refused);
+    set_expiry(&h, (NOW + 86_400) as u64);
+    queries::insert_tx_draft(&h.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
+    h.conn
+        .execute(
+            "UPDATE shakedex_listings SET state = 'cancelling', cancel_draft_id = 'cd'",
+            [],
+        )
+        .unwrap();
+    let mut s = market().await;
+    let any = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+    let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    let n = node(&h, TIP);
+    keep_listed_with_client(&h.conn, &n, &client(&s), PROFILE, NOW)
+        .await
+        .unwrap();
+    any.assert_async().await;
+    post.assert_async().await;
+    assert_eq!(n.call_count(), 0);
+    assert_eq!(listing(&h).market_status, Some(MarketStatus::Refused));
 }
 
 /// R23: off mainnet the keep-listed job returns before any read: no node
@@ -1198,19 +1222,14 @@ async fn steps_unverified_is_verified_again_before_the_market() {
     );
 }
 
-/// R24, R28: only a Listed Buy Now listing is kept on the market by this
-/// job: a Cancelling one (its cancel not sent yet), a reverse auction
-/// (T8's), one the market has not taken yet (the first upload is
-/// `publish_listings_with_client`'s) and a reported one are not asked about.
+/// R24, R25: of the jobs' set, a reverse auction (T8's), one the market has
+/// not taken yet (the first upload is `publish_listings_with_client`'s) and
+/// a reported one are not asked about.
 #[tokio::test]
-async fn only_listed_buy_now_listings_are_kept() {
-    for case in ["cancelling", "reverse_auction", "unset", "reported"] {
+async fn only_buy_now_listings_the_market_took_are_kept() {
+    for case in ["reverse_auction", "unset", "reported"] {
         let f = listed_on_market(MarketStatus::Listed);
         let sql = match case {
-            "cancelling" => {
-                queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
-                "UPDATE shakedex_listings SET state = 'cancelling', cancel_draft_id = 'cd'"
-            }
             "reverse_auction" => "UPDATE shakedex_listings SET mode = 'reverse_auction'",
             "unset" => "UPDATE shakedex_listings SET market_status = NULL",
             _ => "UPDATE shakedex_listings SET market_status = 'reported'",
@@ -1233,5 +1252,67 @@ async fn only_listed_buy_now_listings_are_kept() {
         get.assert_async().await;
         post.assert_async().await;
         assert_eq!(n.call_count(), 0, "{case}");
+    }
+}
+
+/// R24, R25 (coordinator ruling 2026-10-10): a Cancelling listing whose
+/// cancel is not sent yet is still buyable on chain, so it is kept on the
+/// market like a Listed one: the market's "not listed" or someone else's
+/// copy gets ours uploaded. Once the cancel is sent (R28) it is not touched.
+#[tokio::test]
+async fn cancelling_listing_is_kept_until_its_cancel_is_sent() {
+    for (gone, ok) in [
+        (true, MarketStatus::Listed),
+        (false, MarketStatus::ReplacedReuploaded),
+    ] {
+        let f = listed_on_market(MarketStatus::Listed);
+        queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
+        queries::update_tx_draft_status(&f.conn, "cd", "signed", None, None).unwrap();
+        f.conn
+            .execute(
+                "UPDATE shakedex_listings SET state = 'cancelling', cancel_draft_id = 'cd'",
+                [],
+            )
+            .unwrap();
+        let mut s = market().await;
+        let get = if gone {
+            s.mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+                .with_status(404)
+                .with_body(PROOF_NOT_FOUND)
+                .expect(1)
+                .create_async()
+                .await
+        } else {
+            let mut theirs: serde_json::Value = serde_json::from_str(&our_copy(&f)).unwrap();
+            theirs["data"][0]["price"] = 1.into();
+            copy_mock(&mut s, theirs.to_string(), 1).await
+        };
+        let (m, seen) = upload_mock(&mut s, 1).await;
+        keep(&f, &s, NOW).await;
+        get.assert_async().await;
+        m.assert_async().await;
+        let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+        assert_eq!(sent, our_copy(&f));
+        let l = listing(&f);
+        assert_eq!(l.state, ListingState::Cancelling);
+        assert_eq!(l.market_status, Some(ok));
+        assert_eq!(
+            l.market_retry_at.as_deref(),
+            Some(rfc3339(NOW + 3_600).as_str())
+        );
+
+        // The cancel sent: nothing is asked of the market, however long after.
+        queries::update_tx_draft_status(&f.conn, "cd", "broadcasted", None, Some(&txid("c1")))
+            .unwrap();
+        let mut s = market().await;
+        let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+        let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+        let n = node(&f, TIP);
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, NOW + 86_400)
+            .await
+            .unwrap();
+        get.assert_async().await;
+        post.assert_async().await;
+        assert_eq!(n.call_count(), 0);
     }
 }
