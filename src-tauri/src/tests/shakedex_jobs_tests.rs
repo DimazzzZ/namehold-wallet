@@ -1115,6 +1115,9 @@ async fn copy_mock(s: &mut ServerGuard, body: String, hits: usize) -> mockito::M
 #[tokio::test]
 async fn reuploads_when_replaced() {
     let f = listed_on_market(MarketStatus::Listed);
+    // A Buy Now the market took before T8 recorded the step sent: nothing
+    // tells its own copy from someone else's but `market_changed`.
+    assert_eq!(listing(&f).market_sent_step, None);
     let mut theirs: serde_json::Value = serde_json::from_str(&our_copy(&f)).unwrap();
     theirs["data"][0]["price"] = 1.into();
     let mut s = market().await;
@@ -1130,6 +1133,113 @@ async fn reuploads_when_replaced() {
         l.market_retry_at.as_deref(),
         Some(rfc3339(NOW + 3_600).as_str())
     );
+}
+
+async fn keep_at(f: &Fx, s: &ServerGuard, now: i64, mtp: u64) {
+    keep_listed_with_client(&f.conn, &node_at(f, TIP, mtp), &client(s), PROFILE, now)
+        .await
+        .unwrap();
+}
+
+/// [`uploads_current_step_only`]'s first upload: a reverse auction of
+/// [`schedule`] on the market, its step 2 accepted. The signed steps and
+/// the copy sent.
+async fn schedule_on_market(f: &Fx) -> (Vec<PriceStep>, String) {
+    let steps = as_schedule(f, &schedule());
+    let mut s = market().await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    publish(f, &node(f, TIP), &s, NOW).await;
+    m.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    (steps, sent)
+}
+
+/// The median time at which [`schedule`]'s step 3 is the current one.
+fn step_3_mtp() -> u64 {
+    valid_from_mtp(schedule()[3].1)
+}
+
+/// R25 (T8, fix round 1): the step moved with no write (no Lower price, no
+/// refresh: `market_changed` clear) and the market's copy is the step we
+/// last sent (`market_sent_step`): it is our own earlier step, not someone
+/// else's — the current step goes up as Listed. Here the step moves while
+/// the market gave no answer.
+#[tokio::test]
+async fn our_earlier_step_on_the_market_is_ours() {
+    let f = fx(ListingState::Listed, true);
+    let (steps, sent) = schedule_on_market(&f).await;
+    let mut s = market().await;
+    let get = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(502)
+        .with_body("<html>Application failed to respond</html>")
+        .expect(1)
+        .create_async()
+        .await;
+    keep(&f, &s, NOW + 3_600).await;
+    get.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(l.market_status, Some(MarketStatus::Retrying));
+    assert!(!l.market_changed);
+    let mut s = market().await;
+    let get = copy_mock(&mut s, sent, 1).await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    keep_at(&f, &s, NOW + 3_900, step_3_mtp()).await;
+    get.assert_async().await;
+    m.assert_async().await;
+    let (_, up) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        ListingFile::parse(&up, NET).unwrap().steps,
+        vec![steps[3].clone()]
+    );
+    let l = listing(&f);
+    assert_eq!(l.market_status, Some(MarketStatus::Listed));
+    assert_eq!(l.market_sent_step, Some(hex::encode(steps[3].signature)));
+}
+
+/// R25 (T8, fix round 1): after the step moved, a copy that is not the step
+/// we last sent — another signature, our sent step's signature over
+/// another offer (a price changed), or a stored step of ours we did not
+/// send (step 1, dearer: anyone holding the file may upload it) — is
+/// someone else's: ReplacedReuploaded.
+#[tokio::test]
+async fn foreign_copy_after_the_step_moved_is_replaced() {
+    for case in [
+        "foreign signature",
+        "our signature, another price",
+        "our step 1, not sent",
+    ] {
+        let f = fx(ListingState::Listed, true);
+        let (_, sent) = schedule_on_market(&f).await;
+        let theirs = if case == "foreign signature" {
+            let foreign = signed_step(&f.key, &f.payment, 7_000_000, schedule()[2].1);
+            let file = file_of(
+                &f.key,
+                &f.payment,
+                &[foreign],
+                MTP + sell::LISTING_LIFETIME_SECS,
+            );
+            listing_file_market_copy(&file)
+        } else if case == "our step 1, not sent" {
+            let stored = listing(&f).listing_file_json.unwrap();
+            crate::noncustodial::shakedex::listing_file::market_copy(&stored, 1, NET).unwrap()
+        } else {
+            let mut v: serde_json::Value = serde_json::from_str(&sent).unwrap();
+            v["data"][0]["price"] = 1.into();
+            v.to_string()
+        };
+        let mut s = market().await;
+        let get = copy_mock(&mut s, theirs, 1).await;
+        let (m, _) = upload_mock(&mut s, 1).await;
+        keep_at(&f, &s, NOW + 3_600, step_3_mtp()).await;
+        get.assert_async().await;
+        m.assert_async().await;
+        assert_eq!(
+            listing(&f).market_status,
+            Some(MarketStatus::ReplacedReuploaded),
+            "{case}"
+        );
+    }
 }
 
 /// R25: a copy that offers a buyer exactly ours — keys in Flask's order, an

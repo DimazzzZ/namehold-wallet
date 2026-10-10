@@ -2766,6 +2766,40 @@ fn copy_step(copy: &listing_file::ListingFile) -> Result<String, AppError> {
     }
 }
 
+/// R25 (T8): whether `theirs`, the market's copy of `l`, is the step we
+/// last sent it (`market_sent_step`): `ours` (the copy we would upload now)
+/// with its one step replaced by the stored step of that signature, offered
+/// exactly ([`listing_file::same_market_listing`]). A signature of ours over
+/// another offer (a price, lock time or fee address changed) is someone
+/// else's copy; no step recorded as sent (a Buy Now taken before T8) is
+/// never ours here.
+fn is_our_sent_step(
+    l: &queries::ShakedexListing,
+    theirs: &listing_file::ListingFile,
+    ours: &listing_file::ListingFile,
+) -> bool {
+    let Some(sent) = l.market_sent_step.as_deref() else {
+        return false;
+    };
+    let Some(stored) = l
+        .listing_file_json
+        .as_deref()
+        .and_then(|f| listing_file::ListingFile::parse(f, Network::Main).ok())
+    else {
+        return false;
+    };
+    let Some(step) = stored
+        .steps
+        .into_iter()
+        .find(|s| hex::encode(s.signature) == sent)
+    else {
+        return false;
+    };
+    let mut earlier = ours.clone();
+    earlier.steps = vec![step];
+    listing_file::same_market_listing(theirs, &earlier)
+}
+
 /// Whether a listing file's `expiresAt` of `exp` (Unix) is near
 /// ([`near_expiry`]); one past `i64` is not.
 fn file_near_expiry(exp: u64, now: i64) -> bool {
@@ -3160,8 +3194,10 @@ async fn upload(
 /// in an hour (Retrying/StepsUnverified → Listed, ReplacedReuploaded
 /// stays); a copy that does not read as a listing file, or another offer →
 /// ours uploaded over it (ReplacedReuploaded; Listed while
-/// `market_changed` says ours changed since the market last took it: the
-/// market's copy is then our own older one); the market's own "not
+/// `market_changed` says ours changed since the market last took it, or
+/// when the copy offers exactly the step we last sent, `market_sent_step`
+/// ([`is_our_sent_step`]: a reverse auction's step moved with no write):
+/// the market's copy is then our own older one); the market's own "not
 /// listed" → uploaded (Listed); no answer → Retrying, backed off
 /// ([`retry_delay_secs`]), nothing uploaded on it. The upload's answer is
 /// recorded by [`after_reply`] (a refusal → Refused, not retried). Reads the
@@ -3281,19 +3317,26 @@ async fn keep_listed(
         // The expiry was just refreshed: the market holds the old file.
         return upload(conn, market, &file, &step, &listing, S::Listed, now).await;
     }
-    // What is sent changed since the market last took our copy (a Lower
-    // price, an expiry refresh, a reorg back to an unsent cancel:
-    // `market_changed`): a copy that differs is then our own older one, not
-    // someone else's.
-    let replaced = if listing.market_changed {
-        S::Listed
-    } else {
-        S::ReplacedReuploaded
-    };
     match market.proof_copy(&listing.name).await? {
         ProofCopy::Copy(text) => {
-            let same = listing_file::ListingFile::parse(&text, Network::Main)
-                .is_ok_and(|theirs| listing_file::same_market_listing(&theirs, &ours));
+            let theirs = listing_file::ListingFile::parse(&text, Network::Main).ok();
+            let same = theirs
+                .as_ref()
+                .is_some_and(|theirs| listing_file::same_market_listing(theirs, &ours));
+            // A copy that differs is our own older one, not someone else's,
+            // when what is sent changed since the market last took our copy
+            // (a Lower price, an expiry refresh, a reorg back to an unsent
+            // cancel: `market_changed`) or when it is the step we last sent
+            // (a reverse auction's step moved with no write, R24).
+            let replaced = if listing.market_changed
+                || theirs
+                    .as_ref()
+                    .is_some_and(|theirs| is_our_sent_step(&listing, theirs, &ours))
+            {
+                S::Listed
+            } else {
+                S::ReplacedReuploaded
+            };
             if same {
                 let ok = match listing.market_status {
                     Some(S::ReplacedReuploaded) => S::ReplacedReuploaded,
