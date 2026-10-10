@@ -2903,16 +2903,20 @@ async fn upload(
 
 /// R25 (T6): about hourly, keep the profile's published Buy Now listings on
 /// LearnHNS Market. Mainnet only: returns before any read off mainnet.
-/// Takes the Listed listings of [`queries::list_listings_kept_on_market`]
-/// (a Cancelling one is on its way off the market) that the market has
-/// taken or failed to take for want of an answer or of verified steps
+/// Takes the listings of [`queries::list_listings_kept_on_market`] — Listed,
+/// and Cancelling while the cancel is not sent (still buyable on chain;
+/// R24, R28: the jobs stop once it is sent) — that the market has taken or
+/// failed to take for want of an answer or of verified steps
 /// (`market_status` Listed, ReplacedReuploaded, Retrying, StepsUnverified)
-/// and that are due ([`due`]). Never a Refused one: it waits for a write
-/// that changes what is sent; only its expiry is looked at, without a
-/// market call, and only once the stored `expires_at` is within
-/// [`EXPIRY_REFRESH_MARGIN_SECS`]: the refresh ([`market_copy`]) starts its
-/// bookkeeping over, and the next run's first upload sends the new file.
-/// Reverse auctions are T8's.
+/// and that are due ([`due`]). The first upload is Listed only and
+/// [`publish_listings_with_client`]'s. Never a Refused one: it waits for a
+/// write that changes what is sent; only a Refused Listed listing's expiry
+/// is looked at, without a market call, and only once the stored
+/// `expires_at` is within [`EXPIRY_REFRESH_MARGIN_SECS`]: the refresh
+/// ([`market_copy`]) starts its bookkeeping over, and the next run's first
+/// upload sends the new file. The expiry is refreshed for Listed listings
+/// only ([`market_copy`], `ListingWrite::RefreshExpiry` is Listed to
+/// Listed). Reverse auctions are T8's.
 ///
 /// Per listing: [`market_copy`] first (our node: every step verified
 /// again, the expiry refreshed when near). StepsUnverified → recorded,
@@ -2941,9 +2945,10 @@ pub async fn keep_listed_with_client(
         return Ok(());
     }
     for l in queries::list_listings_kept_on_market(conn, profile_id)? {
-        if l.state != queries::ListingState::Listed || l.mode != queries::ListingMode::BuyNow {
+        if l.mode != queries::ListingMode::BuyNow {
             continue;
         }
+        let listed = l.state == queries::ListingState::Listed;
         let run = match l.market_status {
             Some(S::Listed | S::ReplacedReuploaded | S::Retrying | S::StepsUnverified) => {
                 if !due(&l, now) {
@@ -2951,7 +2956,9 @@ pub async fn keep_listed_with_client(
                 }
                 keep_listed(conn, node, market, &l, now).await
             }
-            Some(S::Refused) if expiry_near(&l, now) => refresh_refused(conn, node, &l, now).await,
+            Some(S::Refused) if listed && expiry_near(&l, now) => {
+                refresh_refused(conn, node, &l, now).await
+            }
             _ => continue,
         };
         if let Err(e) = run {
