@@ -17,7 +17,8 @@ use crate::noncustodial::shakedex::lock_key::LockKey;
 use crate::noncustodial::shakedex::purchase::MAX_MONEY;
 use crate::noncustodial::shakedex::script;
 use crate::noncustodial::shakedex::template::{
-    secs_until_valid, valid_from_mtp, verify_step_signature, StepTemplate, STEP_SIGHASH,
+    current_step_index, encode_lock_time, secs_until_valid, valid_from_mtp, verify_step_signature,
+    StepTemplate, STEP_SIGHASH,
 };
 use crate::noncustodial::sync::{COV_FINALIZE, COV_NONE, COV_TRANSFER};
 use crate::noncustodial::tx::{Covenant, OutputAddress};
@@ -381,6 +382,24 @@ pub struct StoredStep {
     pub signature: String,
 }
 
+/// When a step signed with `lock_time` is valid, at `mtp` (R3): "valid at
+/// once", or the UTC time it becomes valid, or that the time is too far away
+/// to show. The one wording both signing prompts use.
+fn step_validity(lock_time: u64, mtp: u64) -> String {
+    if secs_until_valid(lock_time, mtp) == 0 {
+        "valid at once".to_string()
+    } else {
+        match i64::try_from(valid_from_mtp(lock_time))
+            .ok()
+            .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+        {
+            Some(t) => format!("valid from {}", t.format("%Y-%m-%d %H:%M UTC")),
+            // A lock time past what a date holds: say so rather than guess.
+            None => "valid from a time too far away to show".into(),
+        }
+    }
+}
+
 /// What the Finalize & sign confirmation (R20) is built from.
 pub struct FinalizeAndSignRows<'a> {
     pub name: &'a str,
@@ -409,18 +428,7 @@ pub fn finalize_and_sign_rows(r: &FinalizeAndSignRows) -> serde_json::Value {
         ),
     ];
     for (i, &(price, lock_time)) in r.steps.iter().enumerate() {
-        let when = if secs_until_valid(lock_time, r.mtp) == 0 {
-            "valid at once".to_string()
-        } else {
-            match i64::try_from(valid_from_mtp(lock_time))
-                .ok()
-                .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-            {
-                Some(t) => format!("valid from {}", t.format("%Y-%m-%d %H:%M UTC")),
-                // A lock time past what a date holds: say so rather than guess.
-                None => "valid from a time too far away to show".into(),
-            }
-        };
+        let when = step_validity(lock_time, r.mtp);
         rows.push(row(
             format!("Price step {}", i + 1),
             format!("{}, {when}", doos_to_hns_string(price)),
@@ -430,6 +438,78 @@ pub fn finalize_and_sign_rows(r: &FinalizeAndSignRows) -> serde_json::Value {
     rows.push(row("Lock address".into(), r.lock_address.into()));
     rows.push(row("Warning".into(), STEP_SIGNATURE_PERMANENCE.into()));
     serde_json::json!({ "rows": rows })
+}
+
+/// R26: what a lower price does not undo, shown in the Lower price prompt:
+/// the new price is valid at once, and every earlier, dearer signature stays
+/// valid until the lock coin is spent.
+pub const LOWER_PRICE_PERMANENCE: &str = "The new price is valid at once. The earlier, dearer \
+     signatures stay valid until the lock coin is spent, by a purchase or by a cancel once it \
+     is mined, so anyone holding the listing file can still use them. A price can be lowered \
+     later, never raised.";
+
+/// What the Lower price prompt (R26) is built from.
+pub struct LowerPriceRows<'a> {
+    pub name: &'a str,
+    pub current_price: u64,
+    pub new_price: u64,
+    pub lock_time: u64,
+    pub mtp: u64,
+    pub payment_address: &'a str,
+    pub lock_address: &'a str,
+}
+
+/// R26: the rows of the Lower price confirmation, `{ "rows": [...] }`.
+pub fn lower_price_rows(r: &LowerPriceRows) -> serde_json::Value {
+    let row = |label: &str, value: String| serde_json::json!({ "label": label, "value": value });
+    serde_json::json!({ "rows": [
+        row("Action", "Lower the price".into()),
+        row("Name", r.name.into()),
+        row("Current price", doos_to_hns_string(r.current_price)),
+        row(
+            "New price",
+            format!(
+                "{}, {}",
+                doos_to_hns_string(r.new_price),
+                step_validity(r.lock_time, r.mtp)
+            ),
+        ),
+        row("Paid to", r.payment_address.into()),
+        row("Lock address", r.lock_address.into()),
+        row("Warning", LOWER_PRICE_PERMANENCE.into()),
+    ] })
+}
+
+/// Cancel and Lower price (R26, R28): the lock key this wallet derives for
+/// the name is not the one stored on the listing.
+pub const LISTING_KEY_MISMATCH: &str = "the lock key this wallet derives for the name is not \
+     this listing's: nothing was signed";
+
+/// R3's current price of a listing's stored steps at `mtp`: the cheapest
+/// step valid for the next block (`template::current_step_index`); `None`
+/// when no step is valid yet or there are none (a lock restored by name). A
+/// stored lock time past R3's 40 bits is a corrupted row.
+pub fn current_step_price(steps: &[StoredStep], mtp: u64) -> Result<Option<u64>, AppError> {
+    let encoded = steps
+        .iter()
+        .map(|s| encode_lock_time(s.lock_time).map(|e| (s.price, e)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| AppError::Other("corrupted listing: a stored step's lock time".into()))?;
+    Ok(current_step_index(&encoded, mtp).map(|i| encoded[i].0))
+}
+
+/// R26: a price is lowered only strictly below the current step's. Raising
+/// is impossible, since the earlier signatures stay valid.
+pub fn check_lower_price(new_price: u64, current: u64) -> Result<(), AppError> {
+    if new_price >= current {
+        return Err(AppError::InvalidInput(format!(
+            "{} is not below the current price {}: a price can only be lowered; raising it needs \
+             a cancel",
+            doos_to_hns_string(new_price),
+            doos_to_hns_string(current)
+        )));
+    }
+    Ok(())
 }
 
 /// R31's refusal at Finalize & sign: the name would expire within a day of
@@ -717,15 +797,11 @@ impl ListingLock {
     }
 }
 
-/// Whether a TRANSFER covenant's commitment (items 2–3: address version and
-/// hash) is an address of ours. Ours are P2WPKH (version 0, 20 bytes); any
-/// other commitment is not ours. Items hsd did not send whole are an error,
-/// not a "no": a "no" can end a listing as Sold.
-pub fn commitment_is_ours(
-    items: &[String],
-    network: Network,
-    own: &HashSet<String>,
-) -> Result<bool, AppError> {
+/// The address a TRANSFER covenant's commitment (items 2–3: address version
+/// and hash) names, when it is one of ours in kind: a version-0, 20-byte
+/// P2WPKH; `None` for any other commitment. Items hsd did not send whole are
+/// an error, not a "no": a "no" can end a listing as Sold.
+pub fn commitment_address(items: &[String], network: Network) -> Result<Option<String>, AppError> {
     let [_, _, version, hash, ..] = items else {
         return Err(AppError::Rpc(
             "node did not report the transfer covenant's address".into(),
@@ -739,12 +815,22 @@ pub fn commitment_is_ours(
         ));
     };
     let Ok(hash20) = <[u8; 20]>::try_from(hash.as_slice()) else {
-        return Ok(false);
+        return Ok(None);
     };
     if version[0] != 0 {
-        return Ok(false);
+        return Ok(None);
     }
-    Ok(own.contains(&address::encode_p2wpkh(network, &hash20)?))
+    Ok(Some(address::encode_p2wpkh(network, &hash20)?))
+}
+
+/// Whether a TRANSFER covenant's commitment is an address of ours (`own`);
+/// see [`commitment_address`] for the errors.
+pub fn commitment_is_ours(
+    items: &[String],
+    network: Network,
+    own: &HashSet<String>,
+) -> Result<bool, AppError> {
+    Ok(commitment_address(items, network)?.is_some_and(|a| own.contains(&a)))
 }
 
 /// What a purchase of one listing's lock coin looks like (R22).
@@ -796,6 +882,74 @@ pub fn purchase_in(tx: &SpendView, p: &PurchaseOf) -> Result<Option<(String, u32
     Ok(None)
 }
 
+/// Output `k` of `tx`, when `tx` is mined in a block, its input `k` spends
+/// the lock coin `lock`, and that output is a TRANSFER of the listing's name
+/// at its lock address (hsd links a TRANSFER to the input at its index): a
+/// TRANSFER out of this lock coin. `None` for anything else. The links both
+/// [`sale_out_of_restored_lock`] and [`cancel_out_of_lock`] read.
+fn lock_spend_at<'t>(
+    tx: &'t SpendView,
+    k: u32,
+    lock: (&str, u32),
+    at: &ListingLock,
+) -> Option<&'t SpendOutput> {
+    let k = k as usize;
+    let (input, out) = (tx.inputs.get(k)?, tx.outputs.get(k)?);
+    (tx.height.is_some()
+        && input.0 == lock.0
+        && input.1 == lock.1
+        && at.holds(CoinAt::of_output(out), COV_TRANSFER, None))
+    .then_some(out)
+}
+
+/// R28: whether `tx`, mined in a block, spends the lock coin `lock` at input
+/// `k` into output `k`, a TRANSFER of the listing's name at its lock address
+/// committing to an address of ours (`own`, the profile's derived addresses):
+/// our cancel, another same-seed device's, or a purchase of our own; the name
+/// comes home either way, by a FINALIZE to that address. The commitment is
+/// found in our own set, never inferred from an absence. A `0x83` cancel to
+/// an address this device has not derived (past its restore window, spec §5)
+/// is not one here: no verdict.
+pub fn cancel_out_of_lock(
+    tx: &SpendView,
+    k: u32,
+    lock: (&str, u32),
+    at: &ListingLock,
+    network: Network,
+    own: &HashSet<String>,
+) -> Result<bool, AppError> {
+    match lock_spend_at(tx, k, lock, at) {
+        Some(out) => commitment_is_ours(&out.items, network, own),
+        None => Ok(false),
+    }
+}
+
+/// R28: whether `tx`, mined in a block, spends the cancel TRANSFER `cancel`
+/// at input `k` into output `k`, a FINALIZE of the listing's name (`at`'s
+/// name hash) at an address of ours (`own`): the name is home, whoever sent
+/// that FINALIZE.
+pub fn cancel_finalized_home(
+    tx: &SpendView,
+    k: u32,
+    cancel: (&str, u32),
+    at: &ListingLock,
+    own: &HashSet<String>,
+) -> bool {
+    let k = k as usize;
+    let (Some(input), Some(out)) = (tx.inputs.get(k), tx.outputs.get(k)) else {
+        return false;
+    };
+    tx.height.is_some()
+        && input.0 == cancel.0
+        && input.1 == cancel.1
+        && out.covenant_type == COV_FINALIZE
+        && out
+            .items
+            .first()
+            .is_some_and(|h| h.eq_ignore_ascii_case(&at.name_hash))
+        && own.contains(&out.address)
+}
+
 /// R22 for a lock restored by name (R32), which knows no payment address:
 /// whether `tx`, mined in a block, is a price step's purchase of the lock
 /// coin `lock`: input `k` spends it with the witness `[signature, lock
@@ -816,16 +970,10 @@ pub fn sale_out_of_restored_lock(
     network: Network,
     own: &HashSet<String>,
 ) -> Result<bool, AppError> {
-    let k = k as usize;
-    let (Some(input), Some(out)) = (tx.inputs.get(k), tx.outputs.get(k)) else {
+    let Some(out) = lock_spend_at(tx, k, lock, at) else {
         return Ok(false);
     };
-    if tx.height.is_none()
-        || !(input.0 == lock.0 && input.1 == lock.1)
-        || !at.holds(CoinAt::of_output(out), COV_TRANSFER, None)
-    {
-        return Ok(false);
-    }
+    let k = k as usize;
     let witness = tx
         .witnesses
         .get(k)
@@ -1750,5 +1898,241 @@ mod tests {
             &purchase_of(&own, Some((LOCK, 0)), &pay, &lock_of(&la, &n))
         )
         .is_err());
+    }
+
+    /// R28: a mined TRANSFER out of the stored lock coin, linked input k →
+    /// output k, of the name at our lock, committing to an address of ours,
+    /// is a cancel (ours, another device's, or our own purchase); any link
+    /// missing, or a commitment not ours, is not.
+    #[test]
+    fn cancel_out_of_lock_needs_every_link() {
+        let own: HashSet<String> = [p2wpkh(5)].into();
+        let at = lock_of(&lock_addr(), &nh());
+        let cancelled = |tx: &SpendView, k: u32, lock: (&str, u32)| {
+            cancel_out_of_lock(tx, k, lock, &at, Network::Regtest, &own).unwrap()
+        };
+        let ours = spend_view_from_rest(&rest(120, 5, &p2wpkh(6))).unwrap();
+        assert!(cancelled(&ours, 0, (LOCK, 0)));
+        let theirs = spend_view_from_rest(&rest(120, 9, &p2wpkh(6))).unwrap();
+        assert!(
+            !cancelled(&theirs, 0, (LOCK, 0)),
+            "committing elsewhere: a sale's"
+        );
+        let mempool = spend_view_from_rest(&rest(-1, 5, &p2wpkh(6))).unwrap();
+        assert!(!cancelled(&mempool, 0, (LOCK, 0)), "in the mempool");
+        assert!(!cancelled(&ours, 0, (LOCK, 1)), "another lock coin");
+        assert!(!cancelled(&ours, 0, (BUY, 0)), "another lock txid");
+        assert!(
+            !cancelled(&ours, 1, (LOCK, 0)),
+            "output 1 is not the TRANSFER"
+        );
+        assert!(!cancelled(&ours, 5, (LOCK, 0)), "no such input");
+        let other = lock_of(
+            &lock_addr(),
+            &hex::encode(names::hash_name("other").unwrap()),
+        );
+        assert!(
+            !cancel_out_of_lock(&ours, 0, (LOCK, 0), &other, Network::Regtest, &own).unwrap(),
+            "another name"
+        );
+        let elsewhere = lock_of(&p2wpkh(7), &nh());
+        assert!(
+            !cancel_out_of_lock(&ours, 0, (LOCK, 0), &elsewhere, Network::Regtest, &own).unwrap(),
+            "not at our lock"
+        );
+        // A commitment hsd sent short is an error, never a "no".
+        let mut short = rest(120, 5, &p2wpkh(6));
+        short["outputs"][0]["covenant"]["items"] = serde_json::json!([nh()]);
+        let short = spend_view_from_rest(&short).unwrap();
+        assert!(cancel_out_of_lock(&short, 0, (LOCK, 0), &at, Network::Regtest, &own).is_err());
+        // The sale rule is unchanged by the shared link checks.
+        assert!(
+            sale_out_of_restored_lock(&theirs, 0, (LOCK, 0), &at, Network::Regtest, &own).unwrap()
+        );
+        assert!(
+            !sale_out_of_restored_lock(&ours, 0, (LOCK, 0), &at, Network::Regtest, &own).unwrap()
+        );
+    }
+
+    /// The FINALIZE that brings a cancelled name home: `GET /tx`'s shape,
+    /// input 0 the cancel TRANSFER `(BUY, 0)`, output 0 a FINALIZE of the
+    /// name hash at `to`.
+    fn home(height: i64, to: &str, name_hash: &str) -> serde_json::Value {
+        serde_json::json!({
+            "hash": "c2".repeat(32), "height": height, "hex": "00",
+            "inputs": [ { "prevout": { "hash": BUY, "index": 0 }, "witness": ["76".repeat(40)] },
+                        { "prevout": { "hash": "aa".repeat(32), "index": 1 },
+                          "witness": [format!("{}01", "bb".repeat(64)), "02".repeat(33)] } ],
+            "outputs": [
+                { "value": 1_000_000, "address": to,
+                  "covenant": { "type": 10, "action": "FINALIZE",
+                                "items": [name_hash, "32000000", hex::encode("dexreviews"),
+                                          "00", "00000000", "00000000", "ab".repeat(32)] } },
+                { "value": 1, "address": p2wpkh(9),
+                  "covenant": { "type": 0, "action": "NONE", "items": [] } }
+            ]
+        })
+    }
+
+    /// R28: the name is home when a mined FINALIZE spends the cancel
+    /// TRANSFER at input k into output k, a FINALIZE of the name at an
+    /// address of ours, whoever sent it; any link missing is not.
+    #[test]
+    fn cancel_finalized_home_needs_every_link() {
+        let own: HashSet<String> = [p2wpkh(5)].into();
+        let at = lock_of(&lock_addr(), &nh());
+        let is_home = |v: serde_json::Value, k: u32, cancel: (&str, u32)| {
+            cancel_finalized_home(&spend_view_from_rest(&v).unwrap(), k, cancel, &at, &own)
+        };
+        assert!(is_home(home(130, &p2wpkh(5), &nh()), 0, (BUY, 0)));
+        assert!(
+            !is_home(home(-1, &p2wpkh(5), &nh()), 0, (BUY, 0)),
+            "in the mempool"
+        );
+        assert!(
+            !is_home(home(130, &p2wpkh(6), &nh()), 0, (BUY, 0)),
+            "not ours"
+        );
+        assert!(
+            !is_home(home(130, &p2wpkh(5), &nh()), 0, (BUY, 1)),
+            "another cancel output"
+        );
+        assert!(
+            !is_home(home(130, &p2wpkh(5), &nh()), 0, (LOCK, 0)),
+            "another cancel txid"
+        );
+        assert!(
+            !is_home(home(130, &p2wpkh(5), &nh()), 1, (BUY, 0)),
+            "output 1 is no FINALIZE"
+        );
+        let other = hex::encode(names::hash_name("other").unwrap());
+        assert!(
+            !is_home(home(130, &p2wpkh(5), &other), 0, (BUY, 0)),
+            "another name"
+        );
+        let mut transfer = home(130, &p2wpkh(5), &nh());
+        transfer["outputs"][0]["covenant"]["type"] = 9.into();
+        assert!(
+            !is_home(transfer, 0, (BUY, 0)),
+            "a TRANSFER, not a FINALIZE"
+        );
+    }
+
+    /// R26: the Lower price prompt shows the current price, the new one
+    /// valid at once, where it pays, the lock, and what a lower price does
+    /// not undo: the earlier, dearer signatures stay valid until the lock
+    /// coin is spent.
+    #[test]
+    fn lower_price_rows_show_the_new_price_and_permanence() {
+        let mtp = 1_700_100_000;
+        let v = lower_price_rows(&LowerPriceRows {
+            name: "dexreviews",
+            current_price: 5_000_000,
+            new_price: 3_000_000,
+            lock_time: buy_now_lock_time(mtp),
+            mtp,
+            payment_address: "hs1qpay",
+            lock_address: "hs1qlock",
+        });
+        let rows = v["rows"].as_array().unwrap();
+        let value = |label: &str| {
+            rows.iter()
+                .find(|r| r["label"] == label)
+                .map(|r| r["value"].as_str().unwrap().to_string())
+        };
+        assert_eq!(value("Action").as_deref(), Some("Lower the price"));
+        assert_eq!(value("Name").as_deref(), Some("dexreviews"));
+        assert_eq!(value("Current price").as_deref(), Some("5.000000 HNS"));
+        assert_eq!(
+            value("New price").as_deref(),
+            Some("3.000000 HNS, valid at once")
+        );
+        assert_eq!(value("Paid to").as_deref(), Some("hs1qpay"));
+        assert_eq!(value("Lock address").as_deref(), Some("hs1qlock"));
+        assert_eq!(value("Warning").as_deref(), Some(LOWER_PRICE_PERMANENCE));
+        assert!(LOWER_PRICE_PERMANENCE.contains("earlier"));
+        assert!(LOWER_PRICE_PERMANENCE.contains("until the lock coin is spent"));
+        assert!(LOWER_PRICE_PERMANENCE.contains("never raised"));
+    }
+
+    /// R3 on stored steps: the cheapest step valid at the MTP is the
+    /// current price; a step not valid yet is not, and no steps is no price.
+    #[test]
+    fn current_step_price_is_the_cheapest_valid_at_the_mtp() {
+        let mtp = 1_700_100_000;
+        let step = |price, lock_time| StoredStep {
+            price,
+            lock_time,
+            signature: "ab".into(),
+        };
+        let steps = [
+            step(5_000_000, buy_now_lock_time(mtp - 86_400)),
+            step(3_000_000, buy_now_lock_time(mtp)),
+            step(1_000_000, mtp + 86_400),
+        ];
+        assert_eq!(current_step_price(&steps, mtp).unwrap(), Some(3_000_000));
+        assert_eq!(
+            current_step_price(&steps[..1], mtp).unwrap(),
+            Some(5_000_000)
+        );
+        assert_eq!(
+            current_step_price(&steps[2..], mtp).unwrap(),
+            None,
+            "not valid yet"
+        );
+        assert_eq!(
+            current_step_price(&[], mtp).unwrap(),
+            None,
+            "a lock restored by name"
+        );
+        assert!(
+            current_step_price(&[step(1, 1 << 41)], mtp).is_err(),
+            "past 40 bits"
+        );
+    }
+
+    /// R26: a price is lowered only strictly below the current step's: the
+    /// same price, a dearer one and one dearer than an earlier step but
+    /// below the first are all refused, with the reason.
+    #[test]
+    fn a_lower_price_must_be_strictly_below_the_current_step() {
+        check_lower_price(3_999_999, 4_000_000).expect("one doo below");
+        for new in [4_000_000, 4_000_001, 5_000_000] {
+            let e = check_lower_price(new, 4_000_000).unwrap_err().to_string();
+            assert!(e.contains("not below the current price"), "{new}: {e}");
+            assert!(e.contains("raising it needs a cancel"), "{new}: {e}");
+        }
+    }
+
+    /// A TRANSFER's commitment is an address of ours in kind only when it is
+    /// version 0 with a 20-byte hash; any other commitment names no address
+    /// (a "no", not an error), and a short or unreadable one is an error.
+    #[test]
+    fn commitment_address_reads_only_p2wpkh() {
+        let (_, hash) = address::decode(Network::Regtest, &p2wpkh(5)).unwrap();
+        let items = |version: &str, hash: &str| {
+            vec![
+                nh(),
+                "32000000".to_string(),
+                version.to_string(),
+                hash.to_string(),
+            ]
+        };
+        assert_eq!(
+            commitment_address(&items("00", &hex::encode(&hash)), Network::Regtest).unwrap(),
+            Some(p2wpkh(5))
+        );
+        assert_eq!(
+            commitment_address(&items("01", &hex::encode(&hash)), Network::Regtest).unwrap(),
+            None,
+            "another version"
+        );
+        assert_eq!(
+            commitment_address(&items("00", &"ab".repeat(32)), Network::Regtest).unwrap(),
+            None,
+            "a 32-byte program"
+        );
+        assert!(commitment_address(&items("zz", "ab"), Network::Regtest).is_err());
+        assert!(commitment_address(&[nh()], Network::Regtest).is_err());
     }
 }
