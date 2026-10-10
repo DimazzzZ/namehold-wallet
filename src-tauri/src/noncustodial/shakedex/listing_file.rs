@@ -393,3 +393,69 @@ pub fn add_step_to_listing_file(
         .ok_or_else(|| AppError::Other("the listing file lost its expiry".into()))?;
     Ok((json, expiry))
 }
+
+/// R23 (T6): `stored`, one of our listing files as stored, cut to its price
+/// step `index` — LearnHNS Market takes exactly one step per upload. Every
+/// other field, known or not, at every level, stays as written, the kept
+/// step's unknown fields too. Read back by [`ListingFile::parse`]: its one
+/// step must be the stored step `index`.
+pub fn market_copy(stored: &str, index: usize, network: Network) -> Result<String, AppError> {
+    let file = ListingFile::parse(stored, network)?;
+    let step = file
+        .steps
+        .get(index)
+        .cloned()
+        .ok_or_else(|| bad(format!("no price step {index}")))?;
+    let mut v = file.as_written.clone();
+    let data = v
+        .get_mut("data")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| bad("no price steps"))?;
+    let kept = data
+        .get(index)
+        .cloned()
+        .ok_or_else(|| bad(format!("no price step {index}")))?;
+    *data = vec![kept];
+    let json = serde_json::to_string(&v)?;
+    if ListingFile::parse(&json, network)?.steps != [step] {
+        return Err(AppError::Other(
+            "the market copy's step did not read back as the stored one".into(),
+        ));
+    }
+    Ok(json)
+}
+
+/// R23 (T6): `stored` with `expiresAt` set to `expires_at` (Unix seconds),
+/// every other field, known or not, at every level, as written. Read back
+/// strictly: the steps and the new expiry must come back.
+pub fn with_expiry(stored: &str, expires_at: u64, network: Network) -> Result<String, AppError> {
+    let file = ListingFile::parse(stored, network)?;
+    let mut v = file.as_written.clone();
+    v["expiresAt"] = expires_at.into();
+    let json = serde_json::to_string(&v)?;
+    let back = ListingFile::parse(&json, network)?;
+    if back.steps != file.steps || back.expires_at != Some(expires_at) {
+        return Err(AppError::Other(
+            "the listing file did not read back with its new expiry".into(),
+        ));
+    }
+    Ok(json)
+}
+
+/// R25 (T6): whether `copy`, the market's copy of a listing, offers a buyer
+/// exactly `ours` (a [`market_copy`] we would upload): the same name, lock
+/// outpoint, public key and payment address, one step with the same price,
+/// lock time and signature, no fee address in effect (a fee output is not
+/// committed to by `0x84`, so a copy naming one is someone else's), and the
+/// same `expiresAt` (an earlier one hides the listing early).
+pub fn same_market_listing(copy: &ListingFile, ours: &ListingFile) -> bool {
+    copy.steps.len() == 1
+        && copy.name == ours.name
+        && copy.lock_txid == ours.lock_txid
+        && copy.lock_vout == ours.lock_vout
+        && copy.public_key == ours.public_key
+        && copy.payment_addr == ours.payment_addr
+        && copy.fee_addr.is_none()
+        && copy.steps == ours.steps
+        && copy.expires_at == ours.expires_at
+}

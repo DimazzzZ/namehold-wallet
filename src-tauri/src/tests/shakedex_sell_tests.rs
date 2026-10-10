@@ -5730,6 +5730,19 @@ fn own_file(
     .unwrap()
 }
 
+/// Carried from T4 (T6): one rule verifies a listing file's steps over the
+/// lock coin, at the value hsd reports — for an import (R32) and before
+/// every upload. A step signed over another value does not verify.
+#[test]
+fn file_steps_verify_only_at_the_coin_value_they_were_signed_over() {
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let pay = address::encode_p2wpkh(Network::Regtest, &[9; 20]).unwrap();
+    let file = ListingFile::parse(&own_file(0, key.pubkey, &key, &pay), Network::Regtest).unwrap();
+    sell::verify_file_steps(&file, NAME_VALUE, Network::Regtest).expect("signed over NAME_VALUE");
+    let e = sell::verify_file_steps(&file, NAME_VALUE + 1, Network::Regtest).unwrap_err();
+    assert!(e.to_string().contains(sell::STEP_NOT_SIGNED_BY_LOCK), "{e}");
+}
+
 /// Our own file for the restored lock: the derived key over `(RESTORED_TXID,
 /// 1)`, paying our address 0/0.
 fn good_file() -> String {

@@ -13,6 +13,7 @@ use crate::noncustodial::network::{NameParams, Network};
 use crate::noncustodial::rpc;
 use crate::noncustodial::send::{SpendableCoin, DUST_THRESHOLD};
 use crate::noncustodial::shakedex::funding::{cov_out, fund, own_input};
+use crate::noncustodial::shakedex::listing_file::ListingFile;
 use crate::noncustodial::shakedex::lock_key::LockKey;
 use crate::noncustodial::shakedex::purchase::MAX_MONEY;
 use crate::noncustodial::shakedex::script;
@@ -21,7 +22,7 @@ use crate::noncustodial::shakedex::template::{
     StepTemplate, STEP_SIGHASH,
 };
 use crate::noncustodial::sync::{COV_FINALIZE, COV_NONE, COV_TRANSFER};
-use crate::noncustodial::tx::{Covenant, OutputAddress};
+use crate::noncustodial::tx::{output_address_from_string, Covenant, OutputAddress};
 use crate::noncustodial::types::doos_to_hns_string;
 
 /// One lock-time unit: hsd encodes a time lock in 512-second steps.
@@ -722,6 +723,72 @@ pub fn spend_view_from_block(
         witnesses,
         outputs,
     }))
+}
+
+/// The value of the lock coin hsd reports for `file`'s lock outpoint, read
+/// field by field: a coin of another outpoint, without its address, at
+/// another address than `lock_address`, or with a negative value, is "could
+/// not check".
+pub fn lock_coin_value(
+    coin: &rpc::NodeCoin,
+    file: &ListingFile,
+    lock_address: &str,
+) -> Result<u64, AppError> {
+    let lock_txid = hex::encode(file.lock_txid);
+    if !(coin.txid == lock_txid && coin.vout == file.lock_vout) {
+        return Err(AppError::Rpc(format!(
+            "node answered coin {}:{} for the lock coin {lock_txid}:{}",
+            coin.txid, coin.vout, file.lock_vout
+        )));
+    }
+    let Some(address) = coin.address.as_deref() else {
+        return Err(AppError::Rpc(
+            "node did not report the lock coin's address".into(),
+        ));
+    };
+    if address != lock_address {
+        return Err(AppError::Rpc(format!(
+            "node reported the lock coin at {address}, not at this lock's address"
+        )));
+    }
+    u64::try_from(coin.value).map_err(|_| {
+        AppError::Rpc(format!(
+            "node reported a lock coin value of {} doos",
+            coin.value
+        ))
+    })
+}
+
+/// Why a listing file's step was refused (R32 import, T6 upload).
+pub const STEP_NOT_SIGNED_BY_LOCK: &str = "a price in this listing file is not signed by this lock";
+
+/// R32, and before every upload (T6): every price step of `file` verifies
+/// (`template::verify_step_signature`: sighash `0x84`, low-S, the file's
+/// public key) over the lock coin worth `lock_value` — the value hsd reports
+/// for the file's lock outpoint ([`lock_coin_value`]) — paying the file's
+/// payment address. A step that does not is refused with
+/// [`STEP_NOT_SIGNED_BY_LOCK`].
+pub fn verify_file_steps(
+    file: &ListingFile,
+    lock_value: u64,
+    network: Network,
+) -> Result<(), AppError> {
+    let payment = output_address_from_string(network, &file.payment_addr)?;
+    for step in &file.steps {
+        verify_step_signature(
+            &StepTemplate {
+                lock_outpoint: (file.lock_txid, file.lock_vout),
+                lock_value,
+                lock_pubkey: &file.public_key,
+                payment: payment.clone(),
+                price: step.price,
+                lock_time_secs: step.lock_time,
+            },
+            &step.signature,
+        )
+        .map_err(|_| AppError::InvalidInput(STEP_NOT_SIGNED_BY_LOCK.into()))?;
+    }
+    Ok(())
 }
 
 /// A coin's address and covenant as hsd reports them, from either of its
