@@ -86,7 +86,9 @@ pub fn cancel_rows(r: &CancelRows) -> serde_json::Value {
 /// T1b carry (R21, R28), the command's half of the destination rule: the
 /// cancel plan is for the profile's `account`, and its lock-key input 0 is
 /// a `0x83` input carrying the listing's cancel path (receive branch,
-/// `cancel_index`). The signer re-derives the TRANSFER's commitment from
+/// `cancel_index`), marked for this listing's lock key (`name`) and spending
+/// the listing's stored lock coin `lock` (txid compared as the listing
+/// stores it, lowercase). The signer re-derives the TRANSFER's commitment from
 /// that path ([`check_lock_key_input`]); the command has checked that the
 /// path is the listing's reserved cancel address
 /// (`queries::receive_address_at`).
@@ -94,11 +96,15 @@ pub fn check_cancel_plan(
     plan: &DraftPlan,
     account: u32,
     cancel_index: u32,
+    name: &str,
+    lock: (&str, u32),
 ) -> Result<(), AppError> {
     match plan.inputs.first() {
         Some(i)
             if plan.account == account
-                && i.lock_key_name.is_some()
+                && i.lock_key_name.as_deref() == Some(name)
+                && i.txid.eq_ignore_ascii_case(lock.0)
+                && i.vout == lock.1
                 && i.sighash_type == CANCEL_SIGHASH
                 && i.branch == BRANCH_RECEIVE
                 && i.child_index == cancel_index =>
@@ -272,6 +278,9 @@ mod tests {
 
     const CHANGE: &str = "hs1qdhtaj7ws7chd2z2tulrmakqww428myx08d6w3v";
     const CANCEL_INDEX: u32 = 11;
+    const NAME: &str = "dexreviews";
+    const LOCK_TXID: &str = "2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c";
+    const LOCK: (&str, u32) = (LOCK_TXID, 0);
 
     fn master() -> ExtendedPrivKey {
         ExtendedPrivKey::from_seed(&[7u8; 64]).unwrap()
@@ -450,32 +459,54 @@ mod tests {
         let to = cancel_to();
         let funding = [coin(1, 1_000_000, 10)];
         let res = build_cancel_plan(&input(&k, &to, &funding, 5)).unwrap();
-        check_cancel_plan(&res.plan, 0, CANCEL_INDEX).expect("ours");
+        check_cancel_plan(&res.plan, 0, CANCEL_INDEX, NAME, LOCK).expect("ours");
         assert!(
-            check_cancel_plan(&res.plan, 1, CANCEL_INDEX).is_err(),
+            check_cancel_plan(&res.plan, 1, CANCEL_INDEX, NAME, LOCK).is_err(),
             "another account"
         );
         assert!(
-            check_cancel_plan(&res.plan, 0, CANCEL_INDEX + 1).is_err(),
+            check_cancel_plan(&res.plan, 0, CANCEL_INDEX + 1, NAME, LOCK).is_err(),
             "another index"
         );
         let mut change_branch = res.plan.clone();
         change_branch.inputs[0].branch = 1;
         assert!(
-            check_cancel_plan(&change_branch, 0, CANCEL_INDEX).is_err(),
+            check_cancel_plan(&change_branch, 0, CANCEL_INDEX, NAME, LOCK).is_err(),
             "change branch"
         );
         let mut not_lock = res.plan.clone();
         not_lock.inputs[0].lock_key_name = None;
         assert!(
-            check_cancel_plan(&not_lock, 0, CANCEL_INDEX).is_err(),
+            check_cancel_plan(&not_lock, 0, CANCEL_INDEX, NAME, LOCK).is_err(),
             "no lock-key input"
         );
-        let mut other_sighash = res.plan;
+        let mut other_sighash = res.plan.clone();
         other_sighash.inputs[0].sighash_type = sighash::ALL;
         assert!(
-            check_cancel_plan(&other_sighash, 0, CANCEL_INDEX).is_err(),
+            check_cancel_plan(&other_sighash, 0, CANCEL_INDEX, NAME, LOCK).is_err(),
             "not 0x83"
         );
+        let mut other_name = res.plan.clone();
+        other_name.inputs[0].lock_key_name = Some("another".into());
+        assert!(
+            check_cancel_plan(&other_name, 0, CANCEL_INDEX, NAME, LOCK).is_err(),
+            "another name's lock key"
+        );
+        let mut other_vout = res.plan.clone();
+        other_vout.inputs[0].vout = 1;
+        assert!(
+            check_cancel_plan(&other_vout, 0, CANCEL_INDEX, NAME, LOCK).is_err(),
+            "another lock output"
+        );
+        let mut other_txid = res.plan.clone();
+        other_txid.inputs[0].txid = hex::encode([0x2d; 32]);
+        assert!(
+            check_cancel_plan(&other_txid, 0, CANCEL_INDEX, NAME, LOCK).is_err(),
+            "another lock txid"
+        );
+        // The stored txid is lowercase; a differently cased one is the same.
+        let upper = hex::encode([0x2c; 32]).to_ascii_uppercase();
+        check_cancel_plan(&res.plan, 0, CANCEL_INDEX, NAME, (&upper, 0))
+            .expect("case-insensitive txid");
     }
 }
