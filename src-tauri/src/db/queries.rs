@@ -1903,6 +1903,13 @@ impl ListingWrite {
 const MARKET_RESET_SQL: &str = ", market_status = NULL, market_retry_at = NULL, \
      market_attempts = 0, market_error = NULL, market_accepted = 0";
 
+/// R28 (T6): the SET fragment of the writes that record a mined sale or a
+/// mined cancel ([`sell_shakedex_listing`], [`mark_listing_cancel_mined`]):
+/// a listing the market was told about is due for its report at once
+/// (`market_retry_at` cleared), not when its hourly check would have been.
+const REPORT_DUE_NOW_SQL: &str = ", market_retry_at = CASE WHEN market_status IS NOT NULL \
+     THEN NULL ELSE market_retry_at END";
+
 /// The condition that the listing's cancel draft (`cancel_draft_id`) exists
 /// and was never sent ([`UNSENT_STATUSES`]). An SQL condition on
 /// `shakedex_listings`.
@@ -2801,8 +2808,15 @@ fn sale_write(
     let sql = format!(
         "UPDATE shakedex_listings
          SET state = ?2, sold_txid = ?3, cancel_finalize_draft_id = NULL,
-             cancel_blocks_remaining = NULL, updated_at = datetime('now')
+             cancel_blocks_remaining = NULL, updated_at = datetime('now'){}
          WHERE id = ?1 AND {} AND lock_txid = ?4 AND lock_vout = ?5",
+        // Mined (Sold): the report is due at once; a mempool purchase
+        // (SalePending) is never reported.
+        if w == ListingWrite::Sell {
+            REPORT_DUE_NOW_SQL
+        } else {
+            ""
+        },
         w.source_sql()
     );
     Ok(conn.execute(
@@ -3075,7 +3089,8 @@ pub fn mark_listing_cancel_mined(
     let sql = format!(
         "UPDATE shakedex_listings
          SET state = ?2, cancel_txid = ?3, cancel_vout = ?4, cancel_blocks_remaining = NULL,
-             cancel_finalize_draft_id = NULL, sold_txid = NULL, updated_at = datetime('now')
+             cancel_finalize_draft_id = NULL, sold_txid = NULL,
+             updated_at = datetime('now'){REPORT_DUE_NOW_SQL}
          WHERE id = ?1 AND {} AND lock_txid = ?5 AND lock_vout = ?6",
         w.source_sql()
     );

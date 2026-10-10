@@ -48,12 +48,16 @@ pub const CANCEL_FINALIZE_NOTE: &str = "This brings the name out of its lock to 
      this wallet the cancel committed to; the listing ends.";
 /// R28 (T6): the market notice of a published listing's cancel prompt. The
 /// report (`refresh-status`) waits for our node to have the cancel mined
-/// (`queries::list_listings_to_report`), and LearnHNS Market has no endpoint
-/// that withdraws a pending listing (MKT @3d117361: `GET`/`POST
-/// /v2/pending-listings` only).
-pub const CANCEL_MARKET_TOLD: &str = "Told the listing is cancelled at the first sync after \
-     this cancel is mined, if the market was told about the listing; until then it can still \
-     show it. LearnHNS Market offers no way to withdraw a pending listing.";
+/// (`queries::list_listings_to_report`); the write that records the mined
+/// cancel makes it due at once (`queries::mark_listing_cancel_mined`), and
+/// the market jobs run after the listing jobs in the same sync; no answer is
+/// retried with the backoff. LearnHNS Market has no endpoint that withdraws
+/// a pending listing (MKT @3d117361: `GET`/`POST /v2/pending-listings`
+/// only).
+pub const CANCEL_MARKET_TOLD: &str = "Told the listing is cancelled at the next sync after \
+     this cancel is mined (and later again while the market does not answer), if it was told \
+     about the listing; until then it can still show it. LearnHNS Market offers no way to \
+     withdraw a pending listing.";
 /// Why a cancel draft that can never land was dropped (R28,
 /// `queries::release_losing_cancel`).
 pub const CANCEL_LOST_TO_PURCHASE: &str = "a purchase of the name was mined first: this \

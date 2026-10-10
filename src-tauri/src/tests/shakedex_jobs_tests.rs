@@ -1855,3 +1855,38 @@ async fn our_copy_served_back_counts_as_accepted() {
         (Some(MarketStatus::Listed), true)
     );
 }
+
+/// R28 (fix round 1 of Step 6): the write that records a mined cancel or a
+/// mined sale clears the hourly check's `market_retry_at`, so the market is
+/// told at the same or the next sync, not when the check would have been
+/// due.
+#[tokio::test]
+async fn a_mined_cancel_or_sale_is_reported_at_the_next_sync() {
+    for sale in [false, true] {
+        let f = listed_on_market(MarketStatus::Listed);
+        f.conn
+            .execute(
+                "UPDATE shakedex_listings SET market_retry_at = ?1",
+                [rfc3339(NOW + 3_600)],
+            )
+            .unwrap();
+        let body = if sale {
+            assert_eq!(
+                queries::sell_shakedex_listing(&f.conn, &f.id, &txid("b1"), (&txid("f1"), 0))
+                    .unwrap(),
+                1
+            );
+            SALE_RECORDED
+        } else {
+            cancelling(&f, "broadcasted");
+            cancel_mined(&f, ListingState::CancelAwaitingFinalize);
+            CANCEL_RECORDED
+        };
+        assert_eq!(listing(&f).market_retry_at, None, "sale {sale}");
+        let mut s = market().await;
+        let (m, _) = report_mock(&mut s, 200, body, 1).await;
+        publish(&f, &node(&f, TIP), &s, NOW).await;
+        m.assert_async().await;
+        assert_eq!(listing(&f).market_status, Some(MarketStatus::Reported));
+    }
+}
