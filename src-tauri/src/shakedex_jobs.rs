@@ -1394,8 +1394,9 @@ pub async fn refresh_listings_with_client(
 ///   with the name's live state gone or its height not the lock coin's → a
 ///   Listed, Restored or Cancelling listing Expired ([`registration_ended`]);
 /// - a Cancelling listing whose cancel can no longer land ([`cancel_dead`]),
-///   the lock coin a coin → Listed (Restored without a file), the cancel
-///   forgotten;
+///   the lock coin mined in a block → Expired when its registration is gone,
+///   otherwise Listed (Restored without a file), the cancel forgotten; the
+///   lock coin in the mempool → unchanged;
 /// - hsd's 404 for the lock coin while the lock TRANSFER
 ///   `(lock_transfer_txid, 0)` is a coin again (the FINALIZE into the lock
 ///   in no block and no mempool): a Finalizing listing whose FINALIZE draft
@@ -1412,7 +1413,8 @@ pub async fn refresh_listings_with_client(
 /// - any other 404 (the lock coin spent in a block or in the mempool) is no
 ///   verdict alone: the name's owner is read; no live name → a Listed,
 ///   SalePending or Restored listing Expired; the owner a mined TRANSFER
-///   out of the lock coin committing to an address of ours, linked from it
+///   out of the lock coin committing to an address of ours, linked from it,
+///   or a mined FINALIZE home at an address of ours spending such a TRANSFER
 ///   ([`cancel_of_lock`]) → CancelAwaitingFinalize, and a cancel of ours
 ///   that lost is released ([`cancel_mined`]); otherwise a purchase is looked
 ///   for ([`find_sale`]); one in the mempool while the owner is still the
@@ -1515,12 +1517,20 @@ async fn lock_coin_held(
                 );
             }
         }
-        // R28: the lock coin a coin (no transaction of this node spends
-        // it) and our cancel can no longer land: Listed again (Restored
-        // without a file), the cancel forgotten.
-        (queries::ListingState::Cancelling, _) if cancel_dead(conn, l)? => {
-            let to = queries::ListingState::uncancel_target(l.listing_file_json.is_some());
-            queries::uncancel_listing(conn, &l.id, to)?;
+        // R28: the lock coin a mined coin (no transaction of this node
+        // spends it) and our cancel can no longer land: Listed again
+        // (Restored without a file), the cancel forgotten, unless the name's
+        // registration is gone (Expired, never Listed first). In the mempool
+        // (a reorg of the FINALIZE into the lock) it stays Cancelling: no
+        // file is published over an unmined FINALIZE (R22's unsell rule).
+        (queries::ListingState::Cancelling, Some(_)) if cancel_dead(conn, l)? => {
+            let reply = client.get_name_info(&l.name).await?;
+            if registration_ended(&reply, purchase::covenant_name_height(covenant))? {
+                queries::expire_locked_listing(conn, &l.id)?;
+            } else {
+                let to = queries::ListingState::uncancel_target(l.listing_file_json.is_some());
+                queries::uncancel_listing(conn, &l.id, to)?;
+            }
         }
         (
             queries::ListingState::Listed
@@ -1983,14 +1993,25 @@ fn own_addresses(conn: &rusqlite::Connection, profile: &str) -> Result<HashSet<S
         .collect())
 }
 
-/// R28: the name's owner `owner` as a mined TRANSFER out of listing `l`'s
-/// lock coin `lock` committing to an address of ours
-/// ([`sell::cancel_out_of_lock`]): its outpoint. `None` (no verdict here)
-/// for the owner still the lock coin (a spend of it is at most in the
-/// mempool), the owner coin hsd's 404 (spent in the mempool), not a
-/// TRANSFER of the name at our lock, committing elsewhere (a sale's, judged
-/// next), in the mempool, or its transaction not found or not linked from
-/// `lock`. A coin without its address or covenant is not hsd's answer.
+/// R28: the mined cancel out of listing `l`'s lock coin `lock`, found from
+/// the name's owner `owner`: its outpoint, the TRANSFER of the name at our
+/// lock committing to an address of ours whose transaction spends `lock` at
+/// its index ([`sell::cancel_out_of_lock`]). Two owners lead to it:
+///
+/// - the owner is that TRANSFER, mined;
+/// - the owner is a mined FINALIZE of the name at an address of ours whose
+///   input k spends a TRANSFER ([`sell::cancel_finalized_home`]): the cancel
+///   was mined and finalized home (from another same-seed device) before
+///   this device synced. That TRANSFER's transaction is read with `GET /tx`
+///   (its block is not known, so without the transaction index it is not
+///   found: no verdict) and must be the cancel above.
+///
+/// `None` (no verdict here) for the owner still the lock coin (a spend of it
+/// is at most in the mempool), the owner coin hsd's 404 (spent in the
+/// mempool), anything else as the owner (a TRANSFER committing elsewhere is
+/// a sale's, judged next), in the mempool, or a transaction not found or not
+/// linked from `lock`. A coin without its address or covenant is not hsd's
+/// answer.
 async fn cancel_of_lock(
     conn: &rusqlite::Connection,
     client: &dyn NodeRpc,
@@ -2013,9 +2034,9 @@ async fn cancel_of_lock(
     };
     let at = listing_lock(network, l)?;
     let own = own_addresses(conn, &l.wallet_profile_id)?;
-    if !at.holds(owner_at, COV_TRANSFER, None)
-        || !sell::commitment_is_ours(owner_at.items, network, &own)?
-    {
+    let transfer = at.holds(owner_at, COV_TRANSFER, None);
+    let home = owner_at.covenant_type == COV_FINALIZE && own.contains(owner_at.address);
+    if transfer && !sell::commitment_is_ours(owner_at.items, network, &own)? || !transfer && !home {
         return Ok(None);
     }
     // hsd names a coin the owner only once its block is connected; a coin
@@ -2026,8 +2047,23 @@ async fn cancel_of_lock(
     let Some(tx) = spend_view(client, &owner.0, Some(height)).await? else {
         return Ok(None);
     };
-    let found = sell::cancel_out_of_lock(&tx, owner.1, lock, &at, network, &own)?;
-    Ok(found.then(|| owner.clone()))
+    let cancel = if transfer {
+        (owner.clone(), tx)
+    } else {
+        let Some(spent) = tx.inputs.get(owner.1 as usize).cloned() else {
+            return Ok(None);
+        };
+        if !sell::cancel_finalized_home(&tx, owner.1, (&spent.0, spent.1), &at, &own) {
+            return Ok(None);
+        }
+        let Some(transfer_tx) = spend_view(client, &spent.0, None).await? else {
+            return Ok(None);
+        };
+        (spent, transfer_tx)
+    };
+    let (outpoint, tx) = cancel;
+    let found = sell::cancel_out_of_lock(&tx, outpoint.1, lock, &at, network, &own)?;
+    Ok(found.then_some(outpoint))
 }
 
 /// R28: CancelAwaitingFinalize with the mined cancel `cancel`, linked from
