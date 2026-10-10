@@ -2537,11 +2537,13 @@ pub(crate) enum MarketCopy {
         listing: Box<queries::ShakedexListing>,
     },
     /// A step of the stored file does not verify over the lock coin hsd
-    /// reports, or the file is not this listing's: nothing is uploaded.
+    /// reports, the file is not this listing's, or the row does not read
+    /// (its steps, lock key, lock outpoint, file): nothing is uploaded.
     StepsUnverified(String),
     /// The node gives no verdict this sync (no median time, the lock coin
     /// spent (404) or not this listing's FINALIZE, unmined, no step valid
-    /// yet): nothing is done, nothing written.
+    /// yet): nothing is done, nothing written. A node reply that does not
+    /// read (an error) is no verdict either: logged, nothing written.
     NotNow(String),
 }
 
@@ -2566,49 +2568,40 @@ pub(crate) async fn market_copy(
 ) -> Result<MarketCopy, AppError> {
     let not_now = |why: &str| Ok(MarketCopy::NotNow(why.into()));
     let unverified = |why: String| Ok(MarketCopy::StepsUnverified(why));
-    let (Some(lock), Some(stored_file)) = (stored_lock(l)?, l.listing_file_json.as_deref()) else {
-        return not_now("no lock coin or listing file stored");
+    // The row first: what it stores either reads or is recorded once as
+    // StepsUnverified (a corrupted row is no node question, and logging it
+    // every sync tells the user nothing).
+    let row = match row_for_market(l, network) {
+        Ok(row) => row,
+        Err(e) => return unverified(e.to_string()),
     };
+    let RowForMarket {
+        lock,
+        stored_file,
+        at,
+        file,
+    } = row;
     let Some(mtp) = node.get_blockchain_info().await?.mediantime else {
         return not_now("the node reported no median time");
     };
     let Some(coin) = node.get_coin(lock.0, lock.1).await? else {
         return not_now("the node reports the lock coin spent");
     };
-    let at = listing_lock(network, l)?;
     if at.stored_coin(&coin, lock, COV_FINALIZE).is_err() {
         return not_now("the node reports something else than this listing's lock coin");
     }
     if coin.mined_height()?.is_none() {
         return not_now("the FINALIZE into the lock is not mined");
     }
-    let file = match listing_file::ListingFile::parse(stored_file, network) {
-        Ok(f) => f,
-        Err(e) => return unverified(format!("the stored listing file does not read: {e}")),
-    };
-    let steps: Vec<(u64, u64, String)> = file
-        .steps
-        .iter()
-        .map(|s| (s.price, s.lock_time, hex::encode(s.signature)))
-        .collect();
-    let stored: Vec<(u64, u64, String)> = stored_steps(l)?
-        .into_iter()
-        .map(|s| (s.price, s.lock_time, s.signature.to_ascii_lowercase()))
-        .collect();
-    if !(file.name == l.name
-        && hex::encode(file.lock_txid).eq_ignore_ascii_case(lock.0)
-        && file.lock_vout == lock.1
-        && file.public_key == lock_pubkey(l)?
-        && l.payment_address.as_deref() == Some(file.payment_addr.as_str())
-        && steps == stored)
-    {
-        return unverified("the stored listing file is not this listing's".into());
-    }
     let value = sell::lock_coin_value(&coin, &file, &at.address)?;
     if let Err(e) = sell::verify_file_steps(&file, value, network) {
         return unverified(e.to_string());
     }
-    let Some(index) = template::current_step_index(&file.encoded_steps()?, mtp) else {
+    let encoded = match file.encoded_steps() {
+        Ok(e) => e,
+        Err(e) => return unverified(e.to_string()),
+    };
+    let Some(index) = template::current_step_index(&encoded, mtp) else {
         return not_now("no price step is valid yet");
     };
     let refreshed = mtp.saturating_add(sell::LISTING_LIFETIME_SECS);
@@ -2645,6 +2638,57 @@ pub(crate) async fn market_copy(
     Ok(MarketCopy::Ready {
         file: listing_file::market_copy(&file_json, index, network)?,
         listing: Box::new(listing),
+    })
+}
+
+/// What [`market_copy`] reads from the row alone, before asking the node.
+struct RowForMarket<'a> {
+    lock: (&'a str, u32),
+    stored_file: &'a str,
+    at: sell::ListingLock,
+    file: listing_file::ListingFile,
+}
+
+/// Listing `l`'s stored lock outpoint, lock, and listing file, the file
+/// this listing's own (name, lock outpoint, key, payment address, and the
+/// steps the row stores). An `Err` is the row's, never the node's: the
+/// caller records it as StepsUnverified.
+fn row_for_market(
+    l: &queries::ShakedexListing,
+    network: Network,
+) -> Result<RowForMarket<'_>, AppError> {
+    let corrupted = |why: &str| AppError::Other(format!("corrupted listing {}: {why}", l.id));
+    let lock = stored_lock(l)?.ok_or_else(|| corrupted("no lock coin stored"))?;
+    let stored_file = l
+        .listing_file_json
+        .as_deref()
+        .ok_or_else(|| corrupted("no listing file stored"))?;
+    let at = listing_lock(network, l)?;
+    let file = listing_file::ListingFile::parse(stored_file, network)
+        .map_err(|e| corrupted(&format!("the stored listing file does not read: {e}")))?;
+    let steps: Vec<(u64, u64, String)> = file
+        .steps
+        .iter()
+        .map(|s| (s.price, s.lock_time, hex::encode(s.signature)))
+        .collect();
+    let stored: Vec<(u64, u64, String)> = stored_steps(l)?
+        .into_iter()
+        .map(|s| (s.price, s.lock_time, s.signature.to_ascii_lowercase()))
+        .collect();
+    if !(file.name == l.name
+        && hex::encode(file.lock_txid).eq_ignore_ascii_case(lock.0)
+        && file.lock_vout == lock.1
+        && file.public_key == lock_pubkey(l)?
+        && l.payment_address.as_deref() == Some(file.payment_addr.as_str())
+        && steps == stored)
+    {
+        return Err(corrupted("the stored listing file is not this listing's"));
+    }
+    Ok(RowForMarket {
+        lock,
+        stored_file,
+        at,
+        file,
     })
 }
 
@@ -2705,7 +2749,7 @@ fn market_job_clients(
 /// listing (no node read). Once Listed (the FINALIZE into the lock mined,
 /// one confirmation): each Listed Buy Now listing of
 /// [`queries::list_listings_kept_on_market`] (published) the market has not taken yet
-/// (`market_status` unset or Pending) gets its current step uploaded
+/// (`market_status` unset) gets its current step uploaded
 /// ([`market_copy`]); reverse auctions are T8's. Reads the node, writes only
 /// to the market and to the listing's market bookkeeping (and an expiry
 /// refresh): never signs, never broadcasts (SECURITY.md). A failure on one
@@ -2728,7 +2772,11 @@ pub async fn publish_listings_with_client(
         }
     }
     for l in queries::list_listings_kept_on_market(conn, profile_id)? {
-        let first = matches!(l.market_status, None | Some(queries::MarketStatus::Pending));
+        // Not taken by the market yet: unset. A Listed row is never Pending
+        // (every move to Listed starts the bookkeeping over,
+        // `ListingWrite::market_reset_sql`, and the day-0 announce never
+        // takes a Listed one).
+        let first = l.market_status.is_none();
         // Only a Listed one: a Cancelling listing of that set (its cancel
         // not sent yet) is on its way off the market, not onto it.
         let listed = l.state == queries::ListingState::Listed;
