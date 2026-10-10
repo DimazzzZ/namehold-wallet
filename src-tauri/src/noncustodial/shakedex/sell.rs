@@ -441,9 +441,8 @@ pub fn finalize_and_sign_rows(r: &FinalizeAndSignRows) -> serde_json::Value {
 }
 
 /// R26: what a lower price does not undo, shown in the Lower price prompt:
-/// the new price is valid at once, and every earlier, dearer signature stays
-/// valid until the lock coin is spent.
-pub const LOWER_PRICE_PERMANENCE: &str = "The new price is valid at once. The earlier, dearer \
+/// every earlier, dearer signature stays valid until the lock coin is spent.
+pub const LOWER_PRICE_PERMANENCE: &str = "The earlier, dearer \
      signatures stay valid until the lock coin is spent, by a purchase or by a cancel once it \
      is mined, so anyone holding the listing file can still use them. A price can be lowered \
      later, never raised.";
@@ -2050,6 +2049,7 @@ mod tests {
         assert_eq!(value("Paid to").as_deref(), Some("hs1qpay"));
         assert_eq!(value("Lock address").as_deref(), Some("hs1qlock"));
         assert_eq!(value("Warning").as_deref(), Some(LOWER_PRICE_PERMANENCE));
+        assert!(!LOWER_PRICE_PERMANENCE.contains("valid at once"));
         assert!(LOWER_PRICE_PERMANENCE.contains("earlier"));
         assert!(LOWER_PRICE_PERMANENCE.contains("until the lock coin is spent"));
         assert!(LOWER_PRICE_PERMANENCE.contains("never raised"));
