@@ -113,6 +113,58 @@ fn ts_listing_state_union_lists_every_state() {
     assert_eq!(in_ts, in_rust);
 }
 
+/// The TS mirror `ShakedexListingSummary` (`src/types/index.ts`) has
+/// exactly the keys serde sends for `ListingSummary`, an optional one typed
+/// `| null`.
+#[test]
+fn ts_listing_summary_lists_every_field() {
+    let ts = include_str!("../../../src/types/index.ts");
+    let start = ts
+        .find("export interface ShakedexListingSummary {")
+        .expect("the TS interface");
+    let block = &ts[start..start + ts[start..].find("\n}").expect("end of the interface")];
+    let fields: Vec<(&str, &str)> = block
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|l| !l.starts_with("/**") && !l.starts_with('*') && !l.is_empty())
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, t)| (k.trim(), t.trim()))
+        .collect();
+    let mut in_ts: Vec<&str> = fields.iter().map(|(k, _)| *k).collect();
+    in_ts.sort_unstable();
+    let summary = crate::commands::shakedex::ListingSummary {
+        id: String::new(),
+        name: String::new(),
+        mode: ListingMode::BuyNow,
+        state: ListingState::Listed,
+        lock_txid: None,
+        lock_vout: None,
+        payment_address: None,
+        steps: vec![],
+        expires_at: None,
+        finalize_draft_id: None,
+        cancel_draft_id: None,
+        cancel_finalize_draft_id: None,
+        cancel_blocks_remaining: None,
+    };
+    let json = serde_json::to_value(&summary).unwrap();
+    let mut in_rust: Vec<&str> = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    in_rust.sort_unstable();
+    assert_eq!(in_ts, in_rust);
+    for (k, v) in json.as_object().unwrap() {
+        if v.is_null() {
+            let t = fields.iter().find(|(f, _)| f == k).unwrap().1;
+            assert!(t.ends_with("| null;"), "{k}: {t}");
+        }
+    }
+}
+
 #[test]
 fn an_unknown_listing_state_is_refused_when_read() {
     assert!("owned".parse::<ListingState>().is_err());
