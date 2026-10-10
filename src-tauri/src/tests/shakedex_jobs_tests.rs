@@ -1343,6 +1343,76 @@ async fn refused_listing_near_expiry_is_refreshed_without_a_market_call() {
     assert_eq!(listing(&h).market_status, Some(MarketStatus::Refused));
 }
 
+/// A6 (code-review round): a Refused listing's expiry is judged from its
+/// stored file's `expiresAt`, the one source the refresh reads, never from
+/// the `expires_at` column: a column unset or far while the file's is far
+/// reads nothing from the node; a file near its end is refreshed whatever
+/// the column says; and nothing is read before the listing is due.
+#[tokio::test]
+async fn refused_listing_expiry_is_read_from_its_file_once_due() {
+    // The column unset, the file's expiry far: nothing read.
+    let f = listed_on_market(MarketStatus::Refused);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET market_retry_at = NULL, expires_at = NULL",
+            [],
+        )
+        .unwrap();
+    let s = market().await;
+    let n = node(&f, TIP);
+    for at in [NOW, NOW + 3_600] {
+        keep_listed_with_client(&f.conn, &n, &client(&s), PROFILE, at)
+            .await
+            .unwrap();
+    }
+    assert_eq!(n.call_count(), 0, "a far file expiry reads nothing");
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Refused));
+
+    // The file near its end, the column far: refreshed (Retrying, due now).
+    let g = listed_on_market(MarketStatus::Refused);
+    g.conn
+        .execute("UPDATE shakedex_listings SET market_retry_at = NULL", [])
+        .unwrap();
+    set_expiry(&g, (NOW + 86_400) as u64);
+    g.conn
+        .execute(
+            "UPDATE shakedex_listings SET expires_at = ?1",
+            [NOW + 300 * 86_400],
+        )
+        .unwrap();
+    let mut s = market().await;
+    let any = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+    let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    keep(&g, &s, NOW).await;
+    any.assert_async().await;
+    post.assert_async().await;
+    let l = listing(&g);
+    assert_eq!(
+        (l.market_status, l.expires_at),
+        (
+            Some(MarketStatus::Retrying),
+            Some((MTP + sell::LISTING_LIFETIME_SECS) as i64)
+        )
+    );
+
+    // Near its end but not due yet: nothing read.
+    let h = listed_on_market(MarketStatus::Refused);
+    set_expiry(&h, (NOW + 86_400) as u64);
+    h.conn
+        .execute(
+            "UPDATE shakedex_listings SET market_retry_at = ?1",
+            [rfc3339(NOW + 60)],
+        )
+        .unwrap();
+    let s = market().await;
+    let n = node(&h, TIP);
+    keep_listed_with_client(&h.conn, &n, &client(&s), PROFILE, NOW)
+        .await
+        .unwrap();
+    assert_eq!(n.call_count(), 0, "not due: nothing read");
+    assert_eq!(listing(&h).market_status, Some(MarketStatus::Refused));
+}
+
 /// R23: off mainnet the keep-listed job returns before any read: no node
 /// call, no market request, nothing written — even for a listing that is
 /// due and that a mainnet client would check.

@@ -3075,8 +3075,9 @@ async fn upload(
 /// [`publish_listings_with_client`]'s, so a listing whose cancel is in
 /// progress is never published for the first time. Never a Refused one: it
 /// waits for a write that changes what is sent; only a Refused Listed
-/// listing's expiry is looked at, without a market call, and only once the
-/// stored `expires_at` is within [`EXPIRY_REFRESH_MARGIN_SECS`]: the refresh
+/// listing's expiry is looked at, without a market call, only once it is
+/// due and its stored file's `expiresAt` is within
+/// [`EXPIRY_REFRESH_MARGIN_SECS`] ([`stored_file_near_expiry`]): the refresh
 /// ([`market_copy`]) makes it Retrying, due now (what is sent changed), and
 /// the next run checks the market's copy and uploads the new file. The
 /// expiry is refreshed for Listed listings only ([`market_copy`],
@@ -3123,7 +3124,7 @@ pub async fn keep_listed_with_client(
                 }
                 keep_listed(conn, node, market, &l, now).await
             }
-            Some(S::Refused) if listed && expiry_near(&l, now) => {
+            Some(S::Refused) if listed && due(&l, now) && stored_file_near_expiry(&l, now) => {
                 refresh_refused(conn, node, &l, now).await
             }
             _ => continue,
@@ -3135,11 +3136,21 @@ pub async fn keep_listed_with_client(
     Ok(())
 }
 
-/// Whether kept `l`'s (Listed, or Cancelling with an unsent cancel) stored
-/// `expires_at` is near ([`near_expiry`]; or not stored: [`market_copy`]
-/// reads the file's own). The refresh rule itself is [`market_copy`]'s.
-fn expiry_near(l: &queries::ShakedexListing, now: i64) -> bool {
-    l.expires_at.is_none_or(|e| near_expiry(e, now))
+/// Whether kept `l`'s stored listing file's `expiresAt` is near
+/// ([`file_near_expiry`]): the one source [`market_copy`] refreshes from,
+/// read from the row alone (no node read). A file without `expiresAt` is
+/// never refreshed, so never near; a file that is not stored or does not
+/// read is near: [`market_copy`] records it from the row, before any node
+/// read.
+fn stored_file_near_expiry(l: &queries::ShakedexListing, now: i64) -> bool {
+    match l
+        .listing_file_json
+        .as_deref()
+        .map(|f| listing_file::ListingFile::parse(f, Network::Main))
+    {
+        Some(Ok(file)) => file.expires_at.is_some_and(|e| file_near_expiry(e, now)),
+        None | Some(Err(_)) => true,
+    }
 }
 
 /// R23 for a Refused Listed listing: [`market_copy`]'s expiry refresh, and
