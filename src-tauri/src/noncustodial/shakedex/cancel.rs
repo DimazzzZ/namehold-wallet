@@ -34,6 +34,21 @@ pub const CANCEL_FINALIZE_ACTION: &str = "shakedex_cancel_finalize";
 /// and kept on its draft.
 pub const CANCEL_STILL_BUYABLE: &str = "Anyone holding the listing file can still buy the \
      name at its current price until this cancel is mined.";
+/// R28 for a schedule (T8): what a cancel cannot stop while a cheaper step
+/// of a reverse auction is still ahead — it becomes buyable once valid.
+pub const CANCEL_STILL_BUYABLE_AS_IT_FALLS: &str = "Anyone holding the listing file can still \
+     buy the name at its current price, or at a cheaper price step of its schedule once that \
+     step is valid, until this cancel is mined.";
+
+/// The "Until it is mined" words (R28): [`CANCEL_STILL_BUYABLE_AS_IT_FALLS`]
+/// while a cheaper step is ahead, [`CANCEL_STILL_BUYABLE`] otherwise.
+pub fn still_buyable(cheaper_ahead: bool) -> &'static str {
+    if cheaper_ahead {
+        CANCEL_STILL_BUYABLE_AS_IT_FALLS
+    } else {
+        CANCEL_STILL_BUYABLE
+    }
+}
 /// R28: hsd answers `sendrawtransaction` with the txid whatever its mempool
 /// does, so a cancel beaten by a purchase already there reads as sent.
 pub const CANCEL_MEMPOOL_PURCHASE: &str = "If a purchase of the name is already in your \
@@ -75,6 +90,10 @@ pub struct CancelRows<'a> {
     /// R23: the listing is published on LearnHNS Market (R28's market
     /// notice, [`CANCEL_MARKET_TOLD`]).
     pub published: bool,
+    /// A stored step not valid yet at the node's MTP is cheaper than the
+    /// current price (any step ahead when none is valid yet): a reverse
+    /// auction's schedule ([`still_buyable`]).
+    pub cheaper_ahead: bool,
 }
 
 /// The "Current price" row of the cancel's prompt (R3, R28).
@@ -115,7 +134,7 @@ pub fn cancel_rows(r: &CancelRows) -> serde_json::Value {
         ),
         row("Name comes home to", r.cancel_address.into()),
         row("Lock address", r.lock_address.into()),
-        row("Until it is mined", CANCEL_STILL_BUYABLE.into()),
+        row("Until it is mined", still_buyable(r.cheaper_ahead).into()),
         row("A purchase already sent", CANCEL_MEMPOOL_PURCHASE.into()),
     ];
     if r.published {
@@ -434,6 +453,34 @@ mod tests {
         assert_eq!(res.input_total, out + res.fee);
     }
 
+    /// R28 for a schedule (T8): while a cheaper step of it is still ahead,
+    /// the prompt says a buyer can also take that step once it is valid,
+    /// until the cancel is mined.
+    #[test]
+    fn cancel_rows_of_a_schedule_say_a_cheaper_step_is_buyable_too() {
+        let r = cancel_rows(&CancelRows {
+            name: "dexreviews",
+            fee: 2_340,
+            cancel_address: "hs1qcancel",
+            lock_address: "hs1qlock",
+            current_price: CancelPrice::Step(5_000_000),
+            published: false,
+            cheaper_ahead: true,
+        });
+        let until = r["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["label"] == "Until it is mined")
+            .unwrap()["value"]
+            .clone();
+        assert_eq!(until, CANCEL_STILL_BUYABLE_AS_IT_FALLS);
+        assert!(CANCEL_STILL_BUYABLE_AS_IT_FALLS.contains("cheaper price step"));
+        assert!(CANCEL_STILL_BUYABLE_AS_IT_FALLS.contains("until this cancel is mined"));
+        assert_eq!(still_buyable(false), CANCEL_STILL_BUYABLE);
+        assert_eq!(still_buyable(true), CANCEL_STILL_BUYABLE_AS_IT_FALLS);
+    }
+
     /// R28: the cancel's own prompt says what the cancel cannot stop (a buyer
     /// until it is mined; a purchase already in the node's mempool, which
     /// hsd still answers with the cancel's txid), the fee, where the name
@@ -449,6 +496,7 @@ mod tests {
                 lock_address: "hs1qlock",
                 current_price: price,
                 published: false,
+                cheaper_ahead: false,
             })["rows"]
                 .as_array()
                 .unwrap()
@@ -570,6 +618,7 @@ mod tests {
                 lock_address: "rs1qlock",
                 current_price: CancelPrice::Step(5_000_000),
                 published,
+                cheaper_ahead: false,
             })["rows"]
                 .as_array()
                 .unwrap()

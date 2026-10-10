@@ -1260,6 +1260,9 @@ pub(crate) struct PreparedCancel {
     cancel_address: String,
     cancel_index: u32,
     current_price: cancel::CancelPrice,
+    /// R28 for a schedule: a cheaper stored step is still ahead at the MTP
+    /// (`cancel::still_buyable`).
+    cheaper_ahead: bool,
 }
 
 /// "could not check" for a field `what` of a node reply that a command
@@ -1464,6 +1467,18 @@ pub(crate) async fn prepare_cancel(
             None => cancel::CancelPrice::NoneValidYet,
         },
     };
+    // R28 for a schedule: a cheaper step still ahead is buyable once valid
+    // (any step ahead when none is valid yet).
+    let cheaper_ahead = match on_node.mtp {
+        None => false,
+        Some(mtp) => {
+            let below = match current_price {
+                cancel::CancelPrice::Step(price) => price,
+                _ => u64::MAX,
+            };
+            sell::steps_ahead(&steps, mtp, below)?.0 > 0
+        }
+    };
 
     // R21, R32: a lock restored by name reserves its cancel address
     // now, after the node reads. The reservation and the row commit
@@ -1527,6 +1542,7 @@ pub(crate) async fn prepare_cancel(
         cancel_address,
         cancel_index,
         current_price,
+        cheaper_ahead,
     })
 }
 
@@ -1554,6 +1570,7 @@ pub(crate) async fn cancel_listing_confirmed<R: tauri::Runtime>(
             lock_address: &p.lock_address,
             current_price: p.current_price,
             published: p.listing.publish,
+            cheaper_ahead: p.cheaper_ahead,
         }),
     )
     .await?;
@@ -1579,7 +1596,7 @@ pub(crate) async fn cancel_listing_confirmed<R: tauri::Runtime>(
             recipient: Some(&p.cancel_address),
             name_list: None,
             warnings: &[
-                cancel::CANCEL_STILL_BUYABLE.to_string(),
+                cancel::still_buyable(p.cheaper_ahead).to_string(),
                 cancel::CANCEL_MEMPOOL_PURCHASE.to_string(),
             ],
         },

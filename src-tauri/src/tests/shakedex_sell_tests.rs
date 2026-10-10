@@ -6362,7 +6362,7 @@ use crate::commands::shakedex::{
 };
 use crate::noncustodial::shakedex::cancel::{
     CANCEL_ACTION, CANCEL_MARKET_TOLD, CANCEL_MEMPOOL_PURCHASE, CANCEL_PRICE_NONE_VALID_YET,
-    CANCEL_PRICE_NOT_KNOWN, CANCEL_STILL_BUYABLE,
+    CANCEL_PRICE_NOT_KNOWN, CANCEL_STILL_BUYABLE, CANCEL_STILL_BUYABLE_AS_IT_FALLS,
 };
 
 /// The node's MTP and tip once the listing is Listed: a day after Finalize
@@ -6643,6 +6643,84 @@ async fn cancel_stops_jobs() {
     assert!(
         followed.contains(&l.r.listing_id),
         "still followed on chain"
+    );
+}
+
+/// R28 for a schedule (T8, carry): a reverse auction with cheaper steps
+/// still ahead at the node's median time says, in its prompt and on its
+/// draft, that a buyer can also take a cheaper step once it is valid, until
+/// the cancel is mined; at its floor (nothing cheaper ahead) it says the
+/// Buy Now words; with no step valid yet, every step ahead counts.
+#[tokio::test]
+async fn cancel_prompt_of_a_schedule_says_a_cheaper_step_is_buyable_too() {
+    let until_and_warnings = |l: &Listed, d: &crate::noncustodial::types::TxDraftSummary| {
+        let reqs = take_test_requests();
+        assert_eq!(reqs.len(), 1, "one prompt");
+        let rows = reqs[0].details.as_ref().unwrap()["rows"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let until = rows
+            .iter()
+            .find(|x| x["label"] == "Until it is mined")
+            .unwrap()["value"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let row = with_db(&l.r.app, |c| {
+            queries::get_tx_draft(c, &d.id).unwrap().unwrap()
+        });
+        let warnings: Vec<String> = serde_json::from_value(
+            serde_json::from_str::<Value>(&row.summary_json).unwrap()["warnings"].clone(),
+        )
+        .unwrap();
+        (until, warnings)
+    };
+
+    // Step 4 (6 HNS) current at LISTED_MTP, steps 5 to 8 cheaper and ahead.
+    let mut l = listed_schedule_fixture(&schedule("10", "2", 9, 21_600)).await;
+    let sent = no_broadcast(&mut l.r).await;
+    answer(true);
+    let d = cancel(&l).await.expect("cancel");
+    sent.assert_async().await;
+    let (until, warnings) = until_and_warnings(&l, &d);
+    assert_eq!(until, CANCEL_STILL_BUYABLE_AS_IT_FALLS);
+    assert_eq!(
+        warnings,
+        [CANCEL_STILL_BUYABLE_AS_IT_FALLS, CANCEL_MEMPOOL_PURCHASE],
+        "the draft keeps the same warning"
+    );
+
+    // Two steps, both valid at LISTED_MTP: at the floor, nothing cheaper ahead.
+    let mut l = listed_schedule_fixture(&schedule("10", "2", 2, 21_600)).await;
+    let sent = no_broadcast(&mut l.r).await;
+    answer(true);
+    let d = cancel(&l).await.expect("cancel");
+    sent.assert_async().await;
+    let (until, warnings) = until_and_warnings(&l, &d);
+    assert_eq!(until, CANCEL_STILL_BUYABLE);
+    assert_eq!(warnings, [CANCEL_STILL_BUYABLE, CANCEL_MEMPOOL_PURCHASE]);
+
+    // No step valid yet (the node's MTP a day before signing, as after a
+    // reorg): every step ahead is buyable once valid.
+    let mut l = listed_schedule_fixture(&schedule("10", "2", 2, 21_600)).await;
+    let (info, coin, lock) = (l.info(), l.lock_coin(TRANSFER_HEIGHT + 20), l.lock.clone());
+    l.node(
+        LISTED_TIP,
+        Some(SIGN_MTP - 86_400),
+        info,
+        vec![(lock.0, lock.1, Some(coin))],
+    )
+    .await;
+    let sent = no_broadcast(&mut l.r).await;
+    answer(true);
+    let d = cancel(&l).await.expect("cancel");
+    sent.assert_async().await;
+    let (until, warnings) = until_and_warnings(&l, &d);
+    assert_eq!(until, CANCEL_STILL_BUYABLE_AS_IT_FALLS);
+    assert_eq!(
+        warnings,
+        [CANCEL_STILL_BUYABLE_AS_IT_FALLS, CANCEL_MEMPOOL_PURCHASE]
     );
 }
 
