@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::error::AppError;
 use crate::models::settings::SettingsMap;
 use crate::noncustodial::network::Network;
-use crate::noncustodial::shakedex::listing_file::MAX_LISTING_FILE_BYTES;
+use crate::noncustodial::shakedex::listing_file::{ListingFile, MAX_LISTING_FILE_BYTES};
 
 pub const LEARNHNS_BASE_URL: &str = "https://market.learnhns.com";
 const LEARNHNS_HOST: &str = "market.learnhns.com";
@@ -187,8 +187,15 @@ impl LearnHnsClient {
     /// the file in multipart field `proof` as written.
     pub async fn upload_proof(&self, listing_file: &str) -> Result<UploadResult, AppError> {
         self.writes_allowed()?;
+        // The market saves the upload under the file name as sent, in one
+        // folder shared by every upload (MKT api.py L2807–2808): name it by
+        // the listing's (checked) name and lock txid (hex) so no two uploads
+        // collide.
+        let parsed = ListingFile::parse(listing_file, Network::Main)?;
+        check_name(&parsed.name)?;
+        let file_name = format!("{}-{}.json", parsed.name, hex::encode(parsed.lock_txid));
         let part = reqwest::multipart::Part::text(listing_file.to_string())
-            .file_name("proof.json")
+            .file_name(file_name)
             .mime_str("application/json")
             .map_err(|e| AppError::Other(format!("LearnHNS upload: {e}")))?;
         let form = reqwest::multipart::Form::new().part("proof", part);
@@ -271,7 +278,9 @@ impl LearnHnsClient {
             Ok((status, Some(v))) if is_2xx(status) && v[key] == true => {
                 MarketReply::Accepted(StatusRecorded::Recorded)
             }
-            Ok((404, Some(v))) if v["error"] == "Listing not found" => {
+            // 400 on our path (we always send a txid: MKT
+            // `_refreshable_listing_for_spend`, L478/L495), 404 on the others.
+            Ok((400 | 404, Some(v))) if v["error"] == "Listing not found" => {
                 MarketReply::Accepted(StatusRecorded::NoListing)
             }
             Ok((status, v)) => refusal_or_none(status, v),
