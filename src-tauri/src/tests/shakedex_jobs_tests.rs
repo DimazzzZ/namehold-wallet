@@ -1465,6 +1465,30 @@ async fn advance_records_an_unreadable_row() {
     assert!(l.market_error.unwrap().contains("unreadable steps"));
 }
 
+/// R24 (T8): no step valid at the node's median time (a reorg took it back
+/// before step 0) is no move: nothing uploaded, nothing written, and the
+/// node read once (its median time) — not handed to the upload.
+#[tokio::test]
+async fn no_valid_step_is_no_move() {
+    let (f, _) = auction_on_market().await;
+    let before = listing(&f);
+    let mut s = market().await;
+    let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    let n = node_at(&f, TIP, schedule()[0].1 - 1_024);
+    advance(&f, &n, &s, NOW + 60).await;
+    any.assert_async().await;
+    assert_eq!(n.call_count(), 1, "the median time only");
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_retry_at, l.market_sent_step),
+        (
+            before.market_status,
+            before.market_retry_at,
+            before.market_sent_step
+        )
+    );
+}
+
 /// R23: off mainnet the advance job reads nothing and calls no market.
 #[tokio::test]
 async fn nothing_advanced_off_mainnet() {
@@ -3092,8 +3116,9 @@ async fn daemon_publishes_but_never_signs_or_broadcasts() {
 }
 
 /// R24, decision 3, SECURITY.md: `run_sync_steps`, as the daemon and as the
-/// app run it, uploads a reverse auction's moved step — signed at Finalize
-/// & sign, byte for byte — and makes no send: no `sendrawtransaction`, no
+/// app run it, uploads a reverse auction's moved step once — signed at
+/// Finalize & sign, byte for byte, keep-listed after it not uploading it
+/// again — and makes no send: no `sendrawtransaction`, no
 /// draft created or changed, the steps and file as they were.
 #[tokio::test]
 async fn daemon_advances_a_reverse_auction_but_never_signs_or_broadcasts() {
@@ -3106,12 +3131,13 @@ async fn daemon_advances_a_reverse_auction_but_never_signs_or_broadcasts() {
         let schedule = schedule_at(mtp0);
         let steps = as_schedule_at(&f, &schedule, mtp0);
         // The market accepted step 2, current at `mtp0`; the hourly check is
-        // an hour away.
+        // due too, so keep-listed runs in the same sync after advance: one
+        // upload in all (advance's; keep-listed then finds it not due).
         f.conn
             .execute(
                 "UPDATE shakedex_listings SET market_status = 'listed', market_sent_step = ?1,
                  market_retry_at = ?2, market_accepted = 1, market_told = 1",
-                [hex::encode(steps[2].signature), rfc3339(now + 3_600)],
+                [hex::encode(steps[2].signature), rfc3339(now - 60)],
             )
             .unwrap();
         let mtp = i64::try_from(valid_from_mtp(schedule[3].1)).unwrap();
