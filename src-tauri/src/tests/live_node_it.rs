@@ -7567,6 +7567,122 @@ async fn shakedex_lowered_price_is_bought_by_the_cli_at_the_lower_price() {
     );
 }
 
+/// R23, R25, carried from T4, on hsd: for a Listed listing whose price was
+/// lowered (two steps in its file), the market copy the jobs would upload is
+/// built from hsd's own reads — every step re-verified over the lock coin at
+/// the value hsd reports, the current step at hsd's median time — and holds
+/// exactly the lowered step; the shakedex CLI buys from that copy alone: the
+/// mined fill spends our stored lock outpoint, the name's owner is its
+/// TRANSFER committing to the CLI wallet, and hsd shows the lowered price paid
+/// to our payment address. A step altered by one doo does not verify over
+/// hsd's coin. No market is contacted: the market is mainnet-only (R23), so
+/// the test drives the jobs' node-side copy builder alone.
+#[tokio::test]
+async fn shakedex_market_copy_of_a_lowered_listing_is_bought_by_the_cli() {
+    let Some((url, key, cli)) =
+        shakedex_env("shakedex_market_copy_of_a_lowered_listing_is_bought_by_the_cli")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id, s) = listed_on_chain(&url, &key, "nhmkt", "5").await;
+    let pay = s.payment_address.clone().expect("payment address");
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+    unlock(&app);
+    crate::commands::secure_prompt::push_test_answer(
+        crate::commands::secure_prompt::SecurePromptResult {
+            value: None,
+            confirmed: true,
+        },
+    );
+    crate::commands::shakedex::lower_price_confirmed(&app.state(), app.handle(), &id, "3")
+        .await
+        .expect("lower");
+    let row = listing_row(&app, &id);
+    let now = chrono::Utc::now().timestamp();
+
+    let conn = std::mem::replace(
+        &mut *app.state::<AppState>().db.lock().unwrap(),
+        rusqlite::Connection::open_in_memory().unwrap(),
+    );
+    let copy = crate::shakedex_jobs::market_copy(&conn, &cl, Network::Regtest, &row, now).await;
+    // One doo more on the cheaper step, in the file and in the row's steps
+    // alike (the row still reads as this listing's): not what the lock key
+    // signed.
+    let mut tampered = row.clone();
+    let mut v: serde_json::Value =
+        serde_json::from_str(row.listing_file_json.as_deref().unwrap()).unwrap();
+    v["data"][1]["price"] = (v["data"][1]["price"].as_u64().unwrap() + 1).into();
+    tampered.listing_file_json = Some(v.to_string());
+    let mut steps: Vec<crate::noncustodial::shakedex::sell::StoredStep> =
+        serde_json::from_str(&row.steps_json).unwrap();
+    steps[1].price += 1;
+    tampered.steps_json = serde_json::to_string(&steps).unwrap();
+    let refused =
+        crate::shakedex_jobs::market_copy(&conn, &cl, Network::Regtest, &tampered, now).await;
+    *app.state::<AppState>().db.lock().unwrap() = conn;
+    assert_eq!(
+        listing_row(&app, &id).listing_file_json,
+        row.listing_file_json,
+        "no expiry refresh: the stored file is as the lower wrote it"
+    );
+
+    let file = match copy.expect("market copy") {
+        crate::shakedex_jobs::MarketCopy::Ready { file, .. } => file,
+        _ => panic!("the copy is ready on hsd's lock coin"),
+    };
+    match refused.expect("market copy") {
+        crate::shakedex_jobs::MarketCopy::StepsUnverified(why) => assert!(
+            why.contains(crate::noncustodial::shakedex::sell::STEP_NOT_SIGNED_BY_LOCK),
+            "{why}"
+        ),
+        _ => panic!("a tampered step must not verify over hsd's coin"),
+    }
+    let listing = CliListing::new(file);
+    assert_eq!(listing.steps.len(), 1, "the market takes one step");
+    assert_eq!(
+        listing.price(0),
+        3_000_000,
+        "the current step is the lowered one"
+    );
+    let lock_addr = owner_coin_address(&cl, &name).await.expect("lock address");
+    fund_the_cli_wallet(&cl, &key, &addr).await;
+    cli.fill(&listing);
+    let (fill_txid, fill_vout) = name_owner(&cl, &name).await;
+    assert_ne!(fill_txid, lock_txid, "the name moved out of the lock");
+    assert_spends_lock(&cl, &fill_txid, (&lock_txid, lock_vout)).await;
+    assert_eq!(
+        paid_to(&cl, &fill_txid, &pay).await,
+        3_000_000,
+        "paid the lowered price"
+    );
+    let out = cl
+        .get_coin(&fill_txid, fill_vout)
+        .await
+        .expect("coin")
+        .expect("the fill's TRANSFER");
+    assert!(out.mined_height().unwrap().is_some(), "mined: {out:?}");
+    let cov = out.covenant.as_ref().expect("covenant");
+    assert_eq!(cov.kind, crate::noncustodial::sync::COV_TRANSFER);
+    assert_eq!(
+        out.address.as_deref(),
+        Some(lock_addr.as_str()),
+        "the TRANSFER out of our lock stays at it until finalized"
+    );
+    assert_eq!(cov.items[2], "00", "witness version 0");
+    let hash: [u8; 20] = hex::decode(&cov.items[3])
+        .unwrap()
+        .try_into()
+        .expect("a 20-byte P2WPKH program");
+    let buyer = crate::noncustodial::address::encode_p2wpkh(NET, &hash).unwrap();
+    let info: serde_json::Value =
+        serde_json::from_str(&hsw_rpc(&key, &["getaddressinfo", &buyer])).expect("json");
+    assert_eq!(
+        info["ismine"], true,
+        "the TRANSFER commits to the CLI wallet: {buyer} {info}"
+    );
+}
+
 /// R4 on hsd: the cancel pays the fee rate asked for on its virtual size,
 /// with the lock witness `[sig65, lockScript]` counted: hsd's `GET /tx`
 /// reports the fee the draft recorded and a rate within 2% above the one
