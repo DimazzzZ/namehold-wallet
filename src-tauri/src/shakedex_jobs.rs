@@ -2200,8 +2200,13 @@ pub(crate) fn stored_cancel(l: &queries::ShakedexListing) -> Result<(&str, u32),
 ///   TRANSFER ([`sell::cancel_finalized_home`], its transaction read with
 ///   `GET /tx` or in the block at the owner coin's height) → Cancelled,
 ///   whoever sent it (a cancel [`cancel_of_lock`] found from its FINALIZE
-///   home ends here on the next sync); anything else (the owner coin's 404:
-///   the FINALIZE in the mempool) → unchanged.
+///   home ends here on the next sync); otherwise a reorg may have replaced
+///   the cancel, and the lock coin's spender is judged on mined facts
+///   ([`cancel_replaced`]): another mined cancel out of it →
+///   CancelAwaitingFinalize with that outpoint, a mined purchase of it →
+///   Sold, our cancel released either way; anything else (the owner coin's
+///   404: the FINALIZE in the mempool; a spender in the mempool) →
+///   unchanged.
 ///
 /// A reply missing a field the verdict reads, or a coin there that is not
 /// a TRANSFER of the name at the lock address, is an error: unchanged.
@@ -2272,18 +2277,62 @@ async fn cancel_on_its_way_home(
         return Ok(());
     };
     let owner = owner_of(info)?;
-    let Some(coin) = client.get_coin(&owner.0, owner.1).await? else {
+    if let Some(coin) = client.get_coin(&owner.0, owner.1).await? {
+        if let Some(height) = coin.mined_height()? {
+            if let Some(tx) = spend_view(client, &owner.0, Some(height)).await? {
+                let own = own_addresses(conn, &l.wallet_profile_id)?;
+                if sell::cancel_finalized_home(&tx, owner.1, cancel, &at, &own) {
+                    queries::mark_listing_cancelled(conn, &l.id, cancel)?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+    let Some(lock) = stored_lock(l)? else {
         return Ok(());
     };
-    let Some(height) = coin.mined_height()? else {
+    cancel_replaced(conn, client, network, l, &owner, lock, cancel).await
+}
+
+/// R22, R28: hsd's 404 for both the mined cancel `cancel`'s TRANSFER and
+/// the stored lock coin `lock`, the name's owner `owner` not a FINALIZE
+/// home through `cancel`: a reorg may have replaced our cancel. The lock
+/// coin's spender is judged as for a Listed listing ([`lock_coin_spent`]),
+/// on mined facts tied to `lock` only: another mined cancel out of it
+/// ([`cancel_of_lock`], an outpoint that is not `cancel`) →
+/// CancelAwaitingFinalize with that outpoint ([`cancel_mined`]); otherwise
+/// a mined purchase of it while the owner has moved ([`find_sale`];
+/// [`sale_of_restored_lock`] for a lock restored by name) → Sold
+/// ([`sell_releasing_cancel`]). Either way a cancel of ours that can no
+/// longer land is released with that spender. A spender in the mempool, no
+/// spender found, or `cancel` itself found again is no verdict.
+async fn cancel_replaced(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+    owner: &(String, u32),
+    lock: (&str, u32),
+    cancel: (&str, u32),
+) -> Result<(), AppError> {
+    if let Some(c) = cancel_of_lock(conn, client, network, l, owner, lock).await? {
+        if !(c.0.eq_ignore_ascii_case(cancel.0) && c.1 == cancel.1) {
+            cancel_mined(conn, l, (&c.0, c.1), lock)?;
+        }
         return Ok(());
-    };
-    let Some(tx) = spend_view(client, &owner.0, Some(height)).await? else {
+    }
+    if l.payment_address.is_none() {
+        if let Some(txid) = sale_of_restored_lock(conn, client, network, l, owner, lock).await? {
+            sell_releasing_cancel(conn, l, &txid, lock)?;
+        }
         return Ok(());
-    };
-    let own = own_addresses(conn, &l.wallet_profile_id)?;
-    if sell::cancel_finalized_home(&tx, owner.1, cancel, &at, &own) {
-        queries::mark_listing_cancelled(conn, &l.id, cancel)?;
+    }
+    let owner_is_lock = owner.0 == lock.0 && owner.1 == lock.1;
+    if let (Sale::Mined { txid, lock }, false) = (
+        find_sale(conn, client, network, l, owner).await?,
+        owner_is_lock,
+    ) {
+        sell_releasing_cancel(conn, l, &txid, (lock.0.as_str(), lock.1))?;
     }
     Ok(())
 }

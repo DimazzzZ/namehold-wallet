@@ -1760,24 +1760,30 @@ impl ListingWrite {
     ///   Lower price rewrites a Listed listing's steps and file, its state
     ///   unchanged. A purchase mined before our cancel is a sale all the same
     ///   (Sell from Cancelling), and a reorg may replace a purchase with our
-    ///   mined cancel (CancelMined from Sold, its sold txid forgotten).
+    ///   mined cancel (CancelMined from Sold, its sold txid forgotten) or our
+    ///   mined cancel with a purchase or another cancel (Sell and CancelMined
+    ///   from the two cancel-mined states).
     pub const fn transition(self) -> (&'static [ListingState], &'static [ListingState]) {
         use ListingState as S;
         const BEFORE_LOCK_END: &[ListingState] = &[S::Locking, S::ReadyToFinalize, S::Finalizing];
         const SALE: &[ListingState] = &[S::Finalizing, S::Listed, S::SalePending, S::Restored];
         // A purchase mined before our cancel is a sale all the same (R28).
+        // A reorg may replace our mined cancel with a purchase (R22).
         const SELL_FROM: &[ListingState] = &[
             S::Finalizing,
             S::Listed,
             S::SalePending,
             S::Restored,
             S::Cancelling,
+            S::CancelAwaitingFinalize,
+            S::CancelFinalizing,
         ];
         // A TRANSFER out of the lock coin to an address of ours: our cancel,
         // another device's, or our own purchase (R28).
         // Finalizing: its FINALIZE mined and then the cancel, or a purchase of
         // our own, before this device synced. Sold: a reorg replaced the
-        // winning purchase with our cancel.
+        // winning purchase with our cancel. The two cancel-mined states: a
+        // reorg replaced the mined cancel with another one (a new txid).
         const CANCEL_MINED_FROM: &[ListingState] = &[
             S::Finalizing,
             S::Listed,
@@ -1785,6 +1791,8 @@ impl ListingWrite {
             S::Sold,
             S::Restored,
             S::Cancelling,
+            S::CancelAwaitingFinalize,
+            S::CancelFinalizing,
         ];
         const CANCEL_MINED: &[ListingState] = &ListingState::CANCEL_MINED;
         const LOCKED_EXPIRABLE: &[ListingState] = &[
@@ -2910,8 +2918,9 @@ pub fn uncancel_listing(
 /// the mined TRANSFER `cancel` (txid, output) of the name at the lock
 /// address committing to an address of ours: our cancel, another same-seed
 /// device's, or a purchase of our own. CancelAwaitingFinalize with that
-/// outpoint, from [`ListingWrite::CancelMined`]'s sources only. Returns how
-/// many rows changed (0 or 1).
+/// outpoint, from [`ListingWrite::CancelMined`]'s sources only; a FINALIZE
+/// draft of a cancel this one replaced (a reorg) is unlinked, as it spends a
+/// TRANSFER that is not mined. Returns how many rows changed (0 or 1).
 pub fn mark_listing_cancel_mined(
     conn: &rusqlite::Connection,
     id: &str,
@@ -2922,7 +2931,7 @@ pub fn mark_listing_cancel_mined(
     let sql = format!(
         "UPDATE shakedex_listings
          SET state = ?2, cancel_txid = ?3, cancel_vout = ?4, cancel_blocks_remaining = NULL,
-             sold_txid = NULL, updated_at = datetime('now')
+             cancel_finalize_draft_id = NULL, sold_txid = NULL, updated_at = datetime('now')
          WHERE id = ?1 AND {} AND lock_txid = ?5 AND lock_vout = ?6",
         w.source_sql()
     );
