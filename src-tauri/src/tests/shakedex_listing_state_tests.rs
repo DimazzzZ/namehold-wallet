@@ -303,10 +303,18 @@ fn each_listing_write_moves_exactly_its_transitions() {
         expected.push((ListingWrite::SalePending, from, S::SalePending));
         expected.push((ListingWrite::Sell, from, S::Sold));
     }
-    // R28: a purchase mined before our cancel is a sale all the same.
-    expected.push((ListingWrite::Sell, S::Cancelling, S::Sold));
+    // R28: a purchase mined before our cancel is a sale all the same, and
+    // a reorg may replace our mined cancel with a purchase.
+    for from in [
+        S::Cancelling,
+        S::CancelAwaitingFinalize,
+        S::CancelFinalizing,
+    ] {
+        expected.push((ListingWrite::Sell, from, S::Sold));
+    }
     // A FINALIZE mined and a cancel or purchase of it before this device
-    // syncs; a Sold listing whose purchase a reorg replaced with our cancel.
+    // syncs; a Sold listing whose purchase a reorg replaced with our cancel;
+    // a mined cancel a reorg replaced with another.
     for from in [
         S::Finalizing,
         S::Listed,
@@ -314,6 +322,8 @@ fn each_listing_write_moves_exactly_its_transitions() {
         S::Sold,
         S::Restored,
         S::Cancelling,
+        S::CancelAwaitingFinalize,
+        S::CancelFinalizing,
     ] {
         expected.push((ListingWrite::CancelMined, from, S::CancelAwaitingFinalize));
     }
@@ -3010,6 +3020,175 @@ async fn cancel_follows_a_reorg_of_its_transfer() {
         listing(&f).state,
         ListingState::CancelAwaitingFinalize,
         "spent in the mempool"
+    );
+}
+
+/// R22, R28: a reorg replaced our mined cancel with a mined purchase of the
+/// stored lock coin (hsd's 404 for the cancel's TRANSFER and for the lock
+/// coin, the name's owner the purchase's TRANSFER committing to the buyer,
+/// a coin of it at our payment address): Sold with that txid from either
+/// cancel state, and our cancel, which can no longer land, released with
+/// the purchase as the spender. The purchase only in the mempool (the owner
+/// still the lock coin) is no verdict.
+#[tokio::test]
+async fn purchase_replacing_a_mined_cancel_is_sold() {
+    let buy = txid("b1");
+    for (case, finalizing) in [("awaiting", false), ("finalizing", true)] {
+        let f = fx(ListingState::Listed);
+        our_cancel(&f, "broadcasted");
+        let c = cancel_mined_at(&f);
+        if finalizing {
+            cancel_finalizing(&f, &c);
+        }
+        paid(&f, &buy, 2, -1, false);
+        run(
+            &f,
+            &node(
+                info((&f.lock_txid, f.lock_vout)),
+                vec![transfer_out_of_lock(&f, &buy, &f.buyer, -1)],
+                purchase_rest(&f, &buy, -1, &f.payment),
+            ),
+        )
+        .await;
+        let l = listing(&f);
+        assert!(
+            queries::ListingState::CANCEL_MINED.contains(&l.state),
+            "{case}: in the mempool"
+        );
+        assert_eq!(l.sold_txid, None, "{case}: in the mempool");
+
+        paid(&f, &buy, 2, TIP, false);
+        run(
+            &f,
+            &node(
+                info((&buy, 0)),
+                vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+                purchase_rest(&f, &buy, TIP, &f.payment),
+            ),
+        )
+        .await;
+        let l = listing(&f);
+        assert_eq!(
+            (l.state, l.sold_txid.as_deref()),
+            (ListingState::Sold, Some(buy.as_str())),
+            "{case}"
+        );
+        let d = queries::get_tx_draft(&f.conn, "cx").unwrap().unwrap();
+        assert_eq!(d.status, "dropped", "{case}");
+        assert_eq!(
+            d.error_message.as_deref(),
+            Some(crate::noncustodial::shakedex::cancel::CANCEL_LOST_TO_PURCHASE),
+            "{case}"
+        );
+    }
+}
+
+/// R28: a reorg replaced our mined cancel with another mined cancel out of
+/// the stored lock coin (another same-seed device's, a new txid): the
+/// listing awaits that cancel's finalize, with its outpoint, from either
+/// cancel state (a FINALIZE draft of the old cancel forgotten), and our
+/// cancel is released with that cancel as the spender. The other cancel in
+/// the mempool (the owner still the lock coin), or linked from another lock
+/// coin, is no verdict.
+#[tokio::test]
+async fn another_cancel_replacing_a_mined_cancel_awaits_its_finalize() {
+    let c7 = txid("c7");
+    for (case, finalizing) in [("awaiting", false), ("finalizing", true)] {
+        let f = fx(ListingState::Listed);
+        our_cancel(&f, "broadcasted");
+        let c = cancel_mined_at(&f);
+        if finalizing {
+            cancel_finalizing(&f, &c);
+        }
+        let want_before = listing(&f).state;
+        run(
+            &f,
+            &node(
+                info((&f.lock_txid, f.lock_vout)),
+                vec![transfer_out_of_lock(&f, &c7, &f.cancel, -1)],
+                cancel_rest(&f, &c7, -1, &f.cancel),
+            ),
+        )
+        .await;
+        assert_eq!(listing(&f).state, want_before, "{case}: in the mempool");
+        let mut other = cancel_rest(&f, &c7, TIP, &f.cancel);
+        other["inputs"][0]["prevout"]["hash"] = txid("c2").into();
+        run(
+            &f,
+            &node(
+                info((&c7, 0)),
+                vec![transfer_out_of_lock(&f, &c7, &f.cancel, TIP)],
+                other,
+            ),
+        )
+        .await;
+        let l = listing(&f);
+        assert_eq!(
+            (l.state, l.cancel_txid.as_deref()),
+            (want_before, Some(c.0.as_str())),
+            "{case}: another lock coin"
+        );
+
+        run(
+            &f,
+            &node(
+                info((&c7, 0)),
+                vec![transfer_out_of_lock(&f, &c7, &f.cancel, TIP)],
+                cancel_rest(&f, &c7, TIP, &f.cancel),
+            ),
+        )
+        .await;
+        let l = listing(&f);
+        assert_eq!(
+            (
+                l.state,
+                l.cancel_txid.as_deref(),
+                l.cancel_vout,
+                l.cancel_finalize_draft_id
+            ),
+            (
+                ListingState::CancelAwaitingFinalize,
+                Some(c7.as_str()),
+                Some(0),
+                None
+            ),
+            "{case}"
+        );
+        let d = queries::get_tx_draft(&f.conn, "cx").unwrap().unwrap();
+        assert_eq!(d.status, "dropped", "{case}");
+        assert_eq!(
+            d.error_message.as_deref(),
+            Some(crate::noncustodial::shakedex::cancel::CANCEL_LOST_TO_ANOTHER),
+            "{case}"
+        );
+    }
+}
+
+/// R28: our mined cancel found again as the lock coin's spender (hsd's 404
+/// for its TRANSFER at the first read, a block connected before the later
+/// ones) is no replacement: a CancelFinalizing listing keeps its state and
+/// its FINALIZE draft.
+#[tokio::test]
+async fn our_own_cancel_found_again_is_no_replacement() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let f = fx(ListingState::Listed);
+    our_cancel(&f, "broadcasted");
+    let c = cancel_mined_at(&f);
+    cancel_finalizing(&f, &c);
+    let mined = transfer_out_of_lock(&f, &c.0, &f.cancel, TIP);
+    let reads = AtomicUsize::new(0);
+    let rpc = MockNodeRpc::new()
+        .with_name_info(info((&c.0, 0)))
+        .with_tx_by_hash(cancel_rest(&f, &c.0, TIP, &f.cancel))
+        .with_get_coin(move |t, v| {
+            let ours = t == mined.txid && v == mined.vout;
+            Ok((ours && reads.fetch_add(1, Ordering::SeqCst) > 0).then(|| mined.clone()))
+        });
+    run(&f, &rpc).await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.cancel_finalize_draft_id.as_deref()),
+        (ListingState::CancelFinalizing, Some("cfin"))
     );
 }
 
