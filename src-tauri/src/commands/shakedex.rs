@@ -1556,6 +1556,245 @@ pub(crate) async fn cancel_listing_confirmed<R: tauri::Runtime>(
     draft_ctx::draft_summary(&conn, &draft_id)
 }
 
+/// R26: the Lower price prompt's own title.
+pub const LOWER_PRICE_TITLE: &str = "Confirm Lower price";
+const LOWER_PRICE_MESSAGE: &str = "Review these details. This signs, with the lock key, one \
+     more, lower price for the name.";
+/// R26: disabled while a cancel is unconfirmed.
+pub const LOWER_DURING_CANCEL: &str = "a cancel of this listing is not mined yet: its price \
+     cannot be lowered";
+/// R26: hsd answers 404 for a lock coin spent in a block or in its mempool.
+pub const LOWER_LOCK_COIN_SPENT: &str = "the lock coin is no longer unspent (bought, \
+     cancelled, or being spent in the node's mempool): the price cannot be lowered";
+/// R26: a listing without signed prices here has no current price.
+pub const LOWER_NO_PRICE_HERE: &str = "this listing has no signed prices here: import its \
+     listing file first";
+
+const LOWER_LOCK_WORDS: LockCoinWords = LockCoinWords {
+    checked: "the price",
+    spent: LOWER_LOCK_COIN_SPENT,
+    not_mined: "the finalize into the lock is not mined: the price cannot be lowered until it is",
+    nothing: "the price cannot be lowered",
+};
+
+/// Why Lower price refuses a listing in `state` (R26); `None` for Listed.
+fn lower_refusal(state: ListingState) -> Option<&'static str> {
+    match state {
+        ListingState::Listed => None,
+        ListingState::Cancelling => Some(LOWER_DURING_CANCEL),
+        ListingState::CancelAwaitingFinalize | ListingState::CancelFinalizing => {
+            Some("this listing is cancelled: its price cannot be lowered")
+        }
+        ListingState::SalePending => {
+            Some("a purchase of this listing is in the node's mempool: its price cannot be lowered")
+        }
+        ListingState::Restored => Some(LOWER_NO_PRICE_HERE),
+        ListingState::Locking | ListingState::ReadyToFinalize => {
+            Some("the price is set at Finalize & sign")
+        }
+        ListingState::Finalizing => {
+            Some("the price can be lowered once the finalize into the lock is mined")
+        }
+        ListingState::Sold
+        | ListingState::Cancelled
+        | ListingState::Aborted
+        | ListingState::Expired => listing_over(state),
+    }
+}
+
+/// R26, generic over the runtime so tests drive it. The gates (R16, R6; no
+/// experimental flag, R15) and the unlocked signer first; the listing the
+/// active profile's, Listed, a Buy Now (reverse auctions are T8's) with
+/// signed steps here; the price parsed by R19's rule; on the node the lock
+/// coin checks Cancel makes too ([`lock_on_node`]: unspent, at the stored
+/// outpoint, a FINALIZE of the name at the lock address of the stored key,
+/// mined, of the name's live registration) and the MTP; the new price below
+/// the current step at that MTP (R3, `sell::check_lower_price`); the lock
+/// key re-derived after the reads, its public key the stored one; then R26's
+/// own prompt, one step signed valid now (R19: the MTP minus 512 s) over the
+/// stored lock coin at hsd's value, paying the listing's payment address,
+/// the listing file rewritten with it and read back by the strict parser
+/// (`write_listing_file`), and the steps and file stored only while the
+/// listing is still Listed on that lock coin with the steps read here
+/// (`queries::lower_listing_price`). Sends nothing.
+pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
+    state: &State<'_, AppState>,
+    app: &tauri::AppHandle<R>,
+    listing_id: &str,
+    price: &str,
+) -> Result<ListingSummary, AppError> {
+    let ctx = software_writer_ctx(state)?;
+    authorize_signer(state, &ctx)?;
+    let listing = {
+        let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+        let l = queries::get_shakedex_listing(&conn, listing_id)?
+            .filter(|l| l.wallet_profile_id == ctx.profile_id)
+            .ok_or_else(|| AppError::NotFound(format!("listing {listing_id}")))?;
+        if let Some(why) = lower_refusal(l.state) {
+            return Err(AppError::InvalidInput(why.into()));
+        }
+        if l.mode != ListingMode::BuyNow {
+            return Err(AppError::InvalidInput(
+                "reverse auctions are not supported yet".into(),
+            ));
+        }
+        l
+    };
+    let stored: Vec<sell::StoredStep> = serde_json::from_str(&listing.steps_json)
+        .map_err(|e| AppError::Other(format!("corrupted listing: unreadable steps: {e}")))?;
+    if stored.is_empty() {
+        return Err(AppError::InvalidInput(LOWER_NO_PRICE_HERE.into()));
+    }
+    let new_price = sell::parse_step_price(price)?;
+    let corrupted = |what: &str| AppError::Other(format!("corrupted listing: no {what}"));
+    let lock_txid = listing
+        .lock_txid
+        .clone()
+        .ok_or_else(|| corrupted("lock coin"))?;
+    let lock_vout = listing
+        .lock_vout
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or_else(|| corrupted("lock output"))?;
+    let pubkey: [u8; 33] = hex::decode(&listing.lock_pubkey_hex)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(|| corrupted("lock public key"))?;
+    let payment_address = listing
+        .payment_address
+        .clone()
+        .ok_or_else(|| corrupted("payment address"))?;
+    let name = listing.name.clone();
+    let lock_addr = lock_address(ctx.network, &pubkey)?;
+    let at = sell::ListingLock::new(lock_addr.clone(), &name)?;
+
+    let on_node = lock_on_node(
+        &ctx,
+        &name,
+        &at,
+        (&lock_txid, lock_vout),
+        true,
+        &LOWER_LOCK_WORDS,
+    )
+    .await?;
+    let mtp = on_node
+        .mtp
+        .ok_or_else(|| AppError::Other("the node's median time was not read".into()))?;
+    let current = sell::current_step_price(&stored, mtp)?.ok_or_else(|| {
+        AppError::InvalidInput(
+            "no price of this listing is valid yet at the node's median time: there is no \
+             current price to lower"
+                .into(),
+        )
+    })?;
+    sell::check_lower_price(new_price, current)?;
+    let lock_time = sell::buy_now_lock_time(mtp);
+    let key = derive_listing_key(state, &ctx, &name)?;
+    if key.pubkey != pubkey {
+        return Err(AppError::InvalidInput(sell::LISTING_KEY_MISMATCH.into()));
+    }
+    crate::commands::secure_confirm::confirm_rows(
+        app,
+        LOWER_PRICE_TITLE,
+        LOWER_PRICE_MESSAGE,
+        sell::lower_price_rows(&sell::LowerPriceRows {
+            name: &name,
+            current_price: current,
+            new_price,
+            lock_time,
+            mtp,
+            payment_address: &payment_address,
+            lock_address: &lock_addr,
+        }),
+    )
+    .await?;
+
+    let mut lock_bytes = [0u8; 32];
+    hex::decode_to_slice(&lock_txid, &mut lock_bytes)
+        .map_err(|_| corrupted("readable lock txid"))?;
+    let payment = output_address_from_string(ctx.network, &payment_address)?;
+    // The prompt may have outlasted the earlier check: authorized again.
+    let signature = with_signer(state, &ctx, |_| {
+        sell::sign_step(
+            &key,
+            &template::StepTemplate {
+                lock_outpoint: (lock_bytes, lock_vout),
+                lock_value: on_node.value,
+                lock_pubkey: &key.pubkey,
+                payment,
+                price: new_price,
+                lock_time_secs: lock_time,
+            },
+        )
+    })?;
+    let mut steps = stored
+        .iter()
+        .map(|s| {
+            let signature: [u8; 65] = hex::decode(&s.signature)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| corrupted("readable step signature"))?;
+            Ok(PriceStep {
+                price: s.price,
+                lock_time: s.lock_time,
+                signature,
+                fee: 0,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    steps.push(PriceStep {
+        price: new_price,
+        lock_time,
+        signature,
+        fee: 0,
+    });
+    // The file's expiry stays as signed; a file imported without one (R32)
+    // gets R23's, from this signing's MTP.
+    let expires_at = match listing.expires_at {
+        Some(e) => u64::try_from(e).map_err(|_| corrupted("readable expiry"))?,
+        None => mtp + sell::LISTING_LIFETIME_SECS,
+    };
+    let file = write_listing_file(
+        &NewListingFile {
+            name: &name,
+            lock_txid: lock_bytes,
+            lock_vout,
+            public_key: pubkey,
+            payment_addr: &payment_address,
+            steps: &steps,
+            expires_at,
+        },
+        ctx.network,
+    )?;
+    let stored_new: Vec<sell::StoredStep> = steps
+        .iter()
+        .map(|s| sell::StoredStep {
+            price: s.price,
+            lock_time: s.lock_time,
+            signature: hex::encode(s.signature),
+        })
+        .collect();
+    let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
+    let n = queries::lower_listing_price(
+        &conn,
+        &listing.id,
+        &queries::LoweredPrice {
+            lock: (&lock_txid, lock_vout),
+            old_steps_json: &listing.steps_json,
+            steps_json: &serde_json::to_string(&stored_new)?,
+            listing_file_json: &file,
+            expires_at: i64::try_from(expires_at).map_err(|_| corrupted("readable expiry"))?,
+        },
+    )?;
+    if n != 1 {
+        return Err(AppError::InvalidInput(
+            "this listing changed meanwhile: nothing was saved; try again".into(),
+        ));
+    }
+    let l = queries::get_shakedex_listing(&conn, &listing.id)?
+        .ok_or_else(|| AppError::Other("listing vanished after Lower price".into()))?;
+    ListingSummary::of(&l)
+}
+
 /// R23: the saved listing file of one of the profile's listings, once its
 /// FINALIZE into the lock is mined (Listed or later): before that its steps
 /// are over a coin that may never exist.
@@ -2719,6 +2958,19 @@ pub async fn shakedex_finalize_cancel(
     fee_rate: Option<u64>,
 ) -> Result<TxDraftSummary, AppError> {
     finalize_cancel(&state, &listing_id, fee_rate).await
+}
+
+/// Lower a listing's price (R26): see [`lower_price_confirmed`]. Returns the
+/// listing with its new step.
+#[tauri::command]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn shakedex_lower_price(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    listing_id: String,
+    price: String,
+) -> Result<ListingSummary, AppError> {
+    lower_price_confirmed(&state, &app, &listing_id, &price).await
 }
 
 #[cfg(test)]
