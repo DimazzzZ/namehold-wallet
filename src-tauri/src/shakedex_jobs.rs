@@ -2860,8 +2860,11 @@ pub async fn publish_listings_with_client(
 /// R28 (T6): tell the market of `l`'s mined sale (`saleTxHash`) or mined
 /// cancel (`outcome: "cancelled"`, `cancelTxHash`) and record its answer:
 /// marked → Reported; its "Listing not found" (nothing of the name to mark)
-/// → Reported with that note; its refusal → Refused, not retried; no answer
-/// or "not seen yet" → Retrying, backed off ([`after_reply`]).
+/// → Reported with that note; its own refusal → Reported with its words
+/// (nothing more to tell, not retried); no answer or "not seen yet" →
+/// Retrying, backed off ([`after_reply`]) — but a listing the market knows
+/// only from its pending post stays Pending while it backs off: that post
+/// is what makes it told ([`queries::list_listings_to_report`]).
 async fn report(
     conn: &rusqlite::Connection,
     market: &LearnHnsClient,
@@ -2884,15 +2887,20 @@ async fn report(
                 .ok_or_else(|| corrupted("cancel txid"))?,
         }
     };
+    use queries::MarketStatus as S;
     let reply = market.refresh_status(&l.name, &what).await?;
-    let mut result = after_reply(
-        Outcome::of(&reply, false),
-        queries::MarketStatus::Reported,
-        l.market_attempts,
-        now,
-    );
+    let mut result = match Outcome::of(&reply, false) {
+        Outcome::Refused(why) => MarketResult {
+            error: Some(why),
+            ..after_reply(Outcome::Taken { holds_ours: false }, S::Reported, 0, now)
+        },
+        outcome => after_reply(outcome, S::Reported, l.market_attempts, now),
+    };
     if reply == MarketReply::Accepted(StatusRecorded::NoListing) {
         result.error = Some(REPORT_NO_LISTING.into());
+    }
+    if result.status != S::Reported && !l.market_accepted {
+        result.status = S::Pending;
     }
     record(conn, l, &result)
 }
