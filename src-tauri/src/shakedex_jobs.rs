@@ -2774,8 +2774,8 @@ fn market_job_clients(
 /// [`queries::list_listings_to_announce`] that is due gets its pending
 /// listing (no node read). Once Listed (the FINALIZE into the lock mined,
 /// one confirmation): each Listed Buy Now listing of
-/// [`queries::list_listings_kept_on_market`] (published) the market has not taken yet
-/// (`market_status` unset) gets its current step uploaded
+/// [`queries::list_listings_kept_on_market`] (published) the market has not
+/// taken yet (`market_status` unset) gets its current step uploaded
 /// ([`market_copy`]); reverse auctions are T8's. R28: each due listing of
 /// [`queries::list_listings_to_report`] — the market told about it, and our
 /// node has its sale or cancel mined — is reported first ([`report`]), once;
@@ -2985,22 +2985,23 @@ async fn upload(
 /// Takes the listings of [`queries::list_listings_kept_on_market`] — Listed,
 /// and Cancelling while the cancel is not sent (still buyable on chain;
 /// R24, R28: the jobs stop once it is sent) and only once the market
-/// accepted an upload of it (`market_accepted`) — that the market has taken or
-/// failed to take for want of an answer or of verified steps
+/// accepted an upload of it (`market_accepted`) — that the market has taken
+/// or failed to take for want of an answer or of verified steps
 /// (`market_status` Listed, ReplacedReuploaded, Retrying, StepsUnverified;
 /// a reorg that takes a mined cancel back to an unsent one starts a told
 /// listing over as Retrying, [`queries::mark_listing_cancel_unmined`]), and
 /// that are due ([`due`]). Never one the market was not told about
 /// (`market_status` unset): its first upload is Listed only and
 /// [`publish_listings_with_client`]'s, so a listing whose cancel is in
-/// progress is never published for the first time. Never a Refused one: it waits for a
-/// write that changes what is sent; only a Refused Listed listing's expiry
-/// is looked at, without a market call, and only once the stored
-/// `expires_at` is within [`EXPIRY_REFRESH_MARGIN_SECS`]: the refresh
+/// progress is never published for the first time. Never a Refused one: it
+/// waits for a write that changes what is sent; only a Refused Listed
+/// listing's expiry is looked at, without a market call, and only once the
+/// stored `expires_at` is within [`EXPIRY_REFRESH_MARGIN_SECS`]: the refresh
 /// ([`market_copy`]) makes it Retrying, due now (what is sent changed), and
-/// the next run checks the market's copy and uploads the new file. The expiry is refreshed for Listed listings
-/// only ([`market_copy`], `ListingWrite::RefreshExpiry` is Listed to
-/// Listed). Reverse auctions are T8's.
+/// the next run checks the market's copy and uploads the new file. The
+/// expiry is refreshed for Listed listings only ([`market_copy`],
+/// `ListingWrite::RefreshExpiry` is Listed to Listed). Reverse auctions are
+/// T8's.
 ///
 /// Per listing: [`market_copy`] first (our node: every step verified
 /// again, the expiry refreshed when near). StepsUnverified → recorded,
@@ -3010,9 +3011,9 @@ async fn upload(
 /// ([`listing_file::same_market_listing`]) → nothing uploaded, checked again
 /// in an hour (Retrying/StepsUnverified → Listed, ReplacedReuploaded
 /// stays); a copy that does not read as a listing file, or another offer →
-/// ours uploaded over it (ReplacedReuploaded; Listed when a Lower price or
-/// an expiry refresh changed ours since, Retrying with no failure counted:
-/// the market's copy is then our own older one); the market's own "not
+/// ours uploaded over it (ReplacedReuploaded; Listed while
+/// `market_changed` says ours changed since the market last took it: the
+/// market's copy is then our own older one); the market's own "not
 /// listed" → uploaded (Listed); no answer → Retrying, backed off
 /// ([`retry_delay_secs`]), nothing uploaded on it. The upload's answer is
 /// recorded by [`after_reply`] (a refusal → Refused, not retried). Reads the
@@ -3102,14 +3103,11 @@ async fn keep_listed(
         // The expiry was just refreshed: the market holds the old file.
         return upload(conn, market, &file, &listing, S::Listed, now).await;
     }
-    // Retrying with no failure counted: a Listed to Listed write (a Lower
-    // price, an expiry refresh) changed what is sent
-    // (`ListingWrite::market_reset_sql`). A copy that differs is then our
-    // own older one, not someone else's.
-    let changed = listing.market_status == Some(S::Retrying)
-        && listing.market_attempts == 0
-        && listing.market_error.is_none();
-    let replaced = if changed {
+    // What is sent changed since the market last took our copy (a Lower
+    // price, an expiry refresh, a reorg back to an unsent cancel:
+    // `market_changed`): a copy that differs is then our own older one, not
+    // someone else's.
+    let replaced = if listing.market_changed {
         S::Listed
     } else {
         S::ReplacedReuploaded
