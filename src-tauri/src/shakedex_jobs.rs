@@ -2215,17 +2215,20 @@ async fn cancel_on_its_way_home(
     let cancel = stored_cancel(l)?;
     let at = listing_lock(network, l)?;
     if let Some(coin) = client.get_coin(cancel.0, cancel.1).await? {
-        let Some(coin_at) = sell::CoinAt::of_coin(&coin) else {
-            return Err(AppError::Rpc(format!(
-                "node did not report the address or covenant of cancel {}:{}",
-                cancel.0, cancel.1
-            )));
-        };
-        if !at.holds(coin_at, COV_TRANSFER, None) {
-            return Err(AppError::Other(format!(
-                "cancel {}:{} is not a TRANSFER of the name at the listing's lock address",
-                cancel.0, cancel.1
-            )));
+        match at.stored_coin(&coin, cancel, COV_TRANSFER) {
+            Ok(_) => {}
+            Err(sell::StoredCoinRefusal::Unreadable) => {
+                return Err(AppError::Rpc(format!(
+                    "node did not report the address or covenant of cancel {}:{}",
+                    cancel.0, cancel.1
+                )));
+            }
+            Err(sell::StoredCoinRefusal::SomethingElse) => {
+                return Err(AppError::Other(format!(
+                    "cancel {}:{} is not a TRANSFER of the name at the listing's lock address",
+                    cancel.0, cancel.1
+                )));
+            }
         }
         if coin.mined_height()?.is_none() {
             queries::mark_listing_cancel_unmined(conn, &l.id, cancel.0)?;

@@ -756,6 +756,17 @@ impl<'a> CoinAt<'a> {
     }
 }
 
+/// Why a coin hsd showed at a listing's stored outpoint is not taken
+/// ([`ListingLock::stored_coin`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoredCoinRefusal {
+    /// The reply has no address or covenant: not hsd's whole answer.
+    Unreadable,
+    /// Another outpoint, or not the expected covenant of the name at the
+    /// lock address.
+    SomethingElse,
+}
+
 /// One listing's lock: the lock address its key derives, and its name's
 /// hash. Every lock coin of a key sits at that one address (ADR 0004), so
 /// the address alone does not say whose a coin there is: the covenant's
@@ -778,6 +789,29 @@ impl ListingLock {
     /// Whether `coin` sits at this lock address.
     pub fn is_at(&self, coin: CoinAt) -> bool {
         coin.address == self.address
+    }
+
+    /// `coin`, hsd's `GET /coin` of the `outpoint` a listing stores, as that
+    /// outpoint and a `covenant_type` covenant of this name at this lock
+    /// address (the lock coin a FINALIZE, the mined cancel a TRANSFER): its
+    /// [`CoinAt`] then. The one check Cancel, Lower price, the cancel's
+    /// FINALIZE and the after-lock job make of a stored coin; each caller
+    /// says the refusal in its own words.
+    pub fn stored_coin<'c>(
+        &self,
+        coin: &'c rpc::NodeCoin,
+        outpoint: (&str, u32),
+        covenant_type: u8,
+    ) -> Result<CoinAt<'c>, StoredCoinRefusal> {
+        let at = CoinAt::of_coin(coin).ok_or(StoredCoinRefusal::Unreadable)?;
+        if coin.txid.eq_ignore_ascii_case(outpoint.0)
+            && coin.vout == outpoint.1
+            && self.holds(at, covenant_type, None)
+        {
+            Ok(at)
+        } else {
+            Err(StoredCoinRefusal::SomethingElse)
+        }
     }
 
     /// Whether `coin` is a `covenant_type` covenant of this name at this
