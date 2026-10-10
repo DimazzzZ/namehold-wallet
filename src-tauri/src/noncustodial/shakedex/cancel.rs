@@ -18,6 +18,7 @@ use crate::noncustodial::shakedex::purchase::{build_purchase_finalize_plan, Fina
 use crate::noncustodial::shakedex::script::lock_address;
 use crate::noncustodial::sync::COV_TRANSFER;
 use crate::noncustodial::tx::sighash;
+use crate::noncustodial::types::doos_to_hns_string;
 
 /// `ANYONECANPAY|SINGLE`: the lock key commits to the lock input and the
 /// TRANSFER at the same index only, as shakedex's cancel does.
@@ -28,6 +29,87 @@ pub const CANCEL_ACTION: &str = "shakedex_cancel";
 /// `wallet_tx_drafts.action` of a draft finalizing a cancelled listing's
 /// name out of the lock.
 pub const CANCEL_FINALIZE_ACTION: &str = "shakedex_cancel_finalize";
+
+/// R28: what a cancel cannot stop before it is mined, shown in its prompt
+/// and kept on its draft.
+pub const CANCEL_STILL_BUYABLE: &str = "Anyone holding the listing file can still buy the \
+     name at its current price until this cancel is mined.";
+/// R28: hsd answers `sendrawtransaction` with the txid whatever its mempool
+/// does, so a cancel beaten by a purchase already there reads as sent.
+pub const CANCEL_MEMPOOL_PURCHASE: &str = "If a purchase of the name is already in your \
+     node's mempool, the node does not take this cancel and it is never mined, although the \
+     node still answers it with a transaction id.";
+/// R28: the way home after the cancel is mined.
+pub const CANCEL_THEN_FINALIZE: &str = "Once the cancel is mined and the transfer lockup is \
+     over, finalize it to bring the name home.";
+/// Why a cancel draft that can never land was dropped (R28,
+/// `queries::release_losing_cancel`).
+pub const CANCEL_LOST_TO_PURCHASE: &str = "a purchase of the name was mined first: this \
+     cancel can never be mined, and its coins are free again";
+pub const CANCEL_LOST_TO_ANOTHER: &str = "another transfer out of the lock was mined first: \
+     this cancel can never be mined, and its coins are free again";
+
+/// What the cancel's prompt (R28) is built from.
+pub struct CancelRows<'a> {
+    pub name: &'a str,
+    pub fee: u64,
+    pub cancel_address: &'a str,
+    pub lock_address: &'a str,
+    /// The current step's price at the node's MTP (R3); `None` for a lock
+    /// restored by name, whose steps this device does not know.
+    pub current_price: Option<u64>,
+}
+
+/// R28: the rows of the cancel's own confirmation, `{ "rows": [...] }` as
+/// the secure window renders a `confirm` request.
+pub fn cancel_rows(r: &CancelRows) -> serde_json::Value {
+    let row = |label: &str, value: String| serde_json::json!({ "label": label, "value": value });
+    serde_json::json!({ "rows": [
+        row("Action", "Cancel the listing".into()),
+        row("Name", r.name.into()),
+        row("Network fee (cancel)", doos_to_hns_string(r.fee)),
+        row(
+            "Current price",
+            match r.current_price {
+                Some(price) => doos_to_hns_string(price),
+                None => "not known on this device (a lock restored by name)".into(),
+            },
+        ),
+        row("Name comes home to", r.cancel_address.into()),
+        row("Lock address", r.lock_address.into()),
+        row("Until it is mined", CANCEL_STILL_BUYABLE.into()),
+        row("A purchase already sent", CANCEL_MEMPOOL_PURCHASE.into()),
+        row("Then", CANCEL_THEN_FINALIZE.into()),
+    ] })
+}
+
+/// T1b carry (R21, R28), the command's half of the destination rule: the
+/// cancel plan is for the profile's `account`, and its lock-key input 0 is
+/// a `0x83` input carrying the listing's cancel path (receive branch,
+/// `cancel_index`). The signer re-derives the TRANSFER's commitment from
+/// that path ([`check_lock_key_input`]); the command has checked that the
+/// path is the listing's reserved cancel address
+/// (`queries::receive_address_at`).
+pub fn check_cancel_plan(
+    plan: &DraftPlan,
+    account: u32,
+    cancel_index: u32,
+) -> Result<(), AppError> {
+    match plan.inputs.first() {
+        Some(i)
+            if plan.account == account
+                && i.lock_key_name.is_some()
+                && i.sighash_type == CANCEL_SIGHASH
+                && i.branch == BRANCH_RECEIVE
+                && i.child_index == cancel_index =>
+        {
+            Ok(())
+        }
+        _ => Err(AppError::Other(
+            "the cancel plan is not for this listing's cancel address: nothing was signed".into(),
+        )),
+    }
+}
 
 /// What the caller supplies from the name state to build a cancel; the caller
 /// checks the lock coin's TRANSFER commitment.
@@ -299,5 +381,101 @@ mod tests {
         assert_eq!(res.fee, tx.vsize() * 7, "fee sized on the exact vsize");
         let out: u64 = res.plan.outputs.iter().map(|o| o.value).sum();
         assert_eq!(res.input_total, out + res.fee);
+    }
+
+    /// R28: the cancel's own prompt says what the cancel cannot stop (a buyer
+    /// until it is mined; a purchase already in the node's mempool, which
+    /// hsd still answers with the cancel's txid), the fee, where the name
+    /// comes home to, and the current price, or that this device does not
+    /// know it (a lock restored by name).
+    #[test]
+    fn cancel_rows_say_what_r28_says() {
+        let rows = |price| {
+            cancel_rows(&CancelRows {
+                name: "dexreviews",
+                fee: 2_340,
+                cancel_address: "hs1qcancel",
+                lock_address: "hs1qlock",
+                current_price: price,
+            })["rows"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        let value = |rows: &[serde_json::Value], label: &str| {
+            rows.iter()
+                .find(|r| r["label"] == label)
+                .map(|r| r["value"].as_str().unwrap().to_string())
+        };
+        let r = rows(Some(5_000_000));
+        assert_eq!(value(&r, "Action").as_deref(), Some("Cancel the listing"));
+        assert_eq!(value(&r, "Name").as_deref(), Some("dexreviews"));
+        assert_eq!(
+            value(&r, "Network fee (cancel)").as_deref(),
+            Some("0.002340 HNS")
+        );
+        assert_eq!(value(&r, "Current price").as_deref(), Some("5.000000 HNS"));
+        assert_eq!(
+            value(&r, "Name comes home to").as_deref(),
+            Some("hs1qcancel")
+        );
+        assert_eq!(value(&r, "Lock address").as_deref(), Some("hs1qlock"));
+        assert_eq!(
+            value(&r, "Until it is mined").as_deref(),
+            Some(CANCEL_STILL_BUYABLE)
+        );
+        assert_eq!(
+            value(&r, "A purchase already sent").as_deref(),
+            Some(CANCEL_MEMPOOL_PURCHASE)
+        );
+        assert_eq!(value(&r, "Then").as_deref(), Some(CANCEL_THEN_FINALIZE));
+        assert!(CANCEL_STILL_BUYABLE.contains("until this cancel is mined"));
+        assert!(CANCEL_MEMPOOL_PURCHASE.contains("mempool"));
+        assert!(CANCEL_MEMPOOL_PURCHASE.contains("transaction id"));
+        let r = rows(None);
+        assert_eq!(
+            value(&r, "Current price").as_deref(),
+            Some("not known on this device (a lock restored by name)")
+        );
+    }
+
+    /// T1b carry: the command refuses a cancel plan that is not for the
+    /// profile's account, or whose lock input does not carry the listing's
+    /// cancel path (the receive branch at the stored index): the signer
+    /// re-derives the TRANSFER's commitment from that path, so the path is
+    /// what ties the signature to the reserved address.
+    #[test]
+    fn cancel_plan_is_for_the_profiles_account_and_path() {
+        let k = key();
+        let to = cancel_to();
+        let funding = [coin(1, 1_000_000, 10)];
+        let res = build_cancel_plan(&input(&k, &to, &funding, 5)).unwrap();
+        check_cancel_plan(&res.plan, 0, CANCEL_INDEX).expect("ours");
+        assert!(
+            check_cancel_plan(&res.plan, 1, CANCEL_INDEX).is_err(),
+            "another account"
+        );
+        assert!(
+            check_cancel_plan(&res.plan, 0, CANCEL_INDEX + 1).is_err(),
+            "another index"
+        );
+        let mut change_branch = res.plan.clone();
+        change_branch.inputs[0].branch = 1;
+        assert!(
+            check_cancel_plan(&change_branch, 0, CANCEL_INDEX).is_err(),
+            "change branch"
+        );
+        let mut not_lock = res.plan.clone();
+        not_lock.inputs[0].lock_key_name = None;
+        assert!(
+            check_cancel_plan(&not_lock, 0, CANCEL_INDEX).is_err(),
+            "no lock-key input"
+        );
+        let mut other_sighash = res.plan;
+        other_sighash.inputs[0].sighash_type = sighash::ALL;
+        assert!(
+            check_cancel_plan(&other_sighash, 0, CANCEL_INDEX).is_err(),
+            "not 0x83"
+        );
     }
 }
