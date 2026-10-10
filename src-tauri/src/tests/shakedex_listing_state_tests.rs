@@ -3769,13 +3769,49 @@ fn market_result_is_written_only_over_the_listing_the_job_read() {
 
 /// R28, a reorg back to Cancelling: while the cancel draft is unsent the
 /// listing is kept on the market again ([`queries::list_listings_kept_on_market`]),
-/// so its market bookkeeping starts over (a `Reported` left from the mined
-/// cancel would stop the jobs); with the cancel sent the bookkeeping stays.
+/// so the bookkeeping of a listing the market was told about starts over as
+/// Retrying, due now (a `Reported` left from the mined cancel would stop
+/// the jobs); with the cancel sent the bookkeeping stays. A listing the
+/// market was never told about stays untold: keep-listed takes only told
+/// ones, so a cancel in progress never publishes it for the first time.
 #[test]
 fn cancel_unmined_back_to_an_unsent_cancel_resets_its_market_status() {
     let f = fx(ListingState::Listed);
     let base = listing(&f);
     queries::insert_tx_draft(&f.conn, "cx", PROFILE, "shakedex_cancel", "00", "{}", "{}").unwrap();
+    let unmined = |market_status: Option<MarketStatus>| {
+        let row = ShakedexListing {
+            state: ListingState::CancelAwaitingFinalize,
+            cancel_draft_id: Some("cx".into()),
+            cancel_txid: Some(txid("c1")),
+            cancel_vout: Some(0),
+            market_status,
+            market_retry_at: market_status.map(|_| "2026-10-10T00:00:00Z".into()),
+            market_attempts: 3,
+            market_error: Some("told".into()),
+            publish: true,
+            ..base.clone()
+        };
+        f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
+        queries::insert_shakedex_listing(&f.conn, &row).unwrap();
+        assert_eq!(
+            queries::mark_listing_cancel_unmined(&f.conn, &f.id, &txid("c1")).unwrap(),
+            1
+        );
+        listing(&f)
+    };
+    f.conn
+        .execute(
+            "UPDATE wallet_tx_drafts SET status = 'signed' WHERE id = 'cx'",
+            [],
+        )
+        .unwrap();
+    let untold = unmined(None);
+    assert_eq!(
+        (untold.state, untold.market_status, untold.market_retry_at),
+        (ListingState::Cancelling, None, None),
+        "never told: stays untold"
+    );
     for (status, reset) in [
         ("draft", true),
         ("signed", true),
@@ -3819,7 +3855,11 @@ fn cancel_unmined_back_to_an_unsent_cancel_resets_its_market_status() {
             after.market_error,
         );
         if reset {
-            assert_eq!(book, (None, None, 0, None), "{status}");
+            assert_eq!(
+                book,
+                (Some(MarketStatus::Retrying), None, 0, None),
+                "{status}"
+            );
         } else {
             assert_eq!(
                 book,

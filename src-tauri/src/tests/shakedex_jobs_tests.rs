@@ -1317,10 +1317,10 @@ async fn cancelling_listing_is_kept_until_its_cancel_is_sent() {
     }
 }
 
-/// Fix round 1 (ruling 2026-10-10, option a): a reorg that takes the mined
+/// Fix round 1 (ruling 2026-10-10, option b): a reorg that takes the mined
 /// cancel off the chain while this device's cancel draft is unsent
 /// (`queries::mark_listing_cancel_unmined`) starts the bookkeeping over on a
-/// Cancelling listing. It is still buyable on chain, so keep-listed takes it
+/// Cancelling listing the market was told about: Retrying, due now. It is still buyable on chain, so keep-listed takes it
 /// like any kept listing: the market's copy is asked for first, and the
 /// market's "not listed" gets ours uploaded. The first upload stays Listed
 /// only. With the cancel sent, nothing is asked of the market.
@@ -1344,7 +1344,12 @@ async fn cancelling_listing_reset_by_a_reorg_is_kept() {
         );
         let l = listing(&f);
         assert_eq!(l.state, ListingState::Cancelling, "{status}");
-        assert_eq!(l.market_status.is_none(), kept, "{status}");
+        let expected = if kept {
+            (Some(MarketStatus::Retrying), None)
+        } else {
+            (Some(MarketStatus::Reported), Some(rfc3339(NOW)))
+        };
+        assert_eq!((l.market_status, l.market_retry_at), expected, "{status}");
         let mut s = market().await;
         let hits = usize::from(kept);
         let get = s
@@ -1373,4 +1378,33 @@ async fn cancelling_listing_reset_by_a_reorg_is_kept() {
             assert_eq!(l.market_status, Some(MarketStatus::Reported));
         }
     }
+}
+
+/// Fix round 2 (ruling 2026-10-10, option b): a Listed listing the market
+/// was never told about (the publish job's first upload had not run) whose
+/// cancel is signed but unsent is not published by either job: keep-listed
+/// takes only listings the market was told about, and the first upload is
+/// Listed only.
+#[tokio::test]
+async fn never_uploaded_listing_is_not_published_while_cancelling() {
+    let f = fx(ListingState::Listed, true);
+    queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
+    queries::update_tx_draft_status(&f.conn, "cd", "signed", None, None).unwrap();
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET state = 'cancelling', cancel_draft_id = 'cd'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(listing(&f).market_status, None);
+    let mut s = market().await;
+    let get = s.mock("GET", Matcher::Any).expect(0).create_async().await;
+    let post = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    for at in [NOW, NOW + 3_600, NOW + 86_400] {
+        publish(&f, &node(&f, TIP), &s, at).await;
+        keep(&f, &s, at).await;
+    }
+    get.assert_async().await;
+    post.assert_async().await;
+    assert_eq!(listing(&f).market_status, None);
 }

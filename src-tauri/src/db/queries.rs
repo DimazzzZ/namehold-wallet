@@ -3093,28 +3093,44 @@ pub fn mark_listing_cancel_mined(
 /// listing's own cancel draft is unsent ([`UNSENT_STATUSES`]: the mined
 /// cancel was another device's, or this one's before a send we never
 /// recorded), the listing is back among [`list_listings_kept_on_market`], so
-/// its market bookkeeping starts over (a `Reported` left from the mined
-/// cancel would stop the jobs); with the cancel sent it stays. Returns how
-/// many rows changed (0 or 1).
+/// the market bookkeeping of a listing the market was told about
+/// (`market_status` set) starts over as Retrying, due now (a `Reported` left
+/// from the mined cancel would stop the jobs); one the market was never told
+/// about stays untold (keep-listed takes only told listings, so a cancel in
+/// progress never publishes one for the first time). With the cancel sent it
+/// stays. Returns how many rows changed (0 or 1).
 pub fn mark_listing_cancel_unmined(
     conn: &rusqlite::Connection,
     id: &str,
     cancel_txid: &str,
 ) -> Result<usize, AppError> {
     let w = ListingWrite::CancelUnmined;
-    let unsent = cancel_draft_unsent_sql();
+    // SQLite evaluates every SET expression over the row as it was, so each
+    // CASE reads the old `market_status`.
+    let told = format!(
+        "({} AND market_status IS NOT NULL)",
+        cancel_draft_unsent_sql()
+    );
     let sql = format!(
         "UPDATE shakedex_listings
          SET state = ?2, cancel_vout = NULL, cancel_blocks_remaining = NULL,
              cancel_finalize_draft_id = NULL, updated_at = datetime('now'),
-             market_status = CASE WHEN {unsent} THEN NULL ELSE market_status END,
-             market_retry_at = CASE WHEN {unsent} THEN NULL ELSE market_retry_at END,
-             market_attempts = CASE WHEN {unsent} THEN 0 ELSE market_attempts END,
-             market_error = CASE WHEN {unsent} THEN NULL ELSE market_error END
+             market_status = CASE WHEN {told} THEN ?4 ELSE market_status END,
+             market_retry_at = CASE WHEN {told} THEN NULL ELSE market_retry_at END,
+             market_attempts = CASE WHEN {told} THEN 0 ELSE market_attempts END,
+             market_error = CASE WHEN {told} THEN NULL ELSE market_error END
          WHERE id = ?1 AND {} AND cancel_txid = ?3",
         w.source_sql()
     );
-    Ok(conn.execute(&sql, params![id, w.target(), listing_txid(cancel_txid)])?)
+    Ok(conn.execute(
+        &sql,
+        params![
+            id,
+            w.target(),
+            listing_txid(cancel_txid),
+            MarketStatus::Retrying
+        ],
+    )?)
 }
 
 /// R28: a CancelAwaitingFinalize listing becomes CancelFinalizing with the
