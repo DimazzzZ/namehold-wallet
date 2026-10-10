@@ -2454,54 +2454,82 @@ fn due(l: &queries::ShakedexListing, now: i64) -> bool {
     }
 }
 
-/// What a market job writes after a reply ([`after_reply`]).
+/// What a market job writes after an outcome ([`after_reply`]).
 struct MarketResult {
     status: queries::MarketStatus,
     retry_at: Option<String>,
     attempts: i64,
     error: Option<String>,
-    /// The market accepted an upload, or served our own copy back
-    /// (`market_accepted`); set by the caller, never by [`after_reply`].
+    /// The market holds our listing file (`market_accepted`): set from
+    /// [`Outcome::Taken`] only.
     accepted: bool,
 }
 
-/// What a market job writes after an answer, given the listing's attempts so
-/// far: success → `ok` (Listed/ReplacedReuploaded due again in an hour,
-/// Pending and Reported not due), the count back to 0; the market's own
-/// refusal → Refused with its words and **no** `retry_at` (never retried
+/// A market call's outcome, as the market jobs record it ([`after_reply`]).
+enum Outcome {
+    /// The market took what was sent, or serves our own copy back.
+    /// `holds_ours`: it now holds our listing file (an accepted upload, a
+    /// matched copy), which sets `market_accepted`.
+    Taken { holds_ours: bool },
+    /// The market's own refusal (its 4xx JSON), with its words.
+    Refused(String),
+    /// No verdict: no answer, or the market's "not seen yet", with why.
+    NoVerdict(String),
+}
+
+impl Outcome {
+    /// The outcome of `reply`; `holds_ours`: an acceptance means the market
+    /// now holds our listing file (an upload).
+    fn of<T>(reply: &MarketReply<T>, holds_ours: bool) -> Self {
+        match reply {
+            MarketReply::Accepted(_) => Self::Taken { holds_ours },
+            MarketReply::Refused { status, error } => {
+                Self::Refused(format!("{error} (HTTP {status})"))
+            }
+            MarketReply::NotSeenYet { status, error } => Self::NoVerdict(format!(
+                "the market has not seen it on chain yet: {error} (HTTP {status})"
+            )),
+            MarketReply::NoAnswer(why) => {
+                Self::NoVerdict(format!("no answer from the market: {why}"))
+            }
+        }
+    }
+}
+
+/// What a market job writes after `outcome`, given the listing's attempts
+/// so far: taken → `ok` (Listed/ReplacedReuploaded due again in an hour,
+/// Pending and Reported not due), the count back to 0, `market_accepted`
+/// set when the market now holds our file; the market's own refusal →
+/// Refused with its words and **no** `retry_at` (never retried
 /// automatically: only a write that changes what is sent starts it over);
-/// no answer, or the market's "not seen yet" (never a verdict on the
-/// listing: its state is the after-lock job's, from our own node) →
-/// Retrying with the reason, due again after [`retry_delay_secs`] (5 min
+/// no verdict (no answer, or the market's "not seen yet": never a verdict
+/// on the listing, whose state is the after-lock job's, from our own node)
+/// → Retrying with the reason, due again after [`retry_delay_secs`] (5 min
 /// doubling to the 6 h cap).
-fn after_reply<T>(
-    reply: &MarketReply<T>,
+fn after_reply(
+    outcome: Outcome,
     ok: queries::MarketStatus,
     attempts: i64,
     now: i64,
 ) -> MarketResult {
     use queries::MarketStatus as S;
-    let retrying = |why: String| backing_off(S::Retrying, attempts, why, now);
-    match reply {
-        MarketReply::Accepted(_) => MarketResult {
+    match outcome {
+        Outcome::Taken { holds_ours } => MarketResult {
             status: ok,
             retry_at: matches!(ok, S::Listed | S::ReplacedReuploaded)
                 .then(|| rfc3339(now.saturating_add(KEEP_LISTED_INTERVAL_SECS))),
             attempts: 0,
             error: None,
-            accepted: false,
+            accepted: holds_ours,
         },
-        MarketReply::Refused { status, error } => MarketResult {
+        Outcome::Refused(why) => MarketResult {
             status: S::Refused,
             retry_at: None,
             attempts,
-            error: Some(format!("{error} (HTTP {status})")),
+            error: Some(why),
             accepted: false,
         },
-        MarketReply::NotSeenYet { status, error } => retrying(format!(
-            "the market has not seen it on chain yet: {error} (HTTP {status})"
-        )),
-        MarketReply::NoAnswer(why) => retrying(format!("no answer from the market: {why}")),
+        Outcome::NoVerdict(why) => backing_off(S::Retrying, attempts, why, now),
     }
 }
 
@@ -2858,7 +2886,7 @@ async fn report(
     };
     let reply = market.refresh_status(&l.name, &what).await?;
     let mut result = after_reply(
-        &reply,
+        Outcome::of(&reply, false),
         queries::MarketStatus::Reported,
         l.market_attempts,
         now,
@@ -2901,7 +2929,7 @@ async fn announce(
         conn,
         l,
         &after_reply(
-            &reply,
+            Outcome::of(&reply, false),
             queries::MarketStatus::Pending,
             l.market_attempts,
             now,
@@ -2968,16 +2996,18 @@ async fn upload(
     ok: queries::MarketStatus,
     now: i64,
 ) -> Result<(), AppError> {
-    let reply = match market.upload_proof(file).await? {
-        MarketReply::Accepted(a) if a.name != listing.name => MarketReply::NoAnswer(format!(
-            "the market answered for '{}', not '{}'",
+    let outcome = match market.upload_proof(file).await? {
+        MarketReply::Accepted(a) if a.name != listing.name => Outcome::NoVerdict(format!(
+            "no answer from the market: the market answered for '{}', not '{}'",
             a.name, listing.name
         )),
-        other => other,
+        reply => Outcome::of(&reply, true),
     };
-    let mut result = after_reply(&reply, ok, listing.market_attempts, now);
-    result.accepted = matches!(reply, MarketReply::Accepted(_));
-    record(conn, listing, &result)
+    record(
+        conn,
+        listing,
+        &after_reply(outcome, ok, listing.market_attempts, now),
+    )
 }
 
 /// R25 (T6): about hourly, keep the profile's published Buy Now listings on
@@ -3122,22 +3152,24 @@ async fn keep_listed(
                     Some(S::ReplacedReuploaded) => S::ReplacedReuploaded,
                     _ => S::Listed,
                 };
-                let matched: MarketReply<()> = MarketReply::Accepted(());
-                let mut result = after_reply(&matched, ok, listing.market_attempts, now);
                 // The market serves our own copy: it holds our listing.
-                result.accepted = true;
-                record(conn, &listing, &result)
+                let matched = Outcome::Taken { holds_ours: true };
+                record(
+                    conn,
+                    &listing,
+                    &after_reply(matched, ok, listing.market_attempts, now),
+                )
             } else {
                 upload(conn, market, &file, &listing, replaced, now).await
             }
         }
         ProofCopy::NotListed => upload(conn, market, &file, &listing, S::Listed, now).await,
         ProofCopy::NoAnswer(why) => {
-            let reply: MarketReply<()> = MarketReply::NoAnswer(why);
+            let none = Outcome::NoVerdict(format!("no answer from the market: {why}"));
             record(
                 conn,
                 &listing,
-                &after_reply(&reply, S::Listed, listing.market_attempts, now),
+                &after_reply(none, S::Listed, listing.market_attempts, now),
             )
         }
     }
