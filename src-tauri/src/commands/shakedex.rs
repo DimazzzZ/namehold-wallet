@@ -1288,18 +1288,18 @@ async fn lock_on_node(
         .get_coin(lock_txid, lock_vout)
         .await?
         .ok_or_else(|| AppError::InvalidInput(words.spent.into()))?;
-    let Some(coin_at) = sell::CoinAt::of_coin(&coin) else {
-        return Err(could_not_check("the lock coin's address or covenant"));
-    };
-    if !(coin.txid.eq_ignore_ascii_case(lock_txid)
-        && coin.vout == lock_vout
-        && at.holds(coin_at, COV_FINALIZE, None))
-    {
-        return Err(AppError::Rpc(format!(
-            "node reported something else than this listing's lock at its lock outpoint: could \
-             not check {}",
-            words.checked
-        )));
+    match at.stored_coin(&coin, lock, COV_FINALIZE) {
+        Ok(_) => {}
+        Err(sell::StoredCoinRefusal::Unreadable) => {
+            return Err(could_not_check("the lock coin's address or covenant"));
+        }
+        Err(sell::StoredCoinRefusal::SomethingElse) => {
+            return Err(AppError::Rpc(format!(
+                "node reported something else than this listing's lock at its lock outpoint: \
+                 could not check {}",
+                words.checked
+            )));
+        }
     }
     if coin.mined_height()?.is_none() {
         return Err(AppError::InvalidInput(words.not_mined.into()));
@@ -2783,19 +2783,19 @@ pub(crate) async fn finalize_cancel(
         .get_coin(&cancel_txid, cancel_vout)
         .await?
         .ok_or_else(|| AppError::InvalidInput(CANCEL_TRANSFER_SPENT.into()))?;
-    let Some(coin_at) = sell::CoinAt::of_coin(&coin) else {
-        return Err(cancel_could_not_check(
-            "the cancel transfer's address or covenant",
-        ));
+    let coin_at = match at.stored_coin(&coin, (&cancel_txid, cancel_vout), COV_TRANSFER) {
+        Ok(coin_at) => coin_at,
+        Err(sell::StoredCoinRefusal::Unreadable) => {
+            return Err(cancel_could_not_check(
+                "the cancel transfer's address or covenant",
+            ));
+        }
+        Err(sell::StoredCoinRefusal::SomethingElse) => {
+            return Err(AppError::Rpc(
+                "node reported something else than this listing's cancel at its outpoint".into(),
+            ));
+        }
     };
-    if !(coin.txid.eq_ignore_ascii_case(&cancel_txid)
-        && coin.vout == cancel_vout
-        && at.holds(coin_at, COV_TRANSFER, None))
-    {
-        return Err(AppError::Rpc(
-            "node reported something else than this listing's cancel at its outpoint".into(),
-        ));
-    }
     if coin.mined_height()?.is_none() {
         return Err(AppError::InvalidInput("the cancel is not mined yet".into()));
     }
