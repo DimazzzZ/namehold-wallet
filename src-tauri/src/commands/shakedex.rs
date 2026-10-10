@@ -1260,8 +1260,8 @@ pub(crate) struct PreparedCancel {
     cancel_address: String,
     cancel_index: u32,
     current_price: cancel::CancelPrice,
-    /// R28 for a schedule: a cheaper stored step is still ahead at the MTP
-    /// (`cancel::still_buyable`).
+    /// R28 for a schedule: a reverse auction with a cheaper stored step
+    /// still ahead at the MTP (`cancel::still_buyable`).
     cheaper_ahead: bool,
 }
 
@@ -1468,16 +1468,17 @@ pub(crate) async fn prepare_cancel(
         },
     };
     // R28 for a schedule: a cheaper step still ahead is buyable once valid
-    // (any step ahead when none is valid yet).
+    // (any step ahead when none is valid yet). A reverse auction's only: a
+    // Buy Now's one step not valid yet becomes buyable at the same price.
     let cheaper_ahead = match on_node.mtp {
-        None => false,
-        Some(mtp) => {
+        Some(mtp) if listing.mode == ListingMode::ReverseAuction => {
             let below = match current_price {
                 cancel::CancelPrice::Step(price) => price,
                 _ => u64::MAX,
             };
             sell::steps_ahead(&steps, mtp, below)?.0 > 0
         }
+        _ => false,
     };
 
     // R21, R32: a lock restored by name reserves its cancel address

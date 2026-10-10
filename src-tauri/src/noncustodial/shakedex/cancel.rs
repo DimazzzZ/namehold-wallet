@@ -90,9 +90,9 @@ pub struct CancelRows<'a> {
     /// R23: the listing is published on LearnHNS Market (R28's market
     /// notice, [`CANCEL_MARKET_TOLD`]).
     pub published: bool,
-    /// A stored step not valid yet at the node's MTP is cheaper than the
-    /// current price (any step ahead when none is valid yet): a reverse
-    /// auction's schedule ([`still_buyable`]).
+    /// A reverse auction with a stored step not valid yet at the node's MTP
+    /// cheaper than the current price (any step ahead when none is valid
+    /// yet) ([`still_buyable`]); never a Buy Now.
     pub cheaper_ahead: bool,
 }
 

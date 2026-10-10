@@ -6949,7 +6949,8 @@ async fn cancel_of_a_lock_restored_by_name_reserves_its_cancel_address() {
 /// R28, R3: a listing with stored steps of which none
 /// is valid at the node's MTP says so in the prompt's "Current price" row;
 /// it is not "not known on this device", which only a lock restored by
-/// name (no stored steps) says.
+/// name (no stored steps) says. A Buy Now's "Until it is mined" row keeps
+/// the plain words: its one step is no cheaper step of a schedule.
 #[tokio::test]
 async fn cancel_prompt_says_when_no_step_is_valid_yet() {
     let mut l = listed_fixture().await;
@@ -6973,6 +6974,16 @@ async fn cancel_prompt_says_when_no_step_is_valid_yet() {
     let row = rows.iter().find(|r| r["label"] == "Current price").unwrap();
     assert_eq!(row["value"], CANCEL_PRICE_NONE_VALID_YET);
     assert_ne!(row["value"], CANCEL_PRICE_NOT_KNOWN);
+    // A Buy Now's one step becomes buyable at the same price: no cheaper
+    // step of a schedule (R28 for a schedule is a reverse auction's).
+    let until = rows
+        .iter()
+        .find(|r| r["label"] == "Until it is mined")
+        .unwrap()["value"]
+        .as_str()
+        .unwrap();
+    assert_eq!(until, CANCEL_STILL_BUYABLE);
+    assert!(!until.contains("of its schedule"), "{until}");
 }
 
 /// R28: the cancel's other node checks, each refused before anything is
