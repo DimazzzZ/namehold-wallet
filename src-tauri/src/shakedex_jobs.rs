@@ -2429,15 +2429,21 @@ pub const EXPIRY_REFRESH_MARGIN_SECS: i64 = 30 * 86_400;
 
 /// R25: the wait before try `attempts + 1` after `attempts` failures in a row.
 pub(crate) fn retry_delay_secs(attempts: i64) -> i64 {
-    let doublings = u32::try_from(attempts.saturating_sub(1).clamp(0, 16)).unwrap_or(16);
+    // Clamped: 2^16 base delays already pass the cap, and a shift past 63
+    // would overflow.
+    let doublings = attempts.saturating_sub(1).clamp(0, 16);
     RETRY_BASE_SECS
-        .saturating_mul(1 << doublings)
+        .saturating_mul(1_i64 << doublings)
         .min(RETRY_MAX_SECS)
 }
 
 /// `secs` (Unix) as `market_retry_at` stores it: RFC 3339, UTC, seconds.
 pub(crate) fn rfc3339(secs: i64) -> String {
     chrono::DateTime::from_timestamp(secs, 0)
+        // Only a time past chrono's range (year 262143) has no RFC 3339 form,
+        // and only a clock that is not real gives one: the epoch makes the
+        // action due at once, as `due` treats a time it cannot read
+        // (retrying early only costs a request; never due loses the listing).
         .unwrap_or_default()
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
