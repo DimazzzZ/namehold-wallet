@@ -105,28 +105,42 @@ fn transaction_commands_do_not_reach_into_the_shakedex_commands() {
 
 /// SECURITY.md, "The daemon never signs or broadcasts": the jobs that run in
 /// `namehold-syncd` (`shakedex_jobs.rs`, every step of `run_sync_steps` it
-/// adds) name no signing call and no key: no lock key derivation, no seed,
-/// no signer session, no step or plan signing.
+/// adds) name no signing call and no key material. The whole class is
+/// refused, case-insensitively: anything that signs (`sign_…`, a signer),
+/// any private key, seed or mnemonic, a master key, the unlocked session and
+/// the vault. A send is refused too, except the one purchase rebroadcast,
+/// which `may_broadcast` closes for the daemon (`Rebroadcast::Never`): that
+/// exact line, exactly once.
 #[test]
 fn shakedex_jobs_hold_no_signing_call() {
     let src = include_str!("../shakedex_jobs.rs");
     let forbidden = [
-        "sign_step",
-        "sign_plan",
-        "derive_lock_key",
-        "ExtendedPrivKey",
-        "SecretKey",
+        "sign_",
         "signer",
-        "seed_from_mnemonic",
-        "secure_wallet",
-        "sign_p2wsh_input",
+        "privkey",
+        "secretkey",
+        "seed",
+        "mnemonic",
+        ".master(",
+        "session",
+        "vault",
+        "sendrawtransaction",
+        "send_raw_transaction",
     ];
+    const REBROADCAST: &str = "match self.client.send_raw_transaction(signed).await {";
     let mut scanned = 0;
+    let mut rebroadcasts = 0;
     for line in code_lines(src) {
         scanned += 1;
+        if line.trim_end() == REBROADCAST {
+            rebroadcasts += 1;
+            continue;
+        }
+        let lower = line.to_lowercase();
         for f in forbidden {
-            assert!(!line.contains(f), "shakedex_jobs.rs names `{f}`: {line}");
+            assert!(!lower.contains(f), "shakedex_jobs.rs names `{f}`: {line}");
         }
     }
     assert!(scanned > 500, "only {scanned} lines scanned");
+    assert_eq!(rebroadcasts, 1, "the one guarded rebroadcast, exactly once");
 }
