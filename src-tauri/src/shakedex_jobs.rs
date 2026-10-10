@@ -2779,8 +2779,9 @@ pub async fn publish_listings_with_client(
         // `ListingWrite::market_reset_sql`, and the day-0 announce never
         // takes a Listed one).
         let first = l.market_status.is_none();
-        // Only a Listed one: a Cancelling listing of that set (its cancel
-        // not sent yet) is on its way off the market, not onto it.
+        // Only a Listed one: the FIRST upload puts a listing onto the
+        // market. Keeping it there (`keep_listed_with_client`) also covers a
+        // Cancelling one whose cancel is not sent yet.
         let listed = l.state == queries::ListingState::Listed;
         if first && listed && l.mode == queries::ListingMode::BuyNow && due(&l, now) {
             if let Err(e) = upload_current(conn, node, market, &l, now).await {
@@ -2907,8 +2908,10 @@ async fn upload(
 /// and Cancelling while the cancel is not sent (still buyable on chain;
 /// R24, R28: the jobs stop once it is sent) — that the market has taken or
 /// failed to take for want of an answer or of verified steps
-/// (`market_status` Listed, ReplacedReuploaded, Retrying, StepsUnverified)
-/// and that are due ([`due`]). The first upload is Listed only and
+/// (`market_status` Listed, ReplacedReuploaded, Retrying, StepsUnverified),
+/// plus a Cancelling one whose bookkeeping a reorg started over (unset,
+/// [`queries::mark_listing_cancel_unmined`]), and that are due ([`due`]).
+/// The first upload of an unset Listed listing is Listed only and
 /// [`publish_listings_with_client`]'s. Never a Refused one: it waits for a
 /// write that changes what is sent; only a Refused Listed listing's expiry
 /// is looked at, without a market call, and only once the stored
@@ -2956,6 +2959,16 @@ pub async fn keep_listed_with_client(
                 }
                 keep_listed(conn, node, market, &l, now).await
             }
+            // A Cancelling listing whose bookkeeping a reorg started over
+            // (`queries::mark_listing_cancel_unmined`, its cancel unsent):
+            // still buyable on chain, so checked like a kept one. The first
+            // upload of an unset Listed one is the publish job's.
+            None if !listed => {
+                if !due(&l, now) {
+                    continue;
+                }
+                keep_listed(conn, node, market, &l, now).await
+            }
             Some(S::Refused) if listed && expiry_near(&l, now) => {
                 refresh_refused(conn, node, &l, now).await
             }
@@ -2968,9 +2981,10 @@ pub async fn keep_listed_with_client(
     Ok(())
 }
 
-/// Whether Listed `l`'s stored `expires_at` is within
-/// [`EXPIRY_REFRESH_MARGIN_SECS`] of `now` (or not stored: [`market_copy`]
-/// reads the file's own). The refresh rule itself is [`market_copy`]'s.
+/// Whether kept `l`'s (Listed, or Cancelling with an unsent cancel) stored
+/// `expires_at` is within [`EXPIRY_REFRESH_MARGIN_SECS`] of `now` (or not
+/// stored: [`market_copy`] reads the file's own). The refresh rule itself
+/// is [`market_copy`]'s.
 fn expiry_near(l: &queries::ShakedexListing, now: i64) -> bool {
     l.expires_at
         .is_none_or(|e| e.saturating_sub(now) <= EXPIRY_REFRESH_MARGIN_SECS)
@@ -2993,7 +3007,8 @@ async fn refresh_refused(
     Ok(())
 }
 
-/// R25: one due check of Listed `l` (see [`keep_listed_with_client`]).
+/// R25: one due check of kept `l` (Listed, or Cancelling with an unsent
+/// cancel; see [`keep_listed_with_client`]).
 async fn keep_listed(
     conn: &rusqlite::Connection,
     node: &dyn NodeRpc,
@@ -3012,8 +3027,9 @@ async fn keep_listed(
         }
         MarketCopy::Ready { file, listing } => (file, listing),
     };
-    if listing.market_status.is_none() {
-        // The expiry was just refreshed: the market holds the old file.
+    if l.market_status.is_some() && listing.market_status.is_none() {
+        // The expiry was just refreshed (which starts the bookkeeping
+        // over): the market holds the old file.
         return upload(conn, market, &file, &listing, S::Listed, now).await;
     }
     match market.proof_copy(&listing.name).await? {

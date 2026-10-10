@@ -1316,3 +1316,61 @@ async fn cancelling_listing_is_kept_until_its_cancel_is_sent() {
         assert_eq!(n.call_count(), 0);
     }
 }
+
+/// Fix round 1 (ruling 2026-10-10, option a): a reorg that takes the mined
+/// cancel off the chain while this device's cancel draft is unsent
+/// (`queries::mark_listing_cancel_unmined`) starts the bookkeeping over on a
+/// Cancelling listing. It is still buyable on chain, so keep-listed takes it
+/// like any kept listing: the market's copy is asked for first, and the
+/// market's "not listed" gets ours uploaded. The first upload stays Listed
+/// only. With the cancel sent, nothing is asked of the market.
+#[tokio::test]
+async fn cancelling_listing_reset_by_a_reorg_is_kept() {
+    for (status, kept) in [("signed", true), ("broadcasted", false)] {
+        let f = listed_on_market(MarketStatus::Reported);
+        queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
+        queries::update_tx_draft_status(&f.conn, "cd", status, None, Some(&txid("c1"))).unwrap();
+        f.conn
+            .execute(
+                "UPDATE shakedex_listings SET state = 'cancel_awaiting_finalize',
+                 cancel_draft_id = 'cd', cancel_txid = ?1, cancel_vout = 0",
+                [txid("c1")],
+            )
+            .unwrap();
+        assert_eq!(
+            queries::mark_listing_cancel_unmined(&f.conn, &f.id, &txid("c1")).unwrap(),
+            1,
+            "{status}"
+        );
+        let l = listing(&f);
+        assert_eq!(l.state, ListingState::Cancelling, "{status}");
+        assert_eq!(l.market_status.is_none(), kept, "{status}");
+        let mut s = market().await;
+        let hits = usize::from(kept);
+        let get = s
+            .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+            .with_status(404)
+            .with_body(PROOF_NOT_FOUND)
+            .expect(hits)
+            .create_async()
+            .await;
+        let (m, seen) = upload_mock(&mut s, hits).await;
+        // The publish job's first upload is Listed only: it leaves it.
+        publish(&f, &node(&f, TIP), &s, NOW).await;
+        assert!(seen.lock().unwrap().is_empty(), "{status}");
+        keep(&f, &s, NOW).await;
+        get.assert_async().await;
+        m.assert_async().await;
+        let l = listing(&f);
+        if kept {
+            let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+            assert_eq!(sent, our_copy(&f));
+            assert_eq!(
+                (l.state, l.market_status),
+                (ListingState::Cancelling, Some(MarketStatus::Listed))
+            );
+        } else {
+            assert_eq!(l.market_status, Some(MarketStatus::Reported));
+        }
+    }
+}
