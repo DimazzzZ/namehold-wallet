@@ -107,6 +107,13 @@ pub(crate) fn push_test_answer(result: SecurePromptResult) {
     TEST_ANSWERS.with(|q| q.borrow_mut().push_back(result));
 }
 
+/// Drop every queued answer no prompt took (a test that expected no
+/// prompt), so it cannot answer a later prompt on this thread.
+#[cfg(test)]
+pub(crate) fn clear_test_answers() {
+    TEST_ANSWERS.with(|q| q.borrow_mut().clear());
+}
+
 // Test-only record of every request `prompt_secure` answered from the
 // queue, so a test can read the rows the window would have shown.
 #[cfg(test)]
