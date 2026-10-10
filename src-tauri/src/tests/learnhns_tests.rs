@@ -1,6 +1,10 @@
 use crate::market::learnhns::{
-    market_fee_is_published, name_from_listing_link, FeeInfo, LearnHnsClient,
+    market_fee_is_published, name_from_listing_link, FeeInfo, LearnHnsClient, ListingKind,
+    MarketReply, PendingListing, ProofCopy, StatusRecorded, StatusReport, UploadAccepted,
+    MARKET_MAINNET_ONLY,
 };
+use crate::noncustodial::network::Network;
+use crate::tests::shakedex_cmd_tests::LISTING_FILE;
 
 #[tokio::test]
 async fn lists_available_and_fetches_listing_file() {
@@ -227,4 +231,382 @@ fn market_fee_must_match_published() {
         address: Some("a".into()),
     };
     assert!(market_fee_is_published(u64::MAX, Some("a"), u64::MAX, &big));
+}
+
+// --- writes (R23, R25, R28): only the market's own JSON answer is a verdict ---
+//
+// No live reply of a write endpoint is recorded: recording one would publish
+// on the real market. The replies below copy the `jsonify` calls of the
+// LearnHNS Market source (MKT `shadstone/learnhns-market` @3d117361), field
+// for field; the line numbers are in shakedex-protocol.md §11.3.
+
+/// Every request body a mock saw, for asserting on what was sent.
+pub(crate) type Seen = std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>;
+
+/// `m` answering `status` with `reply`, recording each request's body.
+pub(crate) fn recording(
+    m: mockito::Mock,
+    status: usize,
+    reply: &'static str,
+) -> (mockito::Mock, Seen) {
+    let seen: Seen = Default::default();
+    let s2 = seen.clone();
+    let m = m
+        .with_status(status)
+        .with_header("content-type", "application/json")
+        .with_body_from_request(move |req| {
+            s2.lock().unwrap().push(req.body().unwrap().clone());
+            reply.as_bytes().to_vec()
+        });
+    (m, seen)
+}
+
+/// The file in multipart field `proof` of `body`, and its part headers.
+pub(crate) fn proof_part(body: &[u8]) -> (String, String) {
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    let at = text.find("name=\"proof\"").expect("a proof field");
+    let start = text[..at].rfind("\r\n").map_or(0, |i| i + 2);
+    let head_end = text[at..].find("\r\n\r\n").unwrap() + at;
+    let end = text[head_end + 4..].find("\r\n--").unwrap() + head_end + 4;
+    (
+        text[start..head_end].to_string(),
+        text[head_end + 4..end].to_string(),
+    )
+}
+
+/// MKT api.py `upload_proof`'s success reply (@3d117361, L2893–2899); no
+/// live upload was recorded (it would publish).
+pub(crate) const UPLOAD_ACCEPTED: &str = r#"{"cid":"bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku","name":"dexreviews","previousListingId":null,"replaced":false,"success":true}"#;
+/// MKT api.py `create_pending_listing`'s reply (@3d117361, L2139–2142); the
+/// `pending` object (`_pending_listing_payload`, L353–390) copies the live
+/// row recorded 2026-10-03 (`api_v2_pending-listings.json`, `pending[0]`):
+/// the same keys and the same `pending-submitted` action words, with this
+/// name, outpoint and no price or note.
+pub(crate) const PENDING_ACCEPTED: &str = r#"{"pending":{"actionRequired":true,"blocksUntilFinalize":null,"buyable":false,"chainHeight":null,"createdAt":"2026-10-10T05:39:26.279069","expectedPrice":null,"id":"pending-504","listingMode":"fixed-price","lockScriptAddr":"hs1qx3lyaqwuhg7h6ut5rc9m89gna3jqce4ka07nvjmzljkq0696t2gqh449r6","name":"dexreviews","nameState":null,"network":"main","nextAction":"Check the transfer in Bob","nextActionDetail":"The channel has the pending record but cannot yet verify an active Shakedex transfer for this name.","pending":true,"pendingReason":null,"sellerNote":"","status":"pending-submitted","transferHeight":null,"transferOutputIdx":0,"transferTxHash":"abababababababababababababababababababababababababababababababab","updatedAt":"2026-10-10T05:39:26.279074","url":"/listing/dexreviews"},"success":true}"#;
+/// MKT `_mark_listing_cancelled_if_spent`'s reply (@3d117361, L873–879).
+pub(crate) const CANCEL_RECORDED: &str = r#"{"cancelTxHash":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","cancelled":true,"cancelledAt":"2026-10-10T06:00:00.000000","status":"cancelled","url":"/listing/dexreviews"}"#;
+/// MKT `_mark_listing_sold_if_spent`'s reply (@3d117361, L729–737).
+pub(crate) const SALE_RECORDED: &str = r#"{"saleTxHash":"b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1","sold":true,"soldAt":"2026-10-10T06:00:00.000000","status":"sold","transferStartTxHash":"b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1","url":"/listing/dexreviews","verificationSource":"hsd"}"#;
+/// MKT `refresh_listing_status`'s 404 when it has no active or sale-pending
+/// listing of the name (@3d117361, L2462/L2475).
+pub(crate) const NO_LISTING: &str = r#"{"error":"Listing not found"}"#;
+/// MKT main.py `listing_proof`'s 404 (@3d117361, L512–513).
+pub(crate) const PROOF_NOT_FOUND: &str = r#"{"error":"Active listing not found"}"#;
+
+fn mainnet(s: &mockito::ServerGuard) -> LearnHnsClient {
+    LearnHnsClient::with_base_url(&s.url())
+        .unwrap()
+        .for_network(Network::Main)
+}
+
+fn pending() -> PendingListing<'static> {
+    PendingListing {
+        name: "dexreviews",
+        transfer_txid: "abababababababababababababababababababababababababababababababab",
+        transfer_vout: 0,
+        lock_address: "hs1qx3lyaqwuhg7h6ut5rc9m89gna3jqce4ka07nvjmzljkq0696t2gqh449r6",
+        kind: ListingKind::FixedPrice,
+    }
+}
+
+/// R23, carry 5: every write is refused, before any HTTP, unless the client
+/// was told the profile's network and it is mainnet — testnet, regtest,
+/// simnet and an unknown network alike.
+#[tokio::test]
+async fn no_http_off_mainnet() {
+    let mut s = mockito::Server::new_async().await;
+    let any = s
+        .mock("POST", mockito::Matcher::Any)
+        .expect(0)
+        .create_async()
+        .await;
+    let cancel = StatusReport::Cancelled {
+        cancel_txid: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    };
+    for net in [
+        Some(Network::Testnet),
+        Some(Network::Regtest),
+        Some(Network::Simnet),
+        None,
+    ] {
+        let base = LearnHnsClient::with_base_url(&s.url()).unwrap();
+        let c = match net {
+            Some(n) => base.for_network(n),
+            None => base,
+        };
+        let errs = [
+            c.upload_proof(LISTING_FILE).await.err(),
+            c.post_pending_listing(&pending()).await.err(),
+            c.refresh_status("dexreviews", &cancel).await.err(),
+        ];
+        for e in errs {
+            let e = e.expect("refused off mainnet").to_string();
+            assert!(e.contains(MARKET_MAINNET_ONLY), "{net:?}: {e}");
+        }
+    }
+    any.assert_async().await;
+}
+
+/// R23: the upload is `POST /api/upload-proof`, multipart, the listing file
+/// as written in field `proof` (filename `proof.json`, JSON), and the
+/// market's 201 reads as accepted; its own JSON refusal as refused, with its
+/// words; a proxy's HTML page, a 5xx or a 2xx not in its shape as no answer.
+#[tokio::test]
+async fn upload_shape() {
+    let mut s = mockito::Server::new_async().await;
+    let (m, seen) = recording(
+        s.mock("POST", "/api/upload-proof").match_header(
+            "content-type",
+            mockito::Matcher::Regex("^multipart/form-data; boundary=".into()),
+        ),
+        201,
+        UPLOAD_ACCEPTED,
+    );
+    let _m = m.create_async().await;
+    let c = mainnet(&s);
+    match c.upload_proof(LISTING_FILE).await.unwrap() {
+        MarketReply::Accepted(UploadAccepted { name, replaced }) => {
+            assert_eq!((name.as_str(), replaced), ("dexreviews", false))
+        }
+        other => panic!("{other:?}"),
+    }
+    let bodies = seen.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 1);
+    let (head, file) = proof_part(&bodies[0]);
+    assert!(
+        head.contains(r#"form-data; name="proof"; filename="proof.json""#),
+        "{head}"
+    );
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("content-type: application/json"),
+        "{head}"
+    );
+    assert_eq!(file, LISTING_FILE, "the file as written, byte for byte");
+
+    for (status, body, want) in [
+        (
+            400,
+            r#"{"error":"Fixed-price listings must contain exactly one proof entry"}"#,
+            "refused",
+        ),
+        (
+            409,
+            r#"{"error":"An active listing for dexreviews already exists. Cancel it or wait for it to expire before uploading a different listing proof."}"#,
+            "refused",
+        ),
+        (
+            502,
+            "<html><body>Application failed to respond</body></html>",
+            "none",
+        ),
+        (
+            429,
+            "<!doctype html><title>429 Too Many Requests</title>",
+            "none",
+        ),
+        (500, r#"{"error":"Failed to pin to IPFS: timeout"}"#, "none"),
+        (201, r#"{"success":false}"#, "none"),
+        (201, "not json", "none"),
+    ] {
+        let mut s = mockito::Server::new_async().await;
+        let _m = s
+            .mock("POST", "/api/upload-proof")
+            .with_status(status)
+            .with_body(body)
+            .create_async()
+            .await;
+        let r = mainnet(&s).upload_proof(LISTING_FILE).await.unwrap();
+        match (want, &r) {
+            ("refused", MarketReply::Refused { status: got, error }) => {
+                assert_eq!(*got as usize, status);
+                assert!(body.contains(error.as_str()), "{error}");
+            }
+            ("none", MarketReply::NoAnswer(_)) => {}
+            _ => panic!("{status} {body}: {r:?}"),
+        }
+    }
+}
+
+/// R23 day 0: `POST /api/v2/pending-listings`, JSON with the name, network
+/// `main`, the lock TRANSFER outpoint, the lock address and the mode; no
+/// price (chosen at Finalize & sign) and no note.
+#[tokio::test]
+async fn pending_listing_shape() {
+    let mut s = mockito::Server::new_async().await;
+    let (m, seen) = recording(
+        s.mock("POST", "/api/v2/pending-listings")
+            .match_header("content-type", "application/json"),
+        201,
+        PENDING_ACCEPTED,
+    );
+    let _m = m.create_async().await;
+    assert!(matches!(
+        mainnet(&s).post_pending_listing(&pending()).await.unwrap(),
+        MarketReply::Accepted(())
+    ));
+    let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
+    assert_eq!(
+        sent,
+        serde_json::json!({
+            "name": "dexreviews",
+            "network": "main",
+            "transferTxHash": "abababababababababababababababababababababababababababababababab",
+            "transferOutputIdx": 0,
+            "lockScriptAddr": "hs1qx3lyaqwuhg7h6ut5rc9m89gna3jqce4ka07nvjmzljkq0696t2gqh449r6",
+            "listingMode": "fixed-price"
+        })
+    );
+    let reverse = PendingListing {
+        kind: ListingKind::ReverseAuction,
+        ..pending()
+    };
+    let _ = mainnet(&s).post_pending_listing(&reverse).await.unwrap();
+    let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[1]).unwrap();
+    assert_eq!(sent["listingMode"], "reverse-auction");
+
+    let mut s = mockito::Server::new_async().await;
+    let _m = s
+        .mock("POST", "/api/v2/pending-listings")
+        .with_status(409)
+        .with_body(r#"{"error":"A pending listing with that transferTxHash already exists"}"#)
+        .create_async()
+        .await;
+    assert!(matches!(
+        mainnet(&s).post_pending_listing(&pending()).await.unwrap(),
+        MarketReply::Refused { status: 409, .. }
+    ));
+}
+
+/// R28: `POST /api/v2/listings/<name>/refresh-status` with
+/// `{outcome: "cancelled", cancelTxHash}` or `{saleTxHash}`; the market's
+/// record reads as recorded, its "Listing not found" as nothing listed, its
+/// other JSON refusals as refused, anything else as no answer.
+#[tokio::test]
+async fn refresh_status_shape() {
+    let cancel_txid = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+    let sale_txid = "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1";
+    let mut s = mockito::Server::new_async().await;
+    let (m, seen) = recording(
+        s.mock("POST", "/api/v2/listings/dexreviews/refresh-status")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({"outcome": "cancelled"}),
+            )),
+        200,
+        CANCEL_RECORDED,
+    );
+    let _m = m.create_async().await;
+    let c = mainnet(&s);
+    assert!(matches!(
+        c.refresh_status("dexreviews", &StatusReport::Cancelled { cancel_txid })
+            .await
+            .unwrap(),
+        MarketReply::Accepted(StatusRecorded::Recorded)
+    ));
+    let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
+    assert_eq!(
+        sent,
+        serde_json::json!({"outcome": "cancelled", "cancelTxHash": cancel_txid})
+    );
+
+    let mut s = mockito::Server::new_async().await;
+    let (m, seen) = recording(
+        s.mock("POST", "/api/v2/listings/dexreviews/refresh-status"),
+        200,
+        SALE_RECORDED,
+    );
+    let _m = m.create_async().await;
+    assert!(matches!(
+        mainnet(&s)
+            .refresh_status("dexreviews", &StatusReport::Sold { sale_txid })
+            .await
+            .unwrap(),
+        MarketReply::Accepted(StatusRecorded::Recorded)
+    ));
+    let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
+    assert_eq!(sent, serde_json::json!({"saleTxHash": sale_txid}));
+
+    for (status, body, want) in [
+        (404, NO_LISTING, "nothing"),
+        (404, "<!doctype html><h1>Not found</h1>", "none"),
+        (
+            400,
+            r#"{"error":"Transaction does not spend this listing's Shakedex locking coin","url":"/listing/dexreviews"}"#,
+            "refused",
+        ),
+        (503, r#"{"error":"Could not reach HSD node"}"#, "none"),
+        (200, r#"{"sold":false,"status":"active"}"#, "none"),
+    ] {
+        let mut s = mockito::Server::new_async().await;
+        let _m = s
+            .mock("POST", "/api/v2/listings/dexreviews/refresh-status")
+            .with_status(status)
+            .with_body(body)
+            .create_async()
+            .await;
+        let r = mainnet(&s)
+            .refresh_status("dexreviews", &StatusReport::Cancelled { cancel_txid })
+            .await
+            .unwrap();
+        match (want, &r) {
+            ("nothing", MarketReply::Accepted(StatusRecorded::NoListing)) => {}
+            ("refused", MarketReply::Refused { .. }) => {}
+            ("none", MarketReply::NoAnswer(_)) => {}
+            _ => panic!("{status} {body}: {r:?}"),
+        }
+    }
+}
+
+/// R25: the market's copy, its own "not listed" (a JSON 404) and no answer
+/// (an HTML 404, a 5xx, a body that is not JSON) are three answers.
+#[tokio::test]
+async fn proof_copy_tells_not_listed_from_no_answer() {
+    for (status, body, want) in [
+        (200, LISTING_FILE, "copy"),
+        (404, PROOF_NOT_FOUND, "not listed"),
+        (404, "<!doctype html><h1>Not found</h1>", "none"),
+        (502, "<html>bad gateway</html>", "none"),
+        (200, "<html>maintenance</html>", "none"),
+    ] {
+        let mut s = mockito::Server::new_async().await;
+        let _m = s
+            .mock("GET", "/listing/dexreviews/proof.json")
+            .with_status(status)
+            .with_body(body)
+            .create_async()
+            .await;
+        let r = mainnet(&s).proof_copy("dexreviews").await.unwrap();
+        match (want, &r) {
+            ("copy", ProofCopy::Copy(text)) => assert_eq!(text, LISTING_FILE),
+            ("not listed", ProofCopy::NotListed) => {}
+            ("none", ProofCopy::NoAnswer(_)) => {}
+            _ => panic!("{status} {body}: {r:?}"),
+        }
+    }
+}
+
+/// A market that cannot be reached (connection refused) gave no answer: each
+/// write and the copy read say so, and none is our refusal or theirs.
+#[tokio::test]
+async fn unreachable_market_is_no_answer() {
+    // Bind a port, then free it: nothing listens there.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let c = LearnHnsClient::with_base_url(&format!("http://127.0.0.1:{port}"))
+        .unwrap()
+        .for_network(Network::Main);
+    let cancel = StatusReport::Cancelled {
+        cancel_txid: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    };
+    let upload = c.upload_proof(LISTING_FILE).await.unwrap();
+    assert!(matches!(upload, MarketReply::NoAnswer(_)), "{upload:?}");
+    let posted = c.post_pending_listing(&pending()).await.unwrap();
+    assert!(matches!(posted, MarketReply::NoAnswer(_)), "{posted:?}");
+    let reported = c.refresh_status("dexreviews", &cancel).await.unwrap();
+    assert!(matches!(reported, MarketReply::NoAnswer(_)), "{reported:?}");
+    let copy = c.proof_copy("dexreviews").await.unwrap();
+    assert!(matches!(copy, ProofCopy::NoAnswer(_)), "{copy:?}");
 }
