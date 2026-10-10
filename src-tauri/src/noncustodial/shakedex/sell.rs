@@ -88,7 +88,9 @@ pub const REVERSE_MIN_INTERVAL_SECS: u64 = 900;
 /// money supply, a floor below the dust limit, prices that would not fall
 /// strictly (fewer doos between start and floor than steps after the
 /// first), a lock time past R3's 40 bits. Prices typed by a person go
-/// through [`parse_step_price`] first.
+/// through [`parse_step_price`] first. The 15 minutes are nominal, between
+/// the signed lock times: R3 rounds each down to 512 s, so consecutive
+/// steps may become buyable 512 to 1024 s apart.
 pub fn reverse_schedule(
     start_price: u64,
     floor: u64,
@@ -136,9 +138,13 @@ pub fn reverse_schedule(
     }
     (0..u64::from(steps))
         .map(|i| {
-            // span · i / (n − 1) ≤ span: always fits u64.
-            let drop = u64::try_from(u128::from(span) * u128::from(i) / u128::from(after_first))
-                .map_err(|_| bad("price arithmetic overflow".into()))?;
+            // span · i / (n − 1) ≤ span: always fits u64. Checked anyway,
+            // so no order of the refusals above can make it panic.
+            let drop = u128::from(span)
+                .checked_mul(u128::from(i))
+                .and_then(|x| x.checked_div(u128::from(after_first)))
+                .and_then(|d| u64::try_from(d).ok())
+                .ok_or_else(|| bad("price arithmetic out of range".into()))?;
             let lock_time = interval_secs
                 .checked_mul(i)
                 .and_then(|d| start_lock_time.checked_add(d))
@@ -582,9 +588,11 @@ pub fn current_step_price(steps: &[StoredStep], mtp: u64) -> Result<Option<u64>,
     Ok(current_step(steps, mtp)?.map(|s| s.price))
 }
 
-/// R26 on a schedule: of `steps`, the ones not valid yet at `mtp` priced
-/// below `price` (they still become current as they become valid) and at
-/// or above it (moot: a cheaper step is valid before them).
+/// R26 on a schedule: of `steps` not valid yet at `mtp`, those priced below
+/// `price` and those at or above it (moot: a step at least as cheap is
+/// valid before them). With our own falling schedule the ones below become
+/// current in turn; an imported file's steps may come in any order, so some
+/// of them may be moot too.
 pub fn steps_ahead(steps: &[StoredStep], mtp: u64, price: u64) -> Result<(usize, usize), AppError> {
     let encoded = encoded_stored(steps)?;
     let ahead = encoded.iter().filter(|(_, enc)| !is_valid_at(*enc, mtp));
@@ -2356,6 +2364,15 @@ mod tests {
             .expect_err("40 bits")
             .to_string();
         assert!(e.contains("lock time"), "{e}");
+        // An interval so long that the step times overflow u64: refused,
+        // never wrapped round to an early time (two steps: the second's
+        // addition alone overflows).
+        for n in [2, 3] {
+            let e = reverse_schedule(5_000_000, 3_000_000, n, u64::MAX, start)
+                .expect_err("overflow")
+                .to_string();
+            assert!(e.contains("lock time"), "{n}: {e}");
+        }
     }
 
     /// R3, R26: the current stored step is the cheapest valid at the MTP;
