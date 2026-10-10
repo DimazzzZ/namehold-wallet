@@ -321,6 +321,9 @@ pub struct CancelFinalizeDeadline {
     pub cancel_txid: String,
 }
 
+/// A cancel reorged back to Cancelling and mined again with the same txid
+/// keeps its key, so it reminds again only if a scan ran while it was out of
+/// the ready list (which drops the key from the persisted state).
 fn cancel_finalize_key(d: &CancelFinalizeDeadline) -> String {
     format!(
         "cancel_finalize:{}:{}:{}",

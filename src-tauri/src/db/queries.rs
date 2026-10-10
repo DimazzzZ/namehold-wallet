@@ -3289,6 +3289,7 @@ pub fn set_cancel_blocks_remaining(
 /// be sent now, across profiles (the `cancel_finalize` reminder, R14's
 /// pattern): its lockup over at the last sync and no FINALIZE draft of it
 /// that may have reached the chain.
+///
 /// A `failed` or `dropped` FINALIZE draft counts as not sent here, unlike the
 /// sibling [`list_listings_ready_to_finalize`] (whose draft is the one it
 /// waits to be sent): that draft will never land, so a new FINALIZE is needed
