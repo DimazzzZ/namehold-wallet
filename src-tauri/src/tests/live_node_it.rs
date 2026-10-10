@@ -7325,6 +7325,193 @@ async fn shakedex_cli_purchase_beats_our_cancel() {
     );
 }
 
+/// R28 with R22's reorg rule on hsd, the shakedex CLI the buyer: our cancel
+/// is mined and the listing awaits its finalize; a reorg then replaces the
+/// cancel's block with one holding the CLI's purchase of the same lock coin.
+/// The cancel's block is taken out with `invalidateblock` (which empties the
+/// mempool, so the cancel is in no block and no mempool), the CLI fills the
+/// exported file into a block of its own and one more block makes that chain
+/// the longer one before `reconsiderblock` clears the invalid mark. With the
+/// draft tracker still calling the cancel `confirmed`, the next sync makes
+/// the listing Sold by the purchase, which paid our payment address the
+/// price, and the cancel's coins are free again.
+#[tokio::test]
+async fn shakedex_purchase_replacing_our_mined_cancel_is_sold() {
+    let Some((url, key, cli)) =
+        shakedex_env("shakedex_purchase_replacing_our_mined_cancel_is_sold")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id, s) = listed_on_chain(&url, &key, "nhrepl", "3").await;
+    let pay = s.payment_address.clone().expect("payment address");
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+    let file = exported_file(&app, &id);
+    fund_the_cli_wallet(&cl, &key, &addr).await;
+    let cancel = cancel_signed(&app, &id, 1).await;
+    let held_by_cancel = |app: &tauri::App<tauri::test::MockRuntime>| -> i64 {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        c.query_row(
+            "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = ?1",
+            [&cancel.id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let reserved: Vec<(String, u32)> = {
+        let state = app.state::<AppState>();
+        let c = state.db.lock().unwrap();
+        let mut st = c
+            .prepare("SELECT txid, vout FROM tracked_utxos WHERE reserved_by_draft_id = ?1")
+            .unwrap();
+        st.query_map([&cancel.id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    };
+    let reserved: Vec<(String, u32)> = reserved
+        .into_iter()
+        .filter(|(t, v)| !(t.eq_ignore_ascii_case(&lock_txid) && *v == lock_vout))
+        .collect();
+    assert!(
+        !reserved.is_empty(),
+        "the cancel holds coins of ours for its fee"
+    );
+
+    // Our cancel mined, as the app sees it: broadcast, one block, the
+    // tracker and a sync. Unlike `settle`, nothing releases the draft's
+    // reservations by hand: a confirmed draft keeps them.
+    let bc = broadcast_tx_draft(app.state(), cancel.id.clone())
+        .await
+        .expect("broadcast");
+    assert_eq!(bc.status, "broadcasted");
+    wait_until_node_has(&cl, &bc.txid).await;
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    refresh_tx_confirmations(app.state(), None)
+        .await
+        .expect("refresh confirmations");
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    assert_eq!(
+        listing_state(&app, &id),
+        ListingState::CancelAwaitingFinalize
+    );
+    assert_eq!(draft_status(&app, &cancel.id).status, "confirmed");
+    assert!(held_by_cancel(&app) > 0, "the mined cancel keeps its coins");
+    let cancel_height = cl.get_tx_by_hash(&bc.txid).await.expect("tx")["height"]
+        .as_i64()
+        .unwrap_or(-1);
+    assert!(cancel_height > 0, "the cancel is mined");
+    assert_eq!(name_owner(&cl, &name).await, (bc.txid.clone(), 0));
+
+    // The reorg: the cancel's block taken out (hsd's invalidateblock
+    // empties the mempool), the CLI's purchase mined in its place, and one
+    // block more so that chain is the longer one.
+    let block = cl.get_block_hash(cancel_height).await.expect("blockhash");
+    cl.invalidate_block(&block).await.expect("invalidate");
+    assert!(
+        cl.get_tx_by_hash(&bc.txid).await.expect("lookup").is_null(),
+        "the cancel is in no block and no mempool"
+    );
+    assert!(
+        cl.get_coin(&lock_txid, lock_vout)
+            .await
+            .expect("coin")
+            .is_some(),
+        "the lock coin is back"
+    );
+    cli.fill(&CliListing::new(file));
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    // Only clears the invalid mark (`chain.removeInvalid`, no reorg); the
+    // chain holding the purchase is longer anyway.
+    cl.reconsider_block(&block).await.expect("reconsider");
+    assert_ne!(
+        cl.get_block_hash(cancel_height).await.expect("blockhash"),
+        block,
+        "the chain ends without the cancel's block"
+    );
+
+    let (fill_txid, fill_vout) = name_owner(&cl, &name).await;
+    assert_ne!(fill_txid, bc.txid, "the cancel no longer owns the name");
+    assert_ne!(fill_txid, lock_txid, "the name moved out of the lock");
+    assert_spends_lock(&cl, &fill_txid, (&lock_txid, lock_vout)).await;
+    let t = cl
+        .get_coin(&fill_txid, fill_vout)
+        .await
+        .expect("coin")
+        .expect("the purchase's TRANSFER");
+    assert_eq!(
+        t.covenant.as_ref().expect("covenant").kind,
+        crate::noncustodial::sync::COV_TRANSFER
+    );
+    assert!(t.mined_height().unwrap().is_some(), "the purchase is mined");
+    assert!(
+        cl.get_tx_by_hash(&bc.txid).await.expect("lookup").is_null(),
+        "the cancel is in no block and no mempool"
+    );
+    assert_eq!(
+        paid_to(&cl, &fill_txid, &pay).await,
+        3_000_000,
+        "the price was paid to us"
+    );
+
+    // The tracker is not run: the draft still says `confirmed` when the
+    // listing job judges the replaced cancel.
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    assert_eq!(draft_status(&app, &cancel.id).status, "confirmed");
+    listing_jobs(&app, &cl).await;
+    let l = listing_row(&app, &id);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::Sold, Some(fill_txid.as_str()))
+    );
+    assert_eq!(
+        (
+            l.cancel_finalize_draft_id.as_deref(),
+            l.cancel_blocks_remaining
+        ),
+        (None, None),
+        "nothing of the cancel's finalize is left"
+    );
+    assert_eq!(held_by_cancel(&app), 0, "the cancel's coins are free again");
+    for (t, v) in &reserved {
+        let (spent_by, held_by): (Option<String>, Option<String>) = {
+            let state = app.state::<AppState>();
+            let c = state.db.lock().unwrap();
+            c.query_row(
+                "SELECT spent_by_txid, reserved_by_draft_id FROM tracked_utxos
+                 WHERE wallet_profile_id = ?1 AND txid = ?2 AND vout = ?3",
+                params![PROFILE, t, v],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("the coin is still tracked")
+        };
+        assert_eq!(
+            (spent_by, held_by),
+            (None, None),
+            "{t}:{v} is unspent and held by nothing"
+        );
+        assert!(
+            cl.get_coin(t, *v).await.expect("coin").is_some(),
+            "hsd still has {t}:{v} as a coin"
+        );
+    }
+    let d = draft_status(&app, &cancel.id);
+    assert!(
+        !db::queries::draft_alive(&d.status),
+        "the cancel can never land: {}",
+        d.status
+    );
+    assert_eq!(
+        d.error_message.as_deref(),
+        Some(crate::noncustodial::shakedex::cancel::CANCEL_LOST_TO_PURCHASE),
+        "the listing job released the replaced cancel"
+    );
+}
+
 /// R26 on hsd, the shakedex CLI the buyer: a Listed Buy Now at 5 HNS is
 /// lowered to 3 HNS; the exported listing file carries both steps, the CLI
 /// fills the cheapest step valid at the MTP (R3's current step, its
