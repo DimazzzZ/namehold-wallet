@@ -371,7 +371,8 @@ async fn no_http_off_mainnet() {
 /// as written in field `proof` (filename `<name>-<lockTxHash>.json`, JSON),
 /// and the market's 201 reads as accepted; its own JSON refusal as refused,
 /// with its words; its chain-lag replies as not seen yet; a proxy's HTML
-/// page, a 5xx or a reply not in its shape as no answer.
+/// page, a redirect, a 5xx, an oversized reply or a reply not in its shape
+/// as no answer.
 #[tokio::test]
 async fn upload_shape() {
     let mut s = mockito::Server::new_async().await;
@@ -431,6 +432,9 @@ async fn upload_shape() {
         (500, r#"{"error":"Failed to pin to IPFS: timeout"}"#, "none"),
         (201, r#"{"success":false}"#, "none"),
         (201, "not json", "none"),
+        (400, r#"{"message":"bad request"}"#, "none"),
+        (201, r#"{"success":true,"replaced":false}"#, "none"),
+        (201, r#"{"success":true,"name":"dexreviews"}"#, "none"),
         (404, COIN_NOT_SEEN, "not seen"),
         (404, NAME_NOT_SEEN, "not seen"),
         (409, OWNER_NOT_SEEN, "not seen"),
@@ -438,6 +442,13 @@ async fn upload_shape() {
         (400, NAME_NOT_SEEN, "refused"),
     ]
     .map(|(st, b, w)| (st, b.to_string(), w))
+    .into_iter()
+    // A reply over the 64 KiB cap is not read, whatever it says.
+    .chain([(
+        400,
+        format!(r#"{{"error":"{}"}}"#, "x".repeat(70 * 1024)),
+        "none",
+    )])
     {
         let mut s = mockito::Server::new_async().await;
         let _m = s
@@ -460,6 +471,19 @@ async fn upload_shape() {
             _ => panic!("{status} {body}: {r:?}"),
         }
     }
+
+    // A redirect is not followed and is no answer, even toward the market.
+    let mut s = mockito::Server::new_async().await;
+    let target = s.mock("POST", "/elsewhere").expect(0).create_async().await;
+    let _m = s
+        .mock("POST", "/api/upload-proof")
+        .with_status(302)
+        .with_header("location", &format!("{}/elsewhere", s.url()))
+        .create_async()
+        .await;
+    let r = mainnet(&s).upload_proof(LISTING_FILE).await.unwrap();
+    assert!(matches!(r, MarketReply::NoAnswer(_)), "{r:?}");
+    target.assert_async().await;
 }
 
 /// R23: a file the client cannot name (not a mainnet listing file) is our
