@@ -1411,6 +1411,62 @@ async fn refused_auction_is_tried_again_when_its_step_moves() {
     assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
 }
 
+/// R25 with deviation 5 (T8): a moved step not taken marks the market's
+/// differing copy as our own earlier one only when the market took this
+/// listing before (`market_accepted`). Here it never did (step 2 refused),
+/// so after step 3's upload got no answer, a differing copy — step 2, which
+/// the market refused from us — is someone else's: ReplacedReuploaded.
+#[tokio::test]
+async fn never_taken_auction_does_not_claim_the_markets_copy() {
+    let f = fx(ListingState::Listed, true);
+    let steps = as_schedule(&f, &schedule());
+    let mut s = market().await;
+    let _refuse = s
+        .mock("POST", "/api/upload-proof")
+        .with_status(409)
+        .with_body(r#"{"error":"An active listing for dexjobs already exists."}"#)
+        .expect(1)
+        .create_async()
+        .await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Refused));
+    let theirs = listing_file_market_copy_at(&f, 2);
+
+    let (mtp, later) = moved();
+    let mut s = market().await;
+    let _down = s
+        .mock("POST", "/api/upload-proof")
+        .with_status(502)
+        .with_body("<html>Bad gateway</html>")
+        .expect(1)
+        .create_async()
+        .await;
+    advance(&f, &node_at(&f, TIP, mtp), &s, later).await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_changed, l.market_accepted),
+        (Some(MarketStatus::Retrying), false, false)
+    );
+
+    let retry = later + crate::shakedex_jobs::retry_delay_secs(1);
+    let mut s = market().await;
+    let _get = copy_mock(&mut s, theirs, 1).await;
+    let (m, seen) = upload_mock(&mut s, 1).await;
+    keep_listed_with_client(&f.conn, &node_at(&f, TIP, mtp), &client(&s), PROFILE, retry)
+        .await
+        .unwrap();
+    m.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        ListingFile::parse(&sent, NET).unwrap().steps,
+        vec![steps[3].clone()]
+    );
+    assert_eq!(
+        listing(&f).market_status,
+        Some(MarketStatus::ReplacedReuploaded)
+    );
+}
+
 /// Deviation 7 (T8): the advance job takes reverse auctions only — a Buy
 /// Now (its current step moves only by Lower price, whose write already
 /// makes it due) is not looked at, even with no step recorded as sent; and

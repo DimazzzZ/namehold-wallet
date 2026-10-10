@@ -3391,7 +3391,8 @@ pub struct MarketUpdate<'a> {
     /// found on the market as ours; `None` when no step was sent (a report,
     /// a pending post, a row that does not read). Recorded as
     /// `market_sent_step`; a step other than the one recorded, not taken,
-    /// sets `market_changed`.
+    /// sets `market_changed` once the market had taken this listing
+    /// (`market_accepted`).
     pub sent_step: Option<&'a str>,
 }
 
@@ -3414,8 +3415,11 @@ pub struct MarketUpdate<'a> {
 ///
 /// A result that sent a step records it (`market_sent_step`); a step other
 /// than the recorded one that the market did not take sets
-/// `market_changed`, as a Lower price does: the market's copy is then our
-/// own earlier step.
+/// `market_changed`, as a Lower price does, when the market had taken this
+/// listing before (`market_accepted`, as the row stood): the market's copy
+/// is then our own earlier step. A listing the market never took (its
+/// earlier step refused, or never answered) has no earlier copy there, so
+/// a differing copy stays someone else's.
 ///
 /// Returns how many rows changed.
 pub fn record_market_result(
@@ -3425,7 +3429,8 @@ pub fn record_market_result(
     u: &MarketUpdate,
 ) -> Result<usize, AppError> {
     // SQLite evaluates every SET expression over the row as it was, so
-    // `market_changed` compares with the old `market_sent_step`.
+    // `market_changed` compares with the old `market_sent_step` and reads
+    // the old `market_accepted`.
     Ok(conn.execute(
         "UPDATE shakedex_listings
          SET market_status = ?2, market_retry_at = ?3, market_attempts = ?4,
@@ -3433,7 +3438,7 @@ pub fn record_market_result(
              market_changed = CASE
                  WHEN ?9 THEN 0
                  WHEN ?11 IS NOT NULL AND market_sent_step IS NOT NULL
-                      AND ?11 <> market_sent_step THEN 1
+                      AND ?11 <> market_sent_step AND market_accepted = 1 THEN 1
                  ELSE market_changed END,
              market_told = MAX(market_told, ?10),
              market_sent_step = COALESCE(?11, market_sent_step),
