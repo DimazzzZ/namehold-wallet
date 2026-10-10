@@ -2050,8 +2050,10 @@ pub enum MarketStatus {
     /// A stored step does not verify over the lock coin hsd reports; nothing
     /// was uploaded (carried from T4).
     StepsUnverified,
-    /// The market was told of the cancel or the sale, or answered that it
-    /// lists nothing to withdraw (R28): the jobs are done with this listing.
+    /// The market was told of the cancel or the sale, answered that it
+    /// lists nothing to withdraw, or refused the report (its words in
+    /// `market_error`) (R28): nothing more to tell, the jobs are done with
+    /// this listing.
     Reported,
 }
 
@@ -3586,10 +3588,14 @@ pub fn list_listings_kept_on_market(
 /// [`ListingState::CANCEL_MINED`] or Cancelled, with its `cancel_txid` (the
 /// mined cancel's, [`mark_listing_cancel_mined`]). Never a Cancelling one
 /// (sent or not, the cancel is in no block and a purchase may still beat
-/// it) nor SalePending (a purchase in the mempool). Only once the market was
-/// told something (`market_status` set), not yet this (`reported`), and not
-/// refused (`refused`: not retried automatically). The mainnet rule (R23) is
-/// the job's own.
+/// it) nor SalePending (a purchase in the mempool). Only while the market
+/// holds something of ours — it accepted an upload or served our own copy
+/// back (`market_accepted`, kept through a later refused or failed upload),
+/// or holds our day-0 pending post (`pending`) — and is not told yet
+/// (`reported`; a report the market refused is recorded as `reported` too:
+/// nothing more to tell). A listing never sent (unset, `steps_unverified`,
+/// a refused or unanswered pending post) is not told. The mainnet rule
+/// (R23) is the job's own.
 pub fn list_listings_to_report(
     conn: &rusqlite::Connection,
     profile_id: &str,
@@ -3597,7 +3603,7 @@ pub fn list_listings_to_report(
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
          WHERE wallet_profile_id = ?1 AND publish = 1
-           AND market_status IS NOT NULL AND market_status NOT IN (?2, ?3)
+           AND (market_accepted = 1 OR market_status = ?3) AND market_status <> ?2
            AND ((state = ?4 AND sold_txid IS NOT NULL)
                 OR (cancel_txid IS NOT NULL AND (state = ?5 OR state IN {})))
          ORDER BY created_at, id",
@@ -3608,7 +3614,7 @@ pub fn list_listings_to_report(
         params![
             profile_id,
             MarketStatus::Reported,
-            MarketStatus::Refused,
+            MarketStatus::Pending,
             ListingState::Sold,
             ListingState::Cancelled
         ],

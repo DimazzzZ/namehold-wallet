@@ -1816,8 +1816,9 @@ async fn sold_listing_reports_its_sale() {
     assert_eq!(listing(&f).market_status, Some(MarketStatus::Reported));
 }
 
-/// Ruling 2026-10-10: the market's own refusal of a report (its JSON 400)
-/// is kept with its words and not sent again.
+/// Ruling 2026-10-10, code-review round: the market's own refusal of a
+/// report (its JSON 400) leaves nothing more to tell: the report is
+/// recorded as Reported with the market's words, and not sent again.
 #[tokio::test]
 async fn refused_report_is_not_retried() {
     let f = listed_on_market(MarketStatus::Listed);
@@ -1838,12 +1839,168 @@ async fn refused_report_is_not_retried() {
     let l = listing(&f);
     assert_eq!(
         (l.market_status, l.market_retry_at),
-        (Some(MarketStatus::Refused), None)
+        (Some(MarketStatus::Reported), None)
     );
     assert!(l
         .market_error
         .unwrap()
         .contains("does not spend this listing"));
+}
+
+/// `f` (Listed, accepted on the market) after a later upload the market
+/// refused: keep-listed finds its copy gone, and the market answers the
+/// upload with its own 409.
+async fn upload_refused(f: &Fx) {
+    let mut s = market().await;
+    let _get = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(404)
+        .with_body(PROOF_NOT_FOUND)
+        .create_async()
+        .await;
+    let _refuse = s
+        .mock("POST", "/api/upload-proof")
+        .with_status(409)
+        .with_body(r#"{"error":"An active listing for dexjobs already exists."}"#)
+        .create_async()
+        .await;
+    keep(f, &s, NOW).await;
+    let l = listing(f);
+    assert_eq!(
+        (l.market_status, l.market_accepted),
+        (Some(MarketStatus::Refused), true)
+    );
+}
+
+/// S1 (code-review round): a listing the market accepted is still told of
+/// its mined cancel after a later upload was refused — the market holds
+/// our earlier copy. Exactly one `refresh-status`.
+#[tokio::test]
+async fn refused_upload_listing_still_reports_its_mined_cancel() {
+    let f = listed_on_market(MarketStatus::Listed);
+    upload_refused(&f).await;
+    cancelling(&f, "broadcasted");
+    cancel_mined(&f, ListingState::CancelAwaitingFinalize);
+    let mut s = market().await;
+    let (m, seen) = report_mock(&mut s, 200, CANCEL_RECORDED, 1).await;
+    for at in [NOW, NOW + 3_600, NOW + 7 * 86_400] {
+        publish(&f, &node(&f, TIP), &s, at).await;
+    }
+    m.assert_async().await;
+    let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
+    assert_eq!(
+        sent,
+        json!({ "outcome": "cancelled", "cancelTxHash": txid("c1") })
+    );
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Reported));
+}
+
+/// S1, the sale: an accepted listing whose later upload was refused is
+/// told of its mined sale, once.
+#[tokio::test]
+async fn refused_upload_listing_still_reports_its_sale() {
+    let f = listed_on_market(MarketStatus::Listed);
+    upload_refused(&f).await;
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET state = 'sold', sold_txid = ?1",
+            [txid("b1")],
+        )
+        .unwrap();
+    let mut s = market().await;
+    let (m, seen) = report_mock(&mut s, 200, SALE_RECORDED, 1).await;
+    for at in [NOW, NOW + 3_600, NOW + 7 * 86_400] {
+        publish(&f, &node(&f, TIP), &s, at).await;
+    }
+    m.assert_async().await;
+    let sent: serde_json::Value = serde_json::from_slice(&seen.lock().unwrap()[0]).unwrap();
+    assert_eq!(sent, json!({ "saleTxHash": txid("b1") }));
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Reported));
+}
+
+/// S1: a listing whose steps never verified was never sent: the market
+/// holds nothing of it (never accepted, no pending post), so its mined
+/// cancel is not reported.
+#[tokio::test]
+async fn never_sent_steps_unverified_listing_does_not_report_its_mined_cancel() {
+    let f = fx(ListingState::Listed, true);
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET market_status = ?1, market_retry_at = ?2",
+            [MarketStatus::StepsUnverified.as_str(), &rfc3339(NOW)],
+        )
+        .unwrap();
+    cancelling(&f, "broadcasted");
+    cancel_mined(&f, ListingState::Cancelled);
+    let mut s = market().await;
+    let any = s.mock("POST", Matcher::Any).expect(0).create_async().await;
+    for at in [NOW, NOW + 7 * 86_400] {
+        publish(&f, &node(&f, TIP), &s, at).await;
+    }
+    any.assert_async().await;
+    assert_eq!(
+        listing(&f).market_status,
+        Some(MarketStatus::StepsUnverified)
+    );
+}
+
+/// S1: a listing the market knows only from its day-0 pending post is told
+/// of its mined sale; while the report gets no answer it stays Pending (the
+/// pending post is what the market holds), backed off, and is reported
+/// once the market answers.
+#[tokio::test]
+async fn pending_only_listing_reports_its_sale_after_no_answer() {
+    let f = fx(ListingState::Finalizing, true);
+    let mut s = market().await;
+    let post = s
+        .mock("POST", "/api/v2/pending-listings")
+        .with_status(201)
+        .with_body(PENDING_ACCEPTED)
+        .expect(1)
+        .create_async()
+        .await;
+    publish(&f, &MockNodeRpc::new(), &s, NOW).await;
+    post.assert_async().await;
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Pending));
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET state = 'sold', sold_txid = ?1",
+            [txid("b1")],
+        )
+        .unwrap();
+    let down = s
+        .mock(
+            "POST",
+            format!("/api/v2/listings/{NAME}/refresh-status").as_str(),
+        )
+        .with_status(503)
+        .with_body("<html>unavailable</html>")
+        .expect(1)
+        .create_async()
+        .await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    publish(&f, &node(&f, TIP), &s, NOW + 299).await;
+    down.assert_async().await;
+    let l = listing(&f);
+    assert_eq!(
+        (
+            l.market_status,
+            l.market_retry_at.as_deref(),
+            l.market_attempts
+        ),
+        (
+            Some(MarketStatus::Pending),
+            Some(rfc3339(NOW + 300).as_str()),
+            1
+        )
+    );
+    assert!(l.market_error.unwrap().contains("no answer"));
+    down.remove_async().await;
+    let (m, _) = report_mock(&mut s, 200, SALE_RECORDED, 1).await;
+    publish(&f, &node(&f, TIP), &s, NOW + 300).await;
+    publish(&f, &node(&f, TIP), &s, NOW + 86_400).await;
+    m.assert_async().await;
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Reported));
 }
 
 /// Carried from T5: the market was told the listing is cancelled, and then
