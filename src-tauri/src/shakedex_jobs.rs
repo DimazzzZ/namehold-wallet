@@ -2920,11 +2920,13 @@ async fn upload(
 /// and Cancelling while the cancel is not sent (still buyable on chain;
 /// R24, R28: the jobs stop once it is sent) — that the market has taken or
 /// failed to take for want of an answer or of verified steps
-/// (`market_status` Listed, ReplacedReuploaded, Retrying, StepsUnverified),
-/// plus a Cancelling one whose bookkeeping a reorg started over (unset,
-/// [`queries::mark_listing_cancel_unmined`]), and that are due ([`due`]).
-/// The first upload of an unset Listed listing is Listed only and
-/// [`publish_listings_with_client`]'s. Never a Refused one: it waits for a
+/// (`market_status` Listed, ReplacedReuploaded, Retrying, StepsUnverified;
+/// a reorg that takes a mined cancel back to an unsent one starts a told
+/// listing over as Retrying, [`queries::mark_listing_cancel_unmined`]), and
+/// that are due ([`due`]). Never one the market was not told about
+/// (`market_status` unset): its first upload is Listed only and
+/// [`publish_listings_with_client`]'s, so a listing whose cancel is in
+/// progress is never published for the first time. Never a Refused one: it waits for a
 /// write that changes what is sent; only a Refused Listed listing's expiry
 /// is looked at, without a market call, and only once the stored
 /// `expires_at` is within [`EXPIRY_REFRESH_MARGIN_SECS`]: the refresh
@@ -2966,16 +2968,6 @@ pub async fn keep_listed_with_client(
         let listed = l.state == queries::ListingState::Listed;
         let run = match l.market_status {
             Some(S::Listed | S::ReplacedReuploaded | S::Retrying | S::StepsUnverified) => {
-                if !due(&l, now) {
-                    continue;
-                }
-                keep_listed(conn, node, market, &l, now).await
-            }
-            // A Cancelling listing whose bookkeeping a reorg started over
-            // (`queries::mark_listing_cancel_unmined`, its cancel unsent):
-            // still buyable on chain, so checked like a kept one. The first
-            // upload of an unset Listed one is the publish job's.
-            None if !listed => {
                 if !due(&l, now) {
                     continue;
                 }
