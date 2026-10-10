@@ -107,10 +107,9 @@ mod tests {
         assert_eq!(count, 38, "expected 38 migrations, got {count}");
     }
 
-    /// A database already at 033 (a real upgrade) takes 034 on top of its
-    /// schema and keeps its rows.
-    #[test]
-    fn migration_034_applies_on_top_of_033() {
+    /// An in-memory database with every migration before `version` applied
+    /// and recorded, as an older release left it.
+    fn db_before(version: &str) -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (
@@ -119,14 +118,27 @@ mod tests {
             );",
         )
         .unwrap();
-        for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v < "034") {
+        for (v, sql) in MIGRATIONS.iter().filter(|(v, _)| *v < version) {
             conn.execute_batch(sql).unwrap();
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                [version],
-            )
-            .unwrap();
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [v])
+                .unwrap();
         }
+        conn
+    }
+
+    /// `conn` records the last migration as its version.
+    fn assert_at_last_migration(conn: &Connection) {
+        let top: String = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(top, MIGRATIONS.last().unwrap().0);
+    }
+
+    /// A database already at 033 (a real upgrade) takes 034 on top of its
+    /// schema and keeps its rows.
+    #[test]
+    fn migration_034_applies_on_top_of_033() {
+        let conn = db_before("034");
         conn.execute(
             "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, watch_only)
              VALUES ('p', 'P', 'mnemonic_hot', 'regtest', 'xpub', 0, 0)",
@@ -146,32 +158,14 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM wallet_profiles", [], |r| r.get(0))
             .unwrap();
         assert_eq!(profiles, 1);
-        let top: String = conn
-            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(top, MIGRATIONS.last().unwrap().0);
+        assert_at_last_migration(&conn);
     }
 
     /// A database already at 034 (the T2 schema, with listings) takes 035 on
     /// top: the new column exists and the existing listing keeps its row.
     #[test]
     fn migration_035_applies_on_top_of_034() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE schema_version (
-                version TEXT PRIMARY KEY,
-                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );",
-        )
-        .unwrap();
-        for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v < "035") {
-            conn.execute_batch(sql).unwrap();
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                [version],
-            )
-            .unwrap();
-        }
+        let conn = db_before("035");
         conn.execute(
             "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, watch_only)
              VALUES ('p', 'P', 'mnemonic_hot', 'regtest', 'xpub', 0, 0)",
@@ -193,32 +187,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(draft, None);
-        let top: String = conn
-            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(top, MIGRATIONS.last().unwrap().0);
+        assert_at_last_migration(&conn);
     }
 
     /// A database already at 035 (the T3 schema) takes 036 on top: the four
     /// cancel columns exist, empty, and the existing listing keeps its row.
     #[test]
     fn migration_036_applies_on_top_of_035() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE schema_version (
-                version TEXT PRIMARY KEY,
-                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );",
-        )
-        .unwrap();
-        for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v < "036") {
-            conn.execute_batch(sql).unwrap();
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                [version],
-            )
-            .unwrap();
-        }
+        let conn = db_before("036");
         conn.execute(
             "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, watch_only)
              VALUES ('p', 'P', 'mnemonic_hot', 'regtest', 'xpub', 0, 0)",
@@ -248,32 +224,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(row, (None, None, None, None, "listed".to_string()));
-        let top: String = conn
-            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(top, MIGRATIONS.last().unwrap().0);
+        assert_at_last_migration(&conn);
     }
 
     /// A database already at 036 (the T5 schema) takes 037 on top: the market
     /// columns exist, zero and empty, and the existing listing keeps its row.
     #[test]
     fn migration_037_applies_on_top_of_036() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE schema_version (
-                version TEXT PRIMARY KEY,
-                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );",
-        )
-        .unwrap();
-        for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v < "037") {
-            conn.execute_batch(sql).unwrap();
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                [version],
-            )
-            .unwrap();
-        }
+        let conn = db_before("037");
         conn.execute(
             "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, watch_only)
              VALUES ('p', 'P', 'mnemonic_hot', 'mainnet', 'xpub', 0, 0)",
@@ -295,32 +253,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(row, (0, None, "listed".to_string(), 0, 0, 0));
-        let top: String = conn
-            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(top, MIGRATIONS.last().unwrap().0);
+        assert_at_last_migration(&conn);
     }
 
     /// A database already at 037 (the T6 schema) takes 038 on top: the
     /// listing keeps its row, with no step recorded as sent.
     #[test]
     fn migration_038_applies_on_top_of_037() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE schema_version (
-                version TEXT PRIMARY KEY,
-                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );",
-        )
-        .unwrap();
-        for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v < "038") {
-            conn.execute_batch(sql).unwrap();
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?1)",
-                [version],
-            )
-            .unwrap();
-        }
+        let conn = db_before("038");
         conn.execute(
             "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, watch_only)
              VALUES ('p', 'P', 'mnemonic_hot', 'mainnet', 'xpub', 0, 0)",
@@ -342,10 +282,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(sent, None);
-        let top: String = conn
-            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(top, MIGRATIONS.last().unwrap().0);
+        assert_at_last_migration(&conn);
     }
 
     #[test]
