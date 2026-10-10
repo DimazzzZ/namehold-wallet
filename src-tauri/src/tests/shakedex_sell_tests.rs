@@ -6649,8 +6649,9 @@ async fn cancel_stops_jobs() {
 /// R28 for a schedule (T8, carry): a reverse auction with cheaper steps
 /// still ahead at the node's median time says, in its prompt and on its
 /// draft, that a buyer can also take a cheaper step once it is valid, until
-/// the cancel is mined; at its floor (nothing cheaper ahead) it says the
-/// Buy Now words; with no step valid yet, every step ahead counts.
+/// the cancel is mined; at its floor, or lowered below it (only dearer
+/// steps ahead), it says the plain words; with no step valid yet, every
+/// step ahead counts.
 #[tokio::test]
 async fn cancel_prompt_of_a_schedule_says_a_cheaper_step_is_buyable_too() {
     let until_and_warnings = |l: &Listed, d: &crate::noncustodial::types::TxDraftSummary| {
@@ -6701,6 +6702,24 @@ async fn cancel_prompt_of_a_schedule_says_a_cheaper_step_is_buyable_too() {
     assert_eq!(until, CANCEL_STILL_BUYABLE);
     assert_eq!(warnings, [CANCEL_STILL_BUYABLE, CANCEL_MEMPOOL_PURCHASE]);
 
+    // Lowered below its floor at step 4: steps 5 to 8 (5 to 2 HNS) still
+    // ahead, none cheaper than the current 1 HNS.
+    let mut l = listed_schedule_fixture(&schedule("10", "2", 9, 21_600)).await;
+    let _ = no_broadcast(&mut l.r).await;
+    answer(true);
+    lower(&l, "1").await.expect("lower below the floor");
+    let _ = take_test_requests();
+    let sent = no_broadcast(&mut l.r).await;
+    answer(true);
+    let d = cancel(&l).await.expect("cancel");
+    sent.assert_async().await;
+    let (until, warnings) = until_and_warnings(&l, &d);
+    assert_eq!(
+        until, CANCEL_STILL_BUYABLE,
+        "dearer steps ahead do not count"
+    );
+    assert_eq!(warnings, [CANCEL_STILL_BUYABLE, CANCEL_MEMPOOL_PURCHASE]);
+
     // No step valid yet (the node's MTP a day before signing, as after a
     // reorg): every step ahead is buyable once valid.
     let mut l = listed_schedule_fixture(&schedule("10", "2", 2, 21_600)).await;
@@ -6718,6 +6737,61 @@ async fn cancel_prompt_of_a_schedule_says_a_cheaper_step_is_buyable_too() {
     sent.assert_async().await;
     let (until, warnings) = until_and_warnings(&l, &d);
     assert_eq!(until, CANCEL_STILL_BUYABLE_AS_IT_FALLS);
+    assert_eq!(
+        warnings,
+        [CANCEL_STILL_BUYABLE_AS_IT_FALLS, CANCEL_MEMPOOL_PURCHASE]
+    );
+}
+
+/// R28 (T8 review): a lowered Buy Now whose cheaper step is not valid yet
+/// at the node's median time (taken back by a reorg) says, in its prompt and
+/// on its draft, that the cheaper step is buyable too once it is valid: the
+/// strict "a step ahead cheaper than the current one" rule holds for every
+/// mode.
+#[tokio::test]
+async fn cancel_prompt_of_a_lowered_buy_now_says_its_cheaper_step_is_buyable_too() {
+    let mut l = listed_fixture().await;
+    let _ = no_broadcast(&mut l.r).await;
+    answer(true);
+    let s = lower(&l, "3").await.expect("lower");
+    let _ = take_test_requests();
+    let lowered = s.steps[1].lock_time;
+    let (info, coin, lock) = (l.info(), l.lock_coin(TRANSFER_HEIGHT + 20), l.lock.clone());
+    // The 5 HNS step valid, the 3 HNS one not yet.
+    let mtp = valid_from_mtp(lowered) - 1;
+    assert!(mtp >= valid_from_mtp(s.steps[0].lock_time));
+    l.node(
+        LISTED_TIP,
+        Some(mtp),
+        info,
+        vec![(lock.0, lock.1, Some(coin))],
+    )
+    .await;
+    let sent = no_broadcast(&mut l.r).await;
+    answer(true);
+    let d = cancel(&l).await.expect("cancel");
+    sent.assert_async().await;
+    let reqs = take_test_requests();
+    assert_eq!(reqs.len(), 1, "one prompt");
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let value = |label: &str| {
+        rows.iter().find(|x| x["label"] == label).unwrap()["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(value("Current price"), "5.000000 HNS");
+    assert_eq!(value("Until it is mined"), CANCEL_STILL_BUYABLE_AS_IT_FALLS);
+    let row = with_db(&l.r.app, |c| {
+        queries::get_tx_draft(c, &d.id).unwrap().unwrap()
+    });
+    let warnings: Vec<String> = serde_json::from_value(
+        serde_json::from_str::<Value>(&row.summary_json).unwrap()["warnings"].clone(),
+    )
+    .unwrap();
     assert_eq!(
         warnings,
         [CANCEL_STILL_BUYABLE_AS_IT_FALLS, CANCEL_MEMPOOL_PURCHASE]

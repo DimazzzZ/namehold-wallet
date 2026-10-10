@@ -34,11 +34,13 @@ pub const CANCEL_FINALIZE_ACTION: &str = "shakedex_cancel_finalize";
 /// and kept on its draft.
 pub const CANCEL_STILL_BUYABLE: &str = "Anyone holding the listing file can still buy the \
      name at its current price until this cancel is mined.";
-/// R28 for a schedule (T8): what a cancel cannot stop while a cheaper step
-/// of a reverse auction is still ahead — it becomes buyable once valid.
+/// R28 (T8): what a cancel cannot stop while a cheaper step is still ahead
+/// (a reverse auction's schedule, or a lowered Buy Now's step after a
+/// reorg) — it becomes buyable once valid. It names no current price: a
+/// schedule not started yet has none.
 pub const CANCEL_STILL_BUYABLE_AS_IT_FALLS: &str = "Anyone holding the listing file can still \
-     buy the name at its current price, or at a cheaper price step of its schedule once that \
-     step is valid, until this cancel is mined.";
+     buy the name at any price step that is valid by then, a cheaper price step too once it is \
+     valid, until this cancel is mined.";
 
 /// The "Until it is mined" words (R28): [`CANCEL_STILL_BUYABLE_AS_IT_FALLS`]
 /// while a cheaper step is ahead, [`CANCEL_STILL_BUYABLE`] otherwise.
@@ -90,9 +92,9 @@ pub struct CancelRows<'a> {
     /// R23: the listing is published on LearnHNS Market (R28's market
     /// notice, [`CANCEL_MARKET_TOLD`]).
     pub published: bool,
-    /// A reverse auction with a stored step not valid yet at the node's MTP
-    /// cheaper than the current price (any step ahead when none is valid
-    /// yet) ([`still_buyable`]); never a Buy Now.
+    /// A stored step not valid yet at the node's MTP is cheaper than the
+    /// current price (for a reverse auction with none valid yet, any step
+    /// ahead) ([`still_buyable`]).
     pub cheaper_ahead: bool,
 }
 
@@ -453,9 +455,11 @@ mod tests {
         assert_eq!(res.input_total, out + res.fee);
     }
 
-    /// R28 for a schedule (T8): while a cheaper step of it is still ahead,
-    /// the prompt says a buyer can also take that step once it is valid,
-    /// until the cancel is mined.
+    /// R28 (T8): while a cheaper step is still ahead (a reverse auction's
+    /// schedule, or a lowered Buy Now's step after a reorg), the prompt says
+    /// a buyer can take any step valid by then, a cheaper one too once it is
+    /// valid, until the cancel is mined; the words name no current price,
+    /// which a schedule not started yet does not have.
     #[test]
     fn cancel_rows_of_a_schedule_say_a_cheaper_step_is_buyable_too() {
         let r = cancel_rows(&CancelRows {
@@ -477,6 +481,9 @@ mod tests {
         assert_eq!(until, CANCEL_STILL_BUYABLE_AS_IT_FALLS);
         assert!(CANCEL_STILL_BUYABLE_AS_IT_FALLS.contains("cheaper price step"));
         assert!(CANCEL_STILL_BUYABLE_AS_IT_FALLS.contains("until this cancel is mined"));
+        // True for a Buy Now's lowered step and with no step valid yet.
+        assert!(!CANCEL_STILL_BUYABLE_AS_IT_FALLS.contains("schedule"));
+        assert!(!CANCEL_STILL_BUYABLE_AS_IT_FALLS.contains("current price"));
         assert_eq!(still_buyable(false), CANCEL_STILL_BUYABLE);
         assert_eq!(still_buyable(true), CANCEL_STILL_BUYABLE_AS_IT_FALLS);
     }

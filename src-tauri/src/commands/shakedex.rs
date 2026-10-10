@@ -1260,8 +1260,9 @@ pub(crate) struct PreparedCancel {
     cancel_address: String,
     cancel_index: u32,
     current_price: cancel::CancelPrice,
-    /// R28 for a schedule: a reverse auction with a cheaper stored step
-    /// still ahead at the MTP (`cancel::still_buyable`).
+    /// R28: a stored step ahead at the MTP cheaper than the current one (any
+    /// step ahead for a reverse auction with none valid yet),
+    /// `cancel::still_buyable`.
     cheaper_ahead: bool,
 }
 
@@ -1467,16 +1468,19 @@ pub(crate) async fn prepare_cancel(
             None => cancel::CancelPrice::NoneValidYet,
         },
     };
-    // R28 for a schedule: a cheaper step still ahead is buyable once valid
-    // (any step ahead when none is valid yet). A reverse auction's only: a
-    // Buy Now's one step not valid yet becomes buyable at the same price.
-    let cheaper_ahead = match on_node.mtp {
-        Some(mtp) if listing.mode == ListingMode::ReverseAuction => {
-            let below = match current_price {
-                cancel::CancelPrice::Step(price) => price,
-                _ => u64::MAX,
-            };
-            sell::steps_ahead(&steps, mtp, below)?.0 > 0
+    // R28: a step ahead cheaper than the current one is buyable once valid
+    // (`sell::steps_ahead`), in every mode: a reverse auction's schedule, or
+    // a lowered Buy Now's step after a reorg. With no step valid yet, any
+    // step ahead counts for a reverse auction only: a Buy Now's one step not
+    // valid yet becomes buyable at that same price.
+    let cheaper_ahead = match (on_node.mtp, current_price) {
+        (Some(mtp), cancel::CancelPrice::Step(price)) => {
+            sell::steps_ahead(&steps, mtp, price)?.0 > 0
+        }
+        (Some(mtp), cancel::CancelPrice::NoneValidYet)
+            if listing.mode == ListingMode::ReverseAuction =>
+        {
+            sell::steps_ahead(&steps, mtp, u64::MAX)?.0 > 0
         }
         _ => false,
     };
