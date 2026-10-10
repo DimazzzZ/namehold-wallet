@@ -27,7 +27,8 @@ use crate::noncustodial::send::{self, SpendableCoin, DUST_THRESHOLD};
 use crate::noncustodial::session::{session_ttl_ms, SignerSession};
 use crate::noncustodial::shakedex::cancel;
 use crate::noncustodial::shakedex::listing_file::{
-    write_listing_file, ListingFile, NewListingFile, PriceStep, MAX_LISTING_FILE_BYTES,
+    add_step_to_listing_file, write_listing_file, ListingFile, NewListingFile, PriceStep,
+    MAX_LISTING_FILE_BYTES,
 };
 use crate::noncustodial::shakedex::lock_key::{derive_lock_key, LockKey};
 use crate::noncustodial::shakedex::purchase::{
@@ -1605,8 +1606,9 @@ fn lower_refusal(state: ListingState) -> Option<&'static str> {
 /// key re-derived after the reads, its public key the stored one; then R26's
 /// own prompt, one step signed valid now (R19: the MTP minus 512 s) over the
 /// stored lock coin at hsd's value, paying the listing's payment address,
-/// the listing file rewritten with it and read back by the strict parser
-/// (`write_listing_file`), and the steps and file stored only while the
+/// added to the stored listing file as written, unknown fields kept, once
+/// that file is checked to be the row's (`add_step_to_listing_file`, read
+/// back by the strict parser), and the steps and file stored only while the
 /// listing is still Listed on that lock coin with the steps read here
 /// (`queries::lower_listing_price`). Sends nothing.
 pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
@@ -1649,6 +1651,31 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
     let name = listing.name.clone();
     let at = shakedex_jobs::listing_lock(ctx.network, &listing)?;
     let lock_addr = at.address.clone();
+    // The step is added to the stored file as written (R26, R32): it must
+    // be this row's file, its lock, key, payment address and steps.
+    let stored_file = listing
+        .listing_file_json
+        .clone()
+        .ok_or_else(|| corrupted("listing file"))?;
+    let file_is_the_rows = ListingFile::parse(&stored_file, ctx.network)
+        .ok()
+        .is_some_and(|f| {
+            hex::encode(f.lock_txid) == lock_txid
+                && f.lock_vout == lock_vout
+                && f.public_key == pubkey
+                && f.payment_addr == payment_address
+                && f.steps
+                    .iter()
+                    .map(|s| sell::StoredStep {
+                        price: s.price,
+                        lock_time: s.lock_time,
+                        signature: hex::encode(s.signature),
+                    })
+                    .eq(stored.iter().cloned())
+        });
+    if !file_is_the_rows {
+        return Err(corrupted("listing file matching its lock and steps"));
+    }
 
     let on_node = lock_on_node(
         &ctx,
@@ -1709,53 +1736,25 @@ pub(crate) async fn lower_price_confirmed<R: tauri::Runtime>(
             },
         )
     })?;
-    let mut steps = stored
-        .iter()
-        .map(|s| {
-            let signature: [u8; 65] = hex::decode(&s.signature)
-                .ok()
-                .and_then(|b| b.try_into().ok())
-                .ok_or_else(|| corrupted("readable step signature"))?;
-            Ok(PriceStep {
-                price: s.price,
-                lock_time: s.lock_time,
-                signature,
-                fee: 0,
-            })
-        })
-        .collect::<Result<Vec<_>, AppError>>()?;
-    steps.push(PriceStep {
-        price: new_price,
-        lock_time,
-        signature,
-        fee: 0,
-    });
     // The file's expiry stays as signed; a file imported without one (R32)
     // gets R23's, from this signing's MTP.
-    let expires_at = match listing.expires_at {
-        Some(e) => u64::try_from(e).map_err(|_| corrupted("readable expiry"))?,
-        None => mtp + sell::LISTING_LIFETIME_SECS,
-    };
-    let file = write_listing_file(
-        &NewListingFile {
-            name: &name,
-            lock_txid: lock_bytes,
-            lock_vout,
-            public_key: pubkey,
-            payment_addr: &payment_address,
-            steps: &steps,
-            expires_at,
+    let (file, expires_at) = add_step_to_listing_file(
+        &stored_file,
+        &PriceStep {
+            price: new_price,
+            lock_time,
+            signature,
+            fee: 0,
         },
+        mtp + sell::LISTING_LIFETIME_SECS,
         ctx.network,
     )?;
-    let stored_new: Vec<sell::StoredStep> = steps
-        .iter()
-        .map(|s| sell::StoredStep {
-            price: s.price,
-            lock_time: s.lock_time,
-            signature: hex::encode(s.signature),
-        })
-        .collect();
+    let mut stored_new = stored.clone();
+    stored_new.push(sell::StoredStep {
+        price: new_price,
+        lock_time,
+        signature: hex::encode(signature),
+    });
     let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
     let n = queries::lower_listing_price(
         &conn,
