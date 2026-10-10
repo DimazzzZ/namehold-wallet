@@ -3053,6 +3053,18 @@ fn cancel_funding(f: &Fx) {
         .unwrap();
 }
 
+/// `rpc` with `GET /tx` answering `tx` for every txid but our cancel's
+/// (`c1…`), which gets `ours` (hsd's not-found `null`, or its own reply).
+fn with_our_cancel_as(rpc: MockNodeRpc, tx: Value, ours: Value) -> MockNodeRpc {
+    rpc.with_tx_by_hash_fn(move |t| {
+        Ok(if t == txid("c1") {
+            ours.clone()
+        } else {
+            tx.clone()
+        })
+    })
+}
+
 /// How many coins our cancel draft `cx` holds.
 fn held_by_cancel(f: &Fx) -> i64 {
     f.conn
@@ -3109,12 +3121,17 @@ async fn purchase_replacing_a_mined_cancel_is_sold() {
         assert_eq!(held_by_cancel(&f), 1, "{case}: in the mempool");
 
         paid(&f, &buy, 2, TIP, false);
+        let purchase = purchase_rest(&f, &buy, TIP, &f.payment);
         run(
             &f,
-            &node(
-                info((&buy, 0)),
-                vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
-                purchase_rest(&f, &buy, TIP, &f.payment),
+            &with_our_cancel_as(
+                node(
+                    info((&buy, 0)),
+                    vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+                    purchase.clone(),
+                ),
+                purchase,
+                Value::Null,
             ),
         )
         .await;
@@ -3137,6 +3154,63 @@ async fn purchase_replacing_a_mined_cancel_is_sold() {
             "{case}"
         );
         assert_eq!(held_by_cancel(&f), 0, "{case}: its coins are free again");
+    }
+}
+
+/// R28: before freeing a cancel the draft tracker still calls `confirmed`,
+/// the job reads our cancel's own transaction on hsd again: not found, or
+/// in the mempool, it is out of every block and its coins are freed; shown
+/// mined (a reorg between the job's reads) they stay held and the draft
+/// stays `confirmed`; a reply without the transaction's height is no answer:
+/// nothing is written. A purchase of the lock coin is mined throughout.
+#[tokio::test]
+async fn replaced_confirmed_cancel_is_freed_only_when_hsd_shows_it_unmined() {
+    let buy = txid("b1");
+    for (case, want, status, held) in [
+        ("not found", ListingState::Sold, "dropped", 0),
+        ("in the mempool", ListingState::Sold, "dropped", 0),
+        ("mined", ListingState::Sold, "confirmed", 1),
+        (
+            "no height",
+            ListingState::CancelAwaitingFinalize,
+            "confirmed",
+            1,
+        ),
+    ] {
+        let f = fx(ListingState::Listed);
+        our_cancel(&f, "confirmed");
+        cancel_funding(&f);
+        cancel_mined_at(&f);
+        let ours = match case {
+            "not found" => Value::Null,
+            "in the mempool" => cancel_rest(&f, &txid("c1"), -1, &f.cancel),
+            "mined" => cancel_rest(&f, &txid("c1"), TIP - 5, &f.cancel),
+            _ => {
+                let mut v = cancel_rest(&f, &txid("c1"), TIP - 5, &f.cancel);
+                v.as_object_mut().unwrap().remove("height");
+                v
+            }
+        };
+        paid(&f, &buy, 2, TIP, false);
+        let purchase = purchase_rest(&f, &buy, TIP, &f.payment);
+        run(
+            &f,
+            &with_our_cancel_as(
+                node(
+                    info((&buy, 0)),
+                    vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+                    purchase.clone(),
+                ),
+                purchase,
+                ours,
+            ),
+        )
+        .await;
+        let l = listing(&f);
+        assert_eq!(l.state, want, "{case}");
+        let d = queries::get_tx_draft(&f.conn, "cx").unwrap().unwrap();
+        assert_eq!(d.status, status, "{case}");
+        assert_eq!(held_by_cancel(&f), held, "{case}");
     }
 }
 
@@ -3193,12 +3267,17 @@ async fn another_cancel_replacing_a_mined_cancel_awaits_its_finalize() {
             "{case}: another lock coin"
         );
 
+        let theirs = cancel_rest(&f, &c7, TIP, &f.cancel);
         run(
             &f,
-            &node(
-                info((&c7, 0)),
-                vec![transfer_out_of_lock(&f, &c7, &f.cancel, TIP)],
-                cancel_rest(&f, &c7, TIP, &f.cancel),
+            &with_our_cancel_as(
+                node(
+                    info((&c7, 0)),
+                    vec![transfer_out_of_lock(&f, &c7, &f.cancel, TIP)],
+                    theirs.clone(),
+                ),
+                theirs,
+                Value::Null,
             ),
         )
         .await;

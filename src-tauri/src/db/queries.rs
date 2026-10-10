@@ -1295,7 +1295,7 @@ pub fn never_sent(status: &str) -> bool {
 }
 
 /// The status of a draft the chain has mined.
-const CONFIRMED_STATUS: &str = "confirmed";
+pub const CONFIRMED_STATUS: &str = "confirmed";
 
 /// The status of a draft whose broadcast hsd refused: dead ([`draft_alive`]).
 const FAILED_STATUS: &str = "failed";

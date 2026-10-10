@@ -2322,8 +2322,8 @@ async fn cancel_on_its_way_home(
 /// [`sale_of_restored_lock`] for a lock restored by name) → Sold
 /// ([`sell_releasing_cancel`]). Either way a cancel of ours that can no
 /// longer land is released with that mined spender as evidence, even while
-/// the draft tracker still calls it `confirmed`
-/// ([`queries::release_replaced_cancel`]). A spender in the mempool, no
+/// the draft tracker still calls it `confirmed`, once hsd, read again, does
+/// not show our cancel mined ([`replaced_cancel_release`]). A spender in the mempool, no
 /// spender found, or `cancel` itself found again is no verdict.
 async fn cancel_replaced(
     conn: &rusqlite::Connection,
@@ -2336,13 +2336,15 @@ async fn cancel_replaced(
 ) -> Result<(), AppError> {
     if let Some(c) = cancel_of_lock(conn, client, network, l, owner, lock).await? {
         if !(c.0.eq_ignore_ascii_case(cancel.0) && c.1 == cancel.1) {
-            cancel_mined(conn, l, (&c.0, c.1), lock, queries::release_replaced_cancel)?;
+            let release = replaced_cancel_release(conn, client, l).await?;
+            cancel_mined(conn, l, (&c.0, c.1), lock, release)?;
         }
         return Ok(());
     }
     if l.payment_address.is_none() {
         if let Some(txid) = sale_of_restored_lock(conn, client, network, l, owner, lock).await? {
-            sell_releasing_cancel(conn, l, &txid, lock, queries::release_replaced_cancel)?;
+            let release = replaced_cancel_release(conn, client, l).await?;
+            sell_releasing_cancel(conn, l, &txid, lock, release)?;
         }
         return Ok(());
     }
@@ -2351,8 +2353,43 @@ async fn cancel_replaced(
         find_sale(conn, client, network, l, owner).await?,
         owner_is_lock,
     ) {
+        let release = replaced_cancel_release(conn, client, l).await?;
         let lock = (lock.0.as_str(), lock.1);
-        sell_releasing_cancel(conn, l, &txid, lock, queries::release_replaced_cancel)?;
+        sell_releasing_cancel(conn, l, &txid, lock, release)?;
     }
     Ok(())
+}
+
+/// How [`cancel_replaced`] releases our cancel draft. Only a `confirmed`
+/// draft differs between the two releases, and it is released
+/// ([`queries::release_replaced_cancel`]) only when hsd, read again now,
+/// does not show the draft's own transaction mined: [`spend_view`] of its
+/// txid (`GET /tx`, or without the index the block at its recorded
+/// confirmation height) not found, or in the mempool. Shown mined (a reorg
+/// between the job's reads put it back), it is kept
+/// ([`queries::release_losing_cancel`]); a reply that is not hsd's whole
+/// answer is an error, and nothing is written this sync.
+async fn replaced_cancel_release(
+    conn: &rusqlite::Connection,
+    client: &dyn NodeRpc,
+    l: &queries::ShakedexListing,
+) -> Result<ReleaseCancel, AppError> {
+    let draft = match l.cancel_draft_id.as_deref() {
+        Some(id) => queries::get_tx_draft(conn, id)?,
+        None => None,
+    };
+    let Some(d) = draft.filter(|d| d.status == queries::CONFIRMED_STATUS) else {
+        return Ok(queries::release_replaced_cancel);
+    };
+    let Some(txid) = d.txid.as_deref() else {
+        return Ok(queries::release_losing_cancel);
+    };
+    let mined = spend_view(client, txid, d.confirmation_height)
+        .await?
+        .is_some_and(|tx| tx.height.is_some());
+    Ok(if mined {
+        queries::release_losing_cancel
+    } else {
+        queries::release_replaced_cancel
+    })
 }
