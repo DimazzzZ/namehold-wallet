@@ -1262,11 +1262,11 @@ struct LockOnNode {
 
 /// The node checks Cancel (R28) and Lower price (R26) both make before they
 /// sign over a listing's stored lock coin, in one place so they cannot
-/// drift: the lock coin of `name` unspent (hsd's 404 is `words.spent`), at its stored
-/// outpoint (the txid in any case), a FINALIZE of the name at the lock
-/// address `at`, mined, with a readable value and name height; the name's
-/// live state (`info` not null) at that name height (a lock coin left over
-/// from an earlier registration is refused); and, with `read_mtp`, the
+/// drift: the lock coin of `name` unspent (hsd's 404 is `words.spent`), at
+/// its stored outpoint (the txid in any case), a FINALIZE of the name at the
+/// lock address `at`, mined, with a readable value and name height; the
+/// name's live state (`info` not null) at that name height (a lock coin left
+/// over from an earlier registration is refused); and, with `read_mtp`, the
 /// node's MTP. A reply missing a field read here is "could not check".
 async fn lock_on_node(
     ctx: &Ctx,
