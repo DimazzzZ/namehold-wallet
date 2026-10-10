@@ -113,6 +113,7 @@ fn fx_at(state: ListingState, publish: bool, mtp: u64) -> Fx {
         market_accepted: false,
         market_changed: false,
         market_told: false,
+        market_sent_step: None,
         expires_at: locked.then_some((mtp + sell::LISTING_LIFETIME_SECS) as i64),
         abort_draft_id: None,
         abort_txid: None,

@@ -53,6 +53,7 @@ fn listing(id: &str, name: &str, state: ListingState) -> ShakedexListing {
         market_accepted: false,
         market_changed: false,
         market_told: false,
+        market_sent_step: None,
         expires_at: None,
         abort_draft_id: None,
         abort_txid: None,

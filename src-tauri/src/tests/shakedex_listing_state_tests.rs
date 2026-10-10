@@ -88,6 +88,7 @@ fn fx(state: ListingState) -> Fx {
         market_accepted: false,
         market_changed: false,
         market_told: false,
+        market_sent_step: None,
         expires_at: Some(1_731_536_000),
         abort_draft_id: None,
         abort_txid: None,
@@ -3679,6 +3680,7 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
                     market_accepted: true,
                     market_changed: true,
                     market_told: true,
+                    market_sent_step: Some("s0".into()),
                     ..base.clone()
                 };
                 f.conn.execute("DELETE FROM shakedex_listings", []).unwrap();
@@ -3702,8 +3704,9 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
                     after.market_error.clone(),
                     after.market_accepted,
                     after.market_changed,
+                    after.market_sent_step.clone(),
                 );
-                let reset = book == (None, None, 0, None, false, false);
+                let reset = book == (None, None, 0, None, false, false, None);
                 let kept = book
                     == (
                         Some(MarketStatus::Reported),
@@ -3712,6 +3715,7 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
                         Some("told".to_string()),
                         true,
                         true,
+                        Some("s0".to_string()),
                     );
                 // R28: recording a mined sale or cancel makes the report
                 // due at once: only `market_retry_at` is cleared.
@@ -3723,12 +3727,22 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
                         Some("told".to_string()),
                         true,
                         true,
+                        Some("s0".to_string()),
                     );
                 // Listed to Listed (a Lower price, an expiry refresh): the
                 // market already holds this lock's listing, so the new copy
                 // is due for keep-listed's check at once (Retrying, no
                 // failure counted) and the acceptance stays.
-                let changed = book == (Some(MarketStatus::Retrying), None, 0, None, true, true);
+                let changed = book
+                    == (
+                        Some(MarketStatus::Retrying),
+                        None,
+                        0,
+                        None,
+                        true,
+                        true,
+                        Some("s0".to_string()),
+                    );
                 if matches!(w, ListingWrite::LowerPrice | ListingWrite::RefreshExpiry) {
                     assert!(changed, "{w:?} {from:?} -> {to:?}: not due as changed");
                     resets += 1;
@@ -3795,6 +3809,7 @@ fn market_result_is_written_only_over_the_listing_the_job_read() {
         error: None,
         accepted: true,
         told: true,
+        sent_step: None,
     };
     assert_eq!(
         queries::record_market_result(&f.conn, &f.id, &seen, &update).unwrap(),
@@ -3855,6 +3870,70 @@ fn market_result_is_written_only_over_the_listing_the_job_read() {
         0
     );
     assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
+}
+
+/// R24, R25 (T8): every market result that sent a step (an upload, or our
+/// copy found on the market) records its signature; others leave it. A new
+/// step sent and not taken sets `market_changed` (the market's differing
+/// copy is our own earlier step); a first send does not, and an acceptance
+/// clears it.
+#[test]
+fn market_result_records_the_step_it_sent() {
+    let f = fx(ListingState::Listed);
+    let l = listing(&f);
+    let seen = queries::MarketSeen {
+        state: l.state,
+        steps_json: &l.steps_json,
+        listing_file_json: l.listing_file_json.as_deref(),
+    };
+    let taken = queries::MarketUpdate {
+        status: MarketStatus::Listed,
+        retry_at: Some("2026-10-10T01:00:00Z"),
+        attempts: 0,
+        error: None,
+        accepted: true,
+        told: true,
+        sent_step: Some("aa"),
+    };
+    let no_answer = queries::MarketUpdate {
+        status: MarketStatus::Retrying,
+        accepted: false,
+        told: false,
+        ..taken
+    };
+    let book = |f: &Fx| {
+        let l = listing(f);
+        (l.market_sent_step, l.market_changed)
+    };
+    // A first send that got no answer: recorded, no change flagged.
+    queries::record_market_result(&f.conn, &f.id, &seen, &no_answer).unwrap();
+    assert_eq!(book(&f), (Some("aa".into()), false));
+    queries::record_market_result(&f.conn, &f.id, &seen, &taken).unwrap();
+    assert_eq!(book(&f), (Some("aa".into()), false));
+    // The same step again, no answer: nothing changed.
+    queries::record_market_result(&f.conn, &f.id, &seen, &no_answer).unwrap();
+    assert_eq!(book(&f), (Some("aa".into()), false));
+    // A new step, not taken: the market still holds our earlier one.
+    let moved = queries::MarketUpdate {
+        sent_step: Some("bb"),
+        ..no_answer
+    };
+    queries::record_market_result(&f.conn, &f.id, &seen, &moved).unwrap();
+    assert_eq!(book(&f), (Some("bb".into()), true));
+    // A result that sent no step (a report, a pending post) leaves both.
+    let report = queries::MarketUpdate {
+        sent_step: None,
+        ..no_answer
+    };
+    queries::record_market_result(&f.conn, &f.id, &seen, &report).unwrap();
+    assert_eq!(book(&f), (Some("bb".into()), true));
+    // Taken: the market holds it.
+    let taken_bb = queries::MarketUpdate {
+        sent_step: Some("bb"),
+        ..taken
+    };
+    queries::record_market_result(&f.conn, &f.id, &seen, &taken_bb).unwrap();
+    assert_eq!(book(&f), (Some("bb".into()), false));
 }
 
 /// R28, a reorg back to Cancelling: while the cancel draft is unsent the

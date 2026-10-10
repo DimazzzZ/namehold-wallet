@@ -75,7 +75,8 @@ fn test_schema_version_tracking() {
     // 035 (shakedex_listing_finalize: the FINALIZE into the lock).
     // 036 (shakedex_cancel: the cancel's drafts and outpoint).
     // 037 (shakedex_market: market bookkeeping, attempts and error).
-    assert_eq!(count, 37);
+    // 038 (shakedex_market_step: the step the market was last sent).
+    assert_eq!(count, 38);
 }
 
 #[test]

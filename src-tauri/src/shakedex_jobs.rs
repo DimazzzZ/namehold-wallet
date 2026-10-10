@@ -2602,6 +2602,7 @@ fn record(
             error: r.error.as_deref(),
             accepted: r.accepted,
             told: r.told,
+            sent_step: None,
         },
     )?;
     Ok(())

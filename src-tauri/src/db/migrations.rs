@@ -62,6 +62,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
     ("036", include_str!("../sql/036_shakedex_cancel.sql")),
     ("037", include_str!("../sql/037_shakedex_market.sql")),
+    ("038", include_str!("../sql/038_shakedex_market_step.sql")),
 ];
 
 pub fn run(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -103,7 +104,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 37, "expected 37 migrations, got {count}");
+        assert_eq!(count, 38, "expected 38 migrations, got {count}");
     }
 
     /// A database already at 033 (a real upgrade) takes 034 on top of its
@@ -300,6 +301,53 @@ mod tests {
         assert_eq!(top, MIGRATIONS.last().unwrap().0);
     }
 
+    /// A database already at 037 (the T6 schema) takes 038 on top: the
+    /// listing keeps its row, with no step recorded as sent.
+    #[test]
+    fn migration_038_applies_on_top_of_037() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v < "038") {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                [version],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO wallet_profiles (id, label, kind, network, account_xpub, account_index, watch_only)
+             VALUES ('p', 'P', 'mnemonic_hot', 'mainnet', 'xpub', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO shakedex_listings (id, wallet_profile_id, name, mode, state, lock_pubkey_hex, publish, market_status)
+             VALUES ('l1', 'p', 'dexsale', 'buy_now', 'listed', '02', 1, 'listed')",
+            [],
+        )
+        .unwrap();
+        run(&conn).unwrap();
+        let sent: Option<String> = conn
+            .query_row(
+                "SELECT market_sent_step FROM shakedex_listings WHERE id = 'l1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sent, None);
+        let top: String = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(top, MIGRATIONS.last().unwrap().0);
+    }
+
     #[test]
     fn run_is_idempotent() {
         let conn = Connection::open_in_memory().unwrap();
@@ -308,7 +356,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, 37);
+        assert_eq!(count, 38);
     }
 
     #[test]
