@@ -58,6 +58,12 @@ struct Fx {
 /// address of ours, and the listing file Finalize & sign writes (expiry MTP
 /// + 365 days). Its lock TRANSFER `e1…` was sent (`lockd`, broadcasted).
 fn fx(state: ListingState, publish: bool) -> Fx {
+    fx_at(state, publish, MTP)
+}
+
+/// [`fx`] at the node's median time `mtp`: the step's lock time and the
+/// listing's expiry follow it.
+fn fx_at(state: ListingState, publish: bool, mtp: u64) -> Fx {
     let conn = seeded("mainnet", "mnemonic_hot", "http://127.0.0.1:9");
     let key = derive_lock_key(&ExtendedPrivKey::from_seed(&seed()).unwrap(), NET, 0, NAME).unwrap();
     let lock = script::lock_address(NET, &key.pubkey).unwrap();
@@ -69,14 +75,14 @@ fn fx(state: ListingState, publish: bool) -> Fx {
         .unwrap();
     let locked = !matches!(state, ListingState::Locking | ListingState::ReadyToFinalize);
     let (steps_json, file) = if locked {
-        let step = signed_step(&key, &payment, PRICE, sell::buy_now_lock_time(MTP));
+        let step = signed_step(&key, &payment, PRICE, sell::buy_now_lock_time(mtp));
         (
             stored(std::slice::from_ref(&step)),
             Some(file_of(
                 &key,
                 &payment,
                 &[step],
-                MTP + sell::LISTING_LIFETIME_SECS,
+                mtp + sell::LISTING_LIFETIME_SECS,
             )),
         )
     } else {
@@ -105,7 +111,7 @@ fn fx(state: ListingState, publish: bool) -> Fx {
         market_attempts: 0,
         market_error: None,
         market_accepted: false,
-        expires_at: locked.then_some((MTP + sell::LISTING_LIFETIME_SECS) as i64),
+        expires_at: locked.then_some((mtp + sell::LISTING_LIFETIME_SECS) as i64),
         abort_draft_id: None,
         abort_txid: None,
         sold_txid: None,
@@ -1995,4 +2001,119 @@ async fn lowered_listing_is_kept_while_cancelling_and_then_reported() {
         json!({ "outcome": "cancelled", "cancelTxHash": txid("c1") })
     );
     assert_eq!(listing(&f).market_status, Some(MarketStatus::Reported));
+}
+
+/// R25, decision 3, SECURITY.md: `run_sync_steps`, as `namehold-syncd` runs
+/// it (and as the app does), uploads a published Listed listing — the step
+/// signed at Finalize & sign, byte for byte — and makes no send: no
+/// `sendrawtransaction` reaches hsd, no draft is created or changed, the
+/// listing's steps and file are what they were. The daemon holds no key; the
+/// source check `shakedex_layering_tests::shakedex_jobs_hold_no_signing_call`
+/// keeps a signing call out of the jobs.
+#[tokio::test]
+async fn daemon_publishes_but_never_signs_or_broadcasts() {
+    use crate::commands::sync::{run_sync_steps, SyncCaller, SyncStatus};
+    for caller in [SyncCaller::Daemon, SyncCaller::App] {
+        // Real time: run_sync_steps reads the clock itself.
+        let now = chrono::Utc::now().timestamp();
+        let f = fx_at(ListingState::Listed, true, (now - 600) as u64);
+        let mut hsd = mockito::Server::new_async().await;
+        let mut s = market().await;
+        let path = std::env::temp_dir().join(format!(
+            "namehold_publish_{}_{caller:?}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let db_path = path.to_str().unwrap().to_string();
+        queries::set_setting(&f.conn, "node_rpc_url", &hsd.url()).unwrap();
+        queries::set_setting(&f.conn, "learnhns_base_url", &s.url()).unwrap();
+        f.conn
+            .execute("VACUUM INTO ?1", rusqlite::params![db_path])
+            .unwrap();
+        let rpc = |srv: &mut ServerGuard, method: &str, result: serde_json::Value| {
+            srv.mock("POST", "/")
+                .match_body(Matcher::PartialJson(json!({ "method": method })))
+                .with_header("content-type", "application/json")
+                .with_body(crate::tests::shakedex_cmd_tests::rpc_ok(result))
+        };
+        let _chain = rpc(
+            &mut hsd,
+            "getblockchaininfo",
+            json!({
+                "chain": "main", "blocks": TIP, "headers": TIP,
+                "verificationprogress": 1.0, "mediantime": now - 600
+            }),
+        )
+        .create_async()
+        .await;
+        let _coin = hsd
+            .mock("GET", format!("/coin/{}/0", txid("f1")).as_str())
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "version": 0, "height": TIP - 5, "value": LOCK_VALUE, "address": f.lock,
+                    "covenant": { "type": COV_FINALIZE, "action": "FINALIZE",
+                                  "items": [hex::encode(crate::noncustodial::names::hash_name(NAME).unwrap()), "32000000"] },
+                    "coinbase": false, "hash": txid("f1"), "index": 0
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let send = hsd
+            .mock("POST", "/")
+            .match_body(Matcher::Regex("sendrawtransaction".into()))
+            .expect(0)
+            .create_async()
+            .await;
+        let (up, seen) = upload_mock(&mut s, 1).await;
+        let before = listing(&f);
+        let drafts = |c: &Connection| -> Vec<(String, String)> {
+            let mut st = c
+                .prepare("SELECT id, status FROM wallet_tx_drafts ORDER BY id")
+                .unwrap();
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let drafts_before = drafts(&f.conn);
+        let status = std::sync::Arc::new(tokio::sync::Mutex::new(SyncStatus::default()));
+        run_sync_steps(&status, &db_path, PROFILE, caller).await;
+        send.assert_async().await;
+        up.assert_async().await;
+        let after_conn = Connection::open(&db_path).unwrap();
+        let after = queries::get_shakedex_listing(&after_conn, &f.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.market_status,
+            Some(MarketStatus::Listed),
+            "{caller:?}"
+        );
+        assert_eq!(
+            (
+                after.steps_json.as_str(),
+                after.listing_file_json.as_deref()
+            ),
+            (
+                before.steps_json.as_str(),
+                before.listing_file_json.as_deref()
+            )
+        );
+        assert_eq!(
+            drafts(&after_conn),
+            drafts_before,
+            "{caller:?}: no draft created or changed"
+        );
+        let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+        let stored = ListingFile::parse(before.listing_file_json.as_deref().unwrap(), NET).unwrap();
+        assert_eq!(
+            ListingFile::parse(&sent, NET).unwrap().steps,
+            stored.steps,
+            "the signed step as stored"
+        );
+        drop(after_conn);
+        let _ = std::fs::remove_file(&path);
+    }
 }

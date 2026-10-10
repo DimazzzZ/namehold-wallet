@@ -116,6 +116,31 @@ fn ts_listing_state_union_lists_every_state() {
     assert_eq!(in_ts, in_rust);
 }
 
+/// The TS mirror `ShakedexMarketStatus` (`src/types/index.ts`) lists
+/// exactly the spellings serde sends for `MarketStatus` (T6, Deviation 12).
+#[test]
+fn ts_market_status_union_lists_every_status() {
+    let ts = include_str!("../../../src/types/index.ts");
+    let start = ts
+        .find("export type ShakedexMarketStatus =")
+        .expect("the TS union");
+    let block = &ts[start..start + ts[start..].find(';').expect("end of the union")];
+    let mut in_ts: Vec<&str> = block.split('"').skip(1).step_by(2).collect();
+    in_ts.sort_unstable();
+    let mut in_rust: Vec<String> = queries::MarketStatus::ALL
+        .iter()
+        .map(|s| {
+            serde_json::to_value(s)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    in_rust.sort_unstable();
+    assert_eq!(in_ts, in_rust);
+}
+
 /// The TS mirror `ShakedexListingSummary` (`src/types/index.ts`) has
 /// exactly the keys serde sends for `ListingSummary`, an optional one typed
 /// `| null`.
@@ -150,6 +175,9 @@ fn ts_listing_summary_lists_every_field() {
         cancel_draft_id: None,
         cancel_finalize_draft_id: None,
         cancel_blocks_remaining: None,
+        market_status: None,
+        market_error: None,
+        market_retry_at: None,
     };
     let json = serde_json::to_value(&summary).unwrap();
     let mut in_rust: Vec<&str> = json
@@ -2272,7 +2300,7 @@ async fn reorged_abort_leaves_a_newer_listing_open() {
 
 /// The abort is a sync step: both the app's sync and the daemon's run it
 /// against an authoritative node, and neither sends anything (SECURITY.md,
-/// "Daemon is read-only").
+/// "The daemon never signs or broadcasts").
 #[tokio::test]
 async fn sync_aborts_the_listing_in_the_app_and_the_daemon() {
     use crate::commands::sync::{run_sync_steps, SyncCaller, SyncStatus};

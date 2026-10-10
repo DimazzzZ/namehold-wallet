@@ -134,8 +134,9 @@ const EXPIRED_UNFINALIZED: &str =
     "the name expired before it was finalized — the purchase was paid, but the name is lost";
 
 /// Whether this refresh may rebroadcast a purchase that went missing (R13).
-/// The sync daemon never broadcasts (SECURITY.md, "Daemon is read-only"), so
-/// it only tracks the purchase and leaves its one rebroadcast to the app.
+/// The sync daemon never broadcasts (SECURITY.md, "The daemon never signs or
+/// broadcasts"), so it only tracks the purchase and leaves its one
+/// rebroadcast to the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rebroadcast {
     Allowed,

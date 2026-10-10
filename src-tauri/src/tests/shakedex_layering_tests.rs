@@ -102,3 +102,31 @@ fn transaction_commands_do_not_reach_into_the_shakedex_commands() {
         );
     }
 }
+
+/// SECURITY.md, "The daemon never signs or broadcasts": the jobs that run in
+/// `namehold-syncd` (`shakedex_jobs.rs`, every step of `run_sync_steps` it
+/// adds) name no signing call and no key: no lock key derivation, no seed,
+/// no signer session, no step or plan signing.
+#[test]
+fn shakedex_jobs_hold_no_signing_call() {
+    let src = include_str!("../shakedex_jobs.rs");
+    let forbidden = [
+        "sign_step",
+        "sign_plan",
+        "derive_lock_key",
+        "ExtendedPrivKey",
+        "SecretKey",
+        "signer",
+        "seed_from_mnemonic",
+        "secure_wallet",
+        "sign_p2wsh_input",
+    ];
+    let mut scanned = 0;
+    for line in code_lines(src) {
+        scanned += 1;
+        for f in forbidden {
+            assert!(!line.contains(f), "shakedex_jobs.rs names `{f}`: {line}");
+        }
+    }
+    assert!(scanned > 500, "only {scanned} lines scanned");
+}
