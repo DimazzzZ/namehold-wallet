@@ -447,7 +447,9 @@ pub fn with_expiry(stored: &str, expires_at: u64, network: Network) -> Result<St
 /// outpoint, public key and payment address, one step with the same price,
 /// lock time and signature, no fee address in effect (a fee output is not
 /// committed to by `0x84`, so a copy naming one is someone else's), and the
-/// same `expiresAt` (an earlier one hides the listing early).
+/// same `expiresAt` (an earlier one hides the listing early). Deliberately
+/// not reflexive: a file with a fee address in effect or more than one step
+/// is never the market listing, even compared with itself.
 pub fn same_market_listing(copy: &ListingFile, ours: &ListingFile) -> bool {
     copy.steps.len() == 1
         && copy.name == ours.name
