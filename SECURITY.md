@@ -173,12 +173,7 @@ takeover.
 
 #### 4. The daemon never signs or broadcasts
 
-The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market.
-
-**Guarantee:** The daemon never has access to key material, never signs
-transactions, and never broadcasts. Even if the daemon is compromised, it cannot
-steal funds or sign malicious transactions. It can read the node (and the explorer),
-write sync data and publish to LearnHNS Market what the app already signed.
+**Guarantee:** The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market. It never has access to key material. Even if the daemon is compromised, it cannot steal funds or sign malicious transactions: it can read the node (and the explorer), write sync data and publish to LearnHNS Market what the app already signed.
 
 The "never broadcasts" half is a runtime rule, not a property of the build: the daemon runs the same `run_sync_steps` as the app, and the Shakedex purchase refresh in it holds the one path that can send (a purchase's single rebroadcast, already signed by the app). That path is closed for the daemon by `Rebroadcast::Never`: `daemon_sync_makes_no_send_call_where_the_apps_sync_does` runs the daemon's own `sync_profile` against a mock hsd holding a purchase due for its rebroadcast and checks that no `sendrawtransaction` reaches it, while the app's sync of the same wallet sends one; `daemon_never_rebroadcasts_and_leaves_it_to_the_app` checks the refresh itself under `Rebroadcast::Never`. Signing stays impossible in the daemon: it has no key material.
 
@@ -292,6 +287,12 @@ The Market lists names for sale through Shakedex, read from the LearnHNS Market 
 | Name finalized into a lock this wallet cannot move | Finalize & sign re-derives the lock key after the node reads and refuses unless the node's confirmed lock TRANSFER commits to that key's lock and the stored public key is that key's (R18) | `commands/shakedex.rs` (`prepare_lock_finalize`) | `shakedex_sell_tests::refuses_finalize_on_commitment_mismatch` |
 | Listing file out before its FINALIZE is mined | Export refuses in Locking, ReadyToFinalize and Finalizing | `commands/shakedex.rs` (`export_listing_file_from_conn`) | `shakedex_sell_tests::listing_file_is_exported_only_once_the_finalize_is_mined` |
 | Daemon rebroadcasts a purchase | `SyncCaller::Daemon` never rebroadcasts | `commands/sync.rs`, `shakedex_jobs.rs` | `shakedex_purchase_state_tests::{daemon_sync_makes_no_send_call_where_the_apps_sync_does, daemon_never_rebroadcasts_and_leaves_it_to_the_app}` |
+| Daemon crashes mid-sync | Heartbeat every 10s; stale-lock takeover after 30s; app respawns daemon on next startup | `db/sync_lock.rs`, `commands/daemon_ctl.rs` | `sync_lock` tests |
+| Concurrent writes by app + daemon | Cross-process `sync_locks` table; app acquires with priority, daemon preempts stale locks | `db/sync_lock.rs`, `commands/sync.rs` | `sync_lock`, `sync_race` tests |
+| Daemon signs (would-be) | Daemon has no access to key material — it reads hsd, writes sync data and, on mainnet, publishes listings the app already signed; the market jobs name no signing call | `bin/namehold-syncd.rs`, `daemon/mod.rs`, `shakedex_jobs.rs` | (no key material in the daemon process), `shakedex_layering_tests::shakedex_jobs_hold_no_signing_call` |
+| Daemon broadcasts (would-be) | The one send path in `run_sync_steps` (a purchase's rebroadcast) is closed for the daemon at runtime by `Rebroadcast::Never` | `commands/sync.rs`, `shakedex_jobs.rs` | `shakedex_purchase_state_tests::{daemon_sync_makes_no_send_call_where_the_apps_sync_does, daemon_never_rebroadcasts_and_leaves_it_to_the_app}`, `shakedex_jobs_tests::daemon_publishes_but_never_signs_or_broadcasts` |
+| Daemon publishes to the market | Mainnet only; already-signed steps re-verified on hsd; no key in the jobs | `market/learnhns.rs`, `shakedex_jobs.rs` | `learnhns_tests::no_http_off_mainnet`, `shakedex_jobs_tests::{daemon_publishes_but_never_signs_or_broadcasts, steps_not_signed_by_the_lock_are_not_uploaded}` |
+| hsd left running after app exit | Intentional when "Sync in background" ON; hsd bound to loopback + api-key required | `lib.rs` (setup/exit hooks) | `settings-background-sync` tests |
 
 ---
 
@@ -347,9 +348,3 @@ dependencies of this crate.
 - [User Manual](./docs/USER_MANUAL.md) -- user-facing security guidance
 - [CHANGELOG](./CHANGELOG.md) -- security fixes and improvements
 - [hsd API docs](https://hsd-dev.org/api-docs/) -- Handshake node RPC reference
-| Daemon crashes mid-sync | Heartbeat every 10s; stale-lock takeover after 30s; app respawns daemon on next startup | `db/sync_lock.rs`, `commands/daemon_ctl.rs` | `sync_lock` tests |
-| Concurrent writes by app + daemon | Cross-process `sync_locks` table; app acquires with priority, daemon preempts stale locks | `db/sync_lock.rs`, `commands/sync.rs` | `sync_lock`, `sync_race` tests |
-| Daemon signs (would-be) | Daemon has no access to key material — it reads hsd, writes sync data and, on mainnet, publishes listings the app already signed; the market jobs name no signing call | `bin/namehold-syncd.rs`, `daemon/mod.rs`, `shakedex_jobs.rs` | (no key material in the daemon process), `shakedex_layering_tests::shakedex_jobs_hold_no_signing_call` |
-| Daemon broadcasts (would-be) | The one send path in `run_sync_steps` (a purchase's rebroadcast) is closed for the daemon at runtime by `Rebroadcast::Never` | `commands/sync.rs`, `shakedex_jobs.rs` | `shakedex_purchase_state_tests::{daemon_sync_makes_no_send_call_where_the_apps_sync_does, daemon_never_rebroadcasts_and_leaves_it_to_the_app}`, `shakedex_jobs_tests::daemon_publishes_but_never_signs_or_broadcasts` |
-| Daemon publishes to the market | Mainnet only; already-signed steps re-verified on hsd; no key in the jobs | `market/learnhns.rs`, `shakedex_jobs.rs` | `learnhns_tests::no_http_off_mainnet`, `shakedex_jobs_tests::{daemon_publishes_but_never_signs_or_broadcasts, steps_not_signed_by_the_lock_are_not_uploaded}` |
-| hsd left running after app exit | Intentional when "Sync in background" ON; hsd bound to loopback + api-key required | `lib.rs` (setup/exit hooks) | `settings-background-sync` tests |

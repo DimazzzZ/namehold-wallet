@@ -948,7 +948,7 @@ export interface ShakedexListingSummary {
   cancelFinalizeDraftId: string | null;
   /** Blocks left until the cancel's FINALIZE is valid, at the last sync. */
   cancelBlocksRemaining: number | null;
-  /** Where the listing stands on LearnHNS Market; null while nothing was told. */
+  /** Where the listing stands on LearnHNS Market; null while our current listing is not yet told. */
   marketStatus: ShakedexMarketStatus | null;
   /** The market's own refusal, or why it gave no answer. */
   marketError: string | null;
