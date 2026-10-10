@@ -7493,8 +7493,10 @@ async fn lower_refused_when_the_lock_coin_is_spent() {
 /// R26, R28 (`lock_on_node`, the checks Lower price and Cancel share): a
 /// lock coin reply for another txid or output, without its address, with a
 /// value that is not a coin's, or without a readable name height is "could
-/// not check", nothing asked or written; hsd's txid in upper case is the
-/// stored lock coin all the same (the prompt is reached).
+/// not check", nothing asked or written; a lock coin left over from an
+/// earlier registration (its name height not hsd's) is refused with that
+/// reason; hsd's txid in upper case is the stored lock coin all the same (the
+/// prompt is reached).
 #[tokio::test]
 async fn lower_refused_on_lock_coin_replies_that_do_not_hold() {
     let mut l = listed_fixture().await;
@@ -7531,6 +7533,22 @@ async fn lower_refused_on_lock_coin_replies_that_do_not_hold() {
         assert!(matches!(e, crate::error::AppError::Rpc(_)), "{case}: {e:?}");
         assert_not_lowered(&l, &before);
     }
+
+    // The name expired and was opened again: hsd's name height is not the
+    // one the lock coin commits to.
+    let mut later = info.clone();
+    later["info"]["height"] = (NAME_HEIGHT + 1).into();
+    l.node(
+        LISTED_TIP,
+        Some(LISTED_MTP),
+        later,
+        vec![(lock.0.clone(), lock.1, Some(mined.clone()))],
+    )
+    .await;
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("leftover"));
+    assert!(e.contains("earlier registration"), "{e}");
+    assert_not_lowered(&l, &before);
 
     let mut upper = mined;
     upper["hash"] = lock.0.to_uppercase().into();
