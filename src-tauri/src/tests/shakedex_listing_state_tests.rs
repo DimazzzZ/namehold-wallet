@@ -2468,16 +2468,20 @@ async fn external_cancel_awaits_its_finalize() {
 /// failed, dropped or deleted) while hsd shows the lock coin a mined coin
 /// (no transaction of the node spends it) is Listed again — Restored
 /// without a listing file — and forgets that cancel. An alive cancel (unsent
-/// or sent) leaves it Cancelling.
+/// or sent) leaves it Cancelling, and so does a lock coin back in the
+/// mempool (R22's unsell rule: no file is published over an unmined
+/// FINALIZE). A dead cancel on a name that expired, or was opened again,
+/// ends the listing as Expired, never Listed first.
 #[tokio::test]
 async fn dead_cancel_returns_the_listing() {
-    for (status, file, want) in [
-        (Some("failed"), true, ListingState::Listed),
-        (Some("dropped"), true, ListingState::Listed),
-        (None, true, ListingState::Listed),
-        (Some("dropped"), false, ListingState::Restored),
-        (Some("signed"), true, ListingState::Cancelling),
-        (Some("broadcasted"), true, ListingState::Cancelling),
+    for (status, file, mined, want) in [
+        (Some("failed"), true, true, ListingState::Listed),
+        (Some("dropped"), true, true, ListingState::Listed),
+        (None, true, true, ListingState::Listed),
+        (Some("dropped"), false, true, ListingState::Restored),
+        (Some("signed"), true, true, ListingState::Cancelling),
+        (Some("broadcasted"), true, true, ListingState::Cancelling),
+        (Some("dropped"), true, false, ListingState::Cancelling),
     ] {
         let f = fx(ListingState::Listed);
         if !file {
@@ -2489,22 +2493,193 @@ async fn dead_cancel_returns_the_listing() {
                 .execute("DELETE FROM wallet_tx_drafts WHERE id = 'cx'", [])
                 .unwrap();
         }
+        let height = if mined { TIP - 20 } else { -1 };
         run(
             &f,
             &node(
                 info((&f.lock_txid, f.lock_vout)),
-                vec![lock_coin(&f, TIP - 20)],
+                vec![lock_coin(&f, height)],
                 Value::Null,
             ),
         )
         .await;
         let l = listing(&f);
-        assert_eq!(l.state, want, "{status:?}, file {file}");
+        assert_eq!(l.state, want, "{status:?}, file {file}, mined {mined}");
         if want != ListingState::Cancelling {
             assert_eq!(
                 (l.cancel_draft_id, l.cancel_txid),
                 (None, None),
                 "{status:?}"
+            );
+        }
+    }
+    let mut reopened = info((&txid("00"), 0));
+    reopened["info"]["height"] = 7_000.into();
+    for (case, reply) in [
+        ("info null", json!({ "info": null, "start": null })),
+        ("reopened", reopened),
+    ] {
+        let f = fx(ListingState::Listed);
+        our_cancel(&f, "dropped");
+        run(&f, &node(reply, vec![lock_coin(&f, TIP - 20)], Value::Null)).await;
+        assert_eq!(listing(&f).state, ListingState::Expired, "{case}");
+    }
+}
+
+/// `txid` as hsd's `GET /tx` sends a FINALIZE home: input 0 spends
+/// `transfer` with the lock script's FINALIZE witness `[lockScript]`,
+/// output 0 the FINALIZE of NAME at `to` (hsd's items: name hash, height,
+/// raw name, flags, claimed, renewals, block hash).
+fn home_rest(txid: &str, transfer: (&str, u32), to: &str, height: i64) -> Value {
+    json!({
+        "hash": txid, "height": height, "hex": "00",
+        "inputs": [
+            { "prevout": { "hash": transfer.0, "index": transfer.1 },
+              "witness": ["76".repeat(40)] },
+            { "prevout": { "hash": "aa".repeat(32), "index": 1 },
+              "witness": [format!("{}01", "bb".repeat(64)), "02".repeat(33)] }
+        ],
+        "outputs": [
+            { "value": 1_000_000, "address": to, "covenant": { "type": COV_FINALIZE,
+              "action": "FINALIZE",
+              "items": [name_hash(), height_item(NAME_HEIGHT), hex::encode(NAME), "00",
+                        "00000000", "00000000", "bb".repeat(32)] } },
+            { "value": 1, "address": to,
+              "covenant": { "type": 0, "action": "NONE", "items": [] } }
+        ]
+    })
+}
+
+/// A cancel mined and finalized home from another same-seed device before
+/// this device syncs (R28): the name's owner is already a FINALIZE at an
+/// address of ours. Its input k is the cancel's TRANSFER, and that
+/// TRANSFER, read from hsd, spends the stored lock coin into a TRANSFER at
+/// our lock committing to an address of ours: the listing (Listed,
+/// Cancelling, Restored, restored by name) is CancelAwaitingFinalize with
+/// the TRANSFER's outpoint. A FINALIZE to an address not ours, of another
+/// name, or in the mempool, a TRANSFER out of another lock coin or in the
+/// mempool, or a TRANSFER hsd does not find (no index) is no verdict.
+#[tokio::test]
+async fn cancel_finalized_home_before_a_sync_awaits_its_finalize() {
+    let (c7, d1) = (txid("c7"), txid("d1"));
+    let stranger = address::encode_p2wpkh(NET, &[8; 20]).unwrap();
+    let home_coin = |to: &str, height: i64| {
+        coin(
+            &d1,
+            0,
+            to,
+            COV_FINALIZE,
+            vec![
+                name_hash(),
+                height_item(NAME_HEIGHT),
+                hex::encode(NAME),
+                "00".into(),
+                "00000000".into(),
+                "00000000".into(),
+                "bb".repeat(32),
+            ],
+            height,
+        )
+    };
+    // hsd's `GET /tx` for d1 (the FINALIZE) and c7 (the cancel TRANSFER).
+    let chain = |to: &str, height: i64, transfer: Option<Value>, other_name: bool| {
+        let mut home = home_rest(&d1, (&c7, 0), to, height);
+        if other_name {
+            home["outputs"][0]["covenant"]["items"][0] =
+                hex::encode(names::hash_name("othername").unwrap()).into();
+        }
+        let (d, c) = (d1.clone(), c7.clone());
+        node(info((&d1, 0)), vec![home_coin(to, height)], Value::Null).with_tx_by_hash_fn(
+            move |t| {
+                Ok(if t == d {
+                    home.clone()
+                } else if t == c {
+                    transfer.clone().unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                })
+            },
+        )
+    };
+    for (case, from, by_name, cancelling) in [
+        ("listed", ListingState::Listed, false, false),
+        ("cancelling", ListingState::Listed, false, true),
+        ("restored", ListingState::Restored, false, false),
+        ("restored by name", ListingState::Restored, true, false),
+    ] {
+        let f = fx(from);
+        if by_name {
+            restored_by_name(&f);
+        }
+        if cancelling {
+            our_cancel(&f, "broadcasted");
+        }
+        let transfer = cancel_rest(&f, &c7, TIP - 20, &f.cancel);
+        run(&f, &chain(&f.cancel, TIP, Some(transfer), false)).await;
+        let l = listing(&f);
+        assert_eq!(
+            (l.state, l.cancel_txid.as_deref(), l.cancel_vout),
+            (
+                ListingState::CancelAwaitingFinalize,
+                Some(c7.as_str()),
+                Some(0)
+            ),
+            "{case}"
+        );
+    }
+    let f = fx(ListingState::Listed);
+    let ok = cancel_rest(&f, &c7, TIP - 20, &f.cancel);
+    let mut other = ok.clone();
+    other["inputs"][0]["prevout"]["hash"] = txid("c2").into();
+    let mut mempool = ok.clone();
+    mempool["height"] = (-1).into();
+    for (case, to, height, transfer, other_name) in [
+        (
+            "home not ours",
+            stranger.clone(),
+            TIP,
+            Some(ok.clone()),
+            false,
+        ),
+        (
+            "home of another name",
+            f.cancel.clone(),
+            TIP,
+            Some(ok.clone()),
+            true,
+        ),
+        (
+            "home in the mempool",
+            f.cancel.clone(),
+            -1,
+            Some(ok.clone()),
+            false,
+        ),
+        (
+            "another lock coin",
+            f.cancel.clone(),
+            TIP,
+            Some(other),
+            false,
+        ),
+        (
+            "transfer in the mempool",
+            f.cancel.clone(),
+            TIP,
+            Some(mempool),
+            false,
+        ),
+        ("transfer not found", f.cancel.clone(), TIP, None, false),
+    ] {
+        let f = fx(ListingState::Listed);
+        let rpc = chain(&to, height, transfer, other_name);
+        run(&f, &rpc).await;
+        assert_eq!(listing(&f).state, ListingState::Listed, "{case}");
+        if case == "home not ours" {
+            assert_eq!(
+                rpc.count_matching(|c| matches!(c, RpcCall::TxByHash(t) if *t == d1)),
+                0,
+                "a FINALIZE at an address not ours is not read further"
             );
         }
     }
