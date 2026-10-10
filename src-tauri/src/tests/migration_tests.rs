@@ -72,7 +72,10 @@ fn test_schema_version_tracking() {
     //      outranked the network default on every other network).
     // 033 (shakedex_purchases: buyer-side Shakedex purchase tracking).
     // 034 (shakedex_listings: seller-side Shakedex listing tracking).
-    assert_eq!(count, 36);
+    // 035 (shakedex_listing_finalize: the FINALIZE into the lock).
+    // 036 (shakedex_cancel: the cancel's drafts and outpoint).
+    // 037 (shakedex_market: market bookkeeping, attempts and error).
+    assert_eq!(count, 37);
 }
 
 #[test]

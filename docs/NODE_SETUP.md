@@ -92,7 +92,7 @@ When "Sync in background" is enabled (Settings → Connections, default ON):
   SQLite database.
 - hsd stays running after the app closes (not killed). The daemon keeps it alive
   so it can sync in the background.
-- The daemon is **read-only**: it never signs or broadcasts transactions.
+- The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market.
 - A cross-process DB lock table (`sync_locks`) coordinates the app's manual Sync
   and the daemon, using heartbeats (every 10 seconds) and stale-lock takeover
   (after 30 seconds) to prevent conflicts.

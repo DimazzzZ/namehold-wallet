@@ -1707,10 +1707,13 @@ pub enum ListingWrite {
     CancelDone,
     /// [`lower_listing_price`]: a cheaper step, the state unchanged.
     LowerPrice,
+    /// [`refresh_listing_expiry`]: the listing file's `expiresAt` rewritten
+    /// before it lapses (R23), the state unchanged.
+    RefreshExpiry,
 }
 
 impl ListingWrite {
-    pub const ALL: [ListingWrite; 26] = [
+    pub const ALL: [ListingWrite; 27] = [
         Self::Ready,
         Self::LockingAgain,
         Self::Finalize,
@@ -1737,6 +1740,7 @@ impl ListingWrite {
         Self::RevertCancelFinalize,
         Self::CancelDone,
         Self::LowerPrice,
+        Self::RefreshExpiry,
     ];
 
     /// The table: `(from, to)`, the states this write moves a listing from
@@ -1758,11 +1762,12 @@ impl ListingWrite {
     ///   Restored, mined from any state whose lock coin is ours to spend,
     ///   back to Cancelling on a reorg, Cancelled once the name is home;
     ///   Lower price rewrites a Listed listing's steps and file, its state
-    ///   unchanged. A purchase mined before our cancel is a sale all the same
-    ///   (Sell from Cancelling), and a reorg may replace a purchase with our
-    ///   mined cancel (CancelMined from Sold, its sold txid forgotten) or our
-    ///   mined cancel with a purchase or another cancel (Sell and CancelMined
-    ///   from the two cancel-mined states).
+    ///   unchanged, and the `expiresAt` refresh likewise. A purchase mined
+    ///   before our cancel is a sale all the same (Sell from Cancelling), and
+    ///   a reorg may replace a purchase with our mined cancel (CancelMined
+    ///   from Sold, its sold txid forgotten) or our mined cancel with a
+    ///   purchase or another cancel (Sell and CancelMined from the two
+    ///   cancel-mined states).
     pub const fn transition(self) -> (&'static [ListingState], &'static [ListingState]) {
         use ListingState as S;
         const BEFORE_LOCK_END: &[ListingState] = &[S::Locking, S::ReadyToFinalize, S::Finalizing];
@@ -1833,6 +1838,7 @@ impl ListingWrite {
             Self::RevertCancelFinalize => (&[S::CancelFinalizing], &[S::CancelAwaitingFinalize]),
             Self::CancelDone => (CANCEL_MINED, &[S::Cancelled]),
             Self::LowerPrice => (&[S::Listed], &[S::Listed]),
+            Self::RefreshExpiry => (&[S::Listed], &[S::Listed]),
         }
     }
 
@@ -1854,6 +1860,30 @@ impl ListingWrite {
         )
     }
 
+    /// R25 (T6): the SET fragment that starts a listing's market bookkeeping
+    /// over when this write moves it to `to` = Listed. A move into Listed
+    /// from another state (a cancel that died, a reorg back, an upgrade) is
+    /// a fresh listing: the market may have been told something else
+    /// meanwhile, so the bookkeeping and the acceptance are cleared and the
+    /// publish job uploads it afresh ([`MARKET_RESET_SQL`]). A Listed to
+    /// Listed write (a lowered price, a refreshed expiry) is not: the market
+    /// holds this lock's listing, so the acceptance stays and a listing the
+    /// market was told about is Retrying, due now, with no failure counted
+    /// ([`market_changed_sql`]): keep-listed checks the market's copy and
+    /// uploads the new one at the next sync, a Refused one included (what
+    /// is sent changed). Empty for every other target, including the other
+    /// targets of a write that may also go to Listed (Unsell to Finalizing
+    /// or Restored, Uncancel to Restored): those listings are off the market
+    /// set.
+    fn market_reset_sql(self, to: ListingState) -> String {
+        debug_assert!(self.to().contains(&to), "{self:?} to {to:?}");
+        match (self, to) {
+            (Self::LowerPrice | Self::RefreshExpiry, _) => market_changed_sql(),
+            (_, ListingState::Listed) => MARKET_RESET_SQL.to_owned(),
+            _ => String::new(),
+        }
+    }
+
     /// The target of a write that has one.
     fn target(self) -> ListingState {
         match self.to() {
@@ -1873,6 +1903,46 @@ impl ListingWrite {
             )))
         }
     }
+}
+
+/// The SET fragment that starts a fresh listing's market bookkeeping over
+/// ([`ListingWrite::market_reset_sql`]).
+const MARKET_RESET_SQL: &str = ", market_status = NULL, market_retry_at = NULL, \
+     market_attempts = 0, market_error = NULL, market_accepted = 0, market_changed = 0";
+
+/// The SET fragment of a Listed to Listed write that changes what is sent
+/// ([`ListingWrite::market_reset_sql`]): a listing the market was told about
+/// is Retrying, due now, no failure counted, its acceptance kept, and
+/// `market_changed` set (a differing market copy is then our own older
+/// one); one never told stays untold (its first upload is the publish
+/// job's). The status is spelled by [`MarketStatus::as_str`], never by
+/// hand.
+fn market_changed_sql() -> String {
+    format!(
+        ", market_status = CASE WHEN market_status IS NULL THEN NULL ELSE '{}' END, \
+         market_retry_at = NULL, market_attempts = 0, market_error = NULL, market_changed = 1",
+        MarketStatus::Retrying.as_str()
+    )
+}
+
+/// R28 (T6): the SET fragment of the writes that record a mined sale or a
+/// mined cancel ([`sell_shakedex_listing`], [`sell_listing_through_proven_lock`],
+/// [`mark_listing_cancel_mined`]):
+/// a listing the market was told about is due for its report at once
+/// (`market_retry_at` cleared), not when its hourly check would have been.
+const REPORT_DUE_NOW_SQL: &str = ", market_retry_at = CASE WHEN market_status IS NOT NULL \
+     THEN NULL ELSE market_retry_at END";
+
+/// The condition that the listing's cancel draft (`cancel_draft_id`) exists
+/// and was never sent ([`UNSENT_STATUSES`]). An SQL condition on
+/// `shakedex_listings`.
+fn cancel_draft_unsent_sql() -> String {
+    format!(
+        "EXISTS (
+             SELECT 1 FROM wallet_tx_drafts d
+             WHERE d.id = shakedex_listings.cancel_draft_id AND d.status IN {})",
+        sql_list(UNSENT_STATUSES.iter().copied())
+    )
 }
 
 /// The `NOT EXISTS` condition of a write that reopens a listing: no other
@@ -1962,6 +2032,86 @@ impl rusqlite::types::FromSql for ListingMode {
     }
 }
 
+/// Where a published listing stands on LearnHNS Market
+/// (`shakedex_listings.market_status`; `None`: nothing told yet). Stored by
+/// [`MarketStatus::as_str`]; serde sends camelCase to the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MarketStatus {
+    /// The day-0 pending listing is posted (R23).
+    Pending,
+    /// Our current step is on the market as we uploaded it (R23, R25).
+    Listed,
+    /// Someone else's copy was on the market; ours was uploaded over it (R25).
+    ReplacedReuploaded,
+    /// The market gave no answer; the next try is at `market_retry_at` (R25).
+    Retrying,
+    /// The market answered no (its own 4xx JSON `error`); its words are in
+    /// `market_error`. Not retried automatically (`market_retry_at` unset):
+    /// tried again only once what would be sent changes — a Lower price, an
+    /// expiry refresh, a reset after a revert ([`ListingWrite::market_reset_sql`]).
+    Refused,
+    /// A stored step does not verify over the lock coin hsd reports; nothing
+    /// was uploaded (carried from T4).
+    StepsUnverified,
+    /// The market was told of the cancel or the sale, answered that it
+    /// lists nothing to withdraw, or refused the report (its words in
+    /// `market_error`) (R28): nothing more to tell, the jobs are done with
+    /// this listing.
+    Reported,
+}
+
+impl MarketStatus {
+    pub const ALL: [MarketStatus; 7] = [
+        Self::Pending,
+        Self::Listed,
+        Self::ReplacedReuploaded,
+        Self::Retrying,
+        Self::Refused,
+        Self::StepsUnverified,
+        Self::Reported,
+    ];
+
+    /// The stored spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Listed => "listed",
+            Self::ReplacedReuploaded => "replaced_reuploaded",
+            Self::Retrying => "retrying",
+            Self::Refused => "refused",
+            Self::StepsUnverified => "steps_unverified",
+            Self::Reported => "reported",
+        }
+    }
+}
+
+impl std::str::FromStr for MarketStatus {
+    type Err = AppError;
+
+    fn from_str(s: &str) -> Result<Self, AppError> {
+        Self::ALL
+            .into_iter()
+            .find(|status| status.as_str() == s)
+            .ok_or_else(|| AppError::Other(format!("unknown market status '{s}'")))
+    }
+}
+
+impl rusqlite::ToSql for MarketStatus {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
+impl rusqlite::types::FromSql for MarketStatus {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        value
+            .as_str()?
+            .parse()
+            .map_err(|e: AppError| rusqlite::types::FromSqlError::Other(e.to_string().into()))
+    }
+}
+
 /// One row of `shakedex_listings`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShakedexListing {
@@ -1984,8 +2134,28 @@ pub struct ShakedexListing {
     pub steps_json: String,
     pub listing_file_json: Option<String>,
     pub publish: bool,
-    pub market_status: Option<String>,
+    pub market_status: Option<MarketStatus>,
+    /// RFC 3339 UTC: when the next market action on the listing is due.
     pub market_retry_at: Option<String>,
+    /// Failed market tries since the last success: the backoff exponent.
+    pub market_attempts: i64,
+    /// The market's own refusal, or why there was no answer.
+    pub market_error: Option<String>,
+    /// The market accepted an upload of this listing (or served our own
+    /// copy back) since it last became Listed: a Cancelling listing is kept
+    /// on the market only then, so a cancel in progress never publishes a
+    /// listing for the first time.
+    pub market_accepted: bool,
+    /// What is sent changed since the market last accepted or served our
+    /// copy (a Lower price, an expiry refresh, a reorg back to an unsent
+    /// cancel): a market copy that differs is then our own older one, not
+    /// someone else's. Cleared only by an accepted upload or a matched copy.
+    pub market_changed: bool,
+    /// The market took something of ours for this listing (its pending post
+    /// accepted, an upload accepted, our copy served back): its mined cancel
+    /// or sale is then reported (R28). Sticky: nothing clears it, since a
+    /// listing row is one lock (a new lock is a new row).
+    pub market_told: bool,
     pub expires_at: Option<i64>,
     pub abort_draft_id: Option<String>,
     /// The txid of the Cancel transfer `abort_draft_id` holds; kept when that
@@ -2013,7 +2183,7 @@ pub struct ShakedexListing {
 const SHAKEDEX_LISTING_COLS: &str = "id, wallet_profile_id, name, mode, state, lock_pubkey_hex, \
     lock_transfer_draft_id, lock_finalize_draft_id, lock_transfer_txid, lock_txid, lock_vout, \
     payment_address, cancel_address, cancel_child_index, steps_json, listing_file_json, publish, market_status, \
-    market_retry_at, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout, \
+    market_retry_at, market_attempts, market_error, market_accepted, market_changed, market_told, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout, \
     cancel_finalize_draft_id, cancel_blocks_remaining, created_at, updated_at";
 
 fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShakedexListing> {
@@ -2037,6 +2207,11 @@ fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<Shakedex
         publish: row.get::<_, i64>("publish")? != 0,
         market_status: row.get("market_status")?,
         market_retry_at: row.get("market_retry_at")?,
+        market_attempts: row.get("market_attempts")?,
+        market_error: row.get("market_error")?,
+        market_accepted: row.get::<_, i64>("market_accepted")? != 0,
+        market_changed: row.get::<_, i64>("market_changed")? != 0,
+        market_told: row.get::<_, i64>("market_told")? != 0,
         expires_at: row.get("expires_at")?,
         abort_draft_id: row.get("abort_draft_id")?,
         abort_txid: row.get("abort_txid")?,
@@ -2069,11 +2244,12 @@ pub fn insert_shakedex_listing(
             (id, wallet_profile_id, name, mode, state, lock_pubkey_hex, lock_transfer_draft_id,
              lock_finalize_draft_id, lock_transfer_txid, lock_txid, lock_vout, payment_address,
              cancel_address, cancel_child_index, steps_json, listing_file_json, publish,
-             market_status, market_retry_at, expires_at, abort_draft_id, abort_txid, sold_txid,
-             cancel_txid, cancel_draft_id, cancel_vout, cancel_finalize_draft_id,
-             cancel_blocks_remaining)
+             market_status, market_retry_at, market_attempts, market_error, expires_at,
+             abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout,
+             cancel_finalize_draft_id, cancel_blocks_remaining, market_accepted, market_changed,
+             market_told)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
+                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
         params![
             l.id,
             l.wallet_profile_id,
@@ -2094,6 +2270,8 @@ pub fn insert_shakedex_listing(
             i64::from(l.publish),
             l.market_status,
             l.market_retry_at,
+            l.market_attempts,
+            l.market_error,
             l.expires_at,
             l.abort_draft_id,
             l.abort_txid.as_deref().map(listing_txid),
@@ -2102,7 +2280,10 @@ pub fn insert_shakedex_listing(
             l.cancel_draft_id,
             l.cancel_vout,
             l.cancel_finalize_draft_id,
-            l.cancel_blocks_remaining
+            l.cancel_blocks_remaining,
+            i64::from(l.market_accepted),
+            i64::from(l.market_changed),
+            i64::from(l.market_told)
         ],
     )?;
     Ok(())
@@ -2317,8 +2498,7 @@ pub fn link_shakedex_listing_abort(
     draft_id: &str,
     cancel_txid: &str,
 ) -> Result<usize, AppError> {
-    // The lock TRANSFER is output 0 of its draft (the plan's covenant output).
-    if transfer_vout != 0 {
+    if transfer_vout != crate::noncustodial::shakedex::sell::LOCK_TRANSFER_NAME_VOUT {
         return Ok(0);
     }
     let sql = format!(
@@ -2530,8 +2710,9 @@ pub fn revert_listing_to_ready(conn: &rusqlite::Connection, id: &str) -> Result<
 /// one of `w`'s source states. Returns how many rows changed (0 or 1).
 fn move_listing(conn: &rusqlite::Connection, id: &str, w: ListingWrite) -> Result<usize, AppError> {
     let sql = format!(
-        "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now')
+        "UPDATE shakedex_listings SET state = ?2, updated_at = datetime('now'){}
          WHERE id = ?1 AND {}",
+        w.market_reset_sql(w.target()),
         w.source_sql()
     );
     Ok(conn.execute(&sql, params![id, w.target()])?)
@@ -2666,8 +2847,15 @@ fn sale_write(
     let sql = format!(
         "UPDATE shakedex_listings
          SET state = ?2, sold_txid = ?3, cancel_finalize_draft_id = NULL,
-             cancel_blocks_remaining = NULL, updated_at = datetime('now')
+             cancel_blocks_remaining = NULL, updated_at = datetime('now'){}
          WHERE id = ?1 AND {} AND lock_txid = ?4 AND lock_vout = ?5",
+        // Mined (Sold): the report is due at once; a mempool purchase
+        // (SalePending) is never reported.
+        if w == ListingWrite::Sell {
+            REPORT_DUE_NOW_SQL
+        } else {
+            ""
+        },
         w.source_sql()
     );
     Ok(conn.execute(
@@ -2697,7 +2885,7 @@ pub fn sell_listing_through_proven_lock(
     let sql = format!(
         "UPDATE shakedex_listings
          SET state = ?2, sold_txid = ?3, lock_txid = ?4, lock_vout = ?5,
-             updated_at = datetime('now')
+             updated_at = datetime('now'){REPORT_DUE_NOW_SQL}
          WHERE id = ?1 AND {} AND lock_txid IS NULL AND lock_vout IS NULL",
         ListingWrite::ProvenLockSale.source_sql()
     );
@@ -2766,9 +2954,10 @@ pub fn unsell_shakedex_listing(
     let w = ListingWrite::Unsell;
     w.check_to(to)?;
     let sql = format!(
-        "UPDATE shakedex_listings SET state = ?2, sold_txid = NULL, updated_at = datetime('now')
+        "UPDATE shakedex_listings SET state = ?2, sold_txid = NULL, updated_at = datetime('now'){}
          WHERE id = ?1 AND {} AND {}
            AND (?2 <> ?3 OR listing_file_json IS NOT NULL)",
+        w.market_reset_sql(to),
         w.source_sql(),
         no_other_open_listing_sql()
     );
@@ -2824,9 +3013,10 @@ pub fn upgrade_restored_lock(
     let sql = format!(
         "UPDATE shakedex_listings
          SET state = ?2, mode = ?3, payment_address = ?4, steps_json = ?5,
-             listing_file_json = ?6, expires_at = ?7, updated_at = datetime('now')
+             listing_file_json = ?6, expires_at = ?7, updated_at = datetime('now'){}
          WHERE id = ?1 AND {} AND lock_txid = ?8 AND lock_vout = ?9
            AND lock_pubkey_hex = ?10",
+        w.market_reset_sql(w.target()),
         w.source_sql()
     );
     Ok(conn.execute(
@@ -2895,7 +3085,9 @@ pub fn mark_listing_cancelling_in_tx(
 
 /// What a listing loses when its cancel can no longer land: the draft link
 /// and the cancel's txid and output. Shared by [`uncancel_listing`] and the
-/// deletion of an unsent cancel draft. `?2` is the target state.
+/// deletion of an unsent cancel draft (which calls it); back to Listed it
+/// also starts the market bookkeeping over
+/// ([`ListingWrite::market_reset_sql`]). `?2` is the target state.
 const UNCANCEL_SET: &str = "state = ?2, cancel_draft_id = NULL, cancel_txid = NULL, \
      cancel_vout = NULL, cancel_blocks_remaining = NULL, updated_at = datetime('now')";
 
@@ -2911,8 +3103,9 @@ pub fn uncancel_listing(
     let w = ListingWrite::Uncancel;
     w.check_to(to)?;
     let sql = format!(
-        "UPDATE shakedex_listings SET {UNCANCEL_SET}
+        "UPDATE shakedex_listings SET {UNCANCEL_SET}{}
          WHERE id = ?1 AND {} AND (?2 <> ?3 OR listing_file_json IS NOT NULL)",
+        w.market_reset_sql(to),
         w.source_sql()
     );
     Ok(conn.execute(&sql, params![id, to, ListingState::Listed])?)
@@ -2935,7 +3128,8 @@ pub fn mark_listing_cancel_mined(
     let sql = format!(
         "UPDATE shakedex_listings
          SET state = ?2, cancel_txid = ?3, cancel_vout = ?4, cancel_blocks_remaining = NULL,
-             cancel_finalize_draft_id = NULL, sold_txid = NULL, updated_at = datetime('now')
+             cancel_finalize_draft_id = NULL, sold_txid = NULL,
+             updated_at = datetime('now'){REPORT_DUE_NOW_SQL}
          WHERE id = ?1 AND {} AND lock_txid = ?5 AND lock_vout = ?6",
         w.source_sql()
     );
@@ -2956,22 +3150,51 @@ pub fn mark_listing_cancel_mined(
 /// or the lock coin a coin again. Cancelling, the mined output, the lockup
 /// count and the FINALIZE draft link forgotten (that FINALIZE cannot be
 /// mined before the cancel is again, and its lockup starts over then).
-/// Only for the cancel the listing stores (`cancel_txid`). Returns how many
-/// rows changed (0 or 1).
+/// Only for the cancel the listing stores (`cancel_txid`). When the
+/// listing's own cancel draft is unsent ([`UNSENT_STATUSES`]: the mined
+/// cancel was another device's, or this one's before a send we never
+/// recorded), the listing is back among [`list_listings_kept_on_market`], so
+/// the market bookkeeping of a listing the market was told about
+/// (`market_status` set) starts over as Retrying, due now (a `Reported` left
+/// from the mined cancel would stop the jobs), `market_accepted` kept: the
+/// market may still hold the copy it accepted. One the market was never told
+/// about stays untold, and a Refused one stays Refused (not retried until
+/// what is sent changes). With the cancel sent it all stays. Returns how
+/// many rows changed (0 or 1).
 pub fn mark_listing_cancel_unmined(
     conn: &rusqlite::Connection,
     id: &str,
     cancel_txid: &str,
 ) -> Result<usize, AppError> {
     let w = ListingWrite::CancelUnmined;
+    // SQLite evaluates every SET expression over the row as it was, so each
+    // CASE reads the old `market_status`.
+    let told = format!(
+        "({} AND market_status IS NOT NULL AND market_status <> ?5)",
+        cancel_draft_unsent_sql()
+    );
     let sql = format!(
         "UPDATE shakedex_listings
          SET state = ?2, cancel_vout = NULL, cancel_blocks_remaining = NULL,
-             cancel_finalize_draft_id = NULL, updated_at = datetime('now')
+             cancel_finalize_draft_id = NULL, updated_at = datetime('now'),
+             market_status = CASE WHEN {told} THEN ?4 ELSE market_status END,
+             market_retry_at = CASE WHEN {told} THEN NULL ELSE market_retry_at END,
+             market_attempts = CASE WHEN {told} THEN 0 ELSE market_attempts END,
+             market_error = CASE WHEN {told} THEN NULL ELSE market_error END,
+             market_changed = CASE WHEN {told} THEN 1 ELSE market_changed END
          WHERE id = ?1 AND {} AND cancel_txid = ?3",
         w.source_sql()
     );
-    Ok(conn.execute(&sql, params![id, w.target(), listing_txid(cancel_txid)])?)
+    Ok(conn.execute(
+        &sql,
+        params![
+            id,
+            w.target(),
+            listing_txid(cancel_txid),
+            MarketStatus::Retrying,
+            MarketStatus::Refused
+        ],
+    )?)
 }
 
 /// R28: a CancelAwaitingFinalize listing becomes CancelFinalizing with the
@@ -3072,8 +3295,9 @@ pub fn lower_listing_price(
     let sql = format!(
         "UPDATE shakedex_listings
          SET state = ?2, steps_json = ?3, listing_file_json = ?4, expires_at = ?5,
-             updated_at = datetime('now')
+             updated_at = datetime('now'){}
          WHERE id = ?1 AND {} AND lock_txid = ?6 AND lock_vout = ?7 AND steps_json = ?8",
+        w.market_reset_sql(w.target()),
         w.source_sql()
     );
     Ok(conn.execute(
@@ -3087,6 +3311,119 @@ pub fn lower_listing_price(
             listing_txid(p.lock.0),
             i64::from(p.lock.1),
             p.old_steps_json
+        ],
+    )?)
+}
+
+/// What the `expiresAt` refresh writes (R23, T6): the stored listing file
+/// with its new expiry, over the lock coin and the file the job read.
+pub struct RefreshedExpiry<'a> {
+    pub lock: (&'a str, u32),
+    pub old_file: &'a str,
+    pub listing_file_json: &'a str,
+    pub expires_at: i64,
+}
+
+/// R23: a Listed listing's file with its `expiresAt` moved ahead, only while
+/// it is still Listed on that lock coin with the file the job read
+/// ([`ListingWrite::RefreshExpiry`]); a listing the market was told about
+/// becomes Retrying, due now, its acceptance kept, so keep-listed uploads
+/// the new file. Returns how many rows changed.
+pub fn refresh_listing_expiry(
+    conn: &rusqlite::Connection,
+    id: &str,
+    r: &RefreshedExpiry,
+) -> Result<usize, AppError> {
+    let w = ListingWrite::RefreshExpiry;
+    let sql = format!(
+        "UPDATE shakedex_listings
+         SET state = ?2, listing_file_json = ?3, expires_at = ?4,
+             updated_at = datetime('now'){}
+         WHERE id = ?1 AND {} AND lock_txid = ?5 AND lock_vout = ?6 AND listing_file_json = ?7",
+        w.market_reset_sql(w.target()),
+        w.source_sql()
+    );
+    Ok(conn.execute(
+        &sql,
+        params![
+            id,
+            w.target(),
+            r.listing_file_json,
+            r.expires_at,
+            listing_txid(r.lock.0),
+            i64::from(r.lock.1),
+            r.old_file
+        ],
+    )?)
+}
+
+/// The listing as a market job read it: its result is written only over
+/// that row ([`record_market_result`]).
+pub struct MarketSeen<'a> {
+    pub state: ListingState,
+    pub steps_json: &'a str,
+    pub listing_file_json: Option<&'a str>,
+}
+
+/// A market job's result (R23, R25, R28).
+#[derive(Debug, Clone, Copy)]
+pub struct MarketUpdate<'a> {
+    pub status: MarketStatus,
+    /// RFC 3339 UTC: when the next market action is due; `None`: none due.
+    pub retry_at: Option<&'a str>,
+    pub attempts: i64,
+    pub error: Option<&'a str>,
+    /// The market accepted an upload (or served our own copy back): sets
+    /// `market_accepted`, which no later result clears.
+    pub accepted: bool,
+    /// The market took something of ours (the pending post, an upload, our
+    /// copy served back): sets `market_told`, which nothing clears.
+    pub told: bool,
+}
+
+/// Write a market job's result. Not a state write (no `ListingWrite`): the
+/// listing's state is untouched, and the row changes only while it is still
+/// the one the job read (`seen`: state, steps, file), so a Lower price or a
+/// state change made meanwhile is never overwritten with a stale result.
+///
+/// A round trip back to the same state, steps and file (Listed, a cancel
+/// built and its unsent draft deleted, Listed again with the bookkeeping
+/// reset) passes this guard, and the stale result replaces the reset. That
+/// result is still what the market holds unless another market call ran in
+/// between, and only the market jobs call the market: they run in
+/// `commands::sync::run_sync_steps` under the profile's `sync_lock`, one
+/// sync of a profile at a time. The lock is not strict: the app takes a
+/// daemon's lock (`sync_lock::acquire_for_app`), and the daemon's sync in
+/// flight runs to its end (`commands::sync::spawn_lock_heartbeat` drops the
+/// lost-lock answer of `refresh_heartbeat`), so an app job and a daemon job
+/// may overlap then.
+///
+/// Returns how many rows changed.
+pub fn record_market_result(
+    conn: &rusqlite::Connection,
+    id: &str,
+    seen: &MarketSeen,
+    u: &MarketUpdate,
+) -> Result<usize, AppError> {
+    Ok(conn.execute(
+        "UPDATE shakedex_listings
+         SET market_status = ?2, market_retry_at = ?3, market_attempts = ?4,
+             market_error = ?5, market_accepted = MAX(market_accepted, ?9),
+             market_changed = CASE WHEN ?9 THEN 0 ELSE market_changed END,
+             market_told = MAX(market_told, ?10),
+             updated_at = datetime('now')
+         WHERE id = ?1 AND state = ?6 AND steps_json = ?7 AND listing_file_json IS ?8",
+        params![
+            id,
+            u.status,
+            u.retry_at,
+            u.attempts,
+            u.error,
+            seen.state,
+            seen.steps_json,
+            seen.listing_file_json,
+            i64::from(u.accepted),
+            i64::from(u.told)
         ],
     )?)
 }
@@ -3238,8 +3575,10 @@ fn release_cancel(
 /// The listings the market jobs keep on LearnHNS (R24, R25: the jobs that
 /// re-upload and step listings read this): the
 /// published (`publish`) ones that are Listed, or Cancelling while their
-/// cancel draft is not sent yet (`draft`, `signed`): R28 stops the jobs once
-/// a cancel is broadcast. The mainnet rule (R23) is the jobs' own.
+/// cancel draft is not sent yet (`draft`, `signed`; R28 stops the jobs once
+/// a cancel is broadcast) and only once the market accepted an upload of it
+/// (`market_accepted`): a cancel in progress never publishes a listing for
+/// the first time. The mainnet rule (R23) is the jobs' own.
 pub fn list_listings_kept_on_market(
     conn: &rusqlite::Connection,
     profile_id: &str,
@@ -3247,16 +3586,94 @@ pub fn list_listings_kept_on_market(
     let sql = format!(
         "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
          WHERE wallet_profile_id = ?1 AND publish = 1
-           AND (state = ?2
-                OR (state = ?3 AND EXISTS (
-                    SELECT 1 FROM wallet_tx_drafts d
-                    WHERE d.id = shakedex_listings.cancel_draft_id AND d.status IN {})))
+           AND (state = ?2 OR (state = ?3 AND market_accepted = 1 AND {}))
          ORDER BY created_at, id",
-        sql_list(UNSENT_STATUSES.iter().copied())
+        cancel_draft_unsent_sql()
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
         params![profile_id, ListingState::Listed, ListingState::Cancelling],
+        row_to_shakedex_listing,
+    )?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// R28 (T6): the published (`publish`) listings whose end LearnHNS Market
+/// must be told, once our own node has it mined: Sold (a mined purchase,
+/// reported with its `sold_txid`), or the cancel mined —
+/// [`ListingState::CANCEL_MINED`] or Cancelled, reported with its
+/// `cancel_txid` (the mined cancel's, [`mark_listing_cancel_mined`]); a row
+/// without that txid is listed too, so the job records it rather than
+/// skipping it unseen. Never a Cancelling one
+/// (sent or not, the cancel is in no block and a purchase may still beat
+/// it) nor SalePending (a purchase in the mempool). Only once the market
+/// has taken our pending post or an upload of this listing (`market_told`,
+/// sticky: whatever later uploads got, and through the move into Listed)
+/// and not reported yet (`market_status` anything but `reported`, unset
+/// included; a report the market refused is recorded as `reported` too:
+/// nothing more to tell). A listing the market never took anything of
+/// (never sent, its steps unverified, a refused or unanswered post) is not
+/// reported. The mainnet rule (R23) is the job's own.
+pub fn list_listings_to_report(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<ShakedexListing>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
+         WHERE wallet_profile_id = ?1 AND publish = 1
+           AND market_told = 1 AND market_status IS NOT ?2
+           AND (state = ?3 OR state = ?4 OR state IN {})
+         ORDER BY created_at, id",
+        ListingState::cancel_mined_sql()
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params![
+            profile_id,
+            MarketStatus::Reported,
+            ListingState::Sold,
+            ListingState::Cancelled
+        ],
+        row_to_shakedex_listing,
+    )?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// R23 day 0: the published listings to announce as pending — Locking once
+/// its lock TRANSFER draft has been sent ([`REACHED_CHAIN_STATUSES`]),
+/// ReadyToFinalize and Finalizing — that the market has not taken yet
+/// (`market_status` unset, retrying after no answer, or steps unverified: a
+/// row the post could not be built from, tried again after its backoff; a
+/// refused one waits for a change, see [`MarketStatus::Refused`]). A Listed
+/// listing a reorg takes back to Finalizing with its status Retrying or
+/// StepsUnverified (left by its uploads) gets a pending post again, as a
+/// Retrying one always did. The mainnet rule is the job's own.
+pub fn list_listings_to_announce(
+    conn: &rusqlite::Connection,
+    profile_id: &str,
+) -> Result<Vec<ShakedexListing>, AppError> {
+    let sql = format!(
+        "SELECT {SHAKEDEX_LISTING_COLS} FROM shakedex_listings
+         WHERE wallet_profile_id = ?1 AND publish = 1
+           AND (market_status IS NULL OR market_status IN (?2, ?6))
+           AND (state IN (?3, ?4)
+                OR (state = ?5 AND EXISTS (
+                    SELECT 1 FROM wallet_tx_drafts d
+                    WHERE d.id = shakedex_listings.lock_transfer_draft_id
+                      AND d.status IN {})))
+         ORDER BY created_at, id",
+        reached_chain_sql()
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params![
+            profile_id,
+            MarketStatus::Retrying,
+            ListingState::ReadyToFinalize,
+            ListingState::Finalizing,
+            ListingState::Locking,
+            MarketStatus::StepsUnverified
+        ],
         row_to_shakedex_listing,
     )?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)

@@ -409,7 +409,7 @@ pub enum SyncCaller {
 
 impl SyncCaller {
     /// Whether this caller's sync may rebroadcast a missing purchase: the
-    /// daemon never may (SECURITY.md, "Daemon is read-only").
+    /// daemon never may (SECURITY.md, "The daemon never signs or broadcasts").
     pub fn rebroadcast(self) -> crate::shakedex_jobs::Rebroadcast {
         match self {
             SyncCaller::App => crate::shakedex_jobs::Rebroadcast::Allowed,
@@ -431,7 +431,10 @@ impl SyncCaller {
 /// 3. Discover new names — node path when authoritative, explorer path otherwise.
 /// 4. Shakedex purchases — only when the node is authoritative; never sends
 ///    from the daemon. Then the Shakedex listing aborts (R19), on the same
-///    condition; that step sends nothing from either caller.
+///    condition; that step sends nothing from either caller. Then, on a
+///    mainnet profile, the market jobs (R23, R25): publishing and keeping
+///    published listings on LearnHNS Market; they read the node and write
+///    to the market only, never signing or sending, from either caller.
 ///
 /// `caller` says who runs it. The app writes `SyncStatus` progress labels (the
 /// UI polls them) and may rebroadcast a missing purchase; the daemon has no
@@ -557,6 +560,13 @@ pub async fn run_sync_steps(
         // Restored) and after it (Listed, SalePending, Sold). Reads the node
         // and the database only, so the daemon runs it as the app does.
         crate::shakedex_jobs::refresh_listings_step(db_path, profile_id).await;
+        // R23, R25, R28 (T6): publish, keep listed and report the profile's
+        // published listings on LearnHNS Market, mainnet only. Both read the
+        // node and write to the market and the listing's market bookkeeping
+        // only: no key, no signature, no send — the daemon runs them as the
+        // app does (SECURITY.md, "The daemon never signs or broadcasts").
+        crate::shakedex_jobs::publish_listings_step(db_path, profile_id).await;
+        crate::shakedex_jobs::keep_listed_step(db_path, profile_id).await;
     }
 }
 

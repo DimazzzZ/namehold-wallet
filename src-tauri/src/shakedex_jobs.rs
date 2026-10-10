@@ -55,19 +55,36 @@
 //! is mined first (the losing cancel's coins released), Listed again when a
 //! cancel can no longer land.
 //! Both only read the node, and never take the same listing.
+//!
+//! The market jobs (T6) run after them, on mainnet only:
+//! [`publish_listings_step`] announces a published listing on LearnHNS
+//! Market as pending once its lock TRANSFER is sent (R23 day 0) and uploads
+//! its current price step once the FINALIZE into the lock is mined, every
+//! stored step verified over the lock coin our node reports first
+//! ([`market_copy`]); [`keep_listed_step`] keeps it there (R25) until its
+//! cancel is sent (R24, R28). Once our node has its sale or cancel mined,
+//! the publish step tells the market, once (R28). They read
+//! the node and write to the market and the listing's market bookkeeping
+//! only: the market's answers never change a listing's state.
 
 use std::collections::HashSet;
 
 use crate::db::queries::{self, PurchaseProgress, PurchaseState, ShakedexPurchase, TxDraftRow};
 use crate::error::AppError;
+use crate::market::learnhns::{
+    LearnHnsClient, ListingKind, MarketReply, PendingListing, ProofCopy, StatusRecorded,
+    StatusReport,
+};
 use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
 use crate::noncustodial::rpc::{self, NodeRpcClient};
 use crate::noncustodial::send::RESERVATION_TTL_SECS;
 use crate::noncustodial::shakedex::cancel;
+use crate::noncustodial::shakedex::listing_file;
 use crate::noncustodial::shakedex::purchase::{self, transfer_commits_to};
 use crate::noncustodial::shakedex::script;
 use crate::noncustodial::shakedex::sell;
+use crate::noncustodial::shakedex::template;
 use crate::noncustodial::shakedex::verify;
 use crate::noncustodial::sync::{COV_FINALIZE, COV_TRANSFER};
 use crate::noncustodial::tx_evidence;
@@ -117,8 +134,9 @@ const EXPIRED_UNFINALIZED: &str =
     "the name expired before it was finalized — the purchase was paid, but the name is lost";
 
 /// Whether this refresh may rebroadcast a purchase that went missing (R13).
-/// The sync daemon never broadcasts (SECURITY.md, "Daemon is read-only"), so
-/// it only tracks the purchase and leaves its one rebroadcast to the app.
+/// The sync daemon never broadcasts (SECURITY.md, "The daemon never signs or
+/// broadcasts"), so it only tracks the purchase and leaves its one
+/// rebroadcast to the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rebroadcast {
     Allowed,
@@ -836,8 +854,9 @@ enum CancelOnChain {
 }
 
 /// Read [`CancelOnChain`] for the cancel `cancel_txid`, which spends the
-/// lock TRANSFER at `lock_transfer_txid:0`. The cancel's UPDATE is its
-/// output 0 (`actions::build_plan` puts the covenant output first).
+/// lock TRANSFER at `lock_transfer_txid`:[`sell::LOCK_TRANSFER_NAME_VOUT`].
+/// The cancel's UPDATE is its output 0 (`actions::build_plan` puts the
+/// covenant output first).
 async fn cancel_on_chain(
     client: &dyn NodeRpc,
     cancel_txid: &str,
@@ -849,7 +868,10 @@ async fn cancel_on_chain(
             Ok(None) => CancelOnChain::NotMined,
             Err(_) => CancelOnChain::Unknown,
         },
-        Ok(None) => match client.get_coin(lock_transfer_txid, 0).await {
+        Ok(None) => match client
+            .get_coin(lock_transfer_txid, sell::LOCK_TRANSFER_NAME_VOUT)
+            .await
+        {
             Ok(Some(_)) => CancelOnChain::NotMined,
             Ok(None) | Err(_) => CancelOnChain::Unknown,
         },
@@ -917,7 +939,10 @@ async fn lock_on_chain(
         Ok(LockOnChain::Owner {
             transfer: sell::transfer_height(info),
         })
-    } else if let Some(coin) = client.get_coin(lock_transfer_txid, 0).await? {
+    } else if let Some(coin) = client
+        .get_coin(lock_transfer_txid, sell::LOCK_TRANSFER_NAME_VOUT)
+        .await?
+    {
         // Mined in a block, it would be the owner (or revoked): a node that
         // says otherwise is not consistent, so no verdict — unless the
         // registration it belongs to is gone: the name expired and was
@@ -1321,7 +1346,7 @@ async fn finalize_into_lock(
     let spends_our_transfer = tx
         .inputs
         .get(k)
-        .is_some_and(|(t, v)| t == lock_transfer_txid && *v == 0);
+        .is_some_and(|(t, v)| t == lock_transfer_txid && *v == sell::LOCK_TRANSFER_NAME_VOUT);
     let is_our_lock = tx
         .outputs
         .get(k)
@@ -1620,7 +1645,11 @@ async fn lock_coin_spent(
     // transaction spends, so the FINALIZE into the lock is in no block and
     // no mempool of this node.
     if let Some(lock_transfer_txid) = l.lock_transfer_txid.as_deref() {
-        if client.get_coin(lock_transfer_txid, 0).await?.is_some() {
+        if client
+            .get_coin(lock_transfer_txid, sell::LOCK_TRANSFER_NAME_VOUT)
+            .await?
+            .is_some()
+        {
             match l.state {
                 // Our FINALIZE never landed: Finalize & sign may run again.
                 queries::ListingState::Finalizing if finalize_dead(conn, l)? => {
@@ -2392,4 +2421,853 @@ async fn replaced_cancel_release(
     } else {
         queries::release_replaced_cancel
     })
+}
+
+// ---------------------------------------------------------------------------
+// The market jobs (T6): R23's publishing on LearnHNS Market, R25's keeping
+// listed. Mainnet only; they read the node and write to the market and the
+// listing's market bookkeeping only: never a key, a signature or a send.
+// ---------------------------------------------------------------------------
+
+/// R25: the market copy is checked about hourly.
+pub const KEEP_LISTED_INTERVAL_SECS: i64 = 3_600;
+/// R25: the first retry after a failure, doubled per failure up to
+/// [`RETRY_MAX_SECS`].
+pub const RETRY_BASE_SECS: i64 = 300;
+pub const RETRY_MAX_SECS: i64 = 6 * 3_600;
+/// R23: `expiresAt` is moved ahead once it is this close.
+pub const EXPIRY_REFRESH_MARGIN_SECS: i64 = 30 * 86_400;
+
+/// R25: the wait before try `attempts + 1` after `attempts` failures in a row.
+pub(crate) fn retry_delay_secs(attempts: i64) -> i64 {
+    // Clamped: 2^16 base delays already pass the cap, and a shift past 63
+    // would overflow.
+    let doublings = attempts.saturating_sub(1).clamp(0, 16);
+    RETRY_BASE_SECS
+        .saturating_mul(1_i64 << doublings)
+        .min(RETRY_MAX_SECS)
+}
+
+/// `secs` (Unix) as `market_retry_at` stores it: RFC 3339, UTC, seconds.
+pub(crate) fn rfc3339(secs: i64) -> String {
+    chrono::DateTime::from_timestamp(secs, 0)
+        // Only a time past chrono's range (year 262143) has no RFC 3339 form,
+        // and only a clock that is not real gives one: the epoch makes the
+        // action due at once, as `due` treats a time it cannot read
+        // (retrying early only costs a request; never due loses the listing).
+        .unwrap_or_default()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// Whether a market action on `l` is due at `now`. A `market_retry_at` this
+/// code did not write (unreadable) is due: retrying early only costs a
+/// request, waiting forever loses the listing.
+fn due(l: &queries::ShakedexListing, now: i64) -> bool {
+    match l.market_retry_at.as_deref() {
+        None => true,
+        Some(at) => chrono::DateTime::parse_from_rfc3339(at)
+            .map(|t| t.timestamp() <= now)
+            .unwrap_or(true),
+    }
+}
+
+/// What a market job writes after an outcome ([`after_reply`]).
+struct MarketResult {
+    status: queries::MarketStatus,
+    retry_at: Option<String>,
+    attempts: i64,
+    error: Option<String>,
+    /// The market holds our listing file (`market_accepted`): set from
+    /// [`Outcome::Taken`] only.
+    accepted: bool,
+    /// The market took something of ours (`market_told`): set from
+    /// [`Outcome::Taken`] only.
+    told: bool,
+}
+
+/// A market call's outcome, as the market jobs record it ([`after_reply`]).
+enum Outcome {
+    /// The market took what was sent, or serves our own copy back.
+    /// `holds_ours`: it now holds our listing file (an accepted upload, a
+    /// matched copy), which sets `market_accepted`.
+    Taken { holds_ours: bool },
+    /// The market's own refusal (its 4xx JSON), with its words.
+    Refused(String),
+    /// No verdict: no answer, or the market's "not seen yet", with why.
+    NoVerdict(String),
+}
+
+impl Outcome {
+    /// The outcome of `reply`; `holds_ours`: an acceptance means the market
+    /// now holds our listing file (an upload).
+    fn of<T>(reply: &MarketReply<T>, holds_ours: bool) -> Self {
+        match reply {
+            MarketReply::Accepted(_) => Self::Taken { holds_ours },
+            MarketReply::Refused { status, error } => {
+                Self::Refused(format!("{error} (HTTP {status})"))
+            }
+            MarketReply::NotSeenYet { status, error } => Self::NoVerdict(format!(
+                "the market has not seen it on chain yet: {error} (HTTP {status})"
+            )),
+            MarketReply::NoAnswer(why) => {
+                Self::NoVerdict(format!("no answer from the market: {why}"))
+            }
+        }
+    }
+}
+
+/// What a market job writes after `outcome`, given the listing's attempts
+/// so far: taken → `ok` (Listed/ReplacedReuploaded due again in an hour,
+/// Pending and Reported not due), the count back to 0, `market_accepted`
+/// set when the market now holds our file; the market's own refusal →
+/// Refused with its words and **no** `retry_at` (never retried
+/// automatically: only a write that changes what is sent starts it over);
+/// no verdict (no answer, or the market's "not seen yet": never a verdict
+/// on the listing, whose state is the after-lock job's, from our own node)
+/// → Retrying with the reason, due again after [`retry_delay_secs`] (5 min
+/// doubling to the 6 h cap).
+fn after_reply(
+    outcome: Outcome,
+    ok: queries::MarketStatus,
+    attempts: i64,
+    now: i64,
+) -> MarketResult {
+    use queries::MarketStatus as S;
+    match outcome {
+        Outcome::Taken { holds_ours } => MarketResult {
+            status: ok,
+            retry_at: matches!(ok, S::Listed | S::ReplacedReuploaded)
+                .then(|| rfc3339(now.saturating_add(KEEP_LISTED_INTERVAL_SECS))),
+            attempts: 0,
+            error: None,
+            accepted: holds_ours,
+            told: true,
+        },
+        Outcome::Refused(why) => MarketResult {
+            status: S::Refused,
+            retry_at: None,
+            attempts,
+            error: Some(why),
+            accepted: false,
+            told: false,
+        },
+        Outcome::NoVerdict(why) => backing_off(S::Retrying, attempts, why, now),
+    }
+}
+
+/// One more failure after `attempts` in a row: `status` with `why`, due
+/// again after [`retry_delay_secs`] (5 min doubling to the 6 h cap).
+fn backing_off(
+    status: queries::MarketStatus,
+    attempts: i64,
+    why: String,
+    now: i64,
+) -> MarketResult {
+    let attempts = attempts.saturating_add(1);
+    MarketResult {
+        status,
+        retry_at: Some(rfc3339(now.saturating_add(retry_delay_secs(attempts)))),
+        attempts,
+        error: Some(why),
+        accepted: false,
+        told: false,
+    }
+}
+
+/// Whether an `expiresAt` of `exp` (Unix) is within
+/// [`EXPIRY_REFRESH_MARGIN_SECS`] of `now` (R23: time to move it ahead).
+fn near_expiry(exp: i64, now: i64) -> bool {
+    exp.saturating_sub(now) <= EXPIRY_REFRESH_MARGIN_SECS
+}
+
+/// Write `r` over `l`, the row the job read ([`queries::record_market_result`]:
+/// nothing is written once the listing changed meanwhile).
+fn record(
+    conn: &rusqlite::Connection,
+    l: &queries::ShakedexListing,
+    r: &MarketResult,
+) -> Result<(), AppError> {
+    queries::record_market_result(
+        conn,
+        &l.id,
+        &queries::MarketSeen {
+            state: l.state,
+            steps_json: &l.steps_json,
+            listing_file_json: l.listing_file_json.as_deref(),
+        },
+        &queries::MarketUpdate {
+            status: r.status,
+            retry_at: r.retry_at.as_deref(),
+            attempts: r.attempts,
+            error: r.error.as_deref(),
+            accepted: r.accepted,
+            told: r.told,
+        },
+    )?;
+    Ok(())
+}
+
+/// The market's view of a listing the jobs may upload (R23, R25): every
+/// read from the node, none from the market.
+pub(crate) enum MarketCopy {
+    /// The one-step file to upload (the current step at the node's median
+    /// time), and the listing as it now stands (after an expiry refresh).
+    Ready {
+        file: String,
+        /// `file`, read back by the strict parser.
+        copy: Box<listing_file::ListingFile>,
+        listing: Box<queries::ShakedexListing>,
+    },
+    /// A step of the stored file does not verify over the lock coin hsd
+    /// reports, the file is not this listing's, the row does not read (its
+    /// steps, lock key, lock outpoint, file), or the stored file cannot be
+    /// rewritten with a refreshed expiry or cut to its current step: nothing
+    /// is uploaded.
+    StepsUnverified(String),
+    /// The node gives no verdict this sync (no median time, the lock coin
+    /// spent (404) or not this listing's FINALIZE, unmined, no step valid
+    /// yet): nothing is done, nothing written. A node reply that does not
+    /// read (an error) is no verdict either: logged, nothing written.
+    NotNow(String),
+}
+
+/// R23, R25, carried from T4: the copy of Listed `l` the market would get.
+/// Reads hsd's median time and `GET /coin` of the stored lock outpoint; the
+/// coin must be this listing's FINALIZE at its lock address
+/// ([`sell::ListingLock::stored_coin`]), mined; the stored file must be this
+/// listing's (name, lock outpoint, key, payment address, and the steps the
+/// row stores) and every one of its steps must verify over that coin at the
+/// value hsd reports ([`sell::lock_coin_value`],
+/// [`sell::verify_file_steps`]). A Listed listing whose `expiresAt` is
+/// within [`EXPIRY_REFRESH_MARGIN_SECS`] of `now` gets MTP +
+/// [`sell::LISTING_LIFETIME_SECS`] first, only when that is later than the
+/// stored one ([`queries::refresh_listing_expiry`]). Network-agnostic and
+/// sends nothing: the live test runs it on regtest.
+pub(crate) async fn market_copy(
+    conn: &rusqlite::Connection,
+    node: &dyn NodeRpc,
+    network: Network,
+    l: &queries::ShakedexListing,
+    now: i64,
+) -> Result<MarketCopy, AppError> {
+    let not_now = |why: &str| Ok(MarketCopy::NotNow(why.into()));
+    let unverified = |why: String| Ok(MarketCopy::StepsUnverified(why));
+    // The row first: what it stores either reads or is recorded once as
+    // StepsUnverified (a corrupted row is no node question, and logging it
+    // every sync tells the user nothing).
+    let row = match row_for_market(l, network) {
+        Ok(row) => row,
+        Err(e) => return unverified(e.to_string()),
+    };
+    let RowForMarket {
+        lock,
+        stored_file,
+        at,
+        file,
+    } = row;
+    let Some(mtp) = node.get_blockchain_info().await?.mediantime else {
+        return not_now("the node reported no median time");
+    };
+    let Some(coin) = node.get_coin(lock.0, lock.1).await? else {
+        return not_now("the node reports the lock coin spent");
+    };
+    if at.stored_coin(&coin, lock, COV_FINALIZE).is_err() {
+        return not_now("the node reports something else than this listing's lock coin");
+    }
+    if coin.mined_height()?.is_none() {
+        return not_now("the FINALIZE into the lock is not mined");
+    }
+    let value = sell::lock_coin_value(&coin, &file, &at.address)?;
+    if let Err(e) = sell::verify_file_steps(&file, value, network) {
+        return unverified(e.to_string());
+    }
+    let encoded = match file.encoded_steps() {
+        Ok(e) => e,
+        Err(e) => return unverified(e.to_string()),
+    };
+    let Some(index) = template::current_step_index(&encoded, mtp) else {
+        return not_now("no price step is valid yet");
+    };
+    let refreshed = mtp.saturating_add(sell::LISTING_LIFETIME_SECS);
+    let refresh = l.state == queries::ListingState::Listed
+        && file
+            .expires_at
+            .is_some_and(|exp| file_near_expiry(exp, now) && refreshed > exp);
+    // The file work before any write: the stored file read once already, so
+    // a rewrite or a cut that fails is the row's, recorded as
+    // StepsUnverified (never the node's).
+    let built = || -> Result<(String, String, listing_file::ListingFile), AppError> {
+        let json = if refresh {
+            listing_file::with_expiry(stored_file, refreshed, network)?
+        } else {
+            stored_file.to_string()
+        };
+        let copy = listing_file::market_copy(&json, index, network)?;
+        let parsed = listing_file::ListingFile::parse(&copy, network)?;
+        Ok((json, copy, parsed))
+    };
+    let (json, copy, parsed) = match built() {
+        Ok(b) => b,
+        Err(e) => return unverified(e.to_string()),
+    };
+    let listing = if refresh {
+        let expires_at = i64::try_from(refreshed)
+            .map_err(|_| AppError::Other("listing expiry out of range".into()))?;
+        let moved = queries::refresh_listing_expiry(
+            conn,
+            &l.id,
+            &queries::RefreshedExpiry {
+                lock,
+                old_file: stored_file,
+                listing_file_json: &json,
+                expires_at,
+            },
+        )?;
+        if moved == 0 {
+            return not_now("the listing changed meanwhile");
+        }
+        let Some(listing) = queries::get_shakedex_listing(conn, &l.id)? else {
+            return not_now("the listing is gone");
+        };
+        listing
+    } else {
+        l.clone()
+    };
+    Ok(MarketCopy::Ready {
+        file: copy,
+        copy: Box::new(parsed),
+        listing: Box::new(listing),
+    })
+}
+
+/// Whether a listing file's `expiresAt` of `exp` (Unix) is near
+/// ([`near_expiry`]); one past `i64` is not.
+fn file_near_expiry(exp: u64, now: i64) -> bool {
+    i64::try_from(exp).is_ok_and(|e| near_expiry(e, now))
+}
+
+/// What [`market_copy`] reads from the row alone, before asking the node.
+struct RowForMarket<'a> {
+    lock: (&'a str, u32),
+    stored_file: &'a str,
+    at: sell::ListingLock,
+    file: listing_file::ListingFile,
+}
+
+/// Listing `l`'s stored lock outpoint, lock, and listing file, the file
+/// this listing's own (name, lock outpoint, key, payment address, and the
+/// steps the row stores). An `Err` is the row's, never the node's: the
+/// caller records it as StepsUnverified. Row against file: the market's
+/// copy against ours is [`listing_file::same_market_listing`]'s, file
+/// against file, a different comparison.
+fn row_for_market(
+    l: &queries::ShakedexListing,
+    network: Network,
+) -> Result<RowForMarket<'_>, AppError> {
+    let corrupted = |why: &str| AppError::Other(format!("corrupted listing {}: {why}", l.id));
+    let lock = stored_lock(l)?.ok_or_else(|| corrupted("no lock coin stored"))?;
+    let stored_file = l
+        .listing_file_json
+        .as_deref()
+        .ok_or_else(|| corrupted("no listing file stored"))?;
+    let at = listing_lock(network, l)?;
+    let file = listing_file::ListingFile::parse(stored_file, network)
+        .map_err(|e| corrupted(&format!("the stored listing file does not read: {e}")))?;
+    let steps: Vec<(u64, u64, String)> = file
+        .steps
+        .iter()
+        .map(|s| (s.price, s.lock_time, hex::encode(s.signature)))
+        .collect();
+    let stored: Vec<(u64, u64, String)> = stored_steps(l)?
+        .into_iter()
+        .map(|s| (s.price, s.lock_time, s.signature.to_ascii_lowercase()))
+        .collect();
+    if !(file.name == l.name
+        && hex::encode(file.lock_txid).eq_ignore_ascii_case(lock.0)
+        && file.lock_vout == lock.1
+        && file.public_key == lock_pubkey(l)?
+        && l.payment_address.as_deref() == Some(file.payment_addr.as_str())
+        && steps == stored)
+    {
+        return Err(corrupted("the stored listing file is not this listing's"));
+    }
+    Ok(RowForMarket {
+        lock,
+        stored_file,
+        at,
+        file,
+    })
+}
+
+/// R23 (T6): announce and publish the profile's published listings from a
+/// sync. Mainnet only: returns before any read off mainnet, and the client
+/// is told the profile's network, so it refuses every write off mainnet as
+/// well (`LearnHnsClient::from_settings`, the one client of the app's and
+/// the daemon's sync). Silent when the database, the profile or a client
+/// cannot be opened; a failed run is logged.
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn publish_listings_step(db_path: &str, profile_id: &str) {
+    let Some((conn, node, market)) = market_job_clients(db_path, profile_id) else {
+        return;
+    };
+    let now = chrono::Utc::now().timestamp();
+    if let Err(e) = publish_listings_with_client(&conn, &node, &market, profile_id, now).await {
+        eprintln!("shakedex market: publish failed for {profile_id}: {e}");
+    }
+}
+
+/// R25 (T6): keep the profile's published listings on the market from a
+/// sync; the IO shell of [`keep_listed_with_client`], like
+/// [`publish_listings_step`].
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub async fn keep_listed_step(db_path: &str, profile_id: &str) {
+    let Some((conn, node, market)) = market_job_clients(db_path, profile_id) else {
+        return;
+    };
+    let now = chrono::Utc::now().timestamp();
+    if let Err(e) = keep_listed_with_client(&conn, &node, &market, profile_id, now).await {
+        eprintln!("shakedex market: keep listed failed for {profile_id}: {e}");
+    }
+}
+
+/// The database, node client and market client of a market job, on a
+/// mainnet profile only (R23).
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn market_job_clients(
+    db_path: &str,
+    profile_id: &str,
+) -> Option<(rusqlite::Connection, NodeRpcClient, LearnHnsClient)> {
+    let conn = crate::db::connection::open_migrated(db_path).ok()?;
+    let network = queries::profile_network(&conn, profile_id).ok()?;
+    if network != Network::Main {
+        return None;
+    }
+    let node = NodeRpcClient::for_profile(&conn, profile_id).ok()?;
+    let settings = queries::get_settings(&conn).ok()?;
+    let market = LearnHnsClient::from_settings(&settings)
+        .ok()?
+        .for_network(network);
+    Some((conn, node, market))
+}
+
+/// R23 (T6): announce and publish the profile's published listings. Mainnet
+/// only (returns before any read off mainnet). Day 0: each listing of
+/// [`queries::list_listings_to_announce`] that is due gets its pending
+/// listing (no node read). Once Listed (the FINALIZE into the lock mined,
+/// one confirmation): each Listed Buy Now listing of
+/// [`queries::list_listings_kept_on_market`] (published) the market has not
+/// taken yet (`market_status` unset) gets its current step uploaded
+/// ([`market_copy`]); reverse auctions are T8's. R28: each due listing of
+/// [`queries::list_listings_to_report`] — the market told about it, and our
+/// node has its sale or cancel mined — is reported first ([`report`]), once;
+/// a sent cancel already stopped the keep jobs, the report waits for it to
+/// be mined. Reads the node, writes only
+/// to the market and to the listing's market bookkeeping (and an expiry
+/// refresh): never signs, never broadcasts (SECURITY.md). A failure on one
+/// listing is logged and leaves it for the next sync.
+pub async fn publish_listings_with_client(
+    conn: &rusqlite::Connection,
+    node: &dyn NodeRpc,
+    market: &LearnHnsClient,
+    profile_id: &str,
+    now: i64,
+) -> Result<(), AppError> {
+    if queries::profile_network(conn, profile_id)? != Network::Main {
+        return Ok(());
+    }
+    // Reports first: a report never waits behind an upload (no listing is
+    // in two of these sets: their states differ).
+    for l in queries::list_listings_to_report(conn, profile_id)? {
+        if due(&l, now) {
+            if let Err(e) = report(conn, market, &l, now).await {
+                eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
+            }
+        }
+    }
+    for l in queries::list_listings_to_announce(conn, profile_id)? {
+        if due(&l, now) {
+            if let Err(e) = announce(conn, market, &l, now).await {
+                eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
+            }
+        }
+    }
+    for l in queries::list_listings_kept_on_market(conn, profile_id)? {
+        // Not taken by the market yet: unset. A Listed row is never Pending
+        // (every move into Listed clears the bookkeeping, a Listed to Listed
+        // write makes a told one Retrying, `ListingWrite::market_reset_sql`,
+        // and the day-0 announce never takes a Listed one).
+        let first = l.market_status.is_none();
+        // Only a Listed one: the FIRST upload puts a listing onto the
+        // market. Keeping it there (`keep_listed_with_client`) also covers a
+        // Cancelling one whose cancel is not sent yet.
+        let listed = l.state == queries::ListingState::Listed;
+        if first && listed && l.mode == queries::ListingMode::BuyNow && due(&l, now) {
+            if let Err(e) = upload_current(conn, node, market, &l, now).await {
+                eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// R28 (T6): tell the market of `l`'s mined sale (`saleTxHash`) or mined
+/// cancel (`outcome: "cancelled"`, `cancelTxHash`) and record its answer:
+/// marked → Reported; its "Listing not found" (nothing of the name to mark)
+/// → Reported with that note; its own refusal → Reported with its words
+/// (nothing more to tell, not retried); no answer or "not seen yet" →
+/// Retrying, backed off ([`after_reply`]); a row without the txid it
+/// carries → StepsUnverified, backed off, nothing sent. A failure leaves the
+/// listing in the report set: `market_told` is sticky
+/// ([`queries::list_listings_to_report`]).
+async fn report(
+    conn: &rusqlite::Connection,
+    market: &LearnHnsClient,
+    l: &queries::ShakedexListing,
+    now: i64,
+) -> Result<(), AppError> {
+    use queries::MarketStatus as S;
+    let corrupted = |what: &str| format!("corrupted listing {}: no {what}", l.id);
+    let what = if l.state == queries::ListingState::Sold {
+        l.sold_txid
+            .as_deref()
+            .map(|sale_txid| StatusReport::Sold { sale_txid })
+            .ok_or_else(|| corrupted("sale txid"))
+    } else {
+        l.cancel_txid
+            .as_deref()
+            .map(|cancel_txid| StatusReport::Cancelled { cancel_txid })
+            .ok_or_else(|| corrupted("cancel txid"))
+    };
+    let result = match what {
+        Err(why) => steps_unverified(l, why, now),
+        Ok(what) => {
+            let reply = market.refresh_status(&l.name, &what).await?;
+            let mut result = match Outcome::of(&reply, false) {
+                Outcome::Refused(why) => MarketResult {
+                    error: Some(why),
+                    told: false,
+                    ..after_reply(Outcome::Taken { holds_ours: false }, S::Reported, 0, now)
+                },
+                outcome => after_reply(outcome, S::Reported, l.market_attempts, now),
+            };
+            if reply == MarketReply::Accepted(StatusRecorded::NoListing) {
+                result.error = Some(REPORT_NO_LISTING.into());
+            }
+            result
+        }
+    };
+    record(conn, l, &result)
+}
+
+/// R28: the note a report the market answered "Listing not found" leaves.
+pub const REPORT_NO_LISTING: &str =
+    "LearnHNS Market answered \"Listing not found\": it lists nothing of the name to mark";
+
+/// R23 day 0: post `l`'s pending listing — the lock TRANSFER's outpoint, the
+/// lock address, the mode — and record the market's answer. A row without
+/// the lock TRANSFER's txid or a readable lock key is recorded as
+/// StepsUnverified, backed off, nothing posted.
+async fn announce(
+    conn: &rusqlite::Connection,
+    market: &LearnHnsClient,
+    l: &queries::ShakedexListing,
+    now: i64,
+) -> Result<(), AppError> {
+    let row = l
+        .lock_transfer_txid
+        .as_deref()
+        .ok_or_else(|| {
+            AppError::Other(format!("corrupted listing {}: no lock TRANSFER txid", l.id))
+        })
+        .and_then(|txid| Ok((txid, listing_lock(Network::Main, l)?)));
+    let (transfer_txid, lock) = match row {
+        Ok(row) => row,
+        Err(e) => return record(conn, l, &steps_unverified(l, e.to_string(), now)),
+    };
+    let reply = market
+        .post_pending_listing(&PendingListing {
+            name: &l.name,
+            transfer_txid,
+            transfer_vout: sell::LOCK_TRANSFER_NAME_VOUT,
+            lock_address: &lock.address,
+            kind: match l.mode {
+                queries::ListingMode::BuyNow => ListingKind::FixedPrice,
+                queries::ListingMode::ReverseAuction => ListingKind::ReverseAuction,
+            },
+        })
+        .await?;
+    record(
+        conn,
+        l,
+        &after_reply(
+            Outcome::of(&reply, false),
+            queries::MarketStatus::Pending,
+            l.market_attempts,
+            now,
+        ),
+    )
+}
+
+/// R23: upload `l`'s current step ([`market_copy`], every stored step
+/// verified on our node first) and record the market's answer.
+async fn upload_current(
+    conn: &rusqlite::Connection,
+    node: &dyn NodeRpc,
+    market: &LearnHnsClient,
+    l: &queries::ShakedexListing,
+    now: i64,
+) -> Result<(), AppError> {
+    match market_copy(conn, node, Network::Main, l, now).await? {
+        MarketCopy::NotNow(why) => {
+            not_now(l, &why);
+            Ok(())
+        }
+        MarketCopy::StepsUnverified(why) => record(conn, l, &steps_unverified(l, why, now)),
+        MarketCopy::Ready { file, listing, .. } => {
+            upload(
+                conn,
+                market,
+                &file,
+                &listing,
+                queries::MarketStatus::Listed,
+                now,
+            )
+            .await
+        }
+    }
+}
+
+/// A [`MarketCopy::NotNow`]: no verdict this sync, nothing written.
+fn not_now(l: &queries::ShakedexListing, why: &str) {
+    eprintln!(
+        "shakedex market: {} ({}): not uploaded now: {why}",
+        l.id, l.name
+    );
+}
+
+/// What a row or file that does not read, or a step that does not verify
+/// ([`MarketCopy::StepsUnverified`]), writes: StepsUnverified with why,
+/// once per backoff, nothing sent; the row is read (and the steps verified
+/// on our node) again after the backoff. Never for a node reply: that is
+/// no verdict, logged and nothing written.
+fn steps_unverified(l: &queries::ShakedexListing, why: String, now: i64) -> MarketResult {
+    backing_off(
+        queries::MarketStatus::StepsUnverified,
+        l.market_attempts,
+        why,
+        now,
+    )
+}
+
+/// Upload `file` (`listing`'s [`MarketCopy::Ready`] copy) and record the
+/// market's answer, `ok` on acceptance. An acceptance naming another name
+/// than ours is no answer about ours.
+async fn upload(
+    conn: &rusqlite::Connection,
+    market: &LearnHnsClient,
+    file: &str,
+    listing: &queries::ShakedexListing,
+    ok: queries::MarketStatus,
+    now: i64,
+) -> Result<(), AppError> {
+    let outcome = match market.upload_proof(file).await? {
+        MarketReply::Accepted(a) if a.name != listing.name => Outcome::NoVerdict(format!(
+            "no answer from the market: the market answered for '{}', not '{}'",
+            a.name, listing.name
+        )),
+        reply => Outcome::of(&reply, true),
+    };
+    record(
+        conn,
+        listing,
+        &after_reply(outcome, ok, listing.market_attempts, now),
+    )
+}
+
+/// R25 (T6): about hourly, keep the profile's published Buy Now listings on
+/// LearnHNS Market. Mainnet only: returns before any read off mainnet.
+/// Takes the listings of [`queries::list_listings_kept_on_market`] — Listed,
+/// and Cancelling while the cancel is not sent (still buyable on chain;
+/// R24, R28: the jobs stop once it is sent) and only once the market
+/// accepted an upload of it (`market_accepted`) — that the market has taken
+/// or failed to take for want of an answer or of verified steps
+/// (`market_status` Listed, ReplacedReuploaded, Retrying, StepsUnverified;
+/// a reorg that takes a mined cancel back to an unsent one starts a told
+/// listing over as Retrying, [`queries::mark_listing_cancel_unmined`]), and
+/// that are due ([`due`]). Never one the market was not told about
+/// (`market_status` unset): its first upload is Listed only and
+/// [`publish_listings_with_client`]'s, so a listing whose cancel is in
+/// progress is never published for the first time. Never a Refused one: it
+/// waits for a write that changes what is sent; only a Refused Listed
+/// listing's expiry is looked at, without a market call, only once it is
+/// due and its stored file's `expiresAt` is within
+/// [`EXPIRY_REFRESH_MARGIN_SECS`] ([`stored_file_near_expiry`]): the refresh
+/// ([`market_copy`]) makes it Retrying, due now (what is sent changed), and
+/// the next run checks the market's copy and uploads the new file. The
+/// expiry is refreshed for Listed listings only ([`market_copy`],
+/// `ListingWrite::RefreshExpiry` is Listed to Listed). Reverse auctions are
+/// T8's.
+///
+/// Per listing: [`market_copy`] first (our node: every step verified
+/// again, the expiry refreshed when near). StepsUnverified → recorded,
+/// backed off, nothing asked of the market. The expiry just refreshed (the
+/// file changed) → uploaded at once (Listed). Otherwise the market's
+/// copy (`GET /listing/<name>/proof.json`): the same offer
+/// ([`listing_file::same_market_listing`]) → nothing uploaded, checked again
+/// in an hour (Retrying/StepsUnverified → Listed, ReplacedReuploaded
+/// stays); a copy that does not read as a listing file, or another offer →
+/// ours uploaded over it (ReplacedReuploaded; Listed while
+/// `market_changed` says ours changed since the market last took it: the
+/// market's copy is then our own older one); the market's own "not
+/// listed" → uploaded (Listed); no answer → Retrying, backed off
+/// ([`retry_delay_secs`]), nothing uploaded on it. The upload's answer is
+/// recorded by [`after_reply`] (a refusal → Refused, not retried). Reads the
+/// node, writes only to the market and the listing's market bookkeeping
+/// (and an expiry refresh): never signs, never broadcasts (SECURITY.md). A
+/// failure on one listing is logged and leaves it for the next sync.
+pub async fn keep_listed_with_client(
+    conn: &rusqlite::Connection,
+    node: &dyn NodeRpc,
+    market: &LearnHnsClient,
+    profile_id: &str,
+    now: i64,
+) -> Result<(), AppError> {
+    use queries::MarketStatus as S;
+    if queries::profile_network(conn, profile_id)? != Network::Main {
+        return Ok(());
+    }
+    for l in queries::list_listings_kept_on_market(conn, profile_id)? {
+        if l.mode != queries::ListingMode::BuyNow {
+            continue;
+        }
+        let listed = l.state == queries::ListingState::Listed;
+        let run = match l.market_status {
+            Some(S::Listed | S::ReplacedReuploaded | S::Retrying | S::StepsUnverified) => {
+                if !due(&l, now) {
+                    continue;
+                }
+                keep_listed(conn, node, market, &l, now).await
+            }
+            Some(S::Refused) if listed && due(&l, now) && stored_file_near_expiry(&l, now) => {
+                refresh_refused(conn, node, &l, now).await
+            }
+            _ => continue,
+        };
+        if let Err(e) = run {
+            eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
+        }
+    }
+    Ok(())
+}
+
+/// Whether kept `l`'s stored listing file's `expiresAt` is near
+/// ([`file_near_expiry`]): the one source [`market_copy`] refreshes from,
+/// read from the row alone (no node read). A file without `expiresAt` is
+/// never refreshed, so never near; a file that is not stored or does not
+/// read is near: [`market_copy`] records it from the row, before any node
+/// read. The caller also gates on [`due`]; no code writes a
+/// `market_retry_at` on a Refused listing today, so for Refused it is
+/// always true.
+fn stored_file_near_expiry(l: &queries::ShakedexListing, now: i64) -> bool {
+    match l
+        .listing_file_json
+        .as_deref()
+        .map(|f| listing_file::ListingFile::parse(f, Network::Main))
+    {
+        Some(Ok(file)) => file.expires_at.is_some_and(|e| file_near_expiry(e, now)),
+        None | Some(Err(_)) => true,
+    }
+}
+
+/// R23 for a Refused Listed listing: [`market_copy`]'s expiry refresh, and
+/// nothing else — no market call. A refusal stays until what is sent
+/// changes; the refresh is such a change and makes the listing Retrying,
+/// due now, itself. A row or file that does not read (StepsUnverified) is
+/// recorded and backed off like anywhere else, which takes the listing out
+/// of Refused: keep-listed checks it again after the backoff and, once it
+/// reads, may upload it again although what is sent did not change. The
+/// node's no verdict is logged, nothing written.
+async fn refresh_refused(
+    conn: &rusqlite::Connection,
+    node: &dyn NodeRpc,
+    l: &queries::ShakedexListing,
+    now: i64,
+) -> Result<(), AppError> {
+    match market_copy(conn, node, Network::Main, l, now).await? {
+        MarketCopy::Ready { .. } => Ok(()),
+        MarketCopy::StepsUnverified(why) => record(conn, l, &steps_unverified(l, why, now)),
+        MarketCopy::NotNow(why) => {
+            not_now(l, &why);
+            Ok(())
+        }
+    }
+}
+
+/// R25: one due check of kept `l` (Listed, or Cancelling with an unsent
+/// cancel; see [`keep_listed_with_client`]).
+async fn keep_listed(
+    conn: &rusqlite::Connection,
+    node: &dyn NodeRpc,
+    market: &LearnHnsClient,
+    l: &queries::ShakedexListing,
+    now: i64,
+) -> Result<(), AppError> {
+    use queries::MarketStatus as S;
+    let (file, ours, listing) = match market_copy(conn, node, Network::Main, l, now).await? {
+        MarketCopy::NotNow(why) => {
+            not_now(l, &why);
+            return Ok(());
+        }
+        MarketCopy::StepsUnverified(why) => {
+            return record(conn, l, &steps_unverified(l, why, now));
+        }
+        MarketCopy::Ready {
+            file,
+            copy,
+            listing,
+        } => (file, copy, listing),
+    };
+    if listing.listing_file_json != l.listing_file_json {
+        // The expiry was just refreshed: the market holds the old file.
+        return upload(conn, market, &file, &listing, S::Listed, now).await;
+    }
+    // What is sent changed since the market last took our copy (a Lower
+    // price, an expiry refresh, a reorg back to an unsent cancel:
+    // `market_changed`): a copy that differs is then our own older one, not
+    // someone else's.
+    let replaced = if listing.market_changed {
+        S::Listed
+    } else {
+        S::ReplacedReuploaded
+    };
+    match market.proof_copy(&listing.name).await? {
+        ProofCopy::Copy(text) => {
+            let same = listing_file::ListingFile::parse(&text, Network::Main)
+                .is_ok_and(|theirs| listing_file::same_market_listing(&theirs, &ours));
+            if same {
+                let ok = match listing.market_status {
+                    Some(S::ReplacedReuploaded) => S::ReplacedReuploaded,
+                    _ => S::Listed,
+                };
+                // The market serves our own copy: it holds our listing.
+                let matched = Outcome::Taken { holds_ours: true };
+                record(
+                    conn,
+                    &listing,
+                    &after_reply(matched, ok, listing.market_attempts, now),
+                )
+            } else {
+                upload(conn, market, &file, &listing, replaced, now).await
+            }
+        }
+        ProofCopy::NotListed => upload(conn, market, &file, &listing, S::Listed, now).await,
+        ProofCopy::NoAnswer(why) => {
+            let none = Outcome::NoVerdict(format!("no answer from the market: {why}"));
+            record(
+                conn,
+                &listing,
+                &after_reply(none, S::Listed, listing.market_attempts, now),
+            )
+        }
+    }
 }

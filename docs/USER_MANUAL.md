@@ -530,9 +530,7 @@ data fresh without the app being open.
   refreshes your data.
 - **Crash recovery:** if the daemon dies, the app detects it on the next startup
   and respawns it (as long as the toggle is ON).
-- **Read-only:** the daemon never signs transactions or broadcasts — it only reads
-  from hsd and writes sync data to the local database. Your keys stay locked in the
-  encrypted vault.
+- **Never signs or broadcasts:** The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market. It reads from hsd, writes sync data to the local database and, for a listing you chose to publish on mainnet, keeps it on LearnHNS Market. Your keys stay locked in the encrypted vault.
 
 ### SPV mode (lightweight)
 
@@ -688,16 +686,12 @@ Then open the app normally.
 - **Local-first.** No cloud, no telemetry. Keys and secrets stay on your
   device. By default, balance/name lookups go to the public HNSFans explorer,
   which therefore sees your wallet addresses and the names you track; running
-  your own hsd node keeps those lookups fully local. The only other outbound
-  HTTP is to your configured node.
+  your own hsd node keeps those lookups fully local. The only other outbound HTTP is to your configured node and, when you use the Market, to LearnHNS Market (browsing and buying, and publishing a listing you chose to publish on mainnet).
 - **Localhost-first.** Namehold connects to hsd on `127.0.0.1` by default;
   non-localhost URLs are allowed but warned about.
 - **Auto-lock.** The unlocked signer times out after a configurable idle
   period (Settings → Advanced → Signer session timeout, default 15 min).
-- **Background sync is read-only.** When "Sync in background" is enabled, the
-  `namehold-syncd` daemon reads from hsd and writes sync data to the local
-  database — it never signs transactions, never broadcasts, and never has access
-  to key material. Your keys stay locked in the encrypted vault.
+- **Background sync never signs or sends.** The background daemon never signs or broadcasts; it publishes listings already signed to LearnHNS Market. When "Sync in background" is enabled, the `namehold-syncd` daemon reads from hsd and writes sync data to the local database; it never has access to key material. Your keys stay locked in the encrypted vault.
 - **What Namehold never does.** Never asks for or transmits your seed phrase,
   never logs passphrases or private keys, never talks to a remote wallet
   service.

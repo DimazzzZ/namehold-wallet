@@ -8,7 +8,8 @@
 //! sync lock (see `db::sync_lock`) so both never write the same profile
 //! concurrently.
 //!
-//! Read-only: never signs or broadcasts transactions.
+//! Never signs or broadcasts transactions; on a mainnet profile it publishes
+//! listings already signed to LearnHNS Market (SECURITY.md).
 
 use namehold_wallet_lib::daemon;
 

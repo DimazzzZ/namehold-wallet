@@ -48,6 +48,11 @@ fn listing(id: &str, name: &str, state: ListingState) -> ShakedexListing {
         publish: false,
         market_status: None,
         market_retry_at: None,
+        market_attempts: 0,
+        market_error: None,
+        market_accepted: false,
+        market_changed: false,
+        market_told: false,
         expires_at: None,
         abort_draft_id: None,
         abort_txid: None,
@@ -113,6 +118,31 @@ fn ts_listing_state_union_lists_every_state() {
     assert_eq!(in_ts, in_rust);
 }
 
+/// The TS mirror `ShakedexMarketStatus` (`src/types/index.ts`) lists
+/// exactly the spellings serde sends for `MarketStatus` (T6, Deviation 12).
+#[test]
+fn ts_market_status_union_lists_every_status() {
+    let ts = include_str!("../../../src/types/index.ts");
+    let start = ts
+        .find("export type ShakedexMarketStatus =")
+        .expect("the TS union");
+    let block = &ts[start..start + ts[start..].find(';').expect("end of the union")];
+    let mut in_ts: Vec<&str> = block.split('"').skip(1).step_by(2).collect();
+    in_ts.sort_unstable();
+    let mut in_rust: Vec<String> = queries::MarketStatus::ALL
+        .iter()
+        .map(|s| {
+            serde_json::to_value(s)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    in_rust.sort_unstable();
+    assert_eq!(in_ts, in_rust);
+}
+
 /// The TS mirror `ShakedexListingSummary` (`src/types/index.ts`) has
 /// exactly the keys serde sends for `ListingSummary`, an optional one typed
 /// `| null`.
@@ -147,6 +177,9 @@ fn ts_listing_summary_lists_every_field() {
         cancel_draft_id: None,
         cancel_finalize_draft_id: None,
         cancel_blocks_remaining: None,
+        market_status: None,
+        market_error: None,
+        market_retry_at: None,
     };
     let json = serde_json::to_value(&summary).unwrap();
     let mut in_rust: Vec<&str> = json
@@ -1155,8 +1188,9 @@ fn a_losing_cancel_releases_its_coins() {
 }
 
 /// R28: the market jobs (R24, R25) keep a published Listed
-/// listing, and a Cancelling one only until its cancel is sent; an
-/// unpublished listing, and every other state, is never kept.
+/// listing, and a Cancelling one the market accepted an upload of, only
+/// until its cancel is sent; an unpublished listing, and every other state,
+/// is never kept.
 #[test]
 fn listings_kept_on_market_stop_once_the_cancel_is_sent() {
     let conn = store_conn();
@@ -1179,6 +1213,21 @@ fn listings_kept_on_market_stop_once_the_cancel_is_sent() {
     );
     cancelling(&conn, "l3", "cancelling", "cx", true);
     publish("l3");
+    // A Cancelling listing only once the market accepted an upload of it.
+    assert_eq!(
+        queries::list_listings_kept_on_market(&conn, STORE_PROFILE)
+            .unwrap()
+            .into_iter()
+            .map(|l| l.id)
+            .collect::<Vec<_>>(),
+        ["l1"],
+        "never accepted: not kept while cancelling"
+    );
+    conn.execute(
+        "UPDATE shakedex_listings SET market_accepted = 1 WHERE id = 'l3'",
+        [],
+    )
+    .unwrap();
     for (i, state) in ListingState::ALL.into_iter().enumerate() {
         if matches!(state, ListingState::Listed | ListingState::Cancelling) {
             continue;
@@ -2253,7 +2302,7 @@ async fn reorged_abort_leaves_a_newer_listing_open() {
 
 /// The abort is a sync step: both the app's sync and the daemon's run it
 /// against an authoritative node, and neither sends anything (SECURITY.md,
-/// "Daemon is read-only").
+/// "The daemon never signs or broadcasts").
 #[tokio::test]
 async fn sync_aborts_the_listing_in_the_app_and_the_daemon() {
     use crate::commands::sync::{run_sync_steps, SyncCaller, SyncStatus};
@@ -5728,6 +5777,19 @@ fn own_file(
     .unwrap()
 }
 
+/// Carried from T4 (T6): one rule verifies a listing file's steps over the
+/// lock coin, at the value hsd reports — for an import (R32) and before
+/// every upload. A step signed over another value does not verify.
+#[test]
+fn file_steps_verify_only_at_the_coin_value_they_were_signed_over() {
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let pay = address::encode_p2wpkh(Network::Regtest, &[9; 20]).unwrap();
+    let file = ListingFile::parse(&own_file(0, key.pubkey, &key, &pay), Network::Regtest).unwrap();
+    sell::verify_file_steps(&file, NAME_VALUE, Network::Regtest).expect("signed over NAME_VALUE");
+    let e = sell::verify_file_steps(&file, NAME_VALUE + 1, Network::Regtest).unwrap_err();
+    assert!(e.to_string().contains(sell::STEP_NOT_SIGNED_BY_LOCK), "{e}");
+}
+
 /// Our own file for the restored lock: the derived key over `(RESTORED_TXID,
 /// 1)`, paying our address 0/0.
 fn good_file() -> String {
@@ -6087,8 +6149,8 @@ use crate::commands::shakedex::{
     cancel_listing_confirmed, reserve_restored_cancel_address, CANCEL_TITLE,
 };
 use crate::noncustodial::shakedex::cancel::{
-    CANCEL_ACTION, CANCEL_MEMPOOL_PURCHASE, CANCEL_PRICE_NONE_VALID_YET, CANCEL_PRICE_NOT_KNOWN,
-    CANCEL_STILL_BUYABLE,
+    CANCEL_ACTION, CANCEL_MARKET_TOLD, CANCEL_MEMPOOL_PURCHASE, CANCEL_PRICE_NONE_VALID_YET,
+    CANCEL_PRICE_NOT_KNOWN, CANCEL_STILL_BUYABLE,
 };
 
 /// The node's MTP and tip once the listing is Listed: a day after Finalize
@@ -6269,7 +6331,8 @@ async fn cancel_stops_jobs() {
     // see the market set alone.
     with_db(&l.r.app, |c| {
         c.execute(
-            "UPDATE shakedex_listings SET publish = 1 WHERE id = ?1",
+            "UPDATE shakedex_listings SET publish = 1, market_status = 'listed',
+             market_accepted = 1 WHERE id = ?1",
             [&l.r.listing_id],
         )
         .unwrap();
@@ -6311,6 +6374,11 @@ async fn cancel_stops_jobs() {
         Some(CANCEL_MEMPOOL_PURCHASE)
     );
     assert_eq!(value("Current price").as_deref(), Some("5.000000 HNS"));
+    assert_eq!(
+        value("LearnHNS Market").as_deref(),
+        Some(CANCEL_MARKET_TOLD),
+        "a published listing's prompt says when the market is told"
+    );
 
     let row = with_db(&l.r.app, |c| {
         queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
@@ -6342,6 +6410,25 @@ async fn cancel_stops_jobs() {
     assert!(
         followed.contains(&l.r.listing_id),
         "still followed on chain"
+    );
+}
+
+/// R28 (T6): the cancel prompt of an unpublished listing has no market row.
+#[tokio::test]
+async fn unpublished_listing_cancel_prompt_has_no_market_row() {
+    let mut l = listed_fixture().await;
+    let _sent = no_broadcast(&mut l.r).await;
+    assert!(!l.r.listing().publish);
+    answer(true);
+    cancel(&l).await.expect("cancel");
+    let reqs = take_test_requests();
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        rows.iter().all(|r| r["label"] != "LearnHNS Market"),
+        "{rows:?}"
     );
 }
 
