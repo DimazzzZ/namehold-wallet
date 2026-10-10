@@ -4680,19 +4680,25 @@ fn shakedex_cli(api_key: &str) -> ShakedexCli {
 }
 
 impl ShakedexCli {
-    /// Run the script with `args` and extra `env`; its stdout. A failure
-    /// panics with the script's own log.
-    fn run(&self, args: &[&str], env: &[(&str, &str)]) -> String {
+    /// Run the script with `args` and extra `env`; its output, whether it
+    /// succeeded or not.
+    fn try_run(&self, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
         let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../scripts/shakedex-cli-sell.sh");
-        let out = std::process::Command::new("bash")
+        std::process::Command::new("bash")
             .arg(&script)
             .args(args)
             .env("SHAKEDEX_WORK", &self.work)
             .env("HSD_API_KEY", &self.api_key)
             .envs(env.iter().copied())
             .output()
-            .expect("run shakedex-cli-sell.sh");
+            .expect("run shakedex-cli-sell.sh")
+    }
+
+    /// Run the script with `args` and extra `env`; its stdout. A failure
+    /// panics with the script's own log.
+    fn run(&self, args: &[&str], env: &[(&str, &str)]) -> String {
+        let out = self.try_run(args, env);
         assert!(
             out.status.success(),
             "shakedex-cli-sell.sh {args:?} failed:\n{}",
@@ -4743,6 +4749,18 @@ impl ShakedexCli {
         let path = self.work.join("fill.json");
         std::fs::write(&path, &listing.json).expect("write listing");
         self.run(&["fill", path.to_str().unwrap()], &[]);
+    }
+
+    /// The hsd wallet tries to buy `listing`; whether the script succeeded,
+    /// and its log (the CLI's own output goes to stderr).
+    fn try_fill(&self, listing: &CliListing) -> (bool, String) {
+        let path = self.work.join("fill.json");
+        std::fs::write(&path, &listing.json).expect("write listing");
+        let out = self.try_run(&["fill", path.to_str().unwrap()], &[]);
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
     }
 
     /// Register a fresh name with the hsd wallet; its name.
@@ -4942,6 +4960,8 @@ struct ShakedexBuyer {
     db_path: std::path::PathBuf,
     cl: NodeRpcClient,
     addr: String,
+    /// The account the buyer's keys are derived at.
+    acct: u32,
 }
 
 impl ShakedexBuyer {
@@ -4970,6 +4990,7 @@ impl ShakedexBuyer {
             db_path,
             cl,
             addr,
+            acct,
         }
     }
 
@@ -5726,22 +5747,27 @@ fn open_listing(
     db::queries::open_shakedex_listing_for_name(&c, PROFILE, name).unwrap()
 }
 
-/// Lock `name`, broadcast the TRANSFER and mine it; the draft.
+/// Lock `name` as a Buy Now, broadcast the TRANSFER and mine it; the draft.
 async fn lock_on_chain(
     app: &tauri::App<tauri::test::MockRuntime>,
     cl: &NodeRpcClient,
     addr: &str,
     name: &str,
 ) -> crate::noncustodial::types::TxDraftSummary {
-    let draft = shakedex_build_lock_draft(
-        app.state(),
-        name.to_string(),
-        ListingMode::BuyNow,
-        false,
-        Some(1),
-    )
-    .await
-    .expect("lock builds");
+    lock_on_chain_as(app, cl, addr, name, ListingMode::BuyNow).await
+}
+
+/// Lock `name` as `mode`, broadcast the TRANSFER and mine it; the draft.
+async fn lock_on_chain_as(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    cl: &NodeRpcClient,
+    addr: &str,
+    name: &str,
+    mode: ListingMode,
+) -> crate::noncustodial::types::TxDraftSummary {
+    let draft = shakedex_build_lock_draft(app.state(), name.to_string(), mode, false, Some(1))
+        .await
+        .expect("lock builds");
     broadcast_only(app, &draft.id).await;
     settle(app, cl, addr, &draft.id).await;
     draft
@@ -5991,9 +6017,9 @@ async fn listing_jobs(app: &tauri::App<tauri::test::MockRuntime>, cl: &NodeRpcCl
     res.expect("listing jobs run");
 }
 
-/// A fresh name locked on chain and its lockup mined out; the listing
-/// ReadyToFinalize by the job, not by hand. `(app, client, our address,
-/// name, listing id)`.
+/// A fresh name locked on chain as a Buy Now and its lockup mined out; the
+/// listing ReadyToFinalize by the job, not by hand. `(app, client, our
+/// address, name, listing id)`.
 async fn ready_to_finalize_on_chain(
     url: &str,
     key: &str,
@@ -6005,8 +6031,24 @@ async fn ready_to_finalize_on_chain(
     String,
     String,
 ) {
+    ready_to_finalize_on_chain_as(url, key, prefix, ListingMode::BuyNow).await
+}
+
+/// [`ready_to_finalize_on_chain`] with the name locked as `mode`.
+async fn ready_to_finalize_on_chain_as(
+    url: &str,
+    key: &str,
+    prefix: &str,
+    mode: ListingMode,
+) -> (
+    tauri::App<tauri::test::MockRuntime>,
+    NodeRpcClient,
+    String,
+    String,
+    String,
+) {
     let (app, cl, addr, name) = own_a_name(url, key, prefix).await;
-    lock_on_chain(&app, &cl, &addr, &name).await;
+    lock_on_chain_as(&app, &cl, &addr, &name, mode).await;
     let id = open_listing(&app, &name).expect("listing").id;
     // The lock TRANSFER is mined at the tip; the FINALIZE is valid once
     // tip + 1 >= its height + lockup, i.e. after lockup - 1 more blocks.
@@ -6971,6 +7013,68 @@ async fn listed_on_chain(
     (app, cl, addr, name, id, s)
 }
 
+/// A name locked as a reverse auction, Finalize & signed from 5 to 3 HNS in
+/// 3 steps 900 s apart (R19's start: the node's median time minus 512 s),
+/// its FINALIZE mined and the listing Listed by the jobs, with step 0
+/// current at the node's median time.
+async fn auction_listed_on_chain(
+    url: &str,
+    key: &str,
+    prefix: &str,
+) -> (
+    tauri::App<tauri::test::MockRuntime>,
+    NodeRpcClient,
+    String,
+    String,
+    String,
+    crate::commands::shakedex::ListingSummary,
+) {
+    let (app, cl, addr, name, id) =
+        ready_to_finalize_on_chain_as(url, key, prefix, ListingMode::ReverseAuction).await;
+    unlock(&app);
+    crate::commands::secure_prompt::push_test_answer(
+        crate::commands::secure_prompt::SecurePromptResult {
+            value: None,
+            confirmed: true,
+        },
+    );
+    let s = crate::commands::shakedex::finalize_and_sign_confirmed(
+        &app.state(),
+        app.handle(),
+        &id,
+        &[],
+        Some(&crate::commands::shakedex::ScheduleInput {
+            start_price: "5".into(),
+            floor_price: "3".into(),
+            steps: 3,
+            interval_secs: 900,
+        }),
+        Some(1),
+    )
+    .await
+    .expect("finalize & sign the schedule");
+    let draft = s.finalize_draft_id.clone().expect("the FINALIZE draft");
+    let bc = broadcast_tx_draft(app.state(), draft.clone())
+        .await
+        .expect("broadcast");
+    assert_eq!(bc.status, "broadcasted");
+    settle(&app, &cl, &addr, &draft).await;
+    listing_jobs(&app, &cl).await;
+    assert_eq!(listing_state(&app, &id), ListingState::Listed);
+    assert_eq!(
+        s.steps.iter().map(|x| x.price).collect::<Vec<_>>(),
+        vec![5_000_000, 4_000_000, 3_000_000]
+    );
+    // R19: the first step is valid at once, the next ones not yet.
+    let mtp = node_mtp(&cl).await;
+    assert_eq!(
+        crate::noncustodial::shakedex::sell::current_step_price(&s.steps, mtp).unwrap(),
+        Some(5_000_000),
+        "step 0 is current at {mtp} once Listed"
+    );
+    (app, cl, addr, name, id, s)
+}
+
 /// Cancel listing `id` at `per_byte` doos/byte, R28's prompt confirmed
 /// through the test queue: the signed draft, not sent.
 async fn cancel_signed(
@@ -7681,6 +7785,251 @@ async fn shakedex_market_copy_of_a_lowered_listing_is_bought_by_the_cli() {
     assert_eq!(
         info["ismine"], true,
         "the TRANSFER commits to the CLI wallet: {buyer} {info}"
+    );
+}
+
+/// R30, auction half, and R24 on hsd: Namehold locks a name as a reverse
+/// auction, signs its whole schedule (5 -> 3 HNS, 3 steps 900 s apart) and,
+/// once Listed, the node's median time is moved past step 1 and short of
+/// step 2. R3 and the jobs' market copy (what LearnHNS would get) both say
+/// step 1; the shakedex CLI, given the whole exported schedule, buys at
+/// exactly that step: the mined fill spends our lock coin, pays our payment
+/// address 4 HNS, and hsd's owner of the name is the fill's TRANSFER out of
+/// our lock committing to the CLI wallet. The next sync makes the listing
+/// Sold by it.
+#[tokio::test]
+async fn shakedex_namehold_reverse_auction_is_bought_by_the_cli_at_the_current_step() {
+    let Some((url, key, cli)) =
+        shakedex_env("shakedex_namehold_reverse_auction_is_bought_by_the_cli_at_the_current_step")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id, s) = auction_listed_on_chain(&url, &key, "nhauct").await;
+    let pay = s.payment_address.clone().expect("payment address");
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+    let lock_addr = owner_coin_address(&cl, &name).await.expect("lock address");
+    // Fund the CLI first: mining moves the median time, and the step must
+    // be judged after the last block before the fill.
+    fund_the_cli_wallet(&cl, &key, &addr).await;
+    // Past step 1 and short of step 2 (900 s later, so its 512-s rounding
+    // cannot make it valid yet).
+    advance_mtp_past(&cl, &addr, s.steps[1].lock_time).await;
+    let mtp = node_mtp(&cl).await;
+    assert_eq!(
+        crate::noncustodial::shakedex::sell::current_step_price(&s.steps, mtp).unwrap(),
+        Some(4_000_000),
+        "step 1 is current at {mtp}"
+    );
+    let row = listing_row(&app, &id);
+    let conn = std::mem::replace(
+        &mut *app.state::<AppState>().db.lock().unwrap(),
+        rusqlite::Connection::open_in_memory().unwrap(),
+    );
+    let copy = crate::shakedex_jobs::market_copy(
+        &conn,
+        &cl,
+        Network::Regtest,
+        &row,
+        chrono::Utc::now().timestamp(),
+    )
+    .await;
+    *app.state::<AppState>().db.lock().unwrap() = conn;
+    let one = match copy.expect("market copy") {
+        crate::shakedex_jobs::MarketCopy::Ready { file, .. } => CliListing::new(file),
+        _ => panic!("the copy is ready on hsd's lock coin"),
+    };
+    assert_eq!(
+        one.steps,
+        vec![(4_000_000, s.steps[1].lock_time)],
+        "the market gets step 1 alone"
+    );
+
+    let listing = CliListing::new(exported_file(&app, &id));
+    assert_eq!(
+        listing.steps.len(),
+        3,
+        "the file carries the whole schedule"
+    );
+    cli.fill(&listing);
+    let (fill_txid, fill_vout) = name_owner(&cl, &name).await;
+    assert_ne!(fill_txid, lock_txid, "the name moved out of the lock");
+    assert_spends_lock(&cl, &fill_txid, (&lock_txid, lock_vout)).await;
+    assert_eq!(
+        paid_to(&cl, &fill_txid, &pay).await,
+        4_000_000,
+        "paid the current step, on chain"
+    );
+    let out = cl
+        .get_coin(&fill_txid, fill_vout)
+        .await
+        .expect("coin")
+        .expect("the fill's TRANSFER");
+    assert!(out.mined_height().unwrap().is_some(), "mined: {out:?}");
+    let cov = out.covenant.as_ref().expect("covenant");
+    assert_eq!(cov.kind, crate::noncustodial::sync::COV_TRANSFER);
+    assert_eq!(
+        out.address.as_deref(),
+        Some(lock_addr.as_str()),
+        "the TRANSFER out of our lock stays at it until finalized"
+    );
+    assert_eq!(cov.items[2], "00", "witness version 0");
+    let hash: [u8; 20] = hex::decode(&cov.items[3])
+        .unwrap()
+        .try_into()
+        .expect("a 20-byte P2WPKH program");
+    let buyer = crate::noncustodial::address::encode_p2wpkh(NET, &hash).unwrap();
+    let info: serde_json::Value =
+        serde_json::from_str(&hsw_rpc(&key, &["getaddressinfo", &buyer])).expect("json");
+    assert_eq!(
+        info["ismine"], true,
+        "the TRANSFER commits to the CLI wallet: {buyer} {info}"
+    );
+    sync_wallet_state(app.state(), None).await.expect("sync");
+    listing_jobs(&app, &cl).await;
+    let l = listing_row(&app, &id);
+    assert_eq!(
+        (l.state, l.sold_txid.as_deref()),
+        (ListingState::Sold, Some(fill_txid.as_str()))
+    );
+}
+
+/// R24 on hsd: a future step of our auction leaking early is harmless. The
+/// step-2 file alone (as a market copy of it would be) is refused by the
+/// shakedex CLI itself, and nothing changes on chain. The same step's
+/// purchase, built and signed by a Namehold buyer and handed to hsd
+/// directly, is taken into no mempool and no block -- hsd answers
+/// `sendrawtransaction` with the txid all the same, so that answer is not
+/// read -- the lock coin unspent and the name still ours. Once the median
+/// time passes the step, the very same transaction is mined, pays that
+/// step's price, and hsd's owner of the name is its TRANSFER to the buyer:
+/// only its lock time stood in the way.
+#[tokio::test]
+async fn shakedex_cli_cannot_buy_a_future_step_of_our_auction() {
+    use crate::noncustodial::shakedex::template::{encode_lock_time, is_valid_at};
+    let Some((url, key, cli)) =
+        shakedex_env("shakedex_cli_cannot_buy_a_future_step_of_our_auction")
+    else {
+        return;
+    };
+    let (app, cl, addr, name, id, s) = auction_listed_on_chain(&url, &key, "nhfutr").await;
+    let pay = s.payment_address.clone().expect("payment address");
+    let lock_txid = s.lock_txid.clone().expect("lock txid");
+    let lock_vout = u32::try_from(s.lock_vout.expect("lock vout")).unwrap();
+    // Every block mined before the attempts (funding both buyers) comes first.
+    fund_the_cli_wallet(&cl, &key, &addr).await;
+    let b = ShakedexBuyer::new(&url, &key).await;
+    let future = s.steps[2].clone();
+    let mtp = node_mtp(&cl).await;
+    assert!(
+        !is_valid_at(encode_lock_time(future.lock_time).unwrap(), mtp),
+        "step 2 is not valid at {mtp}"
+    );
+    let stored = listing_row(&app, &id)
+        .listing_file_json
+        .expect("listing file");
+    let leaked = CliListing::new(
+        crate::noncustodial::shakedex::listing_file::market_copy(&stored, 2, Network::Regtest)
+            .expect("step 2 alone"),
+    );
+    assert_eq!(leaked.steps, vec![(3_000_000, future.lock_time)]);
+
+    let (ok, log) = cli.try_fill(&leaked);
+    assert!(!ok, "the CLI does not fill a step that is not valid: {log}");
+    assert!(log.contains("No proofs are mature yet"), "{log}");
+    assert_eq!(
+        name_owner(&cl, &name).await,
+        (lock_txid.clone(), lock_vout),
+        "still in our lock"
+    );
+
+    let file =
+        crate::noncustodial::shakedex::listing_file::ListingFile::parse(&leaked.json, NET).unwrap();
+    let lock_value = u64::try_from(
+        cl.get_coin(&lock_txid, lock_vout)
+            .await
+            .expect("coin")
+            .expect("lock coin")
+            .value,
+    )
+    .unwrap();
+    let name_height = u32::try_from(
+        cl.get_name_info(&name).await.expect("name")["info"]["height"]
+            .as_u64()
+            .expect("height"),
+    )
+    .unwrap();
+    let funding = b.spendable();
+    let plan = crate::noncustodial::shakedex::purchase::build_purchase_plan(
+        &crate::noncustodial::shakedex::purchase::PurchaseInput {
+            network: NET,
+            account: b.acct,
+            listing: &file,
+            step: 0,
+            lock_value,
+            name_height,
+            dest: crate::noncustodial::tx::output_address_from_string(NET, &b.addr).unwrap(),
+            market_fee: None,
+            funding: &funding,
+            change_address: &b.addr,
+            rate: 1,
+            fixed_fee: None,
+        },
+    )
+    .expect("the purchase of step 2");
+    unlock(&b.app);
+    let (raw, txid) = {
+        let state = b.app.state::<AppState>();
+        let mut slot = state.signer.lock().unwrap();
+        crate::noncustodial::actions::sign_plan(slot.as_mut().unwrap(), &plan.plan).expect("signed")
+    };
+    // hsd answers with the txid even when its mempool refuses: not read.
+    let _ = b.cl.send_raw_transaction(&raw).await;
+    assert!(
+        cl.get_tx_by_hash(&txid).await.expect("tx").is_null(),
+        "not in the mempool"
+    );
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    assert!(
+        cl.get_tx_by_hash(&txid).await.expect("tx").is_null(),
+        "not mined"
+    );
+    assert!(
+        cl.get_coin(&lock_txid, lock_vout)
+            .await
+            .expect("coin")
+            .is_some(),
+        "the lock coin is unspent"
+    );
+    assert_eq!(name_owner(&cl, &name).await, (lock_txid.clone(), lock_vout));
+
+    advance_mtp_past(&cl, &addr, future.lock_time).await;
+    let _ = b.cl.send_raw_transaction(&raw).await;
+    cl.generate_to_address(1, &addr).await.expect("mine");
+    assert_spends_lock(&cl, &txid, (&lock_txid, lock_vout)).await;
+    assert_eq!(
+        paid_to(&cl, &txid, &pay).await,
+        3_000_000,
+        "the same transaction, once its step is valid, pays that step"
+    );
+    let (owner_txid, owner_vout) = name_owner(&cl, &name).await;
+    assert_eq!(owner_txid, txid, "hsd's owner is the purchase's TRANSFER");
+    let out = cl
+        .get_coin(&owner_txid, owner_vout)
+        .await
+        .expect("coin")
+        .expect("the purchase's TRANSFER");
+    let cov = out.covenant.as_ref().expect("covenant");
+    assert_eq!(cov.kind, crate::noncustodial::sync::COV_TRANSFER);
+    assert_eq!(cov.items[2], "00", "witness version 0");
+    let hash: [u8; 20] = hex::decode(&cov.items[3])
+        .unwrap()
+        .try_into()
+        .expect("a 20-byte P2WPKH program");
+    assert_eq!(
+        crate::noncustodial::address::encode_p2wpkh(NET, &hash).unwrap(),
+        b.addr,
+        "the TRANSFER commits to the buyer"
     );
 }
 
