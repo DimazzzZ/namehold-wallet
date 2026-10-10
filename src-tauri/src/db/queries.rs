@@ -1297,6 +1297,9 @@ pub fn never_sent(status: &str) -> bool {
 /// The status of a draft the chain has mined.
 const CONFIRMED_STATUS: &str = "confirmed";
 
+/// The status of a draft whose broadcast hsd refused: dead ([`draft_alive`]).
+const FAILED_STATUS: &str = "failed";
+
 /// Rule one: whether a draft in `status` is alive — it may yet be sent
 /// ([`never_sent`]), or it was sent and not given up
 /// ([`may_have_reached_chain`]). A `dropped` or `failed` draft, or one whose
@@ -3189,7 +3192,7 @@ pub fn release_losing_cancel(
         return Ok(false);
     }
     release_reserved_utxos_for_draft(conn, &draft)?;
-    if row.status != "failed" {
+    if row.status != FAILED_STATUS {
         update_tx_draft_status(conn, &draft, "dropped", Some(reason), None)?;
     }
     Ok(true)
