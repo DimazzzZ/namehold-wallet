@@ -953,7 +953,8 @@ pub struct ListingSummary {
     pub cancel_finalize_draft_id: Option<String>,
     pub cancel_blocks_remaining: Option<i64>,
     /// Where the listing stands on LearnHNS Market (R23, R25, R28); `None`
-    /// while nothing was told (unpublished, or not yet announced).
+    /// while our current listing is not yet told (unpublished, not yet
+    /// announced, or reset by a move back to Listed).
     pub market_status: Option<MarketStatus>,
     /// The market's own refusal, or why it gave no answer.
     pub market_error: Option<String>,
