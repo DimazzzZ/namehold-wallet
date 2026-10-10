@@ -3698,9 +3698,21 @@ fn every_write_back_onto_the_market_resets_its_market_status() {
                         Some("told".to_string()),
                         true,
                     );
+                // R28: recording a mined sale or cancel makes the report
+                // due at once: only `market_retry_at` is cleared.
+                let due_now = book
+                    == (
+                        Some(MarketStatus::Reported),
+                        None,
+                        3,
+                        Some("told".to_string()),
+                        true,
+                    );
                 if *to == S::Listed {
                     assert!(reset, "{w:?} {from:?} -> {to:?}: not reset");
                     resets += 1;
+                } else if matches!(w, ListingWrite::Sell | ListingWrite::CancelMined) {
+                    assert!(due_now, "{w:?} {from:?} -> {to:?}: not due now");
                 } else {
                     assert!(kept, "{w:?} {from:?} -> {to:?}: touched");
                 }
