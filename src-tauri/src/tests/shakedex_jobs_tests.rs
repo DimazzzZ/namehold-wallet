@@ -325,8 +325,8 @@ async fn refused_pending_post_is_not_retried() {
 async fn publishes_active_after_one_confirmation() {
     let f = fx(ListingState::Finalizing, true);
     let mut s = market().await;
-    // Announced on day 0 (Pending): Pending is a status the first upload
-    // takes, so only the state keeps a Finalizing listing off the market.
+    // Announced on day 0 while Finalizing (Pending); the move to Listed
+    // starts the bookkeeping over, and the upload follows.
     let (pending, _) = recording(
         s.mock("POST", "/api/v2/pending-listings"),
         201,
@@ -516,6 +516,44 @@ async fn stored_steps_not_in_the_file_are_not_uploaded() {
         listing(&f).market_status,
         Some(MarketStatus::StepsUnverified)
     );
+}
+
+/// Fix round 1: a row that does not read — its stored steps, lock key or
+/// lock output index — is no node question: it is recorded once as
+/// StepsUnverified with why (for the UI, retried with backoff), nothing is
+/// uploaded and the node is not read.
+#[tokio::test]
+async fn unreadable_row_is_recorded_as_steps_unverified() {
+    for (column, value, why) in [
+        ("steps_json", "not json", "unreadable steps"),
+        ("lock_pubkey_hex", "zz", "bad lock key"),
+        ("lock_vout", "-1", "bad lock output"),
+    ] {
+        let f = fx(ListingState::Listed, true);
+        f.conn
+            .execute(
+                &format!("UPDATE shakedex_listings SET {column} = ?1"),
+                [value],
+            )
+            .unwrap();
+        let mut s = market().await;
+        let (m, _) = upload_mock(&mut s, 0).await;
+        let n = node(&f, TIP);
+        publish(&f, &n, &s, NOW).await;
+        m.assert_async().await;
+        let l = listing(&f);
+        assert_eq!(
+            (l.market_status, l.market_attempts),
+            (Some(MarketStatus::StepsUnverified), 1),
+            "{column}"
+        );
+        assert_eq!(
+            l.market_retry_at.as_deref(),
+            Some(rfc3339(NOW + 300).as_str())
+        );
+        assert!(l.market_error.unwrap().contains(why), "{column}");
+        assert_eq!(n.call_count(), 0, "{column}: the node is not read");
+    }
 }
 
 /// R23 with R26 (T6): a lowered Buy Now's file holds both steps; the market
