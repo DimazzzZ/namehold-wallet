@@ -950,9 +950,11 @@ async fn expires_at_refreshed_before_it_lapses() {
     let mut s = market().await;
     let (m, seen) = upload_mock(&mut s, 1).await;
     // The market still serves the old copy; it is replaced by the refreshed one.
-    let _get = copy_mock(&mut s, listing_file_market_copy(&old), 0).await;
+    // The file just changed: uploaded at once, the market's copy not asked.
+    let get = copy_mock(&mut s, listing_file_market_copy(&old), 0).await;
     keep(&f, &s, NOW).await;
     m.assert_async().await;
+    get.assert_async().await;
     let want = MTP + sell::LISTING_LIFETIME_SECS;
     let l = listing(&f);
     assert_eq!(l.expires_at, Some(want as i64));
@@ -1057,9 +1059,29 @@ async fn refused_upload_is_not_retried_until_it_changes() {
         .unwrap(),
         1
     );
-    assert_eq!(listing(&f).market_status, None, "started over");
+    let l = listing(&f);
+    assert_eq!(
+        (
+            l.market_status,
+            l.market_retry_at,
+            l.market_attempts,
+            l.market_error
+        ),
+        (Some(MarketStatus::Retrying), None, 0, None),
+        "started over, due now"
+    );
+    get.remove_async().await;
+    let get = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(404)
+        .with_body(PROOF_NOT_FOUND)
+        .expect(1)
+        .create_async()
+        .await;
     let (m, seen) = upload_mock(&mut s, 1).await;
     publish(&f, &node(&f, TIP), &s, NOW + 7 * 86_400).await;
+    keep(&f, &s, NOW + 7 * 86_400).await;
+    get.assert_async().await;
     m.assert_async().await;
     let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
     assert_eq!(ListingFile::parse(&sent, NET).unwrap().steps, vec![lower]);
@@ -1085,10 +1107,23 @@ async fn refused_listing_near_expiry_is_refreshed_without_a_market_call() {
     let want = MTP + sell::LISTING_LIFETIME_SECS;
     let l = listing(&f);
     assert_eq!(l.expires_at, Some(want as i64));
-    assert_eq!(l.market_status, None, "started over");
-    drop(m);
+    assert_eq!(
+        (l.market_status, l.market_retry_at, l.market_accepted),
+        (Some(MarketStatus::Retrying), None, true),
+        "started over, due now"
+    );
+    any.remove_async().await;
+    m.remove_async().await;
+    let get = s
+        .mock("GET", format!("/listing/{NAME}/proof.json").as_str())
+        .with_status(404)
+        .with_body(PROOF_NOT_FOUND)
+        .expect(1)
+        .create_async()
+        .await;
     let (m, _) = upload_mock(&mut s, 1).await;
-    publish(&f, &node(&f, TIP), &s, NOW).await;
+    keep(&f, &s, NOW).await;
+    get.assert_async().await;
     m.assert_async().await;
     assert_eq!(listing(&f).market_status, Some(MarketStatus::Listed));
 
@@ -1889,4 +1924,75 @@ async fn a_mined_cancel_or_sale_is_reported_at_the_next_sync() {
         m.assert_async().await;
         assert_eq!(listing(&f).market_status, Some(MarketStatus::Reported));
     }
+}
+
+/// Ruling 2026-10-10 (fix round 2 of Step 6): a Lower price is no fresh
+/// listing — the market holds this lock's listing — so it keeps the
+/// acceptance and makes the new copy due for keep-listed at once. A cancel
+/// signed before that re-upload still keeps the listing: the market's copy
+/// (our older, dearer step) is replaced by the lowered one, which the
+/// listing reads as ours (Listed, not "replaced by someone else's copy");
+/// once the cancel is mined it is reported.
+#[tokio::test]
+async fn lowered_listing_is_kept_while_cancelling_and_then_reported() {
+    let f = listed_on_market(MarketStatus::Listed);
+    let old = listing(&f);
+    let old_copy = our_copy(&f);
+    let first = signed_step(&f.key, &f.payment, PRICE, sell::buy_now_lock_time(MTP));
+    let lower = signed_step(&f.key, &f.payment, 3_000_000, sell::buy_now_lock_time(MTP));
+    let file = file_of(
+        &f.key,
+        &f.payment,
+        &[first.clone(), lower.clone()],
+        MTP + sell::LISTING_LIFETIME_SECS,
+    );
+    let steps = stored(&[first, lower.clone()]);
+    let txid_f1 = txid("f1");
+    assert_eq!(
+        queries::lower_listing_price(
+            &f.conn,
+            &f.id,
+            &queries::LoweredPrice {
+                lock: (&txid_f1, 0),
+                old_steps_json: &old.steps_json,
+                steps_json: &steps,
+                listing_file_json: &file,
+                expires_at: old.expires_at.unwrap(),
+            },
+        )
+        .unwrap(),
+        1
+    );
+    cancelling(&f, "signed");
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_retry_at, l.market_accepted),
+        (Some(MarketStatus::Retrying), None, true)
+    );
+    let mut s = market().await;
+    let get = copy_mock(&mut s, old_copy, 1).await;
+    let (up, seen) = upload_mock(&mut s, 1).await;
+    publish(&f, &node(&f, TIP), &s, NOW).await;
+    keep(&f, &s, NOW).await;
+    get.assert_async().await;
+    up.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(ListingFile::parse(&sent, NET).unwrap().steps, vec![lower]);
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.market_status),
+        (ListingState::Cancelling, Some(MarketStatus::Listed))
+    );
+    // Sent, then mined: reported.
+    queries::update_tx_draft_status(&f.conn, "cd", "broadcasted", None, Some(&txid("c1"))).unwrap();
+    cancel_mined(&f, ListingState::CancelAwaitingFinalize);
+    let (report, body) = report_mock(&mut s, 200, CANCEL_RECORDED, 1).await;
+    publish(&f, &node(&f, TIP), &s, NOW + 60).await;
+    report.assert_async().await;
+    let sent: serde_json::Value = serde_json::from_slice(&body.lock().unwrap()[0]).unwrap();
+    assert_eq!(
+        sent,
+        json!({ "outcome": "cancelled", "cancelTxHash": txid("c1") })
+    );
+    assert_eq!(listing(&f).market_status, Some(MarketStatus::Reported));
 }
