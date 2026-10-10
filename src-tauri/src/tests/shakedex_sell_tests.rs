@@ -6102,8 +6102,8 @@ use crate::commands::shakedex::{
     cancel_listing_confirmed, reserve_restored_cancel_address, CANCEL_TITLE,
 };
 use crate::noncustodial::shakedex::cancel::{
-    CANCEL_ACTION, CANCEL_MEMPOOL_PURCHASE, CANCEL_PRICE_NONE_VALID_YET, CANCEL_PRICE_NOT_KNOWN,
-    CANCEL_STILL_BUYABLE,
+    CANCEL_ACTION, CANCEL_MARKET_TOLD, CANCEL_MEMPOOL_PURCHASE, CANCEL_PRICE_NONE_VALID_YET,
+    CANCEL_PRICE_NOT_KNOWN, CANCEL_STILL_BUYABLE,
 };
 
 /// The node's MTP and tip once the listing is Listed: a day after Finalize
@@ -6326,6 +6326,11 @@ async fn cancel_stops_jobs() {
         Some(CANCEL_MEMPOOL_PURCHASE)
     );
     assert_eq!(value("Current price").as_deref(), Some("5.000000 HNS"));
+    assert_eq!(
+        value("LearnHNS Market").as_deref(),
+        Some(CANCEL_MARKET_TOLD),
+        "a published listing's prompt says when the market is told"
+    );
 
     let row = with_db(&l.r.app, |c| {
         queries::get_tx_draft(c, &draft.id).unwrap().unwrap()
@@ -6357,6 +6362,25 @@ async fn cancel_stops_jobs() {
     assert!(
         followed.contains(&l.r.listing_id),
         "still followed on chain"
+    );
+}
+
+/// R28 (T6): the cancel prompt of an unpublished listing has no market row.
+#[tokio::test]
+async fn unpublished_listing_cancel_prompt_has_no_market_row() {
+    let mut l = listed_fixture().await;
+    let _sent = no_broadcast(&mut l.r).await;
+    assert!(!l.r.listing().publish);
+    answer(true);
+    cancel(&l).await.expect("cancel");
+    let reqs = take_test_requests();
+    let rows = reqs[0].details.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        rows.iter().all(|r| r["label"] != "LearnHNS Market"),
+        "{rows:?}"
     );
 }
 

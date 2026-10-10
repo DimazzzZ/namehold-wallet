@@ -46,6 +46,14 @@ pub const CANCEL_THEN_FINALIZE: &str = "Once the cancel is mined and the transfe
 /// transaction prompt shows it).
 pub const CANCEL_FINALIZE_NOTE: &str = "This brings the name out of its lock to the address of \
      this wallet the cancel committed to; the listing ends.";
+/// R28 (T6): the market notice of a published listing's cancel prompt. The
+/// report (`refresh-status`) waits for our node to have the cancel mined
+/// (`queries::list_listings_to_report`), and LearnHNS Market has no endpoint
+/// that withdraws a pending listing (MKT @3d117361: `GET`/`POST
+/// /v2/pending-listings` only).
+pub const CANCEL_MARKET_TOLD: &str = "Told the listing is cancelled at the first sync after \
+     this cancel is mined, if the market was told about the listing; until then it can still \
+     show it. LearnHNS Market offers no way to withdraw a pending listing.";
 /// Why a cancel draft that can never land was dropped (R28,
 /// `queries::release_losing_cancel`).
 pub const CANCEL_LOST_TO_PURCHASE: &str = "a purchase of the name was mined first: this \
@@ -60,6 +68,9 @@ pub struct CancelRows<'a> {
     pub cancel_address: &'a str,
     pub lock_address: &'a str,
     pub current_price: CancelPrice,
+    /// R23: the listing is published on LearnHNS Market (R28's market
+    /// notice, [`CANCEL_MARKET_TOLD`]).
+    pub published: bool,
 }
 
 /// The "Current price" row of the cancel's prompt (R3, R28).
@@ -86,7 +97,7 @@ pub const CANCEL_PRICE_NOT_KNOWN: &str =
 /// the secure window renders a `confirm` request.
 pub fn cancel_rows(r: &CancelRows) -> serde_json::Value {
     let row = |label: &str, value: String| serde_json::json!({ "label": label, "value": value });
-    serde_json::json!({ "rows": [
+    let mut rows = vec![
         row("Action", "Cancel the listing".into()),
         row("Name", r.name.into()),
         row("Network fee (cancel)", doos_to_hns_string(r.fee)),
@@ -102,8 +113,12 @@ pub fn cancel_rows(r: &CancelRows) -> serde_json::Value {
         row("Lock address", r.lock_address.into()),
         row("Until it is mined", CANCEL_STILL_BUYABLE.into()),
         row("A purchase already sent", CANCEL_MEMPOOL_PURCHASE.into()),
-        row("Then", CANCEL_THEN_FINALIZE.into()),
-    ] })
+    ];
+    if r.published {
+        rows.push(row("LearnHNS Market", CANCEL_MARKET_TOLD.into()));
+    }
+    rows.push(row("Then", CANCEL_THEN_FINALIZE.into()));
+    serde_json::json!({ "rows": rows })
 }
 
 /// R21, R28: the command's half of the destination rule: the
@@ -429,6 +444,7 @@ mod tests {
                 cancel_address: "hs1qcancel",
                 lock_address: "hs1qlock",
                 current_price: price,
+                published: false,
             })["rows"]
                 .as_array()
                 .unwrap()
@@ -536,5 +552,35 @@ mod tests {
         let upper = hex::encode([0x2c; 32]).to_ascii_uppercase();
         check_cancel_plan(&res.plan, 0, CANCEL_INDEX, NAME, (&upper, 0))
             .expect("case-insensitive txid");
+    }
+
+    /// R28 (T6): a published listing's cancel prompt says when LearnHNS
+    /// Market is told; an unpublished one says nothing about the market.
+    #[test]
+    fn cancel_rows_tell_a_published_listing_the_market_is_told() {
+        let rows = |published| {
+            cancel_rows(&CancelRows {
+                name: "dexsale",
+                fee: 1_000,
+                cancel_address: "rs1qcancel",
+                lock_address: "rs1qlock",
+                current_price: CancelPrice::Step(5_000_000),
+                published,
+            })["rows"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        let market = |rows: &[serde_json::Value]| {
+            rows.iter()
+                .position(|r| r["label"] == "LearnHNS Market")
+                .map(|i| (i, rows[i]["value"].clone()))
+        };
+        let then = |rows: &[serde_json::Value]| rows.iter().position(|r| r["label"] == "Then");
+        let published = rows(true);
+        let (at, value) = market(&published).expect("a market row");
+        assert_eq!(value, CANCEL_MARKET_TOLD);
+        assert_eq!(Some(at + 1), then(&published), "right before Then");
+        assert!(market(&rows(false)).is_none());
     }
 }

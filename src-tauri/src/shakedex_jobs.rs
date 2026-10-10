@@ -61,7 +61,9 @@
 //! Market as pending once its lock TRANSFER is sent (R23 day 0) and uploads
 //! its current price step once the FINALIZE into the lock is mined, every
 //! stored step verified over the lock coin our node reports first
-//! ([`market_copy`]); [`keep_listed_step`] keeps it there (R25). They read
+//! ([`market_copy`]); [`keep_listed_step`] keeps it there (R25) until its
+//! cancel is sent (R24, R28). Once our node has its sale or cancel mined,
+//! the publish step tells the market, once (R28). They read
 //! the node and write to the market and the listing's market bookkeeping
 //! only: the market's answers never change a listing's state.
 
@@ -70,7 +72,8 @@ use std::collections::HashSet;
 use crate::db::queries::{self, PurchaseProgress, PurchaseState, ShakedexPurchase, TxDraftRow};
 use crate::error::AppError;
 use crate::market::learnhns::{
-    LearnHnsClient, ListingKind, MarketReply, PendingListing, ProofCopy,
+    LearnHnsClient, ListingKind, MarketReply, PendingListing, ProofCopy, StatusRecorded,
+    StatusReport,
 };
 use crate::noncustodial::network::Network;
 use crate::noncustodial::node_rpc::NodeRpc;
@@ -2765,7 +2768,11 @@ fn market_job_clients(
 /// one confirmation): each Listed Buy Now listing of
 /// [`queries::list_listings_kept_on_market`] (published) the market has not taken yet
 /// (`market_status` unset) gets its current step uploaded
-/// ([`market_copy`]); reverse auctions are T8's. Reads the node, writes only
+/// ([`market_copy`]); reverse auctions are T8's. R28: each due listing of
+/// [`queries::list_listings_to_report`] — the market told about it, and our
+/// node has its sale or cancel mined — is reported first ([`report`]), once;
+/// a sent cancel already stopped the keep jobs, the report waits for it to
+/// be mined. Reads the node, writes only
 /// to the market and to the listing's market bookkeeping (and an expiry
 /// refresh): never signs, never broadcasts (SECURITY.md). A failure on one
 /// listing is logged and leaves it for the next sync.
@@ -2778,6 +2785,15 @@ pub async fn publish_listings_with_client(
 ) -> Result<(), AppError> {
     if queries::profile_network(conn, profile_id)? != Network::Main {
         return Ok(());
+    }
+    // Reports first: a report never waits behind an upload (no listing is
+    // in two of these sets: their states differ).
+    for l in queries::list_listings_to_report(conn, profile_id)? {
+        if due(&l, now) {
+            if let Err(e) = report(conn, market, &l, now).await {
+                eprintln!("shakedex market: {} ({}): {e}", l.id, l.name);
+            }
+        }
     }
     for l in queries::list_listings_to_announce(conn, profile_id)? {
         if due(&l, now) {
@@ -2804,6 +2820,50 @@ pub async fn publish_listings_with_client(
     }
     Ok(())
 }
+
+/// R28 (T6): tell the market of `l`'s mined sale (`saleTxHash`) or mined
+/// cancel (`outcome: "cancelled"`, `cancelTxHash`) and record its answer:
+/// marked → Reported; its "Listing not found" (nothing of the name to mark)
+/// → Reported with that note; its refusal → Refused, not retried; no answer
+/// or "not seen yet" → Retrying, backed off ([`after_reply`]).
+async fn report(
+    conn: &rusqlite::Connection,
+    market: &LearnHnsClient,
+    l: &queries::ShakedexListing,
+    now: i64,
+) -> Result<(), AppError> {
+    let corrupted = |what: &str| AppError::Other(format!("corrupted listing {}: no {what}", l.id));
+    let what = if l.state == queries::ListingState::Sold {
+        StatusReport::Sold {
+            sale_txid: l
+                .sold_txid
+                .as_deref()
+                .ok_or_else(|| corrupted("sale txid"))?,
+        }
+    } else {
+        StatusReport::Cancelled {
+            cancel_txid: l
+                .cancel_txid
+                .as_deref()
+                .ok_or_else(|| corrupted("cancel txid"))?,
+        }
+    };
+    let reply = market.refresh_status(&l.name, &what).await?;
+    let mut result = after_reply(
+        &reply,
+        queries::MarketStatus::Reported,
+        l.market_attempts,
+        now,
+    );
+    if reply == MarketReply::Accepted(StatusRecorded::NoListing) {
+        result.error = Some(REPORT_NO_LISTING.into());
+    }
+    record(conn, l, &result)
+}
+
+/// R28: the note a report the market answered "Listing not found" leaves.
+pub const REPORT_NO_LISTING: &str =
+    "LearnHNS Market answered \"Listing not found\": it lists nothing of the name to mark";
 
 /// R23 day 0: post `l`'s pending listing — the lock TRANSFER's outpoint, the
 /// lock address, the mode — and record the market's answer.
