@@ -111,6 +111,7 @@ fn fx_at(state: ListingState, publish: bool, mtp: u64) -> Fx {
         market_attempts: 0,
         market_error: None,
         market_accepted: false,
+        market_changed: false,
         expires_at: locked.then_some((mtp + sell::LISTING_LIFETIME_SECS) as i64),
         abort_draft_id: None,
         abort_txid: None,
@@ -1096,7 +1097,9 @@ async fn refused_upload_is_not_retried_until_it_changes() {
 
 /// Ruling 2026-10-10: a Refused Listed listing near its expiry gets the
 /// expiry check only — the refresh, read from our node, with no market call
-/// — which starts its bookkeeping over; the next run uploads the new file.
+/// — which makes it Retrying, due now, its acceptance kept (what is sent
+/// changed); the next keep-listed run checks the market's copy and uploads
+/// the new file.
 #[tokio::test]
 async fn refused_listing_near_expiry_is_refreshed_without_a_market_call() {
     let f = listed_on_market(MarketStatus::Refused);
@@ -2115,5 +2118,144 @@ async fn daemon_publishes_but_never_signs_or_broadcasts() {
         );
         drop(after_conn);
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// Lower `f`'s price to 3 HNS (a second step, `queries::lower_listing_price`);
+/// the new step.
+fn lower_price(f: &Fx) -> PriceStep {
+    let old = listing(f);
+    let first = signed_step(&f.key, &f.payment, PRICE, sell::buy_now_lock_time(MTP));
+    let lower = signed_step(&f.key, &f.payment, 3_000_000, sell::buy_now_lock_time(MTP));
+    let file = file_of(
+        &f.key,
+        &f.payment,
+        &[first.clone(), lower.clone()],
+        MTP + sell::LISTING_LIFETIME_SECS,
+    );
+    let steps = stored(&[first, lower.clone()]);
+    let txid_f1 = txid("f1");
+    assert_eq!(
+        queries::lower_listing_price(
+            &f.conn,
+            &f.id,
+            &queries::LoweredPrice {
+                lock: (&txid_f1, 0),
+                old_steps_json: &old.steps_json,
+                steps_json: &steps,
+                listing_file_json: &file,
+                expires_at: old.expires_at.unwrap(),
+            },
+        )
+        .unwrap(),
+        1
+    );
+    lower
+}
+
+/// Fix round 3 of Step 6: a Lower price sets `market_changed`, which a
+/// failure leaves alone. After no answer, the next run still reads the
+/// market's differing copy as our own older one: uploaded over it, Listed
+/// (not "replaced by someone else's copy"), the flag cleared. A differing
+/// copy found later, with the flag clear, is someone else's:
+/// ReplacedReuploaded.
+#[tokio::test]
+async fn lowered_listing_after_no_answer_is_uploaded_over_our_older_copy() {
+    let f = listed_on_market(MarketStatus::Listed);
+    let old_copy = our_copy(&f);
+    let lower = lower_price(&f);
+    assert!(listing(&f).market_changed);
+    let mut s = market().await;
+    let path = format!("/listing/{NAME}/proof.json");
+    let down = s
+        .mock("GET", path.as_str())
+        .with_status(503)
+        .with_body("<html>unavailable</html>")
+        .expect(1)
+        .create_async()
+        .await;
+    keep(&f, &s, NOW).await;
+    down.assert_async().await;
+    down.remove_async().await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_attempts, l.market_changed),
+        (Some(MarketStatus::Retrying), 1, true),
+        "a failure leaves the flag"
+    );
+    let get = copy_mock(&mut s, old_copy, 1).await;
+    let (up, seen) = upload_mock(&mut s, 1).await;
+    keep(&f, &s, NOW + 300).await;
+    get.assert_async().await;
+    up.assert_async().await;
+    let (_, sent) = proof_part(&seen.lock().unwrap()[0]);
+    assert_eq!(ListingFile::parse(&sent, NET).unwrap().steps, vec![lower]);
+    let l = listing(&f);
+    assert_eq!(
+        (l.market_status, l.market_changed),
+        (Some(MarketStatus::Listed), false)
+    );
+    get.remove_async().await;
+    up.remove_async().await;
+    // An hour later, someone else's copy (another price): replaced.
+    let mut theirs: serde_json::Value = serde_json::from_str(&our_copy(&f)).unwrap();
+    theirs["data"][0]["price"] = 1.into();
+    let get = copy_mock(&mut s, theirs.to_string(), 1).await;
+    let (up, _) = upload_mock(&mut s, 1).await;
+    keep(&f, &s, NOW + 300 + 3_600).await;
+    get.assert_async().await;
+    up.assert_async().await;
+    assert_eq!(
+        listing(&f).market_status,
+        Some(MarketStatus::ReplacedReuploaded)
+    );
+}
+
+/// Fix round 3 of Step 6: a reorg back to an unsent cancel sets
+/// `market_changed` (what the market was told changed: it may hold a copy
+/// marked cancelled), so a differing copy is read as our own: Listed. With
+/// the flag clear, the same differing copy is someone else's.
+#[tokio::test]
+async fn reorg_reset_listing_reads_a_differing_copy_by_its_flag() {
+    for flag in [true, false] {
+        let f = listed_on_market(MarketStatus::Reported);
+        queries::insert_tx_draft(&f.conn, "cd", PROFILE, "x", "00", "{}", "{}").unwrap();
+        queries::update_tx_draft_status(&f.conn, "cd", "signed", None, Some(&txid("c1"))).unwrap();
+        f.conn
+            .execute(
+                "UPDATE shakedex_listings SET state = 'cancel_awaiting_finalize',
+                 cancel_draft_id = 'cd', cancel_txid = ?1, cancel_vout = 0",
+                [txid("c1")],
+            )
+            .unwrap();
+        assert_eq!(
+            queries::mark_listing_cancel_unmined(&f.conn, &f.id, &txid("c1")).unwrap(),
+            1
+        );
+        assert!(listing(&f).market_changed);
+        if !flag {
+            f.conn
+                .execute("UPDATE shakedex_listings SET market_changed = 0", [])
+                .unwrap();
+        }
+        let mut theirs: serde_json::Value = serde_json::from_str(&our_copy(&f)).unwrap();
+        theirs["data"][0]["price"] = 1.into();
+        let mut s = market().await;
+        let get = copy_mock(&mut s, theirs.to_string(), 1).await;
+        let (up, _) = upload_mock(&mut s, 1).await;
+        keep(&f, &s, NOW).await;
+        get.assert_async().await;
+        up.assert_async().await;
+        let want = if flag {
+            MarketStatus::Listed
+        } else {
+            MarketStatus::ReplacedReuploaded
+        };
+        let l = listing(&f);
+        assert_eq!(
+            (l.state, l.market_status, l.market_changed),
+            (ListingState::Cancelling, Some(want), false),
+            "flag {flag}"
+        );
     }
 }

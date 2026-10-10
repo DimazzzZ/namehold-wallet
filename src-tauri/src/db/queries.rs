@@ -1908,18 +1908,22 @@ impl ListingWrite {
 /// The SET fragment that starts a fresh listing's market bookkeeping over
 /// ([`ListingWrite::market_reset_sql`]).
 const MARKET_RESET_SQL: &str = ", market_status = NULL, market_retry_at = NULL, \
-     market_attempts = 0, market_error = NULL, market_accepted = 0";
+     market_attempts = 0, market_error = NULL, market_accepted = 0, market_changed = 0";
 
 /// The SET fragment of a Listed to Listed write that changes what is sent
 /// ([`ListingWrite::market_reset_sql`]): a listing the market was told about
-/// is Retrying, due now, no failure counted, its acceptance kept; one never
-/// told stays untold (its first upload is the publish job's). The spelling
+/// is Retrying, due now, no failure counted, its acceptance kept, and
+/// `market_changed` set (a differing market copy is then our own older
+/// one); one never told stays untold (its first upload is the publish
+/// job's). The spelling
 /// is [`MarketStatus::Retrying`]'s.
 const MARKET_CHANGED_SQL: &str = ", market_status = CASE WHEN market_status IS NULL THEN NULL \
-     ELSE 'retrying' END, market_retry_at = NULL, market_attempts = 0, market_error = NULL";
+     ELSE 'retrying' END, market_retry_at = NULL, market_attempts = 0, market_error = NULL, \
+     market_changed = 1";
 
 /// R28 (T6): the SET fragment of the writes that record a mined sale or a
-/// mined cancel ([`sell_shakedex_listing`], [`mark_listing_cancel_mined`]):
+/// mined cancel ([`sell_shakedex_listing`], [`sell_listing_through_proven_lock`],
+/// [`mark_listing_cancel_mined`]):
 /// a listing the market was told about is due for its report at once
 /// (`market_retry_at` cleared), not when its hourly check would have been.
 const REPORT_DUE_NOW_SQL: &str = ", market_retry_at = CASE WHEN market_status IS NOT NULL \
@@ -2136,6 +2140,11 @@ pub struct ShakedexListing {
     /// on the market only then, so a cancel in progress never publishes a
     /// listing for the first time.
     pub market_accepted: bool,
+    /// What is sent changed since the market last accepted or served our
+    /// copy (a Lower price, an expiry refresh, a reorg back to an unsent
+    /// cancel): a market copy that differs is then our own older one, not
+    /// someone else's. Cleared only by an accepted upload or a matched copy.
+    pub market_changed: bool,
     pub expires_at: Option<i64>,
     pub abort_draft_id: Option<String>,
     /// The txid of the Cancel transfer `abort_draft_id` holds; kept when that
@@ -2163,7 +2172,7 @@ pub struct ShakedexListing {
 const SHAKEDEX_LISTING_COLS: &str = "id, wallet_profile_id, name, mode, state, lock_pubkey_hex, \
     lock_transfer_draft_id, lock_finalize_draft_id, lock_transfer_txid, lock_txid, lock_vout, \
     payment_address, cancel_address, cancel_child_index, steps_json, listing_file_json, publish, market_status, \
-    market_retry_at, market_attempts, market_error, market_accepted, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout, \
+    market_retry_at, market_attempts, market_error, market_accepted, market_changed, expires_at, abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout, \
     cancel_finalize_draft_id, cancel_blocks_remaining, created_at, updated_at";
 
 fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShakedexListing> {
@@ -2190,6 +2199,7 @@ fn row_to_shakedex_listing(row: &rusqlite::Row<'_>) -> rusqlite::Result<Shakedex
         market_attempts: row.get("market_attempts")?,
         market_error: row.get("market_error")?,
         market_accepted: row.get::<_, i64>("market_accepted")? != 0,
+        market_changed: row.get::<_, i64>("market_changed")? != 0,
         expires_at: row.get("expires_at")?,
         abort_draft_id: row.get("abort_draft_id")?,
         abort_txid: row.get("abort_txid")?,
@@ -2224,9 +2234,9 @@ pub fn insert_shakedex_listing(
              cancel_address, cancel_child_index, steps_json, listing_file_json, publish,
              market_status, market_retry_at, market_attempts, market_error, expires_at,
              abort_draft_id, abort_txid, sold_txid, cancel_txid, cancel_draft_id, cancel_vout,
-             cancel_finalize_draft_id, cancel_blocks_remaining, market_accepted)
+             cancel_finalize_draft_id, cancel_blocks_remaining, market_accepted, market_changed)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
+                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
         params![
             l.id,
             l.wallet_profile_id,
@@ -2258,7 +2268,8 @@ pub fn insert_shakedex_listing(
             l.cancel_vout,
             l.cancel_finalize_draft_id,
             l.cancel_blocks_remaining,
-            i64::from(l.market_accepted)
+            i64::from(l.market_accepted),
+            i64::from(l.market_changed)
         ],
     )?;
     Ok(())
@@ -2861,7 +2872,7 @@ pub fn sell_listing_through_proven_lock(
     let sql = format!(
         "UPDATE shakedex_listings
          SET state = ?2, sold_txid = ?3, lock_txid = ?4, lock_vout = ?5,
-             updated_at = datetime('now')
+             updated_at = datetime('now'){REPORT_DUE_NOW_SQL}
          WHERE id = ?1 AND {} AND lock_txid IS NULL AND lock_vout IS NULL",
         ListingWrite::ProvenLockSale.source_sql()
     );
@@ -3156,7 +3167,8 @@ pub fn mark_listing_cancel_unmined(
              market_status = CASE WHEN {told} THEN ?4 ELSE market_status END,
              market_retry_at = CASE WHEN {told} THEN NULL ELSE market_retry_at END,
              market_attempts = CASE WHEN {told} THEN 0 ELSE market_attempts END,
-             market_error = CASE WHEN {told} THEN NULL ELSE market_error END
+             market_error = CASE WHEN {told} THEN NULL ELSE market_error END,
+             market_changed = CASE WHEN {told} THEN 1 ELSE market_changed END
          WHERE id = ?1 AND {} AND cancel_txid = ?3",
         w.source_sql()
     );
@@ -3381,6 +3393,7 @@ pub fn record_market_result(
         "UPDATE shakedex_listings
          SET market_status = ?2, market_retry_at = ?3, market_attempts = ?4,
              market_error = ?5, market_accepted = MAX(market_accepted, ?9),
+             market_changed = CASE WHEN ?9 THEN 0 ELSE market_changed END,
              updated_at = datetime('now')
          WHERE id = ?1 AND state = ?6 AND steps_json = ?7 AND listing_file_json IS ?8",
         params![

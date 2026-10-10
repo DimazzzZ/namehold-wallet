@@ -286,14 +286,14 @@ mod tests {
         )
         .unwrap();
         run(&conn).unwrap();
-        let row: (i64, Option<String>, String, i64) = conn
+        let row: (i64, Option<String>, String, i64, i64) = conn
             .query_row(
-                "SELECT market_attempts, market_error, market_status, market_accepted FROM shakedex_listings WHERE id = 'l1'",
+                "SELECT market_attempts, market_error, market_status, market_accepted, market_changed FROM shakedex_listings WHERE id = 'l1'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .unwrap();
-        assert_eq!(row, (0, None, "listed".to_string(), 0));
+        assert_eq!(row, (0, None, "listed".to_string(), 0, 0));
         let top: String = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
