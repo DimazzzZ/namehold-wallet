@@ -1681,7 +1681,7 @@ async fn lock_coin_spent(
     // any sale: the sale rule says "not ours" of it.
     if queries::ListingWrite::CancelMined.from().contains(&l.state) {
         if let Some(c) = cancel_of_lock(conn, client, network, l, &owner, lock).await? {
-            return cancel_mined(conn, l, (&c.0, c.1), lock);
+            return cancel_mined(conn, l, (&c.0, c.1), lock, queries::release_losing_cancel);
         }
     }
     if l.payment_address.is_none() {
@@ -1689,7 +1689,7 @@ async fn lock_coin_spent(
         // by, only the owner. While the owner is still the lock coin, hsd's
         // `GET /coin` of it is the 404 that brought us here: no verdict.
         if let Some(txid) = sale_of_restored_lock(conn, client, network, l, &owner, lock).await? {
-            sell_releasing_cancel(conn, l, &txid, lock)?;
+            sell_releasing_cancel(conn, l, &txid, lock, queries::release_losing_cancel)?;
         }
         return Ok(());
     }
@@ -1728,7 +1728,8 @@ async fn lock_coin_spent(
             queries::mark_listing_sale_pending(conn, &l.id, &txid, (lock.0.as_str(), lock.1))?;
         }
         (Sale::Mined { txid, lock }, false) => {
-            sell_releasing_cancel(conn, l, &txid, (lock.0.as_str(), lock.1))?;
+            let lock = (lock.0.as_str(), lock.1);
+            sell_releasing_cancel(conn, l, &txid, lock, queries::release_losing_cancel)?;
         }
         _ => {}
     }
@@ -2101,21 +2102,27 @@ async fn cancel_of_lock(
     Ok(found.then_some(outpoint))
 }
 
+/// How a cancel of ours that lost is released: [`queries::release_losing_cancel`],
+/// or [`queries::release_replaced_cancel`] where the spender replaced our
+/// mined cancel in a reorg.
+type ReleaseCancel = fn(&rusqlite::Connection, &str, &str, &str) -> Result<bool, AppError>;
+
 /// R28: CancelAwaitingFinalize with the mined cancel `cancel`, linked from
 /// `lock`; when it is not our own cancel draft's transaction (another
 /// device's cancel, or a purchase of our own), our cancel can never land
-/// and its coins are released ([`queries::release_losing_cancel`], which
-/// compares `cancel`'s txid, the spender read from hsd, with our draft's),
-/// in the same database transaction.
+/// and its coins are released (`release`, which compares `cancel`'s txid,
+/// the spender read from hsd, with our draft's), in the same database
+/// transaction.
 fn cancel_mined(
     conn: &rusqlite::Connection,
     l: &queries::ShakedexListing,
     cancel: (&str, u32),
     lock: (&str, u32),
+    release: ReleaseCancel,
 ) -> Result<(), AppError> {
     let tx = conn.unchecked_transaction()?;
     if queries::mark_listing_cancel_mined(&tx, &l.id, cancel, lock)? == 1 {
-        queries::release_losing_cancel(&tx, &l.id, cancel.0, cancel::CANCEL_LOST_TO_ANOTHER)?;
+        release(&tx, &l.id, cancel.0, cancel::CANCEL_LOST_TO_ANOTHER)?;
     }
     tx.commit()?;
     Ok(())
@@ -2123,19 +2130,19 @@ fn cancel_mined(
 
 /// R22, R28: Sold by the mined purchase `purchase_txid` of `lock`; a cancel
 /// this device built for the listing can never land now, so its coins are
-/// released in the same database transaction
-/// ([`queries::release_losing_cancel`], the purchase the spender read from
-/// hsd). Returns how many rows the sale moved.
+/// released in the same database transaction (`release`, the purchase the
+/// spender read from hsd). Returns how many rows the sale moved.
 fn sell_releasing_cancel(
     conn: &rusqlite::Connection,
     l: &queries::ShakedexListing,
     purchase_txid: &str,
     lock: (&str, u32),
+    release: ReleaseCancel,
 ) -> Result<usize, AppError> {
     let tx = conn.unchecked_transaction()?;
     let n = queries::sell_shakedex_listing(&tx, &l.id, purchase_txid, lock)?;
     if n == 1 {
-        queries::release_losing_cancel(&tx, &l.id, purchase_txid, cancel::CANCEL_LOST_TO_PURCHASE)?;
+        release(&tx, &l.id, purchase_txid, cancel::CANCEL_LOST_TO_PURCHASE)?;
     }
     tx.commit()?;
     Ok(n)
@@ -2314,7 +2321,9 @@ async fn cancel_on_its_way_home(
 /// a mined purchase of it while the owner has moved ([`find_sale`];
 /// [`sale_of_restored_lock`] for a lock restored by name) → Sold
 /// ([`sell_releasing_cancel`]). Either way a cancel of ours that can no
-/// longer land is released with that spender. A spender in the mempool, no
+/// longer land is released with that mined spender as evidence, even while
+/// the draft tracker still calls it `confirmed`
+/// ([`queries::release_replaced_cancel`]). A spender in the mempool, no
 /// spender found, or `cancel` itself found again is no verdict.
 async fn cancel_replaced(
     conn: &rusqlite::Connection,
@@ -2327,13 +2336,13 @@ async fn cancel_replaced(
 ) -> Result<(), AppError> {
     if let Some(c) = cancel_of_lock(conn, client, network, l, owner, lock).await? {
         if !(c.0.eq_ignore_ascii_case(cancel.0) && c.1 == cancel.1) {
-            cancel_mined(conn, l, (&c.0, c.1), lock)?;
+            cancel_mined(conn, l, (&c.0, c.1), lock, queries::release_replaced_cancel)?;
         }
         return Ok(());
     }
     if l.payment_address.is_none() {
         if let Some(txid) = sale_of_restored_lock(conn, client, network, l, owner, lock).await? {
-            sell_releasing_cancel(conn, l, &txid, lock)?;
+            sell_releasing_cancel(conn, l, &txid, lock, queries::release_replaced_cancel)?;
         }
         return Ok(());
     }
@@ -2342,7 +2351,8 @@ async fn cancel_replaced(
         find_sale(conn, client, network, l, owner).await?,
         owner_is_lock,
     ) {
-        sell_releasing_cancel(conn, l, &txid, (lock.0.as_str(), lock.1))?;
+        let lock = (lock.0.as_str(), lock.1);
+        sell_releasing_cancel(conn, l, &txid, lock, queries::release_replaced_cancel)?;
     }
     Ok(())
 }
