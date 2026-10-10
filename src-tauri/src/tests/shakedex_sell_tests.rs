@@ -7675,10 +7675,15 @@ async fn lower_refused_for_a_lock_key_this_wallet_does_not_derive() {
     let mut l = listed_fixture().await;
     let (info, lock) = (l.info(), l.lock.clone());
     let other = derive_lock_key(&master(), Network::Regtest, 0, "othername").unwrap();
+    // The row and its file both carry that key (the file is this row's).
+    let mut file: Value =
+        serde_json::from_str(l.r.listing().listing_file_json.as_deref().unwrap()).unwrap();
+    file["publicKey"] = hex::encode(other.pubkey).into();
     with_db(&l.r.app, |c| {
         c.execute(
-            "UPDATE shakedex_listings SET lock_pubkey_hex = ?2 WHERE id = ?1",
-            params![l.r.listing_id, hex::encode(other.pubkey)],
+            "UPDATE shakedex_listings SET lock_pubkey_hex = ?2, listing_file_json = ?3
+             WHERE id = ?1",
+            params![l.r.listing_id, hex::encode(other.pubkey), file.to_string()],
         )
         .unwrap();
     });
@@ -7731,6 +7736,90 @@ async fn lower_price_gives_a_file_without_expiry_r23s() {
     )
     .unwrap();
     assert_eq!(back.expires_at, Some(want));
+}
+
+/// R26, R32 (docs/CODING_STANDARDS.md: unknown fields are kept at every
+/// level): Lower price adds its step to the stored file as written, so a
+/// field this wallet does not write, at the top level or inside a step,
+/// survives; the new step carries only the fields we write, and every step
+/// of the file still verifies over the lock coin.
+#[tokio::test]
+async fn lower_price_keeps_a_files_unknown_fields() {
+    let l = listed_fixture().await;
+    let mut file: Value =
+        serde_json::from_str(l.r.listing().listing_file_json.as_deref().unwrap()).unwrap();
+    file["marketNote"] = json!({ "seen": 1 });
+    file["data"][0]["origin"] = json!("cli");
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET listing_file_json = ?2 WHERE id = ?1",
+            params![l.r.listing_id, file.to_string()],
+        )
+        .unwrap();
+    });
+    answer(true);
+    lower(&l, "3").await.expect("lower");
+    let _ = take_test_requests();
+    let row = l.r.listing();
+    let after: Value = serde_json::from_str(row.listing_file_json.as_deref().unwrap()).unwrap();
+    assert_eq!(after["marketNote"], json!({ "seen": 1 }));
+    assert_eq!(after["data"][0]["origin"], json!("cli"));
+    let mut keys: Vec<&String> = after["data"][1].as_object().unwrap().keys().collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["fee", "lockTime", "price", "signature"]);
+    let back =
+        ListingFile::parse(row.listing_file_json.as_deref().unwrap(), Network::Regtest).unwrap();
+    let mut outpoint = [0u8; 32];
+    hex::decode_to_slice(&l.lock.0, &mut outpoint).unwrap();
+    let payment = crate::noncustodial::tx::output_address_from_string(
+        Network::Regtest,
+        row.payment_address.as_deref().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        back.steps.iter().map(|s| s.price).collect::<Vec<_>>(),
+        vec![5_000_000, 3_000_000]
+    );
+    for s in &back.steps {
+        verify_step_signature(
+            &StepTemplate {
+                lock_outpoint: (outpoint, l.lock.1),
+                lock_value: NAME_VALUE,
+                lock_pubkey: &back.public_key,
+                payment: payment.clone(),
+                price: s.price,
+                lock_time_secs: s.lock_time,
+            },
+            &s.signature,
+        )
+        .unwrap_or_else(|e| panic!("step at {}: {e}", s.price));
+    }
+}
+
+/// R26: Lower price adds its step to the stored file only when that file is
+/// the row's: its steps, lock and key the stored ones. A file whose step
+/// differs from the row's is refused before the prompt; nothing is written.
+#[tokio::test]
+async fn lower_refused_when_its_file_is_not_the_rows() {
+    let l = listed_fixture().await;
+    let mut file: Value =
+        serde_json::from_str(l.r.listing().listing_file_json.as_deref().unwrap()).unwrap();
+    file["data"][0]["price"] = json!(6_000_000);
+    with_db(&l.r.app, |c| {
+        c.execute(
+            "UPDATE shakedex_listings SET listing_file_json = ?2 WHERE id = ?1",
+            params![l.r.listing_id, file.to_string()],
+        )
+        .unwrap();
+    });
+    let before = l.r.listing();
+    decline_if_asked();
+    let e = err_text(lower(&l, "3").await.expect_err("refused"));
+    assert!(
+        e.contains("listing file matching its lock and steps"),
+        "{e}"
+    );
+    assert_not_lowered(&l, &before);
 }
 
 /// R23, R26: after Lower price the exported file is the row's, reads back

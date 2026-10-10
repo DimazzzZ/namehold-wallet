@@ -346,3 +346,50 @@ pub fn write_listing_file(l: &NewListingFile, network: Network) -> Result<String
     }
     Ok(json)
 }
+
+/// R26: `stored`, one of our own listing files as stored, with `step`
+/// appended to its price steps (the keys [`write_listing_file`] writes, fee
+/// 0) and, when the file names no expiry (imported without one, R32),
+/// `expires_at` (R23, Unix seconds). Every other field, known or not, at
+/// every level, stays as written. The result is read back by
+/// [`ListingFile::parse`]: its steps must be the stored ones and `step`.
+/// Returns the file and the expiry it names.
+pub fn add_step_to_listing_file(
+    stored: &str,
+    step: &PriceStep,
+    expires_at: u64,
+    network: Network,
+) -> Result<(String, u64), AppError> {
+    if step.fee != 0 {
+        return Err(bad(
+            "we never write a market fee: every step's fee must be 0",
+        ));
+    }
+    let file = ListingFile::parse(stored, network)?;
+    let mut v = file.as_written.clone();
+    v.get_mut("data")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| bad("no price steps"))?
+        .push(serde_json::json!({
+            "fee": step.fee,
+            "lockTime": step.lock_time,
+            "price": step.price,
+            "signature": hex::encode(step.signature),
+        }));
+    if file.expires_at.is_none() {
+        v["expiresAt"] = expires_at.into();
+    }
+    let json = serde_json::to_string(&v)?;
+    let back = ListingFile::parse(&json, network)?;
+    let mut want = file.steps.clone();
+    want.push(step.clone());
+    if back.steps != want || serde_json::from_str::<Value>(&back.to_json()?)? != v {
+        return Err(AppError::Other(
+            "the listing file did not read back as written".into(),
+        ));
+    }
+    let expiry = back
+        .expires_at
+        .ok_or_else(|| AppError::Other("the listing file lost its expiry".into()))?;
+    Ok((json, expiry))
+}
