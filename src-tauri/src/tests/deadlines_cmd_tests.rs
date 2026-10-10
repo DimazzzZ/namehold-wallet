@@ -737,3 +737,88 @@ async fn cancel_finalize_ready_after_the_lockup() {
     let raw = db::queries::get_settings(&conn).unwrap()["deadline_notify_state"].clone();
     assert!(!raw.contains("cancel_finalize:"), "{raw}");
 }
+
+/// R28: an unsent (draft or signed) FINALIZE draft does not end the
+/// reminder; a sent one does, and when that draft then fails or is dropped
+/// the cancel is ready again and reminds once more; a disabled setting
+/// notifies nothing.
+#[tokio::test]
+async fn cancel_finalize_reminder_follows_its_draft() {
+    let state = create_full_test_state();
+    {
+        let conn = state.db.lock().unwrap();
+        let id = insert_valid_profile(&conn, "mainnet");
+        enable_notifications(&conn, "144", "30");
+        seed_listing(&conn, &id, "l1", "homeward", "cancel_finalizing");
+        conn.execute(
+            "UPDATE shakedex_listings
+             SET cancel_txid = 'c1-tx', cancel_vout = 0, cancel_blocks_remaining = 0
+             WHERE id = 'l1'",
+            [],
+        )
+        .unwrap();
+        db::queries::insert_tx_draft(
+            &conn,
+            "cfin",
+            &id,
+            "shakedex_cancel_finalize",
+            "00",
+            "{}",
+            "{}",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE shakedex_listings SET cancel_finalize_draft_id = 'cfin' WHERE id = 'l1'",
+            [],
+        )
+        .unwrap();
+    };
+    let app = mock_app_with(state);
+    let scan = |day| scan_deadline_notifications_on_day(app.handle().clone(), app.state(), day);
+    let with = |sql: &str| {
+        let s: tauri::State<crate::AppState> = app.state();
+        let conn = s.db.lock().unwrap();
+        conn.execute(sql, []).unwrap();
+    };
+    let draft = |status: &str| {
+        with(&format!(
+            "UPDATE wallet_tx_drafts SET status = '{status}' WHERE id = 'cfin'"
+        ))
+    };
+    draft("signed");
+    assert_eq!(
+        scan(20_000).await.unwrap().notified.len(),
+        1,
+        "unsent signed"
+    );
+    draft("draft");
+    assert!(
+        scan(20_001).await.unwrap().notified.is_empty(),
+        "still active"
+    );
+    draft("broadcasted");
+    assert!(scan(20_002).await.unwrap().notified.is_empty(), "sent");
+    draft("failed");
+    assert_eq!(
+        scan(20_003).await.unwrap().notified.len(),
+        1,
+        "failed: again"
+    );
+    draft("broadcasted");
+    assert!(
+        scan(20_004).await.unwrap().notified.is_empty(),
+        "sent again"
+    );
+    draft("dropped");
+    assert_eq!(
+        scan(20_005).await.unwrap().notified.len(),
+        1,
+        "dropped: again"
+    );
+    draft("broadcasted");
+    assert!(scan(20_006).await.unwrap().notified.is_empty());
+    with("UPDATE settings SET value = 'false' WHERE key = 'deadline_notify_enabled'");
+    draft("failed");
+    let d = scan(20_007).await.unwrap();
+    assert!(!d.enabled && d.notified.is_empty(), "disabled");
+}
