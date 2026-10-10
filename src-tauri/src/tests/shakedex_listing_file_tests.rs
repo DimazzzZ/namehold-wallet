@@ -393,6 +393,132 @@ fn written(
     (json, key, pay, steps[0].clone())
 }
 
+use crate::noncustodial::shakedex::listing_file::{
+    add_step_to_listing_file, market_copy, same_market_listing, with_expiry,
+};
+
+/// R23 (T6): the market takes one step per upload. The copy keeps exactly
+/// step `index` and every other field as written (unknown fields too), and
+/// reads back through the strict parser.
+#[test]
+fn market_copy_keeps_one_step_and_every_other_field() {
+    let network = Network::Main;
+    let (json, key, pay, first) = written(network);
+    let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    v["marketNote"] = "kept".into();
+    v["data"][0]["origin"] = "kept too".into();
+    let stored = serde_json::to_string(&v).unwrap();
+    let cheaper = {
+        let lock_time = buy_now_lock_time(W_MTP + 600);
+        let t = StepTemplate {
+            lock_outpoint: (W_LOCK_TXID, 0),
+            lock_value: W_LOCK_VALUE,
+            lock_pubkey: &key.pubkey,
+            payment: output_address_from_string(network, &pay).unwrap(),
+            price: 3_000_000,
+            lock_time_secs: lock_time,
+        };
+        PriceStep {
+            price: 3_000_000,
+            lock_time,
+            signature: sign_step(&key, &t).unwrap(),
+            fee: 0,
+        }
+    };
+    let (two, _) = add_step_to_listing_file(&stored, &cheaper, 0, network).unwrap();
+
+    let copy = market_copy(&two, 1, network).unwrap();
+    let back = ListingFile::parse(&copy, network).unwrap();
+    assert_eq!(back.steps, vec![cheaper]);
+    let cv: serde_json::Value = serde_json::from_str(&copy).unwrap();
+    assert_eq!(cv["marketNote"], "kept");
+    assert_eq!(cv["data"].as_array().unwrap().len(), 1);
+    assert_eq!(cv["expiresAt"], v["expiresAt"]);
+    let first_copy = market_copy(&two, 0, network).unwrap();
+    let fv: serde_json::Value = serde_json::from_str(&first_copy).unwrap();
+    assert_eq!(fv["data"][0]["origin"], "kept too");
+    assert_eq!(
+        ListingFile::parse(&first_copy, network).unwrap().steps,
+        vec![first]
+    );
+    assert!(market_copy(&two, 2, network).is_err(), "no third step");
+}
+
+/// R23 (T6): the expiry is rewritten and nothing else changes.
+#[test]
+fn expiry_rewrite_keeps_every_other_field() {
+    let network = Network::Main;
+    let (json, _, _, step) = written(network);
+    let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    v["marketNote"] = "kept".into();
+    v["data"][0]["origin"] = "kept too".into();
+    let stored = serde_json::to_string(&v).unwrap();
+    let later = W_MTP + 2 * 365 * 86_400;
+    let out = with_expiry(&stored, later, network).unwrap();
+    let back = ListingFile::parse(&out, network).unwrap();
+    assert_eq!(back.expires_at, Some(later));
+    assert_eq!(back.steps, vec![step]);
+    let mut ov: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(ov["marketNote"], "kept");
+    ov["expiresAt"] = v["expiresAt"].clone();
+    assert_eq!(ov, v, "only expiresAt changed");
+}
+
+/// R25 (T6): the market's copy is ours only when a buyer would get exactly
+/// our offer: one step, same lock, key, payment address, price, lock time,
+/// signature, no fee address in effect, the same expiry. Key order and
+/// unknown fields do not matter.
+#[test]
+fn same_market_listing_compares_what_a_buyer_gets() {
+    let network = Network::Main;
+    let (json, _, _, _) = written(network);
+    let ours = ListingFile::parse(&json, network).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let parse = |v: &serde_json::Value| ListingFile::parse(&v.to_string(), network).unwrap();
+    // Flask's own key order and an extra field: still ours.
+    let mut same = v.clone();
+    same["served"] = true.into();
+    assert!(same_market_listing(&parse(&same), &ours));
+    let mutate = |f: &dyn Fn(&mut serde_json::Value)| {
+        let mut m = v.clone();
+        f(&mut m);
+        m
+    };
+    let other_addr = crate::noncustodial::address::encode_p2wpkh(network, &[8; 20]).unwrap();
+    let others = [
+        mutate(&|m| m["expiresAt"] = (W_MTP + 1).into()),
+        mutate(&|m| m["lockingOutputIdx"] = 1.into()),
+        mutate(&|m| m["paymentAddr"] = other_addr.clone().into()),
+        mutate(&|m| {
+            m["feeAddr"] = other_addr.clone().into();
+            m["data"][0]["fee"] = 1000.into();
+        }),
+        mutate(&|m| m["data"][0]["price"] = 5_000_001.into()),
+        mutate(&|m| m["data"][0]["lockTime"] = (W_MTP - 1024).into()),
+        mutate(&|m| {
+            let d = m["data"][0].clone();
+            m["data"] = serde_json::json!([d.clone(), d]);
+        }),
+    ];
+    for other in others {
+        assert!(!same_market_listing(&parse(&other), &ours), "{other}");
+    }
+    // The fee and one-step clauses stand on their own: a file with a fee
+    // address in effect, or with two steps, is not the market listing even
+    // compared with itself (ours never carries either, so the step compare
+    // alone would not tell).
+    let fee = parse(&mutate(&|m| {
+        m["feeAddr"] = other_addr.clone().into();
+        m["data"][0]["fee"] = 1000.into();
+    }));
+    assert!(!same_market_listing(&fee, &fee), "fee address in effect");
+    let two = parse(&mutate(&|m| {
+        let d = m["data"][0].clone();
+        m["data"] = serde_json::json!([d.clone(), d]);
+    }));
+    assert!(!same_market_listing(&two, &two), "two steps");
+}
+
 /// R23 and R2: what we write is read back by our own strict parser, field
 /// for field, and comes back unchanged; R7: on a node where its lock coin is
 /// our FINALIZE at the lock address and the name's owner, it is buyable.

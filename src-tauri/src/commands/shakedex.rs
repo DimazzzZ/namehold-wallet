@@ -1917,40 +1917,6 @@ pub(crate) fn restored_lock_for_file(
     Ok(listing)
 }
 
-/// The value of the lock coin hsd reports for `file`'s lock outpoint, read
-/// field by field: a coin of another outpoint, without its address, at
-/// another address than `lock_address`, or with a negative value, is "could
-/// not check".
-fn lock_coin_value(
-    coin: &rpc::NodeCoin,
-    file: &ListingFile,
-    lock_address: &str,
-) -> Result<u64, AppError> {
-    let lock_txid = hex::encode(file.lock_txid);
-    if !(coin.txid == lock_txid && coin.vout == file.lock_vout) {
-        return Err(AppError::Rpc(format!(
-            "node answered coin {}:{} for the lock coin {lock_txid}:{}",
-            coin.txid, coin.vout, file.lock_vout
-        )));
-    }
-    let Some(address) = coin.address.as_deref() else {
-        return Err(AppError::Rpc(
-            "node did not report the lock coin's address".into(),
-        ));
-    };
-    if address != lock_address {
-        return Err(AppError::Rpc(format!(
-            "node reported the lock coin at {address}, not at this lock's address"
-        )));
-    }
-    u64::try_from(coin.value).map_err(|_| {
-        AppError::Rpc(format!(
-            "node reported a lock coin value of {} doos",
-            coin.value
-        ))
-    })
-}
-
 /// What the upgrade of a Restored lock decides from: the listing and the
 /// file already matched ([`restored_lock_for_file`]), the lock coin as hsd
 /// reports it (`None`: its 404, spent), and the lock key derived from the
@@ -1966,7 +1932,7 @@ pub(crate) struct OwnFileInput<'a> {
 /// R32: upgrade a Restored lock with its own listing file. The file's public
 /// key must be the lock key this wallet derives for the name; while the lock
 /// coin is a coin, every step must also be signed by that key over it
-/// (`template::verify_step_signature`, at the coin's value as hsd reports
+/// ([`sell::verify_file_steps`], at the coin's value as hsd reports
 /// it). A spent lock coin leaves the outpoint and key to check: the chain
 /// then judges the sale (R22) by the file's payment address. The listing
 /// becomes Listed with the file's payment address, steps, expiry and mode;
@@ -1984,26 +1950,8 @@ pub(crate) fn upgrade_restored_lock_inner(
         )));
     }
     if let Some(coin) = i.coin {
-        let lock_value = lock_coin_value(coin, file, &i.key.address)?;
-        let payment = output_address_from_string(i.network, &file.payment_addr)?;
-        for step in &file.steps {
-            template::verify_step_signature(
-                &template::StepTemplate {
-                    lock_outpoint: (file.lock_txid, file.lock_vout),
-                    lock_value,
-                    lock_pubkey: &file.public_key,
-                    payment: payment.clone(),
-                    price: step.price,
-                    lock_time_secs: step.lock_time,
-                },
-                &step.signature,
-            )
-            .map_err(|_| {
-                AppError::InvalidInput(
-                    "a price in this listing file is not signed by this lock".into(),
-                )
-            })?;
-        }
+        let lock_value = sell::lock_coin_value(coin, file, &i.key.address)?;
+        sell::verify_file_steps(file, lock_value, i.network)?;
     }
     let steps: Vec<sell::StoredStep> = file
         .steps
