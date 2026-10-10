@@ -301,7 +301,10 @@ impl LearnHnsClient {
 
     /// R25: `GET /listing/<name>/proof.json`, telling the market's "not
     /// listed" (its own JSON 404) from no answer. Reads are allowed on any
-    /// network; the job calls it on mainnet only.
+    /// network; the job calls it on mainnet only. The same path as
+    /// [`Self::listing_file`], for another caller: the keep-listed job must
+    /// not take a proxy's 404 page or a 5xx for "not listed" (it would
+    /// upload on it), while an import only needs the file or an error.
     pub async fn proof_copy(&self, name: &str) -> Result<ProofCopy, AppError> {
         check_name(name)?;
         let req = self
@@ -367,7 +370,11 @@ impl LearnHnsClient {
         Ok((parsed.auctions, parsed.total))
     }
 
-    /// The listing file text for a name, or `None` when the market has none.
+    /// The listing file text for a name, or `None` when the market has none:
+    /// the import of a market link (R5). Any 404 is `None` and any other
+    /// failure an error, which an import shows; the keep-listed job reads
+    /// the same path through [`Self::proof_copy`], which tells the
+    /// market's own "not listed" from no answer.
     pub async fn listing_file(&self, name: &str) -> Result<Option<String>, AppError> {
         check_name(name)?;
         self.get(
