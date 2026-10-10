@@ -15,7 +15,9 @@
 //! for a Shakedex listing whose transfer lockup is over and that waits for
 //! Finalize & sign ([`scan_listing_ready_deadlines`], R19); unlike the
 //! purchase one it repeats daily until Finalize & sign has run and its
-//! FINALIZE is sent.
+//! FINALIZE is sent. A fifth reminds once of a Shakedex cancel whose transfer
+//! lockup is over and whose FINALIZE has not been sent
+//! ([`scan_cancel_finalize_deadlines`], R28), like the purchase one.
 //!
 //! The scanner core ([`scan_deadlines`]) is a PURE function: deadlines +
 //! config + previously-notified state → notifications to emit + new state.
@@ -309,6 +311,42 @@ pub fn scan_listing_ready_deadlines(
     dedup_imminent(ready, config, previously_notified)
 }
 
+/// A Shakedex listing whose cancel is mined and whose transfer lockup is
+/// over: its FINALIZE can bring the name home now (R28, R14's pattern).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CancelFinalizeDeadline {
+    pub wallet_profile_id: String,
+    pub name: String,
+    /// Part of the key, so a later cancel of the same name is a new episode.
+    pub cancel_txid: String,
+}
+
+fn cancel_finalize_key(d: &CancelFinalizeDeadline) -> String {
+    format!(
+        "cancel_finalize:{}:{}:{}",
+        d.wallet_profile_id, d.name, d.cancel_txid
+    )
+}
+
+/// Pure scanner for cancels ready to finalize (R28): one notification per
+/// cancel, deduplicated and gated like [`scan_purchase_deadlines`]. Every
+/// cancel in `ready` is imminent by definition.
+pub fn scan_cancel_finalize_deadlines(
+    ready: &[CancelFinalizeDeadline],
+    config: &DeadlineNotifyConfig,
+    previously_notified: &BTreeSet<String>,
+) -> ScanResult {
+    let ready = ready.iter().map(|d| PendingNotification {
+        key: cancel_finalize_key(d),
+        title: "Ready to finalize".into(),
+        body: format!(
+            "{}: the cancel's transfer lockup is over — finalize it to bring the name home",
+            d.name
+        ),
+    });
+    dedup_imminent(ready, config, previously_notified)
+}
+
 // ---------------------------------------------------------------------------
 // IO shell
 // ---------------------------------------------------------------------------
@@ -493,7 +531,7 @@ pub(crate) async fn scan_deadline_notifications_on_day<R: tauri::Runtime>(
     // same discipline as `read_renewals`).
     let live_height = crate::commands::node_readiness::node_tip_height_if_synced(&state).await;
 
-    let (previously_notified, reveal, renewal, ready, listings) = {
+    let (previously_notified, reveal, renewal, ready, listings, cancels) = {
         let conn = state.db.lock().map_err(|e| AppError::Lock(e.to_string()))?;
         let previously_notified = load_state(&queries::get_settings(&conn)?);
         let (reveal, renewal) = collect_deadlines(&conn, live_height)?;
@@ -518,7 +556,24 @@ pub(crate) async fn scan_deadline_notifications_on_day<R: tauri::Runtime>(
                 },
             )
             .collect();
-        (previously_notified, reveal, renewal, ready, listings)
+        let cancels: Vec<CancelFinalizeDeadline> = queries::list_cancels_ready_to_finalize(&conn)?
+            .into_iter()
+            .map(
+                |(wallet_profile_id, name, cancel_txid)| CancelFinalizeDeadline {
+                    wallet_profile_id,
+                    name,
+                    cancel_txid,
+                },
+            )
+            .collect();
+        (
+            previously_notified,
+            reveal,
+            renewal,
+            ready,
+            listings,
+            cancels,
+        )
     };
 
     // The scans own disjoint key spaces, so their results merge by union.
@@ -529,6 +584,9 @@ pub(crate) async fn scan_deadline_notifications_on_day<R: tauri::Runtime>(
     let listings = scan_listing_ready_deadlines(&listings, &config, &previously_notified, day);
     result.notifications.extend(listings.notifications);
     result.active_episodes.extend(listings.active_episodes);
+    let cancels = scan_cancel_finalize_deadlines(&cancels, &config, &previously_notified);
+    result.notifications.extend(cancels.notifications);
+    result.active_episodes.extend(cancels.active_episodes);
 
     #[cfg_attr(test, allow(unused_mut))]
     let mut delivery_error = None;
