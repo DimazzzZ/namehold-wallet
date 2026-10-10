@@ -3236,6 +3236,35 @@ async fn mined_cancel_of_a_registration_gone_is_expired() {
     }
 }
 
+/// R28: a Finalizing listing whose FINALIZE into the lock was mined and
+/// then spent by a mined cancel out of that lock coin (ours, or another
+/// device's) before this device synced awaits that cancel's finalize: the
+/// after-lock job reads the lock coin hsd's 404, the lock TRANSFER not a
+/// coin, and the name's owner the cancel's TRANSFER.
+#[tokio::test]
+async fn finalizing_listing_whose_cancel_is_mined_awaits_its_finalize() {
+    let c7 = txid("c7");
+    let f = fx(ListingState::Finalizing);
+    run(
+        &f,
+        &node(
+            info((&c7, 0)),
+            vec![transfer_out_of_lock(&f, &c7, &f.cancel, TIP)],
+            cancel_rest(&f, &c7, TIP, &f.cancel),
+        ),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.cancel_txid.as_deref(), l.cancel_vout),
+        (
+            ListingState::CancelAwaitingFinalize,
+            Some(c7.as_str()),
+            Some(0)
+        )
+    );
+}
+
 /// R28 with R22's reorg rule: a Cancelling listing whose cancel can no
 /// longer land, while the FINALIZE into its lock is in no block and no
 /// mempool (the lock coin hsd's 404, the lock TRANSFER a coin again), goes
