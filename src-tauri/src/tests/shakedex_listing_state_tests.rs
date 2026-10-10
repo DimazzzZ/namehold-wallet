@@ -1322,7 +1322,8 @@ fn restored_by_name(f: &Fx) {
 /// lock outpoint (input k the lock coin, output k the TRANSFER of the name
 /// at our lock), it is Sold with that txid, found through the owner without
 /// the transaction index (the block at the owner coin's height). Committing
-/// to an address of ours (our cancel: T5), in the mempool, linked from
+/// to an address of ours it is a cancel (R28,
+/// `external_cancel_awaits_its_finalize`); in the mempool, linked from
 /// another coin, or not readable: no verdict.
 #[tokio::test]
 async fn restored_lock_by_name_is_sold_by_a_mined_transfer_out_of_its_lock() {
@@ -1353,10 +1354,40 @@ async fn restored_lock_by_name_is_sold_by_a_mined_transfer_out_of_its_lock() {
             "indexed {indexed}"
         );
     }
-    // Committing to an address of ours: a cancel, T5's.
+    // Bought while our cancel was on its way (R28): Sold all the same, and
+    // our cancel, which can never land, is dropped with the reason.
     let f = fx(ListingState::Restored);
     restored_by_name(&f);
-    // (Witnessed as a price step, so only the commitment says no.)
+    our_cancel(&f, "broadcasted");
+    let rest = witnessed(&purchase_rest(&f, &buy, TIP, &stranger), 0x84);
+    run(
+        &f,
+        &node(
+            info((&buy, 0)),
+            vec![transfer_out_of_lock(&f, &buy, &f.buyer, TIP)],
+            rest,
+        ),
+    )
+    .await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::Sold,
+        "bought while cancelling"
+    );
+    let d = queries::get_tx_draft(&f.conn, "cx").unwrap().unwrap();
+    assert_eq!(
+        (d.status.as_str(), d.error_message.as_deref()),
+        (
+            "dropped",
+            Some(crate::noncustodial::shakedex::cancel::CANCEL_LOST_TO_PURCHASE)
+        ),
+        "bought while cancelling"
+    );
+    // Committing to an address of ours: a cancel (R28), whatever signed it
+    // (a purchase of our own is one too): the name comes home through it.
+    let f = fx(ListingState::Restored);
+    restored_by_name(&f);
+    // (Witnessed as a price step, so only the commitment makes it a cancel.)
     let mut rest = witnessed(&purchase_rest(&f, &buy, TIP, &stranger), 0x84);
     let (_, ours) = address::decode(NET, &f.cancel).unwrap();
     rest["outputs"][0]["covenant"]["items"][3] = hex::encode(ours).into();
@@ -1369,7 +1400,16 @@ async fn restored_lock_by_name_is_sold_by_a_mined_transfer_out_of_its_lock() {
         ),
     )
     .await;
-    assert_eq!(listing(&f).state, ListingState::Restored, "our cancel");
+    let l = listing(&f);
+    assert_eq!(
+        (l.state, l.cancel_txid.as_deref(), l.cancel_vout),
+        (
+            ListingState::CancelAwaitingFinalize,
+            Some(buy.as_str()),
+            Some(0)
+        ),
+        "our cancel"
+    );
     // In the mempool: the owner is still the lock coin.
     let f = fx(ListingState::Restored);
     restored_by_name(&f);
@@ -1454,10 +1494,10 @@ async fn sold_on_purchase() {
 }
 
 /// R22: coins arriving at the payment address on their own mean nothing.
-/// (a) a coin there while the lock coin is unspent; (b) the lock coin spent
-/// into a TRANSFER at our lock committing to our own cancel address — even
-/// with a coin of ours in that very transaction at the payment address, so
-/// the owner path reads the commitment and says "ours"; (c) the lock coin
+/// (a) a coin there while the lock coin is unspent; (b) the owner a TRANSFER
+/// at our lock committing to our cancel address in a transaction that does
+/// not spend our lock coin into it (the node's `GET /tx` shows a gift):
+/// neither a sale nor a cancel of this listing; (c) the lock coin
 /// bought by a transaction that does not pay us, and a payment from another
 /// one that buys nothing, read from hsd (so the "no" comes from the rule,
 /// not from a read the mock does not answer).
@@ -2106,19 +2146,27 @@ async fn sold_reverts_on_a_reorg_of_the_purchase() {
 /// R22, R31: a name that expired while locked ends the listing as Expired,
 /// never Sold, whatever arrived at the payment address: hsd reports no live
 /// state (`info: null`), or the name was opened again (hsd's name height is
-/// not the lock coin's). From Listed and from a Restored lock, with the lock
-/// coin unspent; and from Listed with the lock coin spent.
+/// not the lock coin's). From Listed, from a Restored lock and from a
+/// Cancelling listing whose cancel is sent (R28: it expires like Listed),
+/// with the lock coin unspent; and from Listed with the lock coin spent.
 #[tokio::test]
 async fn expired_lock_is_expired_not_sold() {
     let other = txid("d1");
     let mut reopened = info((&"00".repeat(32), u32::MAX));
     reopened["info"]["height"] = 7_000.into();
-    for state in [ListingState::Listed, ListingState::Restored] {
+    for state in [
+        ListingState::Listed,
+        ListingState::Restored,
+        ListingState::Cancelling,
+    ] {
         for (case, reply) in [
             ("info null", json!({ "info": null, "start": null })),
             ("reopened", reopened.clone()),
         ] {
             let f = fx(state);
+            if state == ListingState::Cancelling {
+                our_cancel(&f, "broadcasted");
+            }
             paid(&f, &other, 0, TIP, false);
             run(&f, &node(reply, vec![lock_coin(&f, TIP - 20)], Value::Null)).await;
             let l = listing(&f);
@@ -2283,6 +2331,183 @@ async fn restored_lock_follows_its_coin() {
         (ListingState::Restored, None),
         "adopted lock, FINALIZE and purchase nowhere"
     );
+}
+
+/// A cancel `txid` of the fixture's lock coin as `GET /tx` sends it: input
+/// 0 the lock coin signed `0x83`, output 0 a TRANSFER of NAME at our lock
+/// committing to `to`, no payment.
+fn cancel_rest(f: &Fx, txid: &str, height: i64, to: &str) -> Value {
+    let mut v = witnessed(&purchase_rest(f, txid, height, &f.buyer), 0x83);
+    let (_, h) = address::decode(NET, to).unwrap();
+    v["outputs"][0]["covenant"]["items"][3] = hex::encode(h).into();
+    v["outputs"].as_array_mut().unwrap().truncate(2);
+    v
+}
+
+/// Our cancel draft `cx` (txid `c1…`, `status`) on a Cancelling listing.
+fn our_cancel(f: &Fx, status: &str) {
+    queries::insert_tx_draft(&f.conn, "cx", PROFILE, "shakedex_cancel", "00", "{}", "{}").unwrap();
+    queries::update_tx_draft_status(&f.conn, "cx", status, None, Some(&txid("c1"))).unwrap();
+    f.conn
+        .execute(
+            "UPDATE shakedex_listings SET state = 'cancelling', cancel_draft_id = 'cx',
+                 cancel_txid = ?1 WHERE id = ?2",
+            params![txid("c1"), f.id],
+        )
+        .unwrap();
+}
+
+/// R28: our cancel mined (the owner its TRANSFER at our lock committing to
+/// our cancel address, linked from the stored lock coin) makes a Cancelling
+/// listing CancelAwaitingFinalize with that outpoint; our draft is the one
+/// mined, so nothing is released. In the mempool (the owner still the lock
+/// coin) it stays Cancelling.
+#[tokio::test]
+async fn our_mined_cancel_awaits_its_finalize() {
+    let c1 = txid("c1");
+    let f = fx(ListingState::Listed);
+    our_cancel(&f, "broadcasted");
+    run(
+        &f,
+        &node(
+            info((&f.lock_txid, f.lock_vout)),
+            vec![transfer_out_of_lock(&f, &c1, &f.cancel, -1)],
+            cancel_rest(&f, &c1, -1, &f.cancel),
+        ),
+    )
+    .await;
+    assert_eq!(
+        listing(&f).state,
+        ListingState::Cancelling,
+        "in the mempool"
+    );
+
+    run(
+        &f,
+        &node(
+            info((&c1, 0)),
+            vec![transfer_out_of_lock(&f, &c1, &f.cancel, TIP)],
+            cancel_rest(&f, &c1, TIP, &f.cancel),
+        ),
+    )
+    .await;
+    let l = listing(&f);
+    assert_eq!(l.state, ListingState::CancelAwaitingFinalize);
+    assert_eq!(
+        (l.cancel_txid.as_deref(), l.cancel_vout),
+        (Some(c1.as_str()), Some(0))
+    );
+    let d = queries::get_tx_draft(&f.conn, "cx").unwrap().unwrap();
+    assert_eq!(d.status, "broadcasted", "our own cancel: nothing released");
+}
+
+/// The T4 carry: the stored lock coin spent by a mined TRANSFER of the name
+/// at our lock committing to an address of ours that this device did not
+/// send (another same-seed device's cancel, or our own purchase) moves a
+/// Listed, SalePending or Restored listing (a lock restored by name too) to
+/// CancelAwaitingFinalize, so the name never stalls blocked. A Cancelling
+/// one moves as well and its own cancel, which can never land now, is
+/// released. Linked from another lock coin, it is not this listing's.
+#[tokio::test]
+async fn external_cancel_awaits_its_finalize() {
+    let c7 = txid("c7");
+    let chain = |f: &Fx| {
+        node(
+            info((&c7, 0)),
+            vec![transfer_out_of_lock(f, &c7, &f.cancel, TIP)],
+            cancel_rest(f, &c7, TIP, &f.cancel),
+        )
+    };
+    for (case, from, by_name) in [
+        ("listed", ListingState::Listed, false),
+        ("sale pending", ListingState::SalePending, false),
+        ("restored", ListingState::Restored, false),
+        ("restored by name", ListingState::Restored, true),
+    ] {
+        let f = fx(from);
+        if by_name {
+            restored_by_name(&f);
+        }
+        run(&f, &chain(&f)).await;
+        let l = listing(&f);
+        assert_eq!(l.state, ListingState::CancelAwaitingFinalize, "{case}");
+        assert_eq!(
+            (l.cancel_txid.as_deref(), l.cancel_vout),
+            (Some(c7.as_str()), Some(0)),
+            "{case}"
+        );
+    }
+    // Our own cancel lost to another device's.
+    let f = fx(ListingState::Listed);
+    our_cancel(&f, "broadcasted");
+    run(&f, &chain(&f)).await;
+    assert_eq!(listing(&f).state, ListingState::CancelAwaitingFinalize);
+    let d = queries::get_tx_draft(&f.conn, "cx").unwrap().unwrap();
+    assert_eq!(d.status, "dropped");
+    assert_eq!(
+        d.error_message.as_deref(),
+        Some(crate::noncustodial::shakedex::cancel::CANCEL_LOST_TO_ANOTHER)
+    );
+    // Out of another lock coin of the name (same key, same address).
+    let f = fx(ListingState::Listed);
+    let mut other = cancel_rest(&f, &c7, TIP, &f.cancel);
+    other["inputs"][0]["prevout"]["hash"] = txid("c2").into();
+    run(
+        &f,
+        &node(
+            info((&c7, 0)),
+            vec![transfer_out_of_lock(&f, &c7, &f.cancel, TIP)],
+            other,
+        ),
+    )
+    .await;
+    assert_eq!(listing(&f).state, ListingState::Listed, "another lock coin");
+}
+
+/// R28: a Cancelling listing whose cancel can no longer land (its draft
+/// failed, dropped or deleted) while hsd shows the lock coin a mined coin
+/// (no transaction of the node spends it) is Listed again — Restored
+/// without a listing file — and forgets that cancel. An alive cancel (unsent
+/// or sent) leaves it Cancelling.
+#[tokio::test]
+async fn dead_cancel_returns_the_listing() {
+    for (status, file, want) in [
+        (Some("failed"), true, ListingState::Listed),
+        (Some("dropped"), true, ListingState::Listed),
+        (None, true, ListingState::Listed),
+        (Some("dropped"), false, ListingState::Restored),
+        (Some("signed"), true, ListingState::Cancelling),
+        (Some("broadcasted"), true, ListingState::Cancelling),
+    ] {
+        let f = fx(ListingState::Listed);
+        if !file {
+            restored_by_name(&f);
+        }
+        our_cancel(&f, status.unwrap_or("dropped"));
+        if status.is_none() {
+            f.conn
+                .execute("DELETE FROM wallet_tx_drafts WHERE id = 'cx'", [])
+                .unwrap();
+        }
+        run(
+            &f,
+            &node(
+                info((&f.lock_txid, f.lock_vout)),
+                vec![lock_coin(&f, TIP - 20)],
+                Value::Null,
+            ),
+        )
+        .await;
+        let l = listing(&f);
+        assert_eq!(l.state, want, "{status:?}, file {file}");
+        if want != ListingState::Cancelling {
+            assert_eq!(
+                (l.cancel_draft_id, l.cancel_txid),
+                (None, None),
+                "{status:?}"
+            );
+        }
+    }
 }
 
 /// R22, a real reorg of the purchase's block: hsd puts the purchase back in

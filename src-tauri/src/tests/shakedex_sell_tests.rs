@@ -6662,3 +6662,265 @@ async fn a_restored_cancel_address_is_reserved_only_with_its_row() {
     let s = l.r.listing();
     assert_eq!((s.cancel_address, s.cancel_child_index), (None, None));
 }
+
+use crate::noncustodial::shakedex::cancel::CANCEL_LOST_TO_PURCHASE;
+
+/// A TRANSFER of NAME at our regtest lock committing to `to`, output 0 of
+/// `txid`, as `GET /coin` sends it.
+fn transfer_at_lock(txid: &str, to: &str, height: i64) -> Value {
+    let (v, h) = address::decode(Network::Regtest, to).unwrap();
+    let mut c = coin_json(
+        txid,
+        0,
+        &lock_address(Network::Regtest),
+        COV_TRANSFER,
+        height,
+    );
+    c["covenant"]["items"][2] = hex::encode([v]).into();
+    c["covenant"]["items"][3] = hex::encode(h).into();
+    c
+}
+
+/// `txid` as `GET /tx` sends it: input 0 spends `lock` (witness signed with
+/// `sighash`), output 0 is a TRANSFER of NAME at our lock committing to
+/// `to`, and with `pay` the last output pays it 5 HNS (a purchase: a step
+/// commits to output len - 1 - 0).
+fn out_of_lock(
+    txid: &str,
+    lock: (&str, u32),
+    to: &str,
+    height: i64,
+    pay: Option<&str>,
+    sighash: u8,
+) -> Value {
+    let none = json!({ "type": 0, "action": "NONE", "items": [] });
+    let transfer = transfer_at_lock(txid, to, height);
+    let mut outputs = vec![
+        json!({ "value": NAME_VALUE, "address": transfer["address"], "covenant": transfer["covenant"] }),
+        json!({ "value": 1, "address": addr00(Network::Regtest).0, "covenant": none }),
+    ];
+    if let Some(pay) = pay {
+        outputs.push(json!({ "value": 5_000_000, "address": pay, "covenant": none }));
+    }
+    json!({
+        "hash": txid, "height": height, "hex": "00",
+        "inputs": [
+            { "prevout": { "hash": lock.0, "index": lock.1 },
+              "witness": [format!("{}{sighash:02x}", "aa".repeat(64)), "76".repeat(40)] },
+            { "prevout": { "hash": "aa".repeat(32), "index": 1 },
+              "witness": [format!("{}01", "bb".repeat(64)), "02".repeat(33)] }
+        ],
+        "outputs": outputs
+    })
+}
+
+/// R28: a purchase mined before our cancel wins. While it is only in the
+/// node's mempool (the owner still the lock coin) the listing stays
+/// Cancelling: no verdict over a cancel of ours. Mined, the listing is Sold
+/// by it (R22, the purchase paying our payment address), and our cancel,
+/// which can never land, has its reserved coins released and is dropped
+/// with the reason.
+#[tokio::test]
+async fn purchase_beats_cancel() {
+    let l = listed_fixture().await;
+    answer(true);
+    let cx = cancel(&l).await.expect("cancel");
+    let reserved = |app: &App| -> i64 {
+        with_db(app, |c| {
+            c.query_row(
+                "SELECT COUNT(*) FROM tracked_utxos WHERE reserved_by_draft_id = ?1",
+                [&cx.id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        })
+    };
+    assert!(reserved(&l.r.app) > 0, "the cancel holds its funding coin");
+    let pay = l.r.listing().payment_address.unwrap();
+    let buy = "b1".repeat(32);
+    let buyer = address::encode_p2wpkh(Network::Regtest, &[9; 20]).unwrap();
+    // Our coin of the purchase at the payment address, as the sync records it.
+    let paid = |height: i64| {
+        with_db(&l.r.app, |c| {
+            c.execute(
+                "INSERT OR REPLACE INTO tracked_utxos
+                    (txid, vout, wallet_profile_id, address, script_pubkey_hex, value_doos,
+                     height, covenant_type, spend_class, spent_by_txid)
+                 VALUES (?1, 2, ?2, ?3, '00', 5000000, ?4, 0, 'liquid_hns', NULL)",
+                params![buy, PROFILE, pay, height],
+            )
+            .unwrap();
+        })
+    };
+    let lock = (l.lock.0.as_str(), l.lock.1);
+
+    paid(-1);
+    let mempool = MockNodeRpc::new()
+        .with_name_info(l.info())
+        .with_tx_by_hash(out_of_lock(&buy, lock, &buyer, -1, Some(&pay), 0x84))
+        .with_get_coin(|_, _| Ok(None));
+    run_listing_step(&l.r.app, &mempool).await;
+    assert_eq!(
+        listing_state(&l.r.app, &l.r.listing_id),
+        ListingState::Cancelling,
+        "mempool"
+    );
+    assert!(
+        reserved(&l.r.app) > 0,
+        "still held while the purchase is unmined"
+    );
+
+    paid(LISTED_TIP);
+    let coin: NodeCoin =
+        serde_json::from_value(transfer_at_lock(&buy, &buyer, LISTED_TIP)).unwrap();
+    let b = buy.clone();
+    let mined = MockNodeRpc::new()
+        .with_name_info(name_info(RENEWAL, 0, &buy))
+        .with_tx_by_hash(out_of_lock(
+            &buy,
+            lock,
+            &buyer,
+            LISTED_TIP,
+            Some(&pay),
+            0x84,
+        ))
+        .with_get_coin(move |t, v| Ok((t == b && v == 0).then(|| coin.clone())));
+    run_listing_step(&l.r.app, &mined).await;
+    let s = l.r.listing();
+    assert_eq!(
+        (s.state, s.sold_txid.as_deref()),
+        (ListingState::Sold, Some(buy.as_str()))
+    );
+    assert_eq!(reserved(&l.r.app), 0, "the cancel's coins are free again");
+    let d = with_db(&l.r.app, |c| {
+        queries::get_tx_draft(c, &cx.id).unwrap().unwrap()
+    });
+    assert_eq!(d.status, "dropped");
+    assert_eq!(d.error_message.as_deref(), Some(CANCEL_LOST_TO_PURCHASE));
+}
+
+/// Review Focus 1 (R28, ADR 0004): re-listing a name after a cancel reuses
+/// its lock key and lock address, and the new listing tracks only its own
+/// lock outpoint. The old listing (Cancelled, lock coin f1) is terminal, so
+/// the name can be locked again and no job reads it; a mined TRANSFER to an
+/// address of ours out of the OLD lock coin is not the new listing's
+/// cancel, one out of the new lock coin is; the old listing never moves,
+/// and none of its cancel, steps or file attach to the new one.
+#[tokio::test]
+async fn relist_after_cancel_tracks_only_the_new_lock_coin() {
+    let conn = seeded("regtest", "mnemonic_hot", "http://127.0.0.1:9");
+    let key = derive_lock_key(&master(), Network::Regtest, 0, NAME).unwrap();
+    let addr = |conn: &Connection| derivation::reserve_receive_address(conn, PROFILE).unwrap();
+    let (old_pay, old_cancel) = (addr(&conn), addr(&conn));
+    let old = ShakedexListing {
+        wallet_profile_id: PROFILE.into(),
+        lock_pubkey_hex: hex::encode(key.pubkey),
+        lock_txid: Some("f1".repeat(32)),
+        lock_vout: Some(0),
+        payment_address: Some(old_pay.address),
+        cancel_address: Some(old_cancel.address.clone()),
+        cancel_child_index: Some(i64::from(old_cancel.child_index)),
+        steps_json: r#"[{"price":5000000,"lockTime":1,"signature":"ab"}]"#.into(),
+        listing_file_json: Some("{\"old\":true}".into()),
+        cancel_txid: Some("c1".repeat(32)),
+        cancel_vout: Some(0),
+        ..listing("old", NAME, ListingState::Cancelled)
+    };
+    queries::insert_shakedex_listing(&conn, &old).unwrap();
+    assert!(
+        queries::open_shakedex_listing_for_name(&conn, PROFILE, NAME)
+            .unwrap()
+            .is_none(),
+        "a Cancelled listing leaves the name free to lock again"
+    );
+    let (new_pay, new_cancel) = (addr(&conn), addr(&conn));
+    let new = ShakedexListing {
+        wallet_profile_id: PROFILE.into(),
+        lock_pubkey_hex: hex::encode(key.pubkey),
+        lock_txid: Some("f2".repeat(32)),
+        lock_vout: Some(0),
+        payment_address: Some(new_pay.address),
+        cancel_address: Some(new_cancel.address.clone()),
+        cancel_child_index: Some(i64::from(new_cancel.child_index)),
+        listing_file_json: Some("{}".into()),
+        ..listing("new", NAME, ListingState::Listed)
+    };
+    queries::insert_shakedex_listing(&conn, &new).unwrap();
+    assert_eq!(
+        queries::open_shakedex_listing_for_name(&conn, PROFILE, NAME)
+            .unwrap()
+            .map(|l| l.id)
+            .as_deref(),
+        Some("new")
+    );
+    let after: Vec<String> = queries::list_shakedex_listings_after_lock(&conn, PROFILE, 7)
+        .unwrap()
+        .into_iter()
+        .map(|l| l.id)
+        .collect();
+    assert_eq!(after, ["new"], "the old listing is in no job's set");
+
+    // The owner a mined TRANSFER at our lock to our (new) cancel address,
+    // its transaction spending `spends`.
+    let run = |spends: &str| {
+        let c9 = "c9".repeat(32);
+        let coin: NodeCoin =
+            serde_json::from_value(transfer_at_lock(&c9, &new_cancel.address, QUIET_TIP)).unwrap();
+        let tx = out_of_lock(&c9, (spends, 0), &new_cancel.address, QUIET_TIP, None, 0x83);
+        let c = c9.clone();
+        MockNodeRpc::new()
+            .with_name_info(name_info(RENEWAL, 0, &c9))
+            .with_tx_by_hash(tx)
+            .with_get_coin(move |t, v| Ok((t == c && v == 0).then(|| coin.clone())))
+    };
+    let rpc = run(&"f1".repeat(32));
+    refresh_listings_with_client(&conn, &rpc, PROFILE)
+        .await
+        .unwrap();
+    let get = |id: &str| queries::get_shakedex_listing(&conn, id).unwrap().unwrap();
+    assert_eq!(
+        get("new").state,
+        ListingState::Listed,
+        "out of the old lock coin: not ours to follow"
+    );
+    assert_eq!(
+        get("old"),
+        old_with_timestamps(&get("old"), &old),
+        "the old listing never moves"
+    );
+
+    let rpc = run(&"f2".repeat(32));
+    refresh_listings_with_client(&conn, &rpc, PROFILE)
+        .await
+        .unwrap();
+    let n = get("new");
+    assert_eq!(n.state, ListingState::CancelAwaitingFinalize);
+    assert_eq!(
+        (n.cancel_txid.as_deref(), n.cancel_vout),
+        (Some("c9".repeat(32).as_str()), Some(0))
+    );
+    assert_eq!(
+        (n.lock_txid.as_deref(), n.steps_json.as_str()),
+        (Some("f2".repeat(32).as_str()), "[]")
+    );
+    assert_eq!(n.listing_file_json.as_deref(), Some("{}"));
+    let o = get("old");
+    assert_eq!(
+        (o.state, o.cancel_txid.as_deref(), o.lock_txid.as_deref()),
+        (
+            ListingState::Cancelled,
+            Some("c1".repeat(32).as_str()),
+            Some("f1".repeat(32).as_str())
+        )
+    );
+}
+
+/// `want` with the timestamps the database gave `got` (the insert fills
+/// them).
+fn old_with_timestamps(got: &ShakedexListing, want: &ShakedexListing) -> ShakedexListing {
+    ShakedexListing {
+        created_at: got.created_at.clone(),
+        updated_at: got.updated_at.clone(),
+        ..want.clone()
+    }
+}
